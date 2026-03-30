@@ -1,0 +1,15 @@
+.env
+.env.*
+!.env.example
+
+.streamlit/secrets.toml
+credentials/service_account.json
+
+.venv/
+.tmp/
+.cache/
+__pycache__/
+*.py[cod]
+
+.DS_Store
+Thumbs.db
