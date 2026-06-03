@@ -54,6 +54,7 @@ Environment variables to set:
 - `PYTHON=python3`
 - `TRIGGER_POLLER_ON_SYNC=0`
 - `LOCAL_ARCHIVE_ROOT=` to disable the old local archive path in production
+- `SHADOW_USERS_SEED_PATH=/etc/secrets/shadow-users.json` if you want to seed existing users from a Render Secret File
 
 Recommended Render settings:
 
@@ -67,3 +68,11 @@ With a persistent disk, these survive restarts and deploys:
 - saved user accounts
 - generated run index cache
 - downloaded Google Drive image cache
+
+Without a persistent disk, you can still seed users from a Render Secret File:
+
+- create a secret file named `shadow-users.json`
+- paste the contents of your local `.cache/shadow-users.json`
+- set `SHADOW_USERS_SEED_PATH=/etc/secrets/shadow-users.json`
+
+On first startup without a local users file, the app will copy those seeded users into its normal cache file.

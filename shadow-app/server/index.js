@@ -17,6 +17,10 @@ const syncScriptPath = path.join(repoRoot, "sync_index.py");
 const driveBridgePath = path.join(appRoot, "server", "drive_bridge.py");
 const syncWorkerPath = path.join(appRoot, "server", "sync_worker.js");
 const googleImageCacheDir = path.join(cacheDir, "shadow-google-images");
+const usersSeedPathCandidates = [
+  process.env.SHADOW_USERS_SEED_PATH,
+  process.platform === "win32" ? null : "/etc/secrets/shadow-users.json",
+].filter(Boolean);
 const staticRoot = existsSync(path.join(appRoot, "dist"))
   ? path.join(appRoot, "dist")
   : path.join(appRoot, "public");
@@ -168,7 +172,31 @@ async function writeJsonFile(filePath, payload) {
   await fs.writeFile(filePath, JSON.stringify(payload, null, 2), "utf8");
 }
 
+async function ensureUsersSeeded() {
+  if (existsSync(usersPath)) {
+    return;
+  }
+
+  for (const seedPath of usersSeedPathCandidates) {
+    if (!seedPath || !existsSync(seedPath)) {
+      continue;
+    }
+
+    try {
+      const payload = JSON.parse(await fs.readFile(seedPath, "utf8"));
+      if (!Array.isArray(payload?.users)) {
+        continue;
+      }
+      await writeJsonFile(usersPath, payload);
+      return;
+    } catch {
+      // Ignore invalid seed files and keep trying candidates.
+    }
+  }
+}
+
 async function readUsers() {
+  await ensureUsersSeeded();
   const payload = await readJsonFile(usersPath, { users: [] });
   return Array.isArray(payload?.users) ? payload.users : [];
 }
