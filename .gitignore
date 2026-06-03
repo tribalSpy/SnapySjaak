@@ -1,0 +1,12 @@
+.env
+.streamlit/secrets.toml
+credentials/service_account.json
+__pycache__/
+*.pyc
+.venv/
+.cache/
+shadow-app/node_modules/
+shadow-app/dist/
+shadow-app-contained/
+dist/
+node_modules/

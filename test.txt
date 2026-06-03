@@ -1,0 +1,5 @@
+
+GOOGLE_DRIVE_ROOT_FOLDER_ID=1xWrn2BvcMD_U8n9_-hf42qNfvtXB3i1X
+GOOGLE_APPLICATION_CREDENTIALS=credentials/service_account.json
+LOCAL_ARCHIVE_ROOT=C:\Users\vdvfi\SynologyDrive\GoogleArchive
+LOCAL_ARCHIVE_AFTER_DAYS=7

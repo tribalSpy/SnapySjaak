@@ -1,0 +1,10 @@
+.git
+.agents
+.codex
+.venv
+.cache
+__pycache__
+credentials
+.env
+shadow-app/node_modules
+shadow-app-contained
