@@ -436,9 +436,10 @@ function googleImageCachePath(fileId, accountName = "default") {
   );
 }
 
-async function readGoogleImage(fileId, accountName = "default") {
+async function readGoogleImage(fileId, accountName = "default", options = {}) {
+  const { forceRefresh = false } = options;
   const cachePath = googleImageCachePath(fileId, accountName);
-  if (existsSync(cachePath)) {
+  if (!forceRefresh && existsSync(cachePath)) {
     return fs.readFile(cachePath);
   }
 
@@ -872,6 +873,7 @@ async function handleApi(req, res, url) {
   if (url.pathname === "/api/image") {
     const imagePath = url.searchParams.get("id");
     const accountName = url.searchParams.get("account") || "default";
+    const forceRefresh = Boolean(url.searchParams.get("retry"));
     if (!imagePath) {
       sendText(res, 400, "Invalid image id");
       return;
@@ -879,7 +881,7 @@ async function handleApi(req, res, url) {
 
     if (!path.isAbsolute(imagePath)) {
       try {
-        const imageBytes = await readGoogleImage(imagePath, accountName);
+        const imageBytes = await readGoogleImage(imagePath, accountName, { forceRefresh });
         res.writeHead(200, {
           "content-type": url.searchParams.get("mime") || "image/jpeg",
           "cache-control": "private, max-age=300",
