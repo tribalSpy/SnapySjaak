@@ -17,14 +17,49 @@ function formatTimestamp(value) {
   return parsed.toLocaleString();
 }
 
-function imageUrl(image, run) {
+function imageUrl(image, run, retryKey = "") {
   const params = new URLSearchParams();
   params.set("id", image.id);
   params.set("account", String(run?.metadata?.drive_account || "default"));
   if (image.mime_type) {
     params.set("mime", image.mime_type);
   }
+  if (retryKey) {
+    params.set("retry", String(retryKey));
+  }
   return `/api/image?${params.toString()}`;
+}
+
+function PhotoImage({ image, run, alt, loading = "eager" }) {
+  const [attempt, setAttempt] = useState(0);
+  const [failed, setFailed] = useState(false);
+
+  useEffect(() => {
+    setAttempt(0);
+    setFailed(false);
+  }, [image.id, run?.folder_id]);
+
+  useEffect(() => {
+    if (!failed || attempt >= 3) {
+      return undefined;
+    }
+
+    const timer = window.setTimeout(() => {
+      setFailed(false);
+      setAttempt((value) => value + 1);
+    }, 1200);
+
+    return () => window.clearTimeout(timer);
+  }, [attempt, failed]);
+
+  return (
+    <img
+      src={imageUrl(image, run, attempt)}
+      alt={alt}
+      loading={loading}
+      onError={() => setFailed(true)}
+    />
+  );
 }
 
 async function apiJson(path, options = {}) {
@@ -699,7 +734,7 @@ function RunCard({ run, onOpenPhoto }) {
               onClick={() => onOpenPhoto(run, index)}
               aria-label={`Open ${image.name}`}
             >
-              <img src={imageUrl(image, run)} alt={image.name} loading="lazy" />
+              <PhotoImage image={image} run={run} alt={image.name} loading="lazy" />
               <span>{image.name}</span>
             </button>
           ))}
@@ -749,7 +784,7 @@ function Lightbox({ photos, index, onChange, onClose }) {
         ‹
       </button>
       <figure onClick={(event) => event.stopPropagation()}>
-        <img src={imageUrl(active.image, active.run)} alt={active.image.name} />
+        <PhotoImage image={active.image} run={active.run} alt={active.image.name} />
         <figcaption>
           {index + 1} / {photos.length} - {active.image.name}
         </figcaption>
