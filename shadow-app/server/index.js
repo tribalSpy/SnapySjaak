@@ -27,6 +27,9 @@ const staticRoot = existsSync(path.join(appRoot, "dist"))
 const autoSyncOnVisit = process.env.AUTO_SYNC_ON_VISIT !== "0";
 const autoSyncThrottleMs = Number(process.env.AUTO_SYNC_THROTTLE_MINUTES || 5) * 60 * 1000;
 const autoSyncStartedAt = new Map();
+const recentPreloadDays = Math.max(0, Number(process.env.SHADOW_PRELOAD_RECENT_DAYS || 3));
+const recentPreloadMaxImages = Math.max(0, Number(process.env.SHADOW_PRELOAD_MAX_IMAGES || 120));
+const recentPreloadStartedAt = new Map();
 const sessions = new Map();
 const sessionCookieName = "snappysjaak_shadow_session";
 
@@ -523,6 +526,67 @@ async function maybeStartAutoSync(payload, activeDate) {
   return null;
 }
 
+async function preloadRecentGoogleImages(payload) {
+  if (!recentPreloadDays || !recentPreloadMaxImages) {
+    return;
+  }
+
+  const dates = [...new Set(payload.runs.map((run) => run.run_date).filter(Boolean))].sort().reverse();
+  const selectedDates = new Set(dates.slice(0, recentPreloadDays));
+  if (!selectedDates.size) {
+    return;
+  }
+
+  const recentRuns = payload.runs.filter((run) => selectedDates.has(run.run_date));
+  if (!recentRuns.length) {
+    return;
+  }
+
+  const hydratedByFolderId = await hydrateGoogleRuns(recentRuns);
+  let remaining = recentPreloadMaxImages;
+
+  for (const run of recentRuns) {
+    const hydrated = hydratedByFolderId.get(run.folder_id);
+    if (!hydrated || !Array.isArray(hydrated.images)) {
+      continue;
+    }
+
+    const accountName = String(hydrated?.metadata?.drive_account || "default");
+    for (const image of hydrated.images) {
+      if (!image?.id || remaining <= 0) {
+        break;
+      }
+      try {
+        await readGoogleImage(image.id, accountName);
+        remaining -= 1;
+      } catch {
+        // Ignore individual preload failures so the dashboard can still load normally.
+      }
+    }
+
+    if (remaining <= 0) {
+      break;
+    }
+  }
+}
+
+function maybeStartRecentPreload(payload) {
+  if (!payload?.generated_at || !recentPreloadDays || !recentPreloadMaxImages) {
+    return;
+  }
+
+  const cacheKey = String(payload.generated_at);
+  const previousStart = recentPreloadStartedAt.get(cacheKey) || 0;
+  if (previousStart) {
+    return;
+  }
+
+  recentPreloadStartedAt.set(cacheKey, Date.now());
+  void preloadRecentGoogleImages(payload).catch(() => {
+    // Best-effort warmup only.
+  });
+}
+
 async function handleApi(req, res, url) {
   if (url.pathname === "/api/auth/me") {
     const users = await readUsers();
@@ -678,6 +742,7 @@ async function handleApi(req, res, url) {
     const selectedDate = url.searchParams.get("date");
     const search = String(url.searchParams.get("search") || "").trim().toLowerCase();
     const payload = await readRunData();
+    maybeStartRecentPreload(payload);
     const dates = [...new Set(payload.runs.map((run) => run.run_date).filter(Boolean))].sort();
     const activeDate = selectedDate || (dates.includes(localDateIso()) ? localDateIso() : dates.at(-1)) || localDateIso();
     const auto_sync = await maybeStartAutoSync(payload, selectedDate || localDateIso());

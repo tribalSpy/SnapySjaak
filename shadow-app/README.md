@@ -46,7 +46,7 @@ This app is a mixed Node + Python service, so the easiest Render setup is a Dock
 Environment variables to set:
 
 - `GOOGLE_DRIVE_ROOT_FOLDER_ID`
-- `GOOGLE_SERVICE_ACCOUNT_JSON`
+- `GOOGLE_SERVICE_ACCOUNT_JSON` or `GOOGLE_APPLICATION_CREDENTIALS=/etc/secrets/service_account.json`
 - `GOOGLE_DRIVE_ACCOUNT_NAMES` if you use extra Google Drive accounts
 - `GOOGLE_DRIVE_ROOT_FOLDER_ID_<NAME>` for each extra account
 - `GOOGLE_SERVICE_ACCOUNT_JSON_<NAME>` only if an extra account needs different credentials
@@ -55,12 +55,15 @@ Environment variables to set:
 - `TRIGGER_POLLER_ON_SYNC=0`
 - `LOCAL_ARCHIVE_ROOT=` to disable the old local archive path in production
 - `SHADOW_USERS_SEED_PATH=/etc/secrets/shadow-users.json` if you want to seed existing users from a Render Secret File
+- `SHADOW_PRELOAD_RECENT_DAYS=2` to warm the newest two Google Drive dates in the background
+- `SHADOW_PRELOAD_MAX_IMAGES=120` to limit how many recent images are pre-cached per app start
 
 Recommended Render settings:
 
 - Use the repo root as the Docker build context
 - Attach a persistent disk
 - Mount it at `/var/data`
+- Start with `1 GB` and increase later only if your image cache grows
 - Keep `SNAPPYSJAAK_CACHE_DIR` inside that mount path
 
 With a persistent disk, these survive restarts and deploys:
@@ -76,3 +79,9 @@ Without a persistent disk, you can still seed users from a Render Secret File:
 - set `SHADOW_USERS_SEED_PATH=/etc/secrets/shadow-users.json`
 
 On first startup without a local users file, the app will copy those seeded users into its normal cache file.
+
+To reduce slow customer/photo opens on hosting providers with cold starts, the server also supports best-effort background warming:
+
+- it can preload Google Drive image caches for the most recent dates
+- this does not remove Free Render cold-start delays
+- it does make recent customer/photo views faster after the service wakes up
