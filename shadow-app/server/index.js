@@ -17,6 +17,7 @@ const syncScriptPath = path.join(repoRoot, "sync_index.py");
 const driveBridgePath = path.join(appRoot, "server", "drive_bridge.py");
 const syncWorkerPath = path.join(appRoot, "server", "sync_worker.js");
 const googleImageCacheDir = path.join(cacheDir, "shadow-google-images");
+const googleRunDetailsCacheDir = path.join(cacheDir, "shadow-google-run-details");
 const usersSeedPathCandidates = [
   process.env.SHADOW_USERS_SEED_PATH,
   process.platform === "win32" ? null : "/etc/secrets/shadow-users.json",
@@ -32,6 +33,7 @@ const recentPreloadMaxImagesRaw = Number(process.env.SHADOW_PRELOAD_MAX_IMAGES |
 const recentPreloadMaxImages = Number.isFinite(recentPreloadMaxImagesRaw)
   ? recentPreloadMaxImagesRaw
   : 120;
+const googleRunDetailsCacheTtlMinutes = Math.max(0, Number(process.env.SHADOW_RUN_DETAILS_TTL_MINUTES || 720));
 const recentPreloadStartedAt = new Map();
 const sessions = new Map();
 const sessionCookieName = "snappysjaak_shadow_session";
@@ -330,15 +332,80 @@ function runPythonBridge(args, input = "") {
   });
 }
 
+function googleRunDetailsCachePath(folderId, accountName = "default") {
+  return path.join(
+    googleRunDetailsCacheDir,
+    `${encodeURIComponent(accountName)}-${encodeURIComponent(folderId)}.json`,
+  );
+}
+
+function isFreshTimestamp(value, ttlMinutes) {
+  if (!ttlMinutes) {
+    return false;
+  }
+  const parsed = Date.parse(String(value || ""));
+  if (Number.isNaN(parsed)) {
+    return false;
+  }
+  return Date.now() - parsed <= ttlMinutes * 60 * 1000;
+}
+
+async function readCachedGoogleRunDetails(run) {
+  const accountName = String(run?.metadata?.drive_account || "default");
+  const cachePath = googleRunDetailsCachePath(run.folder_id, accountName);
+  const payload = await readJsonFile(cachePath, null);
+  if (!payload || !isFreshTimestamp(payload.cached_at, googleRunDetailsCacheTtlMinutes)) {
+    return null;
+  }
+
+  return {
+    ...run,
+    images: Array.isArray(payload.images) ? payload.images : [],
+    qr_info: payload.qr_info || "No QR info found",
+    qr_source: payload.qr_source || null,
+  };
+}
+
+async function writeCachedGoogleRunDetails(run) {
+  const accountName = String(run?.metadata?.drive_account || "default");
+  const cachePath = googleRunDetailsCachePath(run.folder_id, accountName);
+  await writeJsonFile(cachePath, {
+    cached_at: new Date().toISOString(),
+    images: Array.isArray(run.images) ? run.images : [],
+    qr_info: run.qr_info || "No QR info found",
+    qr_source: run.qr_source || null,
+  });
+}
+
 async function hydrateGoogleRuns(runs) {
   const googleRuns = runs.filter((run) => String(run?.metadata?.source || "google_drive") === "google_drive");
   if (!googleRuns.length) {
     return new Map();
   }
 
-  const output = await runPythonBridge(["details"], JSON.stringify(googleRuns));
-  const hydratedRuns = JSON.parse(output.toString("utf8"));
-  return new Map(hydratedRuns.map((run) => [run.folder_id, run]));
+  const cachedRuns = await Promise.all(googleRuns.map(readCachedGoogleRunDetails));
+  const hydratedByFolderId = new Map();
+  const missingRuns = [];
+
+  for (let index = 0; index < googleRuns.length; index += 1) {
+    const cachedRun = cachedRuns[index];
+    if (cachedRun) {
+      hydratedByFolderId.set(cachedRun.folder_id, cachedRun);
+    } else {
+      missingRuns.push(googleRuns[index]);
+    }
+  }
+
+  if (missingRuns.length) {
+    const output = await runPythonBridge(["details"], JSON.stringify(missingRuns));
+    const fetchedRuns = JSON.parse(output.toString("utf8"));
+    await Promise.all(fetchedRuns.map(writeCachedGoogleRunDetails));
+    for (const run of fetchedRuns) {
+      hydratedByFolderId.set(run.folder_id, run);
+    }
+  }
+
+  return hydratedByFolderId;
 }
 
 async function isIndexedLocalImage(imagePath) {

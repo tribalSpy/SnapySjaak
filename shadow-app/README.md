@@ -57,6 +57,7 @@ Environment variables to set:
 - `SHADOW_USERS_SEED_PATH=/etc/secrets/shadow-users.json` if you want to seed existing users from a Render Secret File
 - `SHADOW_PRELOAD_RECENT_DAYS=2` to warm the newest two Google Drive dates in the background
 - `SHADOW_PRELOAD_MAX_IMAGES=-1` to preload all images from those recent dates, or set a positive number to cap the warmup
+- `SHADOW_RUN_DETAILS_TTL_MINUTES=720` to reuse cached Google run details instead of re-fetching them on every date switch
 
 Recommended Render settings:
 
@@ -70,6 +71,7 @@ With a persistent disk, these survive restarts and deploys:
 
 - saved user accounts
 - generated run index cache
+- cached Google run details for faster date/customer switching
 - downloaded Google Drive image cache
 
 Without a persistent disk, you can still seed users from a Render Secret File:
