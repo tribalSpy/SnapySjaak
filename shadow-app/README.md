@@ -56,7 +56,7 @@ Environment variables to set:
 - `LOCAL_ARCHIVE_ROOT=` to disable the old local archive path in production
 - `SHADOW_USERS_SEED_PATH=/etc/secrets/shadow-users.json` if you want to seed existing users from a Render Secret File
 - `SHADOW_PRELOAD_RECENT_DAYS=2` to warm the newest two Google Drive dates in the background
-- `SHADOW_PRELOAD_MAX_IMAGES=120` to limit how many recent images are pre-cached per app start
+- `SHADOW_PRELOAD_MAX_IMAGES=-1` to preload all images from those recent dates, or set a positive number to cap the warmup
 
 Recommended Render settings:
 

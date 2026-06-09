@@ -28,7 +28,10 @@ const autoSyncOnVisit = process.env.AUTO_SYNC_ON_VISIT !== "0";
 const autoSyncThrottleMs = Number(process.env.AUTO_SYNC_THROTTLE_MINUTES || 5) * 60 * 1000;
 const autoSyncStartedAt = new Map();
 const recentPreloadDays = Math.max(0, Number(process.env.SHADOW_PRELOAD_RECENT_DAYS || 3));
-const recentPreloadMaxImages = Math.max(0, Number(process.env.SHADOW_PRELOAD_MAX_IMAGES || 120));
+const recentPreloadMaxImagesRaw = Number(process.env.SHADOW_PRELOAD_MAX_IMAGES || 120);
+const recentPreloadMaxImages = Number.isFinite(recentPreloadMaxImagesRaw)
+  ? recentPreloadMaxImagesRaw
+  : 120;
 const recentPreloadStartedAt = new Map();
 const sessions = new Map();
 const sessionCookieName = "snappysjaak_shadow_session";
@@ -527,7 +530,7 @@ async function maybeStartAutoSync(payload, activeDate) {
 }
 
 async function preloadRecentGoogleImages(payload) {
-  if (!recentPreloadDays || !recentPreloadMaxImages) {
+  if (!recentPreloadDays || recentPreloadMaxImages === 0) {
     return;
   }
 
@@ -543,7 +546,7 @@ async function preloadRecentGoogleImages(payload) {
   }
 
   const hydratedByFolderId = await hydrateGoogleRuns(recentRuns);
-  let remaining = recentPreloadMaxImages;
+  let remaining = recentPreloadMaxImages < 0 ? Infinity : recentPreloadMaxImages;
 
   for (const run of recentRuns) {
     const hydrated = hydratedByFolderId.get(run.folder_id);
@@ -571,7 +574,7 @@ async function preloadRecentGoogleImages(payload) {
 }
 
 function maybeStartRecentPreload(payload) {
-  if (!payload?.generated_at || !recentPreloadDays || !recentPreloadMaxImages) {
+  if (!payload?.generated_at || !recentPreloadDays || recentPreloadMaxImages === 0) {
     return;
   }
 
