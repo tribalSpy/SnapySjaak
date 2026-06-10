@@ -16,7 +16,8 @@ body {
 
 button,
 input,
-select {
+select,
+textarea {
   font: inherit;
   letter-spacing: 0;
 }
@@ -262,7 +263,8 @@ label {
 }
 
 select,
-input {
+input,
+textarea {
   width: 100%;
   min-height: 42px;
   border: 1px solid #bac4ce;
@@ -270,6 +272,10 @@ input {
   padding: 8px 10px;
   background: #ffffff;
   color: #17202a;
+}
+
+textarea {
+  resize: vertical;
 }
 
 .metric {
@@ -320,6 +326,34 @@ input {
   padding: 0 16px;
 }
 
+.permission-grid {
+  grid-column: 1 / -1;
+  display: grid;
+  gap: 10px;
+  border: 1px solid #d6dde5;
+  border-radius: 8px;
+  padding: 14px;
+  margin: 0;
+}
+
+.permission-grid legend {
+  padding: 0 6px;
+  color: #5a6876;
+  font-weight: 800;
+}
+
+.permission-option {
+  grid-template-columns: auto 1fr;
+  align-items: center;
+  gap: 10px;
+  font-weight: 600;
+}
+
+.permission-option input {
+  width: 18px;
+  min-height: 18px;
+}
+
 .users-list {
   display: grid;
   gap: 10px;
@@ -327,9 +361,9 @@ input {
 
 .user-row {
   display: grid;
-  grid-template-columns: minmax(180px, 1fr) minmax(120px, 160px) minmax(260px, 0.9fr) auto;
+  grid-template-columns: minmax(180px, 0.8fr) minmax(210px, 0.8fr) minmax(260px, 1fr) minmax(260px, 0.8fr) auto;
   gap: 12px;
-  align-items: center;
+  align-items: start;
   border: 1px solid #d6dde5;
   border-radius: 8px;
   background: #ffffff;
@@ -352,9 +386,151 @@ input {
   gap: 8px;
 }
 
+.user-row-actions {
+  display: grid;
+  gap: 10px;
+}
+
+.password-form {
+  align-self: center;
+}
+
 .user-row button {
   min-height: 38px;
   padding: 0 12px;
+}
+
+.fust-page,
+.settings-page {
+  display: grid;
+  gap: 18px;
+}
+
+.fust-form-layout,
+.overview-stack {
+  display: grid;
+  gap: 16px;
+}
+
+.fust-form,
+.settings-form,
+.data-table-card {
+  border: 1px solid #d6dde5;
+  border-radius: 8px;
+  background: #ffffff;
+  padding: 18px;
+}
+
+.form-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(180px, 1fr));
+  gap: 14px;
+}
+
+.form-grid .wide {
+  grid-column: 1 / -1;
+}
+
+.metrics-grid {
+  display: grid;
+  grid-template-columns: repeat(6, minmax(100px, 1fr));
+  gap: 12px;
+  margin: 16px 0;
+}
+
+.tab-strip {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.tab-strip button {
+  min-height: 40px;
+  padding: 0 16px;
+}
+
+.tab-strip button.active {
+  border-color: #1f7a5a;
+  color: #1f7a5a;
+  font-weight: 800;
+}
+
+.panel-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(240px, 1fr));
+  gap: 16px;
+}
+
+.info-panel {
+  border: 1px solid #d6dde5;
+  border-radius: 8px;
+  background: #ffffff;
+  padding: 18px;
+}
+
+.info-panel h2 {
+  margin: 0 0 12px;
+  font-size: 1.1rem;
+}
+
+.info-panel p {
+  margin: 8px 0;
+  color: #4f5f6f;
+}
+
+.table-wrap {
+  overflow: auto;
+}
+
+.overview-filters {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(180px, 260px));
+  gap: 14px;
+  margin-bottom: 14px;
+}
+
+.section-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.section-header h2 {
+  margin: 0;
+}
+
+.data-table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.data-table th,
+.data-table td {
+  border-top: 1px solid #e1e6ec;
+  padding: 10px 8px;
+  text-align: left;
+  vertical-align: top;
+}
+
+.data-table th {
+  color: #5a6876;
+  font-size: 0.86rem;
+}
+
+.balance-table td,
+.balance-table th {
+  white-space: nowrap;
+}
+
+.retry-actions {
+  display: grid;
+  gap: 8px;
+}
+
+.retry-actions button {
+  min-height: 34px;
 }
 
 .customer-list {
@@ -576,6 +752,19 @@ pre {
 
   .user-form,
   .user-row {
+    grid-template-columns: 1fr;
+  }
+
+  .panel-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .form-grid,
+  .metrics-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .overview-filters {
     grid-template-columns: 1fr;
   }
 }
