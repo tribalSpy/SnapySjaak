@@ -1143,6 +1143,8 @@ function FustOverview({ loading, actions, overview, sourceDebug, onRefresh }) {
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
   const [selectedWeek, setSelectedWeek] = useState("");
+  const [selectedFromDate, setSelectedFromDate] = useState("");
+  const [selectedToDate, setSelectedToDate] = useState("");
   const [selectedCountry, setSelectedCountry] = useState("");
   const [selectedCustomer, setSelectedCustomer] = useState("");
 
@@ -1183,15 +1185,49 @@ function FustOverview({ loading, actions, overview, sourceDebug, onRefresh }) {
     }), emptyTotals());
   }
 
-  function downloadCsv(filename, headers, rows) {
-    const csv = [
-      headers.join(","),
-      ...rows.map((row) => row.map((value) => {
-        const text = String(value ?? "");
-        return /[",\n]/.test(text) ? `"${text.replaceAll('"', '""')}"` : text;
-      }).join(",")),
+  function buildOverviewFromActions(items) {
+    const grouped = new Map();
+    for (const action of items) {
+      const key = `${action.week || ""}__${action.country}__${action.customer_name}`;
+      if (!grouped.has(key)) {
+        grouped.set(key, {
+          week: action.week || "",
+          country: action.country,
+          customer_name: action.customer_name,
+          out: { dc: 0, cctag: 0, dcs: 0, dco: 0, pal: 0, vk: 0 },
+          in: { dc: 0, cctag: 0, dcs: 0, dco: 0, pal: 0, vk: 0 },
+          balance: { dc: 0, cctag: 0, dcs: 0, dco: 0, pal: 0, vk: 0 },
+        });
+      }
+      const entry = grouped.get(key);
+      const target = action.type === "OUT" ? entry.out : entry.in;
+      target.dc += Number(action.metrics?.dc || 0);
+      target.cctag += Number(action.metrics?.cctag || 0);
+      target.dcs += Number(action.metrics?.dcs || 0);
+      target.dco += Number(action.metrics?.dco || 0);
+      target.pal += Number(action.metrics?.pal || 0);
+      target.vk += Number(action.metrics?.vk || 0);
+      entry.balance = {
+        dc: entry.in.dc - entry.out.dc,
+        cctag: entry.in.cctag - entry.out.cctag,
+        dcs: entry.in.dcs - entry.out.dcs,
+        dco: entry.in.dco - entry.out.dco,
+        pal: entry.in.pal - entry.out.pal,
+        vk: entry.in.vk - entry.out.vk,
+      };
+    }
+
+    return [...grouped.values()].sort((left, right) => (
+      String(left.customer_name).localeCompare(String(right.customer_name))
+    ));
+  }
+
+  function downloadExcelFriendlyTable(filename, headers, rows) {
+    const tsv = [
+      headers.join("\t"),
+      ...rows.map((row) => row.map((value) => String(value ?? "").replaceAll("\t", " ")).join("\t")),
     ].join("\n");
-    const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
+    const blob = new Blob([tsv], { type: "application/vnd.ms-excel;charset=utf-8;" });
     const url = window.URL.createObjectURL(blob);
     const link = document.createElement("a");
     link.href = url;
@@ -1202,9 +1238,20 @@ function FustOverview({ loading, actions, overview, sourceDebug, onRefresh }) {
     window.URL.revokeObjectURL(url);
   }
 
-  const weekOptions = [...new Set(overview.map((entry) => String(entry.week || "")).filter(Boolean))]
+  const weekOptions = [...new Set(actions.map((action) => String(action.week || "")).filter(Boolean))]
     .sort((left, right) => Number(right) - Number(left));
-  const weekFilteredOverview = overview.filter((entry) => !selectedWeek || String(entry.week || "") === selectedWeek);
+  const datedActions = actions.filter((action) => {
+    const actionDate = String(action.action_date || "");
+    if (selectedFromDate && actionDate && actionDate < selectedFromDate) {
+      return false;
+    }
+    if (selectedToDate && actionDate && actionDate > selectedToDate) {
+      return false;
+    }
+    return true;
+  });
+  const scopedActions = datedActions.filter((action) => !selectedWeek || String(action.week || "") === selectedWeek);
+  const weekFilteredOverview = buildOverviewFromActions(scopedActions);
   const countryOptions = [...new Set(weekFilteredOverview.map((entry) => entry.country).filter(Boolean))]
     .sort((left, right) => left.localeCompare(right));
 
@@ -1252,13 +1299,15 @@ function FustOverview({ loading, actions, overview, sourceDebug, onRefresh }) {
     : scopedOverview;
   const totals = sumOverviewEntries(selectedCustomer ? visibleOverview : countryFilteredOverview);
   const filteredActions = actions.filter((action) => (
+    (!selectedFromDate || String(action.action_date || "") >= selectedFromDate) &&
+    (!selectedToDate || String(action.action_date || "") <= selectedToDate) &&
     (!selectedWeek || String(action.week || "") === selectedWeek) &&
     (!selectedCountry || action.country === selectedCountry) &&
     (!selectedCustomer || action.customer_name === selectedCustomer)
   ));
-  const exportRows = visibleOverview.map((entry) => [
-    entry.week || "",
-    entry.country,
+  const exportRows = visibleOverview.map((entry, index) => [
+    selectedCountry && !selectedCustomer && index > 0 ? "" : (entry.week || ""),
+    selectedCountry && !selectedCustomer && index > 0 ? "" : entry.country,
     entry.customer_name,
     entry.out.dc,
     entry.in.dc,
@@ -1314,6 +1363,22 @@ function FustOverview({ loading, actions, overview, sourceDebug, onRefresh }) {
             </select>
           </label>
           <label>
+            <span>From date</span>
+            <input
+              type="date"
+              value={selectedFromDate}
+              onChange={(event) => setSelectedFromDate(event.target.value)}
+            />
+          </label>
+          <label>
+            <span>To date</span>
+            <input
+              type="date"
+              value={selectedToDate}
+              onChange={(event) => setSelectedToDate(event.target.value)}
+            />
+          </label>
+          <label>
             <span>Country</span>
             <select
               value={selectedCountry}
@@ -1331,8 +1396,8 @@ function FustOverview({ loading, actions, overview, sourceDebug, onRefresh }) {
           <h2>{selectedCountry ? "Customer totals" : "Country totals"}</h2>
           <button
             type="button"
-            onClick={() => downloadCsv(
-              `fust-overview-${selectedWeek || "all-weeks"}-${selectedCountry || "all-countries"}-${selectedCustomer || "active-table"}.csv`,
+            onClick={() => downloadExcelFriendlyTable(
+              `fust-overview-${selectedWeek || "all-weeks"}-${selectedCountry || "all-countries"}-${selectedCustomer || "active-table"}.xls`,
               ["Week", "Country", "Cust/transport", "DC out", "DC in", "DC balance", "CCTag out", "CCTag in", "CCTag balance", "DCS out", "DCS in", "DCS balance", "DCO out", "DCO in", "DCO balance", "VK out", "VK in", "VK balance", "pal out"],
               exportRows,
             )}
