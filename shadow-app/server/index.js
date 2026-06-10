@@ -869,9 +869,9 @@ async function loadServiceAccountInfo() {
   };
 }
 
-async function appendSheetRow(spreadsheetId, sheetName, row) {
+async function writeSheetRowToFirstEmpty(spreadsheetId, sheetName, row) {
   await runPythonBridge(
-    ["sheets-append", "--spreadsheet-id", spreadsheetId, "--sheet-name", sheetName],
+    ["sheets-write-first-empty", "--spreadsheet-id", spreadsheetId, "--sheet-name", sheetName],
     JSON.stringify({ row }),
   );
 }
@@ -881,19 +881,16 @@ async function syncFustActionToSheets(action, settings) {
     return { ok: false, target_sheets: [], error: "Spreadsheet ID is not configured" };
   }
 
-  const targetSheets = [
-    action.type === "OUT" ? settings.out_sheet_name : settings.in_sheet_name,
-    settings.dashboard_sheet_name,
-  ].filter(Boolean);
-
-  await appendSheetRow(settings.spreadsheet_id, targetSheets[0], fustSheetRow(action));
-  if (targetSheets[1]) {
-    await appendSheetRow(settings.spreadsheet_id, targetSheets[1], fustDashboardRow(action));
+  const targetSheet = action.type === "OUT" ? settings.out_sheet_name : settings.in_sheet_name;
+  if (!targetSheet) {
+    return { ok: false, target_sheets: [], error: "Target sheet is not configured" };
   }
+
+  await writeSheetRowToFirstEmpty(settings.spreadsheet_id, targetSheet, fustSheetRow(action));
 
   return {
     ok: true,
-    target_sheets: targetSheets,
+    target_sheets: [targetSheet],
     error: "",
     synced_at: new Date().toISOString(),
   };

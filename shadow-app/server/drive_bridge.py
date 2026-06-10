@@ -134,6 +134,54 @@ def sheets_append(spreadsheet_id: str, sheet_name: str) -> int:
     return 0
 
 
+def _column_name(index: int) -> str:
+    result = ""
+    current = index
+    while current > 0:
+        current, remainder = divmod(current - 1, 26)
+        result = chr(65 + remainder) + result
+    return result
+
+
+def sheets_write_first_empty(spreadsheet_id: str, sheet_name: str) -> int:
+    payload = json.loads(sys.stdin.read() or "{}")
+    row = payload.get("row") if isinstance(payload, dict) else []
+    if not isinstance(row, list) or not row:
+        raise RuntimeError("No row data provided")
+
+    last_column = _column_name(len(row))
+    sheet_range = f"{sheet_name}!A:{last_column}"
+    service = build("sheets", "v4", credentials=_service_account_credentials(), cache_discovery=False)
+    existing = (
+        service.spreadsheets()
+        .values()
+        .get(spreadsheetId=spreadsheet_id, range=sheet_range)
+        .execute()
+    )
+    values = existing.get("values", [])
+    target_row = len(values) + 1 if values else 2
+
+    for index, existing_row in enumerate(values[1:], start=2):
+        if not any(str(cell or "").strip() for cell in existing_row):
+            target_row = index
+            break
+
+    update_range = f"{sheet_name}!A{target_row}:{last_column}{target_row}"
+    response = (
+        service.spreadsheets()
+        .values()
+        .update(
+            spreadsheetId=spreadsheet_id,
+            range=update_range,
+            valueInputOption="USER_ENTERED",
+            body={"values": [row]},
+        )
+        .execute()
+    )
+    sys.stdout.write(json.dumps({"row_number": target_row, "response": response}, ensure_ascii=True))
+    return 0
+
+
 def email_send() -> int:
     payload = json.loads(sys.stdin.read() or "{}")
     recipients = payload.get("recipients") if isinstance(payload, dict) else []
@@ -190,6 +238,9 @@ def main() -> int:
     sheets_append_parser = subparsers.add_parser("sheets-append")
     sheets_append_parser.add_argument("--spreadsheet-id", required=True)
     sheets_append_parser.add_argument("--sheet-name", required=True)
+    sheets_write_first_empty_parser = subparsers.add_parser("sheets-write-first-empty")
+    sheets_write_first_empty_parser.add_argument("--spreadsheet-id", required=True)
+    sheets_write_first_empty_parser.add_argument("--sheet-name", required=True)
     subparsers.add_parser("email-send")
     subparsers.add_parser("service-account-info")
     args = parser.parse_args()
@@ -202,6 +253,8 @@ def main() -> int:
         return sheets_read(args.spreadsheet_id, args.sheet_name)
     if args.command == "sheets-append":
         return sheets_append(args.spreadsheet_id, args.sheet_name)
+    if args.command == "sheets-write-first-empty":
+        return sheets_write_first_empty(args.spreadsheet_id, args.sheet_name)
     if args.command == "email-send":
         return email_send()
     if args.command == "service-account-info":
