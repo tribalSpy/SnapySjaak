@@ -13,6 +13,9 @@ const cacheDir = path.resolve(process.env.SNAPPYSJAAK_CACHE_DIR || path.join(rep
 const runDataPath = path.join(cacheDir, "run_data.json");
 const syncStatusPath = path.join(cacheDir, "index_sync_status.json");
 const usersPath = path.join(cacheDir, "shadow-users.json");
+const fustActionsPath = path.join(cacheDir, "fust-actions.json");
+const fustSettingsPath = path.join(cacheDir, "fust-settings.json");
+const fustBackupDir = path.join(cacheDir, "fust-backups");
 const syncScriptPath = path.join(repoRoot, "sync_index.py");
 const driveBridgePath = path.join(appRoot, "server", "drive_bridge.py");
 const syncWorkerPath = path.join(appRoot, "server", "sync_worker.js");
@@ -37,6 +40,42 @@ const googleRunDetailsCacheTtlMinutes = Math.max(0, Number(process.env.SHADOW_RU
 const recentPreloadStartedAt = new Map();
 const sessions = new Map();
 const sessionCookieName = "snappysjaak_shadow_session";
+const allPermissions = [
+  "photos:view",
+  "fust:view",
+  "fust:in",
+  "fust:out",
+  "fust:overview",
+  "users:manage",
+  "settings:manage",
+];
+const PERMISSIONS = {
+  PHOTOS_VIEW: "photos:view",
+  FUST_VIEW: "fust:view",
+  FUST_IN: "fust:in",
+  FUST_OUT: "fust:out",
+  FUST_OVERVIEW: "fust:overview",
+  USERS_MANAGE: "users:manage",
+  SETTINGS_MANAGE: "settings:manage",
+};
+const roleDefaultPermissions = {
+  admin: allPermissions,
+  viewer: ["photos:view"],
+};
+const defaultFustSettings = {
+  spreadsheet_id: "",
+  data_sheet_name: "Data",
+  in_sheet_name: "Retour",
+  out_sheet_name: "Uitgaand",
+  dashboard_sheet_name: "Dashboard",
+  email_recipients: [],
+  smtp_host: "",
+  smtp_port: 587,
+  smtp_username: "",
+  smtp_password: "",
+  smtp_from: "",
+  smtp_starttls: true,
+};
 
 const imageExtensions = new Set([
   ".jpg",
@@ -203,10 +242,456 @@ async function ensureUsersSeeded() {
   }
 }
 
+function normalizePermissions(role, permissions) {
+  const defaults = roleDefaultPermissions[role] || roleDefaultPermissions.viewer;
+  if (!Array.isArray(permissions)) {
+    return [...defaults];
+  }
+
+  const allowed = new Set(allPermissions);
+  const normalized = [...new Set(
+    permissions
+      .map((value) => String(value || "").trim())
+      .filter((value) => allowed.has(value)),
+  )];
+
+  return normalized.length ? normalized : [...defaults];
+}
+
+function sanitizeStoredUser(user) {
+  const role = user?.role === "admin" ? "admin" : "viewer";
+  return {
+    ...user,
+    role,
+    permissions: normalizePermissions(role, user?.permissions),
+  };
+}
+
+function normalizeEmailRecipients(recipients) {
+  if (!Array.isArray(recipients)) {
+    return [];
+  }
+
+  return [...new Set(
+    recipients
+      .map((value) => String(value || "").trim().toLowerCase())
+      .filter((value) => value.includes("@")),
+  )];
+}
+
+function normalizeFustSettings(settings) {
+  const smtpPort = Number(settings?.smtp_port);
+  return {
+    spreadsheet_id: String(settings?.spreadsheet_id || "").trim(),
+    data_sheet_name: String(settings?.data_sheet_name || defaultFustSettings.data_sheet_name).trim() || defaultFustSettings.data_sheet_name,
+    in_sheet_name: String(settings?.in_sheet_name || defaultFustSettings.in_sheet_name).trim() || defaultFustSettings.in_sheet_name,
+    out_sheet_name: String(settings?.out_sheet_name || defaultFustSettings.out_sheet_name).trim() || defaultFustSettings.out_sheet_name,
+    dashboard_sheet_name: String(settings?.dashboard_sheet_name || defaultFustSettings.dashboard_sheet_name).trim() || defaultFustSettings.dashboard_sheet_name,
+    email_recipients: normalizeEmailRecipients(settings?.email_recipients),
+    smtp_host: String(settings?.smtp_host || "").trim(),
+    smtp_port: Number.isFinite(smtpPort) && smtpPort > 0 ? smtpPort : defaultFustSettings.smtp_port,
+    smtp_username: String(settings?.smtp_username || "").trim(),
+    smtp_password: String(settings?.smtp_password || ""),
+    smtp_from: String(settings?.smtp_from || "").trim(),
+    smtp_starttls: settings?.smtp_starttls === false || settings?.smtp_starttls === "0" || settings?.smtp_starttls === "false"
+      ? false
+      : true,
+  };
+}
+
+async function readFustSettings() {
+  const payload = await readJsonFile(fustSettingsPath, defaultFustSettings);
+  return normalizeFustSettings(payload);
+}
+
+async function writeFustSettings(settings) {
+  await writeJsonFile(fustSettingsPath, normalizeFustSettings(settings));
+}
+
+function normalizeFustAction(action) {
+  return {
+    id: String(action?.id || ""),
+    type: action?.type === "OUT" ? "OUT" : "IN",
+    action_date: String(action?.action_date || ""),
+    week: Number.isFinite(Number(action?.week)) ? Number(action.week) : null,
+    day_name: String(action?.day_name || ""),
+    country: String(action?.country || "").trim(),
+    customer_name: String(action?.customer_name || "").trim(),
+    customer_code: String(action?.customer_code || "").trim(),
+    connect_name: String(action?.connect_name || "").trim(),
+    remark: String(action?.remark || "").trim(),
+    metrics: {
+      dc: Number(action?.metrics?.dc || 0),
+      cctag: Number(action?.metrics?.cctag || 0),
+      dcs: Number(action?.metrics?.dcs || 0),
+      dco: Number(action?.metrics?.dco || 0),
+      pal: Number(action?.metrics?.pal || 0),
+      vk: Number(action?.metrics?.vk || 0),
+    },
+    created_by: String(action?.created_by || ""),
+    created_at: String(action?.created_at || ""),
+    sheet_sync: action?.sheet_sync || { ok: false, target_sheets: [], error: "Not attempted" },
+    email_sync: action?.email_sync || { ok: false, recipients: [], error: "Not attempted" },
+  };
+}
+
+async function readFustActions() {
+  const payload = await readJsonFile(fustActionsPath, { actions: [] });
+  return Array.isArray(payload?.actions) ? payload.actions.map(normalizeFustAction) : [];
+}
+
+async function writeFustActions(actions) {
+  await writeJsonFile(fustActionsPath, { actions: actions.map(normalizeFustAction) });
+}
+
+async function createFustBackupSnapshot(createdBy = "system") {
+  const [settings, actions] = await Promise.all([readFustSettings(), readFustActions()]);
+  const timestamp = new Date().toISOString().replaceAll(":", "-");
+  const filename = `fust-backup-${timestamp}.json`;
+  const filePath = path.join(fustBackupDir, filename);
+  const payload = {
+    created_at: new Date().toISOString(),
+    created_by: createdBy,
+    settings,
+    actions,
+  };
+  await writeJsonFile(filePath, payload);
+  return {
+    filename,
+    created_at: payload.created_at,
+    created_by: createdBy,
+    action_count: actions.length,
+    size_bytes: Buffer.byteLength(JSON.stringify(payload, null, 2), "utf8"),
+  };
+}
+
+async function listFustBackups() {
+  await fs.mkdir(fustBackupDir, { recursive: true });
+  const entries = await fs.readdir(fustBackupDir, { withFileTypes: true });
+  const backups = [];
+  for (const entry of entries) {
+    if (!entry.isFile() || path.extname(entry.name).toLowerCase() !== ".json") {
+      continue;
+    }
+    const filePath = path.join(fustBackupDir, entry.name);
+    const stat = await fs.stat(filePath).catch(() => null);
+    backups.push({
+      filename: entry.name,
+      created_at: stat?.mtime?.toISOString() || "",
+      size_bytes: stat?.size || 0,
+      download_path: `/api/fust/backups/${encodeURIComponent(entry.name)}`,
+    });
+  }
+  backups.sort((left, right) => String(right.created_at).localeCompare(String(left.created_at)));
+  return backups;
+}
+
+function isoDateForDisplay(value) {
+  if (!value) {
+    return "";
+  }
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) {
+    return String(value);
+  }
+  const day = String(parsed.getDate()).padStart(2, "0");
+  const month = String(parsed.getMonth() + 1).padStart(2, "0");
+  const year = String(parsed.getFullYear()).slice(-2);
+  return `${day}-${month}-${year}`;
+}
+
+function weekNumberForDate(dateString) {
+  const parsed = new Date(`${dateString}T00:00:00`);
+  if (Number.isNaN(parsed.getTime())) {
+    return null;
+  }
+  const utc = new Date(Date.UTC(parsed.getFullYear(), parsed.getMonth(), parsed.getDate()));
+  const dayNum = utc.getUTCDay() || 7;
+  utc.setUTCDate(utc.getUTCDate() + 4 - dayNum);
+  const yearStart = new Date(Date.UTC(utc.getUTCFullYear(), 0, 1));
+  return Math.ceil((((utc - yearStart) / 86400000) + 1) / 7);
+}
+
+function weekdayNameForDate(dateString) {
+  const parsed = new Date(`${dateString}T00:00:00`);
+  if (Number.isNaN(parsed.getTime())) {
+    return "";
+  }
+  return parsed.toLocaleDateString("nl-NL", { weekday: "long" }).toLowerCase();
+}
+
+function requirePermission(res, requestUser, permission) {
+  const permissions = normalizePermissions(requestUser?.role, requestUser?.permissions);
+  if (!permissions.includes(permission)) {
+    sendJson(res, 403, { error: "You do not have access to this action" });
+    return false;
+  }
+  return true;
+}
+
+function normalizeHeader(value) {
+  return String(value || "")
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, " ")
+    .trim();
+}
+
+function firstMatchingIndex(headers, aliases) {
+  return headers.findIndex((header) => aliases.includes(header));
+}
+
+function rowValue(row, index) {
+  if (index < 0 || !Array.isArray(row)) {
+    return "";
+  }
+  return String(row[index] || "").trim();
+}
+
+function buildFustMetaFromSheetRows(rows) {
+  if (!Array.isArray(rows) || rows.length < 2) {
+    return { countries: [], records: [], headers: [], raw_row_count: Array.isArray(rows) ? rows.length : 0 };
+  }
+
+  const headers = rows[0].map(normalizeHeader);
+  // Primary expected Data-tab headers:
+  // klantnaam | Country | klantcode connect
+  const countryIndex = firstMatchingIndex(headers, ["country", "land", "co", "country code", "land code"]);
+  const customerIndex = firstMatchingIndex(headers, ["klantnaam", "customer", "carrier", "cust transport", "transport", "customer name"]);
+  const connectIndex = firstMatchingIndex(headers, ["klantcode connect", "connect", "connect name", "connect code", "klantcode connector"]);
+  const customerCodeIndex = firstMatchingIndex(headers, ["customer code", "klantcode", "code", "customer id"]);
+  const activeIndex = firstMatchingIndex(headers, ["active", "actief", "enabled", "status"]);
+  const hasHeaderRow = countryIndex >= 0 || customerIndex >= 0 || connectIndex >= 0;
+
+  const sourceRows = hasHeaderRow ? rows.slice(1) : rows;
+  const fallbackCountryIndex = 5;
+  const fallbackCustomerIndex = 4;
+  const fallbackConnectIndex = 6;
+
+  const records = sourceRows
+    .map((row) => {
+      const country = rowValue(row, countryIndex >= 0 ? countryIndex : fallbackCountryIndex);
+      const customerName = rowValue(row, customerIndex >= 0 ? customerIndex : fallbackCustomerIndex);
+      const connectName = rowValue(row, connectIndex >= 0 ? connectIndex : fallbackConnectIndex);
+      const customerCode = rowValue(row, customerCodeIndex >= 0 ? customerCodeIndex : (connectIndex >= 0 ? connectIndex : fallbackConnectIndex));
+      const activeValue = rowValue(row, activeIndex);
+
+      return {
+        country,
+        customer_name: customerName,
+        connect_name: connectName || customerCode,
+        customer_code: customerCode || connectName,
+        active: activeIndex < 0 ? true : !["0", "false", "nee", "no", "inactive"].includes(activeValue.toLowerCase()),
+      };
+    })
+    .filter((row) => row.country && row.customer_name && row.active);
+
+  const countries = [...new Set(records.map((row) => row.country))].sort((left, right) => left.localeCompare(right));
+  return {
+    countries,
+    records,
+    headers,
+    raw_row_count: rows.length,
+  };
+}
+
+function buildOverview(actions) {
+  const grouped = new Map();
+  for (const action of actions) {
+    const key = `${action.week ?? ""}__${action.country}__${action.customer_name}`;
+    if (!grouped.has(key)) {
+      grouped.set(key, {
+        week: action.week ?? null,
+        country: action.country,
+        customer_name: action.customer_name,
+        connect_names: new Set(),
+        in: { dc: 0, cctag: 0, dcs: 0, dco: 0, pal: 0, vk: 0 },
+        out: { dc: 0, cctag: 0, dcs: 0, dco: 0, pal: 0, vk: 0 },
+      });
+    }
+    const entry = grouped.get(key);
+    entry.connect_names.add(action.connect_name);
+    const target = action.type === "OUT" ? entry.out : entry.in;
+    for (const metric of Object.keys(target)) {
+      target[metric] += Number(action.metrics?.[metric] || 0);
+    }
+  }
+
+  return [...grouped.values()].map((entry) => ({
+    week: entry.week,
+    country: entry.country,
+    customer_name: entry.customer_name,
+    connect_names: [...entry.connect_names].filter(Boolean).sort((left, right) => left.localeCompare(right)),
+    in: entry.in,
+    out: entry.out,
+    balance: {
+      dc: entry.in.dc - entry.out.dc,
+      cctag: entry.in.cctag - entry.out.cctag,
+      dcs: entry.in.dcs - entry.out.dcs,
+      dco: entry.in.dco - entry.out.dco,
+      pal: entry.in.pal - entry.out.pal,
+      vk: entry.in.vk - entry.out.vk,
+    },
+  }));
+}
+
+function normalizeNumber(value) {
+  const raw = String(value || "").trim().replace(",", ".");
+  const parsed = Number(raw);
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function parseSheetDateToIso(value) {
+  const raw = String(value || "").trim();
+  const match = raw.match(/^(\d{2})-(\d{2})-(\d{2}|\d{4})$/);
+  if (!match) {
+    return raw;
+  }
+  const [, day, month, year] = match;
+  const fullYear = year.length === 2 ? `20${year}` : year;
+  return `${fullYear}-${month}-${day}`;
+}
+
+function buildActionSignature(action) {
+  return [
+    action.type,
+    action.action_date,
+    action.customer_name,
+    action.country,
+    action.customer_code || action.connect_name,
+    action.remark,
+    action.metrics?.dc || 0,
+    action.metrics?.cctag || 0,
+    action.metrics?.dcs || 0,
+    action.metrics?.dco || 0,
+    action.metrics?.pal || 0,
+    action.metrics?.vk || 0,
+  ].join("|");
+}
+
+function parseDashboardSheetRows(rows) {
+  if (!Array.isArray(rows) || rows.length < 2) {
+    return [];
+  }
+
+  const headers = rows[0].map(normalizeHeader);
+  const hasHeaderRow = headers.includes("richting") || headers.includes("klantnaam");
+  const sourceRows = hasHeaderRow ? rows.slice(1) : rows;
+
+  return sourceRows
+    .map((row, index) => normalizeFustAction({
+      id: `sheet-${index + 1}`,
+      type: rowValue(row, 0).toLowerCase() === "uitgaand" ? "OUT" : "IN",
+      day_name: rowValue(row, 1),
+      action_date: parseSheetDateToIso(rowValue(row, 2)),
+      week: rowValue(row, 3) ? Number(rowValue(row, 3)) : null,
+      customer_name: rowValue(row, 4),
+      country: rowValue(row, 5),
+      customer_code: rowValue(row, 6),
+      connect_name: rowValue(row, 6),
+      remark: rowValue(row, 7),
+      metrics: {
+        dc: normalizeNumber(rowValue(row, 8)),
+        cctag: normalizeNumber(rowValue(row, 9)),
+        dcs: normalizeNumber(rowValue(row, 10)),
+        dco: normalizeNumber(rowValue(row, 11)),
+        pal: normalizeNumber(rowValue(row, 12)),
+        vk: normalizeNumber(rowValue(row, 13)),
+      },
+      created_by: "spreadsheet",
+      created_at: "",
+      sheet_sync: { ok: true, target_sheets: ["Dashboard"], error: "" },
+      email_sync: { ok: true, recipients: [], error: "" },
+    }))
+    .filter((action) => action.customer_name && action.country);
+}
+
+function parseRegistrySheetRows(rows, type) {
+  if (!Array.isArray(rows) || rows.length < 2) {
+    return [];
+  }
+
+  const headers = rows[0].map(normalizeHeader);
+  const hasHeaderRow = headers.includes("klantnaam") || headers.includes("dag");
+  const sourceRows = hasHeaderRow ? rows.slice(1) : rows;
+
+  return sourceRows
+    .map((row, index) => normalizeFustAction({
+      id: `${type.toLowerCase()}-sheet-${index + 1}`,
+      type,
+      day_name: rowValue(row, 0),
+      action_date: parseSheetDateToIso(rowValue(row, 1)),
+      week: rowValue(row, 2) ? Number(rowValue(row, 2)) : null,
+      customer_name: rowValue(row, 3),
+      country: rowValue(row, 4),
+      customer_code: rowValue(row, 5),
+      connect_name: rowValue(row, 5),
+      remark: rowValue(row, 6),
+      metrics: {
+        dc: normalizeNumber(rowValue(row, 7)),
+        cctag: normalizeNumber(rowValue(row, 8)),
+        dcs: normalizeNumber(rowValue(row, 9)),
+        dco: normalizeNumber(rowValue(row, 10)),
+        pal: normalizeNumber(rowValue(row, 11)),
+        vk: normalizeNumber(rowValue(row, 12)),
+      },
+      created_by: "spreadsheet",
+      created_at: "",
+      sheet_sync: { ok: true, target_sheets: [type === "OUT" ? "Uitgaand" : "Retour"], error: "" },
+      email_sync: { ok: true, recipients: [], error: "" },
+    }))
+    .filter((action) => action.customer_name && action.country);
+}
+
+function fustSheetRow(action) {
+  return [
+    action.day_name,
+    isoDateForDisplay(action.action_date),
+    action.week ?? "",
+    action.customer_name,
+    action.country,
+    action.customer_code || action.connect_name,
+    action.remark,
+    action.metrics.dc || "",
+    action.metrics.cctag || "",
+    action.metrics.dcs || "",
+    action.metrics.dco || "",
+    action.metrics.pal || "",
+    action.metrics.vk || "",
+    "",
+    "",
+    "",
+    "",
+  ];
+}
+
+function fustDashboardRow(action) {
+  return [
+    action.type === "OUT" ? "uitgaand" : "retour",
+    action.day_name,
+    isoDateForDisplay(action.action_date),
+    action.week ?? "",
+    action.customer_name,
+    action.country,
+    action.customer_code || action.connect_name,
+    action.remark,
+    action.metrics.dc || "",
+    action.metrics.cctag || "",
+    action.metrics.dcs || "",
+    action.metrics.dco || "",
+    action.metrics.pal || "",
+    action.metrics.vk || "",
+    "",
+    "",
+    "",
+    "",
+  ];
+}
+
 async function readUsers() {
   await ensureUsersSeeded();
   const payload = await readJsonFile(usersPath, { users: [] });
-  return Array.isArray(payload?.users) ? payload.users : [];
+  return Array.isArray(payload?.users) ? payload.users.map(sanitizeStoredUser) : [];
 }
 
 async function writeUsers(users) {
@@ -214,10 +699,12 @@ async function writeUsers(users) {
 }
 
 function publicUser(user) {
+  const normalizedUser = sanitizeStoredUser(user);
   return {
-    username: user.username,
-    role: user.role,
-    created_at: user.created_at,
+    username: normalizedUser.username,
+    role: normalizedUser.role,
+    permissions: normalizedUser.permissions,
+    created_at: normalizedUser.created_at,
   };
 }
 
@@ -303,6 +790,27 @@ async function isSyncRunning() {
   return status?.state === "running";
 }
 
+function summarizeBridgeError(rawError) {
+  const text = String(rawError || "").trim();
+  if (!text) {
+    return text;
+  }
+
+  const lines = text
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean);
+
+  for (let index = lines.length - 1; index >= 0; index -= 1) {
+    const line = lines[index];
+    if (/^(RuntimeError|ValueError|Exception|Error|HttpError)\b/.test(line)) {
+      return line;
+    }
+  }
+
+  return lines.at(-1) || text;
+}
+
 function runPythonBridge(args, input = "") {
   return new Promise((resolve, reject) => {
     const child = spawn(resolvePythonCommand(), [driveBridgePath, ...args], {
@@ -322,7 +830,7 @@ function runPythonBridge(args, input = "") {
         return;
       }
 
-      reject(new Error(Buffer.concat(stderr).toString("utf8") || `Python bridge exited with ${code}`));
+      reject(new Error(summarizeBridgeError(Buffer.concat(stderr).toString("utf8")) || `Python bridge exited with ${code}`));
     });
 
     if (input) {
@@ -330,6 +838,121 @@ function runPythonBridge(args, input = "") {
     }
     child.stdin.end();
   });
+}
+
+async function loadSheetRows(spreadsheetId, sheetName) {
+  if (!spreadsheetId || !sheetName) {
+    return [];
+  }
+
+  const output = await runPythonBridge([
+    "sheets-read",
+    "--spreadsheet-id",
+    spreadsheetId,
+    "--sheet-name",
+    sheetName,
+  ]);
+  const payload = JSON.parse(output.toString("utf8"));
+  return Array.isArray(payload?.values) ? payload.values : [];
+}
+
+async function loadFustSheetRows(settings) {
+  return loadSheetRows(settings.spreadsheet_id, settings.data_sheet_name);
+}
+
+async function loadServiceAccountInfo() {
+  const output = await runPythonBridge(["service-account-info"]);
+  const payload = JSON.parse(output.toString("utf8"));
+  return {
+    client_email: String(payload?.client_email || ""),
+    project_id: String(payload?.project_id || ""),
+  };
+}
+
+async function appendSheetRow(spreadsheetId, sheetName, row) {
+  await runPythonBridge(
+    ["sheets-append", "--spreadsheet-id", spreadsheetId, "--sheet-name", sheetName],
+    JSON.stringify({ row }),
+  );
+}
+
+async function syncFustActionToSheets(action, settings) {
+  if (!settings.spreadsheet_id) {
+    return { ok: false, target_sheets: [], error: "Spreadsheet ID is not configured" };
+  }
+
+  const targetSheets = [
+    action.type === "OUT" ? settings.out_sheet_name : settings.in_sheet_name,
+    settings.dashboard_sheet_name,
+  ].filter(Boolean);
+
+  await appendSheetRow(settings.spreadsheet_id, targetSheets[0], fustSheetRow(action));
+  if (targetSheets[1]) {
+    await appendSheetRow(settings.spreadsheet_id, targetSheets[1], fustDashboardRow(action));
+  }
+
+  return {
+    ok: true,
+    target_sheets: targetSheets,
+    error: "",
+    synced_at: new Date().toISOString(),
+  };
+}
+
+function buildEmailMessage(action) {
+  return [
+    `Fust ${action.type} action`,
+    "",
+    `Action ID: ${action.id}`,
+    `Date: ${action.action_date}`,
+    `Day: ${action.day_name}`,
+    `Week: ${action.week ?? ""}`,
+    `Country: ${action.country}`,
+    `Customer: ${action.customer_name}`,
+    `Connect: ${action.connect_name || action.customer_code}`,
+    `Remark: ${action.remark || "-"}`,
+    "",
+    `DC: ${action.metrics.dc}`,
+    `CCTAG: ${action.metrics.cctag}`,
+    `DCS: ${action.metrics.dcs}`,
+    `DCO: ${action.metrics.dco}`,
+    `PAL: ${action.metrics.pal}`,
+    `VK: ${action.metrics.vk}`,
+    "",
+    `Created by: ${action.created_by}`,
+    `Created at: ${action.created_at}`,
+  ].join("\n");
+}
+
+async function sendFustActionEmail(action, settings) {
+  const recipients = normalizeEmailRecipients(settings.email_recipients);
+  if (!recipients.length) {
+    return { ok: false, recipients: [], error: "No email recipients configured" };
+  }
+
+  await runPythonBridge(
+    ["email-send"],
+    JSON.stringify({
+      recipients,
+      subject: `Fust ${action.type} | ${action.country} | ${action.customer_name}`,
+      body: buildEmailMessage(action),
+      smtp: {
+        host: settings.smtp_host,
+        port: settings.smtp_port,
+        username: settings.smtp_username,
+        password: settings.smtp_password,
+        from: settings.smtp_from,
+        starttls: settings.smtp_starttls,
+      },
+    }),
+  );
+
+  return {
+    ok: true,
+    recipients,
+    error: "",
+    sent_at: new Date().toISOString(),
+  };
 }
 
 function googleRunDetailsCachePath(folderId, accountName = "default") {
@@ -687,6 +1310,7 @@ async function handleApi(req, res, url) {
     const user = {
       username,
       role: "admin",
+      permissions: [...roleDefaultPermissions.admin],
       password_hash: hashPassword(password),
       created_at: new Date().toISOString(),
     };
@@ -724,6 +1348,372 @@ async function handleApi(req, res, url) {
     return;
   }
 
+  if (url.pathname === "/api/fust/settings") {
+    if (!requirePermission(res, requestUser, PERMISSIONS.SETTINGS_MANAGE)) {
+      return;
+    }
+
+    if (req.method === "GET") {
+      sendJson(res, 200, { settings: await readFustSettings() });
+      return;
+    }
+
+    if (req.method === "PATCH") {
+      const body = await readRequestJson(req);
+      const currentSettings = await readFustSettings();
+      const nextSettings = normalizeFustSettings({
+        ...currentSettings,
+        ...body,
+      });
+      await writeFustSettings(nextSettings);
+      sendJson(res, 200, { settings: nextSettings });
+      return;
+    }
+  }
+
+  if (url.pathname === "/api/fust/backups") {
+    if (!requirePermission(res, requestUser, PERMISSIONS.SETTINGS_MANAGE)) {
+      return;
+    }
+
+    if (req.method === "GET") {
+      sendJson(res, 200, { backups: await listFustBackups() });
+      return;
+    }
+
+    if (req.method === "POST") {
+      const backup = await createFustBackupSnapshot(requestUser.username);
+      sendJson(res, 201, { backup, backups: await listFustBackups() });
+      return;
+    }
+  }
+
+  if (url.pathname.startsWith("/api/fust/backups/") && req.method === "GET") {
+    if (!requirePermission(res, requestUser, PERMISSIONS.SETTINGS_MANAGE)) {
+      return;
+    }
+
+    const filename = decodeURIComponent(url.pathname.slice("/api/fust/backups/".length));
+    const resolvedPath = path.resolve(fustBackupDir, filename);
+    if (!resolvedPath.startsWith(path.resolve(fustBackupDir))) {
+      sendText(res, 403, "Forbidden");
+      return;
+    }
+    if (!existsSync(resolvedPath)) {
+      sendText(res, 404, "Backup not found");
+      return;
+    }
+
+    res.writeHead(200, {
+      "content-type": "application/json; charset=utf-8",
+      "content-disposition": `attachment; filename="${path.basename(resolvedPath)}"`,
+      "cache-control": "no-store",
+    });
+    createReadStream(resolvedPath).pipe(res);
+    return;
+  }
+
+  if (url.pathname === "/api/fust/meta") {
+    if (!requirePermission(res, requestUser, PERMISSIONS.FUST_VIEW)) {
+      return;
+    }
+
+    const settings = await readFustSettings();
+    let records = [];
+    let headers = [];
+    let rawRowCount = 0;
+    let source = "local";
+    let error = "";
+
+    try {
+      const rows = await loadFustSheetRows(settings);
+      const parsed = buildFustMetaFromSheetRows(rows);
+      records = parsed.records;
+      headers = parsed.headers;
+      rawRowCount = parsed.raw_row_count;
+      source = rows.length ? "spreadsheet" : "local";
+    } catch (sheetError) {
+      error = sheetError instanceof Error ? sheetError.message : String(sheetError);
+    }
+
+    const countries = [...new Set(records.map((record) => record.country))].sort((left, right) => left.localeCompare(right));
+    sendJson(res, 200, {
+      settings,
+      countries,
+      records,
+      headers,
+      raw_row_count: rawRowCount,
+      sample_records: records.slice(0, 8),
+      source,
+      error,
+    });
+    return;
+  }
+
+  if (url.pathname === "/api/fust/connection-test") {
+    if (!requirePermission(res, requestUser, PERMISSIONS.SETTINGS_MANAGE)) {
+      return;
+    }
+
+    const settings = await readFustSettings();
+    let account = { client_email: "", project_id: "" };
+    let read_ok = false;
+    let row_count = 0;
+    let headers = [];
+    let error = "";
+
+    try {
+      account = await loadServiceAccountInfo();
+    } catch (accountError) {
+      error = accountError instanceof Error ? accountError.message : String(accountError);
+    }
+
+    if (!error) {
+      try {
+        const rows = await loadFustSheetRows(settings);
+        read_ok = true;
+        row_count = rows.length;
+        headers = Array.isArray(rows[0]) ? rows[0].map((value) => String(value || "").trim()) : [];
+      } catch (sheetError) {
+        error = sheetError instanceof Error ? sheetError.message : String(sheetError);
+      }
+    }
+
+    sendJson(res, 200, {
+      account,
+      spreadsheet_id: settings.spreadsheet_id,
+      sheet_name: settings.data_sheet_name,
+      read_ok,
+      row_count,
+      headers,
+      error,
+    });
+    return;
+  }
+
+  if (url.pathname === "/api/fust/actions") {
+    if (!requirePermission(res, requestUser, PERMISSIONS.FUST_VIEW)) {
+      return;
+    }
+
+    const settings = await readFustSettings();
+    const localActions = await readFustActions();
+    let inSheetActions = [];
+    let outSheetActions = [];
+    let sheetActions = [];
+    const sourceDebug = {
+      local: {
+        action_count: localActions.length,
+      },
+      in_sheet: {
+        sheet_name: settings.in_sheet_name,
+        row_count: 0,
+        action_count: 0,
+        error: "",
+      },
+      out_sheet: {
+        sheet_name: settings.out_sheet_name,
+        row_count: 0,
+        action_count: 0,
+        error: "",
+      },
+      dashboard_sheet: {
+        sheet_name: settings.dashboard_sheet_name,
+        row_count: 0,
+        action_count: 0,
+        error: "",
+      },
+    };
+    try {
+      const retourRows = await loadSheetRows(settings.spreadsheet_id, settings.in_sheet_name);
+      sourceDebug.in_sheet.row_count = retourRows.length;
+      inSheetActions = parseRegistrySheetRows(retourRows, "IN");
+      sourceDebug.in_sheet.action_count = inSheetActions.length;
+    } catch (error) {
+      inSheetActions = [];
+      sourceDebug.in_sheet.error = error instanceof Error ? error.message : String(error || "Unknown error");
+    }
+
+    try {
+      const uitgaandRows = await loadSheetRows(settings.spreadsheet_id, settings.out_sheet_name);
+      sourceDebug.out_sheet.row_count = uitgaandRows.length;
+      outSheetActions = parseRegistrySheetRows(uitgaandRows, "OUT");
+      sourceDebug.out_sheet.action_count = outSheetActions.length;
+    } catch (error) {
+      outSheetActions = [];
+      sourceDebug.out_sheet.error = error instanceof Error ? error.message : String(error || "Unknown error");
+    }
+
+    try {
+      const dashboardRows = await loadSheetRows(settings.spreadsheet_id, settings.dashboard_sheet_name);
+      sourceDebug.dashboard_sheet.row_count = dashboardRows.length;
+      sheetActions = parseDashboardSheetRows(dashboardRows);
+      sourceDebug.dashboard_sheet.action_count = sheetActions.length;
+    } catch (error) {
+      sheetActions = [];
+      sourceDebug.dashboard_sheet.error = error instanceof Error ? error.message : String(error || "Unknown error");
+    }
+
+    const dedupedActions = new Map();
+    for (const action of [...inSheetActions, ...outSheetActions, ...sheetActions, ...localActions]) {
+      dedupedActions.set(buildActionSignature(action), action);
+    }
+
+    const actions = [...dedupedActions.values()];
+    const country = String(url.searchParams.get("country") || "").trim();
+    const customer = String(url.searchParams.get("customer_name") || "").trim().toLowerCase();
+    const type = String(url.searchParams.get("type") || "").trim().toUpperCase();
+    const filteredActions = actions
+      .filter((action) => !country || action.country === country)
+      .filter((action) => !customer || action.customer_name.toLowerCase().includes(customer))
+      .filter((action) => !type || action.type === type);
+
+    sendJson(res, 200, {
+      actions: filteredActions.sort((left, right) => {
+        const rightDate = String(right.created_at || right.action_date || "");
+        const leftDate = String(left.created_at || left.action_date || "");
+        return rightDate.localeCompare(leftDate);
+      }),
+      overview: buildOverview(filteredActions),
+      source_debug: {
+        ...sourceDebug,
+        merged_action_count: actions.length,
+        filtered_action_count: filteredActions.length,
+      },
+    });
+    return;
+  }
+
+  if (url.pathname.startsWith("/api/fust/actions/") && req.method === "POST") {
+    const parts = url.pathname.split("/").filter(Boolean);
+    const actionId = decodeURIComponent(parts[3] || "");
+    const retryKind = parts[4] || "";
+    const actions = await readFustActions();
+    const actionIndex = actions.findIndex((item) => item.id === actionId);
+    if (actionIndex < 0) {
+      sendJson(res, 404, { error: "Fust action not found" });
+      return;
+    }
+
+    const action = actions[actionIndex];
+    const settings = await readFustSettings();
+
+    if (retryKind === "retry-sheet") {
+      const requiredPermission = action.type === "OUT" ? PERMISSIONS.FUST_OUT : PERMISSIONS.FUST_IN;
+      if (!requirePermission(res, requestUser, requiredPermission)) {
+        return;
+      }
+
+      try {
+        action.sheet_sync = await syncFustActionToSheets(action, settings);
+      } catch (sheetError) {
+        action.sheet_sync = {
+          ok: false,
+          target_sheets: [],
+          error: sheetError instanceof Error ? sheetError.message : String(sheetError),
+        };
+      }
+
+      actions[actionIndex] = action;
+      await writeFustActions(actions);
+      sendJson(res, 200, { action });
+      return;
+    }
+
+    if (retryKind === "retry-email") {
+      const requiredPermission = action.type === "OUT" ? PERMISSIONS.FUST_OUT : PERMISSIONS.FUST_IN;
+      if (!requirePermission(res, requestUser, requiredPermission)) {
+        return;
+      }
+
+      try {
+        action.email_sync = await sendFustActionEmail(action, settings);
+      } catch (emailError) {
+        action.email_sync = {
+          ok: false,
+          recipients: normalizeEmailRecipients(settings.email_recipients),
+          error: emailError instanceof Error ? emailError.message : String(emailError),
+        };
+      }
+
+      actions[actionIndex] = action;
+      await writeFustActions(actions);
+      sendJson(res, 200, { action });
+      return;
+    }
+
+    sendJson(res, 404, { error: "Unknown retry action" });
+    return;
+  }
+
+  if (url.pathname === "/api/fust/submit" && req.method === "POST") {
+    const body = await readRequestJson(req);
+    const type = String(body.type || "").trim().toUpperCase() === "OUT" ? "OUT" : "IN";
+    const requiredPermission = type === "OUT" ? PERMISSIONS.FUST_OUT : PERMISSIONS.FUST_IN;
+    if (!requirePermission(res, requestUser, requiredPermission)) {
+      return;
+    }
+
+    const actionDate = String(body.action_date || localDateIso()).trim();
+    const action = normalizeFustAction({
+      id: crypto.randomUUID(),
+      type,
+      action_date: actionDate,
+      week: weekNumberForDate(actionDate),
+      day_name: weekdayNameForDate(actionDate),
+      country: body.country,
+      customer_name: body.customer_name,
+      customer_code: body.customer_code,
+      connect_name: body.connect_name,
+      remark: body.remark,
+      metrics: body.metrics,
+      created_by: requestUser.username,
+      created_at: new Date().toISOString(),
+      sheet_sync: { ok: false, target_sheets: [], error: "Pending" },
+      email_sync: { ok: false, recipients: [], error: "Pending" },
+    });
+
+    if (!action.country || !action.customer_name || !action.connect_name) {
+      sendJson(res, 400, { error: "Country, customer, and connect are required" });
+      return;
+    }
+
+    const actions = await readFustActions();
+    actions.push(action);
+    await writeFustActions(actions);
+
+    const settings = await readFustSettings();
+    try {
+      action.sheet_sync = await syncFustActionToSheets(action, settings);
+    } catch (sheetError) {
+      action.sheet_sync = {
+        ok: false,
+        target_sheets: [],
+        error: sheetError instanceof Error ? sheetError.message : String(sheetError),
+      };
+    }
+
+    try {
+      action.email_sync = await sendFustActionEmail(action, settings);
+    } catch (emailError) {
+      action.email_sync = {
+        ok: false,
+        recipients: normalizeEmailRecipients(settings.email_recipients),
+        error: emailError instanceof Error ? emailError.message : String(emailError),
+      };
+    }
+
+    const savedActions = await readFustActions();
+    const actionIndex = savedActions.findIndex((item) => item.id === action.id);
+    if (actionIndex >= 0) {
+      savedActions[actionIndex] = action;
+      await writeFustActions(savedActions);
+    }
+
+    sendJson(res, 201, { action });
+    return;
+  }
+
   if (url.pathname === "/api/users") {
     if (requestUser.role !== "admin") {
       sendForbidden(res);
@@ -741,6 +1731,7 @@ async function handleApi(req, res, url) {
       const username = String(body.username || "").trim();
       const password = String(body.password || "");
       const role = body.role === "admin" ? "admin" : "viewer";
+      const permissions = normalizePermissions(role, body.permissions);
       if (!username || password.length < 6) {
         sendJson(res, 400, { error: "Username is required and password must be at least 6 characters" });
         return;
@@ -755,6 +1746,7 @@ async function handleApi(req, res, url) {
       const user = {
         username,
         role,
+        permissions,
         password_hash: hashPassword(password),
         created_at: new Date().toISOString(),
       };
@@ -779,6 +1771,10 @@ async function handleApi(req, res, url) {
       if (body.role === "admin" || body.role === "viewer") {
         users[userIndex].role = body.role;
       }
+      users[userIndex].permissions = normalizePermissions(
+        users[userIndex].role,
+        Array.isArray(body.permissions) ? body.permissions : users[userIndex].permissions,
+      );
       if (typeof body.password === "string" && body.password) {
         if (body.password.length < 6) {
           sendJson(res, 400, { error: "Password must be at least 6 characters" });

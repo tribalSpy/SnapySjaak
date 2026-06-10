@@ -3,6 +3,26 @@ import { createRoot } from "react-dom/client";
 import "./styles.css";
 
 const REFRESH_INTERVAL_MS = 15000;
+const PERMISSIONS = {
+  PHOTOS_VIEW: "photos:view",
+  FUST_VIEW: "fust:view",
+  FUST_IN: "fust:in",
+  FUST_OUT: "fust:out",
+  FUST_OVERVIEW: "fust:overview",
+  USERS_MANAGE: "users:manage",
+  SETTINGS_MANAGE: "settings:manage",
+};
+const ALL_PERMISSIONS = Object.values(PERMISSIONS);
+const DEFAULT_PERMISSIONS_BY_ROLE = {
+  admin: ALL_PERMISSIONS,
+  viewer: [PERMISSIONS.PHOTOS_VIEW],
+};
+const PAGE_DEFINITIONS = [
+  { key: "dashboard", label: "Photos", permission: PERMISSIONS.PHOTOS_VIEW },
+  { key: "fust", label: "Fust", permission: PERMISSIONS.FUST_VIEW },
+  { key: "users", label: "Users", permission: PERMISSIONS.USERS_MANAGE },
+  { key: "settings", label: "Settings", permission: PERMISSIONS.SETTINGS_MANAGE },
+];
 
 function formatTimestamp(value) {
   if (!value) {
@@ -15,6 +35,63 @@ function formatTimestamp(value) {
   }
 
   return parsed.toLocaleString();
+}
+
+function normalizePermissions(role, permissions) {
+  const defaults = DEFAULT_PERMISSIONS_BY_ROLE[role] || DEFAULT_PERMISSIONS_BY_ROLE.viewer;
+  if (!Array.isArray(permissions)) {
+    return [...defaults];
+  }
+
+  const normalized = [...new Set(
+    permissions
+      .map((value) => String(value || "").trim())
+      .filter((value) => ALL_PERMISSIONS.includes(value)),
+  )];
+
+  return normalized.length ? normalized : [...defaults];
+}
+
+function hasPermission(user, permission) {
+  if (!user) {
+    return false;
+  }
+
+  const permissions = normalizePermissions(user.role, user.permissions);
+  return permissions.includes(permission);
+}
+
+function availablePagesForUser(user) {
+  return PAGE_DEFINITIONS.filter((page) => hasPermission(user, page.permission));
+}
+
+function defaultPageForUser(user) {
+  return availablePagesForUser(user)[0]?.key || "dashboard";
+}
+
+function pageHeading(page) {
+  switch (page) {
+    case "fust":
+      return {
+        title: "Fust Management",
+        caption: "Capture IN and OUT movements, then review balances and recent actions.",
+      };
+    case "users":
+      return {
+        title: "Users",
+        caption: "Control which menus and actions each account can use.",
+      };
+    case "settings":
+      return {
+        title: "Settings",
+        caption: "Prepare email recipients, spreadsheet mapping, and business master data.",
+      };
+    default:
+      return {
+        title: "Sjaak vd Vijver Expedition Photo Dashboard",
+        caption: "Choose departure date and optionally filter by customer code.",
+      };
+  }
 }
 
 function imageUrl(image, run, retryKey = "") {
@@ -75,6 +152,76 @@ async function apiJson(path, options = {}) {
     throw new Error(payload.error || `Request failed with ${response.status}`);
   }
   return payload;
+}
+
+function emptyFustMetrics() {
+  return { dc: 0, cctag: 0, dcs: 0, dco: 0, pal: 0, vk: 0 };
+}
+
+function useFustMeta(enabled) {
+  const [state, setState] = useState({ loading: true, data: null, error: "" });
+
+  useEffect(() => {
+    if (!enabled) {
+      setState({ loading: false, data: null, error: "" });
+      return undefined;
+    }
+
+    let cancelled = false;
+    setState((current) => ({ ...current, loading: true, error: "" }));
+    apiJson("/api/fust/meta")
+      .then((payload) => {
+        if (!cancelled) {
+          setState({ loading: false, data: payload, error: "" });
+        }
+      })
+      .catch((error) => {
+        if (!cancelled) {
+          setState({ loading: false, data: null, error: error.message });
+        }
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [enabled]);
+
+  return state;
+}
+
+function useFustActions(enabled) {
+  const [refreshKey, setRefreshKey] = useState(0);
+  const [state, setState] = useState({ loading: true, data: null, error: "" });
+
+  useEffect(() => {
+    if (!enabled) {
+      setState({ loading: false, data: null, error: "" });
+      return undefined;
+    }
+
+    let cancelled = false;
+    setState((current) => ({ ...current, loading: true, error: "" }));
+    apiJson("/api/fust/actions")
+      .then((payload) => {
+        if (!cancelled) {
+          setState({ loading: false, data: payload, error: "" });
+        }
+      })
+      .catch((error) => {
+        if (!cancelled) {
+          setState({ loading: false, data: null, error: error.message });
+        }
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [enabled, refreshKey]);
+
+  return {
+    ...state,
+    refresh: () => setRefreshKey((value) => value + 1),
+  };
 }
 
 function useDashboardData(selectedDate, searchTerm, syncVersion, enabled) {
@@ -173,7 +320,10 @@ function App() {
   const [lightbox, setLightbox] = useState(null);
   const [syncVersion, setSyncVersion] = useState(0);
   const requestedDate = dateWasManuallySelected ? selectedDate : "";
-  const { data, loading, error } = useDashboardData(requestedDate, searchTerm, syncVersion, loggedIn && page === "dashboard");
+  const canViewPhotos = hasPermission(auth.user, PERMISSIONS.PHOTOS_VIEW);
+  const visiblePages = availablePagesForUser(auth.user);
+  const onPhotosPage = page === "dashboard" && canViewPhotos;
+  const { data, loading, error } = useDashboardData(requestedDate, searchTerm, syncVersion, loggedIn && onPhotosPage);
 
   const dates = data?.dates || [];
   const activeDate = selectedDate || data?.selected_date || "";
@@ -184,11 +334,15 @@ function App() {
   useEffect(() => {
     apiJson("/api/auth/me")
       .then((payload) => {
+        const nextPage = defaultPageForUser(payload.user);
         setAuth({
           loading: false,
           user: payload.user,
           setupRequired: payload.setup_required,
         });
+        if (payload.user) {
+          setPage(nextPage);
+        }
       })
       .catch(() => setAuth({ loading: false, user: null, setupRequired: false }));
   }, []);
@@ -204,6 +358,16 @@ function App() {
       setSyncVersion((value) => value + 1);
     }
   }, [syncStatus?.state, syncStatus?.updated_at]);
+
+  useEffect(() => {
+    if (!auth.user) {
+      return;
+    }
+    const fallbackPage = defaultPageForUser(auth.user);
+    if (!visiblePages.some((item) => item.key === page)) {
+      setPage(fallbackPage);
+    }
+  }, [auth.user, page, visiblePages]);
 
   const flatPhotoGroups = useMemo(() => {
     const groups = [];
@@ -255,49 +419,66 @@ function App() {
     return (
       <AuthShell title="Sjaak vd Vijver Expedition Photo Dashboard">
         {auth.setupRequired ? (
-          <SetupForm onSetup={(user) => setAuth({ loading: false, user, setupRequired: false })} />
+          <SetupForm onSetup={(user) => {
+            setAuth({ loading: false, user, setupRequired: false });
+            setPage(defaultPageForUser(user));
+          }}
+          />
         ) : (
-          <LoginForm onLogin={(user) => setAuth({ loading: false, user, setupRequired: false })} />
+          <LoginForm onLogin={(user) => {
+            setAuth({ loading: false, user, setupRequired: false });
+            setPage(defaultPageForUser(user));
+          }}
+          />
         )}
       </AuthShell>
     );
   }
+
+  const heading = pageHeading(page);
 
   return (
     <>
       <aside className="sidebar">
         <div>
           <p className="eyebrow">SnappySjaak</p>
-          <h1>Sjaak vd Vijver Expedition Photo Dashboard</h1>
+          <h1>Sjaak vd Vijver Expedition Shadow App</h1>
+          <p className="sidebar-note">Photos stays separate while Fust gets its own protected workspace.</p>
         </div>
 
         <nav className="side-nav" aria-label="Shadow app pages">
-          <button className={page === "dashboard" ? "active" : ""} onClick={() => setPage("dashboard")}>
-            Photos
-          </button>
-          {auth.user.role === "admin" && (
-            <button className={page === "users" ? "active" : ""} onClick={() => setPage("users")}>
-              Users
+          {visiblePages.map((item) => (
+            <button
+              key={item.key}
+              className={page === item.key ? "active" : ""}
+              onClick={() => setPage(item.key)}
+            >
+              {item.label}
             </button>
-          )}
+          ))}
         </nav>
 
-        <div className="control-stack">
-          <button className="primary" disabled={syncRunning} onClick={() => startSync("/api/rebuild")}>
-            Rebuild run index
-          </button>
-          <button disabled={syncRunning || !activeDate} onClick={() => startSync("/api/refresh-date")}>
-            Refresh this date
-          </button>
-          <p className="sidebar-note">
-            {data?.generated_at
-              ? `Using saved run index from ${formatTimestamp(data.generated_at)}.`
-              : "No saved run index loaded yet."}
-          </p>
-        </div>
+        {canViewPhotos && (
+          <>
+            <div className="control-stack">
+              <button className="primary" disabled={syncRunning} onClick={() => startSync("/api/rebuild")}>
+                Rebuild run index
+              </button>
+              <button disabled={syncRunning || !activeDate} onClick={() => startSync("/api/refresh-date")}>
+                Refresh this date
+              </button>
+              <p className="sidebar-note">
+                {data?.generated_at
+                  ? `Using saved run index from ${formatTimestamp(data.generated_at)}.`
+                  : "No saved run index loaded yet."}
+              </p>
+            </div>
 
-        <SyncPanel status={syncStatus} />
-        <ParseErrors errors={data?.parse_errors || []} />
+            <SyncPanel status={syncStatus} />
+            <ParseErrors errors={data?.parse_errors || []} />
+          </>
+        )}
+
         <div className="signed-in">
           <p>Signed in as <strong>{auth.user.username}</strong></p>
           <button onClick={handleLogout}>Log out</button>
@@ -306,12 +487,14 @@ function App() {
 
       <main className="workspace">
         <header className="page-header">
-          <h1>{page === "users" ? "Users" : "Sjaak vd Vijver Expedition Photo Dashboard"}</h1>
+          <h1>{heading.title}</h1>
+          <p>{heading.caption}</p>
         </header>
 
-        {page === "users" ? (
-          <UsersPage currentUser={auth.user} />
-        ) : (
+        {page === "users" && <UsersPage currentUser={auth.user} />}
+        {page === "fust" && <FustPage currentUser={auth.user} />}
+        {page === "settings" && <SettingsPage currentUser={auth.user} />}
+        {page === "dashboard" && canViewPhotos && (
           <>
             <section className="toolbar" aria-label="Filters">
               <label>
@@ -492,7 +675,12 @@ function SetupForm({ onSetup }) {
 
 function UsersPage({ currentUser }) {
   const [users, setUsers] = useState([]);
-  const [form, setForm] = useState({ username: "", password: "", role: "viewer" });
+  const [form, setForm] = useState({
+    username: "",
+    password: "",
+    role: "viewer",
+    permissions: [...DEFAULT_PERMISSIONS_BY_ROLE.viewer],
+  });
   const [error, setError] = useState("");
   const [message, setMessage] = useState("");
 
@@ -514,7 +702,12 @@ function UsersPage({ currentUser }) {
         method: "POST",
         body: JSON.stringify(form),
       });
-      setForm({ username: "", password: "", role: "viewer" });
+      setForm({
+        username: "",
+        password: "",
+        role: "viewer",
+        permissions: [...DEFAULT_PERMISSIONS_BY_ROLE.viewer],
+      });
       setMessage("User added.");
       await loadUsers();
     } catch (addError) {
@@ -567,12 +760,23 @@ function UsersPage({ currentUser }) {
         </label>
         <label>
           <span>Role</span>
-          <select value={form.role} onChange={(event) => setForm({ ...form, role: event.target.value })}>
+          <select
+            value={form.role}
+            onChange={(event) => {
+              const role = event.target.value;
+              setForm({ ...form, role, permissions: [...DEFAULT_PERMISSIONS_BY_ROLE[role]] });
+            }}
+          >
             <option value="viewer">Viewer</option>
             <option value="admin">Admin</option>
           </select>
         </label>
         <button className="primary" type="submit">Add user</button>
+        <PermissionChecklist
+          title="Menu access"
+          permissions={form.permissions}
+          onChange={(permissions) => setForm({ ...form, permissions })}
+        />
       </form>
 
       {error && <div className="notice danger">{error}</div>}
@@ -584,8 +788,7 @@ function UsersPage({ currentUser }) {
             key={user.username}
             user={user}
             currentUser={currentUser}
-            onRoleChange={(role) => updateUser(user.username, { role })}
-            onPasswordChange={(password) => updateUser(user.username, { password })}
+            onSave={(changes) => updateUser(user.username, changes)}
             onDelete={() => deleteUser(user.username)}
           />
         ))}
@@ -594,8 +797,15 @@ function UsersPage({ currentUser }) {
   );
 }
 
-function UserRow({ user, currentUser, onRoleChange, onPasswordChange, onDelete }) {
+function UserRow({ user, currentUser, onSave, onDelete }) {
   const [password, setPassword] = useState("");
+  const [role, setRole] = useState(user.role);
+  const [permissions, setPermissions] = useState(normalizePermissions(user.role, user.permissions));
+
+  useEffect(() => {
+    setRole(user.role);
+    setPermissions(normalizePermissions(user.role, user.permissions));
+  }, [user.permissions, user.role]);
 
   return (
     <article className="user-row">
@@ -603,15 +813,33 @@ function UserRow({ user, currentUser, onRoleChange, onPasswordChange, onDelete }
         <strong>{user.username}</strong>
         <span>{user.role} | created {formatTimestamp(user.created_at)}</span>
       </div>
-      <select value={user.role} onChange={(event) => onRoleChange(event.target.value)}>
-        <option value="viewer">Viewer</option>
-        <option value="admin">Admin</option>
-      </select>
+
+      <div className="user-row-actions">
+        <label>
+          <span>Role</span>
+          <select
+            value={role}
+            onChange={(event) => {
+              const nextRole = event.target.value;
+              setRole(nextRole);
+              setPermissions([...DEFAULT_PERMISSIONS_BY_ROLE[nextRole]]);
+            }}
+          >
+            <option value="viewer">Viewer</option>
+            <option value="admin">Admin</option>
+          </select>
+        </label>
+        <button onClick={() => onSave({ role, permissions })}>Save access</button>
+      </div>
+
+      <PermissionChecklist title="Allowed menus" permissions={permissions} onChange={setPermissions} />
+
       <form
+        className="password-form"
         onSubmit={(event) => {
           event.preventDefault();
           if (password) {
-            onPasswordChange(password);
+            onSave({ password });
             setPassword("");
           }
         }}
@@ -625,7 +853,855 @@ function UserRow({ user, currentUser, onRoleChange, onPasswordChange, onDelete }
         />
         <button type="submit">Set password</button>
       </form>
+
       <button disabled={user.username === currentUser.username} onClick={onDelete}>Delete</button>
+    </article>
+  );
+}
+
+function PermissionChecklist({ title, permissions, onChange }) {
+  return (
+    <fieldset className="permission-grid">
+      <legend>{title}</legend>
+      {ALL_PERMISSIONS.map((permission) => (
+        <label key={permission} className="permission-option">
+          <input
+            type="checkbox"
+            checked={permissions.includes(permission)}
+            onChange={(event) => {
+              if (event.target.checked) {
+                onChange([...permissions, permission]);
+                return;
+              }
+              onChange(permissions.filter((item) => item !== permission));
+            }}
+          />
+          <span>{permission}</span>
+        </label>
+      ))}
+    </fieldset>
+  );
+}
+
+function FustPage({ currentUser }) {
+  const visibleTabs = [
+    hasPermission(currentUser, PERMISSIONS.FUST_IN) ? "in" : null,
+    hasPermission(currentUser, PERMISSIONS.FUST_OUT) ? "out" : null,
+    hasPermission(currentUser, PERMISSIONS.FUST_OVERVIEW) ? "overview" : null,
+  ].filter(Boolean);
+  const [activeTab, setActiveTab] = useState(visibleTabs[0] || "overview");
+  const { loading: metaLoading, data: metaData, error: metaError } = useFustMeta(Boolean(currentUser));
+  const { loading: actionsLoading, data: actionsData, error: actionsError, refresh } = useFustActions(Boolean(currentUser));
+
+  useEffect(() => {
+    if (!visibleTabs.includes(activeTab)) {
+      setActiveTab(visibleTabs[0] || "overview");
+    }
+  }, [activeTab, visibleTabs]);
+
+  if (!visibleTabs.length) {
+    return <div className="notice">This account can open Fust but does not yet have an IN, OUT, or Overview action assigned.</div>;
+  }
+
+  return (
+    <section className="fust-page">
+      {metaError && <div className="notice danger">Unable to load Fust master data: {metaError}</div>}
+      {actionsError && <div className="notice danger">Unable to load Fust actions: {actionsError}</div>}
+
+      <div className="tab-strip" role="tablist" aria-label="Fust sections">
+        {visibleTabs.map((tab) => (
+          <button
+            key={tab}
+            className={activeTab === tab ? "active" : ""}
+            onClick={() => setActiveTab(tab)}
+          >
+            {tab.toUpperCase()}
+          </button>
+        ))}
+      </div>
+
+      {activeTab === "in" && (
+        <FustActionForm
+          type="IN"
+          metaData={metaData}
+          loading={metaLoading}
+          onSaved={refresh}
+        />
+      )}
+
+      {activeTab === "out" && (
+        <FustActionForm
+          type="OUT"
+          metaData={metaData}
+          loading={metaLoading}
+          onSaved={refresh}
+        />
+      )}
+
+      {activeTab === "overview" && (
+        <FustOverview
+          loading={actionsLoading}
+          actions={actionsData?.actions || []}
+          overview={actionsData?.overview || []}
+          sourceDebug={actionsData?.source_debug || null}
+          onRefresh={refresh}
+        />
+      )}
+    </section>
+  );
+}
+
+function FustActionForm({ type, metaData, loading, onSaved }) {
+  const [form, setForm] = useState({
+    action_date: new Date().toISOString().slice(0, 10),
+    country: "",
+    customer_name: "",
+    customer_code: "",
+    connect_name: "",
+    remark: "",
+    metrics: emptyFustMetrics(),
+  });
+  const [message, setMessage] = useState("");
+  const [error, setError] = useState("");
+  const [saving, setSaving] = useState(false);
+  const records = metaData?.records || [];
+  const countries = metaData?.countries || [];
+  const customerOptions = records.filter((record) => record.country === form.country);
+  const customerNames = [...new Set(customerOptions.map((record) => record.customer_name))].sort((left, right) => left.localeCompare(right));
+  const connectOptions = customerOptions.filter((record) => record.customer_name === form.customer_name);
+
+  useEffect(() => {
+    if (countries.length && !form.country) {
+      setForm((current) => ({ ...current, country: countries[0] }));
+    }
+  }, [countries, form.country]);
+
+  useEffect(() => {
+    if (customerNames.length && !customerNames.includes(form.customer_name)) {
+      setForm((current) => ({
+        ...current,
+        customer_name: customerNames[0] || "",
+        connect_name: "",
+        customer_code: "",
+      }));
+    }
+  }, [customerNames, form.customer_name]);
+
+  useEffect(() => {
+    const activeConnect = connectOptions.find((record) => record.connect_name === form.connect_name);
+    if (!activeConnect && connectOptions.length) {
+      const first = connectOptions[0];
+      setForm((current) => ({
+        ...current,
+        connect_name: first.connect_name,
+        customer_code: first.customer_code,
+      }));
+    } else if (activeConnect) {
+      setForm((current) => ({
+        ...current,
+        customer_code: activeConnect.customer_code,
+      }));
+    }
+  }, [connectOptions, form.connect_name]);
+
+  async function submit(event) {
+    event.preventDefault();
+    setSaving(true);
+    setMessage("");
+    setError("");
+    try {
+      const payload = await apiJson("/api/fust/submit", {
+        method: "POST",
+        body: JSON.stringify({ ...form, type }),
+      });
+      setMessage(
+        `${type} saved. Sheet sync: ${payload.action.sheet_sync.ok ? "ok" : payload.action.sheet_sync.error}. Email: ${payload.action.email_sync.ok ? "ok" : payload.action.email_sync.error}`,
+      );
+      setForm((current) => ({
+        ...current,
+        remark: "",
+        metrics: emptyFustMetrics(),
+      }));
+      onSaved();
+    } catch (submitError) {
+      setError(submitError.message);
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <div className="fust-form-layout">
+      <form className="fust-form" onSubmit={submit}>
+        <div className="form-grid">
+          <label>
+            <span>Date</span>
+            <input
+              type="date"
+              value={form.action_date}
+              onChange={(event) => setForm({ ...form, action_date: event.target.value })}
+            />
+          </label>
+          <label>
+            <span>Country</span>
+            <select
+              value={form.country}
+              onChange={(event) => setForm({
+                ...form,
+                country: event.target.value,
+                customer_name: "",
+                connect_name: "",
+                customer_code: "",
+              })}
+            >
+              <option value="">Choose country</option>
+              {countries.map((country) => <option key={country} value={country}>{country}</option>)}
+            </select>
+          </label>
+          <label>
+            <span>Klantnaam / carrier</span>
+            <select
+              value={form.customer_name}
+              onChange={(event) => setForm({
+                ...form,
+                customer_name: event.target.value,
+                connect_name: "",
+                customer_code: "",
+              })}
+              disabled={!form.country}
+            >
+              <option value="">Choose klantnaam</option>
+              {customerNames.map((name) => <option key={name} value={name}>{name}</option>)}
+            </select>
+          </label>
+          <label>
+            <span>Connect</span>
+            <select
+              value={form.connect_name}
+              onChange={(event) => {
+                const selected = connectOptions.find((record) => record.connect_name === event.target.value);
+                setForm({
+                  ...form,
+                  connect_name: event.target.value,
+                  customer_code: selected?.customer_code || "",
+                });
+              }}
+              disabled={!form.customer_name}
+            >
+              <option value="">Choose connect</option>
+              {connectOptions.map((option) => (
+                <option key={`${option.customer_name}-${option.connect_name}`} value={option.connect_name}>
+                  {option.connect_name}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label className="wide">
+            <span>Remark</span>
+            <input
+              value={form.remark}
+              onChange={(event) => setForm({ ...form, remark: event.target.value })}
+              placeholder="alleen fusten"
+            />
+          </label>
+        </div>
+
+        <div className="metrics-grid">
+          {Object.entries(form.metrics).map(([key, value]) => (
+            <label key={key}>
+              <span>{key.toUpperCase()}</span>
+              <input
+                type="number"
+                min="0"
+                value={value}
+                onChange={(event) => setForm({
+                  ...form,
+                  metrics: {
+                    ...form.metrics,
+                    [key]: Number(event.target.value || 0),
+                  },
+                })}
+              />
+            </label>
+          ))}
+        </div>
+
+        {loading && <div className="notice">Loading Data sheet options...</div>}
+        {message && <div className="notice">{message}</div>}
+        {error && <div className="notice danger">{error}</div>}
+
+        <button className="primary" type="submit" disabled={saving || loading}>
+          {saving ? `Saving ${type}...` : `Save ${type}`}
+        </button>
+      </form>
+
+      <InfoPanel
+        title={`${type} sheet targets`}
+        lines={[
+          `Primary sheet: ${type === "OUT" ? metaData?.settings?.out_sheet_name || "Uitgaand" : metaData?.settings?.in_sheet_name || "Retour"}`,
+          `Dashboard mirror: ${metaData?.settings?.dashboard_sheet_name || "Dashboard"}`,
+          `Master data source: ${metaData?.settings?.data_sheet_name || "Data"}`,
+          `Loaded options source: ${metaData?.source || "local"}`,
+          `Detected headers: ${(metaData?.headers || []).join(", ") || "none"}`,
+          `Rows read from Data: ${metaData?.raw_row_count || 0}`,
+          `Usable records: ${metaData?.records?.length || 0}`,
+          metaData?.error ? `Data tab warning: ${metaData.error}` : "Data tab loaded without bridge errors.",
+        ]}
+      />
+    </div>
+  );
+}
+
+function FustOverview({ loading, actions, overview, sourceDebug, onRefresh }) {
+  const [busyActionId, setBusyActionId] = useState("");
+  const [message, setMessage] = useState("");
+  const [error, setError] = useState("");
+  const [selectedWeek, setSelectedWeek] = useState("");
+  const [selectedCountry, setSelectedCountry] = useState("");
+
+  const weekOptions = [...new Set(overview.map((entry) => String(entry.week || "")).filter(Boolean))]
+    .sort((left, right) => Number(right) - Number(left));
+  const countryOptions = [...new Set(
+    overview
+      .filter((entry) => !selectedWeek || String(entry.week || "") === selectedWeek)
+      .map((entry) => entry.country)
+      .filter(Boolean),
+  )]
+    .sort((left, right) => left.localeCompare(right));
+
+  useEffect(() => {
+    if (selectedCountry && !countryOptions.includes(selectedCountry)) {
+      setSelectedCountry("");
+    }
+  }, [countryOptions, selectedCountry]);
+
+  const filteredOverview = overview.filter((entry) => (
+    (!selectedWeek || String(entry.week || "") === selectedWeek) &&
+    (!selectedCountry || entry.country === selectedCountry)
+  ));
+
+  async function retryAction(actionId, kind) {
+    setBusyActionId(`${actionId}:${kind}`);
+    setMessage("");
+    setError("");
+    try {
+      await apiJson(`/api/fust/actions/${encodeURIComponent(actionId)}/${kind}`, {
+        method: "POST",
+      });
+      setMessage(kind === "retry-sheet" ? "Sheet sync retried." : "Email resend retried.");
+      onRefresh();
+    } catch (retryError) {
+      setError(retryError.message);
+    } finally {
+      setBusyActionId("");
+    }
+  }
+
+  if (loading) {
+    return <div className="notice">Loading Fust overview...</div>;
+  }
+
+  return (
+    <div className="overview-stack">
+      {message && <div className="notice">{message}</div>}
+      {error && <div className="notice danger">{error}</div>}
+
+      <div className="data-table-card">
+        <h2>Overview sources</h2>
+        <div className="info-panel">
+          <p>Local actions: {sourceDebug?.local?.action_count || 0}</p>
+          <p>
+            {sourceDebug?.in_sheet?.sheet_name || "Retour"}: {sourceDebug?.in_sheet?.row_count || 0} rows, {sourceDebug?.in_sheet?.action_count || 0} parsed
+            {sourceDebug?.in_sheet?.error ? ` | Error: ${sourceDebug.in_sheet.error}` : ""}
+          </p>
+          <p>
+            {sourceDebug?.out_sheet?.sheet_name || "Uitgaand"}: {sourceDebug?.out_sheet?.row_count || 0} rows, {sourceDebug?.out_sheet?.action_count || 0} parsed
+            {sourceDebug?.out_sheet?.error ? ` | Error: ${sourceDebug.out_sheet.error}` : ""}
+          </p>
+          <p>
+            {sourceDebug?.dashboard_sheet?.sheet_name || "Dashboard"}: {sourceDebug?.dashboard_sheet?.row_count || 0} rows, {sourceDebug?.dashboard_sheet?.action_count || 0} parsed
+            {sourceDebug?.dashboard_sheet?.error ? ` | Error: ${sourceDebug.dashboard_sheet.error}` : ""}
+          </p>
+          <p>Merged actions: {sourceDebug?.merged_action_count || 0}</p>
+          <p>Visible after filters: {sourceDebug?.filtered_action_count || 0}</p>
+        </div>
+      </div>
+
+      <div className="data-table-card">
+        <div className="overview-filters">
+          <label>
+            <span>Week</span>
+            <select value={selectedWeek} onChange={(event) => setSelectedWeek(event.target.value)}>
+              <option value="">All weeks</option>
+              {weekOptions.map((week) => <option key={week} value={week}>{week}</option>)}
+            </select>
+          </label>
+          <label>
+            <span>Country</span>
+            <select value={selectedCountry} onChange={(event) => setSelectedCountry(event.target.value)}>
+              <option value="">All countries</option>
+              {countryOptions.map((country) => <option key={country} value={country}>{country}</option>)}
+            </select>
+          </label>
+        </div>
+        <div className="table-wrap">
+          <table className="data-table balance-table">
+            <thead>
+              <tr>
+                <th>Week</th>
+                <th>Country</th>
+                <th>Cust/transport</th>
+                <th>DC out</th>
+                <th>DC in</th>
+                <th>DC balance</th>
+                <th>CCTag out</th>
+                <th>CCTag in</th>
+                <th>CCTag balance</th>
+                <th>DCS out</th>
+                <th>DCS in</th>
+                <th>DCS balance</th>
+                <th>DCO out</th>
+                <th>DCO in</th>
+                <th>DCO balance</th>
+                <th>VK out</th>
+                <th>VK in</th>
+                <th>VK balance</th>
+                <th>pal out</th>
+              </tr>
+            </thead>
+            <tbody>
+              {filteredOverview.map((entry) => (
+                <tr key={`${entry.week}-${entry.country}-${entry.customer_name}`}>
+                  <td>{entry.week || ""}</td>
+                  <td>{entry.country}</td>
+                  <td>{entry.customer_name}</td>
+                  <td>{entry.out.dc}</td>
+                  <td>{entry.in.dc}</td>
+                  <td>{entry.balance.dc}</td>
+                  <td>{entry.out.cctag}</td>
+                  <td>{entry.in.cctag}</td>
+                  <td>{entry.balance.cctag}</td>
+                  <td>{entry.out.dcs}</td>
+                  <td>{entry.in.dcs}</td>
+                  <td>{entry.balance.dcs}</td>
+                  <td>{entry.out.dco}</td>
+                  <td>{entry.in.dco}</td>
+                  <td>{entry.balance.dco}</td>
+                  <td>{entry.out.vk}</td>
+                  <td>{entry.in.vk}</td>
+                  <td>{entry.balance.vk}</td>
+                  <td>{entry.out.pal}</td>
+                </tr>
+              ))}
+              {!filteredOverview.length && (
+                <tr>
+                  <td colSpan="19">No overview rows found for the selected week and country.</td>
+                </tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <div className="data-table-card">
+        <h2>Recent actions</h2>
+        <div className="table-wrap">
+          <table className="data-table">
+            <thead>
+              <tr>
+                <th>Type</th>
+                <th>Date</th>
+                <th>Country</th>
+                <th>Klantnaam</th>
+                <th>Connect</th>
+                <th>DC</th>
+                <th>DCS</th>
+                <th>Remark</th>
+                <th>Sheet</th>
+                <th>Email</th>
+                <th>Retry</th>
+              </tr>
+            </thead>
+            <tbody>
+              {actions.map((action) => (
+                <tr key={action.id}>
+                  <td>{action.type}</td>
+                  <td>{action.action_date}</td>
+                  <td>{action.country}</td>
+                  <td>{action.customer_name}</td>
+                  <td>{action.connect_name}</td>
+                  <td>{action.metrics?.dc || 0}</td>
+                  <td>{action.metrics?.dcs || 0}</td>
+                  <td>{action.remark || "-"}</td>
+                  <td>{action.sheet_sync?.ok ? "ok" : action.sheet_sync?.error || "-"}</td>
+                  <td>{action.email_sync?.ok ? "ok" : action.email_sync?.error || "-"}</td>
+                  <td>
+                    <div className="retry-actions">
+                      {!action.sheet_sync?.ok && (
+                        <button
+                          type="button"
+                          disabled={busyActionId === `${action.id}:retry-sheet`}
+                          onClick={() => retryAction(action.id, "retry-sheet")}
+                        >
+                          Retry sheet
+                        </button>
+                      )}
+                      {!action.email_sync?.ok && (
+                        <button
+                          type="button"
+                          disabled={busyActionId === `${action.id}:retry-email`}
+                          onClick={() => retryAction(action.id, "retry-email")}
+                        >
+                          Retry email
+                        </button>
+                      )}
+                    </div>
+                  </td>
+                </tr>
+              ))}
+              {!actions.length && (
+                <tr>
+                  <td colSpan="11">No actions were loaded from local storage or the spreadsheet yet.</td>
+                </tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function SettingsPage({ currentUser }) {
+  const [form, setForm] = useState(null);
+  const [error, setError] = useState("");
+  const [message, setMessage] = useState("");
+  const [saving, setSaving] = useState(false);
+  const { loading: metaLoading, data: metaData, error: metaError } = useFustMeta(Boolean(currentUser));
+  const [backups, setBackups] = useState([]);
+  const [backupBusy, setBackupBusy] = useState(false);
+  const [connectionTest, setConnectionTest] = useState(null);
+  const [connectionBusy, setConnectionBusy] = useState(false);
+
+  async function loadBackups() {
+    const payload = await apiJson("/api/fust/backups");
+    setBackups(payload.backups || []);
+  }
+
+  async function loadConnectionTest() {
+    setConnectionBusy(true);
+    try {
+      const payload = await apiJson("/api/fust/connection-test");
+      setConnectionTest(payload);
+    } catch (connectionError) {
+      setConnectionTest({
+        account: { client_email: "", project_id: "" },
+        spreadsheet_id: form?.spreadsheet_id || "",
+        sheet_name: form?.data_sheet_name || "",
+        read_ok: false,
+        row_count: 0,
+        headers: [],
+        error: connectionError.message,
+      });
+    } finally {
+      setConnectionBusy(false);
+    }
+  }
+
+  useEffect(() => {
+    apiJson("/api/fust/settings")
+      .then((payload) => setForm(payload.settings))
+      .catch((settingsError) => setError(settingsError.message));
+
+    loadBackups().catch((backupError) => setError(backupError.message));
+    loadConnectionTest().catch(() => {});
+  }, []);
+
+  async function submit(event) {
+    event.preventDefault();
+    setSaving(true);
+    setError("");
+    setMessage("");
+    try {
+      const payload = await apiJson("/api/fust/settings", {
+        method: "PATCH",
+        body: JSON.stringify({
+          ...form,
+          email_recipients: String(form.email_recipients || "")
+            .split(/[\n,;]/)
+            .map((value) => value.trim())
+            .filter(Boolean),
+        }),
+      });
+      setForm({
+        ...payload.settings,
+        email_recipients: payload.settings.email_recipients.join("\n"),
+      });
+      setMessage("Fust settings saved.");
+      await loadConnectionTest();
+    } catch (saveError) {
+      setError(saveError.message);
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function createBackup() {
+    setBackupBusy(true);
+    setError("");
+    setMessage("");
+    try {
+      const payload = await apiJson("/api/fust/backups", {
+        method: "POST",
+      });
+      setBackups(payload.backups || []);
+      setMessage(`Backup created: ${payload.backup?.filename || "snapshot saved"}`);
+    } catch (backupError) {
+      setError(backupError.message);
+    } finally {
+      setBackupBusy(false);
+    }
+  }
+
+  if (!form) {
+    return <div className="notice">Loading settings...</div>;
+  }
+
+  return (
+    <section className="settings-page">
+      <form className="settings-form" onSubmit={submit}>
+        <div className="form-grid">
+          <label>
+            <span>Spreadsheet ID</span>
+            <input
+              value={form.spreadsheet_id}
+              onChange={(event) => setForm({ ...form, spreadsheet_id: event.target.value })}
+            />
+          </label>
+          <label>
+            <span>Data tab</span>
+            <input
+              value={form.data_sheet_name}
+              onChange={(event) => setForm({ ...form, data_sheet_name: event.target.value })}
+            />
+          </label>
+          <label>
+            <span>IN tab</span>
+            <input
+              value={form.in_sheet_name}
+              onChange={(event) => setForm({ ...form, in_sheet_name: event.target.value })}
+            />
+          </label>
+          <label>
+            <span>OUT tab</span>
+            <input
+              value={form.out_sheet_name}
+              onChange={(event) => setForm({ ...form, out_sheet_name: event.target.value })}
+            />
+          </label>
+          <label>
+            <span>Dashboard tab</span>
+            <input
+              value={form.dashboard_sheet_name}
+              onChange={(event) => setForm({ ...form, dashboard_sheet_name: event.target.value })}
+            />
+          </label>
+          <label className="wide">
+            <span>Target email recipients</span>
+            <textarea
+              value={Array.isArray(form.email_recipients) ? form.email_recipients.join("\n") : form.email_recipients}
+              onChange={(event) => setForm({ ...form, email_recipients: event.target.value })}
+              rows={6}
+              placeholder={"name@example.com\nother@example.com"}
+            />
+          </label>
+          <label>
+            <span>SMTP host</span>
+            <input
+              value={form.smtp_host || ""}
+              onChange={(event) => setForm({ ...form, smtp_host: event.target.value })}
+              placeholder="smtp.gmail.com"
+            />
+          </label>
+          <label>
+            <span>SMTP port</span>
+            <input
+              value={form.smtp_port ?? 587}
+              onChange={(event) => setForm({ ...form, smtp_port: event.target.value })}
+              placeholder="587"
+            />
+          </label>
+          <label>
+            <span>SMTP username</span>
+            <input
+              value={form.smtp_username || ""}
+              onChange={(event) => setForm({ ...form, smtp_username: event.target.value })}
+              placeholder="ftereso@gmail.com"
+            />
+          </label>
+          <label>
+            <span>SMTP sender email</span>
+            <input
+              value={form.smtp_from || ""}
+              onChange={(event) => setForm({ ...form, smtp_from: event.target.value })}
+              placeholder="ftereso@gmail.com"
+            />
+          </label>
+          <label className="wide">
+            <span>SMTP app password</span>
+            <input
+              type="password"
+              value={form.smtp_password || ""}
+              onChange={(event) => setForm({ ...form, smtp_password: event.target.value })}
+              placeholder="16-digit app password"
+            />
+          </label>
+          <label className="checkbox-row">
+            <input
+              type="checkbox"
+              checked={form.smtp_starttls !== false}
+              onChange={(event) => setForm({ ...form, smtp_starttls: event.target.checked })}
+            />
+            <span>Use STARTTLS</span>
+          </label>
+        </div>
+        {message && <div className="notice">{message}</div>}
+        {error && <div className="notice danger">{error}</div>}
+        <button className="primary" type="submit" disabled={saving}>
+          {saving ? "Saving..." : "Save settings"}
+        </button>
+      </form>
+
+      <InfoPanel
+        title="Current live behavior"
+        lines={[
+          `User storage stays on the Render disk once created by ${currentUser.username}.`,
+          "Secret Files are best kept as a seed or restore snapshot.",
+          "Fust actions save locally first, then try Sheets and email.",
+          "If one sync step fails, the saved action still stays in Render storage.",
+          "Target email recipients are where notifications go.",
+          "SMTP sender settings are how the app sends the email.",
+        ]}
+      />
+
+      <div className="data-table-card">
+        <div className="section-header">
+          <h2>Spreadsheet connection test</h2>
+          <button type="button" onClick={loadConnectionTest} disabled={connectionBusy}>
+            {connectionBusy ? "Testing..." : "Test again"}
+          </button>
+        </div>
+        {connectionTest && (
+          <>
+            <p className="sidebar-note">
+              Runtime client email: {connectionTest.account?.client_email || "unknown"}
+            </p>
+            <p className="sidebar-note">
+              Project: {connectionTest.account?.project_id || "unknown"}
+            </p>
+            <p className="sidebar-note">
+              Spreadsheet ID: {connectionTest.spreadsheet_id || "(empty)"} | Tab: {connectionTest.sheet_name || "(empty)"}
+            </p>
+            <p className="sidebar-note">
+              Result: {connectionTest.read_ok ? `read ok (${connectionTest.row_count} rows)` : "read failed"}
+            </p>
+            <p className="sidebar-note">
+              Headers: {(connectionTest.headers || []).join(", ") || "none"}
+            </p>
+            {connectionTest.error && <div className="notice danger">{connectionTest.error}</div>}
+          </>
+        )}
+      </div>
+
+      <div className="data-table-card">
+        <h2>Data tab debug</h2>
+        {metaLoading && <div className="notice">Loading Data tab preview...</div>}
+        {metaError && <div className="notice danger">Unable to read Data tab: {metaError}</div>}
+        {!metaLoading && !metaError && (
+          <>
+            <p className="sidebar-note">
+              Source: {metaData?.source || "unknown"} | Rows read: {metaData?.raw_row_count || 0} | Usable records: {metaData?.records?.length || 0}
+            </p>
+            <p className="sidebar-note">
+              Headers: {(metaData?.headers || []).join(", ") || "none detected"}
+            </p>
+            <div className="table-wrap">
+              <table className="data-table">
+                <thead>
+                  <tr>
+                    <th>klantnaam</th>
+                    <th>Country</th>
+                    <th>klantcode connect</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {(metaData?.sample_records || []).map((record, index) => (
+                    <tr key={`${record.customer_name}-${record.country}-${record.customer_code}-${index}`}>
+                      <td>{record.customer_name}</td>
+                      <td>{record.country}</td>
+                      <td>{record.customer_code || record.connect_name}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </>
+        )}
+      </div>
+
+      <div className="data-table-card">
+        <div className="section-header">
+          <h2>Fust backups</h2>
+          <button type="button" className="primary" onClick={createBackup} disabled={backupBusy}>
+            {backupBusy ? "Creating..." : "Create backup"}
+          </button>
+        </div>
+        <p className="sidebar-note">
+          Snapshots are stored on the Render persistent disk and include current Fust settings plus all saved actions.
+        </p>
+        <div className="table-wrap">
+          <table className="data-table">
+            <thead>
+              <tr>
+                <th>Filename</th>
+                <th>Created</th>
+                <th>Size</th>
+                <th>Download</th>
+              </tr>
+            </thead>
+            <tbody>
+              {backups.map((backup) => (
+                <tr key={backup.filename}>
+                  <td>{backup.filename}</td>
+                  <td>{formatTimestamp(backup.created_at)}</td>
+                  <td>{Math.round((backup.size_bytes || 0) / 1024)} KB</td>
+                  <td>
+                    <a href={backup.download_path}>Download</a>
+                  </td>
+                </tr>
+              ))}
+              {!backups.length && (
+                <tr>
+                  <td colSpan="4">No Fust backups created yet.</td>
+                </tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+  );
+}
+
+function InfoPanel({ title, lines }) {
+  return (
+    <article className="info-panel">
+      <h2>{title}</h2>
+      <div>
+        {lines.map((line) => (
+          <p key={line}>{line}</p>
+        ))}
+      </div>
     </article>
   );
 }
