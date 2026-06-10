@@ -1134,20 +1134,6 @@ function FustActionForm({ type, metaData, loading, onSaved }) {
           {saving ? `Saving ${type}...` : `Save ${type}`}
         </button>
       </form>
-
-      <InfoPanel
-        title={`${type} sheet targets`}
-        lines={[
-          `Primary sheet: ${type === "OUT" ? metaData?.settings?.out_sheet_name || "Uitgaand" : metaData?.settings?.in_sheet_name || "Retour"}`,
-          `Dashboard mirror: ${metaData?.settings?.dashboard_sheet_name || "Dashboard"}`,
-          `Master data source: ${metaData?.settings?.data_sheet_name || "Data"}`,
-          `Loaded options source: ${metaData?.source || "local"}`,
-          `Detected headers: ${(metaData?.headers || []).join(", ") || "none"}`,
-          `Rows read from Data: ${metaData?.raw_row_count || 0}`,
-          `Usable records: ${metaData?.records?.length || 0}`,
-          metaData?.error ? `Data tab warning: ${metaData.error}` : "Data tab loaded without bridge errors.",
-        ]}
-      />
     </div>
   );
 }
@@ -1158,6 +1144,7 @@ function FustOverview({ loading, actions, overview, sourceDebug, onRefresh }) {
   const [error, setError] = useState("");
   const [selectedWeek, setSelectedWeek] = useState("");
   const [selectedCountry, setSelectedCountry] = useState("");
+  const [selectedCustomers, setSelectedCustomers] = useState([]);
 
   const weekOptions = [...new Set(overview.map((entry) => String(entry.week || "")).filter(Boolean))]
     .sort((left, right) => Number(right) - Number(left));
@@ -1168,6 +1155,14 @@ function FustOverview({ loading, actions, overview, sourceDebug, onRefresh }) {
       .filter(Boolean),
   )]
     .sort((left, right) => left.localeCompare(right));
+  const customerOptions = [...new Set(
+    overview
+      .filter((entry) => !selectedWeek || String(entry.week || "") === selectedWeek)
+      .filter((entry) => !selectedCountry || entry.country === selectedCountry)
+      .map((entry) => entry.customer_name)
+      .filter(Boolean),
+  )]
+    .sort((left, right) => left.localeCompare(right));
 
   useEffect(() => {
     if (selectedCountry && !countryOptions.includes(selectedCountry)) {
@@ -1175,10 +1170,45 @@ function FustOverview({ loading, actions, overview, sourceDebug, onRefresh }) {
     }
   }, [countryOptions, selectedCountry]);
 
+  useEffect(() => {
+    setSelectedCustomers((current) => current.filter((value) => customerOptions.includes(value)));
+  }, [customerOptions]);
+
   const filteredOverview = overview.filter((entry) => (
     (!selectedWeek || String(entry.week || "") === selectedWeek) &&
-    (!selectedCountry || entry.country === selectedCountry)
+    (!selectedCountry || entry.country === selectedCountry) &&
+    (!selectedCustomers.length || selectedCustomers.includes(entry.customer_name))
   ));
+  const totals = filteredOverview.reduce((sum, entry) => ({
+    out: {
+      dc: sum.out.dc + entry.out.dc,
+      cctag: sum.out.cctag + entry.out.cctag,
+      dcs: sum.out.dcs + entry.out.dcs,
+      dco: sum.out.dco + entry.out.dco,
+      pal: sum.out.pal + entry.out.pal,
+      vk: sum.out.vk + entry.out.vk,
+    },
+    in: {
+      dc: sum.in.dc + entry.in.dc,
+      cctag: sum.in.cctag + entry.in.cctag,
+      dcs: sum.in.dcs + entry.in.dcs,
+      dco: sum.in.dco + entry.in.dco,
+      pal: sum.in.pal + entry.in.pal,
+      vk: sum.in.vk + entry.in.vk,
+    },
+    balance: {
+      dc: sum.balance.dc + entry.balance.dc,
+      cctag: sum.balance.cctag + entry.balance.cctag,
+      dcs: sum.balance.dcs + entry.balance.dcs,
+      dco: sum.balance.dco + entry.balance.dco,
+      pal: sum.balance.pal + entry.balance.pal,
+      vk: sum.balance.vk + entry.balance.vk,
+    },
+  }), {
+    out: { dc: 0, cctag: 0, dcs: 0, dco: 0, pal: 0, vk: 0 },
+    in: { dc: 0, cctag: 0, dcs: 0, dco: 0, pal: 0, vk: 0 },
+    balance: { dc: 0, cctag: 0, dcs: 0, dco: 0, pal: 0, vk: 0 },
+  });
 
   async function retryAction(actionId, kind) {
     setBusyActionId(`${actionId}:${kind}`);
@@ -1207,27 +1237,6 @@ function FustOverview({ loading, actions, overview, sourceDebug, onRefresh }) {
       {error && <div className="notice danger">{error}</div>}
 
       <div className="data-table-card">
-        <h2>Overview sources</h2>
-        <div className="info-panel">
-          <p>Local actions: {sourceDebug?.local?.action_count || 0}</p>
-          <p>
-            {sourceDebug?.in_sheet?.sheet_name || "Retour"}: {sourceDebug?.in_sheet?.row_count || 0} rows, {sourceDebug?.in_sheet?.action_count || 0} parsed
-            {sourceDebug?.in_sheet?.error ? ` | Error: ${sourceDebug.in_sheet.error}` : ""}
-          </p>
-          <p>
-            {sourceDebug?.out_sheet?.sheet_name || "Uitgaand"}: {sourceDebug?.out_sheet?.row_count || 0} rows, {sourceDebug?.out_sheet?.action_count || 0} parsed
-            {sourceDebug?.out_sheet?.error ? ` | Error: ${sourceDebug.out_sheet.error}` : ""}
-          </p>
-          <p>
-            {sourceDebug?.dashboard_sheet?.sheet_name || "Dashboard"}: {sourceDebug?.dashboard_sheet?.row_count || 0} rows, {sourceDebug?.dashboard_sheet?.action_count || 0} parsed
-            {sourceDebug?.dashboard_sheet?.error ? ` | Error: ${sourceDebug.dashboard_sheet.error}` : ""}
-          </p>
-          <p>Merged actions: {sourceDebug?.merged_action_count || 0}</p>
-          <p>Visible after filters: {sourceDebug?.filtered_action_count || 0}</p>
-        </div>
-      </div>
-
-      <div className="data-table-card">
         <div className="overview-filters">
           <label>
             <span>Week</span>
@@ -1243,6 +1252,45 @@ function FustOverview({ loading, actions, overview, sourceDebug, onRefresh }) {
               {countryOptions.map((country) => <option key={country} value={country}>{country}</option>)}
             </select>
           </label>
+          <label className="wide">
+            <span>Cust/transport</span>
+            <select
+              multiple
+              size={Math.min(Math.max(customerOptions.length, 4), 10)}
+              value={selectedCustomers}
+              onChange={(event) => setSelectedCustomers(
+                [...event.target.selectedOptions].map((option) => option.value),
+              )}
+            >
+              {customerOptions.map((customer) => (
+                <option key={customer} value={customer}>{customer}</option>
+              ))}
+            </select>
+          </label>
+        </div>
+        <div className="info-panel">
+          <p>
+            Total rows: {filteredOverview.length}
+            {selectedCustomers.length ? ` | Selected customers: ${selectedCustomers.length}` : ""}
+          </p>
+          <p>
+            DC out/in/balance: {totals.out.dc} / {totals.in.dc} / {totals.balance.dc}
+          </p>
+          <p>
+            CCTag out/in/balance: {totals.out.cctag} / {totals.in.cctag} / {totals.balance.cctag}
+          </p>
+          <p>
+            DCS out/in/balance: {totals.out.dcs} / {totals.in.dcs} / {totals.balance.dcs}
+          </p>
+          <p>
+            DCO out/in/balance: {totals.out.dco} / {totals.in.dco} / {totals.balance.dco}
+          </p>
+          <p>
+            VK out/in/balance: {totals.out.vk} / {totals.in.vk} / {totals.balance.vk}
+          </p>
+          <p>
+            Pal out: {totals.out.pal}
+          </p>
         </div>
         <div className="table-wrap">
           <table className="data-table balance-table">
@@ -1293,9 +1341,30 @@ function FustOverview({ loading, actions, overview, sourceDebug, onRefresh }) {
                   <td>{entry.out.pal}</td>
                 </tr>
               ))}
+              {!!filteredOverview.length && (
+                <tr>
+                  <td colSpan="3"><strong>Total</strong></td>
+                  <td><strong>{totals.out.dc}</strong></td>
+                  <td><strong>{totals.in.dc}</strong></td>
+                  <td><strong>{totals.balance.dc}</strong></td>
+                  <td><strong>{totals.out.cctag}</strong></td>
+                  <td><strong>{totals.in.cctag}</strong></td>
+                  <td><strong>{totals.balance.cctag}</strong></td>
+                  <td><strong>{totals.out.dcs}</strong></td>
+                  <td><strong>{totals.in.dcs}</strong></td>
+                  <td><strong>{totals.balance.dcs}</strong></td>
+                  <td><strong>{totals.out.dco}</strong></td>
+                  <td><strong>{totals.in.dco}</strong></td>
+                  <td><strong>{totals.balance.dco}</strong></td>
+                  <td><strong>{totals.out.vk}</strong></td>
+                  <td><strong>{totals.in.vk}</strong></td>
+                  <td><strong>{totals.balance.vk}</strong></td>
+                  <td><strong>{totals.out.pal}</strong></td>
+                </tr>
+              )}
               {!filteredOverview.length && (
                 <tr>
-                  <td colSpan="19">No overview rows found for the selected week and country.</td>
+                  <td colSpan="19">No overview rows found for the selected filters.</td>
                 </tr>
               )}
             </tbody>
