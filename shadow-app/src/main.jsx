@@ -1227,7 +1227,7 @@ function FustOverview({ loading, actions, overview, sourceDebug, onRefresh }) {
       headers.join("\t"),
       ...rows.map((row) => row.map((value) => String(value ?? "").replaceAll("\t", " ")).join("\t")),
     ].join("\n");
-    const blob = new Blob([tsv], { type: "application/vnd.ms-excel;charset=utf-8;" });
+    const blob = new Blob([tsv], { type: "text/tab-separated-values;charset=utf-8;" });
     const url = window.URL.createObjectURL(blob);
     const link = document.createElement("a");
     link.href = url;
@@ -1344,6 +1344,23 @@ function FustOverview({ loading, actions, overview, sourceDebug, onRefresh }) {
     }
   }
 
+  async function deleteLocalAction(actionId) {
+    setBusyActionId(`${actionId}:delete`);
+    setMessage("");
+    setError("");
+    try {
+      await apiJson(`/api/fust/actions/${encodeURIComponent(actionId)}`, {
+        method: "DELETE",
+      });
+      setMessage("Local action deleted.");
+      onRefresh();
+    } catch (deleteError) {
+      setError(deleteError.message);
+    } finally {
+      setBusyActionId("");
+    }
+  }
+
   if (loading) {
     return <div className="notice">Loading Fust overview...</div>;
   }
@@ -1397,7 +1414,7 @@ function FustOverview({ loading, actions, overview, sourceDebug, onRefresh }) {
           <button
             type="button"
             onClick={() => downloadExcelFriendlyTable(
-              `fust-overview-${selectedWeek || "all-weeks"}-${selectedCountry || "all-countries"}-${selectedCustomer || "active-table"}.xls`,
+              `fust-overview-${selectedWeek || "all-weeks"}-${selectedCountry || "all-countries"}-${selectedCustomer || "active-table"}.tsv`,
               ["Week", "Country", "Cust/transport", "DC out", "DC in", "DC balance", "CCTag out", "CCTag in", "CCTag balance", "DCS out", "DCS in", "DCS balance", "DCO out", "DCO in", "DCO balance", "VK out", "VK in", "VK balance", "pal out"],
               exportRows,
             )}
@@ -1594,6 +1611,15 @@ function FustOverview({ loading, actions, overview, sourceDebug, onRefresh }) {
                           onClick={() => retryAction(action.id, "retry-email")}
                         >
                           Retry email
+                        </button>
+                      )}
+                      {action.created_by !== "spreadsheet" && (
+                        <button
+                          type="button"
+                          disabled={busyActionId === `${action.id}:delete`}
+                          onClick={() => deleteLocalAction(action.id)}
+                        >
+                          Delete local
                         </button>
                       )}
                     </div>

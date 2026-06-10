@@ -1643,6 +1643,28 @@ async function handleApi(req, res, url) {
     return;
   }
 
+  if (url.pathname.startsWith("/api/fust/actions/") && req.method === "DELETE") {
+    const parts = url.pathname.split("/").filter(Boolean);
+    const actionId = decodeURIComponent(parts[3] || "");
+    const actions = await readFustActions();
+    const actionIndex = actions.findIndex((item) => item.id === actionId);
+    if (actionIndex < 0) {
+      sendJson(res, 404, { error: "Fust action not found" });
+      return;
+    }
+
+    const action = actions[actionIndex];
+    const requiredPermission = action.type === "OUT" ? PERMISSIONS.FUST_OUT : PERMISSIONS.FUST_IN;
+    if (!requirePermission(res, requestUser, requiredPermission)) {
+      return;
+    }
+
+    actions.splice(actionIndex, 1);
+    await writeFustActions(actions);
+    sendJson(res, 200, { ok: true, deleted_action_id: actionId });
+    return;
+  }
+
   if (url.pathname === "/api/fust/submit" && req.method === "POST") {
     const body = await readRequestJson(req);
     const type = String(body.type || "").trim().toUpperCase() === "OUT" ? "OUT" : "IN";
