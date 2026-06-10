@@ -524,6 +524,22 @@ textarea {
   white-space: nowrap;
 }
 
+.clickable-row {
+  cursor: pointer;
+}
+
+.clickable-row:hover {
+  background: #f1f7f4;
+}
+
+.active-row {
+  background: #e2f0ea;
+}
+
+.summary-row {
+  background: #f7faf8;
+}
+
 .retry-actions {
   display: grid;
   gap: 8px;

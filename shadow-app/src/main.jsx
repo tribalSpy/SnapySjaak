@@ -1144,24 +1144,68 @@ function FustOverview({ loading, actions, overview, sourceDebug, onRefresh }) {
   const [error, setError] = useState("");
   const [selectedWeek, setSelectedWeek] = useState("");
   const [selectedCountry, setSelectedCountry] = useState("");
-  const [selectedCustomers, setSelectedCustomers] = useState([]);
+  const [selectedCustomer, setSelectedCustomer] = useState("");
+
+  function emptyTotals() {
+    return {
+      out: { dc: 0, cctag: 0, dcs: 0, dco: 0, pal: 0, vk: 0 },
+      in: { dc: 0, cctag: 0, dcs: 0, dco: 0, pal: 0, vk: 0 },
+      balance: { dc: 0, cctag: 0, dcs: 0, dco: 0, pal: 0, vk: 0 },
+    };
+  }
+
+  function sumOverviewEntries(entries) {
+    return entries.reduce((sum, entry) => ({
+      out: {
+        dc: sum.out.dc + entry.out.dc,
+        cctag: sum.out.cctag + entry.out.cctag,
+        dcs: sum.out.dcs + entry.out.dcs,
+        dco: sum.out.dco + entry.out.dco,
+        pal: sum.out.pal + entry.out.pal,
+        vk: sum.out.vk + entry.out.vk,
+      },
+      in: {
+        dc: sum.in.dc + entry.in.dc,
+        cctag: sum.in.cctag + entry.in.cctag,
+        dcs: sum.in.dcs + entry.in.dcs,
+        dco: sum.in.dco + entry.in.dco,
+        pal: sum.in.pal + entry.in.pal,
+        vk: sum.in.vk + entry.in.vk,
+      },
+      balance: {
+        dc: sum.balance.dc + entry.balance.dc,
+        cctag: sum.balance.cctag + entry.balance.cctag,
+        dcs: sum.balance.dcs + entry.balance.dcs,
+        dco: sum.balance.dco + entry.balance.dco,
+        pal: sum.balance.pal + entry.balance.pal,
+        vk: sum.balance.vk + entry.balance.vk,
+      },
+    }), emptyTotals());
+  }
+
+  function downloadCsv(filename, headers, rows) {
+    const csv = [
+      headers.join(","),
+      ...rows.map((row) => row.map((value) => {
+        const text = String(value ?? "");
+        return /[",\n]/.test(text) ? `"${text.replaceAll('"', '""')}"` : text;
+      }).join(",")),
+    ].join("\n");
+    const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
+    const url = window.URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = filename;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    window.URL.revokeObjectURL(url);
+  }
 
   const weekOptions = [...new Set(overview.map((entry) => String(entry.week || "")).filter(Boolean))]
     .sort((left, right) => Number(right) - Number(left));
-  const countryOptions = [...new Set(
-    overview
-      .filter((entry) => !selectedWeek || String(entry.week || "") === selectedWeek)
-      .map((entry) => entry.country)
-      .filter(Boolean),
-  )]
-    .sort((left, right) => left.localeCompare(right));
-  const customerOptions = [...new Set(
-    overview
-      .filter((entry) => !selectedWeek || String(entry.week || "") === selectedWeek)
-      .filter((entry) => !selectedCountry || entry.country === selectedCountry)
-      .map((entry) => entry.customer_name)
-      .filter(Boolean),
-  )]
+  const weekFilteredOverview = overview.filter((entry) => !selectedWeek || String(entry.week || "") === selectedWeek);
+  const countryOptions = [...new Set(weekFilteredOverview.map((entry) => entry.country).filter(Boolean))]
     .sort((left, right) => left.localeCompare(right));
 
   useEffect(() => {
@@ -1171,44 +1215,68 @@ function FustOverview({ loading, actions, overview, sourceDebug, onRefresh }) {
   }, [countryOptions, selectedCountry]);
 
   useEffect(() => {
-    setSelectedCustomers((current) => current.filter((value) => customerOptions.includes(value)));
-  }, [customerOptions]);
+    if (selectedCustomer && !weekFilteredOverview.some((entry) => (
+      (!selectedCountry || entry.country === selectedCountry) &&
+      entry.customer_name === selectedCustomer
+    ))) {
+      setSelectedCustomer("");
+    }
+  }, [selectedCountry, selectedCustomer, weekFilteredOverview]);
 
-  const filteredOverview = overview.filter((entry) => (
-    (!selectedWeek || String(entry.week || "") === selectedWeek) &&
-    (!selectedCountry || entry.country === selectedCountry) &&
-    (!selectedCustomers.length || selectedCustomers.includes(entry.customer_name))
+  const countryRows = useMemo(() => {
+    const grouped = new Map();
+    for (const entry of weekFilteredOverview) {
+      if (!grouped.has(entry.country)) {
+        grouped.set(entry.country, []);
+      }
+      grouped.get(entry.country).push(entry);
+    }
+
+    return [...grouped.entries()]
+      .map(([country, entries]) => ({
+        week: selectedWeek || "All weeks",
+        country,
+        customer_name: `${entries.length} cust/transports`,
+        ...sumOverviewEntries(entries),
+        row_count: entries.length,
+      }))
+      .sort((left, right) => left.country.localeCompare(right.country));
+  }, [selectedWeek, weekFilteredOverview]);
+
+  const countryFilteredOverview = weekFilteredOverview.filter((entry) => !selectedCountry || entry.country === selectedCountry);
+  const customerRows = countryFilteredOverview
+    .sort((left, right) => left.customer_name.localeCompare(right.customer_name));
+  const scopedOverview = selectedCountry ? customerRows : countryRows;
+  const visibleOverview = selectedCustomer
+    ? customerRows.filter((entry) => entry.customer_name === selectedCustomer)
+    : scopedOverview;
+  const totals = sumOverviewEntries(selectedCustomer ? visibleOverview : countryFilteredOverview);
+  const filteredActions = actions.filter((action) => (
+    (!selectedWeek || String(action.week || "") === selectedWeek) &&
+    (!selectedCountry || action.country === selectedCountry) &&
+    (!selectedCustomer || action.customer_name === selectedCustomer)
   ));
-  const totals = filteredOverview.reduce((sum, entry) => ({
-    out: {
-      dc: sum.out.dc + entry.out.dc,
-      cctag: sum.out.cctag + entry.out.cctag,
-      dcs: sum.out.dcs + entry.out.dcs,
-      dco: sum.out.dco + entry.out.dco,
-      pal: sum.out.pal + entry.out.pal,
-      vk: sum.out.vk + entry.out.vk,
-    },
-    in: {
-      dc: sum.in.dc + entry.in.dc,
-      cctag: sum.in.cctag + entry.in.cctag,
-      dcs: sum.in.dcs + entry.in.dcs,
-      dco: sum.in.dco + entry.in.dco,
-      pal: sum.in.pal + entry.in.pal,
-      vk: sum.in.vk + entry.in.vk,
-    },
-    balance: {
-      dc: sum.balance.dc + entry.balance.dc,
-      cctag: sum.balance.cctag + entry.balance.cctag,
-      dcs: sum.balance.dcs + entry.balance.dcs,
-      dco: sum.balance.dco + entry.balance.dco,
-      pal: sum.balance.pal + entry.balance.pal,
-      vk: sum.balance.vk + entry.balance.vk,
-    },
-  }), {
-    out: { dc: 0, cctag: 0, dcs: 0, dco: 0, pal: 0, vk: 0 },
-    in: { dc: 0, cctag: 0, dcs: 0, dco: 0, pal: 0, vk: 0 },
-    balance: { dc: 0, cctag: 0, dcs: 0, dco: 0, pal: 0, vk: 0 },
-  });
+  const exportRows = visibleOverview.map((entry) => [
+    entry.week || "",
+    entry.country,
+    entry.customer_name,
+    entry.out.dc,
+    entry.in.dc,
+    entry.balance.dc,
+    entry.out.cctag,
+    entry.in.cctag,
+    entry.balance.cctag,
+    entry.out.dcs,
+    entry.in.dcs,
+    entry.balance.dcs,
+    entry.out.dco,
+    entry.in.dco,
+    entry.balance.dco,
+    entry.out.vk,
+    entry.in.vk,
+    entry.balance.vk,
+    entry.out.pal,
+  ]);
 
   async function retryAction(actionId, kind) {
     setBusyActionId(`${actionId}:${kind}`);
@@ -1247,31 +1315,41 @@ function FustOverview({ loading, actions, overview, sourceDebug, onRefresh }) {
           </label>
           <label>
             <span>Country</span>
-            <select value={selectedCountry} onChange={(event) => setSelectedCountry(event.target.value)}>
+            <select
+              value={selectedCountry}
+              onChange={(event) => {
+                setSelectedCountry(event.target.value);
+                setSelectedCustomer("");
+              }}
+            >
               <option value="">All countries</option>
               {countryOptions.map((country) => <option key={country} value={country}>{country}</option>)}
             </select>
           </label>
-          <label className="wide">
-            <span>Cust/transport</span>
-            <select
-              multiple
-              size={Math.min(Math.max(customerOptions.length, 4), 10)}
-              value={selectedCustomers}
-              onChange={(event) => setSelectedCustomers(
-                [...event.target.selectedOptions].map((option) => option.value),
-              )}
-            >
-              {customerOptions.map((customer) => (
-                <option key={customer} value={customer}>{customer}</option>
-              ))}
-            </select>
-          </label>
+        </div>
+        <div className="section-header">
+          <h2>{selectedCountry ? "Customer totals" : "Country totals"}</h2>
+          <button
+            type="button"
+            onClick={() => downloadCsv(
+              `fust-overview-${selectedWeek || "all-weeks"}-${selectedCountry || "all-countries"}-${selectedCustomer || "active-table"}.csv`,
+              ["Week", "Country", "Cust/transport", "DC out", "DC in", "DC balance", "CCTag out", "CCTag in", "CCTag balance", "DCS out", "DCS in", "DCS balance", "DCO out", "DCO in", "DCO balance", "VK out", "VK in", "VK balance", "pal out"],
+              exportRows,
+            )}
+            disabled={!visibleOverview.length}
+          >
+            Export active table
+          </button>
         </div>
         <div className="info-panel">
           <p>
-            Total rows: {filteredOverview.length}
-            {selectedCustomers.length ? ` | Selected customers: ${selectedCustomers.length}` : ""}
+            Scope:
+            {selectedWeek ? ` week ${selectedWeek}` : " all weeks"}
+            {selectedCountry ? ` | country ${selectedCountry}` : " | all countries"}
+            {selectedCustomer ? ` | cust/transport ${selectedCustomer}` : ""}
+          </p>
+          <p>
+            Visible rows: {visibleOverview.length}
           </p>
           <p>
             DC out/in/balance: {totals.out.dc} / {totals.in.dc} / {totals.balance.dc}
@@ -1318,8 +1396,19 @@ function FustOverview({ loading, actions, overview, sourceDebug, onRefresh }) {
               </tr>
             </thead>
             <tbody>
-              {filteredOverview.map((entry) => (
-                <tr key={`${entry.week}-${entry.country}-${entry.customer_name}`}>
+              {visibleOverview.map((entry) => (
+                <tr
+                  key={`${entry.week}-${entry.country}-${entry.customer_name}`}
+                  className={selectedCustomer === entry.customer_name ? "clickable-row active-row" : "clickable-row"}
+                  onClick={() => {
+                    if (!selectedCountry) {
+                      setSelectedCountry(entry.country);
+                      setSelectedCustomer("");
+                      return;
+                    }
+                    setSelectedCustomer((current) => current === entry.customer_name ? "" : entry.customer_name);
+                  }}
+                >
                   <td>{entry.week || ""}</td>
                   <td>{entry.country}</td>
                   <td>{entry.customer_name}</td>
@@ -1341,8 +1430,8 @@ function FustOverview({ loading, actions, overview, sourceDebug, onRefresh }) {
                   <td>{entry.out.pal}</td>
                 </tr>
               ))}
-              {!!filteredOverview.length && (
-                <tr>
+              {!!visibleOverview.length && (
+                <tr className="summary-row">
                   <td colSpan="3"><strong>Total</strong></td>
                   <td><strong>{totals.out.dc}</strong></td>
                   <td><strong>{totals.in.dc}</strong></td>
@@ -1362,7 +1451,7 @@ function FustOverview({ loading, actions, overview, sourceDebug, onRefresh }) {
                   <td><strong>{totals.out.pal}</strong></td>
                 </tr>
               )}
-              {!filteredOverview.length && (
+              {!visibleOverview.length && (
                 <tr>
                   <td colSpan="19">No overview rows found for the selected filters.</td>
                 </tr>
@@ -1373,7 +1462,25 @@ function FustOverview({ loading, actions, overview, sourceDebug, onRefresh }) {
       </div>
 
       <div className="data-table-card">
-        <h2>Recent actions</h2>
+        <div className="section-header">
+          <h2>
+            Recent actions
+            {selectedWeek ? ` | week ${selectedWeek}` : ""}
+            {selectedCountry ? ` | ${selectedCountry}` : ""}
+            {selectedCustomer ? ` | ${selectedCustomer}` : ""}
+          </h2>
+          {selectedCountry && (
+            <button
+              type="button"
+              onClick={() => {
+                setSelectedCountry("");
+                setSelectedCustomer("");
+              }}
+            >
+              Back to countries
+            </button>
+          )}
+        </div>
         <div className="table-wrap">
           <table className="data-table">
             <thead>
@@ -1392,7 +1499,7 @@ function FustOverview({ loading, actions, overview, sourceDebug, onRefresh }) {
               </tr>
             </thead>
             <tbody>
-              {actions.map((action) => (
+              {filteredActions.map((action) => (
                 <tr key={action.id}>
                   <td>{action.type}</td>
                   <td>{action.action_date}</td>
@@ -1428,9 +1535,9 @@ function FustOverview({ loading, actions, overview, sourceDebug, onRefresh }) {
                   </td>
                 </tr>
               ))}
-              {!actions.length && (
+              {!filteredActions.length && (
                 <tr>
-                  <td colSpan="11">No actions were loaded from local storage or the spreadsheet yet.</td>
+                  <td colSpan="11">No actions were found for the current week, country, and cust/transport selection.</td>
                 </tr>
               )}
             </tbody>
