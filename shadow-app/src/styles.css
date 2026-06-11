@@ -42,6 +42,11 @@ button.primary {
   font-weight: 800;
 }
 
+.sidebar-toggle,
+.sidebar-backdrop {
+  display: none;
+}
+
 #root {
   min-height: 100vh;
   display: block;
@@ -87,6 +92,10 @@ button.primary {
   box-shadow: 10px 0 28px rgba(23, 32, 42, 0.16);
   transform: translateX(calc(-100% + 18px));
   transition: transform 180ms ease;
+}
+
+.sidebar.open {
+  transform: translateX(0);
 }
 
 .sidebar::after {
@@ -549,6 +558,16 @@ textarea {
   min-height: 34px;
 }
 
+.action-table input,
+.action-table select {
+  min-width: 86px;
+  width: 100%;
+}
+
+.action-table .metric-edit {
+  min-width: 70px;
+}
+
 .customer-list {
   display: grid;
   gap: 14px;
@@ -786,13 +805,54 @@ pre {
 }
 
 @media (max-width: 620px) {
-  .workspace,
+  .sidebar-toggle {
+    position: fixed;
+    top: 12px;
+    left: 12px;
+    z-index: 130;
+    width: 44px;
+    height: 44px;
+    display: grid;
+    align-content: center;
+    gap: 5px;
+    padding: 0 11px;
+    background: #ffffff;
+    box-shadow: 0 4px 16px rgba(23, 32, 42, 0.16);
+  }
+
+  .sidebar-toggle span {
+    display: block;
+    width: 100%;
+    height: 2px;
+    border-radius: 999px;
+    background: #17202a;
+  }
+
+  .sidebar-backdrop {
+    position: fixed;
+    inset: 0;
+    z-index: 95;
+    display: block;
+    width: 100%;
+    height: 100%;
+    border: 0;
+    border-radius: 0;
+    background: rgba(23, 32, 42, 0.38);
+  }
+
   .sidebar {
-    padding: 18px;
+    width: min(340px, calc(100vw - 24px));
+    padding: 72px 18px 18px;
+    transform: translateX(-105%);
+  }
+
+  .sidebar::before,
+  .sidebar::after {
+    display: none;
   }
 
   .workspace {
-    padding-left: 42px;
+    padding: 72px 16px 18px;
   }
 
   .toolbar {

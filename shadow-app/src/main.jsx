@@ -311,6 +311,7 @@ function useSyncStatus(enabled) {
 function App() {
   const [auth, setAuth] = useState({ loading: true, user: null, setupRequired: false });
   const [page, setPage] = useState("dashboard");
+  const [sidebarOpen, setSidebarOpen] = useState(false);
   const loggedIn = Boolean(auth.user);
   const syncStatus = useSyncStatus(loggedIn);
   const [selectedDate, setSelectedDate] = useState("");
@@ -397,6 +398,7 @@ function App() {
     await apiJson("/api/auth/logout", { method: "POST" });
     setAuth({ loading: false, user: null, setupRequired: false });
     setPage("dashboard");
+    setSidebarOpen(false);
   }
 
   function toggleCustomer(customerCode) {
@@ -439,7 +441,26 @@ function App() {
 
   return (
     <>
-      <aside className="sidebar">
+      <button
+        type="button"
+        className="sidebar-toggle"
+        aria-label={sidebarOpen ? "Close menu" : "Open menu"}
+        aria-expanded={sidebarOpen}
+        onClick={() => setSidebarOpen((open) => !open)}
+      >
+        <span />
+        <span />
+        <span />
+      </button>
+      {sidebarOpen && (
+        <button
+          type="button"
+          className="sidebar-backdrop"
+          aria-label="Close menu"
+          onClick={() => setSidebarOpen(false)}
+        />
+      )}
+      <aside className={`sidebar ${sidebarOpen ? "open" : ""}`}>
         <div>
           <p className="eyebrow">SnappySjaak</p>
           <h1>Sjaak vd Vijver Expedition Shadow App</h1>
@@ -451,7 +472,10 @@ function App() {
             <button
               key={item.key}
               className={page === item.key ? "active" : ""}
-              onClick={() => setPage(item.key)}
+              onClick={() => {
+                setPage(item.key);
+                setSidebarOpen(false);
+              }}
             >
               {item.label}
             </button>
@@ -888,6 +912,7 @@ function FustPage({ currentUser }) {
     hasPermission(currentUser, PERMISSIONS.FUST_IN) ? "in" : null,
     hasPermission(currentUser, PERMISSIONS.FUST_OUT) ? "out" : null,
     hasPermission(currentUser, PERMISSIONS.FUST_OVERVIEW) ? "overview" : null,
+    hasPermission(currentUser, PERMISSIONS.FUST_OVERVIEW) ? "last-actions" : null,
   ].filter(Boolean);
   const [activeTab, setActiveTab] = useState(visibleTabs[0] || "overview");
   const { loading: metaLoading, data: metaData, error: metaError } = useFustMeta(Boolean(currentUser));
@@ -915,7 +940,7 @@ function FustPage({ currentUser }) {
             className={activeTab === tab ? "active" : ""}
             onClick={() => setActiveTab(tab)}
           >
-            {tab.toUpperCase()}
+            {tab === "last-actions" ? "LAST ACTIONS" : tab.toUpperCase()}
           </button>
         ))}
       </div>
@@ -944,6 +969,14 @@ function FustPage({ currentUser }) {
           actions={actionsData?.actions || []}
           overview={actionsData?.overview || []}
           sourceDebug={actionsData?.source_debug || null}
+          onRefresh={refresh}
+        />
+      )}
+
+      {activeTab === "last-actions" && (
+        <FustLastActions
+          loading={actionsLoading}
+          actions={actionsData?.actions || []}
           onRefresh={refresh}
         />
       )}
@@ -1139,9 +1172,6 @@ function FustActionForm({ type, metaData, loading, onSaved }) {
 }
 
 function FustOverview({ loading, actions, overview, sourceDebug, onRefresh }) {
-  const [busyActionId, setBusyActionId] = useState("");
-  const [message, setMessage] = useState("");
-  const [error, setError] = useState("");
   const [selectedWeek, setSelectedWeek] = useState("");
   const [selectedFromDate, setSelectedFromDate] = useState("");
   const [selectedToDate, setSelectedToDate] = useState("");
@@ -1254,6 +1284,9 @@ function FustOverview({ loading, actions, overview, sourceDebug, onRefresh }) {
   const weekFilteredOverview = buildOverviewFromActions(scopedActions);
   const countryOptions = [...new Set(weekFilteredOverview.map((entry) => entry.country).filter(Boolean))]
     .sort((left, right) => left.localeCompare(right));
+  const countryFilteredOverview = weekFilteredOverview.filter((entry) => !selectedCountry || entry.country === selectedCountry);
+  const customerOptions = [...new Set(countryFilteredOverview.map((entry) => entry.customer_name).filter(Boolean))]
+    .sort((left, right) => left.localeCompare(right));
 
   useEffect(() => {
     if (selectedCountry && !countryOptions.includes(selectedCountry)) {
@@ -1262,13 +1295,10 @@ function FustOverview({ loading, actions, overview, sourceDebug, onRefresh }) {
   }, [countryOptions, selectedCountry]);
 
   useEffect(() => {
-    if (selectedCustomer && !weekFilteredOverview.some((entry) => (
-      (!selectedCountry || entry.country === selectedCountry) &&
-      entry.customer_name === selectedCustomer
-    ))) {
+    if (selectedCustomer && !customerOptions.includes(selectedCustomer)) {
       setSelectedCustomer("");
     }
-  }, [selectedCountry, selectedCustomer, weekFilteredOverview]);
+  }, [customerOptions, selectedCustomer]);
 
   const countryRows = useMemo(() => {
     const grouped = new Map();
@@ -1290,24 +1320,39 @@ function FustOverview({ loading, actions, overview, sourceDebug, onRefresh }) {
       .sort((left, right) => left.country.localeCompare(right.country));
   }, [selectedWeek, weekFilteredOverview]);
 
-  const countryFilteredOverview = weekFilteredOverview.filter((entry) => !selectedCountry || entry.country === selectedCountry);
+  const weekRows = useMemo(() => {
+    const grouped = new Map();
+    for (const entry of countryFilteredOverview) {
+      const week = String(entry.week || "");
+      if (!grouped.has(week)) {
+        grouped.set(week, []);
+      }
+      grouped.get(week).push(entry);
+    }
+
+    return [...grouped.entries()]
+      .map(([week, entries]) => ({
+        week,
+        country: selectedCountry,
+        customer_name: `${entries.length} cust/transports`,
+        ...sumOverviewEntries(entries),
+        row_count: entries.length,
+      }))
+      .sort((left, right) => Number(right.week || 0) - Number(left.week || 0));
+  }, [countryFilteredOverview, selectedCountry]);
+
   const customerRows = countryFilteredOverview
     .sort((left, right) => left.customer_name.localeCompare(right.customer_name));
-  const scopedOverview = selectedCountry ? customerRows : countryRows;
+  const scopedOverview = selectedCountry
+    ? (selectedWeek ? customerRows : weekRows)
+    : countryRows;
   const visibleOverview = selectedCustomer
     ? customerRows.filter((entry) => entry.customer_name === selectedCustomer)
     : scopedOverview;
-  const totals = sumOverviewEntries(selectedCustomer ? visibleOverview : countryFilteredOverview);
-  const filteredActions = actions.filter((action) => (
-    (!selectedFromDate || String(action.action_date || "") >= selectedFromDate) &&
-    (!selectedToDate || String(action.action_date || "") <= selectedToDate) &&
-    (!selectedWeek || String(action.week || "") === selectedWeek) &&
-    (!selectedCountry || action.country === selectedCountry) &&
-    (!selectedCustomer || action.customer_name === selectedCustomer)
-  ));
+  const totals = sumOverviewEntries(visibleOverview);
   const exportRows = visibleOverview.map((entry, index) => [
-    selectedCountry && !selectedCustomer && index > 0 ? "" : (entry.week || ""),
-    selectedCountry && !selectedCustomer && index > 0 ? "" : entry.country,
+    selectedCountry && selectedWeek && !selectedCustomer && index > 0 ? "" : (entry.week || ""),
+    selectedCountry && selectedWeek && !selectedCustomer && index > 0 ? "" : entry.country,
     entry.customer_name,
     entry.out.dc,
     entry.in.dc,
@@ -1327,54 +1372,23 @@ function FustOverview({ loading, actions, overview, sourceDebug, onRefresh }) {
     entry.out.pal,
   ]);
 
-  async function retryAction(actionId, kind) {
-    setBusyActionId(`${actionId}:${kind}`);
-    setMessage("");
-    setError("");
-    try {
-      await apiJson(`/api/fust/actions/${encodeURIComponent(actionId)}/${kind}`, {
-        method: "POST",
-      });
-      setMessage(kind === "retry-sheet" ? "Sheet sync retried." : "Email resend retried.");
-      onRefresh();
-    } catch (retryError) {
-      setError(retryError.message);
-    } finally {
-      setBusyActionId("");
-    }
-  }
-
-  async function deleteLocalAction(actionId) {
-    setBusyActionId(`${actionId}:delete`);
-    setMessage("");
-    setError("");
-    try {
-      await apiJson(`/api/fust/actions/${encodeURIComponent(actionId)}`, {
-        method: "DELETE",
-      });
-      setMessage("Local action deleted.");
-      onRefresh();
-    } catch (deleteError) {
-      setError(deleteError.message);
-    } finally {
-      setBusyActionId("");
-    }
-  }
-
   if (loading) {
     return <div className="notice">Loading Fust overview...</div>;
   }
 
   return (
     <div className="overview-stack">
-      {message && <div className="notice">{message}</div>}
-      {error && <div className="notice danger">{error}</div>}
-
       <div className="data-table-card">
         <div className="overview-filters">
           <label>
             <span>Week</span>
-            <select value={selectedWeek} onChange={(event) => setSelectedWeek(event.target.value)}>
+            <select
+              value={selectedWeek}
+              onChange={(event) => {
+                setSelectedWeek(event.target.value);
+                setSelectedCustomer("");
+              }}
+            >
               <option value="">All weeks</option>
               {weekOptions.map((week) => <option key={week} value={week}>{week}</option>)}
             </select>
@@ -1408,9 +1422,30 @@ function FustOverview({ loading, actions, overview, sourceDebug, onRefresh }) {
               {countryOptions.map((country) => <option key={country} value={country}>{country}</option>)}
             </select>
           </label>
+          <label>
+            <span>Cust/transport</span>
+            <select
+              value={selectedCustomer}
+              onChange={(event) => {
+                setSelectedCustomer(event.target.value);
+                if (event.target.value && !selectedWeek) {
+                  const match = countryFilteredOverview.find((entry) => entry.customer_name === event.target.value);
+                  setSelectedWeek(String(match?.week || ""));
+                }
+              }}
+              disabled={!selectedCountry}
+            >
+              <option value="">All cust/transports</option>
+              {customerOptions.map((customer) => <option key={customer} value={customer}>{customer}</option>)}
+            </select>
+          </label>
         </div>
         <div className="section-header">
-          <h2>{selectedCountry ? "Customer totals" : "Country totals"}</h2>
+          <h2>
+            {!selectedCountry && "Country totals"}
+            {selectedCountry && !selectedWeek && "Week totals"}
+            {selectedCountry && selectedWeek && "Customer totals"}
+          </h2>
           <button
             type="button"
             onClick={() => downloadExcelFriendlyTable(
@@ -1422,35 +1457,6 @@ function FustOverview({ loading, actions, overview, sourceDebug, onRefresh }) {
           >
             Export active table
           </button>
-        </div>
-        <div className="info-panel">
-          <p>
-            Scope:
-            {selectedWeek ? ` week ${selectedWeek}` : " all weeks"}
-            {selectedCountry ? ` | country ${selectedCountry}` : " | all countries"}
-            {selectedCustomer ? ` | cust/transport ${selectedCustomer}` : ""}
-          </p>
-          <p>
-            Visible rows: {visibleOverview.length}
-          </p>
-          <p>
-            DC out/in/balance: {totals.out.dc} / {totals.in.dc} / {totals.balance.dc}
-          </p>
-          <p>
-            CCTag out/in/balance: {totals.out.cctag} / {totals.in.cctag} / {totals.balance.cctag}
-          </p>
-          <p>
-            DCS out/in/balance: {totals.out.dcs} / {totals.in.dcs} / {totals.balance.dcs}
-          </p>
-          <p>
-            DCO out/in/balance: {totals.out.dco} / {totals.in.dco} / {totals.balance.dco}
-          </p>
-          <p>
-            VK out/in/balance: {totals.out.vk} / {totals.in.vk} / {totals.balance.vk}
-          </p>
-          <p>
-            Pal out: {totals.out.pal}
-          </p>
         </div>
         <div className="table-wrap">
           <table className="data-table balance-table">
@@ -1485,6 +1491,11 @@ function FustOverview({ loading, actions, overview, sourceDebug, onRefresh }) {
                   onClick={() => {
                     if (!selectedCountry) {
                       setSelectedCountry(entry.country);
+                      setSelectedCustomer("");
+                      return;
+                    }
+                    if (selectedCountry && !selectedWeek) {
+                      setSelectedWeek(String(entry.week || ""));
                       setSelectedCustomer("");
                       return;
                     }
@@ -1542,29 +1553,111 @@ function FustOverview({ loading, actions, overview, sourceDebug, onRefresh }) {
           </table>
         </div>
       </div>
+    </div>
+  );
+}
+
+function FustLastActions({ loading, actions, onRefresh }) {
+  const [busyActionId, setBusyActionId] = useState("");
+  const [message, setMessage] = useState("");
+  const [error, setError] = useState("");
+  const [editingActionId, setEditingActionId] = useState("");
+  const [editForm, setEditForm] = useState(null);
+
+  function startEdit(action) {
+    setEditingActionId(action.id);
+    setEditForm({
+      type: action.type,
+      action_date: action.action_date || "",
+      country: action.country || "",
+      customer_name: action.customer_name || "",
+      connect_name: action.connect_name || "",
+      customer_code: action.customer_code || "",
+      remark: action.remark || "",
+      metrics: {
+        dc: Number(action.metrics?.dc || 0),
+        cctag: Number(action.metrics?.cctag || 0),
+        dcs: Number(action.metrics?.dcs || 0),
+        dco: Number(action.metrics?.dco || 0),
+        pal: Number(action.metrics?.pal || 0),
+        vk: Number(action.metrics?.vk || 0),
+      },
+    });
+  }
+
+  function cancelEdit() {
+    setEditingActionId("");
+    setEditForm(null);
+  }
+
+  async function saveEdit(actionId) {
+    setBusyActionId(`${actionId}:save`);
+    setMessage("");
+    setError("");
+    try {
+      await apiJson(`/api/fust/actions/${encodeURIComponent(actionId)}`, {
+        method: "PUT",
+        body: JSON.stringify(editForm),
+      });
+      setMessage("Action updated.");
+      cancelEdit();
+      onRefresh();
+    } catch (saveError) {
+      setError(saveError.message);
+    } finally {
+      setBusyActionId("");
+    }
+  }
+
+  async function retryAction(actionId, kind) {
+    setBusyActionId(`${actionId}:${kind}`);
+    setMessage("");
+    setError("");
+    try {
+      await apiJson(`/api/fust/actions/${encodeURIComponent(actionId)}/${kind}`, {
+        method: "POST",
+      });
+      setMessage(kind === "retry-sheet" ? "Sheet sync retried." : "Email resend retried.");
+      onRefresh();
+    } catch (retryError) {
+      setError(retryError.message);
+    } finally {
+      setBusyActionId("");
+    }
+  }
+
+  async function deleteLocalAction(actionId) {
+    setBusyActionId(`${actionId}:delete`);
+    setMessage("");
+    setError("");
+    try {
+      await apiJson(`/api/fust/actions/${encodeURIComponent(actionId)}`, {
+        method: "DELETE",
+      });
+      setMessage("Local action deleted.");
+      onRefresh();
+    } catch (deleteError) {
+      setError(deleteError.message);
+    } finally {
+      setBusyActionId("");
+    }
+  }
+
+  if (loading) {
+    return <div className="notice">Loading last actions...</div>;
+  }
+
+  return (
+    <div className="overview-stack">
+      {message && <div className="notice">{message}</div>}
+      {error && <div className="notice danger">{error}</div>}
 
       <div className="data-table-card">
         <div className="section-header">
-          <h2>
-            Recent actions
-            {selectedWeek ? ` | week ${selectedWeek}` : ""}
-            {selectedCountry ? ` | ${selectedCountry}` : ""}
-            {selectedCustomer ? ` | ${selectedCustomer}` : ""}
-          </h2>
-          {selectedCountry && (
-            <button
-              type="button"
-              onClick={() => {
-                setSelectedCountry("");
-                setSelectedCustomer("");
-              }}
-            >
-              Back to countries
-            </button>
-          )}
+          <h2>Last actions</h2>
         </div>
         <div className="table-wrap">
-          <table className="data-table">
+          <table className="data-table action-table">
             <thead>
               <tr>
                 <th>Type</th>
@@ -1574,61 +1667,127 @@ function FustOverview({ loading, actions, overview, sourceDebug, onRefresh }) {
                 <th>Connect</th>
                 <th>DC</th>
                 <th>DCS</th>
+                <th>DCO</th>
+                <th>CCTag</th>
+                <th>PAL</th>
+                <th>VK</th>
                 <th>Remark</th>
                 <th>Sheet</th>
                 <th>Email</th>
-                <th>Retry</th>
+                <th>Actions</th>
               </tr>
             </thead>
             <tbody>
-              {filteredActions.map((action) => (
-                <tr key={action.id}>
-                  <td>{action.type}</td>
-                  <td>{action.action_date}</td>
-                  <td>{action.country}</td>
-                  <td>{action.customer_name}</td>
-                  <td>{action.connect_name}</td>
-                  <td>{action.metrics?.dc || 0}</td>
-                  <td>{action.metrics?.dcs || 0}</td>
-                  <td>{action.remark || "-"}</td>
-                  <td>{action.sheet_sync?.ok ? "ok" : action.sheet_sync?.error || "-"}</td>
-                  <td>{action.email_sync?.ok ? "ok" : action.email_sync?.error || "-"}</td>
-                  <td>
-                    <div className="retry-actions">
-                      {!action.sheet_sync?.ok && (
-                        <button
-                          type="button"
-                          disabled={busyActionId === `${action.id}:retry-sheet`}
-                          onClick={() => retryAction(action.id, "retry-sheet")}
-                        >
-                          Retry sheet
-                        </button>
-                      )}
-                      {!action.email_sync?.ok && (
-                        <button
-                          type="button"
-                          disabled={busyActionId === `${action.id}:retry-email`}
-                          onClick={() => retryAction(action.id, "retry-email")}
-                        >
-                          Retry email
-                        </button>
-                      )}
-                      {action.created_by !== "spreadsheet" && (
-                        <button
-                          type="button"
-                          disabled={busyActionId === `${action.id}:delete`}
-                          onClick={() => deleteLocalAction(action.id)}
-                        >
-                          Delete local
-                        </button>
-                      )}
-                    </div>
-                  </td>
-                </tr>
-              ))}
-              {!filteredActions.length && (
+              {actions.map((action) => {
+                const isEditing = editingActionId === action.id && editForm;
+                const canModify = action.created_by !== "spreadsheet";
+                return (
+                  <tr key={action.id}>
+                    <td>
+                      {isEditing ? (
+                        <select value={editForm.type} onChange={(event) => setEditForm({ ...editForm, type: event.target.value })}>
+                          <option value="IN">IN</option>
+                          <option value="OUT">OUT</option>
+                        </select>
+                      ) : action.type}
+                    </td>
+                    <td>
+                      {isEditing ? (
+                        <input type="date" value={editForm.action_date} onChange={(event) => setEditForm({ ...editForm, action_date: event.target.value })} />
+                      ) : action.action_date}
+                    </td>
+                    <td>
+                      {isEditing ? (
+                        <input value={editForm.country} onChange={(event) => setEditForm({ ...editForm, country: event.target.value })} />
+                      ) : action.country}
+                    </td>
+                    <td>
+                      {isEditing ? (
+                        <input value={editForm.customer_name} onChange={(event) => setEditForm({ ...editForm, customer_name: event.target.value })} />
+                      ) : action.customer_name}
+                    </td>
+                    <td>
+                      {isEditing ? (
+                        <input value={editForm.connect_name} onChange={(event) => setEditForm({ ...editForm, connect_name: event.target.value })} />
+                      ) : action.connect_name}
+                    </td>
+                    {["dc", "dcs", "dco", "cctag", "pal", "vk"].map((metric) => (
+                      <td key={metric}>
+                        {isEditing ? (
+                          <input
+                            className="metric-edit"
+                            type="number"
+                            min="0"
+                            value={editForm.metrics[metric]}
+                            onChange={(event) => setEditForm({
+                              ...editForm,
+                              metrics: {
+                                ...editForm.metrics,
+                                [metric]: Number(event.target.value || 0),
+                              },
+                            })}
+                          />
+                        ) : (action.metrics?.[metric] || 0)}
+                      </td>
+                    ))}
+                    <td>
+                      {isEditing ? (
+                        <input value={editForm.remark} onChange={(event) => setEditForm({ ...editForm, remark: event.target.value })} />
+                      ) : (action.remark || "-")}
+                    </td>
+                    <td>{action.sheet_sync?.ok ? "ok" : action.sheet_sync?.error || "-"}</td>
+                    <td>{action.email_sync?.ok ? "ok" : action.email_sync?.error || "-"}</td>
+                    <td>
+                      <div className="retry-actions">
+                        {isEditing ? (
+                          <>
+                            <button
+                              type="button"
+                              disabled={busyActionId === `${action.id}:save`}
+                              onClick={() => saveEdit(action.id)}
+                            >
+                              Save
+                            </button>
+                            <button type="button" onClick={cancelEdit}>Cancel</button>
+                          </>
+                        ) : canModify && (
+                          <button type="button" onClick={() => startEdit(action)}>Edit</button>
+                        )}
+                        {!action.sheet_sync?.ok && (
+                          <button
+                            type="button"
+                            disabled={busyActionId === `${action.id}:retry-sheet`}
+                            onClick={() => retryAction(action.id, "retry-sheet")}
+                          >
+                            Retry sheet
+                          </button>
+                        )}
+                        {!action.email_sync?.ok && (
+                          <button
+                            type="button"
+                            disabled={busyActionId === `${action.id}:retry-email`}
+                            onClick={() => retryAction(action.id, "retry-email")}
+                          >
+                            Retry email
+                          </button>
+                        )}
+                        {canModify && !isEditing && (
+                          <button
+                            type="button"
+                            disabled={busyActionId === `${action.id}:delete`}
+                            onClick={() => deleteLocalAction(action.id)}
+                          >
+                            Delete local
+                          </button>
+                        )}
+                      </div>
+                    </td>
+                  </tr>
+                );
+              })}
+              {!actions.length && (
                 <tr>
-                  <td colSpan="11">No actions were found for the current week, country, and cust/transport selection.</td>
+                  <td colSpan="15">No actions were found.</td>
                 </tr>
               )}
             </tbody>

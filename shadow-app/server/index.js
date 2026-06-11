@@ -1643,6 +1643,65 @@ async function handleApi(req, res, url) {
     return;
   }
 
+  if (url.pathname.startsWith("/api/fust/actions/") && req.method === "PUT") {
+    const parts = url.pathname.split("/").filter(Boolean);
+    const actionId = decodeURIComponent(parts[3] || "");
+    const actions = await readFustActions();
+    const actionIndex = actions.findIndex((item) => item.id === actionId);
+    if (actionIndex < 0) {
+      sendJson(res, 404, { error: "Fust action not found" });
+      return;
+    }
+
+    const existingAction = actions[actionIndex];
+    const type = String(existingAction.type || "").trim().toUpperCase() === "OUT" ? "OUT" : "IN";
+    const requiredPermission = type === "OUT" ? PERMISSIONS.FUST_OUT : PERMISSIONS.FUST_IN;
+    if (!requirePermission(res, requestUser, requiredPermission)) {
+      return;
+    }
+
+    const body = await readRequestJson(req);
+    const actionDate = String(body.action_date || existingAction.action_date || localDateIso()).trim();
+    const updatedAction = normalizeFustAction({
+      ...existingAction,
+      type: String(body.type || existingAction.type || "IN").trim().toUpperCase() === "OUT" ? "OUT" : "IN",
+      action_date: actionDate,
+      week: weekNumberForDate(actionDate),
+      day_name: weekdayNameForDate(actionDate),
+      country: body.country,
+      customer_name: body.customer_name,
+      customer_code: body.customer_code,
+      connect_name: body.connect_name,
+      remark: body.remark,
+      metrics: body.metrics,
+      sheet_sync: {
+        ...(existingAction.sheet_sync || {}),
+        ok: false,
+        error: "Edited locally",
+      },
+      email_sync: {
+        ...(existingAction.email_sync || {}),
+        ok: false,
+        error: "Edited locally",
+      },
+    });
+
+    if (!updatedAction.country || !updatedAction.customer_name || !updatedAction.connect_name) {
+      sendJson(res, 400, { error: "Country, customer, and connect are required" });
+      return;
+    }
+
+    const newRequiredPermission = updatedAction.type === "OUT" ? PERMISSIONS.FUST_OUT : PERMISSIONS.FUST_IN;
+    if (!requirePermission(res, requestUser, newRequiredPermission)) {
+      return;
+    }
+
+    actions[actionIndex] = updatedAction;
+    await writeFustActions(actions);
+    sendJson(res, 200, { action: updatedAction });
+    return;
+  }
+
   if (url.pathname.startsWith("/api/fust/actions/") && req.method === "DELETE") {
     const parts = url.pathname.split("/").filter(Boolean);
     const actionId = decodeURIComponent(parts[3] || "");
