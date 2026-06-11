@@ -127,9 +127,10 @@ button.primary {
   box-shadow: 0 2px 10px rgba(23, 32, 42, 0.12);
 }
 
-.sidebar:hover,
-.sidebar:focus-within {
-  transform: translateX(0);
+@media (hover: hover) and (pointer: fine) {
+  .sidebar:hover {
+    transform: translateX(0);
+  }
 }
 
 .eyebrow {

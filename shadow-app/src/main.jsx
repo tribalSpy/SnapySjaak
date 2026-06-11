@@ -476,7 +476,8 @@ function App() {
             <button
               key={item.key}
               className={page === item.key ? "active" : ""}
-              onClick={() => {
+              onClick={(event) => {
+                event.currentTarget.blur();
                 setPage(item.key);
                 if (item.key === "fust") {
                   setFustMenuVersion((value) => value + 1);
