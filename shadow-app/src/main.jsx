@@ -1428,10 +1428,6 @@ function FustOverview({ loading, actions, overview, sourceDebug, onRefresh }) {
               value={selectedCustomer}
               onChange={(event) => {
                 setSelectedCustomer(event.target.value);
-                if (event.target.value && !selectedWeek) {
-                  const match = countryFilteredOverview.find((entry) => entry.customer_name === event.target.value);
-                  setSelectedWeek(String(match?.week || ""));
-                }
               }}
               disabled={!selectedCountry}
             >
