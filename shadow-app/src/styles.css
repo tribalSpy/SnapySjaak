@@ -599,6 +599,14 @@ textarea {
   min-width: 70px;
 }
 
+.transaction-detail {
+  margin-top: 16px;
+}
+
+.transaction-detail h3 {
+  margin: 0;
+}
+
 .customer-list {
   display: grid;
   gap: 14px;

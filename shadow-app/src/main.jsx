@@ -1175,7 +1175,7 @@ function FustActionForm({ type, metaData, loading, onSaved }) {
               <input
                 type="number"
                 min="0"
-                value={value}
+                value={value || ""}
                 onChange={(event) => setForm({
                   ...form,
                   metrics: {
@@ -1207,6 +1207,7 @@ function FustOverview({ loading, actions, overview, sourceDebug, onRefresh }) {
   const [selectedCountry, setSelectedCountry] = useState("");
   const [selectedCustomer, setSelectedCustomer] = useState("");
   const [expandedCountryWeek, setExpandedCountryWeek] = useState(false);
+  const [showTransactionRecords, setShowTransactionRecords] = useState(false);
 
   function emptyTotals() {
     return {
@@ -1327,6 +1328,7 @@ function FustOverview({ loading, actions, overview, sourceDebug, onRefresh }) {
   useEffect(() => {
     if (selectedCustomer && !customerOptions.includes(selectedCustomer)) {
       setSelectedCustomer("");
+      setShowTransactionRecords(false);
     }
   }, [customerOptions, selectedCustomer]);
 
@@ -1381,6 +1383,16 @@ function FustOverview({ loading, actions, overview, sourceDebug, onRefresh }) {
     ? customerRows.filter((entry) => entry.customer_name === selectedCustomer)
     : scopedOverview;
   const totals = sumOverviewEntries(visibleOverview);
+  const transactionRecords = datedActions
+    .filter((action) => showTransactionRecords)
+    .filter((action) => selectedWeek && String(action.week || "") === selectedWeek)
+    .filter((action) => selectedCountry && action.country === selectedCountry)
+    .filter((action) => selectedCustomer && action.customer_name === selectedCustomer)
+    .sort((left, right) => {
+      const rightDate = String(right.action_date || right.created_at || "");
+      const leftDate = String(left.action_date || left.created_at || "");
+      return rightDate.localeCompare(leftDate);
+    });
   const exportRows = visibleOverview.map((entry, index) => [
     selectedCountry && selectedWeek && !selectedCustomer && index > 0 ? "" : (entry.week || ""),
     selectedCountry && selectedWeek && !selectedCustomer && index > 0 ? "" : entry.country,
@@ -1419,6 +1431,7 @@ function FustOverview({ loading, actions, overview, sourceDebug, onRefresh }) {
                 setSelectedWeek(event.target.value);
                 setSelectedCustomer("");
                 setExpandedCountryWeek(false);
+                setShowTransactionRecords(false);
               }}
             >
               <option value="">All weeks</option>
@@ -1433,6 +1446,7 @@ function FustOverview({ loading, actions, overview, sourceDebug, onRefresh }) {
               onChange={(event) => {
                 setSelectedFromDate(event.target.value);
                 setExpandedCountryWeek(false);
+                setShowTransactionRecords(false);
               }}
             />
           </label>
@@ -1444,6 +1458,7 @@ function FustOverview({ loading, actions, overview, sourceDebug, onRefresh }) {
               onChange={(event) => {
                 setSelectedToDate(event.target.value);
                 setExpandedCountryWeek(false);
+                setShowTransactionRecords(false);
               }}
             />
           </label>
@@ -1455,6 +1470,7 @@ function FustOverview({ loading, actions, overview, sourceDebug, onRefresh }) {
                 setSelectedCountry(event.target.value);
                 setSelectedCustomer("");
                 setExpandedCountryWeek(false);
+                setShowTransactionRecords(false);
               }}
             >
               <option value="">All countries</option>
@@ -1468,6 +1484,7 @@ function FustOverview({ loading, actions, overview, sourceDebug, onRefresh }) {
               onChange={(event) => {
                 setSelectedCustomer(event.target.value);
                 setExpandedCountryWeek(false);
+                setShowTransactionRecords(false);
               }}
               disabled={!selectedCountry}
             >
@@ -1529,19 +1546,27 @@ function FustOverview({ loading, actions, overview, sourceDebug, onRefresh }) {
                     if (!selectedCountry) {
                       setSelectedCountry(entry.country);
                       setSelectedCustomer("");
+                      setShowTransactionRecords(false);
                       return;
                     }
                     if (selectedCountry && !selectedWeek) {
                       setSelectedWeek(String(entry.week || ""));
                       setSelectedCustomer("");
                       setExpandedCountryWeek(true);
+                      setShowTransactionRecords(false);
                       return;
                     }
                     if (selectedCountry && selectedWeek && !expandedCountryWeek && !selectedCustomer) {
                       setExpandedCountryWeek(true);
+                      setShowTransactionRecords(false);
                       return;
                     }
-                    setSelectedCustomer((current) => current === entry.customer_name ? "" : entry.customer_name);
+                    if (selectedCountry && selectedWeek && selectedCustomer) {
+                      setShowTransactionRecords((current) => !current);
+                      return;
+                    }
+                    setSelectedCustomer(entry.customer_name);
+                    setShowTransactionRecords(false);
                   }}
                 >
                   <td>{entry.week || ""}</td>
@@ -1594,6 +1619,57 @@ function FustOverview({ loading, actions, overview, sourceDebug, onRefresh }) {
             </tbody>
           </table>
         </div>
+        {showTransactionRecords && selectedWeek && selectedCountry && selectedCustomer && (
+          <div className="transaction-detail">
+            <div className="section-header">
+              <h3>Transactions</h3>
+              <button type="button" onClick={() => setShowTransactionRecords(false)}>Close</button>
+            </div>
+            <div className="table-wrap">
+              <table className="data-table action-table">
+                <thead>
+                  <tr>
+                    <th>Type</th>
+                    <th>Date</th>
+                    <th>Country</th>
+                    <th>Cust/transport</th>
+                    <th>Connect</th>
+                    <th>DC</th>
+                    <th>CCTag</th>
+                    <th>DCS</th>
+                    <th>DCO</th>
+                    <th>PAL</th>
+                    <th>VK</th>
+                    <th>Remark</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {transactionRecords.map((action) => (
+                    <tr key={action.id}>
+                      <td>{action.type}</td>
+                      <td>{action.action_date}</td>
+                      <td>{action.country}</td>
+                      <td>{action.customer_name}</td>
+                      <td>{action.connect_name}</td>
+                      <td>{action.metrics?.dc || 0}</td>
+                      <td>{action.metrics?.cctag || 0}</td>
+                      <td>{action.metrics?.dcs || 0}</td>
+                      <td>{action.metrics?.dco || 0}</td>
+                      <td>{action.metrics?.pal || 0}</td>
+                      <td>{action.metrics?.vk || 0}</td>
+                      <td>{action.remark || "-"}</td>
+                    </tr>
+                  ))}
+                  {!transactionRecords.length && (
+                    <tr>
+                      <td colSpan="12">No transactions were found for this filter.</td>
+                    </tr>
+                  )}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        )}
       </div>
     </div>
   );
