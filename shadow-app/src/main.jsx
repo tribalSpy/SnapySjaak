@@ -311,7 +311,8 @@ function useSyncStatus(enabled) {
 function App() {
   const [auth, setAuth] = useState({ loading: true, user: null, setupRequired: false });
   const [page, setPage] = useState("dashboard");
-  const [sidebarOpen, setSidebarOpen] = useState(false);
+  const [sidebarOpen, setSidebarOpen] = useState(true);
+  const [fustMenuVersion, setFustMenuVersion] = useState(0);
   const loggedIn = Boolean(auth.user);
   const syncStatus = useSyncStatus(loggedIn);
   const [selectedDate, setSelectedDate] = useState("");
@@ -343,6 +344,7 @@ function App() {
         });
         if (payload.user) {
           setPage(nextPage);
+          setSidebarOpen(true);
         }
       })
       .catch(() => setAuth({ loading: false, user: null, setupRequired: false }));
@@ -424,12 +426,14 @@ function App() {
           <SetupForm onSetup={(user) => {
             setAuth({ loading: false, user, setupRequired: false });
             setPage(defaultPageForUser(user));
+            setSidebarOpen(true);
           }}
           />
         ) : (
           <LoginForm onLogin={(user) => {
             setAuth({ loading: false, user, setupRequired: false });
             setPage(defaultPageForUser(user));
+            setSidebarOpen(true);
           }}
           />
         )}
@@ -474,6 +478,9 @@ function App() {
               className={page === item.key ? "active" : ""}
               onClick={() => {
                 setPage(item.key);
+                if (item.key === "fust") {
+                  setFustMenuVersion((value) => value + 1);
+                }
                 setSidebarOpen(false);
               }}
             >
@@ -516,7 +523,7 @@ function App() {
         </header>
 
         {page === "users" && <UsersPage currentUser={auth.user} />}
-        {page === "fust" && <FustPage currentUser={auth.user} />}
+        {page === "fust" && <FustPage currentUser={auth.user} menuVersion={fustMenuVersion} />}
         {page === "settings" && <SettingsPage currentUser={auth.user} />}
         {page === "dashboard" && canViewPhotos && (
           <>
@@ -907,20 +914,31 @@ function PermissionChecklist({ title, permissions, onChange }) {
   );
 }
 
-function FustPage({ currentUser }) {
+function fustTileLabel(tab) {
+  if (tab === "last-actions") {
+    return "Last actions";
+  }
+  return tab.toUpperCase();
+}
+
+function FustPage({ currentUser, menuVersion }) {
   const visibleTabs = [
     hasPermission(currentUser, PERMISSIONS.FUST_IN) ? "in" : null,
     hasPermission(currentUser, PERMISSIONS.FUST_OUT) ? "out" : null,
     hasPermission(currentUser, PERMISSIONS.FUST_OVERVIEW) ? "overview" : null,
     hasPermission(currentUser, PERMISSIONS.FUST_OVERVIEW) ? "last-actions" : null,
   ].filter(Boolean);
-  const [activeTab, setActiveTab] = useState(visibleTabs[0] || "overview");
+  const [activeTab, setActiveTab] = useState("");
   const { loading: metaLoading, data: metaData, error: metaError } = useFustMeta(Boolean(currentUser));
   const { loading: actionsLoading, data: actionsData, error: actionsError, refresh } = useFustActions(Boolean(currentUser));
 
   useEffect(() => {
-    if (!visibleTabs.includes(activeTab)) {
-      setActiveTab(visibleTabs[0] || "overview");
+    setActiveTab("");
+  }, [menuVersion]);
+
+  useEffect(() => {
+    if (activeTab && !visibleTabs.includes(activeTab)) {
+      setActiveTab("");
     }
   }, [activeTab, visibleTabs]);
 
@@ -933,17 +951,27 @@ function FustPage({ currentUser }) {
       {metaError && <div className="notice danger">Unable to load Fust master data: {metaError}</div>}
       {actionsError && <div className="notice danger">Unable to load Fust actions: {actionsError}</div>}
 
-      <div className="tab-strip" role="tablist" aria-label="Fust sections">
-        {visibleTabs.map((tab) => (
-          <button
-            key={tab}
-            className={activeTab === tab ? "active" : ""}
-            onClick={() => setActiveTab(tab)}
-          >
-            {tab === "last-actions" ? "LAST ACTIONS" : tab.toUpperCase()}
-          </button>
-        ))}
-      </div>
+      {!activeTab && (
+        <div className="fust-tile-grid" aria-label="Fust menu">
+          {visibleTabs.map((tab) => (
+            <button
+              key={tab}
+              type="button"
+              className="fust-tile"
+              onClick={() => setActiveTab(tab)}
+            >
+              <strong>{fustTileLabel(tab)}</strong>
+            </button>
+          ))}
+        </div>
+      )}
+
+      {activeTab && (
+        <div className="section-header fust-section-nav">
+          <h2>{fustTileLabel(activeTab)}</h2>
+          <button type="button" onClick={() => setActiveTab("")}>Fust menu</button>
+        </div>
+      )}
 
       {activeTab === "in" && (
         <FustActionForm
