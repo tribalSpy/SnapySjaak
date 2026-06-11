@@ -1177,6 +1177,7 @@ function FustOverview({ loading, actions, overview, sourceDebug, onRefresh }) {
   const [selectedToDate, setSelectedToDate] = useState("");
   const [selectedCountry, setSelectedCountry] = useState("");
   const [selectedCustomer, setSelectedCustomer] = useState("");
+  const [expandedCountryWeek, setExpandedCountryWeek] = useState(false);
 
   function emptyTotals() {
     return {
@@ -1343,8 +1344,9 @@ function FustOverview({ loading, actions, overview, sourceDebug, onRefresh }) {
 
   const customerRows = countryFilteredOverview
     .sort((left, right) => left.customer_name.localeCompare(right.customer_name));
+  const collapsedCountryWeekRows = selectedCountry && selectedWeek ? weekRows : [];
   const scopedOverview = selectedCountry
-    ? (selectedWeek ? customerRows : weekRows)
+    ? (selectedWeek && !expandedCountryWeek ? collapsedCountryWeekRows : (selectedWeek ? customerRows : weekRows))
     : countryRows;
   const visibleOverview = selectedCustomer
     ? customerRows.filter((entry) => entry.customer_name === selectedCustomer)
@@ -1387,6 +1389,7 @@ function FustOverview({ loading, actions, overview, sourceDebug, onRefresh }) {
               onChange={(event) => {
                 setSelectedWeek(event.target.value);
                 setSelectedCustomer("");
+                setExpandedCountryWeek(false);
               }}
             >
               <option value="">All weeks</option>
@@ -1398,7 +1401,10 @@ function FustOverview({ loading, actions, overview, sourceDebug, onRefresh }) {
             <input
               type="date"
               value={selectedFromDate}
-              onChange={(event) => setSelectedFromDate(event.target.value)}
+              onChange={(event) => {
+                setSelectedFromDate(event.target.value);
+                setExpandedCountryWeek(false);
+              }}
             />
           </label>
           <label>
@@ -1406,7 +1412,10 @@ function FustOverview({ loading, actions, overview, sourceDebug, onRefresh }) {
             <input
               type="date"
               value={selectedToDate}
-              onChange={(event) => setSelectedToDate(event.target.value)}
+              onChange={(event) => {
+                setSelectedToDate(event.target.value);
+                setExpandedCountryWeek(false);
+              }}
             />
           </label>
           <label>
@@ -1416,6 +1425,7 @@ function FustOverview({ loading, actions, overview, sourceDebug, onRefresh }) {
               onChange={(event) => {
                 setSelectedCountry(event.target.value);
                 setSelectedCustomer("");
+                setExpandedCountryWeek(false);
               }}
             >
               <option value="">All countries</option>
@@ -1428,6 +1438,7 @@ function FustOverview({ loading, actions, overview, sourceDebug, onRefresh }) {
               value={selectedCustomer}
               onChange={(event) => {
                 setSelectedCustomer(event.target.value);
+                setExpandedCountryWeek(false);
               }}
               disabled={!selectedCountry}
             >
@@ -1440,7 +1451,8 @@ function FustOverview({ loading, actions, overview, sourceDebug, onRefresh }) {
           <h2>
             {!selectedCountry && "Country totals"}
             {selectedCountry && !selectedWeek && "Week totals"}
-            {selectedCountry && selectedWeek && "Customer totals"}
+            {selectedCountry && selectedWeek && !expandedCountryWeek && !selectedCustomer && "Country total"}
+            {selectedCountry && selectedWeek && (expandedCountryWeek || selectedCustomer) && "Customer totals"}
           </h2>
           <button
             type="button"
@@ -1493,6 +1505,11 @@ function FustOverview({ loading, actions, overview, sourceDebug, onRefresh }) {
                     if (selectedCountry && !selectedWeek) {
                       setSelectedWeek(String(entry.week || ""));
                       setSelectedCustomer("");
+                      setExpandedCountryWeek(true);
+                      return;
+                    }
+                    if (selectedCountry && selectedWeek && !expandedCountryWeek && !selectedCustomer) {
+                      setExpandedCountryWeek(true);
                       return;
                     }
                     setSelectedCustomer((current) => current === entry.customer_name ? "" : entry.customer_name);
