@@ -1,16 +1,20 @@
 from __future__ import annotations
 
 import argparse
+import base64
 import json
+import mimetypes
 import os
 import smtplib
 import sys
+import tempfile
 from pathlib import Path
 from email.message import EmailMessage
 
 from dotenv import load_dotenv
 from google.oauth2.service_account import Credentials
 from googleapiclient.discovery import build
+from googleapiclient.http import MediaFileUpload
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(REPO_ROOT) not in sys.path:
@@ -21,6 +25,8 @@ load_dotenv(REPO_ROOT / ".env")
 from src.drive_service import DEFAULT_DRIVE_ACCOUNT, DriveService  # noqa: E402
 
 SHEETS_SCOPES = ["https://www.googleapis.com/auth/spreadsheets"]
+DRIVE_FILE_SCOPES = ["https://www.googleapis.com/auth/drive"]
+DRIVE_FOLDER_MIME_TYPE = "application/vnd.google-apps.folder"
 
 
 def serialize_image(image) -> dict[str, object]:
@@ -69,19 +75,20 @@ def image(file_id: str, account_name: str = DEFAULT_DRIVE_ACCOUNT) -> int:
     return 0
 
 
-def _service_account_credentials() -> Credentials:
+def _service_account_credentials(scopes: list[str] | None = None) -> Credentials:
+    active_scopes = scopes or SHEETS_SCOPES
     credentials_json = os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON")
     if credentials_json:
         return Credentials.from_service_account_info(
             json.loads(credentials_json),
-            scopes=SHEETS_SCOPES,
+            scopes=active_scopes,
         )
 
     credentials_path = os.getenv("GOOGLE_APPLICATION_CREDENTIALS")
     if credentials_path:
         return Credentials.from_service_account_file(
             credentials_path,
-            scopes=SHEETS_SCOPES,
+            scopes=active_scopes,
         )
 
     raise RuntimeError("Set GOOGLE_SERVICE_ACCOUNT_JSON or GOOGLE_APPLICATION_CREDENTIALS")
@@ -141,6 +148,99 @@ def _column_name(index: int) -> str:
         current, remainder = divmod(current - 1, 26)
         result = chr(65 + remainder) + result
     return result
+
+
+
+def _drive_service():
+    return build("drive", "v3", credentials=_service_account_credentials(DRIVE_FILE_SCOPES), cache_discovery=False)
+
+
+def _escape_drive_query(value: str) -> str:
+    return value.replace("\\", "\\\\").replace("'", "\\'")
+
+
+def find_or_create_drive_folder(service, parent_id: str, name: str) -> str:
+    folder_name = str(name or "").strip()
+    if not folder_name:
+        raise RuntimeError("Folder name is required")
+
+    query = (
+        f"'{_escape_drive_query(parent_id)}' in parents and "
+        f"mimeType = '{DRIVE_FOLDER_MIME_TYPE}' and "
+        f"name = '{_escape_drive_query(folder_name)}' and trashed = false"
+    )
+    response = (
+        service.files()
+        .list(
+            q=query,
+            spaces="drive",
+            fields="files(id, name)",
+            pageSize=1,
+            includeItemsFromAllDrives=True,
+            supportsAllDrives=True,
+        )
+        .execute()
+    )
+    files = response.get("files", [])
+    if files:
+        return files[0]["id"]
+
+    folder = (
+        service.files()
+        .create(
+            body={
+                "name": folder_name,
+                "mimeType": DRIVE_FOLDER_MIME_TYPE,
+                "parents": [parent_id],
+            },
+            fields="id",
+            supportsAllDrives=True,
+        )
+        .execute()
+    )
+    return folder["id"]
+
+
+def drive_upload_cmr() -> int:
+    payload = json.loads(sys.stdin.read() or "{}")
+    country_folder_id = str(payload.get("country_folder_id") or "").strip()
+    folder_path = payload.get("folder_path") if isinstance(payload.get("folder_path"), list) else []
+    filename = str(payload.get("filename") or "cmr-upload").strip()
+    mime_type = str(payload.get("mime_type") or mimetypes.guess_type(filename)[0] or "application/octet-stream").strip()
+    content_base64 = str(payload.get("content_base64") or "")
+
+    if not country_folder_id:
+        raise RuntimeError("Country folder ID is required")
+    if not content_base64:
+        raise RuntimeError("CMR file content is required")
+
+    service = _drive_service()
+    parent_id = country_folder_id
+    for folder_name in folder_path:
+        parent_id = find_or_create_drive_folder(service, parent_id, str(folder_name))
+
+    file_bytes = base64.b64decode(content_base64)
+    with tempfile.NamedTemporaryFile(delete=False) as temp_file:
+        temp_file.write(file_bytes)
+        temp_path = temp_file.name
+
+    try:
+        media = MediaFileUpload(temp_path, mimetype=mime_type, resumable=False)
+        uploaded = (
+            service.files()
+            .create(
+                body={"name": filename, "parents": [parent_id]},
+                media_body=media,
+                fields="id, name, webViewLink, webContentLink",
+                supportsAllDrives=True,
+            )
+            .execute()
+        )
+    finally:
+        Path(temp_path).unlink(missing_ok=True)
+
+    sys.stdout.write(json.dumps(uploaded, ensure_ascii=True))
+    return 0
 
 
 def sheets_write_first_empty(spreadsheet_id: str, sheet_name: str) -> int:
@@ -243,6 +343,7 @@ def main() -> int:
     sheets_write_first_empty_parser.add_argument("--sheet-name", required=True)
     subparsers.add_parser("email-send")
     subparsers.add_parser("service-account-info")
+    subparsers.add_parser("drive-upload-cmr")
     args = parser.parse_args()
 
     if args.command == "details":
@@ -259,6 +360,8 @@ def main() -> int:
         return email_send()
     if args.command == "service-account-info":
         return service_account_info()
+    if args.command == "drive-upload-cmr":
+        return drive_upload_cmr()
 
     return 1
 

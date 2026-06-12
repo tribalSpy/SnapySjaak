@@ -158,6 +158,32 @@ function emptyFustMetrics() {
   return { dc: 0, cctag: 0, dcs: 0, dco: 0, pal: 0, vk: 0 };
 }
 
+function CmrStatus({ action }) {
+  if (action?.type !== "OUT") {
+    return "-";
+  }
+  const cmr = action?.cmr || {};
+  if (cmr.status === "uploaded" && cmr.web_link) {
+    return <a href={cmr.web_link} target="_blank" rel="noreferrer">Open CMR</a>;
+  }
+  if (cmr.status === "skipped") {
+    return "Skipped";
+  }
+  if (cmr.status === "failed") {
+    return cmr.error || "Upload failed";
+  }
+  return "Missing";
+}
+
+function fileToBase64(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result || "").split(",").pop() || "");
+    reader.onerror = () => reject(reader.error || new Error("Could not read file"));
+    reader.readAsDataURL(file);
+  });
+}
+
 function useFustMeta(enabled) {
   const [state, setState] = useState({ loading: true, data: null, error: "" });
 
@@ -1026,6 +1052,9 @@ function FustActionForm({ type, metaData, loading, onSaved }) {
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
   const [saving, setSaving] = useState(false);
+  const [pendingCmrAction, setPendingCmrAction] = useState(null);
+  const [cmrFile, setCmrFile] = useState(null);
+  const [cmrBusy, setCmrBusy] = useState(false);
   const records = metaData?.records || [];
   const countries = metaData?.countries || [];
   const customerOptions = records.filter((record) => record.country === form.country);
@@ -1079,6 +1108,9 @@ function FustActionForm({ type, metaData, loading, onSaved }) {
       setMessage(
         `${type} saved. Sheet sync: ${payload.action.sheet_sync.ok ? "ok" : payload.action.sheet_sync.error}. Email: ${payload.action.email_sync.ok ? "ok" : payload.action.email_sync.error}`,
       );
+      if (type === "OUT") {
+        setPendingCmrAction(payload.action);
+      }
       setForm((current) => ({
         ...current,
         remark: "",
@@ -1089,6 +1121,59 @@ function FustActionForm({ type, metaData, loading, onSaved }) {
       setError(submitError.message);
     } finally {
       setSaving(false);
+    }
+  }
+
+
+  async function uploadCmr() {
+    if (!pendingCmrAction || !cmrFile) {
+      setError("Choose a CMR file first, or skip CMR.");
+      return;
+    }
+    setCmrBusy(true);
+    setError("");
+    try {
+      const contentBase64 = await fileToBase64(cmrFile);
+      const payload = await apiJson(`/api/fust/actions/${encodeURIComponent(pendingCmrAction.id)}/cmr-upload`, {
+        method: "PATCH",
+        body: JSON.stringify({
+          file: {
+            name: cmrFile.name,
+            type: cmrFile.type || "application/octet-stream",
+            content_base64: contentBase64,
+          },
+        }),
+      });
+      setPendingCmrAction(null);
+      setCmrFile(null);
+      setMessage(`CMR uploaded: ${payload.action.cmr?.file_name || cmrFile.name}`);
+      onSaved();
+    } catch (uploadError) {
+      setError(uploadError.message);
+      onSaved();
+    } finally {
+      setCmrBusy(false);
+    }
+  }
+
+  async function skipCmr() {
+    if (!pendingCmrAction) {
+      return;
+    }
+    setCmrBusy(true);
+    setError("");
+    try {
+      await apiJson(`/api/fust/actions/${encodeURIComponent(pendingCmrAction.id)}/cmr-skip`, {
+        method: "PATCH",
+      });
+      setPendingCmrAction(null);
+      setCmrFile(null);
+      setMessage("CMR skipped for this OUT action.");
+      onSaved();
+    } catch (skipError) {
+      setError(skipError.message);
+    } finally {
+      setCmrBusy(false);
     }
   }
 
@@ -1191,6 +1276,24 @@ function FustActionForm({ type, metaData, loading, onSaved }) {
         {loading && <div className="notice">Loading Data sheet options...</div>}
         {message && <div className="notice">{message}</div>}
         {error && <div className="notice danger">{error}</div>}
+
+        {pendingCmrAction && (
+          <div className="cmr-panel">
+            <h3>CMR for saved OUT action</h3>
+            <input
+              type="file"
+              accept="image/*,.pdf"
+              capture="environment"
+              onChange={(event) => setCmrFile(event.target.files?.[0] || null)}
+            />
+            <div className="cmr-actions">
+              <button type="button" className="primary" disabled={cmrBusy || !cmrFile} onClick={uploadCmr}>
+                {cmrBusy ? "Saving CMR..." : "Upload CMR"}
+              </button>
+              <button type="button" disabled={cmrBusy} onClick={skipCmr}>Skip CMR</button>
+            </div>
+          </div>
+        )}
 
         <button className="primary" type="submit" disabled={saving || loading}>
           {saving ? `Saving ${type}...` : `Save ${type}`}
@@ -1640,6 +1743,7 @@ function FustOverview({ loading, actions, overview, sourceDebug, onRefresh }) {
                     <th>DCO</th>
                     <th>PAL</th>
                     <th>VK</th>
+                    <th>CMR</th>
                     <th>Remark</th>
                   </tr>
                 </thead>
@@ -1657,12 +1761,13 @@ function FustOverview({ loading, actions, overview, sourceDebug, onRefresh }) {
                       <td>{action.metrics?.dco || 0}</td>
                       <td>{action.metrics?.pal || 0}</td>
                       <td>{action.metrics?.vk || 0}</td>
+                      <td><CmrStatus action={action} /></td>
                       <td>{action.remark || "-"}</td>
                     </tr>
                   ))}
                   {!transactionRecords.length && (
                     <tr>
-                      <td colSpan="12">No transactions were found for this filter.</td>
+                      <td colSpan="13">No transactions were found for this filter.</td>
                     </tr>
                   )}
                 </tbody>
@@ -1789,6 +1894,7 @@ function FustLastActions({ loading, actions, onRefresh }) {
                 <th>CCTag</th>
                 <th>PAL</th>
                 <th>VK</th>
+                <th>CMR</th>
                 <th>Remark</th>
                 <th>Sheet</th>
                 <th>Email</th>
@@ -1848,6 +1954,7 @@ function FustLastActions({ loading, actions, onRefresh }) {
                         ) : (action.metrics?.[metric] || 0)}
                       </td>
                     ))}
+                    <td><CmrStatus action={action} /></td>
                     <td>
                       {isEditing ? (
                         <input value={editForm.remark} onChange={(event) => setEditForm({ ...editForm, remark: event.target.value })} />
@@ -1905,7 +2012,7 @@ function FustLastActions({ loading, actions, onRefresh }) {
               })}
               {!actions.length && (
                 <tr>
-                  <td colSpan="15">No actions were found.</td>
+                  <td colSpan="16">No actions were found.</td>
                 </tr>
               )}
             </tbody>
@@ -1913,6 +2020,30 @@ function FustLastActions({ loading, actions, onRefresh }) {
         </div>
       </div>
     </div>
+  );
+}
+
+function cmrFolderLines(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return "";
+  }
+  return Object.entries(value)
+    .sort(([left], [right]) => left.localeCompare(right))
+    .map(([country, folderId]) => `${country}=${folderId}`)
+    .join("\n");
+}
+
+function parseCmrFolderLines(value) {
+  return Object.fromEntries(
+    String(value || "")
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .filter(Boolean)
+      .map((line) => {
+        const [country, ...folderParts] = line.split("=");
+        return [String(country || "").trim().toUpperCase(), folderParts.join("=").trim()];
+      })
+      .filter(([country, folderId]) => country && folderId),
   );
 }
 
@@ -1954,7 +2085,10 @@ function SettingsPage({ currentUser }) {
 
   useEffect(() => {
     apiJson("/api/fust/settings")
-      .then((payload) => setForm(payload.settings))
+      .then((payload) => setForm({
+        ...payload.settings,
+        cmr_country_folders_text: cmrFolderLines(payload.settings.cmr_country_folders),
+      }))
       .catch((settingsError) => setError(settingsError.message));
 
     loadBackups().catch((backupError) => setError(backupError.message));
@@ -1975,11 +2109,13 @@ function SettingsPage({ currentUser }) {
             .split(/[\n,;]/)
             .map((value) => value.trim())
             .filter(Boolean),
+          cmr_country_folders: parseCmrFolderLines(form.cmr_country_folders_text),
         }),
       });
       setForm({
         ...payload.settings,
         email_recipients: payload.settings.email_recipients.join("\n"),
+        cmr_country_folders_text: cmrFolderLines(payload.settings.cmr_country_folders),
       });
       setMessage("Fust settings saved.");
       await loadConnectionTest();
@@ -2048,6 +2184,23 @@ function SettingsPage({ currentUser }) {
             <input
               value={form.dashboard_sheet_name}
               onChange={(event) => setForm({ ...form, dashboard_sheet_name: event.target.value })}
+            />
+          </label>
+          <label className="wide">
+            <span>CMR country folder IDs</span>
+            <textarea
+              value={form.cmr_country_folders_text || ""}
+              onChange={(event) => setForm({ ...form, cmr_country_folders_text: event.target.value })}
+              rows={8}
+              placeholder={"FR=google-drive-folder-id\nPT=google-drive-folder-id\nGB=google-drive-folder-id"}
+            />
+          </label>
+          <label className="wide">
+            <span>CMR fallback folder ID</span>
+            <input
+              value={form.cmr_fallback_folder_id || ""}
+              onChange={(event) => setForm({ ...form, cmr_fallback_folder_id: event.target.value })}
+              placeholder="optional fallback folder id"
             />
           </label>
           <label className="wide">

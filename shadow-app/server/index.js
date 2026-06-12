@@ -75,6 +75,8 @@ const defaultFustSettings = {
   smtp_password: "",
   smtp_from: "",
   smtp_starttls: true,
+  cmr_country_folders: {},
+  cmr_fallback_folder_id: "",
 };
 
 const imageExtensions = new Set([
@@ -138,11 +140,13 @@ function clearSessionCookie(res) {
   res.setHeader("set-cookie", `${sessionCookieName}=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0`);
 }
 
-async function readRequestJson(req) {
+async function readRequestJson(req, maxBytes = 1024 * 1024) {
   const chunks = [];
+  let totalBytes = 0;
   for await (const chunk of req) {
     chunks.push(chunk);
-    if (Buffer.concat(chunks).length > 1024 * 1024) {
+    totalBytes += chunk.length;
+    if (totalBytes > maxBytes) {
       throw new Error("Request body is too large");
     }
   }
@@ -279,6 +283,31 @@ function normalizeEmailRecipients(recipients) {
   )];
 }
 
+function normalizeCmrCountryFolders(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return {};
+  }
+  return Object.fromEntries(
+    Object.entries(value)
+      .map(([country, folderId]) => [String(country || "").trim().toUpperCase(), String(folderId || "").trim()])
+      .filter(([country, folderId]) => country && folderId),
+  );
+}
+
+function normalizeCmrInfo(value) {
+  const status = ["uploaded", "skipped", "failed"].includes(value?.status) ? value.status : "missing";
+  return {
+    status,
+    file_id: String(value?.file_id || ""),
+    file_name: String(value?.file_name || ""),
+    web_link: String(value?.web_link || ""),
+    folder_id: String(value?.folder_id || ""),
+    error: String(value?.error || ""),
+    uploaded_at: String(value?.uploaded_at || ""),
+    uploaded_by: String(value?.uploaded_by || ""),
+  };
+}
+
 function normalizeFustSettings(settings) {
   const smtpPort = Number(settings?.smtp_port);
   return {
@@ -296,6 +325,8 @@ function normalizeFustSettings(settings) {
     smtp_starttls: settings?.smtp_starttls === false || settings?.smtp_starttls === "0" || settings?.smtp_starttls === "false"
       ? false
       : true,
+    cmr_country_folders: normalizeCmrCountryFolders(settings?.cmr_country_folders),
+    cmr_fallback_folder_id: String(settings?.cmr_fallback_folder_id || "").trim(),
   };
 }
 
@@ -332,6 +363,7 @@ function normalizeFustAction(action) {
     created_at: String(action?.created_at || ""),
     sheet_sync: action?.sheet_sync || { ok: false, target_sheets: [], error: "Not attempted" },
     email_sync: action?.email_sync || { ok: false, recipients: [], error: "Not attempted" },
+    cmr: normalizeCmrInfo(action?.cmr),
   };
 }
 
@@ -874,6 +906,75 @@ async function writeSheetRowToFirstEmpty(spreadsheetId, sheetName, row) {
     ["sheets-write-first-empty", "--spreadsheet-id", spreadsheetId, "--sheet-name", sheetName],
     JSON.stringify({ row }),
   );
+}
+
+function sanitizeDriveName(value) {
+  return String(value || "unknown")
+    .trim()
+    .replace(/[\\/:*?"<>|#%{}]/g, "-")
+    .replace(/\s+/g, " ")
+    .slice(0, 120) || "unknown";
+}
+
+function safeExtension(filename, mimeType) {
+  const extension = path.extname(String(filename || "")).toLowerCase();
+  if (extension && extension.length <= 10) {
+    return extension;
+  }
+  if (mimeType === "application/pdf") {
+    return ".pdf";
+  }
+  if (String(mimeType || "").includes("png")) {
+    return ".png";
+  }
+  if (String(mimeType || "").includes("webp")) {
+    return ".webp";
+  }
+  return ".jpg";
+}
+
+function cmrTargetFolderId(settings, action) {
+  const country = String(action.country || "").trim().toUpperCase();
+  return settings.cmr_country_folders?.[country] || settings.cmr_fallback_folder_id || "";
+}
+
+function buildCmrFilename(action, originalName, mimeType) {
+  const extension = safeExtension(originalName, mimeType);
+  const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+  return `${sanitizeDriveName(action.type)}-${sanitizeDriveName(action.action_date)}-${sanitizeDriveName(action.country)}-${sanitizeDriveName(action.customer_name)}-${stamp}${extension}`;
+}
+
+async function uploadCmrToDrive(action, settings, filePayload) {
+  const countryFolderId = cmrTargetFolderId(settings, action);
+  if (!countryFolderId) {
+    throw new Error(`No CMR folder configured for ${action.country}`);
+  }
+
+  const filename = buildCmrFilename(action, filePayload.name, filePayload.type);
+  const output = await runPythonBridge(
+    ["drive-upload-cmr"],
+    JSON.stringify({
+      country_folder_id: countryFolderId,
+      folder_path: [
+        "CMR",
+        sanitizeDriveName(action.customer_name),
+        String(new Date(action.action_date || localDateIso()).getFullYear()),
+        `Week ${action.week ?? "unknown"}`,
+      ],
+      filename,
+      mime_type: filePayload.type || "application/octet-stream",
+      content_base64: filePayload.content_base64,
+    }),
+  );
+  const uploaded = JSON.parse(output.toString("utf8"));
+  return {
+    status: "uploaded",
+    file_id: String(uploaded.id || ""),
+    file_name: String(uploaded.name || filename),
+    web_link: String(uploaded.webViewLink || uploaded.webContentLink || ""),
+    folder_id: countryFolderId,
+    error: "",
+  };
 }
 
 async function syncFustActionToSheets(action, settings) {
@@ -1578,6 +1679,76 @@ async function handleApi(req, res, url) {
         filtered_action_count: filteredActions.length,
       },
     });
+    return;
+  }
+
+  if (url.pathname.startsWith("/api/fust/actions/") && req.method === "PATCH") {
+    const parts = url.pathname.split("/").filter(Boolean);
+    const actionId = decodeURIComponent(parts[3] || "");
+    const cmrAction = parts[4] || "";
+    if (!["cmr-upload", "cmr-skip"].includes(cmrAction)) {
+      sendJson(res, 404, { error: "Unknown action update" });
+      return;
+    }
+
+    const actions = await readFustActions();
+    const actionIndex = actions.findIndex((item) => item.id === actionId);
+    if (actionIndex < 0) {
+      sendJson(res, 404, { error: "Fust action not found" });
+      return;
+    }
+
+    const action = actions[actionIndex];
+    if (action.type !== "OUT") {
+      sendJson(res, 400, { error: "CMR files can only be attached to OUT actions" });
+      return;
+    }
+    if (!requirePermission(res, requestUser, PERMISSIONS.FUST_OUT)) {
+      return;
+    }
+
+    if (cmrAction === "cmr-skip") {
+      action.cmr = normalizeCmrInfo({
+        status: "skipped",
+        uploaded_at: new Date().toISOString(),
+        uploaded_by: requestUser.username,
+      });
+      actions[actionIndex] = action;
+      await writeFustActions(actions);
+      sendJson(res, 200, { action });
+      return;
+    }
+
+    const body = await readRequestJson(req, 18 * 1024 * 1024);
+    const filePayload = body?.file || {};
+    if (!filePayload.content_base64 || !filePayload.name) {
+      sendJson(res, 400, { error: "Choose a CMR file first" });
+      return;
+    }
+
+    const settings = await readFustSettings();
+    try {
+      action.cmr = normalizeCmrInfo({
+        ...(await uploadCmrToDrive(action, settings, filePayload)),
+        uploaded_at: new Date().toISOString(),
+        uploaded_by: requestUser.username,
+      });
+    } catch (cmrError) {
+      action.cmr = normalizeCmrInfo({
+        status: "failed",
+        error: cmrError instanceof Error ? cmrError.message : String(cmrError),
+        uploaded_at: new Date().toISOString(),
+        uploaded_by: requestUser.username,
+      });
+      actions[actionIndex] = action;
+      await writeFustActions(actions);
+      sendJson(res, 500, { error: action.cmr.error, action });
+      return;
+    }
+
+    actions[actionIndex] = action;
+    await writeFustActions(actions);
+    sendJson(res, 200, { action });
     return;
   }
 
