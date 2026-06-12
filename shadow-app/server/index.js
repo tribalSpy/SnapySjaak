@@ -15,6 +15,7 @@ const syncStatusPath = path.join(cacheDir, "index_sync_status.json");
 const usersPath = path.join(cacheDir, "shadow-users.json");
 const fustActionsPath = path.join(cacheDir, "fust-actions.json");
 const fustSettingsPath = path.join(cacheDir, "fust-settings.json");
+const clockRecordsPath = path.join(cacheDir, "clock-records.json");
 const fustBackupDir = path.join(cacheDir, "fust-backups");
 const syncScriptPath = path.join(repoRoot, "sync_index.py");
 const driveBridgePath = path.join(appRoot, "server", "drive_bridge.py");
@@ -46,6 +47,8 @@ const allPermissions = [
   "fust:in",
   "fust:out",
   "fust:overview",
+  "clock:view",
+  "clock:manage",
   "users:manage",
   "settings:manage",
 ];
@@ -55,6 +58,8 @@ const PERMISSIONS = {
   FUST_IN: "fust:in",
   FUST_OUT: "fust:out",
   FUST_OVERVIEW: "fust:overview",
+  CLOCK_VIEW: "clock:view",
+  CLOCK_MANAGE: "clock:manage",
   USERS_MANAGE: "users:manage",
   SETTINGS_MANAGE: "settings:manage",
 };
@@ -81,6 +86,8 @@ const defaultFustSettings = {
   cmr_google_client_secret: "",
   cmr_google_refresh_token: "",
   cmr_google_connected_email: "",
+  clock_employee_sheet_name: "badges",
+  clock_records_sheet_name: "backup",
 };
 
 const imageExtensions = new Set([
@@ -251,6 +258,9 @@ async function ensureUsersSeeded() {
 }
 
 function normalizePermissions(role, permissions) {
+  if (role === "admin") {
+    return [...roleDefaultPermissions.admin];
+  }
   const defaults = roleDefaultPermissions[role] || roleDefaultPermissions.viewer;
   if (!Array.isArray(permissions)) {
     return [...defaults];
@@ -336,6 +346,8 @@ function normalizeFustSettings(settings) {
     cmr_google_client_secret: String(settings?.cmr_google_client_secret || ""),
     cmr_google_refresh_token: String(settings?.cmr_google_refresh_token || ""),
     cmr_google_connected_email: String(settings?.cmr_google_connected_email || "").trim(),
+    clock_employee_sheet_name: String(settings?.clock_employee_sheet_name || defaultFustSettings.clock_employee_sheet_name).trim() || defaultFustSettings.clock_employee_sheet_name,
+    clock_records_sheet_name: String(settings?.clock_records_sheet_name || defaultFustSettings.clock_records_sheet_name).trim() || defaultFustSettings.clock_records_sheet_name,
   };
 }
 
@@ -384,6 +396,150 @@ async function readFustActions() {
 
 async function writeFustActions(actions) {
   await writeJsonFile(fustActionsPath, { actions: actions.map(normalizeFustAction) });
+}
+
+function normalizeClockEmployee(employee) {
+  return {
+    tbnr: String(employee?.tbnr || employee?.TBNR || "").trim().toUpperCase(),
+    type: String(employee?.type || employee?.employee_type || "").trim(),
+    name: String(employee?.name || employee?.Name || "").trim(),
+    active: employee?.active === false ? false : true,
+  };
+}
+
+function buildClockEmployeesFromSheetRows(rows) {
+  if (!Array.isArray(rows) || rows.length < 2) {
+    return { employees: [], headers: [], raw_row_count: Array.isArray(rows) ? rows.length : 0 };
+  }
+
+  const headers = rows[0].map(normalizeHeader);
+  const tbnrIndex = firstMatchingIndex(headers, ["tbnr", "badge", "badge number", "badge nummer", "code", "qr", "qr code"]);
+  const typeIndex = firstMatchingIndex(headers, ["type", "employee type", "contract", "soort"]);
+  const nameIndex = firstMatchingIndex(headers, ["name", "naam", "employee", "werknemer", "medewerker"]);
+  const activeIndex = firstMatchingIndex(headers, ["active", "actief", "enabled", "status"]);
+  const sourceRows = tbnrIndex >= 0 || nameIndex >= 0 ? rows.slice(1) : rows;
+
+  const employees = sourceRows
+    .map((row) => {
+      const activeValue = rowValue(row, activeIndex);
+      return normalizeClockEmployee({
+        tbnr: rowValue(row, tbnrIndex >= 0 ? tbnrIndex : 0),
+        type: rowValue(row, typeIndex >= 0 ? typeIndex : 1),
+        name: rowValue(row, nameIndex >= 0 ? nameIndex : 2),
+        active: activeIndex < 0 ? true : !["0", "false", "nee", "no", "inactive"].includes(activeValue.toLowerCase()),
+      });
+    })
+    .filter((employee) => employee.tbnr && employee.name && employee.active)
+    .sort((left, right) => left.name.localeCompare(right.name) || left.tbnr.localeCompare(right.tbnr));
+
+  return { employees, headers, raw_row_count: rows.length };
+}
+
+function normalizeClockRecord(record) {
+  const direction = String(record?.direction || "").trim().toUpperCase() === "OUT" ? "OUT" : "IN";
+  const actionDate = String(record?.action_date || record?.date || localDateIso()).slice(0, 10);
+  const actionTime = String(record?.action_time || record?.time || "").trim();
+  return {
+    id: String(record?.id || crypto.randomUUID()),
+    action_date: actionDate,
+    action_time: actionTime || new Date().toLocaleTimeString("nl-NL", { hour12: false }),
+    timestamp: String(record?.timestamp || `${actionDate}T${actionTime || "00:00:00"}`),
+    tbnr: String(record?.tbnr || "").trim().toUpperCase(),
+    name: String(record?.name || "").trim(),
+    employee_type: String(record?.employee_type || record?.type || "").trim(),
+    direction,
+    source: String(record?.source || "scanner").trim() || "scanner",
+    created_by: String(record?.created_by || ""),
+    created_at: String(record?.created_at || new Date().toISOString()),
+    updated_by: String(record?.updated_by || ""),
+    updated_at: String(record?.updated_at || ""),
+    sheet_sync: record?.sheet_sync || { ok: false, target_sheets: [], error: "Not attempted" },
+  };
+}
+
+async function readClockRecords() {
+  const payload = await readJsonFile(clockRecordsPath, { records: [] });
+  return Array.isArray(payload?.records) ? payload.records.map(normalizeClockRecord) : [];
+}
+
+async function writeClockRecords(records) {
+  await writeJsonFile(clockRecordsPath, { records: records.map(normalizeClockRecord) });
+}
+
+function clockRecordRow(record) {
+  return [
+    record.action_date,
+    record.action_time,
+    record.tbnr,
+    record.name,
+    record.employee_type,
+    record.direction,
+    record.source,
+    record.id,
+    record.created_by,
+    record.created_at,
+    record.updated_by,
+    record.updated_at,
+  ];
+}
+
+async function syncClockRecordToSheets(record, settings) {
+  if (!settings.spreadsheet_id) {
+    return { ok: false, target_sheets: [], error: "Spreadsheet ID is not configured" };
+  }
+  if (!settings.clock_records_sheet_name) {
+    return { ok: false, target_sheets: [], error: "Clock records sheet is not configured" };
+  }
+  await writeSheetRowToFirstEmpty(settings.spreadsheet_id, settings.clock_records_sheet_name, clockRecordRow(record));
+  return { ok: true, target_sheets: [settings.clock_records_sheet_name], error: "", synced_at: new Date().toISOString() };
+}
+
+function nextClockDirection(records, tbnr, actionDate) {
+  const count = records.filter((record) => record.action_date === actionDate && record.tbnr.toUpperCase() === tbnr.toUpperCase()).length;
+  return count % 2 === 0 ? "IN" : "OUT";
+}
+
+function createClockRecord(employee, direction, actionDate, actionTime, source, username) {
+  return normalizeClockRecord({
+    id: crypto.randomUUID(),
+    action_date: actionDate,
+    action_time: actionTime,
+    timestamp: `${actionDate}T${actionTime}`,
+    tbnr: employee.tbnr,
+    name: employee.name,
+    employee_type: employee.type,
+    direction,
+    source,
+    created_by: username,
+    created_at: new Date().toISOString(),
+    sheet_sync: { ok: false, target_sheets: [], error: "Pending" },
+  });
+}
+
+function filterClockRecords(records, date) {
+  const activeDate = String(date || localDateIso()).slice(0, 10);
+  return records
+    .filter((record) => record.action_date === activeDate)
+    .sort((left, right) => `${right.action_date}T${right.action_time}`.localeCompare(`${left.action_date}T${left.action_time}`));
+}
+
+function clockExportText(records) {
+  const rows = [
+    ["Date", "Time", "TBNR", "Name", "Type", "Direction", "Source", "ID", "Created by", "Created at"],
+    ...records.map((record) => [
+      record.action_date,
+      record.action_time,
+      record.tbnr,
+      record.name,
+      record.employee_type,
+      record.direction,
+      record.source,
+      record.id,
+      record.created_by,
+      record.created_at,
+    ]),
+  ];
+  return rows.map((row) => row.map((value) => String(value || "").replaceAll("\t", " ")).join("\t")).join("\n");
 }
 
 async function createFustBackupSnapshot(createdBy = "system") {
@@ -1553,6 +1709,173 @@ async function handleApi(req, res, url) {
   const requestUser = await getRequestUser(req);
   if (!requestUser) {
     sendUnauthorized(res);
+    return;
+  }
+
+  if (url.pathname === "/api/clock/employees") {
+    if (!requirePermission(res, requestUser, PERMISSIONS.CLOCK_VIEW)) {
+      return;
+    }
+    const settings = await readFustSettings();
+    try {
+      const rows = await loadSheetRows(settings.spreadsheet_id, settings.clock_employee_sheet_name);
+      const parsed = buildClockEmployeesFromSheetRows(rows);
+      sendJson(res, 200, {
+        employees: parsed.employees,
+        headers: parsed.headers,
+        raw_row_count: parsed.raw_row_count,
+        sheet_name: settings.clock_employee_sheet_name,
+      });
+    } catch (error) {
+      sendJson(res, 500, { error: error instanceof Error ? error.message : String(error), employees: [] });
+    }
+    return;
+  }
+
+  if (url.pathname === "/api/clock/records/export" && req.method === "GET") {
+    if (!requirePermission(res, requestUser, PERMISSIONS.CLOCK_VIEW)) {
+      return;
+    }
+    const date = String(url.searchParams.get("date") || localDateIso()).slice(0, 10);
+    const records = filterClockRecords(await readClockRecords(), date).reverse();
+    res.writeHead(200, {
+      "content-type": "text/tab-separated-values; charset=utf-8",
+      "content-disposition": `attachment; filename="clock-times-${date}.tsv"`,
+      "cache-control": "no-store",
+    });
+    res.end(clockExportText(records));
+    return;
+  }
+
+  if (url.pathname.startsWith("/api/clock/records/") && req.method !== "GET") {
+    const recordId = decodeURIComponent(url.pathname.slice("/api/clock/records/".length));
+    if (!requirePermission(res, requestUser, PERMISSIONS.CLOCK_MANAGE)) {
+      return;
+    }
+    const records = await readClockRecords();
+    const recordIndex = records.findIndex((record) => record.id === recordId);
+    if (recordIndex < 0) {
+      sendJson(res, 404, { error: "Clock record not found" });
+      return;
+    }
+
+    if (req.method === "DELETE") {
+      records.splice(recordIndex, 1);
+      await writeClockRecords(records);
+      sendJson(res, 200, { ok: true, deleted_record_id: recordId });
+      return;
+    }
+
+    if (req.method === "PATCH") {
+      const body = await readRequestJson(req);
+      const current = records[recordIndex];
+      const updated = normalizeClockRecord({
+        ...current,
+        action_date: body.action_date ?? current.action_date,
+        action_time: body.action_time ?? current.action_time,
+        timestamp: `${body.action_date ?? current.action_date}T${body.action_time ?? current.action_time}`,
+        tbnr: body.tbnr ?? current.tbnr,
+        name: body.name ?? current.name,
+        employee_type: body.employee_type ?? current.employee_type,
+        direction: body.direction ?? current.direction,
+        source: current.source,
+        updated_by: requestUser.username,
+        updated_at: new Date().toISOString(),
+      });
+      records[recordIndex] = updated;
+      await writeClockRecords(records);
+      sendJson(res, 200, { record: updated, records: filterClockRecords(records, updated.action_date) });
+      return;
+    }
+  }
+
+  if (url.pathname === "/api/clock/records") {
+    if (!requirePermission(res, requestUser, PERMISSIONS.CLOCK_VIEW)) {
+      return;
+    }
+
+    if (req.method === "GET") {
+      const date = String(url.searchParams.get("date") || localDateIso()).slice(0, 10);
+      const records = await readClockRecords();
+      sendJson(res, 200, { date, records: filterClockRecords(records, date) });
+      return;
+    }
+
+    if (req.method === "POST") {
+      if (!requirePermission(res, requestUser, PERMISSIONS.CLOCK_MANAGE)) {
+        return;
+      }
+      const body = await readRequestJson(req);
+      const employee = normalizeClockEmployee(body.employee || {
+        tbnr: body.tbnr,
+        name: body.name,
+        type: body.employee_type,
+      });
+      if (!employee.tbnr || !employee.name) {
+        sendJson(res, 400, { error: "Choose a valid employee" });
+        return;
+      }
+      const actionDate = String(body.action_date || localDateIso()).slice(0, 10);
+      const actionTime = String(body.action_time || new Date().toLocaleTimeString("nl-NL", { hour12: false })).slice(0, 8);
+      const direction = String(body.direction || "IN").toUpperCase() === "OUT" ? "OUT" : "IN";
+      const record = createClockRecord(employee, direction, actionDate, actionTime, "manual", requestUser.username);
+      const records = await readClockRecords();
+      records.push(record);
+      await writeClockRecords(records);
+      const settings = await readFustSettings();
+      try {
+        record.sheet_sync = await syncClockRecordToSheets(record, settings);
+      } catch (error) {
+        record.sheet_sync = { ok: false, target_sheets: [], error: error instanceof Error ? error.message : String(error) };
+      }
+      const savedRecords = await readClockRecords();
+      const savedIndex = savedRecords.findIndex((item) => item.id === record.id);
+      if (savedIndex >= 0) {
+        savedRecords[savedIndex] = record;
+        await writeClockRecords(savedRecords);
+      }
+      sendJson(res, 201, { record, records: filterClockRecords(savedRecords, actionDate) });
+      return;
+    }
+  }
+
+  if (url.pathname === "/api/clock/scan" && req.method === "POST") {
+    if (!requirePermission(res, requestUser, PERMISSIONS.CLOCK_MANAGE)) {
+      return;
+    }
+    const body = await readRequestJson(req);
+    const code = String(body.code || "").trim().toUpperCase();
+    if (!code) {
+      sendJson(res, 400, { error: "Scan a badge code first" });
+      return;
+    }
+    const settings = await readFustSettings();
+    const rows = await loadSheetRows(settings.spreadsheet_id, settings.clock_employee_sheet_name);
+    const employee = buildClockEmployeesFromSheetRows(rows).employees.find((item) => item.tbnr === code);
+    if (!employee) {
+      sendJson(res, 404, { error: `${code} is not in the employee sheet` });
+      return;
+    }
+    const now = new Date();
+    const actionDate = String(body.action_date || localDateIso()).slice(0, 10);
+    const actionTime = String(body.action_time || now.toLocaleTimeString("nl-NL", { hour12: false })).slice(0, 8);
+    const records = await readClockRecords();
+    const direction = nextClockDirection(records, code, actionDate);
+    const record = createClockRecord(employee, direction, actionDate, actionTime, "scanner", requestUser.username);
+    records.push(record);
+    await writeClockRecords(records);
+    try {
+      record.sheet_sync = await syncClockRecordToSheets(record, settings);
+    } catch (error) {
+      record.sheet_sync = { ok: false, target_sheets: [], error: error instanceof Error ? error.message : String(error) };
+    }
+    const savedRecords = await readClockRecords();
+    const savedIndex = savedRecords.findIndex((item) => item.id === record.id);
+    if (savedIndex >= 0) {
+      savedRecords[savedIndex] = record;
+      await writeClockRecords(savedRecords);
+    }
+    sendJson(res, 201, { record, records: filterClockRecords(savedRecords, actionDate) });
     return;
   }
 

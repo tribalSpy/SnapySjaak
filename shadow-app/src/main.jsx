@@ -9,6 +9,8 @@ const PERMISSIONS = {
   FUST_IN: "fust:in",
   FUST_OUT: "fust:out",
   FUST_OVERVIEW: "fust:overview",
+  CLOCK_VIEW: "clock:view",
+  CLOCK_MANAGE: "clock:manage",
   USERS_MANAGE: "users:manage",
   SETTINGS_MANAGE: "settings:manage",
 };
@@ -20,6 +22,7 @@ const DEFAULT_PERMISSIONS_BY_ROLE = {
 const PAGE_DEFINITIONS = [
   { key: "dashboard", label: "Photos", permission: PERMISSIONS.PHOTOS_VIEW },
   { key: "fust", label: "Fust", permission: PERMISSIONS.FUST_VIEW },
+  { key: "clock", label: "Inklokken", permission: PERMISSIONS.CLOCK_VIEW },
   { key: "users", label: "Users", permission: PERMISSIONS.USERS_MANAGE },
   { key: "settings", label: "Settings", permission: PERMISSIONS.SETTINGS_MANAGE },
 ];
@@ -38,6 +41,9 @@ function formatTimestamp(value) {
 }
 
 function normalizePermissions(role, permissions) {
+  if (role === "admin") {
+    return [...DEFAULT_PERMISSIONS_BY_ROLE.admin];
+  }
   const defaults = DEFAULT_PERMISSIONS_BY_ROLE[role] || DEFAULT_PERMISSIONS_BY_ROLE.viewer;
   if (!Array.isArray(permissions)) {
     return [...defaults];
@@ -75,6 +81,11 @@ function pageHeading(page) {
       return {
         title: "Fust Management",
         caption: "Capture IN and OUT movements, then review balances and recent actions.",
+      };
+    case "clock":
+      return {
+        title: "Inklokken",
+        caption: "Scan badge codes, add manual corrections, and export clocked times online.",
       };
     case "users":
       return {
@@ -558,6 +569,7 @@ function App() {
 
         {page === "users" && <UsersPage currentUser={auth.user} />}
         {page === "fust" && <FustPage currentUser={auth.user} menuVersion={fustMenuVersion} />}
+        {page === "clock" && <ClockPage currentUser={auth.user} />}
         {page === "settings" && <SettingsPage currentUser={auth.user} />}
         {page === "dashboard" && canViewPhotos && (
           <>
@@ -2066,6 +2078,336 @@ function parseCmrFolderLines(value) {
   );
 }
 
+
+function todayInputValue() {
+  return new Date().toISOString().slice(0, 10);
+}
+
+function timeInputValue() {
+  return new Date().toLocaleTimeString("nl-NL", { hour12: false }).slice(0, 5);
+}
+
+function employeeOptionLabel(employee) {
+  return `${employee.name} (${employee.tbnr})`;
+}
+
+function ClockPage({ currentUser }) {
+  const canManage = hasPermission(currentUser, PERMISSIONS.CLOCK_MANAGE);
+  const [employees, setEmployees] = useState([]);
+  const [records, setRecords] = useState([]);
+  const [selectedDate, setSelectedDate] = useState(todayInputValue());
+  const [scanCode, setScanCode] = useState("");
+  const [manual, setManual] = useState({ employeeKey: "", action_date: todayInputValue(), action_time: timeInputValue(), direction: "IN" });
+  const [editingId, setEditingId] = useState("");
+  const [editForm, setEditForm] = useState({});
+  const [loading, setLoading] = useState(false);
+  const [employeeLoading, setEmployeeLoading] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [message, setMessage] = useState("");
+  const [error, setError] = useState("");
+
+  async function loadEmployees() {
+    setEmployeeLoading(true);
+    try {
+      const payload = await apiJson("/api/clock/employees");
+      setEmployees(payload.employees || []);
+    } catch (loadError) {
+      setError(loadError.message);
+    } finally {
+      setEmployeeLoading(false);
+    }
+  }
+
+  async function loadRecords(date = selectedDate) {
+    setLoading(true);
+    try {
+      const payload = await apiJson(`/api/clock/records?date=${encodeURIComponent(date)}`);
+      setRecords(payload.records || []);
+    } catch (loadError) {
+      setError(loadError.message);
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  useEffect(() => {
+    loadEmployees();
+  }, []);
+
+  useEffect(() => {
+    loadRecords(selectedDate);
+  }, [selectedDate]);
+
+  const employeeByKey = useMemo(() => {
+    const map = new Map();
+    for (const employee of employees) {
+      map.set(employee.tbnr, employee);
+      map.set(employeeOptionLabel(employee), employee);
+    }
+    return map;
+  }, [employees]);
+
+  async function submitScan(event) {
+    event.preventDefault();
+    if (!canManage) {
+      return;
+    }
+    setBusy(true);
+    setError("");
+    setMessage("");
+    try {
+      const payload = await apiJson("/api/clock/scan", {
+        method: "POST",
+        body: JSON.stringify({ code: scanCode, action_date: selectedDate, action_time: `${timeInputValue()}:00` }),
+      });
+      setRecords(payload.records || []);
+      setScanCode("");
+      setMessage(`${payload.record.name}: ${payload.record.action_time} ${payload.record.direction}`);
+    } catch (scanError) {
+      setError(scanError.message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function submitManual(event) {
+    event.preventDefault();
+    if (!canManage) {
+      return;
+    }
+    const employee = employeeByKey.get(manual.employeeKey);
+    if (!employee) {
+      setError("Choose a valid employee");
+      return;
+    }
+    setBusy(true);
+    setError("");
+    setMessage("");
+    try {
+      const payload = await apiJson("/api/clock/records", {
+        method: "POST",
+        body: JSON.stringify({
+          employee,
+          action_date: manual.action_date,
+          action_time: manual.action_time.length === 5 ? `${manual.action_time}:00` : manual.action_time,
+          direction: manual.direction,
+        }),
+      });
+      setSelectedDate(manual.action_date);
+      setRecords(payload.records || []);
+      setMessage(`Manual ${manual.direction} saved for ${employee.name}`);
+    } catch (manualError) {
+      setError(manualError.message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  function startEdit(record) {
+    setEditingId(record.id);
+    setEditForm({
+      action_date: record.action_date,
+      action_time: String(record.action_time || "").slice(0, 5),
+      employeeKey: record.tbnr,
+      direction: record.direction,
+    });
+  }
+
+  async function saveEdit(record) {
+    const employee = employeeByKey.get(editForm.employeeKey) || {
+      tbnr: record.tbnr,
+      name: record.name,
+      type: record.employee_type,
+    };
+    setBusy(true);
+    setError("");
+    setMessage("");
+    try {
+      const payload = await apiJson(`/api/clock/records/${encodeURIComponent(record.id)}`, {
+        method: "PATCH",
+        body: JSON.stringify({
+          action_date: editForm.action_date,
+          action_time: editForm.action_time.length === 5 ? `${editForm.action_time}:00` : editForm.action_time,
+          tbnr: employee.tbnr,
+          name: employee.name,
+          employee_type: employee.type || employee.employee_type || "",
+          direction: editForm.direction,
+        }),
+      });
+      setEditingId("");
+      setRecords(payload.records || []);
+      setSelectedDate(editForm.action_date);
+      setMessage("Clock record updated");
+    } catch (editError) {
+      setError(editError.message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function deleteRecord(record) {
+    if (!window.confirm(`Delete ${record.name} ${record.action_time} ${record.direction}?`)) {
+      return;
+    }
+    setBusy(true);
+    setError("");
+    setMessage("");
+    try {
+      await apiJson(`/api/clock/records/${encodeURIComponent(record.id)}`, { method: "DELETE" });
+      await loadRecords(selectedDate);
+      setMessage("Clock record deleted");
+    } catch (deleteError) {
+      setError(deleteError.message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <section className="overview-stack clock-page">
+      {error && <div className="notice danger">{error}</div>}
+      {message && <div className="notice">{message}</div>}
+
+      <div className="data-table-card">
+        <div className="section-header">
+          <h2>Scan badge</h2>
+          <button type="button" onClick={loadEmployees} disabled={employeeLoading}>
+            {employeeLoading ? "Loading..." : `${employees.length} employees`}
+          </button>
+        </div>
+        <form className="clock-scan-form" onSubmit={submitScan}>
+          <label>
+            <span>Date</span>
+            <input type="date" value={selectedDate} onChange={(event) => setSelectedDate(event.target.value)} />
+          </label>
+          <label className="wide">
+            <span>Badge code</span>
+            <input
+              value={scanCode}
+              onChange={(event) => setScanCode(event.target.value.toUpperCase())}
+              placeholder="Scan or type TBNR"
+              autoFocus
+            />
+          </label>
+          <button className="primary" type="submit" disabled={!canManage || busy || !scanCode.trim()}>
+            {busy ? "Saving..." : "Clock"}
+          </button>
+        </form>
+      </div>
+
+      {canManage && (
+        <div className="data-table-card">
+          <h2>Manual correction</h2>
+          <form className="clock-manual-form" onSubmit={submitManual}>
+            <label className="wide">
+              <span>Employee</span>
+              <input
+                list="clock-employees"
+                value={manual.employeeKey}
+                onChange={(event) => setManual({ ...manual, employeeKey: event.target.value })}
+                placeholder="Name or badge"
+              />
+              <datalist id="clock-employees">
+                {employees.map((employee) => (
+                  <option key={employee.tbnr} value={employeeOptionLabel(employee)} />
+                ))}
+              </datalist>
+            </label>
+            <label>
+              <span>Date</span>
+              <input type="date" value={manual.action_date} onChange={(event) => setManual({ ...manual, action_date: event.target.value })} />
+            </label>
+            <label>
+              <span>Time</span>
+              <input type="time" value={manual.action_time} onChange={(event) => setManual({ ...manual, action_time: event.target.value })} />
+            </label>
+            <label>
+              <span>Direction</span>
+              <select value={manual.direction} onChange={(event) => setManual({ ...manual, direction: event.target.value })}>
+                <option value="IN">IN</option>
+                <option value="OUT">OUT</option>
+              </select>
+            </label>
+            <button className="primary" type="submit" disabled={busy}>Add manual</button>
+          </form>
+        </div>
+      )}
+
+      <div className="data-table-card">
+        <div className="section-header">
+          <h2>Clocked times</h2>
+          <a className="button-link" href={`/api/clock/records/export?date=${encodeURIComponent(selectedDate)}`}>Export day</a>
+        </div>
+        {loading && <div className="notice">Loading clock records...</div>}
+        <div className="table-wrap">
+          <table className="data-table">
+            <thead>
+              <tr>
+                <th>Time</th>
+                <th>TBNR</th>
+                <th>Name</th>
+                <th>Type</th>
+                <th>Direction</th>
+                <th>Source</th>
+                <th>Sheet</th>
+                {canManage && <th>Actions</th>}
+              </tr>
+            </thead>
+            <tbody>
+              {records.map((record) => {
+                const isEditing = editingId === record.id;
+                return (
+                  <tr key={record.id}>
+                    <td>
+                      {isEditing ? (
+                        <input type="time" value={editForm.action_time || ""} onChange={(event) => setEditForm({ ...editForm, action_time: event.target.value })} />
+                      ) : record.action_time}
+                    </td>
+                    <td>{isEditing ? <input value={editForm.employeeKey || ""} onChange={(event) => setEditForm({ ...editForm, employeeKey: event.target.value })} /> : record.tbnr}</td>
+                    <td>{record.name}</td>
+                    <td>{record.employee_type}</td>
+                    <td>
+                      {isEditing ? (
+                        <select value={editForm.direction || "IN"} onChange={(event) => setEditForm({ ...editForm, direction: event.target.value })}>
+                          <option value="IN">IN</option>
+                          <option value="OUT">OUT</option>
+                        </select>
+                      ) : record.direction}
+                    </td>
+                    <td>{record.source}</td>
+                    <td>{record.sheet_sync?.ok ? "ok" : record.sheet_sync?.error || "local"}</td>
+                    {canManage && (
+                      <td className="row-actions">
+                        {isEditing ? (
+                          <>
+                            <button type="button" onClick={() => saveEdit(record)} disabled={busy}>Save</button>
+                            <button type="button" onClick={() => setEditingId("")} disabled={busy}>Cancel</button>
+                          </>
+                        ) : (
+                          <>
+                            <button type="button" onClick={() => startEdit(record)} disabled={busy}>Edit</button>
+                            <button type="button" onClick={() => deleteRecord(record)} disabled={busy}>Delete</button>
+                          </>
+                        )}
+                      </td>
+                    )}
+                  </tr>
+                );
+              })}
+              {!records.length && !loading && (
+                <tr>
+                  <td colSpan={canManage ? 8 : 7}>No clock records for this date.</td>
+                </tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+  );
+}
+
+
 function SettingsPage({ currentUser }) {
   const [form, setForm] = useState(null);
   const [error, setError] = useState("");
@@ -2234,6 +2576,22 @@ function SettingsPage({ currentUser }) {
             <input
               value={form.dashboard_sheet_name}
               onChange={(event) => setForm({ ...form, dashboard_sheet_name: event.target.value })}
+            />
+          </label>
+          <label>
+            <span>Clock employee tab</span>
+            <input
+              value={form.clock_employee_sheet_name || ""}
+              onChange={(event) => setForm({ ...form, clock_employee_sheet_name: event.target.value })}
+              placeholder="badges"
+            />
+          </label>
+          <label>
+            <span>Clock records tab</span>
+            <input
+              value={form.clock_records_sheet_name || ""}
+              onChange={(event) => setForm({ ...form, clock_records_sheet_name: event.target.value })}
+              placeholder="backup"
             />
           </label>
           <label className="wide">
