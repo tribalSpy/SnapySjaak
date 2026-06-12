@@ -1738,11 +1738,16 @@ async function handleApi(req, res, url) {
     if (!requirePermission(res, requestUser, PERMISSIONS.CLOCK_VIEW)) {
       return;
     }
-    const date = String(url.searchParams.get("date") || localDateIso()).slice(0, 10);
-    const records = filterClockRecords(await readClockRecords(), date).reverse();
+    const fromDate = String(url.searchParams.get("from") || url.searchParams.get("date") || localDateIso()).slice(0, 10);
+    const toDate = String(url.searchParams.get("to") || fromDate).slice(0, 10);
+    const [startDate, endDate] = fromDate <= toDate ? [fromDate, toDate] : [toDate, fromDate];
+    const records = (await readClockRecords())
+      .filter((record) => record.action_date >= startDate && record.action_date <= endDate)
+      .sort((left, right) => `${left.action_date}T${left.action_time}`.localeCompare(`${right.action_date}T${right.action_time}`));
+    const filenameDate = startDate === endDate ? startDate : `${startDate}-to-${endDate}`;
     res.writeHead(200, {
       "content-type": "text/tab-separated-values; charset=utf-8",
-      "content-disposition": `attachment; filename="clock-times-${date}.tsv"`,
+      "content-disposition": `attachment; filename="clock-times-${filenameDate}.tsv"`,
       "cache-control": "no-store",
     });
     res.end(clockExportText(records));

@@ -2080,7 +2080,11 @@ function parseCmrFolderLines(value) {
 
 
 function todayInputValue() {
-  return new Date().toISOString().slice(0, 10);
+  const now = new Date();
+  const year = now.getFullYear();
+  const month = String(now.getMonth() + 1).padStart(2, "0");
+  const day = String(now.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
 }
 
 function timeInputValue() {
@@ -2093,9 +2097,12 @@ function employeeOptionLabel(employee) {
 
 function ClockPage({ currentUser }) {
   const canManage = hasPermission(currentUser, PERMISSIONS.CLOCK_MANAGE);
+  const [activeTab, setActiveTab] = useState("clock");
   const [employees, setEmployees] = useState([]);
   const [records, setRecords] = useState([]);
   const [selectedDate, setSelectedDate] = useState(todayInputValue());
+  const [exportFrom, setExportFrom] = useState(todayInputValue());
+  const [exportTo, setExportTo] = useState(todayInputValue());
   const [scanCode, setScanCode] = useState("");
   const [manual, setManual] = useState({ employeeKey: "", action_date: todayInputValue(), action_time: timeInputValue(), direction: "IN" });
   const [editingId, setEditingId] = useState("");
@@ -2105,6 +2112,7 @@ function ClockPage({ currentUser }) {
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
+  const [nowLabel, setNowLabel] = useState(timeInputValue());
 
   async function loadEmployees() {
     setEmployeeLoading(true);
@@ -2137,6 +2145,11 @@ function ClockPage({ currentUser }) {
   useEffect(() => {
     loadRecords(selectedDate);
   }, [selectedDate]);
+
+  useEffect(() => {
+    const interval = window.setInterval(() => setNowLabel(timeInputValue()), 1000);
+    return () => window.clearInterval(interval);
+  }, []);
 
   const employeeByKey = useMemo(() => {
     const map = new Map();
@@ -2263,39 +2276,47 @@ function ClockPage({ currentUser }) {
     }
   }
 
+  const exportUrl = `/api/clock/records/export?from=${encodeURIComponent(exportFrom)}&to=${encodeURIComponent(exportTo)}`;
+
   return (
     <section className="overview-stack clock-page">
-      {error && <div className="notice danger">{error}</div>}
-      {message && <div className="notice">{message}</div>}
-
-      <div className="data-table-card">
-        <div className="section-header">
-          <h2>Scan badge</h2>
-          <button type="button" onClick={loadEmployees} disabled={employeeLoading}>
-            {employeeLoading ? "Loading..." : `${employees.length} employees`}
-          </button>
-        </div>
-        <form className="clock-scan-form" onSubmit={submitScan}>
-          <label>
-            <span>Date</span>
-            <input type="date" value={selectedDate} onChange={(event) => setSelectedDate(event.target.value)} />
-          </label>
-          <label className="wide">
-            <span>Badge code</span>
-            <input
-              value={scanCode}
-              onChange={(event) => setScanCode(event.target.value.toUpperCase())}
-              placeholder="Scan or type TBNR"
-              autoFocus
-            />
-          </label>
-          <button className="primary" type="submit" disabled={!canManage || busy || !scanCode.trim()}>
-            {busy ? "Saving..." : "Clock"}
-          </button>
-        </form>
+      <div className="tab-strip clock-tabs">
+        <button type="button" className={activeTab === "clock" ? "active" : ""} onClick={() => setActiveTab("clock")}>Clock</button>
+        {canManage && <button type="button" className={activeTab === "manual" ? "active" : ""} onClick={() => setActiveTab("manual")}>Manual</button>}
+        <button type="button" className={activeTab === "export" ? "active" : ""} onClick={() => setActiveTab("export")}>Export</button>
       </div>
 
-      {canManage && (
+      {error && <div className="notice danger">{error}</div>}
+      {message && <div className="notice clock-result">{message}</div>}
+
+      {activeTab === "clock" && (
+        <div className="clock-hero">
+          <div className="clock-face">
+            <span>{selectedDate}</span>
+            <strong>{nowLabel}</strong>
+          </div>
+          <form className="clock-scan-surface" onSubmit={submitScan}>
+            <label>
+              <span>Badge code</span>
+              <input
+                value={scanCode}
+                onChange={(event) => setScanCode(event.target.value.toUpperCase())}
+                placeholder="Scan or type TBNR"
+                autoFocus
+              />
+            </label>
+            <div className="clock-hero-actions">
+              <input type="date" value={selectedDate} onChange={(event) => setSelectedDate(event.target.value)} />
+              <button className="primary" type="submit" disabled={!canManage || busy || !scanCode.trim()}>
+                {busy ? "Saving..." : "Clock"}
+              </button>
+            </div>
+          </form>
+          <p className="sidebar-note">{employeeLoading ? "Loading badges..." : `${employees.length} badges loaded`}</p>
+        </div>
+      )}
+
+      {activeTab === "manual" && canManage && (
         <div className="data-table-card">
           <h2>Manual correction</h2>
           <form className="clock-manual-form" onSubmit={submitManual}>
@@ -2333,80 +2354,96 @@ function ClockPage({ currentUser }) {
         </div>
       )}
 
-      <div className="data-table-card">
-        <div className="section-header">
-          <h2>Clocked times</h2>
-          <a className="button-link" href={`/api/clock/records/export?date=${encodeURIComponent(selectedDate)}`}>Export day</a>
-        </div>
-        {loading && <div className="notice">Loading clock records...</div>}
-        <div className="table-wrap">
-          <table className="data-table">
-            <thead>
-              <tr>
-                <th>Time</th>
-                <th>TBNR</th>
-                <th>Name</th>
-                <th>Type</th>
-                <th>Direction</th>
-                <th>Source</th>
-                <th>Sheet</th>
-                {canManage && <th>Actions</th>}
-              </tr>
-            </thead>
-            <tbody>
-              {records.map((record) => {
-                const isEditing = editingId === record.id;
-                return (
-                  <tr key={record.id}>
-                    <td>
-                      {isEditing ? (
-                        <input type="time" value={editForm.action_time || ""} onChange={(event) => setEditForm({ ...editForm, action_time: event.target.value })} />
-                      ) : record.action_time}
-                    </td>
-                    <td>{isEditing ? <input value={editForm.employeeKey || ""} onChange={(event) => setEditForm({ ...editForm, employeeKey: event.target.value })} /> : record.tbnr}</td>
-                    <td>{record.name}</td>
-                    <td>{record.employee_type}</td>
-                    <td>
-                      {isEditing ? (
-                        <select value={editForm.direction || "IN"} onChange={(event) => setEditForm({ ...editForm, direction: event.target.value })}>
-                          <option value="IN">IN</option>
-                          <option value="OUT">OUT</option>
-                        </select>
-                      ) : record.direction}
-                    </td>
-                    <td>{record.source}</td>
-                    <td>{record.sheet_sync?.ok ? "ok" : record.sheet_sync?.error || "local"}</td>
-                    {canManage && (
-                      <td className="row-actions">
-                        {isEditing ? (
-                          <>
-                            <button type="button" onClick={() => saveEdit(record)} disabled={busy}>Save</button>
-                            <button type="button" onClick={() => setEditingId("")} disabled={busy}>Cancel</button>
-                          </>
-                        ) : (
-                          <>
-                            <button type="button" onClick={() => startEdit(record)} disabled={busy}>Edit</button>
-                            <button type="button" onClick={() => deleteRecord(record)} disabled={busy}>Delete</button>
-                          </>
-                        )}
-                      </td>
-                    )}
-                  </tr>
-                );
-              })}
-              {!records.length && !loading && (
+      {activeTab === "export" && (
+        <div className="data-table-card">
+          <div className="section-header">
+            <h2>Export and records</h2>
+            <button type="button" onClick={() => loadRecords(selectedDate)} disabled={loading}>{loading ? "Loading..." : "Refresh"}</button>
+          </div>
+          <div className="clock-export-controls">
+            <label>
+              <span>From date</span>
+              <input type="date" value={exportFrom} onChange={(event) => setExportFrom(event.target.value)} />
+            </label>
+            <label>
+              <span>To date</span>
+              <input type="date" value={exportTo} onChange={(event) => setExportTo(event.target.value)} />
+            </label>
+            <a className="button-link" href={exportUrl}>Export range</a>
+            <label>
+              <span>Show day</span>
+              <input type="date" value={selectedDate} onChange={(event) => setSelectedDate(event.target.value)} />
+            </label>
+          </div>
+          {loading && <div className="notice">Loading clock records...</div>}
+          <div className="table-wrap">
+            <table className="data-table">
+              <thead>
                 <tr>
-                  <td colSpan={canManage ? 8 : 7}>No clock records for this date.</td>
+                  <th>Time</th>
+                  <th>TBNR</th>
+                  <th>Name</th>
+                  <th>Type</th>
+                  <th>Direction</th>
+                  <th>Source</th>
+                  <th>Sheet</th>
+                  {canManage && <th>Actions</th>}
                 </tr>
-              )}
-            </tbody>
-          </table>
+              </thead>
+              <tbody>
+                {records.map((record) => {
+                  const isEditing = editingId === record.id;
+                  return (
+                    <tr key={record.id}>
+                      <td>
+                        {isEditing ? (
+                          <input type="time" value={editForm.action_time || ""} onChange={(event) => setEditForm({ ...editForm, action_time: event.target.value })} />
+                        ) : record.action_time}
+                      </td>
+                      <td>{isEditing ? <input value={editForm.employeeKey || ""} onChange={(event) => setEditForm({ ...editForm, employeeKey: event.target.value })} /> : record.tbnr}</td>
+                      <td>{record.name}</td>
+                      <td>{record.employee_type}</td>
+                      <td>
+                        {isEditing ? (
+                          <select value={editForm.direction || "IN"} onChange={(event) => setEditForm({ ...editForm, direction: event.target.value })}>
+                            <option value="IN">IN</option>
+                            <option value="OUT">OUT</option>
+                          </select>
+                        ) : record.direction}
+                      </td>
+                      <td>{record.source}</td>
+                      <td>{record.sheet_sync?.ok ? "ok" : record.sheet_sync?.error || "local"}</td>
+                      {canManage && (
+                        <td className="row-actions">
+                          {isEditing ? (
+                            <>
+                              <button type="button" onClick={() => saveEdit(record)} disabled={busy}>Save</button>
+                              <button type="button" onClick={() => setEditingId("")} disabled={busy}>Cancel</button>
+                            </>
+                          ) : (
+                            <>
+                              <button type="button" onClick={() => startEdit(record)} disabled={busy}>Edit</button>
+                              <button type="button" onClick={() => deleteRecord(record)} disabled={busy}>Delete</button>
+                            </>
+                          )}
+                        </td>
+                      )}
+                    </tr>
+                  );
+                })}
+                {!records.length && !loading && (
+                  <tr>
+                    <td colSpan={canManage ? 8 : 7}>No clock records for this date.</td>
+                  </tr>
+                )}
+              </tbody>
+            </table>
+          </div>
         </div>
-      </div>
+      )}
     </section>
   );
 }
-
 
 function SettingsPage({ currentUser }) {
   const [form, setForm] = useState(null);

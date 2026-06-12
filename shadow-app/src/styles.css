@@ -489,6 +489,77 @@ textarea {
 }
 
 
+
+.clock-tabs {
+  margin-bottom: 0;
+}
+
+.clock-hero {
+  min-height: min(680px, calc(100vh - 190px));
+  display: grid;
+  align-content: center;
+  gap: 28px;
+  padding: clamp(18px, 4vw, 44px);
+  border: 1px solid #d6dde5;
+  border-radius: 8px;
+  background: #ffffff;
+}
+
+.clock-face {
+  display: grid;
+  gap: 8px;
+  text-align: center;
+}
+
+.clock-face span {
+  color: #4c6280;
+  font-weight: 800;
+}
+
+.clock-face strong {
+  font-size: clamp(4rem, 18vw, 10rem);
+  line-height: 0.9;
+  letter-spacing: 0;
+}
+
+.clock-scan-surface {
+  display: grid;
+  gap: 16px;
+  max-width: 980px;
+  width: 100%;
+  margin: 0 auto;
+}
+
+.clock-scan-surface label span {
+  font-size: 1rem;
+}
+
+.clock-scan-surface input:not([type="date"]) {
+  min-height: clamp(72px, 12vw, 112px);
+  font-size: clamp(2rem, 8vw, 5rem);
+  font-weight: 900;
+  text-align: center;
+  text-transform: uppercase;
+}
+
+.clock-hero-actions,
+.clock-export-controls {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(150px, 1fr));
+  gap: 14px;
+  align-items: end;
+}
+
+.clock-hero-actions button,
+.clock-hero-actions input {
+  min-height: 52px;
+}
+
+.clock-result {
+  font-size: 1.15rem;
+  font-weight: 800;
+}
+
 .clock-scan-form,
 .clock-manual-form {
   display: grid;
@@ -926,7 +997,9 @@ pre {
   .overview-filters,
   .fust-tile-grid,
   .clock-scan-form,
-  .clock-manual-form {
+  .clock-manual-form,
+  .clock-hero-actions,
+  .clock-export-controls {
     grid-template-columns: 1fr;
   }
 
