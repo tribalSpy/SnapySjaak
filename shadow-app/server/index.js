@@ -86,6 +86,7 @@ const defaultFustSettings = {
   cmr_google_client_secret: "",
   cmr_google_refresh_token: "",
   cmr_google_connected_email: "",
+  clock_spreadsheet_id: "",
   clock_employee_sheet_name: "badges",
   clock_records_sheet_name: "backup",
 };
@@ -346,6 +347,7 @@ function normalizeFustSettings(settings) {
     cmr_google_client_secret: String(settings?.cmr_google_client_secret || ""),
     cmr_google_refresh_token: String(settings?.cmr_google_refresh_token || ""),
     cmr_google_connected_email: String(settings?.cmr_google_connected_email || "").trim(),
+    clock_spreadsheet_id: String(settings?.clock_spreadsheet_id || "").trim(),
     clock_employee_sheet_name: String(settings?.clock_employee_sheet_name || defaultFustSettings.clock_employee_sheet_name).trim() || defaultFustSettings.clock_employee_sheet_name,
     clock_records_sheet_name: String(settings?.clock_records_sheet_name || defaultFustSettings.clock_records_sheet_name).trim() || defaultFustSettings.clock_records_sheet_name,
   };
@@ -484,13 +486,13 @@ function clockRecordRow(record) {
 }
 
 async function syncClockRecordToSheets(record, settings) {
-  if (!settings.spreadsheet_id) {
-    return { ok: false, target_sheets: [], error: "Spreadsheet ID is not configured" };
+  if (!settings.clock_spreadsheet_id) {
+    return { ok: false, target_sheets: [], error: "Clock spreadsheet ID is not configured" };
   }
   if (!settings.clock_records_sheet_name) {
     return { ok: false, target_sheets: [], error: "Clock records sheet is not configured" };
   }
-  await writeSheetRowToFirstEmpty(settings.spreadsheet_id, settings.clock_records_sheet_name, clockRecordRow(record));
+  await writeSheetRowToFirstEmpty(settings.clock_spreadsheet_id, settings.clock_records_sheet_name, clockRecordRow(record));
   return { ok: true, target_sheets: [settings.clock_records_sheet_name], error: "", synced_at: new Date().toISOString() };
 }
 
@@ -1718,7 +1720,7 @@ async function handleApi(req, res, url) {
     }
     const settings = await readFustSettings();
     try {
-      const rows = await loadSheetRows(settings.spreadsheet_id, settings.clock_employee_sheet_name);
+      const rows = await loadSheetRows(settings.clock_spreadsheet_id, settings.clock_employee_sheet_name);
       const parsed = buildClockEmployeesFromSheetRows(rows);
       sendJson(res, 200, {
         employees: parsed.employees,
@@ -1850,7 +1852,7 @@ async function handleApi(req, res, url) {
       return;
     }
     const settings = await readFustSettings();
-    const rows = await loadSheetRows(settings.spreadsheet_id, settings.clock_employee_sheet_name);
+    const rows = await loadSheetRows(settings.clock_spreadsheet_id, settings.clock_employee_sheet_name);
     const employee = buildClockEmployeesFromSheetRows(rows).employees.find((item) => item.tbnr === code);
     if (!employee) {
       sendJson(res, 404, { error: `${code} is not in the employee sheet` });

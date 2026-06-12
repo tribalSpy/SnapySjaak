@@ -2578,6 +2578,14 @@ function SettingsPage({ currentUser }) {
               onChange={(event) => setForm({ ...form, dashboard_sheet_name: event.target.value })}
             />
           </label>
+          <label className="wide">
+            <span>Clock spreadsheet ID</span>
+            <input
+              value={form.clock_spreadsheet_id || ""}
+              onChange={(event) => setForm({ ...form, clock_spreadsheet_id: event.target.value })}
+              placeholder="Spreadsheet ID for badges and backup"
+            />
+          </label>
           <label>
             <span>Clock employee tab</span>
             <input
