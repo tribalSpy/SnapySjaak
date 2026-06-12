@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import "./styles.css";
 
@@ -2113,6 +2113,7 @@ function ClockPage({ currentUser }) {
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
   const [nowLabel, setNowLabel] = useState(timeInputValue());
+  const scanInputRef = useRef(null);
 
   async function loadEmployees() {
     setEmployeeLoading(true);
@@ -2162,9 +2163,6 @@ function ClockPage({ currentUser }) {
 
   async function submitScan(event) {
     event.preventDefault();
-    if (!canManage) {
-      return;
-    }
     setBusy(true);
     setError("");
     setMessage("");
@@ -2176,6 +2174,7 @@ function ClockPage({ currentUser }) {
       setRecords(payload.records || []);
       setScanCode("");
       setMessage(`${payload.record.name}: ${payload.record.action_time} ${payload.record.direction}`);
+      window.setTimeout(() => scanInputRef.current?.focus(), 0);
     } catch (scanError) {
       setError(scanError.message);
     } finally {
@@ -2280,11 +2279,13 @@ function ClockPage({ currentUser }) {
 
   return (
     <section className="overview-stack clock-page">
-      <div className="tab-strip clock-tabs">
-        <button type="button" className={activeTab === "clock" ? "active" : ""} onClick={() => setActiveTab("clock")}>Clock</button>
-        {canManage && <button type="button" className={activeTab === "manual" ? "active" : ""} onClick={() => setActiveTab("manual")}>Manual</button>}
-        <button type="button" className={activeTab === "export" ? "active" : ""} onClick={() => setActiveTab("export")}>Export</button>
-      </div>
+      {canManage && (
+        <div className="tab-strip clock-tabs">
+          <button type="button" className={activeTab === "clock" ? "active" : ""} onClick={() => setActiveTab("clock")}>Clock</button>
+          <button type="button" className={activeTab === "manual" ? "active" : ""} onClick={() => setActiveTab("manual")}>Manual</button>
+          <button type="button" className={activeTab === "export" ? "active" : ""} onClick={() => setActiveTab("export")}>Export</button>
+        </div>
+      )}
 
       {error && <div className="notice danger">{error}</div>}
       {message && <div className="notice clock-result">{message}</div>}
@@ -2292,27 +2293,25 @@ function ClockPage({ currentUser }) {
       {activeTab === "clock" && (
         <div className="clock-hero">
           <div className="clock-face">
-            <span>{selectedDate}</span>
             <strong>{nowLabel}</strong>
           </div>
           <form className="clock-scan-surface" onSubmit={submitScan}>
             <label>
               <span>Badge code</span>
               <input
+                ref={scanInputRef}
                 value={scanCode}
                 onChange={(event) => setScanCode(event.target.value.toUpperCase())}
-                placeholder="Scan or type TBNR"
+                onKeyDown={(event) => {
+                  if (event.key === "Enter") {
+                    submitScan(event);
+                  }
+                }}
+                placeholder="Scan badge"
                 autoFocus
               />
             </label>
-            <div className="clock-hero-actions">
-              <input type="date" value={selectedDate} onChange={(event) => setSelectedDate(event.target.value)} />
-              <button className="primary" type="submit" disabled={!canManage || busy || !scanCode.trim()}>
-                {busy ? "Saving..." : "Clock"}
-              </button>
-            </div>
           </form>
-          <p className="sidebar-note">{employeeLoading ? "Loading badges..." : `${employees.length} badges loaded`}</p>
         </div>
       )}
 

@@ -1847,7 +1847,7 @@ async function handleApi(req, res, url) {
   }
 
   if (url.pathname === "/api/clock/scan" && req.method === "POST") {
-    if (!requirePermission(res, requestUser, PERMISSIONS.CLOCK_MANAGE)) {
+    if (!requirePermission(res, requestUser, PERMISSIONS.CLOCK_VIEW)) {
       return;
     }
     const body = await readRequestJson(req);
