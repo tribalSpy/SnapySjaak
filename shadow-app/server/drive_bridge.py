@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import base64
+import io
 import json
 import mimetypes
 import os
@@ -15,7 +16,7 @@ from dotenv import load_dotenv
 from google.oauth2.service_account import Credentials
 from google.oauth2.credentials import Credentials as UserCredentials
 from googleapiclient.discovery import build
-from googleapiclient.http import MediaFileUpload
+from googleapiclient.http import MediaFileUpload, MediaIoBaseDownload
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(REPO_ROOT) not in sys.path:
@@ -244,7 +245,7 @@ def drive_upload_cmr() -> int:
             .create(
                 body={"name": filename, "parents": [parent_id]},
                 media_body=media,
-                fields="id, name, webViewLink, webContentLink",
+                fields="id, name, mimeType, webViewLink, webContentLink",
                 supportsAllDrives=True,
             )
             .execute()
@@ -253,6 +254,24 @@ def drive_upload_cmr() -> int:
         Path(temp_path).unlink(missing_ok=True)
 
     sys.stdout.write(json.dumps(uploaded, ensure_ascii=True))
+    return 0
+
+
+def drive_download_file() -> int:
+    payload = json.loads(sys.stdin.read() or "{}")
+    file_id = str(payload.get("file_id") or "").strip()
+    oauth = payload.get("oauth") if isinstance(payload.get("oauth"), dict) else None
+    if not file_id:
+        raise RuntimeError("Drive file ID is required")
+
+    service = _drive_service(oauth)
+    request = service.files().get_media(fileId=file_id, supportsAllDrives=True)
+    output = io.BytesIO()
+    downloader = MediaIoBaseDownload(output, request)
+    done = False
+    while not done:
+        _, done = downloader.next_chunk()
+    sys.stdout.buffer.write(output.getvalue())
     return 0
 
 
@@ -357,6 +376,7 @@ def main() -> int:
     subparsers.add_parser("email-send")
     subparsers.add_parser("service-account-info")
     subparsers.add_parser("drive-upload-cmr")
+    subparsers.add_parser("drive-download-file")
     args = parser.parse_args()
 
     if args.command == "details":
@@ -375,6 +395,8 @@ def main() -> int:
         return service_account_info()
     if args.command == "drive-upload-cmr":
         return drive_upload_cmr()
+    if args.command == "drive-download-file":
+        return drive_download_file()
 
     return 1
 

@@ -305,6 +305,7 @@ function normalizeCmrInfo(value) {
     file_id: String(value?.file_id || ""),
     file_name: String(value?.file_name || ""),
     web_link: String(value?.web_link || ""),
+    mime_type: String(value?.mime_type || ""),
     folder_id: String(value?.folder_id || ""),
     error: String(value?.error || ""),
     uploaded_at: String(value?.uploaded_at || ""),
@@ -986,9 +987,31 @@ async function uploadFustDocumentToDrive(action, settings, filePayload, document
     file_id: String(uploaded.id || ""),
     file_name: String(uploaded.name || filename),
     web_link: String(uploaded.webViewLink || uploaded.webContentLink || ""),
+    mime_type: String(uploaded.mimeType || filePayload.type || ""),
     folder_id: countryFolderId,
     error: "",
   };
+}
+
+async function downloadFustDocumentFromDrive(documentInfo, settings) {
+  const output = await runPythonBridge(
+    ["drive-download-file"],
+    JSON.stringify({
+      file_id: documentInfo.file_id,
+      oauth: settings.cmr_google_refresh_token ? {
+        client_id: settings.cmr_google_client_id,
+        client_secret: settings.cmr_google_client_secret,
+        refresh_token: settings.cmr_google_refresh_token,
+      } : null,
+    }),
+  );
+  return output;
+}
+
+function contentDispositionFilename(filename) {
+  return String(filename || "fust-document")
+    .replace(/[\r\n"]/g, "_")
+    .slice(0, 160) || "fust-document";
 }
 
 async function syncFustActionToSheets(action, settings) {
@@ -1696,6 +1719,43 @@ async function handleApi(req, res, url) {
       error,
     });
     return;
+  }
+
+  if (url.pathname.startsWith("/api/fust/actions/") && req.method === "GET") {
+    const parts = url.pathname.split("/").filter(Boolean);
+    const actionId = decodeURIComponent(parts[3] || "");
+    const routeKind = parts[4] || "";
+    const documentKind = parts[5] || "";
+    if (routeKind === "document") {
+      if (!requirePermission(res, requestUser, PERMISSIONS.FUST_VIEW)) {
+        return;
+      }
+      if (!["cmr", "fustbon"].includes(documentKind)) {
+        sendText(res, 404, "Document not found");
+        return;
+      }
+      const actions = await readFustActions();
+      const action = actions.find((item) => item.id === actionId);
+      const documentInfo = normalizeCmrInfo(action?.[documentKind]);
+      if (!action || documentInfo.status !== "uploaded" || !documentInfo.file_id) {
+        sendText(res, 404, "Document not found");
+        return;
+      }
+      try {
+        const settings = await readFustSettings();
+        const fileBuffer = await downloadFustDocumentFromDrive(documentInfo, settings);
+        const fileName = contentDispositionFilename(documentInfo.file_name || `${documentKind}-${actionId}`);
+        res.writeHead(200, {
+          "content-type": documentInfo.mime_type || guessMimeType(fileName),
+          "content-disposition": `inline; filename="${fileName}"`,
+          "cache-control": "private, no-store",
+        });
+        res.end(fileBuffer);
+      } catch (error) {
+        sendText(res, 500, error instanceof Error ? error.message : String(error));
+      }
+      return;
+    }
   }
 
   if (url.pathname === "/api/fust/actions") {

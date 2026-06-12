@@ -159,10 +159,15 @@ function emptyFustMetrics() {
 }
 
 function DocumentStatus({ action }) {
+  const documentKind = action?.type === "IN" ? "fustbon" : "cmr";
   const document = action?.type === "IN" ? action?.fustbon || {} : action?.cmr || {};
   const label = action?.type === "IN" ? "Fustbon" : "CMR";
   if (!action || !["IN", "OUT"].includes(action.type)) {
     return "-";
+  }
+  if (document.status === "uploaded" && document.file_id) {
+    const href = `/api/fust/actions/${encodeURIComponent(action.id)}/document/${documentKind}`;
+    return <a href={href} target="_blank" rel="noreferrer">Open {label}</a>;
   }
   if (document.status === "uploaded" && document.web_link) {
     return <a href={document.web_link} target="_blank" rel="noreferrer">Open {label}</a>;
