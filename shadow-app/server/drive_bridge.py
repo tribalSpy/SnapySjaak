@@ -13,6 +13,7 @@ from email.message import EmailMessage
 
 from dotenv import load_dotenv
 from google.oauth2.service_account import Credentials
+from google.oauth2.credentials import Credentials as UserCredentials
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaFileUpload
 
@@ -151,8 +152,19 @@ def _column_name(index: int) -> str:
 
 
 
-def _drive_service():
-    return build("drive", "v3", credentials=_service_account_credentials(DRIVE_FILE_SCOPES), cache_discovery=False)
+def _drive_service(oauth: dict[str, str] | None = None):
+    if oauth and oauth.get("refresh_token") and oauth.get("client_id") and oauth.get("client_secret"):
+        credentials = UserCredentials(
+            token=None,
+            refresh_token=oauth["refresh_token"],
+            token_uri="https://oauth2.googleapis.com/token",
+            client_id=oauth["client_id"],
+            client_secret=oauth["client_secret"],
+            scopes=DRIVE_FILE_SCOPES,
+        )
+    else:
+        credentials = _service_account_credentials(DRIVE_FILE_SCOPES)
+    return build("drive", "v3", credentials=credentials, cache_discovery=False)
 
 
 def _escape_drive_query(value: str) -> str:
@@ -208,13 +220,14 @@ def drive_upload_cmr() -> int:
     filename = str(payload.get("filename") or "cmr-upload").strip()
     mime_type = str(payload.get("mime_type") or mimetypes.guess_type(filename)[0] or "application/octet-stream").strip()
     content_base64 = str(payload.get("content_base64") or "")
+    oauth = payload.get("oauth") if isinstance(payload.get("oauth"), dict) else None
 
     if not country_folder_id:
         raise RuntimeError("Country folder ID is required")
     if not content_base64:
         raise RuntimeError("CMR file content is required")
 
-    service = _drive_service()
+    service = _drive_service(oauth)
     parent_id = country_folder_id
     for folder_name in folder_path:
         parent_id = find_or_create_drive_folder(service, parent_id, str(folder_name))

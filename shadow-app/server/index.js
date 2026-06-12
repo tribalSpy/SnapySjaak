@@ -77,6 +77,10 @@ const defaultFustSettings = {
   smtp_starttls: true,
   cmr_country_folders: {},
   cmr_fallback_folder_id: "",
+  cmr_google_client_id: "",
+  cmr_google_client_secret: "",
+  cmr_google_refresh_token: "",
+  cmr_google_connected_email: "",
 };
 
 const imageExtensions = new Set([
@@ -327,6 +331,10 @@ function normalizeFustSettings(settings) {
       : true,
     cmr_country_folders: normalizeCmrCountryFolders(settings?.cmr_country_folders),
     cmr_fallback_folder_id: String(settings?.cmr_fallback_folder_id || "").trim(),
+    cmr_google_client_id: String(settings?.cmr_google_client_id || "").trim(),
+    cmr_google_client_secret: String(settings?.cmr_google_client_secret || ""),
+    cmr_google_refresh_token: String(settings?.cmr_google_refresh_token || ""),
+    cmr_google_connected_email: String(settings?.cmr_google_connected_email || "").trim(),
   };
 }
 
@@ -964,6 +972,11 @@ async function uploadCmrToDrive(action, settings, filePayload) {
       filename,
       mime_type: filePayload.type || "application/octet-stream",
       content_base64: filePayload.content_base64,
+      oauth: settings.cmr_google_refresh_token ? {
+        client_id: settings.cmr_google_client_id,
+        client_secret: settings.cmr_google_client_secret,
+        refresh_token: settings.cmr_google_refresh_token,
+      } : null,
     }),
   );
   const uploaded = JSON.parse(output.toString("utf8"));
@@ -1379,6 +1392,58 @@ function maybeStartRecentPreload(payload) {
   });
 }
 
+function publicBaseUrl(req) {
+  const proto = String(req.headers["x-forwarded-proto"] || "http").split(",")[0].trim();
+  const host = String(req.headers["x-forwarded-host"] || req.headers.host || "").split(",")[0].trim();
+  return `${proto}://${host}`;
+}
+
+function cmrGoogleRedirectUri(req) {
+  return `${publicBaseUrl(req)}/api/fust/google/callback`;
+}
+
+function cmrGoogleAuthUrl(settings, req) {
+  const params = new URLSearchParams({
+    client_id: settings.cmr_google_client_id,
+    redirect_uri: cmrGoogleRedirectUri(req),
+    response_type: "code",
+    scope: "https://www.googleapis.com/auth/drive https://www.googleapis.com/auth/userinfo.email openid",
+    access_type: "offline",
+    prompt: "consent",
+  });
+  return `https://accounts.google.com/o/oauth2/v2/auth?${params.toString()}`;
+}
+
+async function exchangeGoogleAuthCode(settings, req, code) {
+  const response = await fetch("https://oauth2.googleapis.com/token", {
+    method: "POST",
+    headers: { "content-type": "application/x-www-form-urlencoded" },
+    body: new URLSearchParams({
+      code,
+      client_id: settings.cmr_google_client_id,
+      client_secret: settings.cmr_google_client_secret,
+      redirect_uri: cmrGoogleRedirectUri(req),
+      grant_type: "authorization_code",
+    }),
+  });
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    throw new Error(payload.error_description || payload.error || `Google token exchange failed with ${response.status}`);
+  }
+  return payload;
+}
+
+async function loadGoogleUserEmail(accessToken) {
+  if (!accessToken) {
+    return "";
+  }
+  const response = await fetch("https://www.googleapis.com/oauth2/v2/userinfo", {
+    headers: { authorization: `Bearer ${accessToken}` },
+  });
+  const payload = await response.json().catch(() => ({}));
+  return String(payload.email || "");
+}
+
 async function handleApi(req, res, url) {
   if (url.pathname === "/api/auth/me") {
     const users = await readUsers();
@@ -1467,6 +1532,49 @@ async function handleApi(req, res, url) {
       sendJson(res, 200, { settings: nextSettings });
       return;
     }
+  }
+
+  if (url.pathname === "/api/fust/google/auth-url") {
+    if (!requirePermission(res, requestUser, PERMISSIONS.SETTINGS_MANAGE)) {
+      return;
+    }
+    const settings = await readFustSettings();
+    if (!settings.cmr_google_client_id || !settings.cmr_google_client_secret) {
+      sendJson(res, 400, { error: "Set Google OAuth client ID and secret first" });
+      return;
+    }
+    sendJson(res, 200, { auth_url: cmrGoogleAuthUrl(settings, req), redirect_uri: cmrGoogleRedirectUri(req) });
+    return;
+  }
+
+  if (url.pathname === "/api/fust/google/callback") {
+    if (!requirePermission(res, requestUser, PERMISSIONS.SETTINGS_MANAGE)) {
+      return;
+    }
+    const code = String(url.searchParams.get("code") || "");
+    if (!code) {
+      sendText(res, 400, "Missing Google authorization code");
+      return;
+    }
+    try {
+      const settings = await readFustSettings();
+      const tokenPayload = await exchangeGoogleAuthCode(settings, req, code);
+      if (!tokenPayload.refresh_token) {
+        sendText(res, 400, "Google did not return a refresh token. Try Connect Google Drive again and approve offline access.");
+        return;
+      }
+      const connectedEmail = await loadGoogleUserEmail(tokenPayload.access_token);
+      await writeFustSettings({
+        ...settings,
+        cmr_google_refresh_token: tokenPayload.refresh_token,
+        cmr_google_connected_email: connectedEmail,
+      });
+      res.writeHead(200, { "content-type": "text/html; charset=utf-8" });
+      res.end("<p>Google Drive connected. You can close this tab and return to SnappySjaak Settings.</p>");
+    } catch (error) {
+      sendText(res, 500, error instanceof Error ? error.message : String(error));
+    }
+    return;
   }
 
   if (url.pathname === "/api/fust/backups") {

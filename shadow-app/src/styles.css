@@ -441,6 +441,22 @@ textarea {
   grid-column: 1 / -1;
 }
 
+.oauth-connect-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px;
+  border: 1px solid #d6dde5;
+  border-radius: 8px;
+  background: #f7faf8;
+}
+
+.oauth-connect-row button {
+  min-height: 38px;
+  padding: 0 12px;
+}
+
 .metrics-grid {
   display: grid;
   grid-template-columns: repeat(6, minmax(100px, 1fr));
@@ -865,6 +881,11 @@ pre {
   .overview-filters,
   .fust-tile-grid {
     grid-template-columns: 1fr;
+  }
+
+  .oauth-connect-row {
+    align-items: stretch;
+    flex-direction: column;
   }
 }
 

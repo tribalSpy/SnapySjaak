@@ -2070,6 +2070,7 @@ function SettingsPage({ currentUser }) {
   const [backupBusy, setBackupBusy] = useState(false);
   const [connectionTest, setConnectionTest] = useState(null);
   const [connectionBusy, setConnectionBusy] = useState(false);
+  const [googleBusy, setGoogleBusy] = useState(false);
 
   async function loadBackups() {
     const payload = await apiJson("/api/fust/backups");
@@ -2156,6 +2157,36 @@ function SettingsPage({ currentUser }) {
     }
   }
 
+
+  async function connectGoogleDrive() {
+    setGoogleBusy(true);
+    setError("");
+    setMessage("");
+    try {
+      const saved = await apiJson("/api/fust/settings", {
+        method: "PATCH",
+        body: JSON.stringify({
+          ...form,
+          email_recipients: String(form.email_recipients || "")
+            .split(/[\n,;]/)
+            .map((value) => value.trim())
+            .filter(Boolean),
+          cmr_country_folders: parseCmrFolderLines(form.cmr_country_folders_text),
+        }),
+      });
+      setForm({
+        ...saved.settings,
+        email_recipients: saved.settings.email_recipients.join("\n"),
+        cmr_country_folders_text: cmrFolderLines(saved.settings.cmr_country_folders),
+      });
+      const payload = await apiJson("/api/fust/google/auth-url");
+      window.location.href = payload.auth_url;
+    } catch (googleError) {
+      setError(googleError.message);
+      setGoogleBusy(false);
+    }
+  }
+
   if (!form) {
     return <div className="notice">Loading settings...</div>;
   }
@@ -2216,6 +2247,29 @@ function SettingsPage({ currentUser }) {
               placeholder="optional fallback folder id"
             />
           </label>
+          <label>
+            <span>Google OAuth client ID</span>
+            <input
+              value={form.cmr_google_client_id || ""}
+              onChange={(event) => setForm({ ...form, cmr_google_client_id: event.target.value })}
+              placeholder="client id"
+            />
+          </label>
+          <label>
+            <span>Google OAuth client secret</span>
+            <input
+              type="password"
+              value={form.cmr_google_client_secret || ""}
+              onChange={(event) => setForm({ ...form, cmr_google_client_secret: event.target.value })}
+              placeholder="client secret"
+            />
+          </label>
+          <div className="wide oauth-connect-row">
+            <span>Google Drive upload account: {form.cmr_google_connected_email || "not connected"}</span>
+            <button type="button" onClick={connectGoogleDrive} disabled={googleBusy}>
+              {googleBusy ? "Connecting..." : "Connect Google Drive"}
+            </button>
+          </div>
           <label className="wide">
             <span>Target email recipients</span>
             <textarea
