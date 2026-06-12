@@ -314,6 +314,32 @@ def sheets_write_first_empty(spreadsheet_id: str, sheet_name: str) -> int:
     return 0
 
 
+def sheets_write_row(spreadsheet_id: str, sheet_name: str, row_number: int) -> int:
+    payload = json.loads(sys.stdin.read() or "{}")
+    row = payload.get("row") if isinstance(payload, dict) else []
+    if not isinstance(row, list) or not row:
+        raise RuntimeError("No row data provided")
+    if row_number < 2:
+        raise RuntimeError("Row number must be 2 or higher")
+
+    last_column = _column_name(len(row))
+    update_range = f"{sheet_name}!A{row_number}:{last_column}{row_number}"
+    service = build("sheets", "v4", credentials=_service_account_credentials(), cache_discovery=False)
+    response = (
+        service.spreadsheets()
+        .values()
+        .update(
+            spreadsheetId=spreadsheet_id,
+            range=update_range,
+            valueInputOption="USER_ENTERED",
+            body={"values": [row]},
+        )
+        .execute()
+    )
+    sys.stdout.write(json.dumps({"row_number": row_number, "response": response}, ensure_ascii=True))
+    return 0
+
+
 def email_send() -> int:
     payload = json.loads(sys.stdin.read() or "{}")
     recipients = payload.get("recipients") if isinstance(payload, dict) else []
@@ -373,6 +399,10 @@ def main() -> int:
     sheets_write_first_empty_parser = subparsers.add_parser("sheets-write-first-empty")
     sheets_write_first_empty_parser.add_argument("--spreadsheet-id", required=True)
     sheets_write_first_empty_parser.add_argument("--sheet-name", required=True)
+    sheets_write_row_parser = subparsers.add_parser("sheets-write-row")
+    sheets_write_row_parser.add_argument("--spreadsheet-id", required=True)
+    sheets_write_row_parser.add_argument("--sheet-name", required=True)
+    sheets_write_row_parser.add_argument("--row-number", required=True, type=int)
     subparsers.add_parser("email-send")
     subparsers.add_parser("service-account-info")
     subparsers.add_parser("drive-upload-cmr")
@@ -389,6 +419,8 @@ def main() -> int:
         return sheets_append(args.spreadsheet_id, args.sheet_name)
     if args.command == "sheets-write-first-empty":
         return sheets_write_first_empty(args.spreadsheet_id, args.sheet_name)
+    if args.command == "sheets-write-row":
+        return sheets_write_row(args.spreadsheet_id, args.sheet_name, args.row_number)
     if args.command == "email-send":
         return email_send()
     if args.command == "service-account-info":

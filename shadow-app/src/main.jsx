@@ -2100,6 +2100,7 @@ function ClockPage({ currentUser }) {
   const [activeTab, setActiveTab] = useState("clock");
   const [employees, setEmployees] = useState([]);
   const [records, setRecords] = useState([]);
+  const [sessions, setSessions] = useState([]);
   const [selectedDate, setSelectedDate] = useState(todayInputValue());
   const [exportFrom, setExportFrom] = useState(todayInputValue());
   const [exportTo, setExportTo] = useState(todayInputValue());
@@ -2132,6 +2133,7 @@ function ClockPage({ currentUser }) {
     try {
       const payload = await apiJson(`/api/clock/records?date=${encodeURIComponent(date)}`);
       setRecords(payload.records || []);
+      setSessions(payload.sessions || []);
     } catch (loadError) {
       setError(loadError.message);
     } finally {
@@ -2172,6 +2174,7 @@ function ClockPage({ currentUser }) {
         body: JSON.stringify({ code: scanCode, action_date: selectedDate, action_time: `${timeInputValue()}:00` }),
       });
       setRecords(payload.records || []);
+      setSessions(payload.sessions || []);
       setScanCode("");
       setMessage(`${payload.record.name}: ${payload.record.action_time} ${payload.record.direction}`);
       window.setTimeout(() => scanInputRef.current?.focus(), 0);
@@ -2207,6 +2210,7 @@ function ClockPage({ currentUser }) {
       });
       setSelectedDate(manual.action_date);
       setRecords(payload.records || []);
+      setSessions(payload.sessions || []);
       setMessage(`Manual ${manual.direction} saved for ${employee.name}`);
     } catch (manualError) {
       setError(manualError.message);
@@ -2248,6 +2252,7 @@ function ClockPage({ currentUser }) {
       });
       setEditingId("");
       setRecords(payload.records || []);
+      setSessions(payload.sessions || []);
       setSelectedDate(editForm.action_date);
       setMessage("Clock record updated");
     } catch (editError) {
@@ -2379,62 +2384,35 @@ function ClockPage({ currentUser }) {
             <table className="data-table">
               <thead>
                 <tr>
-                  <th>Time</th>
+                  <th>Date</th>
                   <th>TBNR</th>
                   <th>Name</th>
                   <th>Type</th>
-                  <th>Direction</th>
+                  <th>IN</th>
+                  <th>OUT</th>
                   <th>Worked</th>
                   <th>Source</th>
-                  <th>Sheet</th>
-                  {canManage && <th>Actions</th>}
                 </tr>
               </thead>
               <tbody>
-                {records.map((record) => {
-                  const isEditing = editingId === record.id;
-                  return (
-                    <tr key={record.id}>
-                      <td>
-                        {isEditing ? (
-                          <input type="time" value={editForm.action_time || ""} onChange={(event) => setEditForm({ ...editForm, action_time: event.target.value })} />
-                        ) : record.action_time}
-                      </td>
-                      <td>{isEditing ? <input value={editForm.employeeKey || ""} onChange={(event) => setEditForm({ ...editForm, employeeKey: event.target.value })} /> : record.tbnr}</td>
-                      <td>{record.name}</td>
-                      <td>{record.employee_type}</td>
-                      <td>
-                        {isEditing ? (
-                          <select value={editForm.direction || "IN"} onChange={(event) => setEditForm({ ...editForm, direction: event.target.value })}>
-                            <option value="IN">IN</option>
-                            <option value="OUT">OUT</option>
-                          </select>
-                        ) : record.direction}
-                      </td>
-                      <td>{record.worked_time || "-"}</td>
-                      <td>{record.source}</td>
-                      <td>{record.sheet_sync?.ok ? "ok" : record.sheet_sync?.error || "local"}</td>
-                      {canManage && (
-                        <td className="row-actions">
-                          {isEditing ? (
-                            <>
-                              <button type="button" onClick={() => saveEdit(record)} disabled={busy}>Save</button>
-                              <button type="button" onClick={() => setEditingId("")} disabled={busy}>Cancel</button>
-                            </>
-                          ) : (
-                            <>
-                              <button type="button" onClick={() => startEdit(record)} disabled={busy}>Edit</button>
-                              <button type="button" onClick={() => deleteRecord(record)} disabled={busy}>Delete</button>
-                            </>
-                          )}
-                        </td>
-                      )}
-                    </tr>
-                  );
-                })}
-                {!records.length && !loading && (
+                {sessions.map((session, index) => {
+                const row = session.row || [];
+                return (
+                  <tr key={`${row[0]}-${row[1]}-${row[4]}-${row[5]}-${index}`}>
+                    <td>{row[0] || "-"}</td>
+                    <td>{row[1] || "-"}</td>
+                    <td>{row[2] || "-"}</td>
+                    <td>{row[3] || "-"}</td>
+                    <td>{row[4] || "-"}</td>
+                    <td>{row[5] || "-"}</td>
+                    <td>{row[6] || "-"}</td>
+                    <td>{row[7] || "-"}</td>
+                  </tr>
+                );
+              })}
+              {!sessions.length && !loading && (
                   <tr>
-                    <td colSpan={canManage ? 9 : 8}>No clock records for this date.</td>
+                    <td colSpan="8">No clock records for this date.</td>
                   </tr>
                 )}
               </tbody>

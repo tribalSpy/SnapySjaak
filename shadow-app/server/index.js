@@ -514,25 +514,67 @@ function addClockWorkedDurations(records) {
   });
 }
 
-function clockRecordRow(record, allRecords = []) {
-  const workedMinutes = Number.isFinite(Number(record.worked_minutes))
-    ? Number(record.worked_minutes)
-    : clockWorkedMinutes(record, allRecords);
+function previousClockInForOut(record, allRecords = []) {
+  if (record.direction !== "OUT") {
+    return null;
+  }
+  const outMs = clockTimestampMs(record);
+  if (!outMs) {
+    return null;
+  }
+  return allRecords
+    .filter((item) => item.action_date === record.action_date && item.tbnr === record.tbnr && item.direction === "IN")
+    .map((item) => ({ item, ms: clockTimestampMs(item) }))
+    .filter(({ ms }) => ms !== null && ms <= outMs)
+    .sort((left, right) => right.ms - left.ms)[0]?.item || null;
+}
+
+function clockSessionRow(inRecord, outRecord = null, allRecords = []) {
+  const base = inRecord?.direction === "IN" ? inRecord : previousClockInForOut(outRecord, allRecords);
+  const first = base || inRecord || outRecord;
+  const workedMinutes = outRecord ? clockWorkedMinutes(outRecord, allRecords) : 0;
   return [
-    record.action_date,
-    record.action_time,
-    record.tbnr,
-    record.name,
-    record.employee_type,
-    record.direction,
+    first?.action_date || outRecord?.action_date || "",
+    first?.tbnr || outRecord?.tbnr || "",
+    first?.name || outRecord?.name || "",
+    first?.employee_type || outRecord?.employee_type || "",
+    base?.action_time || "",
+    outRecord?.action_time || "",
     formatWorkedMinutes(workedMinutes),
-    record.source,
-    record.id,
-    record.created_by,
-    record.created_at,
-    record.updated_by,
-    record.updated_at,
+    outRecord?.source || first?.source || "",
+    first?.id || outRecord?.id || "",
+    first?.created_by || outRecord?.created_by || "",
+    first?.created_at || outRecord?.created_at || "",
   ];
+}
+
+function clockSessionRows(records) {
+  const sorted = addClockWorkedDurations(records)
+    .sort((left, right) => `${left.action_date}T${left.action_time}`.localeCompare(`${right.action_date}T${right.action_time}`));
+  const openByEmployeeDay = new Map();
+  const rows = [];
+  for (const record of sorted) {
+    const key = `${record.action_date}__${record.tbnr}`;
+    if (record.direction === "IN") {
+      openByEmployeeDay.set(key, record);
+      rows.push({ inRecord: record, outRecord: null, row: clockSessionRow(record, null, sorted) });
+      continue;
+    }
+    const openIn = openByEmployeeDay.get(key);
+    if (openIn) {
+      const existing = rows.find((item) => item.inRecord?.id === openIn.id);
+      if (existing) {
+        existing.outRecord = record;
+        existing.row = clockSessionRow(openIn, record, sorted);
+      } else {
+        rows.push({ inRecord: openIn, outRecord: record, row: clockSessionRow(openIn, record, sorted) });
+      }
+      openByEmployeeDay.delete(key);
+    } else {
+      rows.push({ inRecord: null, outRecord: record, row: clockSessionRow(null, record, sorted) });
+    }
+  }
+  return rows;
 }
 
 async function syncClockRecordToSheets(record, settings, allRecords = []) {
@@ -542,8 +584,23 @@ async function syncClockRecordToSheets(record, settings, allRecords = []) {
   if (!settings.clock_records_sheet_name) {
     return { ok: false, target_sheets: [], error: "Clock records sheet is not configured" };
   }
-  await writeSheetRowToFirstEmpty(settings.clock_spreadsheet_id, settings.clock_records_sheet_name, clockRecordRow(record, allRecords));
-  return { ok: true, target_sheets: [settings.clock_records_sheet_name], error: "", synced_at: new Date().toISOString() };
+
+  const previousIn = previousClockInForOut(record, allRecords);
+  const previousRowNumber = Number(previousIn?.sheet_sync?.row_number || 0);
+  const sessionRow = record.direction === "OUT"
+    ? clockSessionRow(previousIn, record, allRecords)
+    : clockSessionRow(record, null, allRecords);
+  const output = record.direction === "OUT" && previousRowNumber >= 2
+    ? await writeSheetRowAt(settings.clock_spreadsheet_id, settings.clock_records_sheet_name, previousRowNumber, sessionRow)
+    : await writeSheetRowToFirstEmpty(settings.clock_spreadsheet_id, settings.clock_records_sheet_name, sessionRow);
+
+  return {
+    ok: true,
+    target_sheets: [settings.clock_records_sheet_name],
+    error: "",
+    synced_at: new Date().toISOString(),
+    row_number: Number(output?.row_number || previousRowNumber || 0),
+  };
 }
 
 function nextClockDirection(records, tbnr, actionDate) {
@@ -576,22 +633,9 @@ function filterClockRecords(records, date) {
 }
 
 function clockExportText(records) {
-  const rowsWithDurations = addClockWorkedDurations(records);
   const rows = [
-    ["Date", "Time", "TBNR", "Name", "Type", "Direction", "Worked time", "Source", "ID", "Created by", "Created at"],
-    ...rowsWithDurations.map((record) => [
-      record.action_date,
-      record.action_time,
-      record.tbnr,
-      record.name,
-      record.employee_type,
-      record.direction,
-      record.worked_time,
-      record.source,
-      record.id,
-      record.created_by,
-      record.created_at,
-    ]),
+    ["Date", "TBNR", "Name", "Type", "IN", "OUT", "Worked time", "Source", "ID", "Created by", "Created at"],
+    ...clockSessionRows(records).map((session) => session.row),
   ];
   return rows.map((row) => row.map((value) => String(value || "").replaceAll("\t", " ")).join("\t")).join("\n");
 }
@@ -1122,10 +1166,19 @@ async function loadServiceAccountInfo() {
 }
 
 async function writeSheetRowToFirstEmpty(spreadsheetId, sheetName, row) {
-  await runPythonBridge(
+  const output = await runPythonBridge(
     ["sheets-write-first-empty", "--spreadsheet-id", spreadsheetId, "--sheet-name", sheetName],
     JSON.stringify({ row }),
   );
+  return JSON.parse(output.toString("utf8"));
+}
+
+async function writeSheetRowAt(spreadsheetId, sheetName, rowNumber, row) {
+  const output = await runPythonBridge(
+    ["sheets-write-row", "--spreadsheet-id", spreadsheetId, "--sheet-name", sheetName, "--row-number", String(rowNumber)],
+    JSON.stringify({ row }),
+  );
+  return JSON.parse(output.toString("utf8"));
 }
 
 function sanitizeDriveName(value) {
@@ -1843,7 +1896,7 @@ async function handleApi(req, res, url) {
       });
       records[recordIndex] = updated;
       await writeClockRecords(records);
-      sendJson(res, 200, { record: updated, records: filterClockRecords(records, updated.action_date) });
+      sendJson(res, 200, { record: updated, records: filterClockRecords(records, updated.action_date), sessions: clockSessionRows(records.filter((item) => item.action_date === updated.action_date)).map((session) => ({ in_record: session.inRecord, out_record: session.outRecord, row: session.row })) });
       return;
     }
   }
@@ -1856,7 +1909,7 @@ async function handleApi(req, res, url) {
     if (req.method === "GET") {
       const date = String(url.searchParams.get("date") || localDateIso()).slice(0, 10);
       const records = await readClockRecords();
-      sendJson(res, 200, { date, records: filterClockRecords(records, date) });
+      sendJson(res, 200, { date, records: filterClockRecords(records, date), sessions: clockSessionRows(records.filter((record) => record.action_date === date)).map((session) => ({ in_record: session.inRecord, out_record: session.outRecord, row: session.row })) });
       return;
     }
 
@@ -1893,7 +1946,7 @@ async function handleApi(req, res, url) {
         savedRecords[savedIndex] = record;
         await writeClockRecords(savedRecords);
       }
-      sendJson(res, 201, { record, records: filterClockRecords(savedRecords, actionDate) });
+      sendJson(res, 201, { record, records: filterClockRecords(savedRecords, actionDate), sessions: clockSessionRows(savedRecords.filter((item) => item.action_date === actionDate)).map((session) => ({ in_record: session.inRecord, out_record: session.outRecord, row: session.row })) });
       return;
     }
   }
@@ -1934,7 +1987,7 @@ async function handleApi(req, res, url) {
       savedRecords[savedIndex] = record;
       await writeClockRecords(savedRecords);
     }
-    sendJson(res, 201, { record, records: filterClockRecords(savedRecords, actionDate) });
+    sendJson(res, 201, { record, records: filterClockRecords(savedRecords, actionDate), sessions: clockSessionRows(savedRecords.filter((item) => item.action_date === actionDate)).map((session) => ({ in_record: session.inRecord, out_record: session.outRecord, row: session.row })) });
     return;
   }
 
