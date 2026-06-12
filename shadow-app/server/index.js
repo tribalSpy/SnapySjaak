@@ -372,6 +372,7 @@ function normalizeFustAction(action) {
     sheet_sync: action?.sheet_sync || { ok: false, target_sheets: [], error: "Not attempted" },
     email_sync: action?.email_sync || { ok: false, recipients: [], error: "Not attempted" },
     cmr: normalizeCmrInfo(action?.cmr),
+    fustbon: normalizeCmrInfo(action?.fustbon),
   };
 }
 
@@ -952,10 +953,11 @@ function buildCmrFilename(action, originalName, mimeType) {
   return `${sanitizeDriveName(action.type)}-${sanitizeDriveName(action.action_date)}-${sanitizeDriveName(action.country)}-${sanitizeDriveName(action.customer_name)}-${stamp}${extension}`;
 }
 
-async function uploadCmrToDrive(action, settings, filePayload) {
+async function uploadFustDocumentToDrive(action, settings, filePayload, documentKind) {
   const countryFolderId = cmrTargetFolderId(settings, action);
+  const documentLabel = documentKind === "fustbon" ? "Fustbon" : "CMR";
   if (!countryFolderId) {
-    throw new Error(`No CMR folder configured for ${action.country}`);
+    throw new Error(`No ${documentLabel} folder configured for ${action.country}`);
   }
 
   const filename = buildCmrFilename(action, filePayload.name, filePayload.type);
@@ -964,8 +966,7 @@ async function uploadCmrToDrive(action, settings, filePayload) {
     JSON.stringify({
       country_folder_id: countryFolderId,
       folder_path: [
-        "CMR",
-        sanitizeDriveName(action.customer_name),
+        `${sanitizeDriveName(action.customer_name)} ${documentLabel}`,
         String(new Date(action.action_date || localDateIso()).getFullYear()),
         `Week ${action.week ?? "unknown"}`,
       ],
@@ -1793,8 +1794,14 @@ async function handleApi(req, res, url) {
   if (url.pathname.startsWith("/api/fust/actions/") && req.method === "PATCH") {
     const parts = url.pathname.split("/").filter(Boolean);
     const actionId = decodeURIComponent(parts[3] || "");
-    const cmrAction = parts[4] || "";
-    if (!["cmr-upload", "cmr-skip"].includes(cmrAction)) {
+    const documentAction = parts[4] || "";
+    const documentConfig = {
+      "cmr-upload": { field: "cmr", type: "OUT", label: "CMR", mode: "upload" },
+      "cmr-skip": { field: "cmr", type: "OUT", label: "CMR", mode: "skip" },
+      "fustbon-upload": { field: "fustbon", type: "IN", label: "Fustbon", mode: "upload" },
+      "fustbon-skip": { field: "fustbon", type: "IN", label: "Fustbon", mode: "skip" },
+    }[documentAction];
+    if (!documentConfig) {
       sendJson(res, 404, { error: "Unknown action update" });
       return;
     }
@@ -1807,16 +1814,17 @@ async function handleApi(req, res, url) {
     }
 
     const action = actions[actionIndex];
-    if (action.type !== "OUT") {
-      sendJson(res, 400, { error: "CMR files can only be attached to OUT actions" });
+    if (action.type !== documentConfig.type) {
+      sendJson(res, 400, { error: `${documentConfig.label} files can only be attached to ${documentConfig.type} actions` });
       return;
     }
-    if (!requirePermission(res, requestUser, PERMISSIONS.FUST_OUT)) {
+    const requiredPermission = action.type === "OUT" ? PERMISSIONS.FUST_OUT : PERMISSIONS.FUST_IN;
+    if (!requirePermission(res, requestUser, requiredPermission)) {
       return;
     }
 
-    if (cmrAction === "cmr-skip") {
-      action.cmr = normalizeCmrInfo({
+    if (documentConfig.mode === "skip") {
+      action[documentConfig.field] = normalizeCmrInfo({
         status: "skipped",
         uploaded_at: new Date().toISOString(),
         uploaded_by: requestUser.username,
@@ -1830,27 +1838,27 @@ async function handleApi(req, res, url) {
     const body = await readRequestJson(req, 18 * 1024 * 1024);
     const filePayload = body?.file || {};
     if (!filePayload.content_base64 || !filePayload.name) {
-      sendJson(res, 400, { error: "Choose a CMR file first" });
+      sendJson(res, 400, { error: `Choose a ${documentConfig.label} file first` });
       return;
     }
 
     const settings = await readFustSettings();
     try {
-      action.cmr = normalizeCmrInfo({
-        ...(await uploadCmrToDrive(action, settings, filePayload)),
+      action[documentConfig.field] = normalizeCmrInfo({
+        ...(await uploadFustDocumentToDrive(action, settings, filePayload, documentConfig.field)),
         uploaded_at: new Date().toISOString(),
         uploaded_by: requestUser.username,
       });
-    } catch (cmrError) {
-      action.cmr = normalizeCmrInfo({
+    } catch (documentError) {
+      action[documentConfig.field] = normalizeCmrInfo({
         status: "failed",
-        error: cmrError instanceof Error ? cmrError.message : String(cmrError),
+        error: documentError instanceof Error ? documentError.message : String(documentError),
         uploaded_at: new Date().toISOString(),
         uploaded_by: requestUser.username,
       });
       actions[actionIndex] = action;
       await writeFustActions(actions);
-      sendJson(res, 500, { error: action.cmr.error, action });
+      sendJson(res, 500, { error: action[documentConfig.field].error, action });
       return;
     }
 
