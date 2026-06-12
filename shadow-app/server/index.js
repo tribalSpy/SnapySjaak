@@ -1355,6 +1355,24 @@ async function maybeStartAutoSync(payload, activeDate) {
   return null;
 }
 
+async function pruneGoogleImageCache(keepCacheNames) {
+  if (!keepCacheNames.size || !existsSync(googleImageCacheDir)) {
+    return;
+  }
+
+  const entries = await fs.readdir(googleImageCacheDir, { withFileTypes: true });
+  await Promise.all(entries.map(async (entry) => {
+    if (!entry.isFile() || keepCacheNames.has(entry.name)) {
+      return;
+    }
+    try {
+      await fs.unlink(path.join(googleImageCacheDir, entry.name));
+    } catch {
+      // Cache pruning is best effort. A failed delete should not block the app.
+    }
+  }));
+}
+
 async function preloadRecentGoogleImages(payload) {
   if (!recentPreloadDays || recentPreloadMaxImages === 0) {
     return;
@@ -1372,6 +1390,7 @@ async function preloadRecentGoogleImages(payload) {
   }
 
   const hydratedByFolderId = await hydrateGoogleRuns(recentRuns);
+  const keepCacheNames = new Set();
   let remaining = recentPreloadMaxImages < 0 ? Infinity : recentPreloadMaxImages;
 
   for (const run of recentRuns) {
@@ -1382,8 +1401,12 @@ async function preloadRecentGoogleImages(payload) {
 
     const accountName = String(hydrated?.metadata?.drive_account || "default");
     for (const image of hydrated.images) {
-      if (!image?.id || remaining <= 0) {
-        break;
+      if (!image?.id) {
+        continue;
+      }
+      keepCacheNames.add(path.basename(googleImageCachePath(image.id, accountName)));
+      if (remaining <= 0) {
+        continue;
       }
       try {
         await readGoogleImage(image.id, accountName);
@@ -1392,11 +1415,9 @@ async function preloadRecentGoogleImages(payload) {
         // Ignore individual preload failures so the dashboard can still load normally.
       }
     }
-
-    if (remaining <= 0) {
-      break;
-    }
   }
+
+  await pruneGoogleImageCache(keepCacheNames);
 }
 
 function maybeStartRecentPreload(payload) {
