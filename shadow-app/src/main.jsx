@@ -2384,6 +2384,7 @@ function ClockPage({ currentUser }) {
                   <th>Name</th>
                   <th>Type</th>
                   <th>Direction</th>
+                  <th>Worked</th>
                   <th>Source</th>
                   <th>Sheet</th>
                   {canManage && <th>Actions</th>}
@@ -2410,6 +2411,7 @@ function ClockPage({ currentUser }) {
                           </select>
                         ) : record.direction}
                       </td>
+                      <td>{record.worked_time || "-"}</td>
                       <td>{record.source}</td>
                       <td>{record.sheet_sync?.ok ? "ok" : record.sheet_sync?.error || "local"}</td>
                       {canManage && (
@@ -2432,7 +2434,7 @@ function ClockPage({ currentUser }) {
                 })}
                 {!records.length && !loading && (
                   <tr>
-                    <td colSpan={canManage ? 8 : 7}>No clock records for this date.</td>
+                    <td colSpan={canManage ? 9 : 8}>No clock records for this date.</td>
                   </tr>
                 )}
               </tbody>

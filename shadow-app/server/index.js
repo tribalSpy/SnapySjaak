@@ -468,7 +468,56 @@ async function writeClockRecords(records) {
   await writeJsonFile(clockRecordsPath, { records: records.map(normalizeClockRecord) });
 }
 
-function clockRecordRow(record) {
+function clockTimestampMs(record) {
+  const parsed = new Date(`${record.action_date}T${record.action_time || "00:00:00"}`);
+  return Number.isNaN(parsed.getTime()) ? null : parsed.getTime();
+}
+
+function formatWorkedMinutes(minutes) {
+  if (!Number.isFinite(minutes) || minutes <= 0) {
+    return "";
+  }
+  const rounded = Math.round(minutes);
+  const hours = Math.floor(rounded / 60);
+  const remainder = rounded % 60;
+  return `${hours}:${String(remainder).padStart(2, "0")}`;
+}
+
+function clockWorkedMinutes(record, allRecords = []) {
+  if (record.direction !== "OUT") {
+    return 0;
+  }
+  const outMs = clockTimestampMs(record);
+  if (!outMs) {
+    return 0;
+  }
+  const previousIn = allRecords
+    .filter((item) => item.action_date === record.action_date && item.tbnr === record.tbnr && item.direction === "IN")
+    .map((item) => ({ item, ms: clockTimestampMs(item) }))
+    .filter(({ ms }) => ms !== null && ms <= outMs)
+    .sort((left, right) => right.ms - left.ms)[0];
+  if (!previousIn) {
+    return 0;
+  }
+  return Math.max(0, (outMs - previousIn.ms) / 60000);
+}
+
+function addClockWorkedDurations(records) {
+  const normalized = records.map(normalizeClockRecord);
+  return normalized.map((record) => {
+    const workedMinutes = clockWorkedMinutes(record, normalized);
+    return {
+      ...record,
+      worked_minutes: Math.round(workedMinutes),
+      worked_time: formatWorkedMinutes(workedMinutes),
+    };
+  });
+}
+
+function clockRecordRow(record, allRecords = []) {
+  const workedMinutes = Number.isFinite(Number(record.worked_minutes))
+    ? Number(record.worked_minutes)
+    : clockWorkedMinutes(record, allRecords);
   return [
     record.action_date,
     record.action_time,
@@ -476,6 +525,7 @@ function clockRecordRow(record) {
     record.name,
     record.employee_type,
     record.direction,
+    formatWorkedMinutes(workedMinutes),
     record.source,
     record.id,
     record.created_by,
@@ -485,14 +535,14 @@ function clockRecordRow(record) {
   ];
 }
 
-async function syncClockRecordToSheets(record, settings) {
+async function syncClockRecordToSheets(record, settings, allRecords = []) {
   if (!settings.clock_spreadsheet_id) {
     return { ok: false, target_sheets: [], error: "Clock spreadsheet ID is not configured" };
   }
   if (!settings.clock_records_sheet_name) {
     return { ok: false, target_sheets: [], error: "Clock records sheet is not configured" };
   }
-  await writeSheetRowToFirstEmpty(settings.clock_spreadsheet_id, settings.clock_records_sheet_name, clockRecordRow(record));
+  await writeSheetRowToFirstEmpty(settings.clock_spreadsheet_id, settings.clock_records_sheet_name, clockRecordRow(record, allRecords));
   return { ok: true, target_sheets: [settings.clock_records_sheet_name], error: "", synced_at: new Date().toISOString() };
 }
 
@@ -520,21 +570,23 @@ function createClockRecord(employee, direction, actionDate, actionTime, source, 
 
 function filterClockRecords(records, date) {
   const activeDate = String(date || localDateIso()).slice(0, 10);
-  return records
+  return addClockWorkedDurations(records)
     .filter((record) => record.action_date === activeDate)
     .sort((left, right) => `${right.action_date}T${right.action_time}`.localeCompare(`${left.action_date}T${left.action_time}`));
 }
 
 function clockExportText(records) {
+  const rowsWithDurations = addClockWorkedDurations(records);
   const rows = [
-    ["Date", "Time", "TBNR", "Name", "Type", "Direction", "Source", "ID", "Created by", "Created at"],
-    ...records.map((record) => [
+    ["Date", "Time", "TBNR", "Name", "Type", "Direction", "Worked time", "Source", "ID", "Created by", "Created at"],
+    ...rowsWithDurations.map((record) => [
       record.action_date,
       record.action_time,
       record.tbnr,
       record.name,
       record.employee_type,
       record.direction,
+      record.worked_time,
       record.source,
       record.id,
       record.created_by,
@@ -1741,7 +1793,7 @@ async function handleApi(req, res, url) {
     const fromDate = String(url.searchParams.get("from") || url.searchParams.get("date") || localDateIso()).slice(0, 10);
     const toDate = String(url.searchParams.get("to") || fromDate).slice(0, 10);
     const [startDate, endDate] = fromDate <= toDate ? [fromDate, toDate] : [toDate, fromDate];
-    const records = (await readClockRecords())
+    const records = addClockWorkedDurations(await readClockRecords())
       .filter((record) => record.action_date >= startDate && record.action_date <= endDate)
       .sort((left, right) => `${left.action_date}T${left.action_time}`.localeCompare(`${right.action_date}T${right.action_time}`));
     const filenameDate = startDate === endDate ? startDate : `${startDate}-to-${endDate}`;
@@ -1831,7 +1883,7 @@ async function handleApi(req, res, url) {
       await writeClockRecords(records);
       const settings = await readFustSettings();
       try {
-        record.sheet_sync = await syncClockRecordToSheets(record, settings);
+        record.sheet_sync = await syncClockRecordToSheets(record, settings, records);
       } catch (error) {
         record.sheet_sync = { ok: false, target_sheets: [], error: error instanceof Error ? error.message : String(error) };
       }
@@ -1872,7 +1924,7 @@ async function handleApi(req, res, url) {
     records.push(record);
     await writeClockRecords(records);
     try {
-      record.sheet_sync = await syncClockRecordToSheets(record, settings);
+      record.sheet_sync = await syncClockRecordToSheets(record, settings, records);
     } catch (error) {
       record.sheet_sync = { ok: false, target_sheets: [], error: error instanceof Error ? error.message : String(error) };
     }
