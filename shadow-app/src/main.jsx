@@ -1061,6 +1061,14 @@ function FustActionForm({ type, metaData, loading, onSaved }) {
   const customerNames = [...new Set(customerOptions.map((record) => record.customer_name))].sort((left, right) => left.localeCompare(right));
   const connectOptions = customerOptions.filter((record) => record.customer_name === form.customer_name);
 
+  function resetActionEntry() {
+    setForm((current) => ({
+      ...current,
+      remark: "",
+      metrics: emptyFustMetrics(),
+    }));
+  }
+
   useEffect(() => {
     if (countries.length && !form.country) {
       setForm((current) => ({ ...current, country: countries[0] }));
@@ -1097,6 +1105,10 @@ function FustActionForm({ type, metaData, loading, onSaved }) {
 
   async function submit(event) {
     event.preventDefault();
+    if (pendingCmrAction) {
+      setError("Finish the CMR step first, or skip CMR.");
+      return;
+    }
     setSaving(true);
     setMessage("");
     setError("");
@@ -1110,12 +1122,9 @@ function FustActionForm({ type, metaData, loading, onSaved }) {
       );
       if (type === "OUT") {
         setPendingCmrAction(payload.action);
+      } else {
+        resetActionEntry();
       }
-      setForm((current) => ({
-        ...current,
-        remark: "",
-        metrics: emptyFustMetrics(),
-      }));
       onSaved();
     } catch (submitError) {
       setError(submitError.message);
@@ -1146,6 +1155,7 @@ function FustActionForm({ type, metaData, loading, onSaved }) {
       });
       setPendingCmrAction(null);
       setCmrFile(null);
+      resetActionEntry();
       setMessage(`CMR uploaded: ${payload.action.cmr?.file_name || cmrFile.name}`);
       onSaved();
     } catch (uploadError) {
@@ -1168,6 +1178,7 @@ function FustActionForm({ type, metaData, loading, onSaved }) {
       });
       setPendingCmrAction(null);
       setCmrFile(null);
+      resetActionEntry();
       setMessage("CMR skipped for this OUT action.");
       onSaved();
     } catch (skipError) {
@@ -1295,9 +1306,11 @@ function FustActionForm({ type, metaData, loading, onSaved }) {
           </div>
         )}
 
-        <button className="primary" type="submit" disabled={saving || loading}>
-          {saving ? `Saving ${type}...` : `Save ${type}`}
-        </button>
+        {!pendingCmrAction && (
+          <button className="primary" type="submit" disabled={saving || loading}>
+            {saving ? `Saving ${type}...` : `Save ${type}`}
+          </button>
+        )}
       </form>
     </div>
   );
