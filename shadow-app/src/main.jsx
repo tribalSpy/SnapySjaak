@@ -2169,10 +2169,12 @@ function ClockPage({ currentUser }) {
     setError("");
     setMessage("");
     try {
+      const scanDate = todayInputValue();
       const payload = await apiJson("/api/clock/scan", {
         method: "POST",
-        body: JSON.stringify({ code: scanCode, action_date: selectedDate, action_time: `${timeInputValue()}:00` }),
+        body: JSON.stringify({ code: scanCode, action_date: scanDate, action_time: `${timeInputValue()}:00` }),
       });
+      setSelectedDate(scanDate);
       setRecords(payload.records || []);
       setSessions(payload.sessions || []);
       setScanCode("");
