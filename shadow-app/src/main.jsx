@@ -2095,6 +2095,21 @@ function employeeOptionLabel(employee) {
   return `${employee.name} (${employee.tbnr})`;
 }
 
+function workedTimeToMinutes(value) {
+  const match = String(value || "").match(/^(\d+):(\d{2})$/);
+  if (!match) {
+    return 0;
+  }
+  return (Number(match[1]) * 60) + Number(match[2]);
+}
+
+function minutesToWorkedTime(minutes) {
+  const rounded = Math.max(0, Math.round(minutes));
+  const hours = Math.floor(rounded / 60);
+  const remainder = rounded % 60;
+  return `${hours}:${String(remainder).padStart(2, "0")}`;
+}
+
 function ClockPage({ currentUser }) {
   const canManage = hasPermission(currentUser, PERMISSIONS.CLOCK_MANAGE);
   const [activeTab, setActiveTab] = useState("clock");
@@ -2162,6 +2177,11 @@ function ClockPage({ currentUser }) {
     }
     return map;
   }, [employees]);
+
+  const selectedDateTotalWorked = useMemo(() => {
+    const totalMinutes = sessions.reduce((total, session) => total + workedTimeToMinutes(session.row?.[6]), 0);
+    return minutesToWorkedTime(totalMinutes);
+  }, [sessions]);
 
   async function submitScan(event) {
     event.preventDefault();
@@ -2342,7 +2362,14 @@ function ClockPage({ currentUser }) {
             </label>
             <label>
               <span>Date</span>
-              <input type="date" value={manual.action_date} onChange={(event) => setManual({ ...manual, action_date: event.target.value })} />
+              <input
+                type="date"
+                value={manual.action_date}
+                onChange={(event) => {
+                  setManual({ ...manual, action_date: event.target.value });
+                  setSelectedDate(event.target.value);
+                }}
+              />
             </label>
             <label>
               <span>Time</span>
@@ -2357,6 +2384,72 @@ function ClockPage({ currentUser }) {
             </label>
             <button className="primary" type="submit" disabled={busy}>Add manual</button>
           </form>
+
+          <div className="clock-manual-overview">
+            <div className="section-header">
+              <h2>Selected date overview</h2>
+              <strong>{selectedDateTotalWorked}</strong>
+            </div>
+            <div className="table-wrap">
+              <table className="data-table">
+                <thead>
+                  <tr>
+                    <th>Time</th>
+                    <th>TBNR</th>
+                    <th>Name</th>
+                    <th>Type</th>
+                    <th>Direction</th>
+                    <th>Source</th>
+                    <th>Actions</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {records.map((record) => {
+                    const isEditing = editingId === record.id;
+                    return (
+                      <tr key={record.id}>
+                        <td>
+                          {isEditing ? (
+                            <input type="time" value={editForm.action_time || ""} onChange={(event) => setEditForm({ ...editForm, action_time: event.target.value })} />
+                          ) : record.action_time}
+                        </td>
+                        <td>{isEditing ? <input value={editForm.employeeKey || ""} onChange={(event) => setEditForm({ ...editForm, employeeKey: event.target.value.toUpperCase() })} /> : record.tbnr}</td>
+                        <td>{record.name}</td>
+                        <td>{record.employee_type}</td>
+                        <td>
+                          {isEditing ? (
+                            <select value={editForm.direction || "IN"} onChange={(event) => setEditForm({ ...editForm, direction: event.target.value })}>
+                              <option value="IN">IN</option>
+                              <option value="OUT">OUT</option>
+                            </select>
+                          ) : record.direction}
+                        </td>
+                        <td>{record.source}</td>
+                        <td className="row-actions">
+                          {isEditing ? (
+                            <>
+                              <button type="button" onClick={() => saveEdit(record)} disabled={busy}>Save</button>
+                              <button type="button" onClick={() => setEditingId("")} disabled={busy}>Cancel</button>
+                            </>
+                          ) : (
+                            <>
+                              <button type="button" onClick={() => startEdit(record)} disabled={busy}>Edit</button>
+                              <button type="button" onClick={() => deleteRecord(record)} disabled={busy}>Delete</button>
+                            </>
+                          )}
+                        </td>
+                      </tr>
+                    );
+                  })}
+                  {!records.length && !loading && (
+                    <tr>
+                      <td colSpan="7">No clock records for this date.</td>
+                    </tr>
+                  )}
+                </tbody>
+              </table>
+            </div>
+          </div>
         </div>
       )}
 
