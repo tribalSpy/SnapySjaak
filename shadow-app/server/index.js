@@ -640,6 +640,92 @@ function clockExportText(records) {
   return rows.map((row) => row.map((value) => String(value || "").replaceAll("\t", " ")).join("\t")).join("\n");
 }
 
+function normalizeClockTime(value) {
+  const raw = String(value || "").trim();
+  const match = raw.match(/^(\d{1,2}):(\d{2})(?::(\d{2}))?$/);
+  if (!match) {
+    return "";
+  }
+  return `${String(match[1]).padStart(2, "0")}:${match[2]}:${match[3] || "00"}`;
+}
+
+function parseClockBackupRows(rows, targetDate, username) {
+  if (!Array.isArray(rows) || rows.length < 2) {
+    return [];
+  }
+
+  const headers = rows[0].map(normalizeHeader);
+  const dateIndex = firstMatchingIndex(headers, ["date", "datum"]);
+  const tbnrIndex = firstMatchingIndex(headers, ["tbnr", "badge", "badge number", "badge nummer"]);
+  const nameIndex = firstMatchingIndex(headers, ["name", "naam"]);
+  const typeIndex = firstMatchingIndex(headers, ["type", "employee type"]);
+  const inIndex = firstMatchingIndex(headers, ["in", "start"]);
+  const outIndex = firstMatchingIndex(headers, ["out", "uit", "finish", "einde"]);
+  const sourceIndex = firstMatchingIndex(headers, ["source", "bron"]);
+  const idIndex = firstMatchingIndex(headers, ["id"]);
+  const createdByIndex = firstMatchingIndex(headers, ["created by", "gemaakt door"]);
+  const createdAtIndex = firstMatchingIndex(headers, ["created at", "gemaakt op"]);
+
+  const imported = [];
+  for (const [offset, row] of rows.slice(1).entries()) {
+    const rowNumber = offset + 2;
+    const actionDate = parseSheetDateToIso(rowValue(row, dateIndex >= 0 ? dateIndex : 0)).slice(0, 10);
+    if (actionDate !== targetDate) {
+      continue;
+    }
+
+    const tbnr = rowValue(row, tbnrIndex >= 0 ? tbnrIndex : 1).toUpperCase();
+    const name = rowValue(row, nameIndex >= 0 ? nameIndex : 2);
+    const employeeType = rowValue(row, typeIndex >= 0 ? typeIndex : 3);
+    const inTime = normalizeClockTime(rowValue(row, inIndex >= 0 ? inIndex : 4));
+    const outTime = normalizeClockTime(rowValue(row, outIndex >= 0 ? outIndex : 5));
+    const source = rowValue(row, sourceIndex >= 0 ? sourceIndex : 7) || "backup";
+    const baseId = rowValue(row, idIndex >= 0 ? idIndex : 8) || crypto.randomUUID();
+    const createdBy = rowValue(row, createdByIndex >= 0 ? createdByIndex : 9) || username;
+    const createdAt = rowValue(row, createdAtIndex >= 0 ? createdAtIndex : 10) || new Date().toISOString();
+
+    if (!tbnr || !name) {
+      continue;
+    }
+
+    if (inTime) {
+      imported.push(normalizeClockRecord({
+        id: baseId,
+        action_date: actionDate,
+        action_time: inTime,
+        timestamp: `${actionDate}T${inTime}`,
+        tbnr,
+        name,
+        employee_type: employeeType,
+        direction: "IN",
+        source,
+        created_by: createdBy,
+        created_at: createdAt,
+        sheet_sync: { ok: true, target_sheets: [], error: "", row_number: rowNumber },
+      }));
+    }
+
+    if (outTime) {
+      imported.push(normalizeClockRecord({
+        id: `${baseId}-out`,
+        action_date: actionDate,
+        action_time: outTime,
+        timestamp: `${actionDate}T${outTime}`,
+        tbnr,
+        name,
+        employee_type: employeeType,
+        direction: "OUT",
+        source,
+        created_by: createdBy,
+        created_at: createdAt,
+        sheet_sync: { ok: true, target_sheets: [], error: "", row_number: rowNumber },
+      }));
+    }
+  }
+
+  return imported.sort((left, right) => `${left.action_date}T${left.action_time}`.localeCompare(`${right.action_date}T${right.action_time}`));
+}
+
 async function createFustBackupSnapshot(createdBy = "system") {
   const [settings, actions] = await Promise.all([readFustSettings(), readFustActions()]);
   const timestamp = new Date().toISOString().replaceAll(":", "-");
@@ -839,13 +925,13 @@ function normalizeNumber(value) {
 
 function parseSheetDateToIso(value) {
   const raw = String(value || "").trim();
-  const match = raw.match(/^(\d{2})-(\d{2})-(\d{2}|\d{4})$/);
+  const match = raw.match(/^(\d{1,2})-(\d{1,2})-(\d{2}|\d{4})$/);
   if (!match) {
     return raw;
   }
   const [, day, month, year] = match;
   const fullYear = year.length === 2 ? `20${year}` : year;
-  return `${fullYear}-${month}-${day}`;
+  return `${fullYear}-${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
 }
 
 function buildActionSignature(action) {
@@ -1856,6 +1942,34 @@ async function handleApi(req, res, url) {
       "cache-control": "no-store",
     });
     res.end(clockExportText(records));
+    return;
+  }
+
+  if (url.pathname === "/api/clock/records/import-backup" && req.method === "POST") {
+    if (!requirePermission(res, requestUser, PERMISSIONS.CLOCK_MANAGE)) {
+      return;
+    }
+    const body = await readRequestJson(req);
+    const date = String(body.date || localDateIso()).slice(0, 10);
+    const settings = await readFustSettings();
+    if (!settings.clock_spreadsheet_id || !settings.clock_records_sheet_name) {
+      sendJson(res, 400, { error: "Clock spreadsheet ID and backup tab must be configured" });
+      return;
+    }
+
+    const rows = await loadSheetRows(settings.clock_spreadsheet_id, settings.clock_records_sheet_name);
+    const importedRecords = parseClockBackupRows(rows, date, requestUser.username);
+    const existingRecords = await readClockRecords();
+    const keptRecords = existingRecords.filter((record) => record.action_date !== date);
+    const nextRecords = [...keptRecords, ...importedRecords];
+    await writeClockRecords(nextRecords);
+
+    sendJson(res, 200, {
+      date,
+      imported_count: importedRecords.length,
+      records: filterClockRecords(nextRecords, date),
+      sessions: clockSessionRows(importedRecords).map((session) => ({ in_record: session.inRecord, out_record: session.outRecord, row: session.row })),
+    });
     return;
   }
 

@@ -570,6 +570,17 @@ textarea {
   font-size: 1.35rem;
 }
 
+.clock-overview-actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.clock-overview-actions button {
+  min-height: 36px;
+}
+
 .clock-scan-form,
 .clock-manual-form {
   display: grid;

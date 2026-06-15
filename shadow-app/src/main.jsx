@@ -2302,6 +2302,30 @@ function ClockPage({ currentUser }) {
     }
   }
 
+  async function refreshDateFromBackup() {
+    const date = manual.action_date || selectedDate;
+    if (!window.confirm(`Replace app records for ${date} with the spreadsheet backup rows for that date?`)) {
+      return;
+    }
+    setBusy(true);
+    setError("");
+    setMessage("");
+    try {
+      const payload = await apiJson("/api/clock/records/import-backup", {
+        method: "POST",
+        body: JSON.stringify({ date }),
+      });
+      setSelectedDate(date);
+      setRecords(payload.records || []);
+      setSessions(payload.sessions || []);
+      setMessage(`Backup refreshed for ${date}: ${payload.imported_count || 0} records loaded`);
+    } catch (backupError) {
+      setError(backupError.message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
   const exportUrl = `/api/clock/records/export?from=${encodeURIComponent(exportFrom)}&to=${encodeURIComponent(exportTo)}`;
 
   return (
@@ -2388,7 +2412,10 @@ function ClockPage({ currentUser }) {
           <div className="clock-manual-overview">
             <div className="section-header">
               <h2>Selected date overview</h2>
-              <strong>{selectedDateTotalWorked}</strong>
+              <div className="clock-overview-actions">
+                <strong>{selectedDateTotalWorked}</strong>
+                <button type="button" onClick={refreshDateFromBackup} disabled={busy}>Refresh from backup</button>
+              </div>
             </div>
             <div className="table-wrap">
               <table className="data-table">
