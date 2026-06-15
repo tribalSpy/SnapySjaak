@@ -1303,6 +1303,49 @@ function buildCmrFilename(action, originalName, mimeType) {
   return `${sanitizeDriveName(action.type)}-${sanitizeDriveName(action.action_date)}-${sanitizeDriveName(action.country)}-${sanitizeDriveName(action.customer_name)}-${stamp}${extension}`;
 }
 
+async function applyFustDocumentChoice(action, settings, documentPayload, requestUser) {
+  const documentConfig = action.type === "IN"
+    ? { field: "fustbon", label: "Fustbon" }
+    : { field: "cmr", label: "CMR" };
+  const mode = String(documentPayload?.mode || "").trim().toLowerCase();
+  if (!mode) {
+    return;
+  }
+
+  if (mode === "skip") {
+    action[documentConfig.field] = normalizeCmrInfo({
+      status: "skipped",
+      uploaded_at: new Date().toISOString(),
+      uploaded_by: requestUser.username,
+    });
+    return;
+  }
+
+  if (mode !== "upload") {
+    throw new Error(`Unknown ${documentConfig.label} choice`);
+  }
+
+  const filePayload = documentPayload?.file || {};
+  if (!filePayload.content_base64 || !filePayload.name) {
+    throw new Error(`Choose a ${documentConfig.label} file first`);
+  }
+
+  try {
+    action[documentConfig.field] = normalizeCmrInfo({
+      ...(await uploadFustDocumentToDrive(action, settings, filePayload, documentConfig.field)),
+      uploaded_at: new Date().toISOString(),
+      uploaded_by: requestUser.username,
+    });
+  } catch (documentError) {
+    action[documentConfig.field] = normalizeCmrInfo({
+      status: "failed",
+      error: documentError instanceof Error ? documentError.message : String(documentError),
+      uploaded_at: new Date().toISOString(),
+      uploaded_by: requestUser.username,
+    });
+  }
+}
+
 async function uploadFustDocumentToDrive(action, settings, filePayload, documentKind) {
   const countryFolderId = cmrTargetFolderId(settings, action);
   const documentLabel = documentKind === "fustbon" ? "Fustbon" : "CMR";
@@ -2673,6 +2716,22 @@ async function handleApi(req, res, url) {
       return;
     }
 
+    const documentPayload = body.document || {};
+    const documentMode = String(documentPayload.mode || "").trim().toLowerCase();
+    const documentLabel = type === "IN" ? "Fustbon" : "CMR";
+    if (!documentMode) {
+      sendJson(res, 400, { error: `Choose a ${documentLabel} file or mark No ${documentLabel}` });
+      return;
+    }
+    if (!["upload", "skip"].includes(documentMode)) {
+      sendJson(res, 400, { error: `Unknown ${documentLabel} choice` });
+      return;
+    }
+    if (documentMode === "upload" && (!documentPayload.file?.content_base64 || !documentPayload.file?.name)) {
+      sendJson(res, 400, { error: `Choose a ${documentLabel} file first` });
+      return;
+    }
+
     const actions = await readFustActions();
     actions.push(action);
     await writeFustActions(actions);
@@ -2696,6 +2755,13 @@ async function handleApi(req, res, url) {
         recipients: normalizeEmailRecipients(settings.email_recipients),
         error: emailError instanceof Error ? emailError.message : String(emailError),
       };
+    }
+
+    try {
+      await applyFustDocumentChoice(action, settings, documentPayload, requestUser);
+    } catch (documentChoiceError) {
+      sendJson(res, 400, { error: documentChoiceError instanceof Error ? documentChoiceError.message : String(documentChoiceError), action });
+      return;
     }
 
     const savedActions = await readFustActions();

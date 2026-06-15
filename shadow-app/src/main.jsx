@@ -1071,16 +1071,15 @@ function FustActionForm({ type, metaData, loading, onSaved }) {
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
   const [saving, setSaving] = useState(false);
-  const [pendingCmrAction, setPendingCmrAction] = useState(null);
-  const [cmrFile, setCmrFile] = useState(null);
-  const [cmrBusy, setCmrBusy] = useState(false);
+  const [documentFile, setDocumentFile] = useState(null);
+  const [documentSkipped, setDocumentSkipped] = useState(false);
+  const [documentInputKey, setDocumentInputKey] = useState(0);
   const records = metaData?.records || [];
   const countries = metaData?.countries || [];
   const customerOptions = records.filter((record) => record.country === form.country);
   const customerNames = [...new Set(customerOptions.map((record) => record.customer_name))].sort((left, right) => left.localeCompare(right));
   const connectOptions = customerOptions.filter((record) => record.customer_name === form.customer_name);
   const documentLabel = type === "IN" ? "Fustbon" : "CMR";
-  const documentEndpoint = type === "IN" ? "fustbon" : "cmr";
 
   function resetActionEntry() {
     setForm((current) => ({
@@ -1126,83 +1125,48 @@ function FustActionForm({ type, metaData, loading, onSaved }) {
 
   async function submit(event) {
     event.preventDefault();
-    if (pendingCmrAction) {
-      setError(`Finish the ${documentLabel} step first, or skip ${documentLabel}.`);
+    if (!documentFile && !documentSkipped) {
+      setError(`Choose a ${documentLabel} file or mark No ${documentLabel}.`);
       return;
     }
     setSaving(true);
     setMessage("");
     setError("");
     try {
+      const document = documentSkipped
+        ? { mode: "skip" }
+        : {
+          mode: "upload",
+          file: {
+            name: documentFile.name,
+            type: documentFile.type || "application/octet-stream",
+            content_base64: await fileToBase64(documentFile),
+          },
+        };
       const payload = await apiJson("/api/fust/submit", {
         method: "POST",
-        body: JSON.stringify({ ...form, type }),
+        body: JSON.stringify({ ...form, type, document }),
       });
+      const savedDocument = type === "IN" ? payload.action.fustbon : payload.action.cmr;
+      const documentStatus = savedDocument?.status === "uploaded"
+        ? `${documentLabel}: uploaded`
+        : savedDocument?.status === "skipped"
+          ? `${documentLabel}: skipped`
+          : savedDocument?.status === "failed"
+            ? `${documentLabel}: ${savedDocument.error || "upload failed"}`
+            : `${documentLabel}: missing`;
       setMessage(
-        `${type} saved. Sheet sync: ${payload.action.sheet_sync.ok ? "ok" : payload.action.sheet_sync.error}. Email: ${payload.action.email_sync.ok ? "ok" : payload.action.email_sync.error}`,
+        `${type} saved. Sheet sync: ${payload.action.sheet_sync.ok ? "ok" : payload.action.sheet_sync.error}. Email: ${payload.action.email_sync.ok ? "ok" : payload.action.email_sync.error}. ${documentStatus}`,
       );
-      setPendingCmrAction(payload.action);
+      setDocumentFile(null);
+      setDocumentSkipped(false);
+      setDocumentInputKey((current) => current + 1);
+      resetActionEntry();
       onSaved();
     } catch (submitError) {
       setError(submitError.message);
     } finally {
       setSaving(false);
-    }
-  }
-
-
-  async function uploadCmr() {
-    if (!pendingCmrAction || !cmrFile) {
-      setError(`Choose a ${documentLabel} file first, or skip ${documentLabel}.`);
-      return;
-    }
-    setCmrBusy(true);
-    setError("");
-    try {
-      const contentBase64 = await fileToBase64(cmrFile);
-      const payload = await apiJson(`/api/fust/actions/${encodeURIComponent(pendingCmrAction.id)}/${documentEndpoint}-upload`, {
-        method: "PATCH",
-        body: JSON.stringify({
-          file: {
-            name: cmrFile.name,
-            type: cmrFile.type || "application/octet-stream",
-            content_base64: contentBase64,
-          },
-        }),
-      });
-      setPendingCmrAction(null);
-      setCmrFile(null);
-      resetActionEntry();
-      const uploadedDocument = type === "IN" ? payload.action.fustbon : payload.action.cmr;
-      setMessage(`${documentLabel} uploaded: ${uploadedDocument?.file_name || cmrFile.name}`);
-      onSaved();
-    } catch (uploadError) {
-      setError(uploadError.message);
-      onSaved();
-    } finally {
-      setCmrBusy(false);
-    }
-  }
-
-  async function skipCmr() {
-    if (!pendingCmrAction) {
-      return;
-    }
-    setCmrBusy(true);
-    setError("");
-    try {
-      await apiJson(`/api/fust/actions/${encodeURIComponent(pendingCmrAction.id)}/${documentEndpoint}-skip`, {
-        method: "PATCH",
-      });
-      setPendingCmrAction(null);
-      setCmrFile(null);
-      resetActionEntry();
-      setMessage(`${documentLabel} skipped for this ${type} action.`);
-      onSaved();
-    } catch (skipError) {
-      setError(skipError.message);
-    } finally {
-      setCmrBusy(false);
     }
   }
 
@@ -1306,29 +1270,42 @@ function FustActionForm({ type, metaData, loading, onSaved }) {
         {message && <div className="notice">{message}</div>}
         {error && <div className="notice danger">{error}</div>}
 
-        {pendingCmrAction && (
-          <div className="cmr-panel">
-            <h3>{documentLabel} for saved {type} action</h3>
+        <div className="cmr-panel">
+          <h3>{documentLabel}</h3>
+          <input
+            key={documentInputKey}
+            type="file"
+            accept="image/*,.pdf"
+            capture="environment"
+            disabled={documentSkipped || saving}
+            onChange={(event) => {
+              const nextFile = event.target.files?.[0] || null;
+              setDocumentFile(nextFile);
+              if (nextFile) {
+                setDocumentSkipped(false);
+              }
+            }}
+          />
+          <label className="checkbox-row">
             <input
-              type="file"
-              accept="image/*,.pdf"
-              capture="environment"
-              onChange={(event) => setCmrFile(event.target.files?.[0] || null)}
+              type="checkbox"
+              checked={documentSkipped}
+              disabled={saving}
+              onChange={(event) => {
+                setDocumentSkipped(event.target.checked);
+                if (event.target.checked) {
+                  setDocumentFile(null);
+                  setDocumentInputKey((current) => current + 1);
+                }
+              }}
             />
-            <div className="cmr-actions">
-              <button type="button" className="primary" disabled={cmrBusy || !cmrFile} onClick={uploadCmr}>
-                {cmrBusy ? `Saving ${documentLabel}...` : `Upload ${documentLabel}`}
-              </button>
-              <button type="button" disabled={cmrBusy} onClick={skipCmr}>Skip {documentLabel}</button>
-            </div>
-          </div>
-        )}
+            <span>No {documentLabel}</span>
+          </label>
+        </div>
 
-        {!pendingCmrAction && (
-          <button className="primary" type="submit" disabled={saving || loading}>
-            {saving ? `Saving ${type}...` : `Save ${type}`}
-          </button>
-        )}
+        <button className="primary" type="submit" disabled={saving || loading}>
+          {saving ? `Saving ${type}...` : `Save ${type}`}
+        </button>
       </form>
     </div>
   );
