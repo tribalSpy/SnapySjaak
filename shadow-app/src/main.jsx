@@ -400,8 +400,7 @@ function mergeCmrFieldLines(...values) {
   const lines = [];
   for (const value of values) {
     for (const line of String(value || "")
-      .split(/?
-/)
+      .split(/\n/)
       .map((part) => part.trim())
       .filter(Boolean)) {
       if (!lines.some((existing) => existing.toLowerCase() === line.toLowerCase())) {
@@ -409,8 +408,7 @@ function mergeCmrFieldLines(...values) {
       }
     }
   }
-  return lines.join("
-");
+  return lines.join("\n");
 }
 
 function applyCmrAssignments(target, assignments, manualFields) {
@@ -423,8 +421,7 @@ function applyCmrAssignments(target, assignments, manualFields) {
 }
 
 function buildCmrCustomerBlock(customer) {
-  return [customer?.name, customer?.address, customer?.city, customer?.country].filter(Boolean).join("
-");
+  return [customer?.name, customer?.address, customer?.city, customer?.country].filter(Boolean).join("\n");
 }
 
 function buildCmrDocumentValues(customer, exporter, transportInfo, loadingPlace, manualValues, places) {
@@ -450,10 +447,7 @@ function buildCmrDocumentValues(customer, exporter, transportInfo, loadingPlace,
   }
 
   values.PackagingType = manualValues.packagingType || "";
-  values.NatureofGoods = manualValues.natureOfGoods || "xx Pal
-xx DC
-xx DCO
-xx DCS";
+  values.NatureofGoods = manualValues.natureOfGoods || "xx Pal\nxx DC\nxx DCO\nxx DCS";
   values.TransportAuthorizations = manualValues.transportAuthorizations || "";
   return values;
 }
@@ -465,10 +459,7 @@ function CmrPrintPage({ currentUser }) {
   const [selectedTemplateName, setSelectedTemplateName] = useState("");
   const [manualValues, setManualValues] = useState({
     packagingType: "",
-    natureOfGoods: "xx Pal
-xx DC
-xx DCO
-xx DCS",
+    natureOfGoods: "xx Pal\nxx DC\nxx DCO\nxx DCS",
     transportAuthorizations: "",
   });
 
@@ -525,11 +516,9 @@ xx DCS",
       if (!value || ["PackagingType", "NatureofGoods", "TransportAuthorizations"].includes(place.field_name)) {
         continue;
       }
-      lines.push(`${place.description}: ${value.replace(/
-/g, " | ")}`);
+      lines.push(`${place.description}: ${value.replace(/\n/g, " | ")}`);
     }
-    return lines.join("
-");
+    return lines.join("\n");
   }, [customer, documentValues, places]);
 
   if (loading) {
