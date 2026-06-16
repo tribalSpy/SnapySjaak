@@ -182,15 +182,14 @@ function decodeXmlEntities(value) {
     .replace(/&gt;/g, ">")
     .replace(/&quot;/g, '"')
     .replace(/&apos;/g, "'")
-    .replace(/&#x0D;/g, "")
-    .replace(/&#10;/g, "
-")
+    .replace(/&#x0D;/g, "\r")
+    .replace(/&#10;/g, "\n")
     .replace(/&amp;/g, "&");
 }
 
 function extractXmlBlocks(xml, tagName) {
   const matches = [];
-  const pattern = new RegExp(`<${tagName}(?:\s[^>]*)?>([\s\S]*?)</${tagName}>`, "g");
+  const pattern = new RegExp(`<${tagName}(?:\\s[^>]*)?>([\\s\\S]*?)</${tagName}>`, "g");
   let match = pattern.exec(xml);
   while (match) {
     matches.push(match[1]);
@@ -200,7 +199,7 @@ function extractXmlBlocks(xml, tagName) {
 }
 
 function extractXmlValue(xml, tagName) {
-  const match = new RegExp(`<${tagName}(?:\s[^>]*)?>([\s\S]*?)</${tagName}>`).exec(xml);
+  const match = new RegExp(`<${tagName}(?:\\s[^>]*)?>([\\s\\S]*?)</${tagName}>`).exec(xml);
   return decodeXmlEntities(match?.[1] || "").trim();
 }
 
