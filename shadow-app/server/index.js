@@ -2832,7 +2832,7 @@ async function handleApi(req, res, url) {
   }
 
   if (url.pathname === "/api/fust/submit" && req.method === "POST") {
-    const body = await readRequestJson(req);
+    const body = await readRequestJson(req, 18 * 1024 * 1024);
     const type = String(body.type || "").trim().toUpperCase() === "OUT" ? "OUT" : "IN";
     const requiredPermission = type === "OUT" ? PERMISSIONS.FUST_OUT : PERMISSIONS.FUST_IN;
     if (!requirePermission(res, requestUser, requiredPermission)) {
