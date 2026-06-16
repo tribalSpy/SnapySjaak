@@ -649,6 +649,83 @@ function normalizeClockTime(value) {
   return `${String(match[1]).padStart(2, "0")}:${match[2]}:${match[3] || "00"}`;
 }
 
+function clockBackupRowNumbersForDate(rows, targetDate) {
+  if (!Array.isArray(rows) || rows.length < 2) {
+    return [];
+  }
+
+  const headers = rows[0].map(normalizeHeader);
+  const dateIndex = firstMatchingIndex(headers, ["date", "datum"]);
+  return rows
+    .slice(1)
+    .map((row, offset) => ({
+      row_number: offset + 2,
+      action_date: parseSheetDateToIso(rowValue(row, dateIndex >= 0 ? dateIndex : 0)).slice(0, 10),
+    }))
+    .filter((entry) => entry.action_date === targetDate)
+    .map((entry) => entry.row_number)
+    .sort((left, right) => left - right);
+}
+
+async function rewriteClockBackupDate(date, records, settings) {
+  if (!settings.clock_spreadsheet_id || !settings.clock_records_sheet_name) {
+    return;
+  }
+
+  const rows = await loadSheetRows(settings.clock_spreadsheet_id, settings.clock_records_sheet_name);
+  const headerWidth = Math.max(rows[0]?.length || 11, 11);
+  const targetRows = clockBackupRowNumbersForDate(rows, date);
+  const dateRecords = records.filter((record) => record.action_date === date);
+  const sessions = clockSessionRows(dateRecords);
+  const blankRow = Array(headerWidth).fill("");
+
+  for (const [index, session] of sessions.entries()) {
+    let rowNumber = Number(targetRows[index] || 0);
+    if (rowNumber >= 2) {
+      await writeSheetRowAt(settings.clock_spreadsheet_id, settings.clock_records_sheet_name, rowNumber, session.row);
+    } else {
+      const output = await writeSheetRowToFirstEmpty(settings.clock_spreadsheet_id, settings.clock_records_sheet_name, session.row);
+      rowNumber = Number(output?.row_number || 0);
+    }
+
+    if (rowNumber >= 2) {
+      const syncInfo = {
+        ok: true,
+        target_sheets: [settings.clock_records_sheet_name],
+        error: "",
+        synced_at: new Date().toISOString(),
+        row_number: rowNumber,
+      };
+      for (const recordId of [session.inRecord?.id, session.outRecord?.id]) {
+        if (!recordId) {
+          continue;
+        }
+        const recordIndex = records.findIndex((item) => item.id === recordId);
+        if (recordIndex >= 0) {
+          records[recordIndex] = {
+            ...records[recordIndex],
+            sheet_sync: {
+              ...records[recordIndex].sheet_sync,
+              ...syncInfo,
+            },
+          };
+        }
+      }
+    }
+  }
+
+  for (const rowNumber of targetRows.slice(sessions.length)) {
+    await writeSheetRowAt(settings.clock_spreadsheet_id, settings.clock_records_sheet_name, rowNumber, blankRow);
+  }
+}
+
+async function rewriteClockBackupDates(dates, records, settings) {
+  const uniqueDates = [...new Set(dates.map((value) => String(value || "").slice(0, 10)).filter(Boolean))];
+  for (const date of uniqueDates) {
+    await rewriteClockBackupDate(date, records, settings);
+  }
+}
+
 function parseClockBackupRows(rows, targetDate, username) {
   if (!Array.isArray(rows) || rows.length < 2) {
     return [];
@@ -2029,8 +2106,18 @@ async function handleApi(req, res, url) {
     }
 
     if (req.method === "DELETE") {
+      const deletedRecord = records[recordIndex];
       records.splice(recordIndex, 1);
       await writeClockRecords(records);
+
+      const settings = await readFustSettings();
+      try {
+        await rewriteClockBackupDates([deletedRecord.action_date], records, settings);
+        await writeClockRecords(records);
+      } catch (sheetError) {
+        // Keep the app data updated even if the backup tab rewrite fails.
+      }
+
       sendJson(res, 200, { ok: true, deleted_record_id: recordId });
       return;
     }
@@ -2038,6 +2125,7 @@ async function handleApi(req, res, url) {
     if (req.method === "PATCH") {
       const body = await readRequestJson(req);
       const current = records[recordIndex];
+      const previousDate = current.action_date;
       const updated = normalizeClockRecord({
         ...current,
         action_date: body.action_date ?? current.action_date,
@@ -2053,6 +2141,15 @@ async function handleApi(req, res, url) {
       });
       records[recordIndex] = updated;
       await writeClockRecords(records);
+
+      const settings = await readFustSettings();
+      try {
+        await rewriteClockBackupDates([previousDate, updated.action_date], records, settings);
+        await writeClockRecords(records);
+      } catch (sheetError) {
+        // Keep the app data updated even if the backup tab rewrite fails.
+      }
+
       sendJson(res, 200, { record: updated, records: filterClockRecords(records, updated.action_date), sessions: clockSessionRows(records.filter((item) => item.action_date === updated.action_date)).map((session) => ({ in_record: session.inRecord, out_record: session.outRecord, row: session.row })) });
       return;
     }

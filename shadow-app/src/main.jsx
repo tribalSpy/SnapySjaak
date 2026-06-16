@@ -2100,6 +2100,8 @@ function ClockPage({ currentUser }) {
   const [manual, setManual] = useState({ employeeKey: "", action_date: todayInputValue(), action_time: timeInputValue(), direction: "IN" });
   const [editingId, setEditingId] = useState("");
   const [editForm, setEditForm] = useState({});
+  const [exportEditingId, setExportEditingId] = useState("");
+  const [exportEditForm, setExportEditForm] = useState({});
   const [loading, setLoading] = useState(false);
   const [employeeLoading, setEmployeeLoading] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -2107,6 +2109,7 @@ function ClockPage({ currentUser }) {
   const [error, setError] = useState("");
   const [nowLabel, setNowLabel] = useState(timeInputValue());
   const scanInputRef = useRef(null);
+  const scanCodeRef = useRef("");
 
   async function loadEmployees() {
     setEmployeeLoading(true);
@@ -2146,6 +2149,10 @@ function ClockPage({ currentUser }) {
     return () => window.clearInterval(interval);
   }, []);
 
+  useEffect(() => {
+    scanCodeRef.current = scanCode;
+  }, [scanCode]);
+
   const employeeByKey = useMemo(() => {
     const map = new Map();
     for (const employee of employees) {
@@ -2160,8 +2167,17 @@ function ClockPage({ currentUser }) {
     return minutesToWorkedTime(totalMinutes);
   }, [sessions]);
 
-  async function submitScan(event) {
-    event.preventDefault();
+  function focusScanInput() {
+    window.setTimeout(() => scanInputRef.current?.focus(), 0);
+  }
+
+  async function processScan(codeValue = scanCodeRef.current) {
+    const normalizedCode = String(codeValue || "").trim().toUpperCase();
+    if (!normalizedCode) {
+      setError("Scan a badge code first");
+      focusScanInput();
+      return;
+    }
     setBusy(true);
     setError("");
     setMessage("");
@@ -2169,19 +2185,24 @@ function ClockPage({ currentUser }) {
       const scanDate = todayInputValue();
       const payload = await apiJson("/api/clock/scan", {
         method: "POST",
-        body: JSON.stringify({ code: scanCode, action_date: scanDate, action_time: `${timeInputValue()}:00` }),
+        body: JSON.stringify({ code: normalizedCode, action_date: scanDate, action_time: `${timeInputValue()}:00` }),
       });
       setSelectedDate(scanDate);
       setRecords(payload.records || []);
       setSessions(payload.sessions || []);
       setScanCode("");
       setMessage(`${payload.record.name}: ${payload.record.action_time} ${payload.record.direction}`);
-      window.setTimeout(() => scanInputRef.current?.focus(), 0);
     } catch (scanError) {
       setError(scanError.message);
     } finally {
       setBusy(false);
+      focusScanInput();
     }
+  }
+
+  async function submitScan(event) {
+    event.preventDefault();
+    await processScan(scanCodeRef.current);
   }
 
   async function submitManual(event) {
@@ -2303,6 +2324,151 @@ function ClockPage({ currentUser }) {
     }
   }
 
+  function exportSessionKey(session, index) {
+    return session.in_record?.id || session.out_record?.id || `clock-session-${index}`;
+  }
+
+  function startExportEdit(session, index) {
+    const baseRecord = session.in_record || session.out_record;
+    if (!baseRecord) {
+      return;
+    }
+    setExportEditingId(exportSessionKey(session, index));
+    setExportEditForm({
+      action_date: baseRecord.action_date,
+      employeeKey: baseRecord.tbnr,
+      in_time: session.in_record ? String(session.in_record.action_time || "").slice(0, 5) : "",
+      out_time: session.out_record ? String(session.out_record.action_time || "").slice(0, 5) : "",
+    });
+  }
+
+  async function saveExportEdit(session) {
+    const baseRecord = session.in_record || session.out_record;
+    if (!baseRecord) {
+      return;
+    }
+    const employee = employeeByKey.get(exportEditForm.employeeKey) || {
+      tbnr: baseRecord.tbnr,
+      name: baseRecord.name,
+      type: baseRecord.employee_type,
+    };
+    if (!employee.tbnr || !employee.name) {
+      setError("Choose a valid employee");
+      return;
+    }
+    if (!exportEditForm.action_date) {
+      setError("Choose a valid date");
+      return;
+    }
+    if (session.in_record && !exportEditForm.in_time) {
+      setError("IN time is required");
+      return;
+    }
+    if (session.out_record && !exportEditForm.out_time) {
+      setError("OUT time is required");
+      return;
+    }
+
+    setBusy(true);
+    setError("");
+    setMessage("");
+    try {
+      if (session.in_record) {
+        await apiJson(`/api/clock/records/${encodeURIComponent(session.in_record.id)}`, {
+          method: "PATCH",
+          body: JSON.stringify({
+            action_date: exportEditForm.action_date,
+            action_time: exportEditForm.in_time.length === 5 ? `${exportEditForm.in_time}:00` : exportEditForm.in_time,
+            tbnr: employee.tbnr,
+            name: employee.name,
+            employee_type: employee.type || employee.employee_type || "",
+            direction: "IN",
+          }),
+        });
+      }
+
+      if (session.out_record) {
+        await apiJson(`/api/clock/records/${encodeURIComponent(session.out_record.id)}`, {
+          method: "PATCH",
+          body: JSON.stringify({
+            action_date: exportEditForm.action_date,
+            action_time: exportEditForm.out_time.length === 5 ? `${exportEditForm.out_time}:00` : exportEditForm.out_time,
+            tbnr: employee.tbnr,
+            name: employee.name,
+            employee_type: employee.type || employee.employee_type || "",
+            direction: "OUT",
+          }),
+        });
+      }
+
+      setExportEditingId("");
+      setSelectedDate(exportEditForm.action_date);
+      await loadRecords(exportEditForm.action_date);
+      setMessage("Clock row updated");
+    } catch (editError) {
+      setError(editError.message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  useEffect(() => {
+    if (activeTab !== "clock") {
+      return undefined;
+    }
+
+    focusScanInput();
+
+    const handlePointerDown = (event) => {
+      const input = scanInputRef.current;
+      if (!input) {
+        return;
+      }
+      if (event.target instanceof Node && input.contains(event.target)) {
+        return;
+      }
+      focusScanInput();
+    };
+
+    const handleKeyDown = (event) => {
+      if (busy || event.defaultPrevented || event.metaKey || event.ctrlKey || event.altKey) {
+        return;
+      }
+      const input = scanInputRef.current;
+      if (!input || document.activeElement === input) {
+        return;
+      }
+
+      if (event.key === "Enter") {
+        if (scanCodeRef.current) {
+          event.preventDefault();
+          processScan(scanCodeRef.current);
+        }
+        return;
+      }
+
+      if (event.key === "Backspace") {
+        event.preventDefault();
+        focusScanInput();
+        setScanCode((current) => current.slice(0, -1));
+        return;
+      }
+
+      if (event.key.length === 1) {
+        event.preventDefault();
+        focusScanInput();
+        setScanCode((current) => `${current}${event.key.toUpperCase()}`);
+      }
+    };
+
+    document.addEventListener("pointerdown", handlePointerDown, true);
+    window.addEventListener("keydown", handleKeyDown, true);
+    return () => {
+      document.removeEventListener("pointerdown", handlePointerDown, true);
+      window.removeEventListener("keydown", handleKeyDown, true);
+    };
+  }, [activeTab, busy]);
+
   const exportUrl = `/api/clock/records/export?from=${encodeURIComponent(exportFrom)}&to=${encodeURIComponent(exportTo)}`;
 
   return (
@@ -2330,6 +2496,11 @@ function ClockPage({ currentUser }) {
                 ref={scanInputRef}
                 value={scanCode}
                 onChange={(event) => setScanCode(event.target.value.toUpperCase())}
+                onBlur={() => {
+                  if (activeTab === "clock") {
+                    focusScanInput();
+                  }
+                }}
                 onKeyDown={(event) => {
                   if (event.key === "Enter") {
                     submitScan(event);
@@ -2491,27 +2662,57 @@ function ClockPage({ currentUser }) {
                   <th>OUT</th>
                   <th>Worked</th>
                   <th>Source</th>
+                  <th>Actions</th>
                 </tr>
               </thead>
               <tbody>
                 {sessions.map((session, index) => {
-                const row = session.row || [];
-                return (
-                  <tr key={`${row[0]}-${row[1]}-${row[4]}-${row[5]}-${index}`}>
-                    <td>{row[0] || "-"}</td>
-                    <td>{row[1] || "-"}</td>
-                    <td>{row[2] || "-"}</td>
-                    <td>{row[3] || "-"}</td>
-                    <td>{row[4] || "-"}</td>
-                    <td>{row[5] || "-"}</td>
-                    <td>{row[6] || "-"}</td>
-                    <td>{row[7] || "-"}</td>
-                  </tr>
-                );
-              })}
-              {!sessions.length && !loading && (
+                  const row = session.row || [];
+                  const sessionKey = exportSessionKey(session, index);
+                  const isEditing = exportEditingId === sessionKey;
+                  const selectedEmployee = employeeByKey.get(exportEditForm.employeeKey);
+                  return (
+                    <tr key={sessionKey}>
+                      <td>
+                        {isEditing ? (
+                          <input type="date" value={exportEditForm.action_date || ""} onChange={(event) => setExportEditForm({ ...exportEditForm, action_date: event.target.value })} />
+                        ) : row[0] || "-"}
+                      </td>
+                      <td>
+                        {isEditing ? (
+                          <input value={exportEditForm.employeeKey || ""} onChange={(event) => setExportEditForm({ ...exportEditForm, employeeKey: event.target.value.toUpperCase() })} />
+                        ) : row[1] || "-"}
+                      </td>
+                      <td>{isEditing ? (selectedEmployee?.name || row[2] || "-") : row[2] || "-"}</td>
+                      <td>{isEditing ? (selectedEmployee?.type || row[3] || "-") : row[3] || "-"}</td>
+                      <td>
+                        {isEditing && session.in_record ? (
+                          <input type="time" value={exportEditForm.in_time || ""} onChange={(event) => setExportEditForm({ ...exportEditForm, in_time: event.target.value })} />
+                        ) : row[4] || "-"}
+                      </td>
+                      <td>
+                        {isEditing && session.out_record ? (
+                          <input type="time" value={exportEditForm.out_time || ""} onChange={(event) => setExportEditForm({ ...exportEditForm, out_time: event.target.value })} />
+                        ) : row[5] || "-"}
+                      </td>
+                      <td>{row[6] || "-"}</td>
+                      <td>{row[7] || "-"}</td>
+                      <td className="row-actions">
+                        {isEditing ? (
+                          <>
+                            <button type="button" onClick={() => saveExportEdit(session)} disabled={busy}>Save</button>
+                            <button type="button" onClick={() => setExportEditingId("")} disabled={busy}>Cancel</button>
+                          </>
+                        ) : (
+                          <button type="button" onClick={() => startExportEdit(session, index)} disabled={busy}>Edit</button>
+                        )}
+                      </td>
+                    </tr>
+                  );
+                })}
+                {!sessions.length && !loading && (
                   <tr>
-                    <td colSpan="8">No clock records for this date.</td>
+                    <td colSpan="9">No clock records for this date.</td>
                   </tr>
                 )}
               </tbody>
