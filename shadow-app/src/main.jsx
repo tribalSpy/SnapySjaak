@@ -2097,7 +2097,7 @@ function ClockPage({ currentUser }) {
   const [exportFrom, setExportFrom] = useState(todayInputValue());
   const [exportTo, setExportTo] = useState(todayInputValue());
   const [scanCode, setScanCode] = useState("");
-  const [manual, setManual] = useState({ employeeKey: "", action_date: todayInputValue(), action_time: timeInputValue(), direction: "IN" });
+  const [manual, setManual] = useState({ employeeKey: "", action_date: todayInputValue(), in_time: "", out_time: "" });
   const [editingId, setEditingId] = useState("");
   const [editForm, setEditForm] = useState({});
   const [exportEditingId, setExportEditingId] = useState("");
@@ -2156,11 +2156,15 @@ function ClockPage({ currentUser }) {
   const employeeByKey = useMemo(() => {
     const map = new Map();
     for (const employee of employees) {
+      const optionLabel = employeeOptionLabel(employee);
       map.set(employee.tbnr, employee);
-      map.set(employeeOptionLabel(employee), employee);
+      map.set(optionLabel, employee);
+      map.set(optionLabel.toUpperCase(), employee);
     }
     return map;
   }, [employees]);
+
+  const selectedManualEmployee = employeeByKey.get(manual.employeeKey);
 
   const selectedDateTotalWorked = useMemo(() => {
     const totalMinutes = sessions.reduce((total, session) => total + workedTimeToMinutes(session.row?.[6]), 0);
@@ -2206,7 +2210,7 @@ function ClockPage({ currentUser }) {
   }
 
   async function submitManual(event) {
-    event.preventDefault();
+    event?.preventDefault?.();
     if (!canManage) {
       return;
     }
@@ -2215,23 +2219,44 @@ function ClockPage({ currentUser }) {
       setError("Choose a valid employee");
       return;
     }
+    if (!manual.action_date) {
+      setError("Choose a valid date");
+      return;
+    }
+    if (!manual.in_time && !manual.out_time) {
+      setError("Add an IN time, an OUT time, or both");
+      return;
+    }
     setBusy(true);
     setError("");
     setMessage("");
     try {
-      const payload = await apiJson("/api/clock/records", {
-        method: "POST",
-        body: JSON.stringify({
-          employee,
-          action_date: manual.action_date,
-          action_time: manual.action_time.length === 5 ? `${manual.action_time}:00` : manual.action_time,
-          direction: manual.direction,
-        }),
-      });
+      if (manual.in_time) {
+        await apiJson("/api/clock/records", {
+          method: "POST",
+          body: JSON.stringify({
+            employee,
+            action_date: manual.action_date,
+            action_time: manual.in_time.length === 5 ? `${manual.in_time}:00` : manual.in_time,
+            direction: "IN",
+          }),
+        });
+      }
+      if (manual.out_time) {
+        await apiJson("/api/clock/records", {
+          method: "POST",
+          body: JSON.stringify({
+            employee,
+            action_date: manual.action_date,
+            action_time: manual.out_time.length === 5 ? `${manual.out_time}:00` : manual.out_time,
+            direction: "OUT",
+          }),
+        });
+      }
       setSelectedDate(manual.action_date);
-      setRecords(payload.records || []);
-      setSessions(payload.sessions || []);
-      setMessage(`Manual ${manual.direction} saved for ${employee.name}`);
+      await loadRecords(manual.action_date);
+      setManual({ employeeKey: "", action_date: manual.action_date, in_time: "", out_time: "" });
+      setMessage(`Clock row saved for ${employee.name}`);
     } catch (manualError) {
       setError(manualError.message);
     } finally {
@@ -2368,6 +2393,10 @@ function ClockPage({ currentUser }) {
       setError("OUT time is required");
       return;
     }
+    if (!session.in_record && !session.out_record && !exportEditForm.in_time && !exportEditForm.out_time) {
+      setError("Add an IN time, an OUT time, or both");
+      return;
+    }
 
     setBusy(true);
     setError("");
@@ -2385,6 +2414,16 @@ function ClockPage({ currentUser }) {
             direction: "IN",
           }),
         });
+      } else if (exportEditForm.in_time) {
+        await apiJson("/api/clock/records", {
+          method: "POST",
+          body: JSON.stringify({
+            employee,
+            action_date: exportEditForm.action_date,
+            action_time: exportEditForm.in_time.length === 5 ? `${exportEditForm.in_time}:00` : exportEditForm.in_time,
+            direction: "IN",
+          }),
+        });
       }
 
       if (session.out_record) {
@@ -2396,6 +2435,16 @@ function ClockPage({ currentUser }) {
             tbnr: employee.tbnr,
             name: employee.name,
             employee_type: employee.type || employee.employee_type || "",
+            direction: "OUT",
+          }),
+        });
+      } else if (exportEditForm.out_time) {
+        await apiJson("/api/clock/records", {
+          method: "POST",
+          body: JSON.stringify({
+            employee,
+            action_date: exportEditForm.action_date,
+            action_time: exportEditForm.out_time.length === 5 ? `${exportEditForm.out_time}:00` : exportEditForm.out_time,
             direction: "OUT",
           }),
         });
@@ -2504,8 +2553,7 @@ function ClockPage({ currentUser }) {
       {canManage && (
         <div className="tab-strip clock-tabs">
           <button type="button" className={activeTab === "clock" ? "active" : ""} onClick={() => setActiveTab("clock")}>Clock</button>
-          <button type="button" className={activeTab === "manual" ? "active" : ""} onClick={() => setActiveTab("manual")}>Manual</button>
-          <button type="button" className={activeTab === "export" ? "active" : ""} onClick={() => setActiveTab("export")}>Export</button>
+          <button type="button" className={activeTab === "extra" ? "active" : ""} onClick={() => setActiveTab("extra")}>Extra</button>
         </div>
       )}
 
@@ -2542,124 +2590,10 @@ function ClockPage({ currentUser }) {
         </div>
       )}
 
-      {activeTab === "manual" && canManage && (
-        <div className="data-table-card">
-          <h2>Manual correction</h2>
-          <form className="clock-manual-form" onSubmit={submitManual}>
-            <label className="wide">
-              <span>Employee</span>
-              <input
-                list="clock-employees"
-                value={manual.employeeKey}
-                onChange={(event) => setManual({ ...manual, employeeKey: event.target.value })}
-                placeholder="Name or badge"
-              />
-              <datalist id="clock-employees">
-                {employees.map((employee) => (
-                  <option key={employee.tbnr} value={employeeOptionLabel(employee)} />
-                ))}
-              </datalist>
-            </label>
-            <label>
-              <span>Date</span>
-              <input
-                type="date"
-                value={manual.action_date}
-                onChange={(event) => {
-                  setManual({ ...manual, action_date: event.target.value });
-                  setSelectedDate(event.target.value);
-                }}
-              />
-            </label>
-            <label>
-              <span>Time</span>
-              <input type="time" value={manual.action_time} onChange={(event) => setManual({ ...manual, action_time: event.target.value })} />
-            </label>
-            <label>
-              <span>Direction</span>
-              <select value={manual.direction} onChange={(event) => setManual({ ...manual, direction: event.target.value })}>
-                <option value="IN">IN</option>
-                <option value="OUT">OUT</option>
-              </select>
-            </label>
-            <button className="primary" type="submit" disabled={busy}>Add manual</button>
-          </form>
-
-          <div className="clock-manual-overview">
-            <div className="section-header">
-              <h2>Selected date overview</h2>
-              <div className="clock-overview-actions">
-                <strong>{selectedDateTotalWorked}</strong>
-                <button type="button" onClick={refreshDateFromBackup} disabled={busy}>Refresh from backup</button>
-              </div>
-            </div>
-            <div className="table-wrap">
-              <table className="data-table">
-                <thead>
-                  <tr>
-                    <th>Time</th>
-                    <th>TBNR</th>
-                    <th>Name</th>
-                    <th>Type</th>
-                    <th>Direction</th>
-                    <th>Source</th>
-                    <th>Actions</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {records.map((record) => {
-                    const isEditing = editingId === record.id;
-                    return (
-                      <tr key={record.id}>
-                        <td>
-                          {isEditing ? (
-                            <input type="time" value={editForm.action_time || ""} onChange={(event) => setEditForm({ ...editForm, action_time: event.target.value })} />
-                          ) : record.action_time}
-                        </td>
-                        <td>{isEditing ? <input value={editForm.employeeKey || ""} onChange={(event) => setEditForm({ ...editForm, employeeKey: event.target.value.toUpperCase() })} /> : record.tbnr}</td>
-                        <td>{record.name}</td>
-                        <td>{record.employee_type}</td>
-                        <td>
-                          {isEditing ? (
-                            <select value={editForm.direction || "IN"} onChange={(event) => setEditForm({ ...editForm, direction: event.target.value })}>
-                              <option value="IN">IN</option>
-                              <option value="OUT">OUT</option>
-                            </select>
-                          ) : record.direction}
-                        </td>
-                        <td>{record.source}</td>
-                        <td className="row-actions">
-                          {isEditing ? (
-                            <>
-                              <button type="button" onClick={() => saveEdit(record)} disabled={busy}>Save</button>
-                              <button type="button" onClick={() => setEditingId("")} disabled={busy}>Cancel</button>
-                            </>
-                          ) : (
-                            <>
-                              <button type="button" onClick={() => startEdit(record)} disabled={busy}>Edit</button>
-                              <button type="button" onClick={() => deleteRecord(record)} disabled={busy}>Delete</button>
-                            </>
-                          )}
-                        </td>
-                      </tr>
-                    );
-                  })}
-                  {!records.length && !loading && (
-                    <tr>
-                      <td colSpan="7">No clock records for this date.</td>
-                    </tr>
-                  )}
-                </tbody>
-              </table>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {activeTab === "export" && (
+      {activeTab === "extra" && canManage && (
         <div className="data-table-card">
           <div className="section-header">
-            <h2>Export and records</h2>
+            <h2>Extra</h2>
             <button type="button" onClick={() => loadRecords(selectedDate)} disabled={loading}>{loading ? "Loading..." : "Refresh"}</button>
           </div>
           <div className="clock-export-controls">
@@ -2674,80 +2608,146 @@ function ClockPage({ currentUser }) {
             <a className="button-link" href={exportUrl}>Export range</a>
             <label>
               <span>Show day</span>
-              <input type="date" value={selectedDate} onChange={(event) => setSelectedDate(event.target.value)} />
+              <input
+                type="date"
+                value={selectedDate}
+                onChange={(event) => {
+                  setSelectedDate(event.target.value);
+                  setManual((current) => ({ ...current, action_date: event.target.value }));
+                }}
+              />
             </label>
           </div>
-          {loading && <div className="notice">Loading clock records...</div>}
-          <div className="table-wrap">
-            <table className="data-table">
-              <thead>
-                <tr>
-                  <th>Date</th>
-                  <th>TBNR</th>
-                  <th>Name</th>
-                  <th>Type</th>
-                  <th>IN</th>
-                  <th>OUT</th>
-                  <th>Worked</th>
-                  <th>Source</th>
-                  <th>Actions</th>
-                </tr>
-              </thead>
-              <tbody>
-                {sessions.map((session, index) => {
-                  const row = session.row || [];
-                  const sessionKey = exportSessionKey(session, index);
-                  const isEditing = exportEditingId === sessionKey;
-                  const selectedEmployee = employeeByKey.get(exportEditForm.employeeKey);
-                  return (
-                    <tr key={sessionKey}>
-                      <td>
-                        {isEditing ? (
-                          <input type="date" value={exportEditForm.action_date || ""} onChange={(event) => setExportEditForm({ ...exportEditForm, action_date: event.target.value })} />
-                        ) : row[0] || "-"}
-                      </td>
-                      <td>
-                        {isEditing ? (
-                          <input value={exportEditForm.employeeKey || ""} onChange={(event) => setExportEditForm({ ...exportEditForm, employeeKey: event.target.value.toUpperCase() })} />
-                        ) : row[1] || "-"}
-                      </td>
-                      <td>{isEditing ? (selectedEmployee?.name || row[2] || "-") : row[2] || "-"}</td>
-                      <td>{isEditing ? (selectedEmployee?.type || row[3] || "-") : row[3] || "-"}</td>
-                      <td>
-                        {isEditing && session.in_record ? (
-                          <input type="time" value={exportEditForm.in_time || ""} onChange={(event) => setExportEditForm({ ...exportEditForm, in_time: event.target.value })} />
-                        ) : row[4] || "-"}
-                      </td>
-                      <td>
-                        {isEditing && session.out_record ? (
-                          <input type="time" value={exportEditForm.out_time || ""} onChange={(event) => setExportEditForm({ ...exportEditForm, out_time: event.target.value })} />
-                        ) : row[5] || "-"}
-                      </td>
-                      <td>{row[6] || "-"}</td>
-                      <td>{row[7] || "-"}</td>
-                      <td className="row-actions">
-                        {isEditing ? (
-                          <>
-                            <button type="button" onClick={() => saveExportEdit(session)} disabled={busy}>Save</button>
-                            <button type="button" onClick={() => setExportEditingId("")} disabled={busy}>Cancel</button>
-                          </>
-                        ) : (
-                          <>
-                            <button type="button" onClick={() => startExportEdit(session, index)} disabled={busy}>Edit</button>
-                            <button type="button" onClick={() => deleteExportSession(session)} disabled={busy}>Delete</button>
-                          </>
-                        )}
-                      </td>
-                    </tr>
-                  );
-                })}
-                {!sessions.length && !loading && (
+          <div className="clock-manual-overview">
+            <div className="section-header">
+              <h2>Selected date overview</h2>
+              <div className="clock-overview-actions">
+                <strong>{selectedDateTotalWorked}</strong>
+                <button type="button" onClick={refreshDateFromBackup} disabled={busy}>Refresh from backup</button>
+              </div>
+            </div>
+            {employeeLoading && <div className="notice">Loading employees...</div>}
+            {loading && <div className="notice">Loading clock records...</div>}
+            <div className="table-wrap">
+              <table className="data-table">
+                <thead>
                   <tr>
-                    <td colSpan="9">No clock records for this date.</td>
+                    <th>Date</th>
+                    <th>TBNR</th>
+                    <th>Name</th>
+                    <th>Type</th>
+                    <th>IN</th>
+                    <th>OUT</th>
+                    <th>Worked</th>
+                    <th>Source</th>
+                    <th>Actions</th>
                   </tr>
-                )}
-              </tbody>
-            </table>
+                </thead>
+                <tbody>
+                  <tr>
+                    <td>
+                      <input
+                        type="date"
+                        value={manual.action_date}
+                        onChange={(event) => {
+                          setManual({ ...manual, action_date: event.target.value });
+                          setSelectedDate(event.target.value);
+                        }}
+                      />
+                    </td>
+                    <td>
+                      <input
+                        list="clock-employees"
+                        value={manual.employeeKey}
+                        onChange={(event) => setManual({ ...manual, employeeKey: event.target.value.toUpperCase() })}
+                        placeholder="Badge or name"
+                      />
+                    </td>
+                    <td>{selectedManualEmployee?.name || "-"}</td>
+                    <td>{selectedManualEmployee?.type || "-"}</td>
+                    <td>
+                      <input type="time" value={manual.in_time || ""} onChange={(event) => setManual({ ...manual, in_time: event.target.value })} />
+                    </td>
+                    <td>
+                      <input type="time" value={manual.out_time || ""} onChange={(event) => setManual({ ...manual, out_time: event.target.value })} />
+                    </td>
+                    <td>-</td>
+                    <td>manual</td>
+                    <td className="row-actions">
+                      <button type="button" onClick={submitManual} disabled={busy}>Add</button>
+                      <button
+                        type="button"
+                        onClick={() => setManual({ employeeKey: "", action_date: selectedDate, in_time: "", out_time: "" })}
+                        disabled={busy}
+                      >
+                        Clear
+                      </button>
+                    </td>
+                  </tr>
+                  {sessions.map((session, index) => {
+                    const row = session.row || [];
+                    const sessionKey = exportSessionKey(session, index);
+                    const isEditing = exportEditingId === sessionKey;
+                    const selectedEmployee = employeeByKey.get(exportEditForm.employeeKey);
+                    return (
+                      <tr key={sessionKey}>
+                        <td>
+                          {isEditing ? (
+                            <input type="date" value={exportEditForm.action_date || ""} onChange={(event) => setExportEditForm({ ...exportEditForm, action_date: event.target.value })} />
+                          ) : row[0] || "-"}
+                        </td>
+                        <td>
+                          {isEditing ? (
+                            <input
+                              list="clock-employees"
+                              value={exportEditForm.employeeKey || ""}
+                              onChange={(event) => setExportEditForm({ ...exportEditForm, employeeKey: event.target.value.toUpperCase() })}
+                            />
+                          ) : row[1] || "-"}
+                        </td>
+                        <td>{isEditing ? (selectedEmployee?.name || row[2] || "-") : row[2] || "-"}</td>
+                        <td>{isEditing ? (selectedEmployee?.type || row[3] || "-") : row[3] || "-"}</td>
+                        <td>
+                          {isEditing ? (
+                            <input type="time" value={exportEditForm.in_time || ""} onChange={(event) => setExportEditForm({ ...exportEditForm, in_time: event.target.value })} />
+                          ) : row[4] || "-"}
+                        </td>
+                        <td>
+                          {isEditing ? (
+                            <input type="time" value={exportEditForm.out_time || ""} onChange={(event) => setExportEditForm({ ...exportEditForm, out_time: event.target.value })} />
+                          ) : row[5] || "-"}
+                        </td>
+                        <td>{row[6] || "-"}</td>
+                        <td>{row[7] || "-"}</td>
+                        <td className="row-actions">
+                          {isEditing ? (
+                            <>
+                              <button type="button" onClick={() => saveExportEdit(session)} disabled={busy}>Save</button>
+                              <button type="button" onClick={() => setExportEditingId("")} disabled={busy}>Cancel</button>
+                            </>
+                          ) : (
+                            <>
+                              <button type="button" onClick={() => startExportEdit(session, index)} disabled={busy}>Edit</button>
+                              <button type="button" onClick={() => deleteExportSession(session)} disabled={busy}>Delete</button>
+                            </>
+                          )}
+                        </td>
+                      </tr>
+                    );
+                  })}
+                  {!sessions.length && !loading && (
+                    <tr>
+                      <td colSpan="9">No clock records for this date.</td>
+                    </tr>
+                  )}
+                </tbody>
+              </table>
+            </div>
+            <datalist id="clock-employees">
+              {employees.map((employee) => (
+                <option key={employee.tbnr} value={employeeOptionLabel(employee)} />
+              ))}
+            </datalist>
           </div>
         </div>
       )}
