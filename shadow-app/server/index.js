@@ -89,6 +89,8 @@ const defaultFustSettings = {
   clock_spreadsheet_id: "",
   clock_employee_sheet_name: "badges",
   clock_records_sheet_name: "backup",
+  cmr_default_template_name: "",
+  cmr_manage_usernames: [],
 };
 
 const cmrPrintDataDirCandidates = [
@@ -343,6 +345,197 @@ async function loadCmrPrintData() {
   };
 }
 
+function cmrPrintPrimaryDataDir() {
+  return path.join(repoRoot, "cmrprint", "CMRPrint", "Data");
+}
+
+async function ensureCmrPrintDataDir() {
+  const dataDir = resolveCmrPrintDataDir() || cmrPrintPrimaryDataDir();
+  const templatesDir = path.join(dataDir, "Templates");
+  await fs.mkdir(templatesDir, { recursive: true });
+  return { dataDir, templatesDir, appDataPath: path.join(dataDir, "app-data.xml") };
+}
+
+function xmlEscape(value) {
+  return String(value || "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&apos;")
+    .replace(/\r/g, "&#x0D;");
+}
+
+function serializeFieldAssignments(assignments) {
+  const rows = Array.isArray(assignments) ? assignments : [];
+  return rows.map((item) => `
+      <FieldAssignment>
+        <FieldName>${xmlEscape(item?.field_name)}</FieldName>
+        <Value>${xmlEscape(item?.value)}</Value>
+      </FieldAssignment>`).join("");
+}
+
+function serializeProfileRecord(tagName, item) {
+  return `
+    <${tagName}>
+      <Name>${xmlEscape(item?.name)}</Name>
+      <Country>${xmlEscape(item?.country)}</Country>
+      <Place>${xmlEscape(item?.place)}</Place>
+      <FieldAssignments>${serializeFieldAssignments(item?.field_assignments)}
+      </FieldAssignments>
+    </${tagName}>`;
+}
+
+function serializeCustomer(item) {
+  return `
+    <Customer>
+      <Name>${xmlEscape(item?.name)}</Name>
+      <Address>${xmlEscape(item?.address)}</Address>
+      <City>${xmlEscape(item?.city)}</City>
+      <Country>${xmlEscape(item?.country)}</Country>
+      <VatNumber>${xmlEscape(item?.vat_number)}</VatNumber>
+      <ExporterProfileName>${xmlEscape(item?.exporter_profile_name)}</ExporterProfileName>
+      <TransportProfileName>${xmlEscape(item?.transport_profile_name)}</TransportProfileName>
+      <LoadingPlaceProfileName>${xmlEscape(item?.loading_place_profile_name)}</LoadingPlaceProfileName>
+      <PlaceOfIssue>${xmlEscape(item?.place_of_issue)}</PlaceOfIssue>
+      <FieldAssignments>${serializeFieldAssignments(item?.field_assignments)}
+      </FieldAssignments>
+    </Customer>`;
+}
+
+function normalizeCmrAssignments(assignments) {
+  if (!Array.isArray(assignments)) {
+    return [];
+  }
+  return assignments.map((item) => ({
+    field_name: String(item?.field_name || "").trim(),
+    value: String(item?.value || ""),
+  })).filter((item) => item.field_name);
+}
+
+function normalizeCmrProfile(item) {
+  return {
+    name: String(item?.name || "").trim(),
+    country: String(item?.country || "").trim(),
+    place: String(item?.place || "").trim(),
+    field_assignments: normalizeCmrAssignments(item?.field_assignments),
+  };
+}
+
+function normalizeCmrCustomer(item) {
+  return {
+    name: String(item?.name || "").trim(),
+    address: String(item?.address || ""),
+    city: String(item?.city || ""),
+    country: String(item?.country || "").trim(),
+    vat_number: String(item?.vat_number || ""),
+    exporter_profile_name: String(item?.exporter_profile_name || ""),
+    transport_profile_name: String(item?.transport_profile_name || ""),
+    loading_place_profile_name: String(item?.loading_place_profile_name || ""),
+    place_of_issue: String(item?.place_of_issue || ""),
+    field_assignments: normalizeCmrAssignments(item?.field_assignments),
+  };
+}
+
+async function saveCmrPrintAppData(payload) {
+  const { appDataPath } = await ensureCmrPrintDataDir();
+  const customers = (Array.isArray(payload?.customers) ? payload.customers : []).map(normalizeCmrCustomer).filter((item) => item.name);
+  const exporters = (Array.isArray(payload?.exporters) ? payload.exporters : []).map(normalizeCmrProfile).filter((item) => item.name);
+  const transportInfos = (Array.isArray(payload?.transport_infos) ? payload.transport_infos : []).map(normalizeCmrProfile).filter((item) => item.name);
+  const loadingPlaces = (Array.isArray(payload?.loading_places) ? payload.loading_places : []).map(normalizeCmrProfile).filter((item) => item.name);
+  const xml = `<?xml version="1.0" encoding="utf-8"?>
+<AppDataStore>
+  <Customers>${customers.map(serializeCustomer).join("")}
+  </Customers>
+  <Exporters>${exporters.map((item) => serializeProfileRecord("ProfileRecord", item)).join("")}
+  </Exporters>
+  <TransportInfos>${transportInfos.map((item) => serializeProfileRecord("ProfileRecord", item)).join("")}
+  </TransportInfos>
+  <LoadingPlaces>${loadingPlaces.map((item) => serializeProfileRecord("ProfileRecord", item)).join("")}
+  </LoadingPlaces>
+</AppDataStore>
+`;
+  await fs.writeFile(appDataPath, xml, "utf8");
+}
+
+function normalizeCmrTemplatePayload(template) {
+  return {
+    name: String(template?.name || "").trim(),
+    created_date: String(template?.created_date || new Date().toISOString()),
+    font_sizes: Array.isArray(template?.font_sizes) ? template.font_sizes : [],
+    vertical_offsets: Array.isArray(template?.vertical_offsets) ? template.vertical_offsets : [],
+    field_positions: Array.isArray(template?.field_positions) ? template.field_positions : [],
+    field_widths: Array.isArray(template?.field_widths) ? template.field_widths : [],
+    field_heights: Array.isArray(template?.field_heights) ? template.field_heights : [],
+  };
+}
+
+function serializeTemplateIntEntries(entries) {
+  return entries.map((entry) => `
+    <TemplateIntSetting>
+      <FieldName>${xmlEscape(entry?.field_name)}</FieldName>
+      <Value>${Number(entry?.value || 0)}</Value>
+    </TemplateIntSetting>`).join("");
+}
+
+function serializeTemplatePointEntries(entries) {
+  return entries.map((entry) => `
+    <TemplatePointSetting>
+      <FieldName>${xmlEscape(entry?.field_name)}</FieldName>
+      <X>${Number(entry?.x || 0)}</X>
+      <Y>${Number(entry?.y || 0)}</Y>
+    </TemplatePointSetting>`).join("");
+}
+
+async function saveCmrPrintTemplate(template) {
+  const normalized = normalizeCmrTemplatePayload(template);
+  if (!normalized.name) {
+    throw new Error("Template name is required");
+  }
+  const { templatesDir } = await ensureCmrPrintDataDir();
+  const filePath = path.join(templatesDir, `${normalized.name}.xml`);
+  const xml = `<?xml version="1.0" encoding="utf-8"?>
+<CmrTemplate>
+  <Name>${xmlEscape(normalized.name)}</Name>
+  <CreatedDate>${xmlEscape(normalized.created_date)}</CreatedDate>
+  <FontSizeEntries>${serializeTemplateIntEntries(normalized.font_sizes)}
+  </FontSizeEntries>
+  <VerticalOffsetEntries>${serializeTemplateIntEntries(normalized.vertical_offsets)}
+  </VerticalOffsetEntries>
+  <FieldPositionEntries>${serializeTemplatePointEntries(normalized.field_positions)}
+  </FieldPositionEntries>
+  <FieldWidthEntries>${serializeTemplateIntEntries(normalized.field_widths)}
+  </FieldWidthEntries>
+  <FieldHeightEntries>${serializeTemplateIntEntries(normalized.field_heights)}
+  </FieldHeightEntries>
+</CmrTemplate>
+`;
+  await fs.writeFile(filePath, xml, "utf8");
+  return filePath;
+}
+
+async function deleteCmrPrintTemplate(templateName) {
+  const safeName = String(templateName || "").trim();
+  if (!safeName) {
+    throw new Error("Template name is required");
+  }
+  const { templatesDir } = await ensureCmrPrintDataDir();
+  const filePath = path.join(templatesDir, `${safeName}.xml`);
+  if (existsSync(filePath)) {
+    await fs.unlink(filePath);
+  }
+}
+
+function canManageCmrWorkspace(user, settings) {
+  if (!user) {
+    return false;
+  }
+  if (user.role === "admin" || normalizePermissions(user.role, user.permissions).includes(PERMISSIONS.SETTINGS_MANAGE)) {
+    return true;
+  }
+  return settings.cmr_manage_usernames.includes(String(user.username || "").trim().toLowerCase());
+}
+
 function parseRunFolderName(folderName) {
   const parts = folderName.trim().split("_");
   const dateIndex = parts.findIndex((part) => /^\d{8}$/.test(part));
@@ -497,6 +690,13 @@ function normalizeCmrInfo(value) {
   };
 }
 
+function normalizeCmrManageUsernames(values) {
+  if (!Array.isArray(values)) {
+    return [];
+  }
+  return [...new Set(values.map((value) => String(value || "").trim().toLowerCase()).filter(Boolean))];
+}
+
 function normalizeFustSettings(settings) {
   const smtpPort = Number(settings?.smtp_port);
   return {
@@ -523,6 +723,8 @@ function normalizeFustSettings(settings) {
     clock_spreadsheet_id: String(settings?.clock_spreadsheet_id || "").trim(),
     clock_employee_sheet_name: String(settings?.clock_employee_sheet_name || defaultFustSettings.clock_employee_sheet_name).trim() || defaultFustSettings.clock_employee_sheet_name,
     clock_records_sheet_name: String(settings?.clock_records_sheet_name || defaultFustSettings.clock_records_sheet_name).trim() || defaultFustSettings.clock_records_sheet_name,
+    cmr_default_template_name: String(settings?.cmr_default_template_name || "").trim(),
+    cmr_manage_usernames: normalizeCmrManageUsernames(settings?.cmr_manage_usernames),
   };
 }
 
@@ -2253,11 +2455,63 @@ async function handleApi(req, res, url) {
       return;
     }
     try {
-      const payload = await loadCmrPrintData();
-      sendJson(res, 200, payload);
+      const [payload, settings] = await Promise.all([loadCmrPrintData(), readFustSettings()]);
+      sendJson(res, 200, {
+        ...payload,
+        settings: {
+          cmr_default_template_name: settings.cmr_default_template_name,
+          cmr_manage_usernames: settings.cmr_manage_usernames,
+        },
+        can_manage: canManageCmrWorkspace(requestUser, settings),
+      });
     } catch (error) {
       sendJson(res, 500, { error: error instanceof Error ? error.message : String(error) });
     }
+    return;
+  }
+
+  if (url.pathname === "/api/cmrprint/app-data" && req.method === "PATCH") {
+    if (!requirePermission(res, requestUser, PERMISSIONS.FUST_VIEW)) {
+      return;
+    }
+    const settings = await readFustSettings();
+    if (!canManageCmrWorkspace(requestUser, settings)) {
+      sendForbidden(res);
+      return;
+    }
+    const body = await readRequestJson(req);
+    await saveCmrPrintAppData(body);
+    sendJson(res, 200, await loadCmrPrintData());
+    return;
+  }
+
+  if (url.pathname === "/api/cmrprint/template" && req.method === "PUT") {
+    if (!requirePermission(res, requestUser, PERMISSIONS.FUST_VIEW)) {
+      return;
+    }
+    const settings = await readFustSettings();
+    if (!canManageCmrWorkspace(requestUser, settings)) {
+      sendForbidden(res);
+      return;
+    }
+    const body = await readRequestJson(req);
+    await saveCmrPrintTemplate(body.template || body);
+    sendJson(res, 200, await loadCmrPrintData());
+    return;
+  }
+
+  if (url.pathname.startsWith("/api/cmrprint/template/") && req.method === "DELETE") {
+    if (!requirePermission(res, requestUser, PERMISSIONS.FUST_VIEW)) {
+      return;
+    }
+    const settings = await readFustSettings();
+    if (!canManageCmrWorkspace(requestUser, settings)) {
+      sendForbidden(res);
+      return;
+    }
+    const templateName = decodeURIComponent(url.pathname.slice("/api/cmrprint/template/".length));
+    await deleteCmrPrintTemplate(templateName);
+    sendJson(res, 200, await loadCmrPrintData());
     return;
   }
 
@@ -2487,7 +2741,14 @@ async function handleApi(req, res, url) {
     }
 
     if (req.method === "GET") {
-      sendJson(res, 200, { settings: await readFustSettings() });
+      const settings = await readFustSettings();
+      const cmrData = await loadCmrPrintData();
+      sendJson(res, 200, { settings: {
+        ...settings,
+        cmr_data_dir: cmrData.data_dir,
+        cmr_templates_dir: cmrData.templates_dir,
+        cmr_available_templates: (cmrData.templates || []).map((item) => item.name),
+      } });
       return;
     }
 
@@ -2499,7 +2760,13 @@ async function handleApi(req, res, url) {
         ...body,
       });
       await writeFustSettings(nextSettings);
-      sendJson(res, 200, { settings: nextSettings });
+      const cmrData = await loadCmrPrintData();
+      sendJson(res, 200, { settings: {
+        ...nextSettings,
+        cmr_data_dir: cmrData.data_dir,
+        cmr_templates_dir: cmrData.templates_dir,
+        cmr_available_templates: (cmrData.templates || []).map((item) => item.name),
+      } });
       return;
     }
   }

@@ -1120,6 +1120,111 @@ pre {
   gap: 10px;
 }
 
+.cmr-submenu-strip {
+  flex-wrap: wrap;
+}
+
+.cmr-print-meta-row {
+  display: flex;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.cmr-editor-layout {
+  display: grid;
+  grid-template-columns: minmax(220px, 280px) minmax(0, 1fr);
+  gap: 18px;
+  align-items: start;
+}
+
+.cmr-editor-list,
+.cmr-editor-form,
+.cmr-template-editor,
+.cmr-batch-panel {
+  display: grid;
+  gap: 14px;
+}
+
+.cmr-select-list {
+  display: grid;
+  gap: 8px;
+  max-height: 70vh;
+  overflow: auto;
+}
+
+.cmr-select-list button {
+  justify-content: flex-start;
+  text-align: left;
+}
+
+.cmr-select-list button.active {
+  border-color: #2a8a5a;
+  color: #145436;
+  background: #eff8f2;
+}
+
+.spread-actions {
+  justify-content: space-between;
+  flex-wrap: wrap;
+}
+
+.compact-table textarea {
+  min-height: 72px;
+}
+
+.compact-table input,
+.compact-table select,
+.compact-table textarea {
+  width: 100%;
+}
+
+.cmr-assignment-editor {
+  display: grid;
+  gap: 12px;
+}
+
+.cmr-template-topbar {
+  display: flex;
+  align-items: end;
+  justify-content: space-between;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+
+.cmr-template-grid {
+  display: grid;
+  grid-template-columns: minmax(320px, 0.95fr) minmax(0, 1.05fr);
+  gap: 18px;
+}
+
+.cmr-template-settings {
+  max-height: 78vh;
+  overflow: auto;
+}
+
+.cmr-batch-header {
+  display: grid;
+  gap: 12px;
+}
+
+.cmr-batch-list-table {
+  display: grid;
+  gap: 12px;
+  max-height: 72vh;
+  overflow: auto;
+}
+
+.cmr-batch-row {
+  display: grid;
+  grid-template-columns: minmax(240px, 1fr) minmax(240px, 320px) auto;
+  gap: 14px;
+  align-items: start;
+  padding: 12px;
+  border: 1px solid #d6dde5;
+  border-radius: 8px;
+  background: #fbfcfd;
+}
+
 .cmr-print-toolbar {
   display: flex;
   align-items: end;
@@ -1282,7 +1387,10 @@ pre {
     margin-top: 8px;
   }
 
-  .cmr-print-workspace {
+  .cmr-print-workspace,
+  .cmr-editor-layout,
+  .cmr-template-grid,
+  .cmr-batch-row {
     grid-template-columns: 1fr;
   }
 }

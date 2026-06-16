@@ -359,6 +359,7 @@ function useSyncStatus(enabled) {
 }
 
 function useCmrPrintData(enabled) {
+  const [refreshKey, setRefreshKey] = useState(0);
   const [state, setState] = useState({ loading: true, data: null, error: "" });
 
   useEffect(() => {
@@ -384,9 +385,12 @@ function useCmrPrintData(enabled) {
     return () => {
       cancelled = true;
     };
-  }, [enabled]);
+  }, [enabled, refreshKey]);
 
-  return state;
+  return {
+    ...state,
+    refresh: () => setRefreshKey((value) => value + 1),
+  };
 }
 
 function formatCmrTransportDate(dateValue = new Date()) {
@@ -487,70 +491,16 @@ function buildCmrPrintHtml(title, pages, autoPrint) {
     <style>
       :root { color-scheme: light; }
       * { box-sizing: border-box; }
-      body {
-        margin: 0;
-        padding: 24px;
-        font-family: Arial, sans-serif;
-        background: #eef3f7;
-        color: #10243e;
-      }
-      .cmr-print-stack {
-        display: grid;
-        gap: 24px;
-      }
-      .cmr-print-page-sheet {
-        position: relative;
-        margin: 0 auto;
-        padding: 16px;
-        background: white;
-        border: 1px solid #d3dbe6;
-        box-shadow: 0 12px 34px rgba(16, 36, 62, 0.08);
-        page-break-after: always;
-      }
-      .cmr-print-page-sheet:last-child {
-        page-break-after: auto;
-      }
-      .cmr-print-sheet-header {
-        display: flex;
-        align-items: baseline;
-        justify-content: space-between;
-        gap: 16px;
-        margin-bottom: 12px;
-      }
-      .cmr-print-sheet-header h1 {
-        margin: 0;
-        font-size: 18px;
-      }
-      .cmr-print-sheet-header p {
-        margin: 0;
-        font-size: 12px;
-        color: #4f6480;
-      }
-      .cmr-print-sheet-board {
-        position: relative;
-        width: 100%;
-        height: calc(100% - 40px);
-        border: 1px solid #c7d2de;
-        background: white;
-      }
-      .cmr-print-sheet-field {
-        position: absolute;
-        white-space: pre-wrap;
-        line-height: 1.22;
-        padding: 2px 4px;
-        overflow: hidden;
-      }
-      @media print {
-        body {
-          padding: 0;
-          background: white;
-        }
-        .cmr-print-page-sheet {
-          border: 0;
-          box-shadow: none;
-          margin: 0;
-        }
-      }
+      body { margin: 0; padding: 24px; font-family: Arial, sans-serif; background: #eef3f7; color: #10243e; }
+      .cmr-print-stack { display: grid; gap: 24px; }
+      .cmr-print-page-sheet { position: relative; margin: 0 auto; padding: 16px; background: white; border: 1px solid #d3dbe6; box-shadow: 0 12px 34px rgba(16, 36, 62, 0.08); page-break-after: always; }
+      .cmr-print-page-sheet:last-child { page-break-after: auto; }
+      .cmr-print-sheet-header { display: flex; align-items: baseline; justify-content: space-between; gap: 16px; margin-bottom: 12px; }
+      .cmr-print-sheet-header h1 { margin: 0; font-size: 18px; }
+      .cmr-print-sheet-header p { margin: 0; font-size: 12px; color: #4f6480; }
+      .cmr-print-sheet-board { position: relative; width: 100%; height: calc(100% - 40px); border: 1px solid #c7d2de; background: white; }
+      .cmr-print-sheet-field { position: absolute; white-space: pre-wrap; line-height: 1.22; padding: 2px 4px; overflow: hidden; }
+      @media print { body { padding: 0; background: white; } .cmr-print-page-sheet { border: 0; box-shadow: none; margin: 0; } }
     </style>
   </head>
   <body>
@@ -574,15 +524,465 @@ function openCmrPrintWindow(title, pages, autoPrint = false) {
   }
 }
 
+const CMR_MANUAL_FIELDS = ["DocumentsAttached", "PackagingType", "NatureofGoods", "TransportAuthorizations"];
+const CMR_MENU_DEFINITIONS = [
+  { key: "cmrprint", label: "CMRPrint" },
+  { key: "templates", label: "Template Editor" },
+  { key: "exporters", label: "Exporter Info" },
+  { key: "transport", label: "Transport Info" },
+  { key: "customers", label: "Customer Info" },
+  { key: "loading", label: "Loading Places" },
+  { key: "batch", label: "Batch Print CMRs" },
+];
+
+function sortByName(items) {
+  return [...items].sort((left, right) => String(left?.name || "").localeCompare(String(right?.name || "")));
+}
+
+function blankCmrProfile() {
+  return { name: "", country: "", place: "", field_assignments: [] };
+}
+
+function blankCmrCustomer() {
+  return {
+    name: "",
+    address: "",
+    city: "",
+    country: "",
+    vat_number: "",
+    exporter_profile_name: "",
+    transport_profile_name: "",
+    loading_place_profile_name: "",
+    place_of_issue: "",
+    field_assignments: [],
+  };
+}
+
+function blankCmrTemplate(name, places) {
+  return {
+    name: name || "",
+    created_date: new Date().toISOString(),
+    font_sizes: places.map((place) => ({ field_name: place.field_name, value: place.default_font_size || 9 })),
+    vertical_offsets: places.map((place) => ({ field_name: place.field_name, value: 0 })),
+    field_positions: places.map((place) => ({ field_name: place.field_name, x: place.default_x, y: place.default_y })),
+    field_widths: places.map((place) => ({ field_name: place.field_name, value: 140 })),
+    field_heights: places.map((place) => ({ field_name: place.field_name, value: 52 })),
+  };
+}
+
+function setEntryValue(entries, fieldName, value, fallback = {}) {
+  const next = [...entries];
+  const index = next.findIndex((entry) => entry.field_name === fieldName);
+  if (index >= 0) {
+    next[index] = { ...next[index], ...value };
+  } else {
+    next.push({ field_name: fieldName, ...fallback, ...value });
+  }
+  return next;
+}
+
+function CmrAssignmentsEditor({ assignments, onChange, places }) {
+  const options = places.map((place) => ({ value: place.field_name, label: `${place.place_number}. ${place.description}` }));
+
+  function updateRow(index, patch) {
+    onChange(assignments.map((item, itemIndex) => (itemIndex === index ? { ...item, ...patch } : item)));
+  }
+
+  function addRow() {
+    const fallback = options.find((item) => !assignments.some((entry) => entry.field_name === item.value)) || options[0];
+    onChange([...assignments, { field_name: fallback?.value || "ConsignorName", value: "" }]);
+  }
+
+  return (
+    <div className="cmr-assignment-editor">
+      <div className="table-wrap">
+        <table className="data-table compact-table">
+          <thead>
+            <tr><th>CMR field</th><th>Value</th><th /></tr>
+          </thead>
+          <tbody>
+            {assignments.map((assignment, index) => (
+              <tr key={`${assignment.field_name}:${index}`}>
+                <td>
+                  <select value={assignment.field_name} onChange={(event) => updateRow(index, { field_name: event.target.value })}>
+                    {options.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
+                  </select>
+                </td>
+                <td>
+                  <textarea rows={3} value={assignment.value || ""} onChange={(event) => updateRow(index, { value: event.target.value })} />
+                </td>
+                <td className="row-actions">
+                  <button type="button" onClick={() => onChange(assignments.filter((_, itemIndex) => itemIndex !== index))}>Remove</button>
+                </td>
+              </tr>
+            ))}
+            {!assignments.length && (
+              <tr><td colSpan="3">No field assignments yet.</td></tr>
+            )}
+          </tbody>
+        </table>
+      </div>
+      <button type="button" onClick={addRow}>Add field</button>
+    </div>
+  );
+}
+
+function CmrProfileManager({ title, records, onChange, places }) {
+  const [selectedName, setSelectedName] = useState("");
+  const sortedRecords = useMemo(() => sortByName(records), [records]);
+
+  useEffect(() => {
+    if (!sortedRecords.length) {
+      setSelectedName("");
+      return;
+    }
+    if (!sortedRecords.some((item) => item.name === selectedName)) {
+      setSelectedName(sortedRecords[0].name);
+    }
+  }, [sortedRecords, selectedName]);
+
+  const selected = sortedRecords.find((item) => item.name === selectedName) || null;
+
+  function replaceSelected(nextRecord) {
+    if (!selected) {
+      return;
+    }
+    onChange(sortByName(records.map((item) => (item.name === selected.name ? nextRecord : item))));
+    setSelectedName(nextRecord.name || selected.name);
+  }
+
+  function addRecord() {
+    const nextName = `New ${title} ${records.length + 1}`;
+    const nextRecord = { ...blankCmrProfile(), name: nextName };
+    onChange(sortByName([...records, nextRecord]));
+    setSelectedName(nextName);
+  }
+
+  function deleteRecord() {
+    if (!selected || !window.confirm(`Delete ${selected.name}?`)) {
+      return;
+    }
+    const next = records.filter((item) => item.name !== selected.name);
+    onChange(sortByName(next));
+    setSelectedName(next[0]?.name || "");
+  }
+
+  return (
+    <div className="cmr-editor-layout">
+      <div className="cmr-editor-list data-table-card">
+        <div className="section-header"><h3>{title}</h3></div>
+        <div className="cmr-select-list">
+          {sortedRecords.map((item) => (
+            <button key={item.name} type="button" className={item.name === selectedName ? "active" : ""} onClick={() => setSelectedName(item.name)}>
+              {item.name}
+            </button>
+          ))}
+        </div>
+        <div className="row-actions spread-actions">
+          <button type="button" onClick={addRecord}>New</button>
+          <button type="button" onClick={deleteRecord} disabled={!selected}>Delete</button>
+        </div>
+      </div>
+      <div className="data-table-card cmr-editor-form">
+        {selected ? (
+          <>
+            <div className="form-grid">
+              <label><span>Name</span><input value={selected.name} onChange={(event) => replaceSelected({ ...selected, name: event.target.value })} /></label>
+              <label><span>Country</span><input value={selected.country || ""} onChange={(event) => replaceSelected({ ...selected, country: event.target.value })} /></label>
+              <label className="wide"><span>Place</span><input value={selected.place || ""} onChange={(event) => replaceSelected({ ...selected, place: event.target.value })} /></label>
+            </div>
+            <CmrAssignmentsEditor assignments={selected.field_assignments || []} onChange={(field_assignments) => replaceSelected({ ...selected, field_assignments })} places={places} />
+          </>
+        ) : (
+          <div className="notice">No records yet.</div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function CmrCustomerManager({ customers, exporters, transportInfos, loadingPlaces, onChange, places }) {
+  const [selectedName, setSelectedName] = useState("");
+  const sortedCustomers = useMemo(() => sortByName(customers), [customers]);
+
+  useEffect(() => {
+    if (!sortedCustomers.length) {
+      setSelectedName("");
+      return;
+    }
+    if (!sortedCustomers.some((item) => item.name === selectedName)) {
+      setSelectedName(sortedCustomers[0].name);
+    }
+  }, [sortedCustomers, selectedName]);
+
+  const selected = sortedCustomers.find((item) => item.name === selectedName) || null;
+
+  function replaceSelected(nextRecord) {
+    if (!selected) {
+      return;
+    }
+    onChange(sortByName(customers.map((item) => (item.name === selected.name ? nextRecord : item))));
+    setSelectedName(nextRecord.name || selected.name);
+  }
+
+  function addCustomer() {
+    const nextName = `New customer ${customers.length + 1}`;
+    const nextRecord = { ...blankCmrCustomer(), name: nextName };
+    onChange(sortByName([...customers, nextRecord]));
+    setSelectedName(nextName);
+  }
+
+  function deleteCustomer() {
+    if (!selected || !window.confirm(`Delete ${selected.name}?`)) {
+      return;
+    }
+    const next = customers.filter((item) => item.name !== selected.name);
+    onChange(sortByName(next));
+    setSelectedName(next[0]?.name || "");
+  }
+
+  return (
+    <div className="cmr-editor-layout">
+      <div className="cmr-editor-list data-table-card">
+        <div className="section-header"><h3>Customer Info</h3></div>
+        <div className="cmr-select-list">
+          {sortedCustomers.map((item) => (
+            <button key={item.name} type="button" className={item.name === selectedName ? "active" : ""} onClick={() => setSelectedName(item.name)}>
+              {item.name}
+            </button>
+          ))}
+        </div>
+        <div className="row-actions spread-actions">
+          <button type="button" onClick={addCustomer}>New</button>
+          <button type="button" onClick={deleteCustomer} disabled={!selected}>Delete</button>
+        </div>
+      </div>
+      <div className="data-table-card cmr-editor-form">
+        {selected ? (
+          <>
+            <div className="form-grid">
+              <label className="wide"><span>Name</span><input value={selected.name} onChange={(event) => replaceSelected({ ...selected, name: event.target.value })} /></label>
+              <label className="wide"><span>Address</span><textarea rows={3} value={selected.address || ""} onChange={(event) => replaceSelected({ ...selected, address: event.target.value })} /></label>
+              <label><span>City</span><input value={selected.city || ""} onChange={(event) => replaceSelected({ ...selected, city: event.target.value })} /></label>
+              <label><span>Country</span><input value={selected.country || ""} onChange={(event) => replaceSelected({ ...selected, country: event.target.value })} /></label>
+              <label><span>VAT</span><input value={selected.vat_number || ""} onChange={(event) => replaceSelected({ ...selected, vat_number: event.target.value })} /></label>
+              <label><span>Place/date</span><input value={selected.place_of_issue || ""} onChange={(event) => replaceSelected({ ...selected, place_of_issue: event.target.value })} /></label>
+              <label><span>Exporter</span><select value={selected.exporter_profile_name || ""} onChange={(event) => replaceSelected({ ...selected, exporter_profile_name: event.target.value })}><option value="">-</option>{sortByName(exporters).map((item) => <option key={item.name} value={item.name}>{item.name}</option>)}</select></label>
+              <label><span>Transport</span><select value={selected.transport_profile_name || ""} onChange={(event) => replaceSelected({ ...selected, transport_profile_name: event.target.value })}><option value="">-</option>{sortByName(transportInfos).map((item) => <option key={item.name} value={item.name}>{item.name}</option>)}</select></label>
+              <label className="wide"><span>Loading place</span><select value={selected.loading_place_profile_name || ""} onChange={(event) => replaceSelected({ ...selected, loading_place_profile_name: event.target.value })}><option value="">-</option>{sortByName(loadingPlaces).map((item) => <option key={item.name} value={item.name}>{item.name}</option>)}</select></label>
+            </div>
+            <div className="sidebar-note">Manual fields stay free: 5, 7, 9, 17.</div>
+            <CmrAssignmentsEditor assignments={selected.field_assignments || []} onChange={(field_assignments) => replaceSelected({ ...selected, field_assignments })} places={places.filter((place) => !CMR_MANUAL_FIELDS.includes(place.field_name))} />
+          </>
+        ) : (
+          <div className="notice">No customers yet.</div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function CmrTemplateEditor({ templates, places, defaultTemplateName, onSaveTemplate, onDeleteTemplate }) {
+  const [selectedTemplateName, setSelectedTemplateName] = useState("");
+  const [draft, setDraft] = useState(null);
+  const [status, setStatus] = useState({ error: "", message: "", busy: false });
+  const sortedTemplates = useMemo(() => sortByName(templates), [templates]);
+
+  useEffect(() => {
+    const firstName = defaultTemplateName || sortedTemplates[0]?.name || "Draft template";
+    if (!selectedTemplateName) {
+      setSelectedTemplateName(firstName);
+    }
+  }, [defaultTemplateName, sortedTemplates, selectedTemplateName]);
+
+  useEffect(() => {
+    const current = sortedTemplates.find((item) => item.name === selectedTemplateName) || blankCmrTemplate(selectedTemplateName, places);
+    setDraft(JSON.parse(JSON.stringify(current)));
+  }, [selectedTemplateName, sortedTemplates, places]);
+
+  const positionMap = useMemo(() => Object.fromEntries((draft?.field_positions || []).map((entry) => [entry.field_name, entry])), [draft]);
+  const widthMap = useMemo(() => Object.fromEntries((draft?.field_widths || []).map((entry) => [entry.field_name, entry.value])), [draft]);
+  const heightMap = useMemo(() => Object.fromEntries((draft?.field_heights || []).map((entry) => [entry.field_name, entry.value])), [draft]);
+  const fontMap = useMemo(() => Object.fromEntries((draft?.font_sizes || []).map((entry) => [entry.field_name, entry.value])), [draft]);
+  const offsetMap = useMemo(() => Object.fromEntries((draft?.vertical_offsets || []).map((entry) => [entry.field_name, entry.value])), [draft]);
+
+  function updateField(fieldName, key, value) {
+    if (!draft) {
+      return;
+    }
+    if (key === "font") {
+      setDraft({ ...draft, font_sizes: setEntryValue(draft.font_sizes || [], fieldName, { value: Number(value) || 0 }) });
+      return;
+    }
+    if (key === "offset") {
+      setDraft({ ...draft, vertical_offsets: setEntryValue(draft.vertical_offsets || [], fieldName, { value: Number(value) || 0 }) });
+      return;
+    }
+    if (key === "width") {
+      setDraft({ ...draft, field_widths: setEntryValue(draft.field_widths || [], fieldName, { value: Number(value) || 0 }) });
+      return;
+    }
+    if (key === "height") {
+      setDraft({ ...draft, field_heights: setEntryValue(draft.field_heights || [], fieldName, { value: Number(value) || 0 }) });
+      return;
+    }
+    if (key === "x") {
+      setDraft({ ...draft, field_positions: setEntryValue(draft.field_positions || [], fieldName, { x: Number(value) || 0 }, { y: positionMap[fieldName]?.y || 0 }) });
+      return;
+    }
+    if (key === "y") {
+      setDraft({ ...draft, field_positions: setEntryValue(draft.field_positions || [], fieldName, { y: Number(value) || 0 }, { x: positionMap[fieldName]?.x || 0 }) });
+    }
+  }
+
+  async function saveTemplate() {
+    if (!draft?.name?.trim()) {
+      setStatus({ busy: false, error: "Template name is required", message: "" });
+      return;
+    }
+    setStatus({ busy: true, error: "", message: "" });
+    try {
+      await onSaveTemplate(draft);
+      setStatus({ busy: false, error: "", message: "Template saved" });
+    } catch (error) {
+      setStatus({ busy: false, error: error.message, message: "" });
+    }
+  }
+
+  async function deleteTemplate() {
+    if (!draft?.name || !window.confirm(`Delete template ${draft.name}?`)) {
+      return;
+    }
+    setStatus({ busy: true, error: "", message: "" });
+    try {
+      await onDeleteTemplate(draft.name);
+      setSelectedTemplateName("");
+      setStatus({ busy: false, error: "", message: "Template deleted" });
+    } catch (error) {
+      setStatus({ busy: false, error: error.message, message: "" });
+    }
+  }
+
+  function newTemplate() {
+    const nextName = `template-${Date.now()}`;
+    setSelectedTemplateName(nextName);
+    setDraft(blankCmrTemplate(nextName, places));
+  }
+
+  return (
+    <div className="data-table-card cmr-template-editor">
+      <div className="cmr-template-topbar">
+        <label><span>Template</span><select value={selectedTemplateName} onChange={(event) => setSelectedTemplateName(event.target.value)}><option value="">Choose template</option>{sortedTemplates.map((item) => <option key={item.name} value={item.name}>{item.name}</option>)}</select></label>
+        <div className="row-actions spread-actions">
+          <button type="button" onClick={newTemplate}>New</button>
+          <button type="button" onClick={saveTemplate} disabled={status.busy}>{status.busy ? "Saving..." : "Save"}</button>
+          <button type="button" onClick={deleteTemplate} disabled={status.busy || !draft?.name}>Delete</button>
+        </div>
+      </div>
+      {status.message && <div className="notice">{status.message}</div>}
+      {status.error && <div className="notice danger">{status.error}</div>}
+      {draft && (
+        <>
+          <label><span>Template name</span><input value={draft.name} onChange={(event) => setDraft({ ...draft, name: event.target.value })} /></label>
+          <div className="cmr-template-grid">
+            <div className="cmr-preview-shell">
+              <div className="cmr-preview-board" style={{ width: 760, height: 980 }}>
+                {places.map((place) => (
+                  <div key={place.field_name} className="cmr-preview-field" style={{ left: positionMap[place.field_name]?.x ?? place.default_x, top: positionMap[place.field_name]?.y ?? place.default_y, width: widthMap[place.field_name] || 140, minHeight: heightMap[place.field_name] || 52 }}>
+                    <strong>{place.place_number}</strong>
+                    <span style={{ fontSize: fontMap[place.field_name] || place.default_font_size || 9 }}>{place.description}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+            <div className="table-wrap cmr-template-settings">
+              <table className="data-table compact-table">
+                <thead>
+                  <tr><th>Place</th><th>Font</th><th>Offset</th><th>W</th><th>H</th><th>X</th><th>Y</th></tr>
+                </thead>
+                <tbody>
+                  {places.map((place) => (
+                    <tr key={place.field_name}>
+                      <td>{place.place_number}. {place.description}</td>
+                      <td><input type="number" value={fontMap[place.field_name] || place.default_font_size || 9} onChange={(event) => updateField(place.field_name, "font", event.target.value)} /></td>
+                      <td><input type="number" value={offsetMap[place.field_name] || 0} onChange={(event) => updateField(place.field_name, "offset", event.target.value)} /></td>
+                      <td><input type="number" value={widthMap[place.field_name] || 140} onChange={(event) => updateField(place.field_name, "width", event.target.value)} /></td>
+                      <td><input type="number" value={heightMap[place.field_name] || 52} onChange={(event) => updateField(place.field_name, "height", event.target.value)} /></td>
+                      <td><input type="number" value={positionMap[place.field_name]?.x ?? place.default_x} onChange={(event) => updateField(place.field_name, "x", event.target.value)} /></td>
+                      <td><input type="number" value={positionMap[place.field_name]?.y ?? place.default_y} onChange={(event) => updateField(place.field_name, "y", event.target.value)} /></td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
+function CmrBatchPrintView({ customers, buildPrintPage, defaultNatureOfGoods }) {
+  const [search, setSearch] = useState("");
+  const [selectedNames, setSelectedNames] = useState([]);
+  const [overrides, setOverrides] = useState({});
+  const visibleCustomers = useMemo(() => sortByName(customers).filter((item) => `${item.name} ${item.address || ""}`.toLowerCase().includes(search.trim().toLowerCase())), [customers, search]);
+
+  function toggle(name) {
+    setSelectedNames((current) => current.includes(name) ? current.filter((item) => item !== name) : [...current, name]);
+  }
+
+  function openBatch(autoPrint) {
+    const pages = selectedNames
+      .map((name) => visibleCustomers.find((item) => item.name === name) || customers.find((item) => item.name === name))
+      .filter(Boolean)
+      .map((customer) => buildPrintPage(customer, { natureOfGoods: overrides[customer.name] || defaultNatureOfGoods }));
+    if (!pages.length) {
+      window.alert("Choose at least one customer.");
+      return;
+    }
+    openCmrPrintWindow("Batch CMR print", pages, autoPrint);
+  }
+
+  return (
+    <div className="data-table-card cmr-batch-panel">
+      <div className="cmr-batch-header">
+        <label className="wide"><span>Search customer</span><input value={search} onChange={(event) => setSearch(event.target.value)} /></label>
+      </div>
+      <div className="cmr-batch-list-table">
+        {visibleCustomers.map((customer) => (
+          <div key={customer.name} className="cmr-batch-row">
+            <div>
+              <strong>{customer.name}</strong>
+              <div className="sidebar-note">{customer.address || "-"}</div>
+            </div>
+            <label>
+              <span>Field 9</span>
+              <textarea rows={4} value={overrides[customer.name] || defaultNatureOfGoods} onChange={(event) => setOverrides((current) => ({ ...current, [customer.name]: event.target.value }))} />
+            </label>
+            <label className="checkbox-row">
+              <input type="checkbox" checked={selectedNames.includes(customer.name)} onChange={() => toggle(customer.name)} />
+              <span>Add</span>
+            </label>
+          </div>
+        ))}
+      </div>
+      <div className="row-actions spread-actions">
+        <button type="button" onClick={() => openBatch(false)}>Preview selected</button>
+        <button type="button" className="primary" onClick={() => openBatch(true)}>Print selected</button>
+      </div>
+    </div>
+  );
+}
+
 function CmrPrintPage({ currentUser }) {
   const enabled = hasPermission(currentUser, PERMISSIONS.FUST_VIEW);
-  const { loading, data, error } = useCmrPrintData(enabled);
+  const { loading, data, error, refresh } = useCmrPrintData(enabled);
+  const [activeMenu, setActiveMenu] = useState("cmrprint");
+  const [message, setMessage] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [draftData, setDraftData] = useState(null);
   const [selectedCustomerName, setSelectedCustomerName] = useState("");
-  const [selectedTemplateName, setSelectedTemplateName] = useState("");
-  const [pendingTemplateName, setPendingTemplateName] = useState("");
-  const [extraMenuOpen, setExtraMenuOpen] = useState(false);
-  const [extraView, setExtraView] = useState("");
-  const [batchCustomerNames, setBatchCustomerNames] = useState([]);
   const [manualValues, setManualValues] = useState({
     documentsAttached: "",
     packagingType: "",
@@ -591,45 +991,61 @@ function CmrPrintPage({ currentUser }) {
   });
 
   useEffect(() => {
-    if (!data?.customers?.length || selectedCustomerName) {
+    if (!data) {
       return;
     }
-    setSelectedCustomerName(data.customers[0].name);
-  }, [data?.customers, selectedCustomerName]);
+    setDraftData({
+      customers: data.customers || [],
+      exporters: data.exporters || [],
+      transport_infos: data.transport_infos || [],
+      loading_places: data.loading_places || [],
+      templates: data.templates || [],
+      settings: data.settings || {},
+      places: data.places || [],
+      can_manage: data.can_manage,
+      data_dir: data.data_dir,
+      templates_dir: data.templates_dir,
+    });
+  }, [data]);
+
+  const cmrData = draftData || data;
+  const places = cmrData?.places || [];
+  const customers = cmrData?.customers || [];
+  const exporters = cmrData?.exporters || [];
+  const transportInfos = cmrData?.transport_infos || [];
+  const loadingPlaces = cmrData?.loading_places || [];
+  const templates = cmrData?.templates || [];
+  const canManage = Boolean(cmrData?.can_manage);
+  const visibleMenus = canManage ? CMR_MENU_DEFINITIONS : CMR_MENU_DEFINITIONS.filter((item) => item.key === "cmrprint");
+  const settings = cmrData?.settings || {};
 
   useEffect(() => {
-    if (!data?.templates?.length) {
-      return;
+    if (!visibleMenus.some((item) => item.key === activeMenu)) {
+      setActiveMenu("cmrprint");
     }
-    if (!pendingTemplateName) {
-      setPendingTemplateName(data.templates[0].name);
-    }
-    if (!selectedTemplateName) {
-      setSelectedTemplateName(data.templates[0].name);
-    }
-  }, [data?.templates, pendingTemplateName, selectedTemplateName]);
+  }, [visibleMenus, activeMenu]);
 
   useEffect(() => {
-    if (!data?.customers?.length) {
+    if (!customers.length) {
+      setSelectedCustomerName("");
       return;
     }
-    if (!batchCustomerNames.length) {
-      setBatchCustomerNames(data.customers.slice(0, 6).map((item) => item.name));
+    if (!customers.some((item) => item.name === selectedCustomerName)) {
+      setSelectedCustomerName(customers[0].name);
     }
-  }, [data?.customers, batchCustomerNames.length]);
+  }, [customers, selectedCustomerName]);
 
-  const customer = (data?.customers || []).find((item) => item.name === selectedCustomerName) || null;
-  const template = (data?.templates || []).find((item) => item.name === selectedTemplateName) || null;
-  const exporter = (data?.exporters || []).find((item) => item.name === customer?.exporter_profile_name) || null;
-  const transportInfo = (data?.transport_infos || []).find((item) => item.name === customer?.transport_profile_name) || null;
-  const loadingPlace = (data?.loading_places || []).find((item) => item.name === customer?.loading_place_profile_name) || null;
-  const places = data?.places || [];
+  const selectedTemplateName = settings.cmr_default_template_name || templates[0]?.name || "";
+  const template = templates.find((item) => item.name === selectedTemplateName) || templates[0] || null;
+  const customer = customers.find((item) => item.name === selectedCustomerName) || null;
+  const exporter = exporters.find((item) => item.name === customer?.exporter_profile_name) || null;
+  const transportInfo = transportInfos.find((item) => item.name === customer?.transport_profile_name) || null;
+  const loadingPlace = loadingPlaces.find((item) => item.name === customer?.loading_place_profile_name) || null;
 
   const documentValues = useMemo(
     () => buildCmrDocumentValues(customer, exporter, transportInfo, loadingPlace, manualValues, places),
     [customer, exporter, transportInfo, loadingPlace, manualValues, places],
   );
-
   const positionMap = useMemo(() => Object.fromEntries((template?.field_positions || []).map((entry) => [entry.field_name, entry])), [template]);
   const widthMap = useMemo(() => Object.fromEntries((template?.field_widths || []).map((entry) => [entry.field_name, entry.value])), [template]);
   const heightMap = useMemo(() => Object.fromEntries((template?.field_heights || []).map((entry) => [entry.field_name, entry.value])), [template]);
@@ -647,43 +1063,70 @@ function CmrPrintPage({ currentUser }) {
     }
     const lines = [
       `Customer: ${customer.name}`,
-      `Exporter profile: ${customer.exporter_profile_name || "-"}`,
-      `Transport profile: ${customer.transport_profile_name || "-"}`,
-      `Loading place: ${customer.loading_place_profile_name || "-"}`,
+      `Template: ${selectedTemplateName || "-"}`,
       `Field 5: ${documentValues.DocumentsAttached || "-"}`,
       `Field 21: ${documentValues.ExportDate || "-"}`,
     ];
     for (const place of places) {
       const value = String(documentValues[place.field_name] || "").trim();
-      if (!value || ["DocumentsAttached", "PackagingType", "NatureofGoods", "TransportAuthorizations"].includes(place.field_name)) {
+      if (!value || CMR_MANUAL_FIELDS.includes(place.field_name)) {
         continue;
       }
       lines.push(`${place.description}: ${value.replace(/\n/g, " | ")}`);
     }
     return lines.join("\n");
-  }, [customer, documentValues, places]);
+  }, [customer, documentValues, places, selectedTemplateName]);
 
-  const extraOptions = [
-    { key: "templates", label: "Template Editor" },
-    { key: "exporters", label: "Exporter Info" },
-    { key: "transport", label: "Transport Info" },
-    { key: "customers", label: "Customer Info" },
-    { key: "loading", label: "Loading Places" },
-    { key: "batch", label: "Batch Print CMRs" },
-  ];
-
-  function updateManualValue(key, value) {
-    setManualValues((current) => ({ ...current, [key]: value }));
+  function updateCollections(patch) {
+    setDraftData((current) => ({ ...current, ...patch }));
   }
 
-  function buildPrintPageForCustomer(customerRecord) {
+  async function saveAppData(patchMessage) {
+    if (!cmrData) {
+      return;
+    }
+    setSaving(true);
+    setMessage("");
+    try {
+      const payload = await apiJson("/api/cmrprint/app-data", {
+        method: "PATCH",
+        body: JSON.stringify({
+          customers,
+          exporters,
+          transport_infos: transportInfos,
+          loading_places: loadingPlaces,
+        }),
+      });
+      setDraftData({ ...payload, settings: data?.settings || cmrData.settings, can_manage: cmrData.can_manage });
+      setMessage(patchMessage || "CMR data saved.");
+      refresh();
+    } catch (saveError) {
+      setMessage(saveError.message);
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function saveTemplate(templatePayload) {
+    const payload = await apiJson("/api/cmrprint/template", { method: "PUT", body: JSON.stringify({ template: templatePayload }) });
+    setDraftData((current) => ({ ...current, templates: payload.templates || [] }));
+    refresh();
+  }
+
+  async function deleteTemplate(templateName) {
+    const payload = await apiJson(`/api/cmrprint/template/${encodeURIComponent(templateName)}`, { method: "DELETE" });
+    setDraftData((current) => ({ ...current, templates: payload.templates || [] }));
+    refresh();
+  }
+
+  function buildPrintPageForCustomer(customerRecord, manualOverride = {}) {
     if (!customerRecord) {
       return null;
     }
-    const pageExporter = (data?.exporters || []).find((item) => item.name === customerRecord.exporter_profile_name) || null;
-    const pageTransport = (data?.transport_infos || []).find((item) => item.name === customerRecord.transport_profile_name) || null;
-    const pageLoading = (data?.loading_places || []).find((item) => item.name === customerRecord.loading_place_profile_name) || null;
-    const values = buildCmrDocumentValues(customerRecord, pageExporter, pageTransport, pageLoading, manualValues, places);
+    const pageExporter = exporters.find((item) => item.name === customerRecord.exporter_profile_name) || null;
+    const pageTransport = transportInfos.find((item) => item.name === customerRecord.transport_profile_name) || null;
+    const pageLoading = loadingPlaces.find((item) => item.name === customerRecord.loading_place_profile_name) || null;
+    const values = buildCmrDocumentValues(customerRecord, pageExporter, pageTransport, pageLoading, { ...manualValues, ...manualOverride }, places);
     const fields = places.map((place) => ({
       x: positionMap[place.field_name]?.x ?? place.default_x,
       y: positionMap[place.field_name]?.y ?? place.default_y,
@@ -692,7 +1135,6 @@ function CmrPrintPage({ currentUser }) {
       fontSize: fontMap[place.field_name] || place.default_font_size || 9,
       value: String(values[place.field_name] || "").trim(),
     })).filter((field) => field.value);
-
     return {
       title: customerRecord.name,
       subtitle: `${selectedTemplateName || "CMR template"} | ${customerRecord.country || ""}`,
@@ -711,281 +1153,69 @@ function CmrPrintPage({ currentUser }) {
     openCmrPrintWindow(`${customer.name} CMR`, [page], autoPrint);
   }
 
-  function toggleBatchCustomer(name) {
-    setBatchCustomerNames((current) => (
-      current.includes(name)
-        ? current.filter((value) => value !== name)
-        : [...current, name]
-    ));
-  }
-
-  function openBatchPrint(autoPrint) {
-    const pages = batchCustomerNames
-      .map((name) => (data?.customers || []).find((item) => item.name === name))
-      .map((item) => buildPrintPageForCustomer(item))
-      .filter(Boolean);
-
-    if (!pages.length) {
-      window.alert("Choose at least one customer for batch print.");
-      return;
-    }
-    openCmrPrintWindow("Batch CMR print", pages, autoPrint);
-  }
-
-  function openExtraView(viewKey) {
-    setExtraView(viewKey);
-    setExtraMenuOpen(false);
-  }
-
   if (loading) {
     return <div className="notice">Loading CMR Print data...</div>;
   }
   if (error) {
     return <div className="notice danger">Unable to load CMR Print data: {error}</div>;
   }
-  if (!data?.available) {
+  if (!cmrData?.available) {
     return <div className="notice">No CMR Print data folder was found yet.</div>;
   }
 
   return (
     <section className="overview-stack cmr-print-page">
-      <div className="data-table-card cmr-print-grid">
-        <div className="cmr-print-meta">
-          <div className="metric-row">
-            <Metric label="Customers" value={data.customers?.length || 0} />
-            <Metric label="Templates" value={data.templates?.length || 0} />
-            <Metric label="Profiles" value={(data.exporters?.length || 0) + (data.transport_infos?.length || 0) + (data.loading_places?.length || 0)} />
-          </div>
-          <p className="sidebar-note">Imported from: {data.data_dir}</p>
-        </div>
-
-        <div className="cmr-print-toolbar">
-          <div className="cmr-template-picker">
-            <label>
-              <span>Template</span>
-              <select value={pendingTemplateName} onChange={(event) => setPendingTemplateName(event.target.value)}>
-                <option value="">Choose template</option>
-                {(data.templates || []).map((item) => <option key={item.name} value={item.name}>{item.name}</option>)}
-              </select>
-            </label>
-            <button type="button" onClick={() => setSelectedTemplateName(pendingTemplateName || selectedTemplateName)}>
-              Use
-            </button>
-          </div>
-
-          <div className="cmr-toolbar-actions">
-            <div className="cmr-extra-menu">
-              <button type="button" onClick={() => setExtraMenuOpen((open) => !open)} aria-expanded={extraMenuOpen}>
-                Extra
-              </button>
-              {extraMenuOpen && (
-                <div className="cmr-extra-menu-list">
-                  {extraOptions.map((option) => (
-                    <button key={option.key} type="button" onClick={() => openExtraView(option.key)}>
-                      {option.label}
-                    </button>
-                  ))}
-                </div>
-              )}
-            </div>
-            <button type="button" onClick={() => openCurrentCustomerPrint(false)}>Preview Print</button>
-            <button type="button" className="primary" onClick={() => openCurrentCustomerPrint(true)}>Print CMR</button>
-          </div>
-        </div>
-
-        {extraView && (
-          <div className="data-table-card cmr-extra-panel">
-            <div className="title-row">
-              <h3>{extraOptions.find((item) => item.key === extraView)?.label || "Extra"}</h3>
-              <button type="button" onClick={() => setExtraView("")}>Close</button>
-            </div>
-
-            {extraView === "templates" && (
-              <div className="table-shell">
-                <table className="data-table">
-                  <thead>
-                    <tr><th>Name</th><th>Created</th><th>Source file</th></tr>
-                  </thead>
-                  <tbody>
-                    {(data.templates || []).map((item) => (
-                      <tr key={item.name}>
-                        <td>{item.name}</td>
-                        <td>{item.created_date || "-"}</td>
-                        <td>{item.source_file || "-"}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            )}
-
-            {extraView === "exporters" && (
-              <div className="table-shell">
-                <table className="data-table">
-                  <thead>
-                    <tr><th>Name</th><th>Country</th><th>Place</th><th>Assignments</th></tr>
-                  </thead>
-                  <tbody>
-                    {(data.exporters || []).map((item) => (
-                      <tr key={item.name}>
-                        <td>{item.name}</td>
-                        <td>{item.country || "-"}</td>
-                        <td>{item.place || "-"}</td>
-                        <td>{item.field_assignments?.length || 0}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            )}
-
-            {extraView === "transport" && (
-              <div className="table-shell">
-                <table className="data-table">
-                  <thead>
-                    <tr><th>Name</th><th>Country</th><th>Place</th><th>Assignments</th></tr>
-                  </thead>
-                  <tbody>
-                    {(data.transport_infos || []).map((item) => (
-                      <tr key={item.name}>
-                        <td>{item.name}</td>
-                        <td>{item.country || "-"}</td>
-                        <td>{item.place || "-"}</td>
-                        <td>{item.field_assignments?.length || 0}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            )}
-
-            {extraView === "customers" && (
-              <div className="table-shell">
-                <table className="data-table">
-                  <thead>
-                    <tr><th>Name</th><th>Country</th><th>Exporter</th><th>Transport</th><th>Loading place</th><th>Place of issue</th></tr>
-                  </thead>
-                  <tbody>
-                    {(data.customers || []).map((item) => (
-                      <tr key={item.name}>
-                        <td>{item.name}</td>
-                        <td>{item.country || "-"}</td>
-                        <td>{item.exporter_profile_name || "-"}</td>
-                        <td>{item.transport_profile_name || "-"}</td>
-                        <td>{item.loading_place_profile_name || "-"}</td>
-                        <td>{item.place_of_issue || "-"}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            )}
-
-            {extraView === "loading" && (
-              <div className="table-shell">
-                <table className="data-table">
-                  <thead>
-                    <tr><th>Name</th><th>Country</th><th>Place</th><th>Assignments</th></tr>
-                  </thead>
-                  <tbody>
-                    {(data.loading_places || []).map((item) => (
-                      <tr key={item.name}>
-                        <td>{item.name}</td>
-                        <td>{item.country || "-"}</td>
-                        <td>{item.place || "-"}</td>
-                        <td>{item.field_assignments?.length || 0}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            )}
-
-            {extraView === "batch" && (
-              <div className="cmr-batch-panel">
-                <div className="cmr-batch-list">
-                  {(data.customers || []).map((item) => (
-                    <label key={item.name} className="cmr-batch-item">
-                      <input type="checkbox" checked={batchCustomerNames.includes(item.name)} onChange={() => toggleBatchCustomer(item.name)} />
-                      <span>{item.name}</span>
-                      <small>{item.country || "-"}</small>
-                    </label>
-                  ))}
-                </div>
-                <div className="cmr-batch-actions">
-                  <button type="button" onClick={() => openBatchPrint(false)}>Preview batch</button>
-                  <button type="button" className="primary" onClick={() => openBatchPrint(true)}>Print batch</button>
-                </div>
-              </div>
-            )}
-          </div>
-        )}
-
-        <div className="form-grid cmr-print-selectors">
-          <label>
-            <span>Customer</span>
-            <select value={selectedCustomerName} onChange={(event) => setSelectedCustomerName(event.target.value)}>
-              <option value="">Choose customer</option>
-              {(data.customers || []).map((item) => <option key={item.name} value={item.name}>{item.name}</option>)}
-            </select>
-          </label>
-          <label>
-            <span>Active template</span>
-            <input value={selectedTemplateName || ""} readOnly />
-          </label>
-          <label className="wide">
-            <span>Customer block</span>
-            <textarea value={buildCmrCustomerBlock(customer)} readOnly rows={4} />
-          </label>
-        </div>
-
-        <div className="cmr-print-workspace">
-          <div className="cmr-print-fields">
-            <label>
-              <span>Field 5 - Documents attached</span>
-              <textarea value={manualValues.documentsAttached} rows={4} onChange={(event) => updateManualValue("documentsAttached", event.target.value)} />
-            </label>
-            <label>
-              <span>Field 7 - Packaging / marks</span>
-              <textarea value={manualValues.packagingType} rows={5} onChange={(event) => updateManualValue("packagingType", event.target.value)} />
-            </label>
-            <label>
-              <span>Field 9 - Nature of goods</span>
-              <textarea value={manualValues.natureOfGoods} rows={6} onChange={(event) => updateManualValue("natureOfGoods", event.target.value)} />
-            </label>
-            <label>
-              <span>Field 17 - Transport authorizations</span>
-              <textarea value={manualValues.transportAuthorizations} rows={5} onChange={(event) => updateManualValue("transportAuthorizations", event.target.value)} />
-            </label>
-            <label>
-              <span>Autofill summary</span>
-              <textarea value={autofillSummary} rows={14} readOnly />
-            </label>
-          </div>
-
-          <div className="cmr-preview-shell">
-            <div className="cmr-preview-board" style={{ width: previewBounds.width, height: previewBounds.height }}>
-              {places.map((place) => {
-                const position = positionMap[place.field_name] || { x: place.default_x, y: place.default_y };
-                const width = widthMap[place.field_name] || 140;
-                const height = heightMap[place.field_name] || 52;
-                const fontSize = fontMap[place.field_name] || place.default_font_size || 9;
-                const value = String(documentValues[place.field_name] || "").trim();
-                return (
-                  <div
-                    key={place.field_name}
-                    className="cmr-preview-field"
-                    style={{ left: position.x, top: position.y, width, minHeight: height }}
-                  >
-                    <strong>{place.place_number}</strong>
-                    <span style={{ fontSize }}>{value || place.field_name}</span>
-                  </div>
-                );
-              })}
-            </div>
-          </div>
-        </div>
+      <div className="tab-strip cmr-submenu-strip">
+        {visibleMenus.map((menu) => (
+          <button key={menu.key} type="button" className={activeMenu === menu.key ? "active" : ""} onClick={() => setActiveMenu(menu.key)}>
+            {menu.label}
+          </button>
+        ))}
       </div>
+      {message && <div className={message.toLowerCase().includes("error") ? "notice danger" : "notice"}>{message}</div>}
+
+      {activeMenu === "cmrprint" && (
+        <div className="data-table-card cmr-print-grid">
+          <div className="cmr-print-meta-row">
+            <div className="notice">Active template: <strong>{selectedTemplateName || "No template"}</strong></div>
+          </div>
+          <div className="form-grid cmr-print-selectors">
+            <label><span>Customer</span><select value={selectedCustomerName} onChange={(event) => setSelectedCustomerName(event.target.value)}><option value="">Choose customer</option>{sortByName(customers).map((item) => <option key={item.name} value={item.name}>{item.name}</option>)}</select></label>
+            <label><span>Exporter</span><input value={exporter?.name || "-"} readOnly /></label>
+            <label><span>Transport</span><input value={transportInfo?.name || "-"} readOnly /></label>
+            <label className="wide"><span>Customer block</span><textarea rows={4} value={buildCmrCustomerBlock(customer)} readOnly /></label>
+          </div>
+          <div className="cmr-print-toolbar"><div className="row-actions spread-actions"><button type="button" onClick={() => openCurrentCustomerPrint(false)}>Preview Print</button><button type="button" className="primary" onClick={() => openCurrentCustomerPrint(true)}>Print CMR</button></div></div>
+          <div className="cmr-print-workspace">
+            <div className="cmr-print-fields">
+              <label><span>Field 5 - Documents attached</span><textarea rows={4} value={manualValues.documentsAttached} onChange={(event) => setManualValues({ ...manualValues, documentsAttached: event.target.value })} /></label>
+              <label><span>Field 7 - Packaging / marks</span><textarea rows={4} value={manualValues.packagingType} onChange={(event) => setManualValues({ ...manualValues, packagingType: event.target.value })} /></label>
+              <label><span>Field 9 - Nature of goods</span><textarea rows={5} value={manualValues.natureOfGoods} onChange={(event) => setManualValues({ ...manualValues, natureOfGoods: event.target.value })} /></label>
+              <label><span>Field 17 - Transport authorizations</span><textarea rows={4} value={manualValues.transportAuthorizations} onChange={(event) => setManualValues({ ...manualValues, transportAuthorizations: event.target.value })} /></label>
+              <label><span>Autofill summary</span><textarea rows={12} value={autofillSummary} readOnly /></label>
+            </div>
+            <div className="cmr-preview-shell">
+              <div className="cmr-preview-board" style={{ width: previewBounds.width, height: previewBounds.height }}>
+                {places.map((place) => {
+                  const position = positionMap[place.field_name] || { x: place.default_x, y: place.default_y };
+                  const width = widthMap[place.field_name] || 140;
+                  const height = heightMap[place.field_name] || 52;
+                  const fontSize = fontMap[place.field_name] || place.default_font_size || 9;
+                  const value = String(documentValues[place.field_name] || "").trim();
+                  return <div key={place.field_name} className="cmr-preview-field" style={{ left: position.x, top: position.y, width, minHeight: height }}><strong>{place.place_number}</strong><span style={{ fontSize }}>{value || place.field_name}</span></div>;
+                })}
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {canManage && activeMenu === "templates" && <CmrTemplateEditor templates={templates} places={places} defaultTemplateName={selectedTemplateName} onSaveTemplate={saveTemplate} onDeleteTemplate={deleteTemplate} />}
+      {canManage && activeMenu === "exporters" && <><CmrProfileManager title="Exporter" records={exporters} onChange={(value) => updateCollections({ exporters: value })} places={places} /><div className="row-actions spread-actions"><button type="button" className="primary" onClick={() => saveAppData("Exporter info saved.")} disabled={saving}>{saving ? "Saving..." : "Save"}</button></div></>}
+      {canManage && activeMenu === "transport" && <><CmrProfileManager title="Transport" records={transportInfos} onChange={(value) => updateCollections({ transport_infos: value })} places={places} /><div className="row-actions spread-actions"><button type="button" className="primary" onClick={() => saveAppData("Transport info saved.")} disabled={saving}>{saving ? "Saving..." : "Save"}</button></div></>}
+      {canManage && activeMenu === "loading" && <><CmrProfileManager title="Loading place" records={loadingPlaces} onChange={(value) => updateCollections({ loading_places: value })} places={places} /><div className="row-actions spread-actions"><button type="button" className="primary" onClick={() => saveAppData("Loading places saved.")} disabled={saving}>{saving ? "Saving..." : "Save"}</button></div></>}
+      {canManage && activeMenu === "customers" && <><CmrCustomerManager customers={customers} exporters={exporters} transportInfos={transportInfos} loadingPlaces={loadingPlaces} onChange={(value) => updateCollections({ customers: value })} places={places} /><div className="row-actions spread-actions"><button type="button" className="primary" onClick={() => saveAppData("Customer info saved.")} disabled={saving}>{saving ? "Saving..." : "Save"}</button></div></>}
+      {canManage && activeMenu === "batch" && <CmrBatchPrintView customers={customers} buildPrintPage={buildPrintPageForCustomer} defaultNatureOfGoods={manualValues.natureOfGoods} />}
     </section>
   );
 }
@@ -3436,6 +3666,7 @@ function SettingsPage({ currentUser }) {
       .then((payload) => setForm({
         ...payload.settings,
         cmr_country_folders_text: cmrFolderLines(payload.settings.cmr_country_folders),
+        cmr_manage_usernames_text: (payload.settings.cmr_manage_usernames || []).join("\n"),
       }))
       .catch((settingsError) => setError(settingsError.message));
 
@@ -3458,12 +3689,17 @@ function SettingsPage({ currentUser }) {
             .map((value) => value.trim())
             .filter(Boolean),
           cmr_country_folders: parseCmrFolderLines(form.cmr_country_folders_text),
+          cmr_manage_usernames: String(form.cmr_manage_usernames_text || "")
+            .split(/[\n,;]/)
+            .map((value) => value.trim().toLowerCase())
+            .filter(Boolean),
         }),
       });
       setForm({
         ...payload.settings,
         email_recipients: payload.settings.email_recipients.join("\n"),
         cmr_country_folders_text: cmrFolderLines(payload.settings.cmr_country_folders),
+        cmr_manage_usernames_text: (payload.settings.cmr_manage_usernames || []).join("\n"),
       });
       setMessage("Fust settings saved.");
       await loadConnectionTest();
@@ -3506,12 +3742,17 @@ function SettingsPage({ currentUser }) {
             .map((value) => value.trim())
             .filter(Boolean),
           cmr_country_folders: parseCmrFolderLines(form.cmr_country_folders_text),
+          cmr_manage_usernames: String(form.cmr_manage_usernames_text || "")
+            .split(/[\n,;]/)
+            .map((value) => value.trim().toLowerCase())
+            .filter(Boolean),
         }),
       });
       setForm({
         ...saved.settings,
         email_recipients: saved.settings.email_recipients.join("\n"),
         cmr_country_folders_text: cmrFolderLines(saved.settings.cmr_country_folders),
+        cmr_manage_usernames_text: (saved.settings.cmr_manage_usernames || []).join("\n"),
       });
       const payload = await apiJson("/api/fust/google/auth-url");
       window.location.href = payload.auth_url;
@@ -3604,6 +3845,31 @@ function SettingsPage({ currentUser }) {
               onChange={(event) => setForm({ ...form, cmr_fallback_folder_id: event.target.value })}
               placeholder="optional fallback folder id"
             />
+          </label>
+          <label>
+            <span>Default CMR template</span>
+            <select
+              value={form.cmr_default_template_name || ""}
+              onChange={(event) => setForm({ ...form, cmr_default_template_name: event.target.value })}
+            >
+              <option value="">Choose template</option>
+              {Array.isArray(form.cmr_available_templates) && form.cmr_available_templates.map((name) => (
+                <option key={name} value={name}>{name}</option>
+              ))}
+            </select>
+          </label>
+          <label className="wide">
+            <span>CMR manager usernames</span>
+            <textarea
+              value={form.cmr_manage_usernames_text || ""}
+              onChange={(event) => setForm({ ...form, cmr_manage_usernames_text: event.target.value })}
+              rows={4}
+              placeholder={"username1\nusername2"}
+            />
+          </label>
+          <label className="wide">
+            <span>CMR data folder</span>
+            <input value={form.cmr_data_dir || ""} readOnly />
           </label>
           <label>
             <span>Google OAuth client ID</span>
