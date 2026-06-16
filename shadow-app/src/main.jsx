@@ -9,6 +9,8 @@ const PERMISSIONS = {
   FUST_IN: "fust:in",
   FUST_OUT: "fust:out",
   FUST_OVERVIEW: "fust:overview",
+  CMR_VIEW: "cmr:view",
+  CMR_MANAGE: "cmr:manage",
   CLOCK_VIEW: "clock:view",
   CLOCK_MANAGE: "clock:manage",
   USERS_MANAGE: "users:manage",
@@ -22,7 +24,7 @@ const DEFAULT_PERMISSIONS_BY_ROLE = {
 const PAGE_DEFINITIONS = [
   { key: "dashboard", label: "Photos", permission: PERMISSIONS.PHOTOS_VIEW },
   { key: "fust", label: "Fust", permission: PERMISSIONS.FUST_VIEW },
-  { key: "cmrprint", label: "CMR Print", permission: PERMISSIONS.FUST_VIEW },
+  { key: "cmrprint", label: "CMR Print", permission: PERMISSIONS.CMR_VIEW },
   { key: "clock", label: "Inklokken", permission: PERMISSIONS.CLOCK_VIEW },
   { key: "users", label: "Users", permission: PERMISSIONS.USERS_MANAGE },
   { key: "settings", label: "Settings", permission: PERMISSIONS.SETTINGS_MANAGE },
@@ -976,7 +978,7 @@ function CmrBatchPrintView({ customers, buildPrintPage, defaultNatureOfGoods }) 
 }
 
 function CmrPrintPage({ currentUser }) {
-  const enabled = hasPermission(currentUser, PERMISSIONS.FUST_VIEW);
+  const enabled = hasPermission(currentUser, PERMISSIONS.CMR_VIEW);
   const { loading, data, error, refresh } = useCmrPrintData(enabled);
   const [activeMenu, setActiveMenu] = useState("cmrprint");
   const [message, setMessage] = useState("");

@@ -47,6 +47,8 @@ const allPermissions = [
   "fust:in",
   "fust:out",
   "fust:overview",
+  "cmr:view",
+  "cmr:manage",
   "clock:view",
   "clock:manage",
   "users:manage",
@@ -58,6 +60,8 @@ const PERMISSIONS = {
   FUST_IN: "fust:in",
   FUST_OUT: "fust:out",
   FUST_OVERVIEW: "fust:overview",
+  CMR_VIEW: "cmr:view",
+  CMR_MANAGE: "cmr:manage",
   CLOCK_VIEW: "clock:view",
   CLOCK_MANAGE: "clock:manage",
   USERS_MANAGE: "users:manage",
@@ -530,7 +534,8 @@ function canManageCmrWorkspace(user, settings) {
   if (!user) {
     return false;
   }
-  if (user.role === "admin" || normalizePermissions(user.role, user.permissions).includes(PERMISSIONS.SETTINGS_MANAGE)) {
+  const permissions = normalizePermissions(user.role, user.permissions);
+  if (user.role === "admin" || permissions.includes(PERMISSIONS.SETTINGS_MANAGE) || permissions.includes(PERMISSIONS.CMR_MANAGE)) {
     return true;
   }
   return settings.cmr_manage_usernames.includes(String(user.username || "").trim().toLowerCase());
@@ -2451,7 +2456,7 @@ async function handleApi(req, res, url) {
   }
 
   if (url.pathname === "/api/cmrprint/data") {
-    if (!requirePermission(res, requestUser, PERMISSIONS.FUST_VIEW)) {
+    if (!requirePermission(res, requestUser, PERMISSIONS.CMR_VIEW)) {
       return;
     }
     try {
@@ -2471,7 +2476,7 @@ async function handleApi(req, res, url) {
   }
 
   if (url.pathname === "/api/cmrprint/app-data" && req.method === "PATCH") {
-    if (!requirePermission(res, requestUser, PERMISSIONS.FUST_VIEW)) {
+    if (!requirePermission(res, requestUser, PERMISSIONS.CMR_VIEW)) {
       return;
     }
     const settings = await readFustSettings();
@@ -2486,7 +2491,7 @@ async function handleApi(req, res, url) {
   }
 
   if (url.pathname === "/api/cmrprint/template" && req.method === "PUT") {
-    if (!requirePermission(res, requestUser, PERMISSIONS.FUST_VIEW)) {
+    if (!requirePermission(res, requestUser, PERMISSIONS.CMR_VIEW)) {
       return;
     }
     const settings = await readFustSettings();
@@ -2501,7 +2506,7 @@ async function handleApi(req, res, url) {
   }
 
   if (url.pathname.startsWith("/api/cmrprint/template/") && req.method === "DELETE") {
-    if (!requirePermission(res, requestUser, PERMISSIONS.FUST_VIEW)) {
+    if (!requirePermission(res, requestUser, PERMISSIONS.CMR_VIEW)) {
       return;
     }
     const settings = await readFustSettings();
