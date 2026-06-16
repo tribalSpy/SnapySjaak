@@ -22,6 +22,7 @@ const DEFAULT_PERMISSIONS_BY_ROLE = {
 const PAGE_DEFINITIONS = [
   { key: "dashboard", label: "Photos", permission: PERMISSIONS.PHOTOS_VIEW },
   { key: "fust", label: "Fust", permission: PERMISSIONS.FUST_VIEW },
+  { key: "cmrprint", label: "CMR Print", permission: PERMISSIONS.FUST_VIEW },
   { key: "clock", label: "Inklokken", permission: PERMISSIONS.CLOCK_VIEW },
   { key: "users", label: "Users", permission: PERMISSIONS.USERS_MANAGE },
   { key: "settings", label: "Settings", permission: PERMISSIONS.SETTINGS_MANAGE },
@@ -86,6 +87,11 @@ function pageHeading(page) {
       return {
         title: "Inklokken",
         caption: "Scan badge codes, add manual corrections, and export clocked times online.",
+      };
+    case "cmrprint":
+      return {
+        title: "CMR Print",
+        caption: "Use your imported CMR customers, linked profiles, and saved templates in a separate daily workspace.",
       };
     case "users":
       return {
@@ -352,6 +358,270 @@ function useSyncStatus(enabled) {
   return status;
 }
 
+function useCmrPrintData(enabled) {
+  const [state, setState] = useState({ loading: true, data: null, error: "" });
+
+  useEffect(() => {
+    if (!enabled) {
+      setState({ loading: false, data: null, error: "" });
+      return undefined;
+    }
+
+    let cancelled = false;
+    setState((current) => ({ ...current, loading: true, error: "" }));
+    apiJson("/api/cmrprint/data")
+      .then((payload) => {
+        if (!cancelled) {
+          setState({ loading: false, data: payload, error: "" });
+        }
+      })
+      .catch((loadError) => {
+        if (!cancelled) {
+          setState({ loading: false, data: null, error: loadError.message });
+        }
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [enabled]);
+
+  return state;
+}
+
+function formatCmrTransportDate(dateValue = new Date()) {
+  const day = String(dateValue.getDate()).padStart(2, "0");
+  const month = String(dateValue.getMonth() + 1).padStart(2, "0");
+  const year = String(dateValue.getFullYear());
+  return `${day}-${month}-${year}`;
+}
+
+function mergeCmrFieldLines(...values) {
+  const lines = [];
+  for (const value of values) {
+    for (const line of String(value || "")
+      .split(/?
+/)
+      .map((part) => part.trim())
+      .filter(Boolean)) {
+      if (!lines.some((existing) => existing.toLowerCase() === line.toLowerCase())) {
+        lines.push(line);
+      }
+    }
+  }
+  return lines.join("
+");
+}
+
+function applyCmrAssignments(target, assignments, manualFields) {
+  for (const assignment of assignments || []) {
+    if (!assignment?.field_name || manualFields.has(assignment.field_name)) {
+      continue;
+    }
+    target[assignment.field_name] = assignment.value || "";
+  }
+}
+
+function buildCmrCustomerBlock(customer) {
+  return [customer?.name, customer?.address, customer?.city, customer?.country].filter(Boolean).join("
+");
+}
+
+function buildCmrDocumentValues(customer, exporter, transportInfo, loadingPlace, manualValues, places) {
+  const values = {};
+  const manualFields = new Set(["PackagingType", "NatureofGoods", "TransportAuthorizations"]);
+  applyCmrAssignments(values, exporter?.field_assignments, manualFields);
+  applyCmrAssignments(values, transportInfo?.field_assignments, manualFields);
+  applyCmrAssignments(values, loadingPlace?.field_assignments, manualFields);
+  applyCmrAssignments(values, customer?.field_assignments, manualFields);
+
+  if (!String(values.ConsignorName || "").trim()) {
+    values.ConsignorName = buildCmrCustomerBlock(customer);
+  }
+
+  const hasExportDate = (places || []).some((place) => place.field_name === "ExportDate");
+  if (hasExportDate) {
+    const dateValue = customer?.place_of_issue
+      ? `${customer.place_of_issue} ${formatCmrTransportDate()}`
+      : formatCmrTransportDate();
+    const combinedPlaceDate = mergeCmrFieldLines(values.ConsignorRemarks, values.ExportDate, dateValue);
+    values.ConsignorRemarks = combinedPlaceDate;
+    values.ExportDate = combinedPlaceDate;
+  }
+
+  values.PackagingType = manualValues.packagingType || "";
+  values.NatureofGoods = manualValues.natureOfGoods || "xx Pal
+xx DC
+xx DCO
+xx DCS";
+  values.TransportAuthorizations = manualValues.transportAuthorizations || "";
+  return values;
+}
+
+function CmrPrintPage({ currentUser }) {
+  const enabled = hasPermission(currentUser, PERMISSIONS.FUST_VIEW);
+  const { loading, data, error } = useCmrPrintData(enabled);
+  const [selectedCustomerName, setSelectedCustomerName] = useState("");
+  const [selectedTemplateName, setSelectedTemplateName] = useState("");
+  const [manualValues, setManualValues] = useState({
+    packagingType: "",
+    natureOfGoods: "xx Pal
+xx DC
+xx DCO
+xx DCS",
+    transportAuthorizations: "",
+  });
+
+  useEffect(() => {
+    if (!data?.customers?.length || selectedCustomerName) {
+      return;
+    }
+    setSelectedCustomerName(data.customers[0].name);
+  }, [data?.customers, selectedCustomerName]);
+
+  useEffect(() => {
+    if (!data?.templates?.length || selectedTemplateName) {
+      return;
+    }
+    setSelectedTemplateName(data.templates[0].name);
+  }, [data?.templates, selectedTemplateName]);
+
+  const customer = (data?.customers || []).find((item) => item.name === selectedCustomerName) || null;
+  const template = (data?.templates || []).find((item) => item.name === selectedTemplateName) || null;
+  const exporter = (data?.exporters || []).find((item) => item.name === customer?.exporter_profile_name) || null;
+  const transportInfo = (data?.transport_infos || []).find((item) => item.name === customer?.transport_profile_name) || null;
+  const loadingPlace = (data?.loading_places || []).find((item) => item.name === customer?.loading_place_profile_name) || null;
+  const places = data?.places || [];
+
+  const documentValues = useMemo(
+    () => buildCmrDocumentValues(customer, exporter, transportInfo, loadingPlace, manualValues, places),
+    [customer, exporter, transportInfo, loadingPlace, manualValues, places],
+  );
+
+  const positionMap = useMemo(() => Object.fromEntries((template?.field_positions || []).map((entry) => [entry.field_name, entry])), [template]);
+  const widthMap = useMemo(() => Object.fromEntries((template?.field_widths || []).map((entry) => [entry.field_name, entry.value])), [template]);
+  const heightMap = useMemo(() => Object.fromEntries((template?.field_heights || []).map((entry) => [entry.field_name, entry.value])), [template]);
+  const fontMap = useMemo(() => Object.fromEntries((template?.font_sizes || []).map((entry) => [entry.field_name, entry.value])), [template]);
+
+  const previewBounds = useMemo(() => {
+    const maxX = Math.max(...places.map((place) => (positionMap[place.field_name]?.x ?? place.default_x) + (widthMap[place.field_name] || 140)), 760);
+    const maxY = Math.max(...places.map((place) => (positionMap[place.field_name]?.y ?? place.default_y) + (heightMap[place.field_name] || 52)), 980);
+    return { width: maxX + 80, height: maxY + 80 };
+  }, [places, positionMap, widthMap, heightMap]);
+
+  const autofillSummary = useMemo(() => {
+    if (!customer) {
+      return "Select a customer to load linked profiles and CMR field values.";
+    }
+    const lines = [
+      `Customer: ${customer.name}`,
+      `Exporter profile: ${customer.exporter_profile_name || "-"}`,
+      `Transport profile: ${customer.transport_profile_name || "-"}`,
+      `Loading place: ${customer.loading_place_profile_name || "-"}`,
+      `Field 21: ${documentValues.ExportDate || "-"}`,
+    ];
+    for (const place of places) {
+      const value = String(documentValues[place.field_name] || "").trim();
+      if (!value || ["PackagingType", "NatureofGoods", "TransportAuthorizations"].includes(place.field_name)) {
+        continue;
+      }
+      lines.push(`${place.description}: ${value.replace(/
+/g, " | ")}`);
+    }
+    return lines.join("
+");
+  }, [customer, documentValues, places]);
+
+  if (loading) {
+    return <div className="notice">Loading CMR Print data...</div>;
+  }
+  if (error) {
+    return <div className="notice danger">Unable to load CMR Print data: {error}</div>;
+  }
+  if (!data?.available) {
+    return <div className="notice">No CMR Print data folder was found yet.</div>;
+  }
+
+  return (
+    <section className="overview-stack cmr-print-page">
+      <div className="data-table-card cmr-print-grid">
+        <div className="cmr-print-meta">
+          <div className="metric-row">
+            <Metric label="Customers" value={data.customers?.length || 0} />
+            <Metric label="Templates" value={data.templates?.length || 0} />
+            <Metric label="Profiles" value={(data.exporters?.length || 0) + (data.transport_infos?.length || 0) + (data.loading_places?.length || 0)} />
+          </div>
+          <p className="sidebar-note">Imported from: {data.data_dir}</p>
+        </div>
+
+        <div className="form-grid cmr-print-selectors">
+          <label>
+            <span>Customer</span>
+            <select value={selectedCustomerName} onChange={(event) => setSelectedCustomerName(event.target.value)}>
+              <option value="">Choose customer</option>
+              {(data.customers || []).map((item) => <option key={item.name} value={item.name}>{item.name}</option>)}
+            </select>
+          </label>
+          <label>
+            <span>Template</span>
+            <select value={selectedTemplateName} onChange={(event) => setSelectedTemplateName(event.target.value)}>
+              <option value="">Choose template</option>
+              {(data.templates || []).map((item) => <option key={item.name} value={item.name}>{item.name}</option>)}
+            </select>
+          </label>
+          <label className="wide">
+            <span>Customer block</span>
+            <textarea value={buildCmrCustomerBlock(customer)} readOnly rows={4} />
+          </label>
+        </div>
+
+        <div className="cmr-print-workspace">
+          <div className="cmr-print-fields">
+            <label>
+              <span>Field 7 - Packaging / marks</span>
+              <textarea value={manualValues.packagingType} rows={5} onChange={(event) => setManualValues({ ...manualValues, packagingType: event.target.value })} />
+            </label>
+            <label>
+              <span>Field 9 - Nature of goods</span>
+              <textarea value={manualValues.natureOfGoods} rows={6} onChange={(event) => setManualValues({ ...manualValues, natureOfGoods: event.target.value })} />
+            </label>
+            <label>
+              <span>Field 17 - Transport authorizations</span>
+              <textarea value={manualValues.transportAuthorizations} rows={5} onChange={(event) => setManualValues({ ...manualValues, transportAuthorizations: event.target.value })} />
+            </label>
+            <label>
+              <span>Autofill summary</span>
+              <textarea value={autofillSummary} rows={14} readOnly />
+            </label>
+          </div>
+
+          <div className="cmr-preview-shell">
+            <div className="cmr-preview-board" style={{ width: previewBounds.width, height: previewBounds.height }}>
+              {places.map((place) => {
+                const position = positionMap[place.field_name] || { x: place.default_x, y: place.default_y };
+                const width = widthMap[place.field_name] || 140;
+                const height = heightMap[place.field_name] || 52;
+                const fontSize = fontMap[place.field_name] || place.default_font_size || 9;
+                const value = String(documentValues[place.field_name] || "").trim();
+                return (
+                  <div
+                    key={place.field_name}
+                    className="cmr-preview-field"
+                    style={{ left: position.x, top: position.y, width, minHeight: height }}
+                  >
+                    <strong>{place.place_number}</strong>
+                    <span style={{ fontSize }}>{value || place.field_name}</span>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+  );
+}
+
 function App() {
   const [auth, setAuth] = useState({ loading: true, user: null, setupRequired: false });
   const [page, setPage] = useState("dashboard");
@@ -569,6 +839,7 @@ function App() {
 
         {page === "users" && <UsersPage currentUser={auth.user} />}
         {page === "fust" && <FustPage currentUser={auth.user} menuVersion={fustMenuVersion} />}
+        {page === "cmrprint" && <CmrPrintPage currentUser={auth.user} />}
         {page === "clock" && <ClockPage currentUser={auth.user} />}
         {page === "settings" && <SettingsPage currentUser={auth.user} />}
         {page === "dashboard" && canViewPhotos && (

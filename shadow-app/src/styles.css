@@ -1109,3 +1109,73 @@ pre {
     transform: none;
   }
 }
+
+.cmr-print-grid {
+  display: grid;
+  gap: 18px;
+}
+
+.cmr-print-meta {
+  display: grid;
+  gap: 10px;
+}
+
+.cmr-print-selectors textarea,
+.cmr-print-fields textarea {
+  min-height: 108px;
+  resize: vertical;
+}
+
+.cmr-print-workspace {
+  display: grid;
+  grid-template-columns: minmax(320px, 420px) minmax(0, 1fr);
+  gap: 18px;
+  align-items: start;
+}
+
+.cmr-print-fields {
+  display: grid;
+  gap: 14px;
+}
+
+.cmr-preview-shell {
+  overflow: auto;
+  border: 1px solid #d6dde5;
+  border-radius: 8px;
+  background: #f7faf8;
+  padding: 12px;
+}
+
+.cmr-preview-board {
+  position: relative;
+  background: #fff;
+  border: 1px solid #c7d2de;
+  border-radius: 6px;
+}
+
+.cmr-preview-field {
+  position: absolute;
+  display: grid;
+  align-content: start;
+  gap: 4px;
+  padding: 6px;
+  border: 1px dashed #9bb2c8;
+  background: rgba(235, 243, 250, 0.88);
+  overflow: hidden;
+}
+
+.cmr-preview-field strong {
+  font-size: 11px;
+  color: #29435c;
+}
+
+.cmr-preview-field span {
+  white-space: pre-wrap;
+  line-height: 1.25;
+}
+
+@media (max-width: 980px) {
+  .cmr-print-workspace {
+    grid-template-columns: 1fr;
+  }
+}

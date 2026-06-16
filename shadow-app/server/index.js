@@ -91,6 +91,12 @@ const defaultFustSettings = {
   clock_records_sheet_name: "backup",
 };
 
+const cmrPrintDataDirCandidates = [
+  path.join(repoRoot, "cmrprint", "CMRPrint", "bin", "Release", "net9.0-windows", "win-x64", "publish", "Data"),
+  path.join(repoRoot, "cmrprint", "CMRPrint", "bin", "Release", "net9.0-windows", "win-x64", "Data"),
+  path.join(repoRoot, "cmrprint", "CMRPrint", "Data"),
+];
+
 const imageExtensions = new Set([
   ".jpg",
   ".jpeg",
@@ -168,6 +174,174 @@ async function readRequestJson(req, maxBytes = 1024 * 1024) {
     return {};
   }
   return JSON.parse(rawBody);
+}
+
+function decodeXmlEntities(value) {
+  return String(value || "")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&quot;/g, '"')
+    .replace(/&apos;/g, "'")
+    .replace(/&#x0D;/g, "")
+    .replace(/&#10;/g, "
+")
+    .replace(/&amp;/g, "&");
+}
+
+function extractXmlBlocks(xml, tagName) {
+  const matches = [];
+  const pattern = new RegExp(`<${tagName}(?:\s[^>]*)?>([\s\S]*?)</${tagName}>`, "g");
+  let match = pattern.exec(xml);
+  while (match) {
+    matches.push(match[1]);
+    match = pattern.exec(xml);
+  }
+  return matches;
+}
+
+function extractXmlValue(xml, tagName) {
+  const match = new RegExp(`<${tagName}(?:\s[^>]*)?>([\s\S]*?)</${tagName}>`).exec(xml);
+  return decodeXmlEntities(match?.[1] || "").trim();
+}
+
+function parseCmrPrintFieldAssignments(xml) {
+  return extractXmlBlocks(xml, "FieldAssignment").map((block) => ({
+    field_name: extractXmlValue(block, "FieldName"),
+    value: extractXmlValue(block, "Value"),
+  })).filter((item) => item.field_name);
+}
+
+function parseCmrPrintProfiles(xml, tagName) {
+  return extractXmlBlocks(xml, tagName).map((block) => ({
+    name: extractXmlValue(block, "Name"),
+    country: extractXmlValue(block, "Country"),
+    place: extractXmlValue(block, "Place"),
+    field_assignments: parseCmrPrintFieldAssignments(extractXmlValue(block, "FieldAssignments") || block),
+  })).filter((item) => item.name || item.field_assignments.length);
+}
+
+function parseCmrPrintCustomers(xml) {
+  return extractXmlBlocks(xml, "Customer").map((block) => ({
+    name: extractXmlValue(block, "Name"),
+    address: extractXmlValue(block, "Address"),
+    city: extractXmlValue(block, "City"),
+    country: extractXmlValue(block, "Country"),
+    vat_number: extractXmlValue(block, "VatNumber"),
+    exporter_profile_name: extractXmlValue(block, "ExporterProfileName"),
+    transport_profile_name: extractXmlValue(block, "TransportProfileName"),
+    loading_place_profile_name: extractXmlValue(block, "LoadingPlaceProfileName"),
+    place_of_issue: extractXmlValue(block, "PlaceOfIssue"),
+    field_assignments: parseCmrPrintFieldAssignments(extractXmlValue(block, "FieldAssignments") || block),
+  })).filter((item) => item.name || item.address || item.field_assignments.length);
+}
+
+function parseCmrPrintTemplateIntEntries(xml, tagName) {
+  return extractXmlBlocks(xml, tagName).map((block) => ({
+    field_name: extractXmlValue(block, "FieldName"),
+    value: Number(extractXmlValue(block, "Value") || 0),
+  })).filter((item) => item.field_name);
+}
+
+function parseCmrPrintTemplatePointEntries(xml, tagName) {
+  return extractXmlBlocks(xml, tagName).map((block) => ({
+    field_name: extractXmlValue(block, "FieldName"),
+    x: Number(extractXmlValue(block, "X") || 0),
+    y: Number(extractXmlValue(block, "Y") || 0),
+  })).filter((item) => item.field_name);
+}
+
+function cmrPrintPlaces() {
+  return [
+    { place_number: 1, field_name: "ConsignorName", description: "1. Sender", default_x: 40, default_y: 80, default_font_size: 9 },
+    { place_number: 2, field_name: "ConsignorDetails", description: "2. Destination", default_x: 40, default_y: 130, default_font_size: 8 },
+    { place_number: 3, field_name: "LoadingInstructions", description: "3. Place of Delivery Good", default_x: 40, default_y: 160, default_font_size: 8 },
+    { place_number: 4, field_name: "ConsignorRemarks", description: "4. Place and Date of Reception", default_x: 40, default_y: 200, default_font_size: 8 },
+    { place_number: 5, field_name: "DocumentsAttached", description: "5. Documents attached", default_x: 40, default_y: 240, default_font_size: 8 },
+    { place_number: 6, field_name: "Seals", description: "6. Marks and Numbers", default_x: 120, default_y: 240, default_font_size: 8 },
+    { place_number: 7, field_name: "PackagingType", description: "7. Number of Packages", default_x: 200, default_y: 240, default_font_size: 8 },
+    { place_number: 8, field_name: "GoodsDescription", description: "8. Goods description", default_x: 40, default_y: 280, default_font_size: 9 },
+    { place_number: 9, field_name: "NatureofGoods", description: "9. Nature of Goods", default_x: 40, default_y: 360, default_font_size: 9 },
+    { place_number: 10, field_name: "LoadingOrderNumber", description: "10. Statistical Number", default_x: 200, default_y: 360, default_font_size: 8 },
+    { place_number: 11, field_name: "TransportChargesPlace", description: "11. Gross Weight", default_x: 400, default_y: 80, default_font_size: 8 },
+    { place_number: 12, field_name: "ConsigeeName", description: "12. Volume in m3", default_x: 400, default_y: 110, default_font_size: 9 },
+    { place_number: 13, field_name: "ConsigneeDetails", description: "13. Sender Instructions", default_x: 400, default_y: 160, default_font_size: 8 },
+    { place_number: 14, field_name: "UnloadingInstructions", description: "14. Instructions regarding Payment", default_x: 400, default_y: 190, default_font_size: 8 },
+    { place_number: 15, field_name: "CarrierRemarks", description: "15. Cash on Delivery", default_x: 40, default_y: 430, default_font_size: 8 },
+    { place_number: 16, field_name: "ConsigneeRemarks", description: "16. Carrier", default_x: 400, default_y: 430, default_font_size: 8 },
+    { place_number: 17, field_name: "TransportAuthorizations", description: "17. Successive Carriers", default_x: 40, default_y: 500, default_font_size: 8 },
+    { place_number: 18, field_name: "RouteInfo", description: "18. Carrier Observations", default_x: 200, default_y: 500, default_font_size: 8 },
+    { place_number: 19, field_name: "InsuranceRemarks", description: "19. Special Agreements", default_x: 40, default_y: 540, default_font_size: 8 },
+    { place_number: 20, field_name: "CarrierSignature", description: "20. To be Paid By", default_x: 40, default_y: 580, default_font_size: 8 },
+    { place_number: 21, field_name: "ExportDate", description: "21. Export/transport date", default_x: 400, default_y: 540, default_font_size: 9 },
+    { place_number: 22, field_name: "SignaturePlace1", description: "22. Signature Sender", default_x: 40, default_y: 620, default_font_size: 8 },
+    { place_number: 23, field_name: "SignaturePlace2", description: "23. Signature of the carrier", default_x: 270, default_y: 620, default_font_size: 8 },
+    { place_number: 24, field_name: "SignaturePlace3", description: "24. Signature Good received", default_x: 500, default_y: 620, default_font_size: 8 },
+  ];
+}
+
+function parseCmrPrintTemplate(xml, filename) {
+  return {
+    name: extractXmlValue(xml, "Name") || filename.replace(/\.xml$/i, ""),
+    created_date: extractXmlValue(xml, "CreatedDate"),
+    font_sizes: parseCmrPrintTemplateIntEntries(extractXmlValue(xml, "FontSizeEntries") || xml, "TemplateIntSetting"),
+    vertical_offsets: parseCmrPrintTemplateIntEntries(extractXmlValue(xml, "VerticalOffsetEntries") || xml, "TemplateIntSetting"),
+    field_positions: parseCmrPrintTemplatePointEntries(extractXmlValue(xml, "FieldPositionEntries") || xml, "TemplatePointSetting"),
+    field_widths: parseCmrPrintTemplateIntEntries(extractXmlValue(xml, "FieldWidthEntries") || xml, "TemplateIntSetting"),
+    field_heights: parseCmrPrintTemplateIntEntries(extractXmlValue(xml, "FieldHeightEntries") || xml, "TemplateIntSetting"),
+    source_file: filename,
+  };
+}
+
+function resolveCmrPrintDataDir() {
+  return cmrPrintDataDirCandidates.find((candidate) => existsSync(candidate)) || "";
+}
+
+async function loadCmrPrintData() {
+  const dataDir = resolveCmrPrintDataDir();
+  if (!dataDir) {
+    return {
+      available: false,
+      data_dir: "",
+      templates_dir: "",
+      customers: [],
+      exporters: [],
+      transport_infos: [],
+      loading_places: [],
+      templates: [],
+      places: cmrPrintPlaces(),
+    };
+  }
+
+  const appDataPath = path.join(dataDir, "app-data.xml");
+  const templatesDir = path.join(dataDir, "Templates");
+  const appDataXml = existsSync(appDataPath) ? await fs.readFile(appDataPath, "utf8") : "";
+  const customers = parseCmrPrintCustomers(extractXmlValue(appDataXml, "Customers") || appDataXml).sort((left, right) => left.name.localeCompare(right.name));
+  const exporters = parseCmrPrintProfiles(extractXmlValue(appDataXml, "Exporters") || appDataXml, "ProfileRecord").sort((left, right) => left.name.localeCompare(right.name));
+  const transportInfos = parseCmrPrintProfiles(extractXmlValue(appDataXml, "TransportInfos") || appDataXml, "ProfileRecord").sort((left, right) => left.name.localeCompare(right.name));
+  const loadingPlaces = parseCmrPrintProfiles(extractXmlValue(appDataXml, "LoadingPlaces") || appDataXml, "ProfileRecord").sort((left, right) => left.name.localeCompare(right.name));
+  const templates = [];
+  if (existsSync(templatesDir)) {
+    const entries = await fs.readdir(templatesDir, { withFileTypes: true });
+    for (const entry of entries) {
+      if (!entry.isFile() || path.extname(entry.name).toLowerCase() !== ".xml") {
+        continue;
+      }
+      const xml = await fs.readFile(path.join(templatesDir, entry.name), "utf8");
+      templates.push(parseCmrPrintTemplate(xml, entry.name));
+    }
+  }
+  templates.sort((left, right) => left.name.localeCompare(right.name));
+  return {
+    available: true,
+    data_dir: dataDir,
+    templates_dir: templatesDir,
+    customers,
+    exporters,
+    transport_infos: transportInfos,
+    loading_places: loadingPlaces,
+    templates,
+    places: cmrPrintPlaces(),
+  };
 }
 
 function parseRunFolderName(folderName) {
@@ -2072,6 +2246,19 @@ async function handleApi(req, res, url) {
   const requestUser = await getRequestUser(req);
   if (!requestUser) {
     sendUnauthorized(res);
+    return;
+  }
+
+  if (url.pathname === "/api/cmrprint/data") {
+    if (!requirePermission(res, requestUser, PERMISSIONS.FUST_VIEW)) {
+      return;
+    }
+    try {
+      const payload = await loadCmrPrintData();
+      sendJson(res, 200, payload);
+    } catch (error) {
+      sendJson(res, 500, { error: error instanceof Error ? error.message : String(error) });
+    }
     return;
   }
 
