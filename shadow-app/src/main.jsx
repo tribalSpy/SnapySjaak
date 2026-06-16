@@ -507,22 +507,28 @@ function buildCmrPrintHtml(title, pages, autoPrint) {
   </head>
   <body>
     <main class="cmr-print-stack">${pageMarkup}</main>
-    ${autoPrint ? '<script>window.addEventListener("load", () => window.print());<\/script>' : ''}
   </body>
 </html>`;
 }
 
 function openCmrPrintWindow(title, pages, autoPrint = false) {
-  const popup = window.open("", "_blank", "noopener,noreferrer");
+  const popup = window.open("about:blank", "_blank", "width=1200,height=900");
   if (!popup) {
     window.alert("Allow pop-ups to open the CMR print preview.");
     return;
   }
+
+  const html = buildCmrPrintHtml(title, pages, autoPrint);
   popup.document.open();
-  popup.document.write(buildCmrPrintHtml(title, pages, autoPrint));
+  popup.document.write(html);
   popup.document.close();
+  popup.focus();
+
   if (autoPrint) {
-    popup.focus();
+    popup.addEventListener("load", () => {
+      popup.focus();
+      popup.print();
+    }, { once: true });
   }
 }
 
