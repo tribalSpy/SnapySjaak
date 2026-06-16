@@ -1162,7 +1162,30 @@ function CmrPrintPage({ currentUser }) {
     return <div className="notice danger">Unable to load CMR Print data: {error}</div>;
   }
   if (!cmrData?.available) {
-    return <div className="notice">No CMR Print data folder was found yet.</div>;
+    return (
+      <div className="data-table-card cmr-missing-data">
+        <div className="notice danger">No CMR Print data folder was found yet.</div>
+        {Array.isArray(cmrData?.debug_candidates) && cmrData.debug_candidates.length > 0 && (
+          <div className="table-wrap">
+            <table className="data-table compact-table">
+              <thead>
+                <tr><th>Checked path</th><th>Folder</th><th>app-data.xml</th><th>Templates</th></tr>
+              </thead>
+              <tbody>
+                {cmrData.debug_candidates.map((item) => (
+                  <tr key={item.path}>
+                    <td>{item.path}</td>
+                    <td>{item.exists ? "yes" : "no"}</td>
+                    <td>{item.has_app_data ? "yes" : "no"}</td>
+                    <td>{item.has_templates_dir ? "yes" : "no"}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
+    );
   }
 
   return (

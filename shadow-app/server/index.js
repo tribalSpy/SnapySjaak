@@ -101,6 +101,9 @@ const cmrPrintDataDirCandidates = [
   path.join(repoRoot, "cmrprint", "CMRPrint", "bin", "Release", "net9.0-windows", "win-x64", "publish", "Data"),
   path.join(repoRoot, "cmrprint", "CMRPrint", "bin", "Release", "net9.0-windows", "win-x64", "Data"),
   path.join(repoRoot, "cmrprint", "CMRPrint", "Data"),
+  path.join(process.cwd(), "cmrprint", "CMRPrint", "Data"),
+  path.join(appRoot, "..", "cmrprint", "CMRPrint", "Data"),
+  path.join(appRoot, "cmrprint", "CMRPrint", "Data"),
 ];
 
 const imageExtensions = new Set([
@@ -297,12 +300,26 @@ function parseCmrPrintTemplate(xml, filename) {
   };
 }
 
+function cmrPrintCandidateStatus() {
+  return [...new Set(cmrPrintDataDirCandidates.map((candidate) => path.resolve(candidate)))].map((candidate) => ({
+    path: candidate,
+    exists: existsSync(candidate),
+    has_app_data: existsSync(path.join(candidate, "app-data.xml")),
+    has_templates_dir: existsSync(path.join(candidate, "Templates")),
+  }));
+}
+
 function resolveCmrPrintDataDir() {
-  return cmrPrintDataDirCandidates.find((candidate) => existsSync(candidate)) || "";
+  const candidates = cmrPrintCandidateStatus();
+  const exactMatch = candidates.find((candidate) => candidate.has_app_data || candidate.has_templates_dir);
+  return {
+    dataDir: exactMatch?.path || "",
+    candidates,
+  };
 }
 
 async function loadCmrPrintData() {
-  const dataDir = resolveCmrPrintDataDir();
+  const { dataDir, candidates } = resolveCmrPrintDataDir();
   if (!dataDir) {
     return {
       available: false,
@@ -314,6 +331,7 @@ async function loadCmrPrintData() {
       loading_places: [],
       templates: [],
       places: cmrPrintPlaces(),
+      debug_candidates: candidates,
     };
   }
 
@@ -346,6 +364,7 @@ async function loadCmrPrintData() {
     loading_places: loadingPlaces,
     templates,
     places: cmrPrintPlaces(),
+    debug_candidates: candidates,
   };
 }
 
@@ -354,7 +373,7 @@ function cmrPrintPrimaryDataDir() {
 }
 
 async function ensureCmrPrintDataDir() {
-  const dataDir = resolveCmrPrintDataDir() || cmrPrintPrimaryDataDir();
+  const dataDir = resolveCmrPrintDataDir().dataDir || cmrPrintPrimaryDataDir();
   const templatesDir = path.join(dataDir, "Templates");
   await fs.mkdir(templatesDir, { recursive: true });
   return { dataDir, templatesDir, appDataPath: path.join(dataDir, "app-data.xml") };
