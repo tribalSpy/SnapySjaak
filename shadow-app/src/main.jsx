@@ -2412,6 +2412,34 @@ function ClockPage({ currentUser }) {
     }
   }
 
+  async function deleteExportSession(session) {
+    const baseRecord = session.in_record || session.out_record;
+    if (!baseRecord) {
+      return;
+    }
+    const label = `${baseRecord.name} ${baseRecord.action_date}`;
+    if (!window.confirm(`Delete this clock row for ${label}? This removes the visible IN and OUT actions.`)) {
+      return;
+    }
+
+    const recordsToDelete = [session.out_record, session.in_record].filter(Boolean);
+    setBusy(true);
+    setError("");
+    setMessage("");
+    try {
+      for (const record of recordsToDelete) {
+        await apiJson(`/api/clock/records/${encodeURIComponent(record.id)}`, { method: "DELETE" });
+      }
+      setExportEditingId("");
+      await loadRecords(selectedDate);
+      setMessage("Clock row deleted");
+    } catch (deleteError) {
+      setError(deleteError.message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
   useEffect(() => {
     if (activeTab !== "clock") {
       return undefined;
@@ -2704,7 +2732,10 @@ function ClockPage({ currentUser }) {
                             <button type="button" onClick={() => setExportEditingId("")} disabled={busy}>Cancel</button>
                           </>
                         ) : (
-                          <button type="button" onClick={() => startExportEdit(session, index)} disabled={busy}>Edit</button>
+                          <>
+                            <button type="button" onClick={() => startExportEdit(session, index)} disabled={busy}>Edit</button>
+                            <button type="button" onClick={() => deleteExportSession(session)} disabled={busy}>Delete</button>
+                          </>
                         )}
                       </td>
                     </tr>

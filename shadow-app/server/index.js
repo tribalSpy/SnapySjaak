@@ -577,6 +577,42 @@ function clockSessionRows(records) {
   return rows;
 }
 
+function clockBackupHeaders() {
+  return ["Date", "TBNR", "Name", "Type", "IN", "OUT", "Worked time", "Source", "ID", "Created by", "Created at", "Status"];
+}
+
+function clockBackupRow(sessionRow, status = "active") {
+  return [...sessionRow.slice(0, 11), status];
+}
+
+function applyClockSessionSync(records, session, rowNumber, sheetName) {
+  if (rowNumber < 2) {
+    return;
+  }
+  const syncInfo = {
+    ok: true,
+    target_sheets: [sheetName],
+    error: "",
+    synced_at: new Date().toISOString(),
+    row_number: rowNumber,
+  };
+  for (const recordId of [session.inRecord?.id, session.outRecord?.id]) {
+    if (!recordId) {
+      continue;
+    }
+    const recordIndex = records.findIndex((item) => item.id === recordId);
+    if (recordIndex >= 0) {
+      records[recordIndex] = {
+        ...records[recordIndex],
+        sheet_sync: {
+          ...records[recordIndex].sheet_sync,
+          ...syncInfo,
+        },
+      };
+    }
+  }
+}
+
 async function syncClockRecordToSheets(record, settings, allRecords = []) {
   if (!settings.clock_spreadsheet_id) {
     return { ok: false, target_sheets: [], error: "Clock spreadsheet ID is not configured" };
@@ -590,9 +626,10 @@ async function syncClockRecordToSheets(record, settings, allRecords = []) {
   const sessionRow = record.direction === "OUT"
     ? clockSessionRow(previousIn, record, allRecords)
     : clockSessionRow(record, null, allRecords);
+  const backupRow = clockBackupRow(sessionRow, "active");
   const output = record.direction === "OUT" && previousRowNumber >= 2
-    ? await writeSheetRowAt(settings.clock_spreadsheet_id, settings.clock_records_sheet_name, previousRowNumber, sessionRow)
-    : await writeSheetRowToFirstEmpty(settings.clock_spreadsheet_id, settings.clock_records_sheet_name, sessionRow);
+    ? await writeSheetRowAt(settings.clock_spreadsheet_id, settings.clock_records_sheet_name, previousRowNumber, backupRow)
+    : await writeSheetRowToFirstEmpty(settings.clock_spreadsheet_id, settings.clock_records_sheet_name, backupRow);
 
   return {
     ok: true,
@@ -649,22 +686,34 @@ function normalizeClockTime(value) {
   return `${String(match[1]).padStart(2, "0")}:${match[2]}:${match[3] || "00"}`;
 }
 
-function clockBackupRowNumbersForDate(rows, targetDate) {
+function clockBackupEntriesForDate(rows, targetDate) {
   if (!Array.isArray(rows) || rows.length < 2) {
     return [];
   }
 
   const headers = rows[0].map(normalizeHeader);
   const dateIndex = firstMatchingIndex(headers, ["date", "datum"]);
+  const idIndex = firstMatchingIndex(headers, ["id"]);
+  const statusIndex = firstMatchingIndex(headers, ["status"]);
   return rows
     .slice(1)
     .map((row, offset) => ({
       row_number: offset + 2,
+      row,
       action_date: parseSheetDateToIso(rowValue(row, dateIndex >= 0 ? dateIndex : 0)).slice(0, 10),
+      id: rowValue(row, idIndex >= 0 ? idIndex : 8),
+      status: rowValue(row, statusIndex >= 0 ? statusIndex : 11).toLowerCase() || "active",
     }))
     .filter((entry) => entry.action_date === targetDate)
-    .map((entry) => entry.row_number)
-    .sort((left, right) => left - right);
+    .sort((left, right) => left.row_number - right.row_number);
+}
+
+async function ensureClockBackupHeader(settings, rows) {
+  const existingHeaders = Array.isArray(rows[0]) ? rows[0].map(normalizeHeader) : [];
+  if (existingHeaders.includes("status")) {
+    return;
+  }
+  await writeSheetRowAt(settings.clock_spreadsheet_id, settings.clock_records_sheet_name, 1, clockBackupHeaders());
 }
 
 async function rewriteClockBackupDate(date, records, settings) {
@@ -673,49 +722,48 @@ async function rewriteClockBackupDate(date, records, settings) {
   }
 
   const rows = await loadSheetRows(settings.clock_spreadsheet_id, settings.clock_records_sheet_name);
-  const headerWidth = Math.max(rows[0]?.length || 11, 11);
-  const targetRows = clockBackupRowNumbersForDate(rows, date);
+  await ensureClockBackupHeader(settings, rows);
+  const entries = clockBackupEntriesForDate(rows, date);
   const dateRecords = records.filter((record) => record.action_date === date);
   const sessions = clockSessionRows(dateRecords);
-  const blankRow = Array(headerWidth).fill("");
+  const sessionsById = new Map(sessions.map((session) => [String(session.row[8] || ""), session]));
+  const matchedIds = new Set();
 
-  for (const [index, session] of sessions.entries()) {
-    let rowNumber = Number(targetRows[index] || 0);
-    if (rowNumber >= 2) {
-      await writeSheetRowAt(settings.clock_spreadsheet_id, settings.clock_records_sheet_name, rowNumber, session.row);
-    } else {
-      const output = await writeSheetRowToFirstEmpty(settings.clock_spreadsheet_id, settings.clock_records_sheet_name, session.row);
-      rowNumber = Number(output?.row_number || 0);
+  for (const entry of entries) {
+    const matchingSession = entry.id ? sessionsById.get(entry.id) : null;
+    if (matchingSession) {
+      await writeSheetRowAt(
+        settings.clock_spreadsheet_id,
+        settings.clock_records_sheet_name,
+        entry.row_number,
+        clockBackupRow(matchingSession.row, "active"),
+      );
+      applyClockSessionSync(records, matchingSession, entry.row_number, settings.clock_records_sheet_name);
+      matchedIds.add(entry.id);
+      continue;
     }
 
-    if (rowNumber >= 2) {
-      const syncInfo = {
-        ok: true,
-        target_sheets: [settings.clock_records_sheet_name],
-        error: "",
-        synced_at: new Date().toISOString(),
-        row_number: rowNumber,
-      };
-      for (const recordId of [session.inRecord?.id, session.outRecord?.id]) {
-        if (!recordId) {
-          continue;
-        }
-        const recordIndex = records.findIndex((item) => item.id === recordId);
-        if (recordIndex >= 0) {
-          records[recordIndex] = {
-            ...records[recordIndex],
-            sheet_sync: {
-              ...records[recordIndex].sheet_sync,
-              ...syncInfo,
-            },
-          };
-        }
-      }
+    if (entry.status !== "deleted") {
+      await writeSheetRowAt(
+        settings.clock_spreadsheet_id,
+        settings.clock_records_sheet_name,
+        entry.row_number,
+        clockBackupRow(entry.row, "deleted"),
+      );
     }
   }
 
-  for (const rowNumber of targetRows.slice(sessions.length)) {
-    await writeSheetRowAt(settings.clock_spreadsheet_id, settings.clock_records_sheet_name, rowNumber, blankRow);
+  for (const session of sessions) {
+    const sessionId = String(session.row[8] || "");
+    if (sessionId && matchedIds.has(sessionId)) {
+      continue;
+    }
+    const output = await writeSheetRowToFirstEmpty(
+      settings.clock_spreadsheet_id,
+      settings.clock_records_sheet_name,
+      clockBackupRow(session.row, "active"),
+    );
+    applyClockSessionSync(records, session, Number(output?.row_number || 0), settings.clock_records_sheet_name);
   }
 }
 
@@ -742,6 +790,7 @@ function parseClockBackupRows(rows, targetDate, username) {
   const idIndex = firstMatchingIndex(headers, ["id"]);
   const createdByIndex = firstMatchingIndex(headers, ["created by", "gemaakt door"]);
   const createdAtIndex = firstMatchingIndex(headers, ["created at", "gemaakt op"]);
+  const statusIndex = firstMatchingIndex(headers, ["status"]);
 
   const imported = [];
   for (const [offset, row] of rows.slice(1).entries()) {
@@ -760,8 +809,9 @@ function parseClockBackupRows(rows, targetDate, username) {
     const baseId = rowValue(row, idIndex >= 0 ? idIndex : 8) || crypto.randomUUID();
     const createdBy = rowValue(row, createdByIndex >= 0 ? createdByIndex : 9) || username;
     const createdAt = rowValue(row, createdAtIndex >= 0 ? createdAtIndex : 10) || new Date().toISOString();
+    const status = rowValue(row, statusIndex >= 0 ? statusIndex : 11).toLowerCase() || "active";
 
-    if (!tbnr || !name) {
+    if (!tbnr || !name || status === "deleted") {
       continue;
     }
 
