@@ -997,6 +997,7 @@ function CmrPrintPage({ currentUser }) {
       return;
     }
     setDraftData({
+      available: data.available,
       customers: data.customers || [],
       exporters: data.exporters || [],
       transport_infos: data.transport_infos || [],
@@ -1007,6 +1008,7 @@ function CmrPrintPage({ currentUser }) {
       can_manage: data.can_manage,
       data_dir: data.data_dir,
       templates_dir: data.templates_dir,
+      debug_candidates: data.debug_candidates || [],
     });
   }, [data]);
 
