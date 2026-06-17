@@ -1,0 +1,15 @@
+C:\inklokken\bin\Debug\net9.0-windows\employees.csv
+C:\inklokken\bin\Debug\net9.0-windows\InKlokken.exe
+C:\inklokken\bin\Debug\net9.0-windows\InKlokken.deps.json
+C:\inklokken\bin\Debug\net9.0-windows\InKlokken.runtimeconfig.json
+C:\inklokken\bin\Debug\net9.0-windows\InKlokken.dll
+C:\inklokken\bin\Debug\net9.0-windows\InKlokken.pdb
+C:\inklokken\obj\Debug\net9.0-windows\InKlokken.GeneratedMSBuildEditorConfig.editorconfig
+C:\inklokken\obj\Debug\net9.0-windows\InKlokken.AssemblyInfoInputs.cache
+C:\inklokken\obj\Debug\net9.0-windows\InKlokken.AssemblyInfo.cs
+C:\inklokken\obj\Debug\net9.0-windows\InKlokken.csproj.CoreCompileInputs.cache
+C:\inklokken\obj\Debug\net9.0-windows\InKlokken.dll
+C:\inklokken\obj\Debug\net9.0-windows\refint\InKlokken.dll
+C:\inklokken\obj\Debug\net9.0-windows\InKlokken.pdb
+C:\inklokken\obj\Debug\net9.0-windows\InKlokken.genruntimeconfig.cache
+C:\inklokken\obj\Debug\net9.0-windows\ref\InKlokken.dll

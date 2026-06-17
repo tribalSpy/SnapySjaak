@@ -1,0 +1,843 @@
+<?xml version="1.0" encoding="utf-8"?>
+<AppDataStore xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:xsd="http://www.w3.org/2001/XMLSchema">
+  <Customers>
+    <Customer>
+      <Name>4F601</Name>
+      <Address>Kukka-Arose Ky/Kimppu Kivaa
+Hakasivuntie 5
+61800 Kauhajoki (FI)
+4F601</Address>
+      <City />
+      <Country />
+      <VatNumber />
+      <ExporterProfileName>Sjaak vd Vijver</ExporterProfileName>
+      <TransportProfileName>O Jylha Oy</TransportProfileName>
+      <LoadingPlaceProfileName>Loading Honselersdijk</LoadingPlaceProfileName>
+      <PlaceOfIssue>Honselersdijk</PlaceOfIssue>
+      <FieldAssignments>
+        <FieldAssignment>
+          <FieldName>ConsignorDetails</FieldName>
+          <Value>Kukka-Arose Ky/Kimppu Kivaa
+Hakasivuntie 5
+61800 Kauhajoki (FI)
+4F601</Value>
+        </FieldAssignment>
+      </FieldAssignments>
+    </Customer>
+    <Customer>
+      <Name>A &amp; G Flora 2013</Name>
+      <Address>2E.Akad.Ivan Geshov Blvd
+Business Center Serdika Sofia 1330(BG)
+XBAG</Address>
+      <City />
+      <Country />
+      <VatNumber />
+      <ExporterProfileName>Sjaak vd Vijver</ExporterProfileName>
+      <TransportProfileName />
+      <LoadingPlaceProfileName>Loading Honselersdijk</LoadingPlaceProfileName>
+      <PlaceOfIssue>Honselersdijk</PlaceOfIssue>
+      <FieldAssignments>
+        <FieldAssignment>
+          <FieldName>ConsignorDetails</FieldName>
+          <Value>2E.Akad.Ivan Geshov Blvd
+Business Center Serdika Sofia 1330(BG)
+XBAG</Value>
+        </FieldAssignment>
+      </FieldAssignments>
+    </Customer>
+    <Customer>
+      <Name>Adm</Name>
+      <Address>Church ln Sarrat
+Rickmansworth WD3 6HN(GB)
+ADM</Address>
+      <City />
+      <Country />
+      <VatNumber />
+      <ExporterProfileName>Sjaak vd Vijver</ExporterProfileName>
+      <TransportProfileName>Van duyn</TransportProfileName>
+      <LoadingPlaceProfileName>Loading Honselersdijk</LoadingPlaceProfileName>
+      <PlaceOfIssue>Honselersdijk</PlaceOfIssue>
+      <FieldAssignments>
+        <FieldAssignment>
+          <FieldName>ConsignorDetails</FieldName>
+          <Value>Church ln Sarrat
+Rickmansworth WD3 6HN(GB)
+ADM</Value>
+        </FieldAssignment>
+      </FieldAssignments>
+    </Customer>
+    <Customer>
+      <Name>BW1</Name>
+      <Address>BW1 (RO)</Address>
+      <City />
+      <Country />
+      <VatNumber />
+      <ExporterProfileName>Sjaak vd Vijver</ExporterProfileName>
+      <TransportProfileName />
+      <LoadingPlaceProfileName>Loading Honselersdijk</LoadingPlaceProfileName>
+      <PlaceOfIssue>Honselersdijk</PlaceOfIssue>
+      <FieldAssignments>
+        <FieldAssignment>
+          <FieldName>ConsignorDetails</FieldName>
+          <Value>BW1 (RO)</Value>
+        </FieldAssignment>
+      </FieldAssignments>
+    </Customer>
+    <Customer>
+      <Name>EM MAR</Name>
+      <Address>Tile Cross Road unit 14
+Marston Green Birmingham B33 ONW(GB)
+EM MAR</Address>
+      <City />
+      <Country />
+      <VatNumber />
+      <ExporterProfileName>Sjaak vd Vijver</ExporterProfileName>
+      <TransportProfileName>Van duyn</TransportProfileName>
+      <LoadingPlaceProfileName>Loading Honselersdijk</LoadingPlaceProfileName>
+      <PlaceOfIssue>Honselersdijk</PlaceOfIssue>
+      <FieldAssignments>
+        <FieldAssignment>
+          <FieldName>ConsignorDetails</FieldName>
+          <Value>Tile Cross Road unit 14
+Marston Green Birmingham B33 ONW(GB)
+EM MAR</Value>
+        </FieldAssignment>
+      </FieldAssignments>
+    </Customer>
+    <Customer>
+      <Name>FR GER</Name>
+      <Address>Freddies Flowers DE Gmbh
+Seligenstadter Str. 53
+63791 Karlstein Am Main (DE)
+FR GER</Address>
+      <City />
+      <Country />
+      <VatNumber />
+      <ExporterProfileName>Sjaak vd Vijver</ExporterProfileName>
+      <TransportProfileName />
+      <LoadingPlaceProfileName>Loading Honselersdijk</LoadingPlaceProfileName>
+      <PlaceOfIssue>Honselersdijk</PlaceOfIssue>
+      <FieldAssignments>
+        <FieldAssignment>
+          <FieldName>ConsignorDetails</FieldName>
+          <Value>Freddies Flowers DE Gmbh
+Seligenstadter Str. 53
+63791 Karlstein Am Main (DE)
+FR GER </Value>
+        </FieldAssignment>
+      </FieldAssignments>
+    </Customer>
+    <Customer>
+      <Name>Freddies Flowers LTD 6EDB10</Name>
+      <Address>Morrisons Flower world Sinfin Lane</Address>
+      <City />
+      <Country />
+      <VatNumber />
+      <ExporterProfileName>Sjaak vd Vijver</ExporterProfileName>
+      <TransportProfileName>Van duyn</TransportProfileName>
+      <LoadingPlaceProfileName>Loading Honselersdijk</LoadingPlaceProfileName>
+      <PlaceOfIssue>Honselersdijk</PlaceOfIssue>
+      <FieldAssignments>
+        <FieldAssignment>
+          <FieldName>ConsignorDetails</FieldName>
+          <Value>Freddies Flowers LTD
+Morrisons Flower world Sinfin Lane 
+DE24 9GL Derby(GB)
+6EDB10</Value>
+        </FieldAssignment>
+      </FieldAssignments>
+    </Customer>
+    <Customer>
+      <Name>Globus 2DGLZ</Name>
+      <Address>Globus Handelshof St. Wendel Gmbh &amp; Co. KG
+Fliehburgstrasse 18
+56856 Zell-Barl(DE)
+2DGLZ</Address>
+      <City />
+      <Country />
+      <VatNumber />
+      <ExporterProfileName>Sjaak vd Vijver</ExporterProfileName>
+      <TransportProfileName>G. A. Velthoven</TransportProfileName>
+      <LoadingPlaceProfileName>Loading Honselersdijk</LoadingPlaceProfileName>
+      <PlaceOfIssue>Honselersdijk</PlaceOfIssue>
+      <FieldAssignments>
+        <FieldAssignment>
+          <FieldName>ConsignorDetails</FieldName>
+          <Value>Globus Handelshof St. Wendel Gmbh &amp; Co. KG
+Fliehburgstrasse 18
+56856 Zell-Barl(DE)
+2DGLZ</Value>
+        </FieldAssignment>
+      </FieldAssignments>
+    </Customer>
+    <Customer>
+      <Name>IGMCI /glendale</Name>
+      <Address>Glendal Flowers
+Rochfordstown Waterfall
+Near Cork(IE)
+IGMCI</Address>
+      <City />
+      <Country />
+      <VatNumber />
+      <ExporterProfileName>Sjaak vd Vijver</ExporterProfileName>
+      <TransportProfileName>Hannon Logistics BV</TransportProfileName>
+      <LoadingPlaceProfileName>Loading Honselersdijk</LoadingPlaceProfileName>
+      <PlaceOfIssue>Honselersdijk</PlaceOfIssue>
+      <FieldAssignments>
+        <FieldAssignment>
+          <FieldName>ConsignorDetails</FieldName>
+          <Value>Glendal Flowers
+Rochfordstown Waterfall
+Near Cork(IE)
+IGMCI</Value>
+        </FieldAssignment>
+      </FieldAssignments>
+    </Customer>
+    <Customer>
+      <Name>Lru Sia Alstromerija</Name>
+      <Address>Sia Altromerija
+Krasta 91.LV-1019
+Riga. Latvia Reg.Nr.40203052897 (LV)
+Lrub</Address>
+      <City />
+      <Country />
+      <VatNumber />
+      <ExporterProfileName>Sjaak vd Vijver</ExporterProfileName>
+      <TransportProfileName />
+      <LoadingPlaceProfileName>Loading Honselersdijk</LoadingPlaceProfileName>
+      <PlaceOfIssue>Honselersdijk</PlaceOfIssue>
+      <FieldAssignments>
+        <FieldAssignment>
+          <FieldName>ConsignorDetails</FieldName>
+          <Value>Sia Altromerija
+Krasta 91.LV-1019
+Riga. Latvia Reg.Nr.40203052897 (LV)
+Lrub</Value>
+        </FieldAssignment>
+      </FieldAssignments>
+    </Customer>
+    <Customer>
+      <Name>Ofud</Name>
+      <Address>Ou Fudera
+Tegur 39
+50107 Tartu Estonia (EE)
+O FUD</Address>
+      <City />
+      <Country />
+      <VatNumber />
+      <ExporterProfileName>Sjaak vd Vijver</ExporterProfileName>
+      <TransportProfileName />
+      <LoadingPlaceProfileName>Loading Honselersdijk</LoadingPlaceProfileName>
+      <PlaceOfIssue>Honselerdijk</PlaceOfIssue>
+      <FieldAssignments>
+        <FieldAssignment>
+          <FieldName>ConsignorDetails</FieldName>
+          <Value>Ou Fudera
+Tegur 39
+50107 Tartu Estonia (EE)
+O FUD</Value>
+        </FieldAssignment>
+      </FieldAssignments>
+    </Customer>
+    <Customer>
+      <Name>P 122</Name>
+      <Address>Maison des Fleurs
+Avenida Antonio Augusto de Aguiar 31
+1069-413 (PT)
+P122</Address>
+      <City />
+      <Country />
+      <VatNumber />
+      <ExporterProfileName>Sjaak vd Vijver</ExporterProfileName>
+      <TransportProfileName>Universal Forever</TransportProfileName>
+      <LoadingPlaceProfileName>Loading Honselersdijk</LoadingPlaceProfileName>
+      <PlaceOfIssue>Honselersdijk</PlaceOfIssue>
+      <FieldAssignments>
+        <FieldAssignment>
+          <FieldName>ConsignorDetails</FieldName>
+          <Value>Maison des Fleurs
+Avenida Antonio Augusto de Aguiar 31
+1069-413 (PT)
+P122</Value>
+        </FieldAssignment>
+      </FieldAssignments>
+    </Customer>
+    <Customer>
+      <Name>P CAS</Name>
+      <Address>Victor Santos 
+Rua H- Zona Industrial  Lote M
+6600-459 Castelo Branco (PT)
+P CAS</Address>
+      <City />
+      <Country />
+      <VatNumber />
+      <ExporterProfileName>Sjaak vd Vijver</ExporterProfileName>
+      <TransportProfileName>TransWhite</TransportProfileName>
+      <LoadingPlaceProfileName>Loading Honselersdijk</LoadingPlaceProfileName>
+      <PlaceOfIssue>Honselersdijk</PlaceOfIssue>
+      <FieldAssignments>
+        <FieldAssignment>
+          <FieldName>ConsignorDetails</FieldName>
+          <Value>Victor Santos 
+Rua H- Zona Industrial  Lote M
+6600-459 Castelo Branco (PT)
+P CAS</Value>
+        </FieldAssignment>
+      </FieldAssignments>
+    </Customer>
+    <Customer>
+      <Name>P FRES</Name>
+      <Address>FrescoFloral
+Av. 5 Outubro , 36A
+1050-057 Lisboa (PT)
+P FRES</Address>
+      <City />
+      <Country />
+      <VatNumber />
+      <ExporterProfileName>Sjaak vd Vijver</ExporterProfileName>
+      <TransportProfileName>Universal Forever</TransportProfileName>
+      <LoadingPlaceProfileName>Loading Honselersdijk</LoadingPlaceProfileName>
+      <PlaceOfIssue>Honselersdijk</PlaceOfIssue>
+      <FieldAssignments>
+        <FieldAssignment>
+          <FieldName>ConsignorDetails</FieldName>
+          <Value>FrescoFloral
+Av. 5 Outubro , 36A
+1050-057 Lisboa (PT)
+P FRES</Value>
+        </FieldAssignment>
+      </FieldAssignments>
+    </Customer>
+    <Customer>
+      <Name>P San</Name>
+      <Address>Victor Santos
+R. Fonte Salgueiro 157
+2425-718 Lameira (Ortigosa) (PT)
+P SAN</Address>
+      <City />
+      <Country />
+      <VatNumber />
+      <ExporterProfileName>Sjaak vd Vijver</ExporterProfileName>
+      <TransportProfileName>TransWhite</TransportProfileName>
+      <LoadingPlaceProfileName>Loading Honselersdijk</LoadingPlaceProfileName>
+      <PlaceOfIssue>Honselersdijk</PlaceOfIssue>
+      <FieldAssignments>
+        <FieldAssignment>
+          <FieldName>ConsignorDetails</FieldName>
+          <Value>Victor Santos
+R. Fonte Salgueiro 157
+2425-718 Lameira (Ortigosa) (PT)
+P SAN</Value>
+        </FieldAssignment>
+      </FieldAssignments>
+    </Customer>
+    <Customer>
+      <Name>P VANG</Name>
+      <Address>Vangflor LDA
+Estrada dos Paulinos Apartado 82
+2870-522 Sarilhos grandes Montijo (PT)
+P VANG</Address>
+      <City />
+      <Country />
+      <VatNumber />
+      <ExporterProfileName>Sjaak vd Vijver</ExporterProfileName>
+      <TransportProfileName>Universal Forever</TransportProfileName>
+      <LoadingPlaceProfileName>Loading Honselersdijk</LoadingPlaceProfileName>
+      <PlaceOfIssue>honselersdijk</PlaceOfIssue>
+      <FieldAssignments>
+        <FieldAssignment>
+          <FieldName>ConsignorDetails</FieldName>
+          <Value>Vangflor LDA
+Estrada dos Paulinos Apartado 82
+2870-522 Sarilhos grandes Montijo (PT)
+P VANG</Value>
+        </FieldAssignment>
+      </FieldAssignments>
+    </Customer>
+    <Customer>
+      <Name>P111</Name>
+      <Address>Helia Arte Floral LDA 
+Rua dr. Leonel Sotoo Mayor No. 8 
+2500-227 Caldas da Rainha (PT)
+P111</Address>
+      <City />
+      <Country />
+      <VatNumber />
+      <ExporterProfileName>Sjaak vd Vijver</ExporterProfileName>
+      <TransportProfileName>TransWhite</TransportProfileName>
+      <LoadingPlaceProfileName>Loading Honselersdijk</LoadingPlaceProfileName>
+      <PlaceOfIssue>Honselersdijk</PlaceOfIssue>
+      <FieldAssignments>
+        <FieldAssignment>
+          <FieldName>ConsignorDetails</FieldName>
+          <Value>Helia Arte Floral LDA 
+Rua dr. Leonel Sotoo Mayor No. 8 
+2500-227 Caldas da Rainha (PT)
+P111</Value>
+        </FieldAssignment>
+      </FieldAssignments>
+    </Customer>
+    <Customer>
+      <Name>S 155</Name>
+      <Address>Fiunch Floristas S.L.
+R. Lisboa Na32, Local 17-A
+15707 Santiago  de Compostela (ES)
+S 155</Address>
+      <City />
+      <Country />
+      <VatNumber />
+      <ExporterProfileName>Sjaak vd Vijver</ExporterProfileName>
+      <TransportProfileName>VougaFrio</TransportProfileName>
+      <LoadingPlaceProfileName>Loading Honselersdijk</LoadingPlaceProfileName>
+      <PlaceOfIssue>Honselersdijk</PlaceOfIssue>
+      <FieldAssignments>
+        <FieldAssignment>
+          <FieldName>ConsignorDetails</FieldName>
+          <Value>Fiunch Floristas S.L.
+R. Lisboa Na32, Local 17-A
+15707 Santiago  de Compostela (ES)
+S 155</Value>
+        </FieldAssignment>
+      </FieldAssignments>
+    </Customer>
+    <Customer>
+      <Name>S 165</Name>
+      <Address>Viveros Miraflores
+C/EL Angel N. 54
+CP 06131 Alconchel, Badajoz (ES)
+5S165</Address>
+      <City />
+      <Country />
+      <VatNumber />
+      <ExporterProfileName>Sjaak vd Vijver</ExporterProfileName>
+      <TransportProfileName>Universal Forever</TransportProfileName>
+      <LoadingPlaceProfileName>Loading Honselersdijk</LoadingPlaceProfileName>
+      <PlaceOfIssue>Honselersdijk</PlaceOfIssue>
+      <FieldAssignments>
+        <FieldAssignment>
+          <FieldName>ConsignorDetails</FieldName>
+          <Value>Viveros Miraflores
+C/EL Angel N. 54
+CP 06131 Alconchel, Badajoz (ES)
+5S165</Value>
+        </FieldAssignment>
+      </FieldAssignments>
+    </Customer>
+    <Customer>
+      <Name>S 224</Name>
+      <Address>Lucia Vieitez Codeseda
+Rua Esperanza 26
+368600 Pontevedra (ES)
+S 224</Address>
+      <City />
+      <Country />
+      <VatNumber />
+      <ExporterProfileName>Sjaak vd Vijver</ExporterProfileName>
+      <TransportProfileName>Tir Compostela SL</TransportProfileName>
+      <LoadingPlaceProfileName>Loading Honselersdijk</LoadingPlaceProfileName>
+      <PlaceOfIssue>Honselersdijk</PlaceOfIssue>
+      <FieldAssignments>
+        <FieldAssignment>
+          <FieldName>ConsignorDetails</FieldName>
+          <Value>Lucia Vieitez Codeseda
+Rua Esperanza 26
+368600 Pontevedra (ES)
+S 224</Value>
+        </FieldAssignment>
+      </FieldAssignments>
+    </Customer>
+    <Customer>
+      <Name>S CMM</Name>
+      <Address>Clarisa Mieres Moran
+Calle del Rio , No 12 bajo
+33205 Gijon Asturias (ES)
+S CMM</Address>
+      <City />
+      <Country />
+      <VatNumber />
+      <ExporterProfileName>Sjaak vd Vijver</ExporterProfileName>
+      <TransportProfileName>VougaFrio</TransportProfileName>
+      <LoadingPlaceProfileName>Loading Honselersdijk</LoadingPlaceProfileName>
+      <PlaceOfIssue>Honselersdijk</PlaceOfIssue>
+      <FieldAssignments>
+        <FieldAssignment>
+          <FieldName>ConsignorDetails</FieldName>
+          <Value>Clarisa Mieres Moran
+Calle del Rio , No 12 bajo
+33205 Gijon Asturias (ES)
+S CMM</Value>
+        </FieldAssignment>
+      </FieldAssignments>
+    </Customer>
+    <Customer>
+      <Name>S FEI</Name>
+      <Address>Feitizo Flor SL
+Parroquia de Rois, H2-A
+15165 Poligono de Bergondo, Coruna (ES)
+S FEI</Address>
+      <City />
+      <Country />
+      <VatNumber />
+      <ExporterProfileName>Sjaak vd Vijver</ExporterProfileName>
+      <TransportProfileName>TirsoFrio Transportes LDA</TransportProfileName>
+      <LoadingPlaceProfileName>Loading Honselersdijk</LoadingPlaceProfileName>
+      <PlaceOfIssue>Honselersdijk</PlaceOfIssue>
+      <FieldAssignments>
+        <FieldAssignment>
+          <FieldName>ConsignorDetails</FieldName>
+          <Value>Feitizo Flor SL
+Parroquia de Rois, H2-A
+15165 Poligono de Bergondo, Coruna (ES)
+S FEI</Value>
+        </FieldAssignment>
+      </FieldAssignments>
+    </Customer>
+    <Customer>
+      <Name>S FREM</Name>
+      <Address>Floristeria Rementeria (Via Ekuafran)
+Avda. Lehendakari Aguirre 18
+48014 Bilba (ES)
+SFREM</Address>
+      <City />
+      <Country />
+      <VatNumber />
+      <ExporterProfileName>Sjaak vd Vijver</ExporterProfileName>
+      <TransportProfileName>VougaFrio</TransportProfileName>
+      <LoadingPlaceProfileName>Loading Honselersdijk</LoadingPlaceProfileName>
+      <PlaceOfIssue>Honselersdijk</PlaceOfIssue>
+      <FieldAssignments>
+        <FieldAssignment>
+          <FieldName>ConsignorDetails</FieldName>
+          <Value>Floristeria Rementeria (Via Ekuafran)
+Avda. Lehendakari Aguirre 18
+48014 Bilba (ES)
+SFREM</Value>
+        </FieldAssignment>
+        <FieldAssignment>
+          <FieldName>TransportAuthorizations</FieldName>
+          <Value>Ekuafran 
+Poligono Ugarte Pabellon C13
+Bilbao</Value>
+        </FieldAssignment>
+      </FieldAssignments>
+    </Customer>
+    <Customer>
+      <Name>S INA</Name>
+      <Address>Distribuciones Florales la Orden S.L.U.
+c/ Monte nr 39
+45800 Quintanar de la Orden (ES)
+S INA</Address>
+      <City />
+      <Country />
+      <VatNumber />
+      <ExporterProfileName>Sjaak vd Vijver</ExporterProfileName>
+      <TransportProfileName>Tonic Logistics BV</TransportProfileName>
+      <LoadingPlaceProfileName>Loading Honselersdijk</LoadingPlaceProfileName>
+      <PlaceOfIssue>Honselersdijk</PlaceOfIssue>
+      <FieldAssignments>
+        <FieldAssignment>
+          <FieldName>ConsignorDetails</FieldName>
+          <Value>Distribuciones Florales la Orden S.L.U.
+c/ Monte nr 39
+45800 Quintanar de la Orden (ES)
+S INA</Value>
+        </FieldAssignment>
+      </FieldAssignments>
+    </Customer>
+    <Customer>
+      <Name>S JPJ</Name>
+      <Address>Flores y Plantas Jose Per 
+Ctra General 51
+39792 Heras (Santander) (ES)
+S JPJ</Address>
+      <City />
+      <Country />
+      <VatNumber />
+      <ExporterProfileName>Sjaak vd Vijver</ExporterProfileName>
+      <TransportProfileName>Getru</TransportProfileName>
+      <LoadingPlaceProfileName>Loading Honselersdijk</LoadingPlaceProfileName>
+      <PlaceOfIssue>Honselersdijk</PlaceOfIssue>
+      <FieldAssignments>
+        <FieldAssignment>
+          <FieldName>ConsignorDetails</FieldName>
+          <Value>Flores y Plantas Jose Per 
+Ctra General 51
+39792 Heras (Santander) (ES)
+S JPJ</Value>
+        </FieldAssignment>
+      </FieldAssignments>
+    </Customer>
+    <Customer>
+      <Name>Stanjenel SRL</Name>
+      <Address>S.C. Stanjenel S.R.L.
+13 Decmbrie st. no123 J-08/1160/1998 (RO)
+Brasov 
+Stan</Address>
+      <City />
+      <Country />
+      <VatNumber />
+      <ExporterProfileName>Sjaak vd Vijver</ExporterProfileName>
+      <TransportProfileName />
+      <LoadingPlaceProfileName>Loading Honselersdijk</LoadingPlaceProfileName>
+      <PlaceOfIssue>Honselersdijk</PlaceOfIssue>
+      <FieldAssignments>
+        <FieldAssignment>
+          <FieldName>ConsignorDetails</FieldName>
+          <Value>S.C. Stanjenel S.R.L.
+13 Decmbrie st. no123 J-08/1160/1998 (RO)
+Brasov 
+Stan </Value>
+        </FieldAssignment>
+      </FieldAssignments>
+    </Customer>
+  </Customers>
+  <Exporters>
+    <ProfileRecord>
+      <Name>Sjaak vd Vijver</Name>
+      <Country>NL</Country>
+      <Place>Honselerdijk</Place>
+      <FieldAssignments>
+        <FieldAssignment>
+          <FieldName>ConsignorName</FieldName>
+          <Value>Sjaak Van der Vijver
+Jupiter 322 
+2675 LW Honselersdijk
+The Netherlands </Value>
+        </FieldAssignment>
+        <FieldAssignment>
+          <FieldName>SignaturePlace1</FieldName>
+          <Value>Sjaak Van der Vijver
+Jupiter 322 
+2675 LW Honselersdijk
+The Netherlands </Value>
+        </FieldAssignment>
+      </FieldAssignments>
+    </ProfileRecord>
+  </Exporters>
+  <TransportInfos>
+    <ProfileRecord>
+      <Name>G. A. Velthoven</Name>
+      <Country>NL</Country>
+      <Place>Kwintsheul</Place>
+      <FieldAssignments>
+        <FieldAssignment>
+          <FieldName>ConsigneeRemarks</FieldName>
+          <Value>G.A van Velthoven 
+Bovendijk 30 
+2295 RZ Kwintsheul</Value>
+        </FieldAssignment>
+      </FieldAssignments>
+    </ProfileRecord>
+    <ProfileRecord>
+      <Name>Getru</Name>
+      <Country>NL</Country>
+      <Place>Bleiswijk</Place>
+      <FieldAssignments>
+        <FieldAssignment>
+          <FieldName>ConsigneeRemarks</FieldName>
+          <Value>Getru Transport
+Klappolder 225
+Bleiswijk</Value>
+        </FieldAssignment>
+        <FieldAssignment>
+          <FieldName>SignaturePlace2</FieldName>
+          <Value>Getru Transport
+Klappolder 225
+Bleiswijk</Value>
+        </FieldAssignment>
+      </FieldAssignments>
+    </ProfileRecord>
+    <ProfileRecord>
+      <Name>Hannon Logistics BV</Name>
+      <Country>NL</Country>
+      <Place>Poeldijk</Place>
+      <FieldAssignments>
+        <FieldAssignment>
+          <FieldName>ConsigneeRemarks</FieldName>
+          <Value>Hannon Logistics
+ABC Westland 549
+2685 DG Poeldijk</Value>
+        </FieldAssignment>
+        <FieldAssignment>
+          <FieldName>SignaturePlace2</FieldName>
+          <Value>Hannon Logistics
+ABC Westland 549
+2685 DG Poeldijk</Value>
+        </FieldAssignment>
+      </FieldAssignments>
+    </ProfileRecord>
+    <ProfileRecord>
+      <Name>O Jylha Oy</Name>
+      <Country>Finland</Country>
+      <Place>Vesku Takala</Place>
+      <FieldAssignments>
+        <FieldAssignment>
+          <FieldName>ConsigneeRemarks</FieldName>
+          <Value>O Jylha Logistics 
+Vasarakatu 26
+Vesku Takala </Value>
+        </FieldAssignment>
+      </FieldAssignments>
+    </ProfileRecord>
+    <ProfileRecord>
+      <Name>Tir Compostela SL</Name>
+      <Country>ES</Country>
+      <Place>Santiago de Compostela</Place>
+      <FieldAssignments>
+        <FieldAssignment>
+          <FieldName>ConsigneeRemarks</FieldName>
+          <Value>Tir Compostela SL
+Via Edison n11- B2 
+15890 Santiago de Compostela </Value>
+        </FieldAssignment>
+        <FieldAssignment>
+          <FieldName>SignaturePlace2</FieldName>
+          <Value>Tir Compostela SL
+Via Edison n11- B2 
+15890 Santiago de Compostela </Value>
+        </FieldAssignment>
+      </FieldAssignments>
+    </ProfileRecord>
+    <ProfileRecord>
+      <Name>TirsoFrio Transportes LDA</Name>
+      <Country>PT</Country>
+      <Place>Santo Tirso</Place>
+      <FieldAssignments>
+        <FieldAssignment>
+          <FieldName>ConsigneeRemarks</FieldName>
+          <Value>TirsoFrio Transportes LDA
+Alvara n-660605
+Rua das Telheiras 230
+Varzea do Monte (Santo Tirso)
+Portugal</Value>
+        </FieldAssignment>
+        <FieldAssignment>
+          <FieldName>SignaturePlace2</FieldName>
+          <Value>TirsoFrio Transportes LDA
+Alvara n-660605
+Rua das Telheiras 230
+Varzea do Monte (Santo Tirso)
+Portugal</Value>
+        </FieldAssignment>
+      </FieldAssignments>
+    </ProfileRecord>
+    <ProfileRecord>
+      <Name>Tonic Logistics BV</Name>
+      <Country>NL</Country>
+      <Place>Hoofdorp</Place>
+      <FieldAssignments>
+        <FieldAssignment>
+          <FieldName>ConsigneeRemarks</FieldName>
+          <Value>Tonic Logistics BV
+Bijlmermeerstraat 30
+2131 HC Hoofdorp</Value>
+        </FieldAssignment>
+        <FieldAssignment>
+          <FieldName>SignaturePlace2</FieldName>
+          <Value>Tonic Logistics BV
+Bijlmermeerstraat 30
+2131 HC Hoofdorp</Value>
+        </FieldAssignment>
+      </FieldAssignments>
+    </ProfileRecord>
+    <ProfileRecord>
+      <Name>TransWhite</Name>
+      <Country>PT</Country>
+      <Place>Caldas da Rainha</Place>
+      <FieldAssignments>
+        <FieldAssignment>
+          <FieldName>ConsigneeRemarks</FieldName>
+          <Value>TransWhite
+Rua Inacio Perdigao , lote 13
+2500-755 Caldas da Rainha.</Value>
+        </FieldAssignment>
+        <FieldAssignment>
+          <FieldName>SignaturePlace2</FieldName>
+          <Value>TransWhite
+Rua Inacio Perdigao , lote 13
+2500-755 Caldas da Rainha.</Value>
+        </FieldAssignment>
+      </FieldAssignments>
+    </ProfileRecord>
+    <ProfileRecord>
+      <Name>Universal Forever</Name>
+      <Country>PT</Country>
+      <Place>Foros de Salvaterra</Place>
+      <FieldAssignments>
+        <FieldAssignment>
+          <FieldName>ConsigneeRemarks</FieldName>
+          <Value>Universal Forever 
+Rua de a Lentrisqueira no 185
+2120-216 Foros de Salvaterra 
+Portugal </Value>
+        </FieldAssignment>
+        <FieldAssignment>
+          <FieldName>SignaturePlace2</FieldName>
+          <Value>Universal Forever 
+Rua de a Lentrisqueira no 185
+2120-216 Foros de Salvaterra 
+Portugal </Value>
+        </FieldAssignment>
+      </FieldAssignments>
+    </ProfileRecord>
+    <ProfileRecord>
+      <Name>Van duyn</Name>
+      <Country>NL</Country>
+      <Place>De Lier</Place>
+      <FieldAssignments>
+        <FieldAssignment>
+          <FieldName>ConsigneeRemarks</FieldName>
+          <Value>Van Duyn
+Jogchem van der Houtweg 12
+2678 AG De Lier</Value>
+        </FieldAssignment>
+        <FieldAssignment>
+          <FieldName>SignaturePlace2</FieldName>
+          <Value>Van Duyn
+Jogchem van der Houtweg 12
+2678 AG De Lier</Value>
+        </FieldAssignment>
+      </FieldAssignments>
+    </ProfileRecord>
+    <ProfileRecord>
+      <Name>VougaFrio</Name>
+      <Country>Pt</Country>
+      <Place>Avanca</Place>
+      <FieldAssignments>
+        <FieldAssignment>
+          <FieldName>ConsigneeRemarks</FieldName>
+          <Value>VougaFrio
+Rua Prof. Dr Egas Moniz 331
+3860-035 Avanca 
+Portugal
+</Value>
+        </FieldAssignment>
+        <FieldAssignment>
+          <FieldName>SignaturePlace2</FieldName>
+          <Value>VougaFrio
+Rua Prof. Dr Egas Moniz 331
+3860-035 Avanca 
+Portugal
+</Value>
+        </FieldAssignment>
+      </FieldAssignments>
+    </ProfileRecord>
+  </TransportInfos>
+  <LoadingPlaces>
+    <ProfileRecord>
+      <Name>Loading Honselersdijk</Name>
+      <Country>NL</Country>
+      <Place>Honselersdijk</Place>
+      <FieldAssignments>
+        <FieldAssignment>
+          <FieldName>ConsignorRemarks</FieldName>
+          <Value>Honselersdijk</Value>
+        </FieldAssignment>
+        <FieldAssignment>
+          <FieldName>ExportDate</FieldName>
+          <Value>Honselersdijk</Value>
+        </FieldAssignment>
+      </FieldAssignments>
+    </ProfileRecord>
+  </LoadingPlaces>
+</AppDataStore>

@@ -242,6 +242,12 @@ h1 {
   padding-left: 46px;
 }
 
+.public-clock-workspace {
+  min-height: 100vh;
+  max-width: 100vw;
+  padding-left: 28px;
+}
+
 .page-header {
   margin: 0 0 22px;
 }

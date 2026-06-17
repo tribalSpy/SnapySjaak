@@ -2468,6 +2468,64 @@ async function handleApi(req, res, url) {
     return;
   }
 
+  if (url.pathname === "/api/public/clock/employees" && req.method === "GET") {
+    const settings = await readFustSettings();
+    try {
+      const rows = await loadSheetRows(settings.clock_spreadsheet_id, settings.clock_employee_sheet_name);
+      const parsed = buildClockEmployeesFromSheetRows(rows);
+      sendJson(res, 200, {
+        employees: parsed.employees,
+        headers: parsed.headers,
+        raw_row_count: parsed.raw_row_count,
+        sheet_name: settings.clock_employee_sheet_name,
+      });
+    } catch (error) {
+      sendJson(res, 500, { error: error instanceof Error ? error.message : String(error), employees: [] });
+    }
+    return;
+  }
+
+  if (url.pathname === "/api/public/clock/scan" && req.method === "POST") {
+    const body = await readRequestJson(req);
+    const code = String(body.code || "").trim().toUpperCase();
+    if (!code) {
+      sendJson(res, 400, { error: "Scan a badge code first" });
+      return;
+    }
+    const settings = await readFustSettings();
+    const rows = await loadSheetRows(settings.clock_spreadsheet_id, settings.clock_employee_sheet_name);
+    const employee = buildClockEmployeesFromSheetRows(rows).employees.find((item) => item.tbnr === code);
+    if (!employee) {
+      sendJson(res, 404, { error: `${code} is not in the employee sheet` });
+      return;
+    }
+    const now = new Date();
+    const actionDate = String(body.action_date || localDateIso()).slice(0, 10);
+    const actionTime = String(body.action_time || now.toLocaleTimeString("nl-NL", { hour12: false })).slice(0, 8);
+    const records = await readClockRecords();
+    const direction = nextClockDirection(records, code, actionDate);
+    const record = createClockRecord(employee, direction, actionDate, actionTime, "scanner", "public-kiosk");
+    records.push(record);
+    await writeClockRecords(records);
+    try {
+      record.sheet_sync = await syncClockRecordToSheets(record, settings, records);
+    } catch (error) {
+      record.sheet_sync = { ok: false, target_sheets: [], error: error instanceof Error ? error.message : String(error) };
+    }
+    const savedRecords = await readClockRecords();
+    const savedIndex = savedRecords.findIndex((item) => item.id === record.id);
+    if (savedIndex >= 0) {
+      savedRecords[savedIndex] = record;
+      await writeClockRecords(savedRecords);
+    }
+    sendJson(res, 201, {
+      record,
+      records: filterClockRecords(savedRecords, actionDate),
+      sessions: clockSessionRows(savedRecords.filter((item) => item.action_date === actionDate)).map((session) => ({ in_record: session.inRecord, out_record: session.outRecord, row: session.row })),
+    });
+    return;
+  }
+
   const requestUser = await getRequestUser(req);
   if (!requestUser) {
     sendUnauthorized(res);

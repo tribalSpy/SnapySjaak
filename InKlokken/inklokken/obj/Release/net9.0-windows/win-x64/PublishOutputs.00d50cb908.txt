@@ -1,0 +1,3 @@
+C:\inklokken\dist\InKlokken-fixed\InKlokken.pdb
+C:\inklokken\dist\InKlokken-fixed\employees.csv
+C:\inklokken\dist\InKlokken-fixed\InKlokken.exe

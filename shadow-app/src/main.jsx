@@ -468,22 +468,23 @@ function escapeHtml(value) {
     .replace(/'/g, "&#39;");
 }
 
-function buildCmrPrintHtml(title, pages, autoPrint) {
-  const pageMarkup = pages.map((page, pageIndex) => `
-    <section class="cmr-print-page-sheet" style="width:${page.width}px;height:${page.height}px;">
-      <header class="cmr-print-sheet-header">
-        <h1>${escapeHtml(page.title || title || `CMR ${pageIndex + 1}`)}</h1>
-        <p>${escapeHtml(page.subtitle || "")}</p>
-      </header>
-      <div class="cmr-print-sheet-board">
-        ${page.fields.map((field) => `
-          <div class="cmr-print-sheet-field" style="left:${field.x}px;top:${field.y}px;width:${field.width}px;min-height:${field.height}px;font-size:${field.fontSize}px;">
-            <span>${escapeHtml(field.value)}</span>
-          </div>
-        `).join("")}
-      </div>
-    </section>
-  `).join("");
+function buildCmrPrintHtml(title, pages) {
+  const a4WidthPx = 794;
+  const a4HeightPx = 1123;
+  const pageMarkup = pages.map((page, pageIndex) => {
+    const scale = Math.min(a4WidthPx / page.width, a4HeightPx / page.height);
+    return `
+      <section class="cmr-print-page-sheet" data-title="${escapeHtml(page.title || title || `CMR ${pageIndex + 1}`)}">
+        <div class="cmr-print-sheet-canvas" style="width:${page.width}px;height:${page.height}px;transform:scale(${scale});">
+          ${page.fields.map((field) => `
+            <div class="cmr-print-sheet-field" style="left:${field.x}px;top:${field.y}px;width:${field.width}px;min-height:${field.height}px;font-size:${field.fontSize}px;">
+              <span>${escapeHtml(field.value)}</span>
+            </div>
+          `).join("")}
+        </div>
+      </section>
+    `;
+  }).join("");
 
   return `<!doctype html>
 <html>
@@ -493,16 +494,37 @@ function buildCmrPrintHtml(title, pages, autoPrint) {
     <style>
       :root { color-scheme: light; }
       * { box-sizing: border-box; }
-      body { margin: 0; padding: 24px; font-family: Arial, sans-serif; background: #eef3f7; color: #10243e; }
-      .cmr-print-stack { display: grid; gap: 24px; }
-      .cmr-print-page-sheet { position: relative; margin: 0 auto; padding: 16px; background: white; border: 1px solid #d3dbe6; box-shadow: 0 12px 34px rgba(16, 36, 62, 0.08); page-break-after: always; }
+      @page { size: A4 portrait; margin: 0; }
+      body { margin: 0; padding: 16px; font-family: Arial, sans-serif; background: #eef3f7; color: #10243e; }
+      .cmr-print-stack { display: grid; gap: 16px; }
+      .cmr-print-page-sheet {
+        position: relative;
+        width: 210mm;
+        height: 297mm;
+        margin: 0 auto;
+        background: white;
+        overflow: hidden;
+        page-break-after: always;
+      }
       .cmr-print-page-sheet:last-child { page-break-after: auto; }
-      .cmr-print-sheet-header { display: flex; align-items: baseline; justify-content: space-between; gap: 16px; margin-bottom: 12px; }
-      .cmr-print-sheet-header h1 { margin: 0; font-size: 18px; }
-      .cmr-print-sheet-header p { margin: 0; font-size: 12px; color: #4f6480; }
-      .cmr-print-sheet-board { position: relative; width: 100%; height: calc(100% - 40px); border: 1px solid #c7d2de; background: white; }
-      .cmr-print-sheet-field { position: absolute; white-space: pre-wrap; line-height: 1.22; padding: 2px 4px; overflow: hidden; }
-      @media print { body { padding: 0; background: white; } .cmr-print-page-sheet { border: 0; box-shadow: none; margin: 0; } }
+      .cmr-print-sheet-canvas {
+        position: absolute;
+        left: 0;
+        top: 0;
+        transform-origin: top left;
+      }
+      .cmr-print-sheet-field {
+        position: absolute;
+        white-space: pre-wrap;
+        line-height: 1.22;
+        padding: 0;
+        overflow: hidden;
+      }
+      @media print {
+        body { padding: 0; background: white; }
+        .cmr-print-stack { gap: 0; }
+        .cmr-print-page-sheet { margin: 0; }
+      }
     </style>
   </head>
   <body>
@@ -518,7 +540,7 @@ function openCmrPrintWindow(title, pages, autoPrint = false) {
     return;
   }
 
-  const html = buildCmrPrintHtml(title, pages, autoPrint);
+  const html = buildCmrPrintHtml(title, pages);
   popup.document.open();
   popup.document.write(html);
   popup.document.close();
@@ -1255,6 +1277,9 @@ function CmrPrintPage({ currentUser }) {
 
 function App() {
   const [auth, setAuth] = useState({ loading: true, user: null, setupRequired: false });
+  const rawPathname = typeof window !== "undefined" ? window.location.pathname : "/";
+  const normalizedPathname = rawPathname !== "/" ? rawPathname.replace(/\/+$/, "") : rawPathname;
+  const publicClockMode = normalizedPathname === "/inklokken";
   const [page, setPage] = useState("dashboard");
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [fustMenuVersion, setFustMenuVersion] = useState(0);
@@ -1279,6 +1304,11 @@ function App() {
   const syncRunning = syncStatus?.state === "running";
 
   useEffect(() => {
+    if (publicClockMode) {
+      setAuth({ loading: false, user: null, setupRequired: false });
+      return;
+    }
+
     apiJson("/api/auth/me")
       .then((payload) => {
         const nextPage = defaultPageForUser(payload.user);
@@ -1293,7 +1323,7 @@ function App() {
         }
       })
       .catch(() => setAuth({ loading: false, user: null, setupRequired: false }));
-  }, []);
+  }, [publicClockMode]);
 
   useEffect(() => {
     if (!dateWasManuallySelected && data?.selected_date) {
@@ -1358,6 +1388,19 @@ function App() {
       }
       return next;
     });
+  }
+
+  if (publicClockMode) {
+    const heading = pageHeading("clock");
+    return (
+      <main className="workspace public-clock-workspace">
+        <header className="page-header">
+          <h1>{heading.title}</h1>
+          <p>{heading.caption}</p>
+        </header>
+        <ClockPage currentUser={null} publicMode />
+      </main>
+    );
   }
 
   if (auth.loading) {
@@ -2989,8 +3032,10 @@ function minutesToWorkedTime(minutes) {
   return `${hours}:${String(remainder).padStart(2, "0")}`;
 }
 
-function ClockPage({ currentUser }) {
-  const canManage = hasPermission(currentUser, PERMISSIONS.CLOCK_MANAGE);
+function ClockPage({ currentUser, publicMode = false }) {
+  const canManage = !publicMode && hasPermission(currentUser, PERMISSIONS.CLOCK_MANAGE);
+  const employeeApiPath = publicMode ? "/api/public/clock/employees" : "/api/clock/employees";
+  const scanApiPath = publicMode ? "/api/public/clock/scan" : "/api/clock/scan";
   const [activeTab, setActiveTab] = useState("clock");
   const [employees, setEmployees] = useState([]);
   const [records, setRecords] = useState([]);
@@ -3016,7 +3061,7 @@ function ClockPage({ currentUser }) {
   async function loadEmployees() {
     setEmployeeLoading(true);
     try {
-      const payload = await apiJson("/api/clock/employees");
+      const payload = await apiJson(employeeApiPath);
       setEmployees(payload.employees || []);
     } catch (loadError) {
       setError(loadError.message);
@@ -3040,11 +3085,16 @@ function ClockPage({ currentUser }) {
 
   useEffect(() => {
     loadEmployees();
-  }, []);
+  }, [employeeApiPath]);
 
   useEffect(() => {
+    if (publicMode) {
+      setRecords([]);
+      setSessions([]);
+      return;
+    }
     loadRecords(selectedDate);
-  }, [selectedDate]);
+  }, [publicMode, selectedDate]);
 
   useEffect(() => {
     const interval = window.setInterval(() => setNowLabel(timeInputValue()), 1000);
@@ -3089,7 +3139,7 @@ function ClockPage({ currentUser }) {
     setMessage("");
     try {
       const scanDate = todayInputValue();
-      const payload = await apiJson("/api/clock/scan", {
+      const payload = await apiJson(scanApiPath, {
         method: "POST",
         body: JSON.stringify({ code: normalizedCode, action_date: scanDate, action_time: `${timeInputValue()}:00` }),
       });

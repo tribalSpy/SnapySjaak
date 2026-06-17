@@ -1,0 +1,2 @@
+C:\CMRPrint\bin\Release\net9.0-windows\win-x64\publish\CMRPrint.pdb
+C:\CMRPrint\bin\Release\net9.0-windows\win-x64\publish\CMRPrint.exe
