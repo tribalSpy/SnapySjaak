@@ -110,8 +110,13 @@ def service_account_info() -> int:
     return 0
 
 
+def _quote_sheet_name(sheet_name: str) -> str:
+    escaped = str(sheet_name or "").replace("'", "''").strip()
+    return f"'{escaped}'"
+
+
 def sheets_read(spreadsheet_id: str, sheet_name: str) -> int:
-    sheet_range = f"{sheet_name}!A:Z"
+    sheet_range = f"{_quote_sheet_name(sheet_name)}!A:Z"
     service = build("sheets", "v4", credentials=_service_account_credentials(), cache_discovery=False)
     response = (
         service.spreadsheets()
