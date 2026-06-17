@@ -110,21 +110,54 @@ def service_account_info() -> int:
     return 0
 
 
-def _quote_sheet_name(sheet_name: str) -> str:
-    escaped = str(sheet_name or "").replace("'", "''").strip()
-    return f"'{escaped}'"
+def _sheet_metadata(service, spreadsheet_id: str) -> list[dict[str, object]]:
+    response = (
+        service.spreadsheets()
+        .get(spreadsheetId=spreadsheet_id, fields="sheets(properties(sheetId,title,gridProperties(columnCount,rowCount)))")
+        .execute()
+    )
+    return response.get("sheets", [])
+
+
+def _find_sheet_properties(service, spreadsheet_id: str, sheet_name: str) -> dict[str, object]:
+    wanted = str(sheet_name or "").strip()
+    for sheet in _sheet_metadata(service, spreadsheet_id):
+        properties = sheet.get("properties", {})
+        if str(properties.get("title") or "").strip() == wanted:
+            return properties
+    raise RuntimeError(f"Sheet tab not found: {wanted}")
 
 
 def sheets_read(spreadsheet_id: str, sheet_name: str) -> int:
-    sheet_range = f"{_quote_sheet_name(sheet_name)}!A:Z"
     service = build("sheets", "v4", credentials=_service_account_credentials(), cache_discovery=False)
+    properties = _find_sheet_properties(service, spreadsheet_id, sheet_name)
+    column_count = int((properties.get("gridProperties") or {}).get("columnCount") or 26)
+    row_count = int((properties.get("gridProperties") or {}).get("rowCount") or 1000)
     response = (
         service.spreadsheets()
         .values()
-        .get(spreadsheetId=spreadsheet_id, range=sheet_range)
+        .batchGetByDataFilter(
+            spreadsheetId=spreadsheet_id,
+            body={
+                "majorDimension": "ROWS",
+                "dataFilters": [
+                    {
+                        "gridRange": {
+                            "sheetId": properties["sheetId"],
+                            "startRowIndex": 0,
+                            "endRowIndex": row_count,
+                            "startColumnIndex": 0,
+                            "endColumnIndex": column_count,
+                        }
+                    }
+                ],
+            },
+        )
         .execute()
     )
-    sys.stdout.write(json.dumps({"values": response.get("values", [])}, ensure_ascii=True))
+    value_ranges = response.get("valueRanges", [])
+    values = value_ranges[0].get("valueRange", {}).get("values", []) if value_ranges else []
+    sys.stdout.write(json.dumps({"values": values}, ensure_ascii=True))
     return 0
 
 
