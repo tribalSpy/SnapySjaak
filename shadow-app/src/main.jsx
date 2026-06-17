@@ -15,6 +15,7 @@ const PERMISSIONS = {
   FUST_OUT: "fust:out",
   FUST_OVERVIEW: "fust:overview",
   CMR_VIEW: "cmr:view",
+  HAL_LOCATIONS_VIEW: "hal_locations:view",
   CMR_MANAGE: "cmr:manage",
   CLOCK_VIEW: "clock:view",
   CLOCK_MANAGE: "clock:manage",
@@ -30,6 +31,7 @@ const PAGE_DEFINITIONS = [
   { key: "dashboard", label: "Photos", permission: PERMISSIONS.PHOTOS_VIEW },
   { key: "fust", label: "Fust", permission: PERMISSIONS.FUST_VIEW },
   { key: "cmrprint", label: "CMR Print", permission: PERMISSIONS.CMR_VIEW },
+  { key: "hallocations", label: "Hal Locations", permission: PERMISSIONS.HAL_LOCATIONS_VIEW },
   { key: "clock", label: "Inklokken", permission: PERMISSIONS.CLOCK_VIEW },
   { key: "users", label: "Users", permission: PERMISSIONS.USERS_MANAGE },
   { key: "settings", label: "Settings", permission: PERMISSIONS.SETTINGS_MANAGE },
@@ -94,6 +96,11 @@ function pageHeading(page) {
       return {
         title: "Inklokken",
         caption: "Scan badge codes, add manual corrections, and export clocked times online.",
+      };
+    case "hallocations":
+      return {
+        title: "Hal Locations",
+        caption: "Upload a halindeling and generate the same sticker PDF flow directly inside the Shadow app.",
       };
     case "cmrprint":
       return {
@@ -213,6 +220,245 @@ function fileToBase64(file) {
     reader.onerror = () => reject(reader.error || new Error("Could not read file"));
     reader.readAsDataURL(file);
   });
+}
+
+function HalLocationsPage() {
+  const [file, setFile] = useState(null);
+  const [sessionId, setSessionId] = useState("");
+  const [locPrefixes, setLocPrefixes] = useState([]);
+  const [custPrefixes, setCustPrefixes] = useState([]);
+  const [visibleCustPrefixes, setVisibleCustPrefixes] = useState([]);
+  const [custByLoc, setCustByLoc] = useState({});
+  const [selectedLocPrefixes, setSelectedLocPrefixes] = useState([]);
+  const [selectedCustPrefixes, setSelectedCustPrefixes] = useState([]);
+  const [uploadMessage, setUploadMessage] = useState("");
+  const [uploadError, setUploadError] = useState("");
+  const [generateMessage, setGenerateMessage] = useState("");
+  const [generateError, setGenerateError] = useState("");
+  const [uploading, setUploading] = useState(false);
+  const [generating, setGenerating] = useState(false);
+
+  function toggleValue(value, selectedValues, setSelectedValues) {
+    setSelectedValues(
+      selectedValues.includes(value)
+        ? selectedValues.filter((item) => item !== value)
+        : [...selectedValues, value],
+    );
+  }
+
+  function replaceSelection(values, setSelectedValues) {
+    setSelectedValues([...values]);
+  }
+
+  async function handleUpload() {
+    if (!file) {
+      setUploadError("Select a file first");
+      setUploadMessage("");
+      return;
+    }
+
+    setUploading(true);
+    setUploadError("");
+    setUploadMessage("Uploading halindeling...");
+    setGenerateError("");
+    setGenerateMessage("");
+
+    try {
+      const contentBase64 = await fileToBase64(file);
+      const payload = await apiJson("/api/hal-locations/inspect", {
+        method: "POST",
+        body: JSON.stringify({
+          file: {
+            name: file.name,
+            content_base64: contentBase64,
+          },
+        }),
+      });
+
+      setSessionId(payload.id || "");
+      setLocPrefixes(Array.isArray(payload.locPrefixes) ? payload.locPrefixes : []);
+      setCustPrefixes(Array.isArray(payload.custPrefixes) ? payload.custPrefixes : []);
+      setVisibleCustPrefixes(Array.isArray(payload.custPrefixes) ? payload.custPrefixes : []);
+      setCustByLoc(payload.custByLoc || {});
+      setSelectedLocPrefixes([]);
+      setSelectedCustPrefixes([]);
+      setUploadMessage(`Ready: ${payload.totalRows || 0} rows, ${(payload.locPrefixes || []).length} location prefixes, ${(payload.custPrefixes || []).length} customer prefixes.`);
+    } catch (error) {
+      setSessionId("");
+      setLocPrefixes([]);
+      setCustPrefixes([]);
+      setVisibleCustPrefixes([]);
+      setCustByLoc({});
+      setSelectedLocPrefixes([]);
+      setSelectedCustPrefixes([]);
+      setUploadError(error.message);
+      setUploadMessage("");
+    } finally {
+      setUploading(false);
+    }
+  }
+
+  function filterCustomersBySelectedLocations() {
+    if (!selectedLocPrefixes.length) {
+      setGenerateError("Select at least one location prefix first");
+      setGenerateMessage("");
+      return;
+    }
+
+    const allowed = [...new Set(
+      selectedLocPrefixes.flatMap((prefix) => Array.isArray(custByLoc[prefix]) ? custByLoc[prefix] : []),
+    )].sort((left, right) => left.localeCompare(right));
+
+    setVisibleCustPrefixes(allowed);
+    setSelectedCustPrefixes([]);
+    setGenerateError("");
+    setGenerateMessage(`${allowed.length} customer prefixes matched the selected locations.`);
+  }
+
+  async function handleGenerate() {
+    if (!sessionId) {
+      setGenerateError("Upload a halindeling first");
+      setGenerateMessage("");
+      return;
+    }
+    if (!selectedLocPrefixes.length) {
+      setGenerateError("Select at least one location prefix");
+      setGenerateMessage("");
+      return;
+    }
+
+    setGenerating(true);
+    setGenerateError("");
+    setGenerateMessage("Generating sticker PDF...");
+
+    try {
+      const response = await fetch("/api/hal-locations/generate", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          id: sessionId,
+          locPrefixes: selectedLocPrefixes,
+          custPrefixes: selectedCustPrefixes,
+        }),
+      });
+
+      if (!response.ok) {
+        const payload = await response.json().catch(() => ({}));
+        throw new Error(payload.error || `Request failed with ${response.status}`);
+      }
+
+      const blob = await response.blob();
+      const url = window.URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = `stickers_${new Date().toISOString().slice(0, 10)}.pdf`;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      window.URL.revokeObjectURL(url);
+      setGenerateMessage("Sticker PDF downloaded.");
+    } catch (error) {
+      setGenerateError(error.message);
+      setGenerateMessage("");
+    } finally {
+      setGenerating(false);
+    }
+  }
+
+  return (
+    <section className="hal-page">
+      <article className="panel hal-panel">
+        <div className="section-header">
+          <div>
+            <h2>Upload halindeling</h2>
+            <p>Choose the Excel file that the old StickerPrinter app used.</p>
+          </div>
+        </div>
+        <div className="hal-upload-row">
+          <input
+            type="file"
+            accept=".xlsx,.xls"
+            onChange={(event) => setFile(event.target.files?.[0] || null)}
+          />
+          <button type="button" className="primary" onClick={handleUpload} disabled={uploading}>
+            {uploading ? "Uploading..." : "Upload"}
+          </button>
+        </div>
+        {uploadMessage ? <div className="notice success">{uploadMessage}</div> : null}
+        {uploadError ? <div className="notice danger">{uploadError}</div> : null}
+      </article>
+
+      <article className="panel hal-panel">
+        <div className="section-header">
+          <div>
+            <h2>Select locations</h2>
+            <p>These are the first 2 characters of each location code, like <code>gK</code>, <code>gL</code>, <code>bA</code>, and <code>eT</code>.</p>
+          </div>
+        </div>
+        <div className="row-actions hal-actions-row">
+          <button type="button" onClick={() => replaceSelection(locPrefixes, setSelectedLocPrefixes)} disabled={!locPrefixes.length}>Select all</button>
+          <button type="button" onClick={() => replaceSelection([], setSelectedLocPrefixes)} disabled={!locPrefixes.length}>Clear</button>
+        </div>
+        <div className="hal-chip-grid">
+          {locPrefixes.map((prefix) => (
+            <label key={prefix} className={`hal-chip ${selectedLocPrefixes.includes(prefix) ? "selected" : ""}`}>
+              <input
+                type="checkbox"
+                checked={selectedLocPrefixes.includes(prefix)}
+                onChange={() => toggleValue(prefix, selectedLocPrefixes, setSelectedLocPrefixes)}
+              />
+              <span>{prefix}</span>
+            </label>
+          ))}
+          {!locPrefixes.length ? <div className="notice">Upload a halindeling to load location prefixes.</div> : null}
+        </div>
+      </article>
+
+      <article className="panel hal-panel">
+        <div className="section-header">
+          <div>
+            <h2>Select customer prefixes</h2>
+            <p>Number-first customer codes use 3 characters, letter-first customer codes use 2. Leave empty to include every customer on the chosen locations.</p>
+          </div>
+        </div>
+        <div className="row-actions hal-actions-row">
+          <button type="button" onClick={() => replaceSelection(visibleCustPrefixes, setSelectedCustPrefixes)} disabled={!visibleCustPrefixes.length}>Select all</button>
+          <button type="button" onClick={() => replaceSelection([], setSelectedCustPrefixes)} disabled={!visibleCustPrefixes.length}>Clear</button>
+          <button type="button" onClick={filterCustomersBySelectedLocations} disabled={!locPrefixes.length}>Only prefixes on selected locations</button>
+          <button type="button" onClick={() => { setVisibleCustPrefixes(custPrefixes); setSelectedCustPrefixes([]); setGenerateError(""); setGenerateMessage("All customer prefixes restored."); }} disabled={!custPrefixes.length}>Show all prefixes</button>
+        </div>
+        <div className="hal-chip-grid">
+          {visibleCustPrefixes.map((prefix) => (
+            <label key={prefix} className={`hal-chip ${selectedCustPrefixes.includes(prefix) ? "selected" : ""}`}>
+              <input
+                type="checkbox"
+                checked={selectedCustPrefixes.includes(prefix)}
+                onChange={() => toggleValue(prefix, selectedCustPrefixes, setSelectedCustPrefixes)}
+              />
+              <span>{prefix}</span>
+            </label>
+          ))}
+          {!visibleCustPrefixes.length ? <div className="notice">No customer prefixes available for the current selection.</div> : null}
+        </div>
+      </article>
+
+      <article className="panel hal-panel">
+        <div className="section-header">
+          <div>
+            <h2>Generate PDF</h2>
+            <p>The output matches the StickerPrinter layout: one sticker per unique customer, 10 x 15 cm, rotated, with the location large and the customer code below.</p>
+          </div>
+        </div>
+        <div className="row-actions hal-actions-row">
+          <button type="button" className="primary" onClick={handleGenerate} disabled={generating || !sessionId || !selectedLocPrefixes.length}>
+            {generating ? "Generating..." : "Download stickers PDF"}
+          </button>
+        </div>
+        {generateMessage ? <div className="notice success">{generateMessage}</div> : null}
+        {generateError ? <div className="notice danger">{generateError}</div> : null}
+      </article>
+    </section>
+  );
 }
 
 function useFustMeta(enabled) {
@@ -1547,6 +1793,7 @@ function App() {
         {page === "fust" && <FustPage currentUser={auth.user} menuVersion={fustMenuVersion} />}
         {page === "cmrprint" && <CmrPrintPage currentUser={auth.user} />}
         {page === "clock" && <ClockPage currentUser={auth.user} />}
+        {page === "hallocations" && <HalLocationsPage currentUser={auth.user} />}
         {page === "settings" && <SettingsPage currentUser={auth.user} />}
         {page === "dashboard" && canViewPhotos && (
           <>

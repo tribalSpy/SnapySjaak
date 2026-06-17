@@ -32,6 +32,7 @@ http://127.0.0.1:4174
 ## Notes
 
 - The Streamlit app is unchanged.
+- Hal Locations now lives inside the Shadow app sidebar and uses the same sticker logic as the old StickerPrinter app.
 - Local archive images are served by the Node backend.
 - Rebuild and refresh date start the existing `sync_index.py` script.
 - Opening the app starts a throttled background refresh for today, or for the selected date.

@@ -20,8 +20,10 @@ const fustBackupDir = path.join(cacheDir, "fust-backups");
 const syncScriptPath = path.join(repoRoot, "sync_index.py");
 const driveBridgePath = path.join(appRoot, "server", "drive_bridge.py");
 const syncWorkerPath = path.join(appRoot, "server", "sync_worker.js");
+const halLocationsWorkerPath = path.join(appRoot, "server", "hal_locations_worker.py");
 const googleImageCacheDir = path.join(cacheDir, "shadow-google-images");
 const googleRunDetailsCacheDir = path.join(cacheDir, "shadow-google-run-details");
+const halLocationsCacheDir = path.join(cacheDir, "hal-locations");
 const usersSeedPathCandidates = [
   process.env.SHADOW_USERS_SEED_PATH,
   process.platform === "win32" ? null : "/etc/secrets/shadow-users.json",
@@ -40,7 +42,9 @@ const recentPreloadMaxImages = Number.isFinite(recentPreloadMaxImagesRaw)
 const googleRunDetailsCacheTtlMinutes = Math.max(0, Number(process.env.SHADOW_RUN_DETAILS_TTL_MINUTES || 720));
 const recentPreloadStartedAt = new Map();
 const sessions = new Map();
+const halLocationSessions = new Map();
 const sessionCookieName = "snappysjaak_shadow_session";
+const halLocationSessionTtlMs = 30 * 60 * 1000;
 const allPermissions = [
   "photos:view",
   "fust:view",
@@ -48,6 +52,7 @@ const allPermissions = [
   "fust:out",
   "fust:overview",
   "cmr:view",
+  "hal_locations:view",
   "cmr:manage",
   "clock:view",
   "clock:manage",
@@ -61,6 +66,7 @@ const PERMISSIONS = {
   FUST_OUT: "fust:out",
   FUST_OVERVIEW: "fust:overview",
   CMR_VIEW: "cmr:view",
+  HAL_LOCATIONS_VIEW: "hal_locations:view",
   CMR_MANAGE: "cmr:manage",
   CLOCK_VIEW: "clock:view",
   CLOCK_MANAGE: "clock:manage",
@@ -1748,6 +1754,87 @@ function runPythonBridge(args, input = "") {
   });
 }
 
+function runHalLocationsWorker(args) {
+  return new Promise((resolve, reject) => {
+    const child = spawn(resolvePythonCommand(), [halLocationsWorkerPath, ...args], {
+      cwd: repoRoot,
+      windowsHide: true,
+    });
+
+    const stdout = [];
+    const stderr = [];
+    child.stdout.on("data", (chunk) => stdout.push(chunk));
+    child.stderr.on("data", (chunk) => stderr.push(chunk));
+    child.on("error", reject);
+    child.on("close", (code) => {
+      const output = Buffer.concat(stdout);
+      if (code === 0) {
+        resolve(output);
+        return;
+      }
+
+      reject(new Error(summarizeBridgeError(Buffer.concat(stderr).toString("utf8")) || `Hal Locations worker exited with ${code}`));
+    });
+
+    child.stdin.end();
+  });
+}
+
+async function cleanupExpiredHalLocationSessions() {
+  const now = Date.now();
+  for (const [sessionId, session] of halLocationSessions.entries()) {
+    if (now - Number(session.ts || 0) <= halLocationSessionTtlMs) {
+      continue;
+    }
+    halLocationSessions.delete(sessionId);
+    if (session.dir_path) {
+      await fs.rm(session.dir_path, { recursive: true, force: true }).catch(() => {});
+    }
+  }
+}
+
+async function createHalLocationSession(filePayload) {
+  await cleanupExpiredHalLocationSessions();
+
+  const fileName = path.basename(String(filePayload?.name || "halindeling.xlsx")).replace(/[^a-zA-Z0-9._ -]+/g, "_") || "halindeling.xlsx";
+  const contentBase64 = String(filePayload?.content_base64 || "").trim();
+  if (!contentBase64) {
+    throw new Error("Upload a halindeling file first");
+  }
+
+  const sessionId = crypto.randomUUID();
+  const dirPath = path.join(halLocationsCacheDir, sessionId);
+  const filePath = path.join(dirPath, fileName);
+  await fs.mkdir(dirPath, { recursive: true });
+  await fs.writeFile(filePath, Buffer.from(contentBase64, "base64"));
+
+  halLocationSessions.set(sessionId, {
+    id: sessionId,
+    dir_path: dirPath,
+    file_path: filePath,
+    file_name: fileName,
+    ts: Date.now(),
+  });
+  return halLocationSessions.get(sessionId);
+}
+
+function normalizeHalPrefixList(values) {
+  if (!Array.isArray(values)) {
+    return [];
+  }
+  return [...new Set(values.map((value) => String(value || "").trim()).filter(Boolean))];
+}
+
+async function getHalLocationSession(sessionId) {
+  await cleanupExpiredHalLocationSessions();
+  const session = halLocationSessions.get(String(sessionId || ""));
+  if (!session) {
+    return null;
+  }
+  session.ts = Date.now();
+  return session;
+}
+
 async function loadSheetRows(spreadsheetId, sheetName) {
   if (!spreadsheetId || !sheetName) {
     return [];
@@ -2529,6 +2616,81 @@ async function handleApi(req, res, url) {
   const requestUser = await getRequestUser(req);
   if (!requestUser) {
     sendUnauthorized(res);
+    return;
+  }
+
+  if (url.pathname === "/api/hal-locations/inspect" && req.method === "POST") {
+    if (!requirePermission(res, requestUser, PERMISSIONS.HAL_LOCATIONS_VIEW)) {
+      return;
+    }
+
+    const body = await readRequestJson(req, 25 * 1024 * 1024);
+    let session = null;
+    try {
+      session = await createHalLocationSession(body.file || {});
+      const output = await runHalLocationsWorker([
+        "inspect",
+        "--input",
+        session.file_path,
+      ]);
+      const payload = JSON.parse(output.toString("utf8"));
+      sendJson(res, 200, {
+        id: session.id,
+        locPrefixes: Array.isArray(payload.locPrefixes) ? payload.locPrefixes : [],
+        custPrefixes: Array.isArray(payload.custPrefixes) ? payload.custPrefixes : [],
+        custByLoc: payload.custByLoc && typeof payload.custByLoc === "object" ? payload.custByLoc : {},
+        totalRows: Number(payload.totalRows || 0),
+      });
+    } catch (error) {
+      if (session?.id) {
+        halLocationSessions.delete(session.id);
+      }
+      if (session?.dir_path) {
+        await fs.rm(session.dir_path, { recursive: true, force: true }).catch(() => {});
+      }
+      sendJson(res, 400, { error: error instanceof Error ? error.message : String(error) });
+    }
+    return;
+  }
+
+  if (url.pathname === "/api/hal-locations/generate" && req.method === "POST") {
+    if (!requirePermission(res, requestUser, PERMISSIONS.HAL_LOCATIONS_VIEW)) {
+      return;
+    }
+
+    const body = await readRequestJson(req, 2 * 1024 * 1024);
+    const session = await getHalLocationSession(body.id);
+    if (!session) {
+      sendJson(res, 404, { error: "Session expired. Upload the halindeling again." });
+      return;
+    }
+
+    const outputPath = path.join(session.dir_path, `stickers-${Date.now()}.pdf`);
+    try {
+      await runHalLocationsWorker([
+        "generate",
+        "--input",
+        session.file_path,
+        "--output",
+        outputPath,
+        "--loc-prefixes-json",
+        JSON.stringify(normalizeHalPrefixList(body.locPrefixes)),
+        "--cust-prefixes-json",
+        JSON.stringify(normalizeHalPrefixList(body.custPrefixes)),
+      ]);
+
+      const pdfBuffer = await fs.readFile(outputPath);
+      res.writeHead(200, {
+        "content-type": "application/pdf",
+        "content-disposition": `attachment; filename="stickers-${localDateIso()}.pdf"`,
+        "cache-control": "private, no-store",
+      });
+      res.end(pdfBuffer);
+    } catch (error) {
+      sendJson(res, 400, { error: error instanceof Error ? error.message : String(error) });
+    } finally {
+      await fs.rm(outputPath, { force: true }).catch(() => {});
+    }
     return;
   }
 
