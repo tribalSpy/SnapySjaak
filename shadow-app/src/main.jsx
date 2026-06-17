@@ -237,6 +237,8 @@ function HalLocationsPage() {
   const [generateError, setGenerateError] = useState("");
   const [uploading, setUploading] = useState(false);
   const [generating, setGenerating] = useState(false);
+  const [loadingSheet, setLoadingSheet] = useState(false);
+  const [sourceLabel, setSourceLabel] = useState("");
 
   function toggleValue(value, selectedValues, setSelectedValues) {
     setSelectedValues(
@@ -282,6 +284,7 @@ function HalLocationsPage() {
       setCustByLoc(payload.custByLoc || {});
       setSelectedLocPrefixes([]);
       setSelectedCustPrefixes([]);
+      setSourceLabel(payload.source?.type === "upload" ? `Source: uploaded file ${payload.source?.file_name || file.name}` : "");
       setUploadMessage(`Ready: ${payload.totalRows || 0} rows, ${(payload.locPrefixes || []).length} location prefixes, ${(payload.custPrefixes || []).length} customer prefixes.`);
     } catch (error) {
       setSessionId("");
@@ -295,6 +298,44 @@ function HalLocationsPage() {
       setUploadMessage("");
     } finally {
       setUploading(false);
+    }
+  }
+
+  async function handleLoadFromSheet() {
+    setLoadingSheet(true);
+    setUploadError("");
+    setUploadMessage("Loading ERP_PASTE from Google Sheets...");
+    setGenerateError("");
+    setGenerateMessage("");
+
+    try {
+      const payload = await apiJson("/api/hal-locations/load-sheet", {
+        method: "POST",
+        body: JSON.stringify({}),
+      });
+
+      setSessionId(payload.id || "");
+      setLocPrefixes(Array.isArray(payload.locPrefixes) ? payload.locPrefixes : []);
+      setCustPrefixes(Array.isArray(payload.custPrefixes) ? payload.custPrefixes : []);
+      setVisibleCustPrefixes(Array.isArray(payload.custPrefixes) ? payload.custPrefixes : []);
+      setCustByLoc(payload.custByLoc || {});
+      setSelectedLocPrefixes([]);
+      setSelectedCustPrefixes([]);
+      setSourceLabel(payload.source?.sheet_name ? `Source: ${payload.source.sheet_name} (${payload.source.spreadsheet_id || "spreadsheet"})` : "Source: ERP_PASTE");
+      setUploadMessage(`Ready: ${payload.totalRows || 0} rows, ${(payload.locPrefixes || []).length} location prefixes, ${(payload.custPrefixes || []).length} customer prefixes.`);
+    } catch (error) {
+      setSessionId("");
+      setLocPrefixes([]);
+      setCustPrefixes([]);
+      setVisibleCustPrefixes([]);
+      setCustByLoc({});
+      setSelectedLocPrefixes([]);
+      setSelectedCustPrefixes([]);
+      setSourceLabel("");
+      setUploadError(error.message);
+      setUploadMessage("");
+    } finally {
+      setLoadingSheet(false);
     }
   }
 
@@ -371,7 +412,7 @@ function HalLocationsPage() {
         <div className="section-header">
           <div>
             <h2>Upload halindeling</h2>
-            <p>Choose the Excel file that the old StickerPrinter app used.</p>
+            <p>Load the data directly from the configured Google Sheet tab `ERP_PASTE`, or fall back to the old Excel upload when needed.</p>
           </div>
         </div>
         <div className="hal-upload-row">
@@ -380,10 +421,14 @@ function HalLocationsPage() {
             accept=".xlsx,.xls"
             onChange={(event) => setFile(event.target.files?.[0] || null)}
           />
+          <button type="button" onClick={handleLoadFromSheet} disabled={loadingSheet}>
+            {loadingSheet ? "Loading sheet..." : "Load ERP_PASTE"}
+          </button>
           <button type="button" className="primary" onClick={handleUpload} disabled={uploading}>
-            {uploading ? "Uploading..." : "Upload"}
+            {uploading ? "Uploading..." : "Upload file"}
           </button>
         </div>
+        {sourceLabel ? <div className="notice">{sourceLabel}</div> : null}
         {uploadMessage ? <div className="notice success">{uploadMessage}</div> : null}
         {uploadError ? <div className="notice danger">{uploadError}</div> : null}
       </article>
@@ -4173,6 +4218,22 @@ function SettingsPage({ currentUser }) {
               value={form.clock_spreadsheet_id || ""}
               onChange={(event) => setForm({ ...form, clock_spreadsheet_id: event.target.value })}
               placeholder="Spreadsheet ID for badges and backup"
+            />
+          </label>
+          <label className="wide">
+            <span>Hal Locations spreadsheet ID</span>
+            <input
+              value={form.hal_locations_spreadsheet_id || ""}
+              onChange={(event) => setForm({ ...form, hal_locations_spreadsheet_id: event.target.value })}
+              placeholder="Defaults to the main spreadsheet ID when left empty"
+            />
+          </label>
+          <label>
+            <span>Hal Locations tab</span>
+            <input
+              value={form.hal_locations_sheet_name || "ERP_PASTE"}
+              onChange={(event) => setForm({ ...form, hal_locations_sheet_name: event.target.value })}
+              placeholder="ERP_PASTE"
             />
           </label>
           <label>

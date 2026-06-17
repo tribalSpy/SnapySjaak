@@ -25,6 +25,12 @@ def load_rows(input_path: Path) -> list[list[object]]:
     suffix = input_path.suffix.lower()
     data = input_path.read_bytes()
 
+    if suffix == ".json":
+        payload = json.loads(data.decode("utf-8"))
+        if not isinstance(payload, list):
+            raise ValueError("Hal Locations JSON source must be a list of rows")
+        return [row if isinstance(row, list) else [row] for row in payload]
+
     if suffix == ".xls":
         workbook = xlrd.open_workbook(file_contents=data)
         sheet_name = select_sheet_name(workbook.sheet_names())

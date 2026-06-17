@@ -99,6 +99,8 @@ const defaultFustSettings = {
   clock_spreadsheet_id: "",
   clock_employee_sheet_name: "badges",
   clock_records_sheet_name: "backup",
+  hal_locations_spreadsheet_id: "",
+  hal_locations_sheet_name: "ERP_PASTE",
   cmr_default_template_name: "",
   cmr_manage_usernames: [],
 };
@@ -753,6 +755,8 @@ function normalizeFustSettings(settings) {
     clock_spreadsheet_id: String(settings?.clock_spreadsheet_id || "").trim(),
     clock_employee_sheet_name: String(settings?.clock_employee_sheet_name || defaultFustSettings.clock_employee_sheet_name).trim() || defaultFustSettings.clock_employee_sheet_name,
     clock_records_sheet_name: String(settings?.clock_records_sheet_name || defaultFustSettings.clock_records_sheet_name).trim() || defaultFustSettings.clock_records_sheet_name,
+    hal_locations_spreadsheet_id: String(settings?.hal_locations_spreadsheet_id || settings?.spreadsheet_id || "").trim(),
+    hal_locations_sheet_name: String(settings?.hal_locations_sheet_name || defaultFustSettings.hal_locations_sheet_name).trim() || defaultFustSettings.hal_locations_sheet_name,
     cmr_default_template_name: String(settings?.cmr_default_template_name || "").trim(),
     cmr_manage_usernames: normalizeCmrManageUsernames(settings?.cmr_manage_usernames),
   };
@@ -1813,6 +1817,32 @@ async function createHalLocationSession(filePayload) {
     dir_path: dirPath,
     file_path: filePath,
     file_name: fileName,
+    source: "upload",
+    ts: Date.now(),
+  });
+  return halLocationSessions.get(sessionId);
+}
+
+async function createHalLocationSheetSession(rows, sourceMeta = {}) {
+  await cleanupExpiredHalLocationSessions();
+
+  if (!Array.isArray(rows) || !rows.length) {
+    throw new Error("No rows found in the Hal Locations sheet");
+  }
+
+  const sessionId = crypto.randomUUID();
+  const dirPath = path.join(halLocationsCacheDir, sessionId);
+  const filePath = path.join(dirPath, "ERP_PASTE.json");
+  await fs.mkdir(dirPath, { recursive: true });
+  await fs.writeFile(filePath, JSON.stringify(rows), "utf8");
+
+  halLocationSessions.set(sessionId, {
+    id: sessionId,
+    dir_path: dirPath,
+    file_path: filePath,
+    file_name: "ERP_PASTE.json",
+    source: "sheet",
+    source_meta: sourceMeta,
     ts: Date.now(),
   });
   return halLocationSessions.get(sessionId);
@@ -2640,6 +2670,54 @@ async function handleApi(req, res, url) {
         custPrefixes: Array.isArray(payload.custPrefixes) ? payload.custPrefixes : [],
         custByLoc: payload.custByLoc && typeof payload.custByLoc === "object" ? payload.custByLoc : {},
         totalRows: Number(payload.totalRows || 0),
+        source: { type: "upload", file_name: session.file_name },
+      });
+    } catch (error) {
+      if (session?.id) {
+        halLocationSessions.delete(session.id);
+      }
+      if (session?.dir_path) {
+        await fs.rm(session.dir_path, { recursive: true, force: true }).catch(() => {});
+      }
+      sendJson(res, 400, { error: error instanceof Error ? error.message : String(error) });
+    }
+    return;
+  }
+
+  if (url.pathname === "/api/hal-locations/load-sheet" && req.method === "POST") {
+    if (!requirePermission(res, requestUser, PERMISSIONS.HAL_LOCATIONS_VIEW)) {
+      return;
+    }
+
+    let session = null;
+    try {
+      const settings = await readFustSettings();
+      const spreadsheetId = String(settings.hal_locations_spreadsheet_id || settings.spreadsheet_id || "").trim();
+      const sheetName = String(settings.hal_locations_sheet_name || "ERP_PASTE").trim() || "ERP_PASTE";
+      if (!spreadsheetId) {
+        sendJson(res, 400, { error: "Set a Hal Locations spreadsheet ID in Settings first" });
+        return;
+      }
+
+      const rows = await loadSheetRows(spreadsheetId, sheetName);
+      session = await createHalLocationSheetSession(rows, { spreadsheet_id: spreadsheetId, sheet_name: sheetName });
+      const output = await runHalLocationsWorker([
+        "inspect",
+        "--input",
+        session.file_path,
+      ]);
+      const payload = JSON.parse(output.toString("utf8"));
+      sendJson(res, 200, {
+        id: session.id,
+        locPrefixes: Array.isArray(payload.locPrefixes) ? payload.locPrefixes : [],
+        custPrefixes: Array.isArray(payload.custPrefixes) ? payload.custPrefixes : [],
+        custByLoc: payload.custByLoc && typeof payload.custByLoc === "object" ? payload.custByLoc : {},
+        totalRows: Number(payload.totalRows || 0),
+        source: {
+          type: "sheet",
+          spreadsheet_id: spreadsheetId,
+          sheet_name: sheetName,
+        },
       });
     } catch (error) {
       if (session?.id) {
