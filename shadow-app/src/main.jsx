@@ -3,6 +3,11 @@ import { createRoot } from "react-dom/client";
 import "./styles.css";
 
 const REFRESH_INTERVAL_MS = 15000;
+const CMR_A4_WIDTH = 827;
+const CMR_A4_HEIGHT = 1169;
+const CMR_DOCUMENT_PADDING = 20;
+const CMR_DEFAULT_FIELD_WIDTH = 140;
+const CMR_DEFAULT_FIELD_HEIGHT = 52;
 const PERMISSIONS = {
   PHOTOS_VIEW: "photos:view",
   FUST_VIEW: "fust:view",
@@ -469,19 +474,26 @@ function escapeHtml(value) {
 }
 
 function buildCmrPrintHtml(title, pages) {
-  const a4WidthPx = 794;
-  const a4HeightPx = 1123;
   const pageMarkup = pages.map((page, pageIndex) => {
-    const scale = Math.min(a4WidthPx / page.width, a4HeightPx / page.height);
+    const documentWidth = page.documentWidth || CMR_A4_WIDTH;
+    const documentHeight = page.documentHeight || CMR_A4_HEIGHT;
+    const scaleX = CMR_A4_WIDTH / documentWidth;
+    const scaleY = CMR_A4_HEIGHT / documentHeight;
+    const fontScale = Math.min(scaleX, scaleY);
     return `
       <section class="cmr-print-page-sheet" data-title="${escapeHtml(page.title || title || `CMR ${pageIndex + 1}`)}">
-        <div class="cmr-print-sheet-canvas" style="width:${page.width}px;height:${page.height}px;transform:scale(${scale});">
-          ${page.fields.map((field) => `
-            <div class="cmr-print-sheet-field" style="left:${field.x}px;top:${field.y}px;width:${field.width}px;min-height:${field.height}px;font-size:${field.fontSize}px;">
+        ${page.fields.map((field) => {
+          const left = (field.x * scaleX) / 100;
+          const top = ((field.y + (field.offset || 0)) * scaleY) / 100;
+          const width = (field.width * scaleX) / 100;
+          const height = (field.height * scaleY) / 100;
+          const fontSize = Math.max(6, field.fontSize * fontScale);
+          return `
+            <div class="cmr-print-sheet-field" style="left:${left}in;top:${top}in;width:${width}in;min-height:${height}in;font-size:${fontSize}pt;">
               <span>${escapeHtml(field.value)}</span>
             </div>
-          `).join("")}
-        </div>
+          `;
+        }).join("")}
       </section>
     `;
   }).join("");
@@ -499,20 +511,14 @@ function buildCmrPrintHtml(title, pages) {
       .cmr-print-stack { display: grid; gap: 16px; }
       .cmr-print-page-sheet {
         position: relative;
-        width: 210mm;
-        height: 297mm;
+        width: 8.27in;
+        height: 11.69in;
         margin: 0 auto;
         background: white;
         overflow: hidden;
         page-break-after: always;
       }
       .cmr-print-page-sheet:last-child { page-break-after: auto; }
-      .cmr-print-sheet-canvas {
-        position: absolute;
-        left: 0;
-        top: 0;
-        transform-origin: top left;
-      }
       .cmr-print-sheet-field {
         position: absolute;
         white-space: pre-wrap;
@@ -595,8 +601,8 @@ function blankCmrTemplate(name, places) {
     font_sizes: places.map((place) => ({ field_name: place.field_name, value: place.default_font_size || 9 })),
     vertical_offsets: places.map((place) => ({ field_name: place.field_name, value: 0 })),
     field_positions: places.map((place) => ({ field_name: place.field_name, x: place.default_x, y: place.default_y })),
-    field_widths: places.map((place) => ({ field_name: place.field_name, value: 140 })),
-    field_heights: places.map((place) => ({ field_name: place.field_name, value: 52 })),
+    field_widths: places.map((place) => ({ field_name: place.field_name, value: CMR_DEFAULT_FIELD_WIDTH })),
+    field_heights: places.map((place) => ({ field_name: place.field_name, value: CMR_DEFAULT_FIELD_HEIGHT })),
   };
 }
 
@@ -609,6 +615,24 @@ function setEntryValue(entries, fieldName, value, fallback = {}) {
     next.push({ field_name: fieldName, ...fallback, ...value });
   }
   return next;
+}
+
+function getCmrDocumentBounds(places, positionMap, widthMap, heightMap) {
+  const fieldBounds = places.map((place) => {
+    const position = positionMap[place.field_name] || { x: place.default_x, y: place.default_y };
+    const width = widthMap[place.field_name] || CMR_DEFAULT_FIELD_WIDTH;
+    const height = heightMap[place.field_name] || CMR_DEFAULT_FIELD_HEIGHT;
+    return { right: position.x + width, bottom: position.y + height };
+  });
+  const maxX = Math.max(1, ...fieldBounds.map((field) => field.right));
+  const maxY = Math.max(1, ...fieldBounds.map((field) => field.bottom));
+  return { width: maxX + CMR_DOCUMENT_PADDING, height: maxY + CMR_DOCUMENT_PADDING };
+}
+
+function getCmrA4Scale(documentBounds) {
+  const scaleX = CMR_A4_WIDTH / Math.max(1, documentBounds?.width || CMR_A4_WIDTH);
+  const scaleY = CMR_A4_HEIGHT / Math.max(1, documentBounds?.height || CMR_A4_HEIGHT);
+  return { scaleX, scaleY, fontScale: Math.min(scaleX, scaleY) };
 }
 
 function CmrAssignmentsEditor({ assignments, onChange, places }) {
@@ -835,6 +859,8 @@ function CmrTemplateEditor({ templates, places, defaultTemplateName, onSaveTempl
   const heightMap = useMemo(() => Object.fromEntries((draft?.field_heights || []).map((entry) => [entry.field_name, entry.value])), [draft]);
   const fontMap = useMemo(() => Object.fromEntries((draft?.font_sizes || []).map((entry) => [entry.field_name, entry.value])), [draft]);
   const offsetMap = useMemo(() => Object.fromEntries((draft?.vertical_offsets || []).map((entry) => [entry.field_name, entry.value])), [draft]);
+  const previewBounds = useMemo(() => getCmrDocumentBounds(places, positionMap, widthMap, heightMap), [places, positionMap, widthMap, heightMap]);
+  const previewScale = useMemo(() => getCmrA4Scale(previewBounds), [previewBounds]);
 
   function updateField(fieldName, key, value) {
     if (!draft) {
@@ -916,13 +942,20 @@ function CmrTemplateEditor({ templates, places, defaultTemplateName, onSaveTempl
           <label><span>Template name</span><input value={draft.name} onChange={(event) => setDraft({ ...draft, name: event.target.value })} /></label>
           <div className="cmr-template-grid">
             <div className="cmr-preview-shell">
-              <div className="cmr-preview-board" style={{ width: 760, height: 980 }}>
-                {places.map((place) => (
-                  <div key={place.field_name} className="cmr-preview-field" style={{ left: positionMap[place.field_name]?.x ?? place.default_x, top: positionMap[place.field_name]?.y ?? place.default_y, width: widthMap[place.field_name] || 140, minHeight: heightMap[place.field_name] || 52 }}>
-                    <strong>{place.place_number}</strong>
-                    <span style={{ fontSize: fontMap[place.field_name] || place.default_font_size || 9 }}>{place.description}</span>
-                  </div>
-                ))}
+              <div className="cmr-preview-board cmr-a4-preview-board" style={{ width: CMR_A4_WIDTH, height: CMR_A4_HEIGHT }}>
+                {places.map((place) => {
+                  const position = positionMap[place.field_name] || { x: place.default_x, y: place.default_y };
+                  const width = widthMap[place.field_name] || CMR_DEFAULT_FIELD_WIDTH;
+                  const height = heightMap[place.field_name] || CMR_DEFAULT_FIELD_HEIGHT;
+                  const offset = offsetMap[place.field_name] || 0;
+                  const fontSize = fontMap[place.field_name] || place.default_font_size || 9;
+                  return (
+                    <div key={place.field_name} className="cmr-preview-field" style={{ left: position.x * previewScale.scaleX, top: (position.y + offset) * previewScale.scaleY, width: width * previewScale.scaleX, minHeight: height * previewScale.scaleY }}>
+                      <strong>{place.place_number}</strong>
+                      <span style={{ fontSize: Math.max(6, fontSize * previewScale.fontScale) }}>{place.description}</span>
+                    </div>
+                  );
+                })}
               </div>
             </div>
             <div className="table-wrap cmr-template-settings">
@@ -936,8 +969,8 @@ function CmrTemplateEditor({ templates, places, defaultTemplateName, onSaveTempl
                       <td>{place.place_number}. {place.description}</td>
                       <td><input type="number" value={fontMap[place.field_name] || place.default_font_size || 9} onChange={(event) => updateField(place.field_name, "font", event.target.value)} /></td>
                       <td><input type="number" value={offsetMap[place.field_name] || 0} onChange={(event) => updateField(place.field_name, "offset", event.target.value)} /></td>
-                      <td><input type="number" value={widthMap[place.field_name] || 140} onChange={(event) => updateField(place.field_name, "width", event.target.value)} /></td>
-                      <td><input type="number" value={heightMap[place.field_name] || 52} onChange={(event) => updateField(place.field_name, "height", event.target.value)} /></td>
+                      <td><input type="number" value={widthMap[place.field_name] || CMR_DEFAULT_FIELD_WIDTH} onChange={(event) => updateField(place.field_name, "width", event.target.value)} /></td>
+                      <td><input type="number" value={heightMap[place.field_name] || CMR_DEFAULT_FIELD_HEIGHT} onChange={(event) => updateField(place.field_name, "height", event.target.value)} /></td>
                       <td><input type="number" value={positionMap[place.field_name]?.x ?? place.default_x} onChange={(event) => updateField(place.field_name, "x", event.target.value)} /></td>
                       <td><input type="number" value={positionMap[place.field_name]?.y ?? place.default_y} onChange={(event) => updateField(place.field_name, "y", event.target.value)} /></td>
                     </tr>
@@ -1082,12 +1115,9 @@ function CmrPrintPage({ currentUser }) {
   const widthMap = useMemo(() => Object.fromEntries((template?.field_widths || []).map((entry) => [entry.field_name, entry.value])), [template]);
   const heightMap = useMemo(() => Object.fromEntries((template?.field_heights || []).map((entry) => [entry.field_name, entry.value])), [template]);
   const fontMap = useMemo(() => Object.fromEntries((template?.font_sizes || []).map((entry) => [entry.field_name, entry.value])), [template]);
-
-  const previewBounds = useMemo(() => {
-    const maxX = Math.max(...places.map((place) => (positionMap[place.field_name]?.x ?? place.default_x) + (widthMap[place.field_name] || 140)), 760);
-    const maxY = Math.max(...places.map((place) => (positionMap[place.field_name]?.y ?? place.default_y) + (heightMap[place.field_name] || 52)), 980);
-    return { width: maxX + 80, height: maxY + 80 };
-  }, [places, positionMap, widthMap, heightMap]);
+  const offsetMap = useMemo(() => Object.fromEntries((template?.vertical_offsets || []).map((entry) => [entry.field_name, entry.value])), [template]);
+  const previewBounds = useMemo(() => getCmrDocumentBounds(places, positionMap, widthMap, heightMap), [places, positionMap, widthMap, heightMap]);
+  const previewScale = useMemo(() => getCmrA4Scale(previewBounds), [previewBounds]);
 
   const autofillSummary = useMemo(() => {
     if (!customer) {
@@ -1162,16 +1192,17 @@ function CmrPrintPage({ currentUser }) {
     const fields = places.map((place) => ({
       x: positionMap[place.field_name]?.x ?? place.default_x,
       y: positionMap[place.field_name]?.y ?? place.default_y,
-      width: widthMap[place.field_name] || 140,
-      height: heightMap[place.field_name] || 52,
+      width: widthMap[place.field_name] || CMR_DEFAULT_FIELD_WIDTH,
+      height: heightMap[place.field_name] || CMR_DEFAULT_FIELD_HEIGHT,
       fontSize: fontMap[place.field_name] || place.default_font_size || 9,
+      offset: offsetMap[place.field_name] || 0,
       value: String(values[place.field_name] || "").trim(),
     })).filter((field) => field.value);
     return {
       title: customerRecord.name,
       subtitle: `${selectedTemplateName || "CMR template"} | ${customerRecord.country || ""}`,
-      width: previewBounds.width,
-      height: previewBounds.height,
+      documentWidth: previewBounds.width,
+      documentHeight: previewBounds.height,
       fields,
     };
   }
@@ -1250,14 +1281,15 @@ function CmrPrintPage({ currentUser }) {
               <label><span>Autofill summary</span><textarea rows={12} value={autofillSummary} readOnly /></label>
             </div>
             <div className="cmr-preview-shell">
-              <div className="cmr-preview-board" style={{ width: previewBounds.width, height: previewBounds.height }}>
+              <div className="cmr-preview-board cmr-a4-preview-board" style={{ width: CMR_A4_WIDTH, height: CMR_A4_HEIGHT }}>
                 {places.map((place) => {
                   const position = positionMap[place.field_name] || { x: place.default_x, y: place.default_y };
-                  const width = widthMap[place.field_name] || 140;
-                  const height = heightMap[place.field_name] || 52;
+                  const width = widthMap[place.field_name] || CMR_DEFAULT_FIELD_WIDTH;
+                  const height = heightMap[place.field_name] || CMR_DEFAULT_FIELD_HEIGHT;
+                  const offset = offsetMap[place.field_name] || 0;
                   const fontSize = fontMap[place.field_name] || place.default_font_size || 9;
                   const value = String(documentValues[place.field_name] || "").trim();
-                  return <div key={place.field_name} className="cmr-preview-field" style={{ left: position.x, top: position.y, width, minHeight: height }}><strong>{place.place_number}</strong><span style={{ fontSize }}>{value || place.field_name}</span></div>;
+                  return <div key={place.field_name} className="cmr-preview-field" style={{ left: position.x * previewScale.scaleX, top: (position.y + offset) * previewScale.scaleY, width: width * previewScale.scaleX, minHeight: height * previewScale.scaleY }}><strong>{place.place_number}</strong><span style={{ fontSize: Math.max(6, fontSize * previewScale.fontScale) }}>{value || place.field_name}</span></div>;
                 })}
               </div>
             </div>
