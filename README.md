@@ -13,6 +13,7 @@ Streamlit dashboard for browsing recent run folders from one or more Google Driv
 - Reports malformed folder names in the sidebar
 - Persists run metadata and downloaded Drive images in a local cache for faster reloads
 - Includes a sidebar button to clear the saved cache and reload from source
+- Includes a Hal Locations menu with integrated sticker PDF generation from halindeling Excel files
 
 ## Project Structure
 
@@ -28,6 +29,7 @@ credentials/
 .streamlit/
   secrets.toml
 requirements.txt
+StickerPrinter/
 .env.example
 ```
 
@@ -67,6 +69,8 @@ the full service account JSON into `GOOGLE_SERVICE_ACCOUNT_JSON`.
 ```powershell
 streamlit run app.py
 ```
+
+Use the sidebar menu to switch between `Photo Dashboard` and `Hal Locations`.
 
 ## Deploy To Streamlit Community Cloud
 

@@ -19,7 +19,11 @@ import streamlit as st
 import streamlit.components.v1 as components
 from dotenv import load_dotenv
 from googleapiclient.errors import HttpError
+from openpyxl import load_workbook
 from PIL import Image, ImageOps
+from reportlab.pdfbase.pdfmetrics import stringWidth
+from reportlab.pdfgen import canvas
+import xlrd
 
 from src.drive_service import (
     DEFAULT_DRIVE_ACCOUNT,
@@ -1244,7 +1248,322 @@ def render_customer_header(customer_code: str, customer_runs: list[RunFolder], i
     )
 
 
-def main() -> None:
+def _hal_location_prefix(location: str | None) -> str:
+    if not location:
+        return ""
+    return location[:2]
+
+
+def _hal_customer_prefix(customer_code: str | None) -> str:
+    if not customer_code:
+        return ""
+    if customer_code[:1].isdigit():
+        return customer_code[:3]
+    return customer_code[:2]
+
+
+def _strip_hal_leading_g(location: str) -> str:
+    if location[:1].lower() == "g":
+        return location[1:].lstrip()
+    return location
+
+
+def _select_hal_sheet_name(sheet_names: list[str]) -> str:
+    if "ERP_PASTE" in sheet_names:
+        return "ERP_PASTE"
+    if "Blad1" in sheet_names:
+        return "Blad1"
+    return sheet_names[0]
+
+
+def _load_hal_rows(upload_name: str, upload_bytes: bytes) -> list[list[object]]:
+    suffix = Path(upload_name).suffix.lower()
+
+    if suffix == ".xls":
+        workbook = xlrd.open_workbook(file_contents=upload_bytes)
+        sheet_name = _select_hal_sheet_name(workbook.sheet_names())
+        sheet = workbook.sheet_by_name(sheet_name)
+        return [sheet.row_values(index) for index in range(sheet.nrows)]
+
+    workbook = load_workbook(filename=BytesIO(upload_bytes), data_only=True, read_only=True)
+    sheet_name = _select_hal_sheet_name(workbook.sheetnames)
+    worksheet = workbook[sheet_name]
+    return [list(row) for row in worksheet.iter_rows(values_only=True)]
+
+
+def _parse_halindeling(upload_name: str, upload_bytes: bytes) -> list[dict[str, str]]:
+    rows = _load_hal_rows(upload_name, upload_bytes)
+    parsed: list[dict[str, str]] = []
+    current_location: str | None = None
+
+    for row in rows:
+        location_value = row[0] if len(row) > 0 else None
+        customer_value = row[1] if len(row) > 1 else None
+        is_header = False
+
+        if isinstance(location_value, str):
+            location_text = location_value.strip()
+            if (
+                not location_text
+                or location_text.startswith("Hal:")
+                or location_text.startswith("---")
+                or location_text.startswith("#")
+                or location_text == "Locatie"
+            ):
+                is_header = True
+            else:
+                current_location = location_text
+
+        if is_header:
+            continue
+
+        if isinstance(customer_value, str) and customer_value.strip() and current_location:
+            parsed.append({"location": current_location, "customer": customer_value.strip()})
+
+    return parsed
+
+
+def _build_hal_dataset(upload_name: str, upload_bytes: bytes) -> dict[str, object]:
+    data = _parse_halindeling(upload_name, upload_bytes)
+    if not data:
+        raise ValueError("Geen geldige halindeling-data gevonden")
+
+    loc_prefixes = sorted({_hal_location_prefix(item["location"]) for item in data if _hal_location_prefix(item["location"])})
+    cust_prefixes = sorted({_hal_customer_prefix(item["customer"]) for item in data if _hal_customer_prefix(item["customer"])})
+
+    cust_by_loc: dict[str, list[str]] = {}
+    grouped: dict[str, set[str]] = defaultdict(set)
+    for item in data:
+        grouped[_hal_location_prefix(item["location"])].add(_hal_customer_prefix(item["customer"]))
+    for loc_prefix, prefixes in grouped.items():
+        cust_by_loc[loc_prefix] = sorted(prefix for prefix in prefixes if prefix)
+
+    return {
+        "file_name": upload_name,
+        "rows": data,
+        "loc_prefixes": loc_prefixes,
+        "cust_prefixes": cust_prefixes,
+        "visible_cust_prefixes": list(cust_prefixes),
+        "cust_by_loc": cust_by_loc,
+    }
+
+
+def _set_hal_checkbox_group(group_key: str, prefixes: list[str], checked: bool) -> None:
+    st.session_state[group_key] = list(prefixes) if checked else []
+    for prefix in prefixes:
+        st.session_state[f"{group_key}_{prefix}"] = checked
+
+
+def _render_hal_checkbox_grid(prefixes: list[str], group_key: str, columns_count: int = 6) -> list[str]:
+    selected = set(st.session_state.get(group_key, []))
+    columns = st.columns(columns_count)
+    chosen: list[str] = []
+
+    for index, prefix in enumerate(prefixes):
+        checkbox_key = f"{group_key}_{prefix}"
+        if checkbox_key not in st.session_state:
+            st.session_state[checkbox_key] = prefix in selected
+        with columns[index % columns_count]:
+            checked = st.checkbox(prefix, key=checkbox_key)
+        if checked:
+            chosen.append(prefix)
+
+    st.session_state[group_key] = chosen
+    return chosen
+
+
+def _generate_hal_pdf_bytes(rows: list[dict[str, str]], chosen_locations: list[str], chosen_customers: list[str]) -> bytes:
+    filtered = []
+    for item in rows:
+        loc_prefix = _hal_location_prefix(item["location"])
+        cust_prefix = _hal_customer_prefix(item["customer"])
+        loc_ok = not chosen_locations or loc_prefix in chosen_locations
+        cust_ok = not chosen_customers or cust_prefix in chosen_customers
+        if loc_ok and cust_ok:
+            filtered.append(item)
+
+    unique_rows: list[dict[str, str]] = []
+    seen_customers: set[str] = set()
+    for item in filtered:
+        customer = item["customer"]
+        if customer in seen_customers:
+            continue
+        seen_customers.add(customer)
+        unique_rows.append(item)
+
+    if not unique_rows:
+        raise ValueError("Geen klanten gevonden voor deze filters")
+
+    page_width = 10 * (72 / 2.54)
+    page_height = 15 * (72 / 2.54)
+    margin = 0.4 * (72 / 2.54)
+    gap = 0.4 * (72 / 2.54)
+    location_ratio = 4
+
+    buffer = BytesIO()
+    pdf = canvas.Canvas(buffer, pagesize=(page_width, page_height))
+
+    def fit_font_size(text: str, max_width: float, max_height: float) -> int:
+        size = 1
+        while size < 600:
+            next_size = size + 1
+            text_width = stringWidth(text, "Helvetica-Bold", next_size)
+            text_height = next_size
+            if text_width > max_width * 0.97 or text_height > max_height * 0.97:
+                break
+            size = next_size
+        return size
+
+    for item in unique_rows:
+        location = _strip_hal_leading_g(item["location"])
+        customer = item["customer"]
+
+        pdf.saveState()
+        pdf.translate(0, page_height)
+        pdf.rotate(-90)
+
+        width = page_height
+        height = page_width
+        inner_width = width - (2 * margin)
+        available_height = height - (2 * margin) - gap
+        customer_height = available_height / (location_ratio + 1)
+        location_height = (available_height * location_ratio) / (location_ratio + 1)
+
+        customer_size = fit_font_size(customer, inner_width, customer_height)
+        customer_width = stringWidth(customer, "Helvetica-Bold", customer_size)
+        customer_text_height = customer_size * 0.72
+        customer_y = height - margin - customer_height + ((customer_height - customer_text_height) / 2) - (customer_size * 0.1)
+        pdf.setFont("Helvetica-Bold", customer_size)
+        pdf.drawString((width - customer_width) / 2, customer_y, customer)
+
+        target_location_size = customer_size * location_ratio
+        max_location_size = fit_font_size(location, inner_width, location_height)
+        location_size = min(target_location_size, max_location_size)
+        location_width = stringWidth(location, "Helvetica-Bold", location_size)
+        location_text_height = location_size * 0.72
+        location_y = margin + ((location_height - location_text_height) / 2) - (location_size * 0.1)
+        pdf.setFont("Helvetica-Bold", location_size)
+        pdf.drawString((width - location_width) / 2, location_y, location)
+
+        pdf.restoreState()
+        pdf.showPage()
+
+    pdf.save()
+    return buffer.getvalue()
+
+
+def render_hal_locations_page() -> None:
+    st.title("Hal Locations")
+    st.caption("Upload een halindeling en download stickers met exact dezelfde filters en PDF-logica als de StickerPrinter app.")
+
+    upload_col, action_col = st.columns([3, 1])
+    with upload_col:
+        upload = st.file_uploader(
+            "1. Upload de halindeling",
+            type=["xlsx", "xls"],
+            key="hal_locations_upload",
+            help="Selecteer het Halindeling .xlsx of .xls bestand.",
+        )
+    with action_col:
+        st.write("")
+        st.write("")
+        upload_clicked = st.button("Upload", use_container_width=True, key="hal_locations_upload_btn")
+
+    if upload_clicked:
+        if upload is None:
+            st.error("Selecteer eerst een bestand")
+        else:
+            try:
+                dataset = _build_hal_dataset(upload.name, upload.getvalue())
+            except Exception as exc:
+                st.error(f"Fout: {exc}")
+            else:
+                st.session_state["hal_locations_dataset"] = dataset
+                _set_hal_checkbox_group("hal_locations_selected_loc", dataset["loc_prefixes"], False)
+                _set_hal_checkbox_group("hal_locations_selected_cust", dataset["cust_prefixes"], False)
+                st.success(
+                    f"OK - {len(dataset['rows'])} regels, {len(dataset['loc_prefixes'])} locatie-prefixen, {len(dataset['cust_prefixes'])} klant-prefixen"
+                )
+
+    dataset = st.session_state.get("hal_locations_dataset")
+    if not dataset:
+        return
+
+    st.markdown("### 2. Selecteer locaties")
+    st.caption("Eerste 2 tekens van de locatiecode. Bijvoorbeeld `gK`, `gL`, `bA`, `eT`.")
+    loc_action_all, loc_action_none = st.columns([1, 1])
+    with loc_action_all:
+        if st.button("Alles aanvinken", key="hal_loc_all", use_container_width=True):
+            _set_hal_checkbox_group("hal_locations_selected_loc", dataset["loc_prefixes"], True)
+    with loc_action_none:
+        if st.button("Niets aanvinken", key="hal_loc_none", use_container_width=True):
+            _set_hal_checkbox_group("hal_locations_selected_loc", dataset["loc_prefixes"], False)
+    chosen_locations = _render_hal_checkbox_grid(dataset["loc_prefixes"], "hal_locations_selected_loc")
+
+    st.markdown("### 3. Selecteer klantcodes (optioneel)")
+    st.caption(
+        "Filter op klantcode-prefix. Codes met cijfer aan het begin gebruiken 3 tekens, codes met letter aan het begin 2 tekens. Leeg laten betekent alle klanten op de gekozen locaties."
+    )
+    cust_prefixes = list(dataset.get("visible_cust_prefixes", dataset["cust_prefixes"]))
+    cust_action_all, cust_action_none, cust_action_filter = st.columns([1, 1, 2])
+    with cust_action_all:
+        if st.button("Alles aanvinken", key="hal_cust_all", use_container_width=True):
+            _set_hal_checkbox_group("hal_locations_selected_cust", cust_prefixes, True)
+    with cust_action_none:
+        if st.button("Niets aanvinken", key="hal_cust_none", use_container_width=True):
+            _set_hal_checkbox_group("hal_locations_selected_cust", cust_prefixes, False)
+    with cust_action_filter:
+        if st.button("Alleen prefixen op gekozen locaties", key="hal_cust_filter", use_container_width=True):
+            if not chosen_locations:
+                st.warning("Vink eerst locaties aan")
+            else:
+                allowed_prefixes = sorted({
+                    prefix
+                    for location_prefix in chosen_locations
+                    for prefix in dataset["cust_by_loc"].get(location_prefix, [])
+                })
+                dataset["visible_cust_prefixes"] = allowed_prefixes
+                st.session_state["hal_locations_dataset"] = dataset
+                _set_hal_checkbox_group("hal_locations_selected_cust", dataset["cust_prefixes"], False)
+                _set_hal_checkbox_group("hal_locations_selected_cust", allowed_prefixes, False)
+                cust_prefixes = allowed_prefixes
+    chosen_customers = _render_hal_checkbox_grid(cust_prefixes, "hal_locations_selected_cust")
+
+    st.markdown("### 4. Genereer PDF")
+    if not chosen_locations:
+        st.info("Vink minstens een locatie aan om de stickers te genereren.")
+        st.download_button(
+            "Download stickers PDF",
+            data=b"",
+            file_name="stickers.pdf",
+            disabled=True,
+            use_container_width=True,
+        )
+        return
+
+    try:
+        pdf_bytes = _generate_hal_pdf_bytes(dataset["rows"], chosen_locations, chosen_customers)
+    except ValueError as exc:
+        st.error(str(exc))
+        st.download_button(
+            "Download stickers PDF",
+            data=b"",
+            file_name="stickers.pdf",
+            disabled=True,
+            use_container_width=True,
+        )
+        return
+
+    st.download_button(
+        "Download stickers PDF",
+        data=pdf_bytes,
+        file_name=f"stickers_{date.today().isoformat()}.pdf",
+        mime="application/pdf",
+        use_container_width=True,
+    )
+
+
+def render_photo_dashboard() -> None:
     st.title("Sjaak vd Vijver Expedition Photo Dashboard")
     st.caption("Choose departure date and optionally filter by customer code")
 
@@ -1417,6 +1736,21 @@ def main() -> None:
         st.sidebar.write(
             f"Carriers on selected date: {len(carriers_by_date.get(selected_date, set()))}"
         )
+
+
+def main() -> None:
+    st.sidebar.header("Menu")
+    selected_page = st.sidebar.radio(
+        "Ga naar",
+        ["Photo Dashboard", "Hal Locations"],
+        key="main_menu",
+    )
+
+    if selected_page == "Hal Locations":
+        render_hal_locations_page()
+        return
+
+    render_photo_dashboard()
 
 
 if __name__ == "__main__":
