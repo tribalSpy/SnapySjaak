@@ -1278,7 +1278,7 @@ function CmrPrintPage({ currentUser }) {
 function App() {
   const [auth, setAuth] = useState({ loading: true, user: null, setupRequired: false });
   const rawPathname = typeof window !== "undefined" ? window.location.pathname : "/";
-  const normalizedPathname = rawPathname !== "/" ? rawPathname.replace(/\/+$/, "") : rawPathname;
+  const normalizedPathname = rawPathname !== "/" ? rawPathname.replace(/\/+$/, "").toLowerCase() : rawPathname;
   const publicClockMode = normalizedPathname === "/inklokken";
   const [page, setPage] = useState("dashboard");
   const [sidebarOpen, setSidebarOpen] = useState(true);
