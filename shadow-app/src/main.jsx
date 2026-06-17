@@ -422,7 +422,7 @@ function HalLocationsPage() {
             onChange={(event) => setFile(event.target.files?.[0] || null)}
           />
           <button type="button" onClick={handleLoadFromSheet} disabled={loadingSheet}>
-            {loadingSheet ? "Loading sheet..." : "Load ERP_PASTE"}
+            {loadingSheet ? "Loading sheet..." : "Load from Hal Indeling Spreadsheet"}
           </button>
           <button type="button" className="primary" onClick={handleUpload} disabled={uploading}>
             {uploading ? "Uploading..." : "Upload file"}
