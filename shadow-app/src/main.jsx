@@ -774,13 +774,13 @@ function buildCmrPrintHtml(title, pages) {
     return `
       <section class="cmr-print-page-sheet" data-title="${escapeHtml(page.title || title || `CMR ${pageIndex + 1}`)}">
         ${page.fields.map((field) => {
-          const left = (field.x * scaleX) / 100;
-          const top = ((field.y + (field.offset || 0)) * scaleY) / 100;
-          const width = (field.width * scaleX) / 100;
-          const height = (field.height * scaleY) / 100;
+          const left = field.x * scaleX;
+          const top = (field.y + (field.offset || 0)) * scaleY;
+          const width = field.width * scaleX;
+          const height = field.height * scaleY;
           const fontSize = Math.max(6, field.fontSize * fontScale);
           return `
-            <div class="cmr-print-sheet-field" style="left:${left}in;top:${top}in;width:${width}in;min-height:${height}in;font-size:${fontSize}pt;">
+            <div class="cmr-print-sheet-field" style="left:${left}px;top:${top}px;width:${width}px;min-height:${height}px;font-size:${fontSize}pt;">
               <span>${escapeHtml(field.value)}</span>
             </div>
           `;
@@ -802,8 +802,8 @@ function buildCmrPrintHtml(title, pages) {
       .cmr-print-stack { display: grid; gap: 16px; }
       .cmr-print-page-sheet {
         position: relative;
-        width: 8.27in;
-        height: 11.69in;
+        width: 827px;
+        height: 1169px;
         margin: 0 auto;
         background: white;
         overflow: hidden;
@@ -812,10 +812,18 @@ function buildCmrPrintHtml(title, pages) {
       .cmr-print-page-sheet:last-child { page-break-after: auto; }
       .cmr-print-sheet-field {
         position: absolute;
+        display: block;
+        text-align: left;
         white-space: pre-wrap;
         line-height: 1.22;
         padding: 0;
         overflow: hidden;
+      }
+      .cmr-print-sheet-field > span {
+        display: block;
+        width: 100%;
+        text-align: left;
+        white-space: pre-wrap;
       }
       @media print {
         body { padding: 0; background: white; }
