@@ -2335,6 +2335,8 @@ function FustActionForm({ type, metaData, loading, onSaved }) {
     customer_code: "",
     connect_name: "",
     remark: "",
+    fustbon_reference: "",
+    fustfactuur_reference: "",
     metrics: emptyFustMetrics(),
   });
   const [message, setMessage] = useState("");
@@ -2354,6 +2356,8 @@ function FustActionForm({ type, metaData, loading, onSaved }) {
     setForm((current) => ({
       ...current,
       remark: "",
+      fustbon_reference: "",
+      fustfactuur_reference: "",
       metrics: emptyFustMetrics(),
     }));
   }
@@ -2511,6 +2515,22 @@ function FustActionForm({ type, metaData, loading, onSaved }) {
               value={form.remark}
               onChange={(event) => setForm({ ...form, remark: event.target.value })}
               placeholder="alleen fusten"
+            />
+          </label>
+          <label>
+            <span>Fustbon</span>
+            <input
+              value={form.fustbon_reference}
+              onChange={(event) => setForm({ ...form, fustbon_reference: event.target.value })}
+              placeholder="Fustbon nummer"
+            />
+          </label>
+          <label>
+            <span>Fustfactuur</span>
+            <input
+              value={form.fustfactuur_reference}
+              onChange={(event) => setForm({ ...form, fustfactuur_reference: event.target.value })}
+              placeholder="Fustfactuur nummer"
             />
           </label>
         </div>
@@ -3063,6 +3083,10 @@ function FustLastActions({ loading, actions, onRefresh }) {
   const [error, setError] = useState("");
   const [editingActionId, setEditingActionId] = useState("");
   const [editForm, setEditForm] = useState(null);
+  const [typeFilter, setTypeFilter] = useState("");
+  const [dateFilter, setDateFilter] = useState("");
+  const [countryFilter, setCountryFilter] = useState("");
+  const [customerFilter, setCustomerFilter] = useState("");
 
   function startEdit(action) {
     setEditingActionId(action.id);
@@ -3074,6 +3098,8 @@ function FustLastActions({ loading, actions, onRefresh }) {
       connect_name: action.connect_name || "",
       customer_code: action.customer_code || "",
       remark: action.remark || "",
+      fustbon_reference: action.fustbon_reference || "",
+      fustfactuur_reference: action.fustfactuur_reference || "",
       metrics: {
         dc: Number(action.metrics?.dc || 0),
         cctag: Number(action.metrics?.cctag || 0),
@@ -3143,6 +3169,28 @@ function FustLastActions({ loading, actions, onRefresh }) {
     }
   }
 
+  const typeOptions = [...new Set(actions.map((action) => action.type).filter(Boolean))]
+    .sort((left, right) => left.localeCompare(right));
+  const countryOptions = [...new Set(actions.map((action) => action.country).filter(Boolean))]
+    .sort((left, right) => left.localeCompare(right));
+  const customerOptions = [...new Set(actions.map((action) => action.customer_name).filter(Boolean))]
+    .sort((left, right) => left.localeCompare(right));
+  const visibleActions = actions.filter((action) => {
+    if (typeFilter && action.type !== typeFilter) {
+      return false;
+    }
+    if (dateFilter && String(action.action_date || "") !== dateFilter) {
+      return false;
+    }
+    if (countryFilter && action.country !== countryFilter) {
+      return false;
+    }
+    if (customerFilter && action.customer_name !== customerFilter) {
+      return false;
+    }
+    return true;
+  });
+
   if (loading) {
     return <div className="notice">Loading last actions...</div>;
   }
@@ -3155,6 +3203,33 @@ function FustLastActions({ loading, actions, onRefresh }) {
       <div className="data-table-card">
         <div className="section-header">
           <h2>Last actions</h2>
+        </div>
+        <div className="overview-filters">
+          <label>
+            <span>Type</span>
+            <select value={typeFilter} onChange={(event) => setTypeFilter(event.target.value)}>
+              <option value="">All types</option>
+              {typeOptions.map((type) => <option key={type} value={type}>{type}</option>)}
+            </select>
+          </label>
+          <label>
+            <span>Date</span>
+            <input type="date" value={dateFilter} onChange={(event) => setDateFilter(event.target.value)} />
+          </label>
+          <label>
+            <span>Country</span>
+            <select value={countryFilter} onChange={(event) => setCountryFilter(event.target.value)}>
+              <option value="">All countries</option>
+              {countryOptions.map((country) => <option key={country} value={country}>{country}</option>)}
+            </select>
+          </label>
+          <label>
+            <span>Klantnaam</span>
+            <select value={customerFilter} onChange={(event) => setCustomerFilter(event.target.value)}>
+              <option value="">All klantnamen</option>
+              {customerOptions.map((customer) => <option key={customer} value={customer}>{customer}</option>)}
+            </select>
+          </label>
         </div>
         <div className="table-wrap">
           <table className="data-table action-table">
@@ -3173,13 +3248,15 @@ function FustLastActions({ loading, actions, onRefresh }) {
                 <th>VK</th>
                 <th>Document</th>
                 <th>Remark</th>
+                <th>Fustbon</th>
+                <th>Fustfactuur</th>
                 <th>Sheet</th>
                 <th>Email</th>
                 <th>Actions</th>
               </tr>
             </thead>
             <tbody>
-              {actions.map((action) => {
+              {visibleActions.map((action) => {
                 const isEditing = editingActionId === action.id && editForm;
                 const canModify = action.created_by !== "spreadsheet";
                 return (
@@ -3237,6 +3314,16 @@ function FustLastActions({ loading, actions, onRefresh }) {
                         <input value={editForm.remark} onChange={(event) => setEditForm({ ...editForm, remark: event.target.value })} />
                       ) : (action.remark || "-")}
                     </td>
+                    <td>
+                      {isEditing ? (
+                        <input value={editForm.fustbon_reference} onChange={(event) => setEditForm({ ...editForm, fustbon_reference: event.target.value })} />
+                      ) : (action.fustbon_reference || "-")}
+                    </td>
+                    <td>
+                      {isEditing ? (
+                        <input value={editForm.fustfactuur_reference} onChange={(event) => setEditForm({ ...editForm, fustfactuur_reference: event.target.value })} />
+                      ) : (action.fustfactuur_reference || "-")}
+                    </td>
                     <td>{action.sheet_sync?.ok ? "ok" : action.sheet_sync?.error || "-"}</td>
                     <td>{action.email_sync?.ok ? "ok" : action.email_sync?.error || "-"}</td>
                     <td>
@@ -3287,9 +3374,9 @@ function FustLastActions({ loading, actions, onRefresh }) {
                   </tr>
                 );
               })}
-              {!actions.length && (
+              {!visibleActions.length && (
                 <tr>
-                  <td colSpan="16">No actions were found.</td>
+                  <td colSpan="18">No actions were found.</td>
                 </tr>
               )}
             </tbody>

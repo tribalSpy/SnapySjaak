@@ -783,6 +783,8 @@ function normalizeFustAction(action) {
     customer_code: String(action?.customer_code || "").trim(),
     connect_name: String(action?.connect_name || "").trim(),
     remark: String(action?.remark || "").trim(),
+    fustbon_reference: String(action?.fustbon_reference || "").trim(),
+    fustfactuur_reference: String(action?.fustfactuur_reference || "").trim(),
     metrics: {
       dc: Number(action?.metrics?.dc || 0),
       cctag: Number(action?.metrics?.cctag || 0),
@@ -1508,6 +1510,8 @@ function parseDashboardSheetRows(rows) {
       customer_code: rowValue(row, 6),
       connect_name: rowValue(row, 6),
       remark: rowValue(row, 7),
+      fustbon_reference: rowValue(row, 15),
+      fustfactuur_reference: rowValue(row, 16),
       metrics: {
         dc: normalizeNumber(rowValue(row, 8)),
         cctag: normalizeNumber(rowValue(row, 9)),
@@ -1545,6 +1549,8 @@ function parseRegistrySheetRows(rows, type) {
       customer_code: rowValue(row, 5),
       connect_name: rowValue(row, 5),
       remark: rowValue(row, 6),
+      fustbon_reference: rowValue(row, 14),
+      fustfactuur_reference: rowValue(row, 15),
       metrics: {
         dc: normalizeNumber(rowValue(row, 7)),
         cctag: normalizeNumber(rowValue(row, 8)),
@@ -1577,8 +1583,8 @@ function fustSheetRow(action) {
     action.metrics.pal || "",
     action.metrics.vk || "",
     "",
-    "",
-    "",
+    action.fustbon_reference || "",
+    action.fustfactuur_reference || "",
     "",
   ];
 }
@@ -1600,8 +1606,8 @@ function fustDashboardRow(action) {
     action.metrics.pal || "",
     action.metrics.vk || "",
     "",
-    "",
-    "",
+    action.fustbon_reference || "",
+    action.fustfactuur_reference || "",
     "",
   ];
 }
@@ -2081,6 +2087,8 @@ function buildEmailMessage(action) {
     `Customer: ${action.customer_name}`,
     `Connect: ${action.connect_name || action.customer_code}`,
     `Remark: ${action.remark || "-"}`,
+    `Fustbon: ${action.fustbon_reference || "-"}`,
+    `Fustfactuur: ${action.fustfactuur_reference || "-"}`,
     "",
     `DC: ${action.metrics.dc}`,
     `CCTAG: ${action.metrics.cctag}`,
@@ -3555,6 +3563,8 @@ async function handleApi(req, res, url) {
       customer_code: body.customer_code,
       connect_name: body.connect_name,
       remark: body.remark,
+      fustbon_reference: body.fustbon_reference,
+      fustfactuur_reference: body.fustfactuur_reference,
       metrics: body.metrics,
       sheet_sync: {
         ...(existingAction.sheet_sync || {}),
@@ -3626,6 +3636,8 @@ async function handleApi(req, res, url) {
       customer_code: body.customer_code,
       connect_name: body.connect_name,
       remark: body.remark,
+      fustbon_reference: body.fustbon_reference,
+      fustfactuur_reference: body.fustfactuur_reference,
       metrics: body.metrics,
       created_by: requestUser.username,
       created_at: new Date().toISOString(),
