@@ -21,6 +21,7 @@ const PERMISSIONS = {
   CLOCK_MANAGE: "clock:manage",
   USERS_MANAGE: "users:manage",
   SETTINGS_MANAGE: "settings:manage",
+  UKDOCS_VIEW: "ukdocs:view",
 };
 const ALL_PERMISSIONS = Object.values(PERMISSIONS);
 const DEFAULT_PERMISSIONS_BY_ROLE = {
@@ -35,6 +36,7 @@ const PAGE_DEFINITIONS = [
   { key: "clock", label: "Inklokken", permission: PERMISSIONS.CLOCK_VIEW },
   { key: "users", label: "Users", permission: PERMISSIONS.USERS_MANAGE },
   { key: "settings", label: "Settings", permission: PERMISSIONS.SETTINGS_MANAGE },
+  { key: "ukdocs", label: "UKdocs", permission: PERMISSIONS.UKDOCS_VIEW },
 ];
 
 function formatTimestamp(value) {
@@ -116,6 +118,11 @@ function pageHeading(page) {
       return {
         title: "Settings",
         caption: "Prepare email recipients, spreadsheet mapping, and business master data.",
+      };
+    case "ukdocs":
+      return {
+        title: "UKdocs",
+        caption: "Prepare UK export shipments, saved mappings, audit checks, and document generation workflows inside Shadow App.",
       };
     default:
       return {
@@ -220,6 +227,23 @@ function fileToBase64(file) {
     reader.onerror = () => reject(reader.error || new Error("Could not read file"));
     reader.readAsDataURL(file);
   });
+}
+
+function downloadBase64File(filename, contentBase64, mimeType) {
+  const binary = window.atob(contentBase64);
+  const bytes = new Uint8Array(binary.length);
+  for (let index = 0; index < binary.length; index += 1) {
+    bytes[index] = binary.charCodeAt(index);
+  }
+  const blob = new Blob([bytes], { type: mimeType || "application/octet-stream" });
+  const url = window.URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = filename;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  window.URL.revokeObjectURL(url);
 }
 
 function HalLocationsPage() {
@@ -1606,6 +1630,637 @@ function CmrPrintPage({ currentUser }) {
   );
 }
 
+const UKDOCS_CATEGORY_DEFINITIONS = [
+  { code: "508", label: "Flowers", shortLabel: "Flowers dump 508" },
+  { code: "515", label: "Accessories", shortLabel: "Accessories dump 515" },
+  { code: "1000", label: "Bouquets / BQ", shortLabel: "Bouquets dump 1000" },
+  { code: "920", label: "Plants", shortLabel: "Plants dump 920" },
+];
+
+const UKDOCS_COMPANY_FIELDS = [
+  ["company_name", "Company name"],
+  ["address", "Address", "textarea"],
+  ["phone", "Phone"],
+  ["email", "Email"],
+  ["website", "Website"],
+  ["vat_number", "VAT number"],
+  ["eori_number", "EORI number"],
+  ["chamber_of_commerce_number", "Chamber of Commerce number"],
+  ["iban", "IBAN"],
+  ["bic_swift", "BIC / SWIFT"],
+  ["rex_registration", "REX registration"],
+  ["default_footer_text", "Default footer text", "textarea"],
+  ["preferential_origin_declaration", "Preferential origin declaration", "textarea"],
+  ["logo_name", "Logo file name"],
+];
+
+const UKDOCS_CUSTOMER_FIELDS = [
+  ["customer_name", "Customer name"],
+  ["customer_address", "Customer address", "textarea"],
+  ["vat_number", "VAT number"],
+  ["eori_number", "EORI number"],
+  ["importer_number", "Importer number"],
+  ["default_delivery_terms", "Default delivery terms"],
+  ["default_city", "Default city"],
+  ["default_uk_arrival_port", "Default UK arrival port"],
+  ["default_currency", "Default currency"],
+  ["default_invoice_language_text", "Default invoice language / text", "textarea"],
+  ["default_document_references", "Default document references", "textarea"],
+];
+
+const UKDOCS_EXPORT_DEFAULT_FIELDS = [
+  ["destination_country", "Country of destination"],
+  ["regulation", "Regulation"],
+  ["border_transport_mode", "Border transport mode"],
+  ["border_transport_nationality", "Border transport nationality"],
+  ["customs_office_of_exit", "Customs office of exit"],
+  ["location", "Location"],
+  ["delivery_terms", "Delivery terms"],
+  ["delivery_terms_city", "Delivery terms city"],
+  ["currency", "Currency"],
+  ["freight_costs", "Freight costs"],
+  ["insurance", "Insurance"],
+  ["importer_field", "Importer field", "textarea"],
+  ["vessel_field", "Vessel field"],
+  ["phyto_fields", "Phyto / certificate fields", "textarea"],
+  ["kcb_fields", "KCB fields", "textarea"],
+  ["certificate_fields", "Bio / origin certificate fields", "textarea"],
+  ["value_tolerance", "Value tolerance"],
+  ["weight_tolerance", "Weight tolerance kg"],
+  ["quantity_tolerance", "Quantity tolerance"],
+  ["packages_tolerance", "Packages tolerance"],
+];
+
+const UKDOCS_EXPECTED_COLUMNS = [
+  "itemIdClientSystem", "itemNumber", "materialNumber", "invoiceIdClientSystem", "grossMassValue", "grossMassUnit",
+  "netMassValue", "netMassUnit", "netPriceValue", "netPriceCurrencyIso", "value", "originCountryCode",
+  "preferentialOriginCountryCode", "classificationType", "classificationValue", "goodsDescriptionText", "quantityValue",
+  "quantityUnit", "packages", "order", "packageCode", "taricCode", "fullClassificationCode", "vbnCode", "vbnDescription",
+];
+
+function emptyUkdocsCustomer() {
+  return {
+    id: "",
+    customer_name: "",
+    customer_address: "",
+    vat_number: "",
+    eori_number: "",
+    importer_number: "",
+    default_delivery_terms: "",
+    default_city: "",
+    default_uk_arrival_port: "",
+    default_currency: "",
+    default_invoice_language_text: "",
+    default_document_references: "",
+  };
+}
+
+function emptyUkdocsShipmentDraft() {
+  return {
+    id: "",
+    customer_id: "",
+    shipment_date: new Date().toISOString().slice(0, 10),
+    trailer_number: "",
+    invoice_numbers: "",
+    invoice_numbers_by_category: Object.fromEntries(UKDOCS_CATEGORY_DEFINITIONS.map((category) => [category.code, ""])),
+    export_reference: "",
+    currency: "GBP",
+    delivery_terms: "",
+    uk_arrival_port: "",
+    transport_customs_info: "",
+    owner: "",
+    regulation: "Export",
+    destination_country: "GB / United Kingdom",
+    customs_office_of_exit: "",
+    location: "",
+    delivery_terms_city: "",
+    border_transport_mode: "Road",
+    border_transport_nationality: "NL",
+    importer: "",
+    vessel: "",
+    freight_costs: "",
+    insurance: "",
+    marks_and_numbers: "",
+    container_number: "",
+    uploaded_files: Object.fromEntries(UKDOCS_CATEGORY_DEFINITIONS.map((category) => [category.code, { category: category.code, file_name: "", uploaded_at: "", size: 0 }])),
+    validation_warnings: [],
+    audit_status: "",
+    ready: false,
+    notes: "",
+  };
+}
+
+function ukdocsStatusDefinition(status) {
+  switch (status) {
+    case "files_uploaded":
+      return { label: "Files uploaded", tone: "info" };
+    case "validated":
+      return { label: "Validated", tone: "success" };
+    case "audit_passed":
+      return { label: "Audit passed", tone: "success" };
+    case "ready":
+      return { label: "Ready", tone: "success" };
+    case "failed":
+      return { label: "Failed", tone: "danger" };
+    default:
+      return { label: "Not started", tone: "muted" };
+  }
+}
+
+function ukdocsCombinedInvoiceNumbers(invoiceNumbersByCategory, uploadedFiles) {
+  return UKDOCS_CATEGORY_DEFINITIONS
+    .filter((category) => uploadedFiles?.[category.code]?.file_name || String(invoiceNumbersByCategory?.[category.code] || "").trim())
+    .map((category) => String(invoiceNumbersByCategory?.[category.code] || "").trim())
+    .filter(Boolean)
+    .join("/");
+}
+
+function ukdocsShipmentStatus(shipment) {
+  const uploadedCount = Object.values(shipment?.uploaded_files || {}).filter((item) => item?.file_name).length;
+  if (!uploadedCount) {
+    return "not_started";
+  }
+  if (shipment?.audit_status === "failed") {
+    return "failed";
+  }
+  if (shipment?.ready) {
+    return "ready";
+  }
+  if (shipment?.audit_status === "passed") {
+    return "audit_passed";
+  }
+  if (shipment?.customer_id && shipment?.shipment_date && shipment?.export_reference) {
+    return "validated";
+  }
+  return "files_uploaded";
+}
+
+function UkdocsPage({ currentUser }) {
+  const [activeMenu, setActiveMenu] = useState("new");
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [message, setMessage] = useState("");
+  const [error, setError] = useState("");
+  const [state, setState] = useState(null);
+  const [customerDraft, setCustomerDraft] = useState(emptyUkdocsCustomer());
+  const [shipmentDraft, setShipmentDraft] = useState(emptyUkdocsShipmentDraft());
+  const [analysis, setAnalysis] = useState(null);
+  const [generatedFiles, setGeneratedFiles] = useState([]);
+
+  useEffect(() => {
+    let cancelled = false;
+    apiJson("/api/ukdocs/state")
+      .then((payload) => {
+        if (!cancelled) {
+          setState(payload.state);
+        }
+      })
+      .catch((loadError) => {
+        if (!cancelled) {
+          setError(loadError.message);
+        }
+      })
+      .finally(() => {
+        if (!cancelled) {
+          setLoading(false);
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [currentUser]);
+
+  const customers = state?.customers || [];
+  const companySettings = state?.company_settings || {};
+  const exportDefaults = state?.export_defaults || {};
+  const templates = state?.templates || {};
+  const columnMappings = state?.column_mappings || {};
+  const shipments = state?.shipments || [];
+  const auditReports = state?.audit_reports || [];
+  const combinedInvoiceNumbers = useMemo(
+    () => ukdocsCombinedInvoiceNumbers(shipmentDraft.invoice_numbers_by_category, shipmentDraft.uploaded_files),
+    [shipmentDraft.invoice_numbers_by_category, shipmentDraft.uploaded_files],
+  );
+
+  useEffect(() => {
+    if (!state) {
+      return;
+    }
+    setShipmentDraft((current) => ({
+      ...current,
+      currency: current.currency || exportDefaults.currency || "GBP",
+      regulation: current.regulation || exportDefaults.regulation || "Export",
+      destination_country: current.destination_country || exportDefaults.destination_country || "GB / United Kingdom",
+      border_transport_mode: current.border_transport_mode || exportDefaults.border_transport_mode || "Road",
+      border_transport_nationality: current.border_transport_nationality || exportDefaults.border_transport_nationality || "NL",
+      customs_office_of_exit: current.customs_office_of_exit || exportDefaults.customs_office_of_exit || "",
+      location: current.location || exportDefaults.location || "",
+      delivery_terms_city: current.delivery_terms_city || exportDefaults.delivery_terms_city || "",
+      freight_costs: current.freight_costs || exportDefaults.freight_costs || "",
+      insurance: current.insurance || exportDefaults.insurance || "",
+      importer: current.importer || exportDefaults.importer_field || "",
+      vessel: current.vessel || exportDefaults.vessel_field || "",
+      owner: current.owner || companySettings.company_name || "",
+      invoice_numbers_by_category: current.invoice_numbers_by_category || Object.fromEntries(UKDOCS_CATEGORY_DEFINITIONS.map((category) => [category.code, ""])),
+    }));
+  }, [state, exportDefaults, companySettings]);
+
+  function resetDrafts() {
+    setShipmentDraft(emptyUkdocsShipmentDraft());
+    setAnalysis(null);
+    setGeneratedFiles([]);
+  }
+
+  function applyCustomerDefaults(customerId) {
+    const customer = customers.find((item) => item.id === customerId);
+    setShipmentDraft((current) => ({
+      ...current,
+      customer_id: customerId,
+      delivery_terms: customer?.default_delivery_terms || current.delivery_terms,
+      uk_arrival_port: customer?.default_uk_arrival_port || current.uk_arrival_port,
+      currency: customer?.default_currency || current.currency,
+      importer: customer?.customer_name || current.importer,
+      delivery_terms_city: customer?.default_city || current.delivery_terms_city,
+      notes: customer?.default_document_references || current.notes,
+    }));
+  }
+
+  async function saveStatePatch(patch, successMessage) {
+    setSaving(true);
+    setError("");
+    setMessage("");
+    try {
+      const payload = await apiJson("/api/ukdocs/state", {
+        method: "PATCH",
+        body: JSON.stringify(patch),
+      });
+      setState(payload.state);
+      setMessage(successMessage);
+    } catch (saveError) {
+      setError(saveError.message);
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  function currentShipmentPayload() {
+    return {
+      ...shipmentDraft,
+      invoice_numbers: combinedInvoiceNumbers,
+      customers,
+      company_settings: companySettings,
+      export_defaults: exportDefaults,
+      column_mappings: columnMappings,
+    };
+  }
+
+  async function analyzeShipment() {
+    setSaving(true);
+    setError("");
+    setMessage("");
+    try {
+      const payload = await apiJson("/api/ukdocs/analyze", {
+        method: "POST",
+        body: JSON.stringify(currentShipmentPayload()),
+      });
+      setAnalysis(payload);
+      setGeneratedFiles([]);
+      setMessage(`UKdocs audit ${payload.audit.final_status}.`);
+    } catch (analysisError) {
+      setError(analysisError.message);
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function generateDocuments() {
+    setSaving(true);
+    setError("");
+    setMessage("");
+    try {
+      const payload = await apiJson("/api/ukdocs/generate", {
+        method: "POST",
+        body: JSON.stringify(currentShipmentPayload()),
+      });
+      setAnalysis(payload.analysis);
+      setGeneratedFiles(payload.files || []);
+      setMessage(`Generated ${payload.files?.length || 0} UKdocs files.`);
+    } catch (generateError) {
+      setError(generateError.message);
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function saveShipment() {
+    setSaving(true);
+    setError("");
+    setMessage("");
+    try {
+      const payload = await apiJson("/api/ukdocs/shipments", {
+        method: "POST",
+        body: JSON.stringify({
+          ...shipmentDraft,
+          invoice_numbers: combinedInvoiceNumbers,
+          status: ukdocsShipmentStatus(shipmentDraft),
+        }),
+      });
+      setState((current) => ({ ...current, shipments: payload.shipments }));
+      setShipmentDraft(payload.shipment);
+      setAnalysis(null);
+      setGeneratedFiles([]);
+      setMessage("Shipment draft saved to UKdocs history.");
+    } catch (saveError) {
+      setError(saveError.message);
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function deleteShipment(shipmentId) {
+    if (!window.confirm("Delete this shipment draft from UKdocs history?")) {
+      return;
+    }
+    setSaving(true);
+    setError("");
+    setMessage("");
+    try {
+      const payload = await apiJson(`/api/ukdocs/shipments/${encodeURIComponent(shipmentId)}`, { method: "DELETE" });
+      setState((current) => ({ ...current, shipments: payload.shipments }));
+      if (shipmentDraft.id === shipmentId) {
+        resetDrafts();
+      }
+      setMessage("Shipment draft deleted.");
+    } catch (deleteError) {
+      setError(deleteError.message);
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  function saveCustomer() {
+    const nextCustomer = { ...customerDraft, id: customerDraft.id || `ukdocs-customer-${Date.now()}` };
+    const nextCustomers = customerDraft.id
+      ? customers.map((item) => (item.id === customerDraft.id ? nextCustomer : item))
+      : [nextCustomer, ...customers];
+    saveStatePatch({ customers: nextCustomers }, customerDraft.id ? "Customer updated." : "Customer added.");
+    setCustomerDraft(emptyUkdocsCustomer());
+  }
+
+  function startEditCustomer(customer) {
+    setCustomerDraft({ ...customer });
+    setActiveMenu("customers");
+  }
+
+  function selectShipment(shipment) {
+    setShipmentDraft({
+      ...emptyUkdocsShipmentDraft(),
+      ...shipment,
+      invoice_numbers: shipment.invoice_numbers || ukdocsCombinedInvoiceNumbers(shipment.invoice_numbers_by_category, shipment.uploaded_files),
+    });
+    setAnalysis(null);
+    setGeneratedFiles([]);
+    setActiveMenu("new");
+  }
+
+  async function updateUploadedFile(categoryCode, file) {
+    let nextFile = { category: categoryCode, file_name: "", size: 0, uploaded_at: "", content_base64: "" };
+    if (file) {
+      nextFile = {
+        category: categoryCode,
+        file_name: file.name,
+        size: file.size || 0,
+        uploaded_at: new Date().toISOString(),
+        content_base64: await fileToBase64(file),
+      };
+    }
+    setShipmentDraft((current) => ({
+      ...current,
+      uploaded_files: {
+        ...(current.uploaded_files || {}),
+        [categoryCode]: nextFile,
+      },
+    }));
+    setAnalysis(null);
+    setGeneratedFiles([]);
+  }
+
+  function mappingText(categoryCode, columnName) {
+    return ((columnMappings[categoryCode]?.aliases || {})[columnName] || []).join("\n");
+  }
+
+  function setMappingText(categoryCode, columnName, value) {
+    const aliases = value.split(/\r?\n/).map((item) => item.trim()).filter(Boolean);
+    setState((current) => ({
+      ...current,
+      column_mappings: {
+        ...current.column_mappings,
+        [categoryCode]: {
+          ...(current.column_mappings?.[categoryCode] || { aliases: {} }),
+          aliases: {
+            ...((current.column_mappings?.[categoryCode] || {}).aliases || {}),
+            [columnName]: aliases,
+          },
+        },
+      },
+    }));
+  }
+
+  if (loading) {
+    return <div className="notice">Loading UKdocs workspace...</div>;
+  }
+
+  return (
+    <section className="overview-stack ukdocs-page">
+      <div className="tab-strip">
+        {[
+          ["new", "New shipment"],
+          ["customers", "Customers"],
+          ["company", "Company settings"],
+          ["defaults", "Export defaults"],
+          ["mappings", "Column mappings"],
+          ["templates", "Templates"],
+          ["history", "Shipment history"],
+          ["audits", "Audit reports"],
+        ].map(([key, label]) => (
+          <button key={key} type="button" className={activeMenu === key ? "active" : ""} onClick={() => setActiveMenu(key)}>{label}</button>
+        ))}
+      </div>
+
+      {message && <div className="notice">{message}</div>}
+      {error && <div className="notice danger">{error}</div>}
+      <div className="notice">Corrected uploaded dump files remain the source of truth. UKdocs now parses the real dump files, builds the control pivot, runs an audit, and generates first-pass Excel output files directly in Shadow App.</div>
+
+      {activeMenu === "new" && (
+        <div className="data-table-card ukdocs-stack">
+          <div className="section-header">
+            <h2>New shipment</h2>
+            <div className={`ukdocs-status-badge ${ukdocsStatusDefinition(ukdocsShipmentStatus(shipmentDraft)).tone}`}>{ukdocsStatusDefinition(ukdocsShipmentStatus(shipmentDraft)).label}</div>
+          </div>
+          <div className="form-grid">
+            <label><span>Customer / export user</span><select value={shipmentDraft.customer_id} onChange={(event) => applyCustomerDefaults(event.target.value)}><option value="">Choose customer</option>{customers.map((customer) => <option key={customer.id} value={customer.id}>{customer.customer_name}</option>)}</select></label>
+            <label><span>Date</span><input type="date" value={shipmentDraft.shipment_date} onChange={(event) => setShipmentDraft({ ...shipmentDraft, shipment_date: event.target.value })} /></label>
+            <label><span>Truck / trailer licence plate</span><input value={shipmentDraft.trailer_number} onChange={(event) => setShipmentDraft({ ...shipmentDraft, trailer_number: event.target.value })} placeholder="One licence plate for the whole export" /></label>
+            <label><span>Combined export invoice numbers</span><input value={combinedInvoiceNumbers} readOnly placeholder="Filled automatically from the category invoice inputs below" /></label>
+            <label><span>Export reference</span><input value={shipmentDraft.export_reference} onChange={(event) => setShipmentDraft({ ...shipmentDraft, export_reference: event.target.value })} /></label>
+            <label><span>Currency</span><input value={shipmentDraft.currency} onChange={(event) => setShipmentDraft({ ...shipmentDraft, currency: event.target.value })} /></label>
+            <label><span>Delivery terms</span><input value={shipmentDraft.delivery_terms} onChange={(event) => setShipmentDraft({ ...shipmentDraft, delivery_terms: event.target.value })} /></label>
+            <label><span>UK arrival port</span><input value={shipmentDraft.uk_arrival_port} onChange={(event) => setShipmentDraft({ ...shipmentDraft, uk_arrival_port: event.target.value })} /></label>
+            <label><span>Owner</span><input value={shipmentDraft.owner} onChange={(event) => setShipmentDraft({ ...shipmentDraft, owner: event.target.value })} /></label>
+            <label><span>Regulation</span><input value={shipmentDraft.regulation} onChange={(event) => setShipmentDraft({ ...shipmentDraft, regulation: event.target.value })} /></label>
+            <label><span>Country of destination</span><input value={shipmentDraft.destination_country} onChange={(event) => setShipmentDraft({ ...shipmentDraft, destination_country: event.target.value })} /></label>
+            <label><span>Customs office of exit</span><input value={shipmentDraft.customs_office_of_exit} onChange={(event) => setShipmentDraft({ ...shipmentDraft, customs_office_of_exit: event.target.value })} /></label>
+            <label><span>Location</span><input value={shipmentDraft.location} onChange={(event) => setShipmentDraft({ ...shipmentDraft, location: event.target.value })} /></label>
+            <label><span>Delivery terms city</span><input value={shipmentDraft.delivery_terms_city} onChange={(event) => setShipmentDraft({ ...shipmentDraft, delivery_terms_city: event.target.value })} /></label>
+            <label><span>Border transport mode</span><input value={shipmentDraft.border_transport_mode} onChange={(event) => setShipmentDraft({ ...shipmentDraft, border_transport_mode: event.target.value })} /></label>
+            <label><span>Border transport nationality</span><input value={shipmentDraft.border_transport_nationality} onChange={(event) => setShipmentDraft({ ...shipmentDraft, border_transport_nationality: event.target.value })} /></label>
+            <label><span>Importer</span><input value={shipmentDraft.importer} onChange={(event) => setShipmentDraft({ ...shipmentDraft, importer: event.target.value })} /></label>
+            <label><span>Vessel</span><input value={shipmentDraft.vessel} onChange={(event) => setShipmentDraft({ ...shipmentDraft, vessel: event.target.value })} /></label>
+            <label><span>Freight costs</span><input value={shipmentDraft.freight_costs} onChange={(event) => setShipmentDraft({ ...shipmentDraft, freight_costs: event.target.value })} /></label>
+            <label><span>Insurance</span><input value={shipmentDraft.insurance} onChange={(event) => setShipmentDraft({ ...shipmentDraft, insurance: event.target.value })} /></label>
+            <label><span>Marks and numbers</span><input value={shipmentDraft.marks_and_numbers} onChange={(event) => setShipmentDraft({ ...shipmentDraft, marks_and_numbers: event.target.value })} /></label>
+            <label><span>Container number</span><input value={shipmentDraft.container_number} onChange={(event) => setShipmentDraft({ ...shipmentDraft, container_number: event.target.value })} /></label>
+            <label className="wide"><span>Transport / customs information</span><textarea rows={4} value={shipmentDraft.transport_customs_info} onChange={(event) => setShipmentDraft({ ...shipmentDraft, transport_customs_info: event.target.value })} /></label>
+            <label className="wide"><span>Notes / references</span><textarea rows={4} value={shipmentDraft.notes} onChange={(event) => setShipmentDraft({ ...shipmentDraft, notes: event.target.value })} /></label>
+          </div>
+
+          <div className="ukdocs-upload-grid">
+            {UKDOCS_CATEGORY_DEFINITIONS.map((category) => {
+              const fileInfo = shipmentDraft.uploaded_files?.[category.code] || {};
+              return (
+                <div key={category.code} className="ukdocs-upload-card">
+                  <strong>{category.shortLabel}</strong>
+                  <input type="file" accept=".xlsx,.xls,.csv" onChange={async (event) => updateUploadedFile(category.code, event.target.files?.[0] || null)} />
+                  <label>
+                    <span>Invoice number for this upload</span>
+                    <input value={shipmentDraft.invoice_numbers_by_category?.[category.code] || ""} onChange={(event) => setShipmentDraft({ ...shipmentDraft, invoice_numbers_by_category: { ...(shipmentDraft.invoice_numbers_by_category || {}), [category.code]: event.target.value } })} placeholder={`External invoice number for ${category.label}`} />
+                  </label>
+                  <small>{fileInfo.file_name ? `${fileInfo.file_name} (${fileInfo.size || 0} bytes)` : "Optional category file not selected."}</small>
+                </div>
+              );
+            })}
+          </div>
+
+          <div className="section-header"><h3>Workflow status</h3></div>
+          <div className="ukdocs-badge-row">{["not_started", "files_uploaded", "validated", "audit_passed", "ready", "failed"].map((status) => { const definition = ukdocsStatusDefinition(status); return <div key={status} className={`ukdocs-status-badge ${definition.tone}`}>{definition.label}</div>; })}</div>
+          <div className="row-actions spread-actions">
+            <button type="button" className="primary" onClick={saveShipment} disabled={saving}>{saving ? "Saving..." : "Save shipment draft"}</button>
+            <button type="button" onClick={resetDrafts} disabled={saving}>New blank shipment</button>
+            <button type="button" onClick={analyzeShipment} disabled={saving}>Run audit</button>
+            <button type="button" onClick={generateDocuments} disabled={saving || analysis?.audit?.final_status !== "PASS"}>Generate documents</button>
+            <button type="button" disabled={!generatedFiles.length} onClick={() => generatedFiles.forEach((file) => downloadBase64File(file.name, file.content_base64, file.mime_type))}>Download files</button>
+          </div>
+
+          {analysis && (
+            <div className="ukdocs-stack">
+              <div className="section-header"><h3>Audit result</h3><div className={`ukdocs-status-badge ${analysis.audit.final_status === "PASS" ? "success" : "danger"}`}>{analysis.audit.final_status}</div></div>
+              {!!analysis.audit.warnings?.length && <div className="notice danger">{analysis.audit.warnings.map((warning) => warning.message).join(" | ")}</div>}
+              <div className="table-wrap">
+                <table className="data-table">
+                  <thead><tr><th>Category</th><th>Invoice</th><th>Rows</th><th>Quantity</th><th>Gross kg</th><th>Net kg</th><th>Packages</th><th>Value</th></tr></thead>
+                  <tbody>
+                    {analysis.categories.map((category) => <tr key={category.code}><td>{category.code} {category.label}</td><td>{category.invoice_number || "-"}</td><td>{category.row_count}</td><td>{category.totals.quantity}</td><td>{category.totals.gross_kg}</td><td>{category.totals.net_kg}</td><td>{category.totals.packages}</td><td>{category.totals.customs_value}</td></tr>)}
+                    <tr className="summary-row"><td colSpan="3"><strong>Combined</strong></td><td><strong>{analysis.combined_totals.quantity}</strong></td><td><strong>{analysis.combined_totals.gross_kg}</strong></td><td><strong>{analysis.combined_totals.net_kg}</strong></td><td><strong>{analysis.combined_totals.packages}</strong></td><td><strong>{analysis.combined_totals.customs_value}</strong></td></tr>
+                  </tbody>
+                </table>
+              </div>
+              <div className="section-header"><h3>Control summary</h3></div>
+              <div className="table-wrap">
+                <table className="data-table">
+                  <thead><tr><th>Scope</th><th>Group</th><th>Field</th><th>Dump</th><th>Invoice</th><th>Export</th><th>Invoice diff</th><th>Export diff</th><th>Status</th></tr></thead>
+                  <tbody>
+                    {(analysis.audit.summary_rows || []).map((row, index) => <tr key={`${row.scope}-${row.group_label}-${row.field}-${index}`}><td>{row.scope}</td><td>{row.group_label}</td><td>{row.field}</td><td>{row.dump_value || "0"}</td><td>{row.invoice_value || "-"}</td><td>{row.export_value || "-"}</td><td>{row.invoice_difference || "-"}</td><td>{row.export_difference || "-"}</td><td><span className={`ukdocs-status-badge ${row.status === "MATCH" ? "success" : "danger"}`}>{row.status}</span></td></tr>)}
+                  </tbody>
+                </table>
+              </div>
+              <div className="section-header"><h3>Control pivot</h3></div>
+              <div className="table-wrap">
+                <table className="data-table">
+                  <thead><tr><th>Description</th><th>Quantity</th><th>Gross kg</th><th>Net kg</th><th>Packages</th><th>Value</th></tr></thead>
+                  <tbody>{analysis.control_pivot_rows.map((row) => <tr key={row.description}><td>{row.description}</td><td>{row.quantity}</td><td>{row.gross_kg}</td><td>{row.net_kg}</td><td>{row.packages}</td><td>{row.customs_value}</td></tr>)}</tbody>
+                </table>
+              </div>
+              <div className="section-header"><h3>Export preview</h3></div>
+              <div className="table-wrap">
+                <table className="data-table">
+                  <thead><tr><th>Description</th><th>Commodity</th><th>Origin</th><th>Quantity</th><th>Net kg</th><th>Gross kg</th><th>Packages</th><th>Value</th></tr></thead>
+                  <tbody>{analysis.export_rows.map((row, index) => <tr key={`${row.description}-${row.commodity_code}-${row.origin}-${index}`}><td>{row.description}</td><td>{row.commodity_code}</td><td>{row.origin}</td><td>{row.quantity}</td><td>{row.net_kg}</td><td>{row.gross_kg}</td><td>{row.packages}</td><td>{row.customs_value}</td></tr>)}</tbody>
+                </table>
+              </div>
+              {!!generatedFiles.length && <div className="row-actions spread-actions">{generatedFiles.map((file) => <button key={file.name} type="button" onClick={() => downloadBase64File(file.name, file.content_base64, file.mime_type)}>{file.name}</button>)}</div>}
+            </div>
+          )}
+        </div>
+      )}
+
+      {activeMenu === "customers" && (
+        <div className="data-table-card ukdocs-stack">
+          <div className="section-header"><h2>Customers</h2></div>
+          <div className="form-grid">
+            {UKDOCS_CUSTOMER_FIELDS.map(([key, label, kind]) => (
+              <label key={key} className={kind === "textarea" ? "wide" : ""}>
+                <span>{label}</span>
+                {kind === "textarea" ? <textarea rows={3} value={customerDraft[key] || ""} onChange={(event) => setCustomerDraft({ ...customerDraft, [key]: event.target.value })} /> : <input value={customerDraft[key] || ""} onChange={(event) => setCustomerDraft({ ...customerDraft, [key]: event.target.value })} />}
+              </label>
+            ))}
+          </div>
+          <div className="row-actions spread-actions"><button type="button" className="primary" onClick={saveCustomer} disabled={saving}>{customerDraft.id ? "Update customer" : "Add customer"}</button><button type="button" onClick={() => setCustomerDraft(emptyUkdocsCustomer())} disabled={saving}>Clear form</button></div>
+          <div className="table-wrap"><table className="data-table"><thead><tr><th>Name</th><th>Delivery terms</th><th>UK port</th><th>Currency</th><th>VAT</th><th>Actions</th></tr></thead><tbody>{customers.map((customer) => <tr key={customer.id}><td>{customer.customer_name}</td><td>{customer.default_delivery_terms || "-"}</td><td>{customer.default_uk_arrival_port || "-"}</td><td>{customer.default_currency || "-"}</td><td>{customer.vat_number || "-"}</td><td className="row-actions"><button type="button" onClick={() => startEditCustomer(customer)}>Edit</button></td></tr>)}{!customers.length && <tr><td colSpan="6">No UKdocs customers saved yet.</td></tr>}</tbody></table></div>
+        </div>
+      )}
+
+      {activeMenu === "company" && (
+        <div className="data-table-card ukdocs-stack">
+          <div className="section-header"><h2>Company settings</h2></div>
+          <div className="form-grid">{UKDOCS_COMPANY_FIELDS.map(([key, label, kind]) => <label key={key} className={kind === "textarea" ? "wide" : ""}><span>{label}</span>{kind === "textarea" ? <textarea rows={4} value={companySettings[key] || ""} onChange={(event) => setState((current) => ({ ...current, company_settings: { ...current.company_settings, [key]: event.target.value } }))} /> : <input value={companySettings[key] || ""} onChange={(event) => setState((current) => ({ ...current, company_settings: { ...current.company_settings, [key]: event.target.value } }))} />}</label>)}</div>
+          <div className="row-actions spread-actions"><button type="button" className="primary" onClick={() => saveStatePatch({ company_settings: companySettings }, "Company settings saved.")} disabled={saving}>{saving ? "Saving..." : "Save company settings"}</button></div>
+        </div>
+      )}
+
+      {activeMenu === "defaults" && (
+        <div className="data-table-card ukdocs-stack">
+          <div className="section-header"><h2>Export defaults</h2></div>
+          <div className="form-grid">{UKDOCS_EXPORT_DEFAULT_FIELDS.map(([key, label, kind]) => <label key={key} className={kind === "textarea" ? "wide" : ""}><span>{label}</span>{kind === "textarea" ? <textarea rows={3} value={exportDefaults[key] || ""} onChange={(event) => setState((current) => ({ ...current, export_defaults: { ...current.export_defaults, [key]: event.target.value } }))} /> : <input value={exportDefaults[key] || ""} onChange={(event) => setState((current) => ({ ...current, export_defaults: { ...current.export_defaults, [key]: event.target.value } }))} />}</label>)}</div>
+          <div className="row-actions spread-actions"><button type="button" className="primary" onClick={() => saveStatePatch({ export_defaults: exportDefaults }, "Export defaults saved.")} disabled={saving}>{saving ? "Saving..." : "Save export defaults"}</button></div>
+        </div>
+      )}
+
+      {activeMenu === "mappings" && (
+        <div className="data-table-card ukdocs-stack">
+          <div className="section-header"><h2>Column mappings</h2></div>
+          <div className="notice">Map source column names once per category. Small header variations can be stored here before the importer is connected to new corrected dumps.</div>
+          {UKDOCS_CATEGORY_DEFINITIONS.map((category) => <div key={category.code} className="ukdocs-mapping-block"><div className="section-header"><h3>{category.code} {category.label}</h3></div><div className="table-wrap"><table className="data-table compact-table"><thead><tr><th>Expected column</th><th>Accepted aliases</th></tr></thead><tbody>{UKDOCS_EXPECTED_COLUMNS.map((columnName) => <tr key={`${category.code}-${columnName}`}><td>{columnName}</td><td><textarea rows={2} value={mappingText(category.code, columnName)} onChange={(event) => setMappingText(category.code, columnName, event.target.value)} placeholder="One alias per line" /></td></tr>)}</tbody></table></div></div>)}
+          <div className="row-actions spread-actions"><button type="button" className="primary" onClick={() => saveStatePatch({ column_mappings: state.column_mappings }, "Column mappings saved.")} disabled={saving}>{saving ? "Saving..." : "Save column mappings"}</button></div>
+        </div>
+      )}
+
+      {activeMenu === "templates" && (
+        <div className="data-table-card ukdocs-stack">
+          <div className="section-header"><h2>Templates</h2></div>
+          <div className="form-grid"><label><span>Invoice template name</span><input value={templates.invoice_template_name || ""} onChange={(event) => setState((current) => ({ ...current, templates: { ...current.templates, invoice_template_name: event.target.value } }))} /></label><label><span>Export template name</span><input value={templates.export_template_name || ""} onChange={(event) => setState((current) => ({ ...current, templates: { ...current.templates, export_template_name: event.target.value } }))} /></label><label><span>Logo file name</span><input value={templates.logo_name || ""} onChange={(event) => setState((current) => ({ ...current, templates: { ...current.templates, logo_name: event.target.value } }))} /></label></div>
+          <div className="notice">The first-pass generator already produces Excel files. This template section remains the place for future exact layout/template controls.</div>
+          <div className="row-actions spread-actions"><button type="button" className="primary" onClick={() => saveStatePatch({ templates }, "Template references saved.")} disabled={saving}>{saving ? "Saving..." : "Save template references"}</button></div>
+        </div>
+      )}
+
+      {activeMenu === "history" && (
+        <div className="data-table-card ukdocs-stack">
+          <div className="section-header"><h2>Shipment history</h2></div>
+          <div className="table-wrap"><table className="data-table"><thead><tr><th>Date</th><th>Reference</th><th>Customer</th><th>Invoices</th><th>Categories</th><th>Status</th><th>Updated</th><th>Actions</th></tr></thead><tbody>{shipments.map((shipment) => { const customer = customers.find((item) => item.id === shipment.customer_id); const status = ukdocsStatusDefinition(shipment.status || ukdocsShipmentStatus(shipment)); return <tr key={shipment.id}><td>{shipment.shipment_date || "-"}</td><td>{shipment.export_reference || "-"}</td><td>{customer?.customer_name || "-"}</td><td>{shipment.invoice_numbers || "-"}</td><td>{(shipment.categories_included || []).join(", ") || "-"}</td><td><span className={`ukdocs-status-badge ${status.tone}`}>{status.label}</span></td><td>{formatTimestamp(shipment.updated_at || shipment.created_at)}</td><td className="row-actions"><button type="button" onClick={() => selectShipment(shipment)}>Open</button><button type="button" onClick={() => deleteShipment(shipment.id)}>Delete</button></td></tr>; })}{!shipments.length && <tr><td colSpan="8">No UKdocs shipments saved yet.</td></tr>}</tbody></table></div>
+        </div>
+      )}
+
+      {activeMenu === "audits" && (
+        <div className="data-table-card ukdocs-stack">
+          <div className="section-header"><h2>Audit reports</h2></div>
+          <div className="notice">Audit history storage is ready. The live audit details are visible immediately on the New shipment screen after each run.</div>
+          <div className="table-wrap"><table className="data-table"><thead><tr><th>Shipment reference</th><th>Created</th><th>Status</th><th>Warnings</th><th>Summary</th></tr></thead><tbody>{auditReports.map((report) => <tr key={report.id}><td>{report.shipment_reference || "-"}</td><td>{formatTimestamp(report.created_at)}</td><td>{report.final_status || "Pending"}</td><td>{(report.warnings || []).join("; ") || "-"}</td><td>{report.summary || "-"}</td></tr>)}{!auditReports.length && <tr><td colSpan="5">No audit reports saved yet.</td></tr>}</tbody></table></div>
+        </div>
+      )}
+    </section>
+  );
+}
+
 function App() {
   const [auth, setAuth] = useState({ loading: true, user: null, setupRequired: false });
   const rawPathname = typeof window !== "undefined" ? window.location.pathname : "/";
@@ -1848,6 +2503,7 @@ function App() {
         {page === "clock" && <ClockPage currentUser={auth.user} />}
         {page === "hallocations" && <HalLocationsPage currentUser={auth.user} />}
         {page === "settings" && <SettingsPage currentUser={auth.user} />}
+        {page === "ukdocs" && <UkdocsPage currentUser={auth.user} />}
         {page === "dashboard" && canViewPhotos && (
           <>
             <section className="toolbar" aria-label="Filters">

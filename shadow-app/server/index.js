@@ -16,11 +16,13 @@ const usersPath = path.join(cacheDir, "shadow-users.json");
 const fustActionsPath = path.join(cacheDir, "fust-actions.json");
 const fustSettingsPath = path.join(cacheDir, "fust-settings.json");
 const clockRecordsPath = path.join(cacheDir, "clock-records.json");
+const ukdocsStatePath = path.join(cacheDir, "ukdocs-state.json");
 const fustBackupDir = path.join(cacheDir, "fust-backups");
 const syncScriptPath = path.join(repoRoot, "sync_index.py");
 const driveBridgePath = path.join(appRoot, "server", "drive_bridge.py");
 const syncWorkerPath = path.join(appRoot, "server", "sync_worker.js");
 const halLocationsWorkerPath = path.join(appRoot, "server", "hal_locations_worker.py");
+const ukdocsWorkerPath = path.join(appRoot, "server", "ukdocs_worker.py");
 const googleImageCacheDir = path.join(cacheDir, "shadow-google-images");
 const googleRunDetailsCacheDir = path.join(cacheDir, "shadow-google-run-details");
 const halLocationsCacheDir = path.join(cacheDir, "hal-locations");
@@ -58,6 +60,7 @@ const allPermissions = [
   "clock:manage",
   "users:manage",
   "settings:manage",
+  "ukdocs:view",
 ];
 const PERMISSIONS = {
   PHOTOS_VIEW: "photos:view",
@@ -72,6 +75,7 @@ const PERMISSIONS = {
   CLOCK_MANAGE: "clock:manage",
   USERS_MANAGE: "users:manage",
   SETTINGS_MANAGE: "settings:manage",
+  UKDOCS_VIEW: "ukdocs:view",
 };
 const roleDefaultPermissions = {
   admin: allPermissions,
@@ -103,6 +107,61 @@ const defaultFustSettings = {
   hal_locations_sheet_name: "ERP_PASTE",
   cmr_default_template_name: "",
   cmr_manage_usernames: [],
+};
+
+const defaultUkdocsState = {
+  company_settings: {
+    company_name: "",
+    address: "",
+    phone: "",
+    email: "",
+    website: "",
+    vat_number: "",
+    eori_number: "",
+    chamber_of_commerce_number: "",
+    iban: "",
+    bic_swift: "",
+    rex_registration: "",
+    default_footer_text: "",
+    preferential_origin_declaration: "",
+    logo_name: "",
+  },
+  export_defaults: {
+    destination_country: "GB / United Kingdom",
+    regulation: "Export",
+    border_transport_mode: "Road",
+    border_transport_nationality: "NL",
+    customs_office_of_exit: "",
+    location: "",
+    delivery_terms: "",
+    delivery_terms_city: "",
+    currency: "GBP",
+    freight_costs: "",
+    insurance: "",
+    importer_field: "",
+    vessel_field: "",
+    phyto_fields: "",
+    kcb_fields: "",
+    certificate_fields: "",
+    value_tolerance: "0.01",
+    weight_tolerance: "0.001",
+    quantity_tolerance: "0",
+    packages_tolerance: "0",
+  },
+  templates: {
+    invoice_template_name: "",
+    export_template_name: "",
+    logo_name: "",
+  },
+  customers: [],
+  column_mappings: {
+    "508": { aliases: {} },
+    "515": { aliases: {} },
+    "1000": { aliases: {} },
+    "920": { aliases: {} },
+  },
+  shipments: [],
+  audit_reports: [],
 };
 
 const cmrPrintDataDirCandidates = [
@@ -769,6 +828,222 @@ async function readFustSettings() {
 
 async function writeFustSettings(settings) {
   await writeJsonFile(fustSettingsPath, normalizeFustSettings(settings));
+}
+
+function normalizeUkdocsText(value) {
+  return String(value || "").trim();
+}
+
+function normalizeUkdocsAliases(aliases) {
+  if (!aliases || typeof aliases !== "object") {
+    return {};
+  }
+  return Object.fromEntries(
+    Object.entries(aliases)
+      .map(([key, value]) => [normalizeUkdocsText(key), Array.isArray(value)
+        ? value.map((item) => normalizeUkdocsText(item)).filter(Boolean)
+        : String(value || "")
+          .split(/\r?\n|,|;/)
+          .map((item) => normalizeUkdocsText(item))
+          .filter(Boolean)])
+      .filter(([key]) => key),
+  );
+}
+
+function normalizeUkdocsCompanySettings(settings) {
+  return {
+    company_name: normalizeUkdocsText(settings?.company_name),
+    address: String(settings?.address || "").trim(),
+    phone: normalizeUkdocsText(settings?.phone),
+    email: normalizeUkdocsText(settings?.email),
+    website: normalizeUkdocsText(settings?.website),
+    vat_number: normalizeUkdocsText(settings?.vat_number),
+    eori_number: normalizeUkdocsText(settings?.eori_number),
+    chamber_of_commerce_number: normalizeUkdocsText(settings?.chamber_of_commerce_number),
+    iban: normalizeUkdocsText(settings?.iban),
+    bic_swift: normalizeUkdocsText(settings?.bic_swift),
+    rex_registration: normalizeUkdocsText(settings?.rex_registration),
+    default_footer_text: String(settings?.default_footer_text || "").trim(),
+    preferential_origin_declaration: String(settings?.preferential_origin_declaration || "").trim(),
+    logo_name: normalizeUkdocsText(settings?.logo_name),
+  };
+}
+
+function normalizeUkdocsCustomer(customer) {
+  return {
+    id: normalizeUkdocsText(customer?.id) || crypto.randomUUID(),
+    customer_name: normalizeUkdocsText(customer?.customer_name),
+    customer_address: String(customer?.customer_address || "").trim(),
+    vat_number: normalizeUkdocsText(customer?.vat_number),
+    eori_number: normalizeUkdocsText(customer?.eori_number),
+    importer_number: normalizeUkdocsText(customer?.importer_number),
+    default_delivery_terms: normalizeUkdocsText(customer?.default_delivery_terms),
+    default_city: normalizeUkdocsText(customer?.default_city),
+    default_uk_arrival_port: normalizeUkdocsText(customer?.default_uk_arrival_port),
+    default_currency: normalizeUkdocsText(customer?.default_currency),
+    default_invoice_language_text: String(customer?.default_invoice_language_text || "").trim(),
+    default_document_references: String(customer?.default_document_references || "").trim(),
+  };
+}
+
+function normalizeUkdocsExportDefaults(settings) {
+  return {
+    destination_country: normalizeUkdocsText(settings?.destination_country) || defaultUkdocsState.export_defaults.destination_country,
+    regulation: normalizeUkdocsText(settings?.regulation) || defaultUkdocsState.export_defaults.regulation,
+    border_transport_mode: normalizeUkdocsText(settings?.border_transport_mode) || defaultUkdocsState.export_defaults.border_transport_mode,
+    border_transport_nationality: normalizeUkdocsText(settings?.border_transport_nationality) || defaultUkdocsState.export_defaults.border_transport_nationality,
+    customs_office_of_exit: normalizeUkdocsText(settings?.customs_office_of_exit),
+    location: normalizeUkdocsText(settings?.location),
+    delivery_terms: normalizeUkdocsText(settings?.delivery_terms),
+    delivery_terms_city: normalizeUkdocsText(settings?.delivery_terms_city),
+    currency: normalizeUkdocsText(settings?.currency) || defaultUkdocsState.export_defaults.currency,
+    freight_costs: normalizeUkdocsText(settings?.freight_costs),
+    insurance: normalizeUkdocsText(settings?.insurance),
+    importer_field: String(settings?.importer_field || "").trim(),
+    vessel_field: String(settings?.vessel_field || "").trim(),
+    phyto_fields: String(settings?.phyto_fields || "").trim(),
+    kcb_fields: String(settings?.kcb_fields || "").trim(),
+    certificate_fields: String(settings?.certificate_fields || "").trim(),
+    value_tolerance: normalizeUkdocsText(settings?.value_tolerance) || defaultUkdocsState.export_defaults.value_tolerance,
+    weight_tolerance: normalizeUkdocsText(settings?.weight_tolerance) || defaultUkdocsState.export_defaults.weight_tolerance,
+    quantity_tolerance: normalizeUkdocsText(settings?.quantity_tolerance) || defaultUkdocsState.export_defaults.quantity_tolerance,
+    packages_tolerance: normalizeUkdocsText(settings?.packages_tolerance) || defaultUkdocsState.export_defaults.packages_tolerance,
+  };
+}
+
+function normalizeUkdocsTemplates(templates) {
+  return {
+    invoice_template_name: normalizeUkdocsText(templates?.invoice_template_name),
+    export_template_name: normalizeUkdocsText(templates?.export_template_name),
+    logo_name: normalizeUkdocsText(templates?.logo_name),
+  };
+}
+
+function normalizeUkdocsColumnMappings(mappings) {
+  const source = mappings && typeof mappings === "object" ? mappings : {};
+  const next = {};
+  for (const category of ["508", "515", "1000", "920"]) {
+    next[category] = { aliases: normalizeUkdocsAliases(source?.[category]?.aliases) };
+  }
+  return next;
+}
+
+function normalizeUkdocsInvoiceNumbersByCategory(values) {
+  const source = values && typeof values === "object" ? values : {};
+  const next = {};
+  for (const category of ["508", "515", "1000", "920"]) {
+    next[category] = normalizeUkdocsText(source?.[category]);
+  }
+  return next;
+}
+
+function normalizeUkdocsUploadedFiles(files) {
+  const source = files && typeof files === "object" ? files : {};
+  const next = {};
+  for (const category of ["508", "515", "1000", "920"]) {
+    const file = source?.[category] || {};
+    next[category] = {
+      category,
+      file_name: normalizeUkdocsText(file.file_name),
+      uploaded_at: normalizeUkdocsText(file.uploaded_at),
+      size: Number.isFinite(Number(file.size)) ? Number(file.size) : 0,
+    };
+  }
+  return next;
+}
+
+function deriveUkdocsShipmentStatus(shipment) {
+  const uploadedCategories = Object.values(shipment.uploaded_files || {}).filter((item) => item.file_name);
+  if (!uploadedCategories.length) {
+    return "not_started";
+  }
+  const requiredHeaderReady = shipment.customer_id && shipment.shipment_date && shipment.export_reference;
+  if (!requiredHeaderReady) {
+    return "files_uploaded";
+  }
+  if (shipment.audit_status === "passed") {
+    return shipment.ready ? "ready" : "audit_passed";
+  }
+  if (shipment.audit_status === "failed") {
+    return "failed";
+  }
+  return "validated";
+}
+
+function normalizeUkdocsShipment(shipment) {
+  const uploadedFiles = normalizeUkdocsUploadedFiles(shipment?.uploaded_files);
+  const categoriesIncluded = Object.values(uploadedFiles).filter((item) => item.file_name).map((item) => item.category);
+  const normalized = {
+    id: normalizeUkdocsText(shipment?.id) || crypto.randomUUID(),
+    customer_id: normalizeUkdocsText(shipment?.customer_id),
+    shipment_date: normalizeUkdocsText(shipment?.shipment_date),
+    trailer_number: normalizeUkdocsText(shipment?.trailer_number),
+    invoice_numbers: String(shipment?.invoice_numbers || "").trim(),
+    invoice_numbers_by_category: normalizeUkdocsInvoiceNumbersByCategory(shipment?.invoice_numbers_by_category),
+    export_reference: normalizeUkdocsText(shipment?.export_reference),
+    currency: normalizeUkdocsText(shipment?.currency),
+    delivery_terms: normalizeUkdocsText(shipment?.delivery_terms),
+    uk_arrival_port: normalizeUkdocsText(shipment?.uk_arrival_port),
+    transport_customs_info: String(shipment?.transport_customs_info || "").trim(),
+    owner: normalizeUkdocsText(shipment?.owner),
+    regulation: normalizeUkdocsText(shipment?.regulation),
+    destination_country: normalizeUkdocsText(shipment?.destination_country),
+    customs_office_of_exit: normalizeUkdocsText(shipment?.customs_office_of_exit),
+    location: normalizeUkdocsText(shipment?.location),
+    delivery_terms_city: normalizeUkdocsText(shipment?.delivery_terms_city),
+    border_transport_mode: normalizeUkdocsText(shipment?.border_transport_mode),
+    border_transport_nationality: normalizeUkdocsText(shipment?.border_transport_nationality),
+    importer: normalizeUkdocsText(shipment?.importer),
+    vessel: normalizeUkdocsText(shipment?.vessel),
+    freight_costs: normalizeUkdocsText(shipment?.freight_costs),
+    insurance: normalizeUkdocsText(shipment?.insurance),
+    marks_and_numbers: String(shipment?.marks_and_numbers || "").trim(),
+    container_number: normalizeUkdocsText(shipment?.container_number),
+    uploaded_files: uploadedFiles,
+    categories_included: categoriesIncluded,
+    validation_warnings: Array.isArray(shipment?.validation_warnings) ? shipment.validation_warnings.map((item) => String(item || "").trim()).filter(Boolean) : [],
+    audit_status: normalizeUkdocsText(shipment?.audit_status),
+    ready: shipment?.ready === true,
+    notes: String(shipment?.notes || "").trim(),
+    created_by: normalizeUkdocsText(shipment?.created_by),
+    created_at: normalizeUkdocsText(shipment?.created_at),
+    updated_at: normalizeUkdocsText(shipment?.updated_at),
+  };
+  normalized.status = deriveUkdocsShipmentStatus(normalized);
+  return normalized;
+}
+
+function normalizeUkdocsAuditReport(report) {
+  return {
+    id: normalizeUkdocsText(report?.id) || crypto.randomUUID(),
+    shipment_id: normalizeUkdocsText(report?.shipment_id),
+    shipment_reference: normalizeUkdocsText(report?.shipment_reference),
+    created_at: normalizeUkdocsText(report?.created_at),
+    final_status: normalizeUkdocsText(report?.final_status),
+    warnings: Array.isArray(report?.warnings) ? report.warnings.map((item) => String(item || "").trim()).filter(Boolean) : [],
+    summary: String(report?.summary || "").trim(),
+  };
+}
+
+function normalizeUkdocsState(state) {
+  return {
+    company_settings: normalizeUkdocsCompanySettings(state?.company_settings || defaultUkdocsState.company_settings),
+    export_defaults: normalizeUkdocsExportDefaults(state?.export_defaults || defaultUkdocsState.export_defaults),
+    templates: normalizeUkdocsTemplates(state?.templates || defaultUkdocsState.templates),
+    customers: Array.isArray(state?.customers) ? state.customers.map(normalizeUkdocsCustomer).sort((a, b) => a.customer_name.localeCompare(b.customer_name)) : [],
+    column_mappings: normalizeUkdocsColumnMappings(state?.column_mappings || defaultUkdocsState.column_mappings),
+    shipments: Array.isArray(state?.shipments) ? state.shipments.map(normalizeUkdocsShipment).sort((a, b) => String(b.shipment_date || b.updated_at).localeCompare(String(a.shipment_date || a.updated_at))) : [],
+    audit_reports: Array.isArray(state?.audit_reports) ? state.audit_reports.map(normalizeUkdocsAuditReport).sort((a, b) => String(b.created_at).localeCompare(String(a.created_at))) : [],
+  };
+}
+
+async function readUkdocsState() {
+  const payload = await readJsonFile(ukdocsStatePath, defaultUkdocsState);
+  return normalizeUkdocsState(payload);
+}
+
+async function writeUkdocsState(state) {
+  await writeJsonFile(ukdocsStatePath, normalizeUkdocsState(state));
 }
 
 function normalizeFustAction(action) {
@@ -1755,6 +2030,34 @@ function runPythonBridge(args, input = "") {
       }
 
       reject(new Error(summarizeBridgeError(Buffer.concat(stderr).toString("utf8")) || `Python bridge exited with ${code}`));
+    });
+
+    if (input) {
+      child.stdin.write(input);
+    }
+    child.stdin.end();
+  });
+}
+
+function runUkdocsWorker(args, input = "") {
+  return new Promise((resolve, reject) => {
+    const child = spawn(resolvePythonCommand(), [ukdocsWorkerPath, ...args], {
+      cwd: repoRoot,
+      windowsHide: true,
+    });
+
+    const stdout = [];
+    const stderr = [];
+    child.stdout.on("data", (chunk) => stdout.push(chunk));
+    child.stderr.on("data", (chunk) => stderr.push(chunk));
+    child.on("error", reject);
+    child.on("close", (code) => {
+      const output = Buffer.concat(stdout);
+      if (code === 0) {
+        resolve(output);
+        return;
+      }
+      reject(new Error(Buffer.concat(stderr).toString("utf8") || `UKdocs worker exited with ${code}`));
     });
 
     if (input) {
@@ -3062,6 +3365,90 @@ async function handleApi(req, res, url) {
       await writeClockRecords(savedRecords);
     }
     sendJson(res, 201, { record, records: filterClockRecords(savedRecords, actionDate), sessions: clockSessionRows(savedRecords.filter((item) => item.action_date === actionDate)).map((session) => ({ in_record: session.inRecord, out_record: session.outRecord, row: session.row })) });
+    return;
+  }
+
+  if (url.pathname === "/api/ukdocs/state") {
+    if (!requirePermission(res, requestUser, PERMISSIONS.UKDOCS_VIEW)) {
+      return;
+    }
+
+    if (req.method === "GET") {
+      const state = await readUkdocsState();
+      sendJson(res, 200, { state });
+      return;
+    }
+
+    if (req.method === "PATCH") {
+      const body = await readRequestJson(req);
+      const currentState = await readUkdocsState();
+      const nextState = normalizeUkdocsState({ ...currentState, ...body });
+      await writeUkdocsState(nextState);
+      sendJson(res, 200, { state: nextState });
+      return;
+    }
+  }
+
+  if (url.pathname === "/api/ukdocs/analyze" && req.method === "POST") {
+    if (!requirePermission(res, requestUser, PERMISSIONS.UKDOCS_VIEW)) {
+      return;
+    }
+    const body = await readRequestJson(req, 60 * 1024 * 1024);
+    const output = await runUkdocsWorker(["analyze"], JSON.stringify(body));
+    sendJson(res, 200, JSON.parse(output.toString("utf8")));
+    return;
+  }
+
+  if (url.pathname === "/api/ukdocs/generate" && req.method === "POST") {
+    if (!requirePermission(res, requestUser, PERMISSIONS.UKDOCS_VIEW)) {
+      return;
+    }
+    const body = await readRequestJson(req, 60 * 1024 * 1024);
+    const output = await runUkdocsWorker(["generate"], JSON.stringify(body));
+    sendJson(res, 200, JSON.parse(output.toString("utf8")));
+    return;
+  }
+
+  if (url.pathname === "/api/ukdocs/shipments") {
+    if (!requirePermission(res, requestUser, PERMISSIONS.UKDOCS_VIEW)) {
+      return;
+    }
+
+    if (req.method === "POST") {
+      const body = await readRequestJson(req);
+      const state = await readUkdocsState();
+      const shipment = normalizeUkdocsShipment({
+        ...body,
+        created_by: body?.created_by || requestUser.username,
+        created_at: body?.created_at || new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+      });
+      const existingIndex = state.shipments.findIndex((item) => item.id === shipment.id);
+      if (existingIndex >= 0) {
+        state.shipments[existingIndex] = shipment;
+      } else {
+        state.shipments.unshift(shipment);
+      }
+      await writeUkdocsState(state);
+      sendJson(res, existingIndex >= 0 ? 200 : 201, { shipment, shipments: normalizeUkdocsState(state).shipments });
+      return;
+    }
+  }
+
+  if (url.pathname.startsWith("/api/ukdocs/shipments/") && req.method === "DELETE") {
+    if (!requirePermission(res, requestUser, PERMISSIONS.UKDOCS_VIEW)) {
+      return;
+    }
+    const shipmentId = decodeURIComponent(url.pathname.slice("/api/ukdocs/shipments/".length));
+    const state = await readUkdocsState();
+    const nextShipments = state.shipments.filter((item) => item.id !== shipmentId);
+    if (nextShipments.length === state.shipments.length) {
+      sendJson(res, 404, { error: "Shipment not found" });
+      return;
+    }
+    state.shipments = nextShipments;
+    await writeUkdocsState(state);
+    sendJson(res, 200, { ok: true, shipments: normalizeUkdocsState(state).shipments });
     return;
   }
 

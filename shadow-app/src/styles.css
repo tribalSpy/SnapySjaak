@@ -1458,3 +1458,81 @@ pre {
     align-items: stretch;
   }
 }
+
+
+.ukdocs-page {
+  gap: 18px;
+}
+
+.ukdocs-stack {
+  display: grid;
+  gap: 16px;
+}
+
+.ukdocs-upload-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 12px;
+}
+
+.ukdocs-upload-card {
+  display: grid;
+  gap: 8px;
+  padding: 14px;
+  border: 1px solid #d6dde5;
+  border-radius: 10px;
+  background: #fbfcfd;
+}
+
+.ukdocs-upload-card small {
+  color: #5d7088;
+}
+
+.ukdocs-badge-row {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.ukdocs-status-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 32px;
+  padding: 6px 12px;
+  border-radius: 999px;
+  border: 1px solid #cdd8e4;
+  font-size: 13px;
+  font-weight: 600;
+  background: #f5f7fa;
+  color: #31465d;
+}
+
+.ukdocs-status-badge.info {
+  background: #eef6ff;
+  border-color: #bfd5ef;
+  color: #204c7d;
+}
+
+.ukdocs-status-badge.success {
+  background: #eff8f2;
+  border-color: #bfe0ca;
+  color: #145436;
+}
+
+.ukdocs-status-badge.danger {
+  background: #fff1f0;
+  border-color: #efc4bf;
+  color: #8c2f25;
+}
+
+.ukdocs-status-badge.muted {
+  background: #f5f7fa;
+  border-color: #d5dde6;
+  color: #55687c;
+}
+
+.ukdocs-mapping-block {
+  display: grid;
+  gap: 10px;
+}
