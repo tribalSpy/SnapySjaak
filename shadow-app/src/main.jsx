@@ -2060,12 +2060,46 @@ function UkdocsPage({ currentUser }) {
       setCustomerDraft(nextCustomer);
       setExampleImportFiles({ invoice_example: null, export_example: null });
       const warningText = (payload.warnings || []).filter(Boolean).join(" ");
-      setMessage(`Imported example data for ${nextCustomer.customer_name || "customer"}.${warningText ? ` ${warningText}` : ""}`);
+      const importedName = nextCustomer.customer_name || "customer";
+      setMessage(`Imported example data for ${importedName}.` + (warningText ? ` ${warningText}` : ""));
     } catch (importError) {
       setError(importError.message);
     } finally {
       setSaving(false);
     }
+  }
+
+  async function handleExampleImportFileChange(kind, file) {
+    setExampleImportFiles((current) => ({
+      ...current,
+      [kind]: file
+        ? {
+            file_name: file.name,
+            content_base64: "",
+          }
+        : null,
+    }));
+    if (!file) {
+      return;
+    }
+    const contentBase64 = await fileToBase64(file);
+    setExampleImportFiles((current) => ({
+      ...current,
+      [kind]: {
+        file_name: file.name,
+        content_base64: contentBase64,
+      },
+    }));
+  }
+
+  function updateCustomerExportDefault(key, value) {
+    setCustomerDraft((current) => ({
+      ...current,
+      export_defaults: {
+        ...(current.export_defaults || {}),
+        [key]: value,
+      },
+    }));
   }
 
   function saveCustomer() {
@@ -2270,11 +2304,11 @@ function UkdocsPage({ currentUser }) {
           <div className="ukdocs-upload-grid">
             <div className="ukdocs-upload-card">
               <strong>Invoice example</strong>
-              <input type="file" accept=".xlsx,.xls" onChange={async (event) => setExampleImportFiles((current) => ({ ...current, invoice_example: event.target.files?.[0] ? { file_name: event.target.files[0].name, content_base64: await fileToBase64(event.target.files[0]) } : null }))} />
+              <input type="file" accept=".xlsx,.xls" onChange={(event) => handleExampleImportFileChange("invoice_example", event.target.files?.[0] || null)} />
             </div>
             <div className="ukdocs-upload-card">
               <strong>Export example</strong>
-              <input type="file" accept=".xlsx,.xls" onChange={async (event) => setExampleImportFiles((current) => ({ ...current, export_example: event.target.files?.[0] ? { file_name: event.target.files[0].name, content_base64: await fileToBase64(event.target.files[0]) } : null }))} />
+              <input type="file" accept=".xlsx,.xls" onChange={(event) => handleExampleImportFileChange("export_example", event.target.files?.[0] || null)} />
             </div>
           </div>
           <div className="row-actions spread-actions"><button type="button" onClick={importCustomerFromExamples} disabled={saving || (!exampleImportFiles.invoice_example && !exampleImportFiles.export_example)}>{saving ? "Importing..." : "Import from example files"}</button></div>
@@ -2287,7 +2321,18 @@ function UkdocsPage({ currentUser }) {
             ))}
           </div>
           <div className="section-header"><h3>Customer export defaults</h3></div>
-          <div className="form-grid">{UKDOCS_EXPORT_DEFAULT_FIELDS.map(([key, label, kind]) => <label key={`customer-export-${key}`} className={kind === "textarea" ? "wide" : ""}><span>{label}</span>{kind === "textarea" ? <textarea rows={3} value={customerDraft.export_defaults?.[key] || ""} onChange={(event) => setCustomerDraft((current) => ({ ...current, export_defaults: { ...(current.export_defaults || {}), [key]: event.target.value } }))} /> : <input value={customerDraft.export_defaults?.[key] || ""} onChange={(event) => setCustomerDraft((current) => ({ ...current, export_defaults: { ...(current.export_defaults || {}), [key]: event.target.value } }))} />}</label>)}</div>
+          <div className="form-grid">
+            {UKDOCS_EXPORT_DEFAULT_FIELDS.map(([key, label, kind]) => (
+              <label key={`customer-export-${key}`} className={kind === "textarea" ? "wide" : ""}>
+                <span>{label}</span>
+                {kind === "textarea" ? (
+                  <textarea rows={3} value={customerDraft.export_defaults?.[key] || ""} onChange={(event) => updateCustomerExportDefault(key, event.target.value)} />
+                ) : (
+                  <input value={customerDraft.export_defaults?.[key] || ""} onChange={(event) => updateCustomerExportDefault(key, event.target.value)} />
+                )}
+              </label>
+            ))}
+          </div>
           <div className="row-actions spread-actions"><button type="button" className="primary" onClick={saveCustomer} disabled={saving}>{customerDraft.id ? "Update customer" : "Add customer"}</button><button type="button" onClick={() => setCustomerDraft(emptyUkdocsCustomer())} disabled={saving}>Clear form</button></div>
           <div className="table-wrap"><table className="data-table"><thead><tr><th>Name</th><th>Delivery terms</th><th>UK port</th><th>Currency</th><th>VAT</th><th>Actions</th></tr></thead><tbody>{customers.map((customer) => <tr key={customer.id}><td>{customer.customer_name}</td><td>{customer.default_delivery_terms || customer.export_defaults?.delivery_terms || "-"}</td><td>{customer.default_uk_arrival_port || "-"}</td><td>{customer.default_currency || customer.export_defaults?.currency || "-"}</td><td>{customer.vat_number || "-"}</td><td className="row-actions"><button type="button" onClick={() => startEditCustomer(customer)}>Edit</button></td></tr>)}{!customers.length && <tr><td colSpan="6">No UKdocs customers saved yet.</td></tr>}</tbody></table></div>
         </div>
