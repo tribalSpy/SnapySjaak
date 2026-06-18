@@ -140,6 +140,113 @@ def parse_xlsx_rows(raw_bytes):
         return rows
 
 
+def xlsx_rows_to_cell_map(rows):
+    cell_map = {}
+    for row_index, row in enumerate(rows, start=1):
+        for col_index, value in enumerate(row, start=1):
+            if value is None:
+                continue
+            text = str(value)
+            if text == "":
+                continue
+            cell_map[(row_index, col_index)] = text
+    return cell_map
+
+
+def xlsx_cell(cells, row_index, col_index):
+    return clean_text(cells.get((row_index, col_index), ""))
+
+
+def parse_prefixed_value(value, prefix):
+    text = clean_text(value)
+    prefix_text = clean_text(prefix)
+    if prefix_text and text.lower().startswith(prefix_text.lower()):
+        return clean_text(text[len(prefix_text):])
+    return text
+
+
+def extract_company_settings_from_invoice_rows(rows):
+    cells = xlsx_rows_to_cell_map(rows)
+    return {
+        "company_name": xlsx_cell(cells, 49, 3) or xlsx_cell(cells, 28, 3) or xlsx_cell(cells, 38, 3),
+        "address": "\n".join(filter(None, [xlsx_cell(cells, 50, 3) or xlsx_cell(cells, 29, 3) or xlsx_cell(cells, 39, 3), xlsx_cell(cells, 51, 3) or xlsx_cell(cells, 30, 3) or xlsx_cell(cells, 40, 3)])),
+        "phone": parse_prefixed_value(xlsx_cell(cells, 52, 3) or xlsx_cell(cells, 31, 3) or xlsx_cell(cells, 41, 3), "tel"),
+        "email": parse_prefixed_value(xlsx_cell(cells, 53, 3) or xlsx_cell(cells, 32, 3) or xlsx_cell(cells, 42, 3), "email :"),
+        "website": parse_prefixed_value(xlsx_cell(cells, 54, 3) or xlsx_cell(cells, 33, 3) or xlsx_cell(cells, 43, 3), "web :"),
+        "vat_number": parse_prefixed_value(xlsx_cell(cells, 49, 7) or xlsx_cell(cells, 28, 7) or xlsx_cell(cells, 38, 7), "VAT nr :"),
+        "eori_number": parse_prefixed_value(xlsx_cell(cells, 50, 7) or xlsx_cell(cells, 29, 7) or xlsx_cell(cells, 39, 7), "EORI nr:"),
+        "chamber_of_commerce_number": parse_prefixed_value(xlsx_cell(cells, 51, 7) or xlsx_cell(cells, 30, 7) or xlsx_cell(cells, 40, 7), "Chamber of Commerce :"),
+        "iban": parse_prefixed_value(xlsx_cell(cells, 52, 7) or xlsx_cell(cells, 31, 7) or xlsx_cell(cells, 41, 7), "IBAN :"),
+        "bic_swift": parse_prefixed_value(xlsx_cell(cells, 53, 7) or xlsx_cell(cells, 32, 7) or xlsx_cell(cells, 42, 7), "BIC/SWIFT :"),
+        "rex_registration": parse_prefixed_value(xlsx_cell(cells, 54, 7) or xlsx_cell(cells, 33, 7) or xlsx_cell(cells, 43, 7), "rex registration :"),
+        "default_footer_text": xlsx_cell(cells, 55, 3) or xlsx_cell(cells, 34, 3) or xlsx_cell(cells, 44, 3),
+        "preferential_origin_declaration": xlsx_cell(cells, 56, 3) or xlsx_cell(cells, 35, 3) or xlsx_cell(cells, 45, 3),
+    }
+
+
+
+def extract_customer_from_invoice_rows(rows):
+    cells = xlsx_rows_to_cell_map(rows)
+    return {
+        "customer_name": xlsx_cell(cells, 4, 2),
+        "customer_address": "\n".join(filter(None, [xlsx_cell(cells, 5, 2), xlsx_cell(cells, 6, 2)])),
+        "vat_number": parse_prefixed_value(xlsx_cell(cells, 7, 2), "VAT NR"),
+        "eori_number": parse_prefixed_value(xlsx_cell(cells, 8, 2), "EORI NR"),
+        "importer_number": parse_prefixed_value(xlsx_cell(cells, 9, 2), ""),
+        "default_delivery_terms": xlsx_cell(cells, 13, 3),
+        "default_city": xlsx_cell(cells, 6, 2),
+        "default_uk_arrival_port": "",
+        "default_currency": "",
+        "default_invoice_language_text": "",
+        "default_document_references": xlsx_cell(cells, 9, 2),
+    }
+
+
+
+def extract_export_defaults_from_export_rows(rows):
+    cells = xlsx_rows_to_cell_map(rows)
+    return {
+        "destination_country": xlsx_cell(cells, 2, 4) or "GB",
+        "regulation": xlsx_cell(cells, 2, 3) or "Export",
+        "border_transport_mode": xlsx_cell(cells, 2, 10) or "Road",
+        "border_transport_nationality": xlsx_cell(cells, 2, 11) or "NL",
+        "customs_office_of_exit": xlsx_cell(cells, 2, 14),
+        "location": xlsx_cell(cells, 2, 7),
+        "delivery_terms": xlsx_cell(cells, 2, 12),
+        "delivery_terms_city": xlsx_cell(cells, 2, 13),
+        "currency": xlsx_cell(cells, 12, 14) or "GBP",
+        "freight_costs": xlsx_cell(cells, 14, 14),
+        "insurance": xlsx_cell(cells, 15, 14),
+        "importer_field": xlsx_cell(cells, 6, 14),
+        "vessel_field": xlsx_cell(cells, 9, 14),
+        "phyto_fields": xlsx_cell(cells, 11, 14),
+        "kcb_fields": xlsx_cell(cells, 11, 14),
+        "certificate_fields": xlsx_cell(cells, 4, 14),
+    }
+
+
+
+def import_example_payload(payload):
+    invoice_file = (payload.get("invoice_example") or {})
+    export_file = (payload.get("export_example") or {})
+    invoice_rows = parse_xlsx_rows(base64.b64decode(clean_text(invoice_file.get("content_base64")))) if clean_text(invoice_file.get("content_base64")) else []
+    export_rows = parse_xlsx_rows(base64.b64decode(clean_text(export_file.get("content_base64")))) if clean_text(export_file.get("content_base64")) else []
+    customer = extract_customer_from_invoice_rows(invoice_rows) if invoice_rows else {}
+    company = extract_company_settings_from_invoice_rows(invoice_rows) if invoice_rows else {}
+    export_defaults = extract_export_defaults_from_export_rows(export_rows) if export_rows else {}
+    warnings = []
+    if not invoice_rows:
+        warnings.append("No invoice example uploaded.")
+    if not export_rows:
+        warnings.append("No export example uploaded.")
+    return {
+        "customer": customer,
+        "company_settings": company,
+        "export_defaults": export_defaults,
+        "warnings": warnings,
+    }
+
+
 def parse_invoice_numbers(payload):
     explicit = payload.get("invoice_numbers_by_category") or {}
     result = {code: clean_text(explicit.get(code)) for code in CATEGORY_DEFINITIONS}
@@ -283,6 +390,30 @@ def rows_to_dense_map(rows):
     return mapping
 
 
+def excel_date_serial(date_text):
+    text = clean_text(date_text)
+    if not text:
+        return ""
+    try:
+        dt = datetime.strptime(text, "%Y-%m-%d")
+    except ValueError:
+        return text
+    base = datetime(1899, 12, 30)
+    return (dt - base).days
+
+
+def normalize_invoice_hs_code(value):
+    text = clean_text(value)
+    if not text:
+        return ""
+    if text.isdigit() and len(text) >= 8:
+        trimmed = text.lstrip("0") or "0"
+        if len(trimmed) > 7:
+            trimmed = trimmed[:-2] or trimmed
+        return trimmed
+    return text
+
+
 def column_name(index):
     result = ""
     while index > 0:
@@ -378,26 +509,36 @@ def build_xlsx(cell_map, sheet_name="Blad1"):
 
 def build_export_workbook(analysis):
     shipment = analysis["shipment"]
-    rows = [
+    customer = analysis.get("customer") or {}
+    cells = rows_to_dense_map([
         ["Reference", "Owner", "Regulation", "Country of destination", "Total gross mass", "Total number of packages", "Location", "Marks and numbers", "Container number", "Border transport mode", "Border transport nationality", "Delivery terms", "Delivery terms city", "Customs office of exit"],
-        [shipment["reference_line"], shipment["owner"], shipment["regulation"], shipment["destination_country"], analysis["combined_totals"]["gross_kg"], analysis["combined_totals"]["packages"], shipment["location"], shipment["marks_and_numbers"], shipment["container_number"], shipment["border_transport_mode"], shipment["border_transport_nationality"], shipment["delivery_terms"], shipment["delivery_terms_city"], shipment["customs_office_of_exit"]],
-        ["Goods description", "Commodity code", "Net weight", "Quantity", "Customs value", "Ctns per regel", "Bruto per regel", "Origin", "Certificate Origin", "Bio Certificate", "KCB Number", "Phyto number"],
-    ]
-    for row in analysis["export_rows"]:
-        rows.append([row["description"], row["commodity_code"], row["net_kg"], row["quantity"], row["customs_value"], row["packages"], row["gross_kg"], row["origin"], "", "", "", ""])
-    cells = rows_to_dense_map(rows)
+        [shipment.get("export_header_reference") or shipment["reference_line"], shipment["owner"], shipment["regulation"], shipment["destination_country"], analysis["combined_totals"]["gross_kg"], analysis["combined_totals"]["packages"], shipment["location"], shipment["marks_and_numbers"], shipment["container_number"], shipment["border_transport_mode"], shipment["border_transport_nationality"], shipment["delivery_terms"], shipment["delivery_terms_city"], shipment["customs_office_of_exit"]],
+        ["Goods description", "Commodity code", "Net weight", "Quantity", "Customs value", "Ctns per regel ", "Bruto per regel ", "oorsprong ", "Certificate Origin", "Bio Certificate ", "KCB Number", "Phyto number "],
+    ])
+    export_row_start = 4
+    for index, row in enumerate(analysis["export_rows"]):
+        row_number = export_row_start + index
+        cells[(row_number, 1)] = row["description"]
+        cells[(row_number, 2)] = row["commodity_code"]
+        cells[(row_number, 3)] = row["net_kg"]
+        cells[(row_number, 4)] = row["quantity"]
+        cells[(row_number, 5)] = row["customs_value"]
+        cells[(row_number, 6)] = row["packages"]
+        cells[(row_number, 7)] = row["gross_kg"]
+        cells[(row_number, 8)] = row["origin"]
     details = [
-        (4, 13, "Additional Information"),
+        (4, 13, "Additional Information "),
         (5, 13, "Importer"), (5, 14, shipment["customer_importer_number"]),
-        (7, 13, "Invoice numbers"), (7, 14, shipment["invoice_numbers"]),
-        (8, 13, "Licence plate truck / trailer"), (8, 14, shipment["trailer_number"]),
+        (6, 14, customer.get("customer_name", "")),
+        (7, 13, "Invoice number"), (7, 14, shipment["invoice_numbers"]),
+        (8, 13, "Trailer number "), (8, 14, shipment["trailer_number"]),
         (9, 13, "Vessel"), (9, 14, shipment["vessel"]),
         (11, 13, "Port of UK Arrival"), (11, 14, shipment["uk_arrival_port"]),
         (12, 13, "Currency of invoice"), (12, 14, shipment["currency"]),
         (13, 15, "Currency"),
         (14, 13, "Freight costs"), (14, 15, shipment["currency"]),
-        (15, 13, "Insurance"),
-        (16, 13, "Inland freight"), (16, 15, shipment["currency"]),
+        (15, 13, "Insurance "),
+        (16, 13, "Inland freight "), (16, 15, shipment["currency"]),
     ]
     for row, col, value in details:
         if value:
@@ -410,30 +551,83 @@ def build_invoice_workbook(analysis, category_code):
     customer = analysis["customer"]
     shipment = analysis["shipment"]
     company = analysis["company"]
-    rows = [[] for _ in range(9)]
-    rows.append(["", customer.get("customer_name", "")])
-    address_lines = str(customer.get("customer_address", "") or "").splitlines() or [""]
-    rows.append(["", address_lines[0]])
-    rows.append(["", shipment.get("delivery_terms_city", "")])
-    rows.append(["", f'VAT NR {customer.get("vat_number", "")}'])
-    rows.append(["", f'EORI NR {customer.get("importer_number") or customer.get("eori_number") or ""}'])
-    rows.append(["", company.get("chamber_of_commerce_number") or company.get("eori_number") or ""]) 
-    rows.append([])
-    rows.append(["", "Date :", shipment["shipment_date_excel"]])
-    rows.append(["", "Invoice nr :", category["invoice_number"], "custom summary"])
-    rows.append(["", "Licence plate truck / trailer : ", shipment["trailer_number"]])
-    rows.append(["", "Delivery Terms : ", shipment["delivery_terms"]])
-    rows.append([])
-    rows.append([])
-    rows.append(["", "classificationType TARIC ", "Goods description", "Origin", "Quantity", "Gross kg", "Net kg", "Packages", "Value"])
+    cells = {}
+    address_lines = str(customer.get("customer_address", "") or "").splitlines()
+    cells[(4, 2)] = customer.get("customer_name", "")
+    if len(address_lines) > 0:
+        cells[(5, 2)] = address_lines[0]
+    if len(address_lines) > 1:
+        cells[(6, 2)] = address_lines[1]
+    cells[(7, 2)] = f'VAT NR {customer.get("vat_number", "")}'
+    cells[(8, 2)] = f'EORI NR {customer.get("importer_number") or customer.get("eori_number") or ""}'
+    cells[(9, 2)] = customer.get("importer_number") or ""
+    cells[(10, 2)] = "Date :"
+    cells[(10, 3)] = excel_date_serial(shipment["shipment_date_excel"])
+    cells[(11, 2)] = "Invoice nr :"
+    cells[(11, 3)] = category["invoice_number"]
+    cells[(11, 4)] = "custom summary"
+    cells[(12, 2)] = "Licence Truck : "
+    cells[(12, 3)] = shipment["trailer_number"]
+    cells[(13, 2)] = "Delivery Terms : "
+    cells[(13, 3)] = shipment["delivery_terms"]
+
+    table_header_row = 16
+    header_values = ["classificationType TARIC ", "Goods description", "Origin", "Quantity", "Gross kg", "Net kg", "Packages", "Value"]
+    for offset, value in enumerate(header_values, start=2):
+        cells[(table_header_row, offset)] = value
+    row_number = table_header_row + 1
     for line in category["invoice_rows"]:
-        rows.append(["", line["commodity_code"], line["description"], line["origin"], line["quantity"], line["gross_kg"], line["net_kg"], line["packages"], line["customs_value"]])
-    rows.append([])
-    rows.append(["", "", "classificationTyp HS", "Goods description", "Quantity", "gros kg", "net kg", "Packages", "Value"])
+        cells[(row_number, 2)] = line["commodity_code"]
+        cells[(row_number, 3)] = line["description"]
+        cells[(row_number, 4)] = line["origin"]
+        cells[(row_number, 5)] = line["quantity"]
+        cells[(row_number, 6)] = line["gross_kg"]
+        cells[(row_number, 7)] = line["net_kg"]
+        cells[(row_number, 8)] = line["packages"]
+        cells[(row_number, 9)] = line["customs_value"]
+        row_number += 1
+
+    hs_header_row = row_number + 2
+    hs_header_values = ["classificationTyp HS", "Goods description", "Quantity", "gros kg", "net kg", "Packages", "Value"]
+    for offset, value in enumerate(hs_header_values, start=3):
+        cells[(hs_header_row, offset)] = value
+    row_number = hs_header_row + 1
     for line in category["hs_summary_rows"]:
-        rows.append(["", "", line["hs_code"], line["description"], line["quantity"], line["gross_kg"], line["net_kg"], line["packages"], line["customs_value"]])
-    rows.append(["", "", "", "TOTALS", category["totals"]["quantity"], category["totals"]["gross_kg"], category["totals"]["net_kg"], category["totals"]["packages"], category["totals"]["customs_value"]])
-    return build_xlsx(rows_to_dense_map(rows))
+        cells[(row_number, 3)] = normalize_invoice_hs_code(line["hs_code"])
+        cells[(row_number, 4)] = line["description"]
+        cells[(row_number, 5)] = line["quantity"]
+        cells[(row_number, 6)] = line["gross_kg"]
+        cells[(row_number, 7)] = line["net_kg"]
+        cells[(row_number, 8)] = line["packages"]
+        cells[(row_number, 9)] = line["customs_value"]
+        row_number += 1
+    totals_row = row_number
+    cells[(totals_row, 4)] = "TOTALS"
+    cells[(totals_row, 5)] = category["totals"]["quantity"]
+    cells[(totals_row, 6)] = category["totals"]["gross_kg"]
+    cells[(totals_row, 7)] = category["totals"]["net_kg"]
+    cells[(totals_row, 8)] = category["totals"]["packages"]
+    cells[(totals_row, 9)] = category["totals"]["customs_value"]
+
+    footer_row = totals_row + 7
+    cells[(footer_row, 3)] = company.get("company_name", "")
+    cells[(footer_row, 7)] = f'VAT nr : {company.get("vat_number", "")}'
+    address_lines = str(company.get("address", "") or "").splitlines()
+    if len(address_lines) > 0:
+        cells[(footer_row + 1, 3)] = address_lines[0]
+    if len(address_lines) > 1:
+        cells[(footer_row + 2, 3)] = address_lines[1]
+    cells[(footer_row + 1, 7)] = f'EORI nr:{company.get("eori_number", "")}'
+    cells[(footer_row + 2, 7)] = f'Chamber of Commerce : {company.get("chamber_of_commerce_number", "")}'
+    cells[(footer_row + 3, 3)] = f'tel {company.get("phone", "")}'.strip()
+    cells[(footer_row + 3, 7)] = f'IBAN : {company.get("iban", "")}'
+    cells[(footer_row + 4, 3)] = f'email : {company.get("email", "")}'.strip()
+    cells[(footer_row + 4, 7)] = f'BIC/SWIFT : {company.get("bic_swift", "")}'
+    cells[(footer_row + 5, 3)] = f'web :  {company.get("website", "")}'.strip()
+    cells[(footer_row + 5, 7)] = f'rex registration : {company.get("rex_registration", "")}'
+    cells[(footer_row + 6, 3)] = company.get("default_footer_text", "")
+    cells[(footer_row + 7, 3)] = company.get("preferential_origin_declaration", "")
+    return build_xlsx(cells)
 
 
 def build_audit_workbook(analysis):
@@ -563,6 +757,7 @@ def analyze_payload(payload):
     company = payload.get("company_settings") or {}
     shipment = {
         "reference_line": reference_line,
+        "export_header_reference": clean_text(payload.get("invoice_numbers")) + "  " + clean_text(payload.get("shipment_date", "")).replace("-", "") + " " + clean_text(payload.get("trailer_number")) if clean_text(payload.get("invoice_numbers")) and clean_text(payload.get("shipment_date")) and clean_text(payload.get("trailer_number")) else reference_line,
         "owner": clean_text(payload.get("owner")) or clean_text(company.get("eori_number")) or clean_text(company.get("vat_number")) or clean_text(company.get("company_name")),
         "regulation": clean_text(payload.get("regulation")) or "Export",
         "destination_country": clean_text(payload.get("destination_country")) or "GB",
@@ -613,9 +808,12 @@ def generate_files(analysis):
 
 def main():
     if len(sys.argv) < 2:
-        raise SystemExit("Usage: ukdocs_worker.py <analyze|generate>")
+        raise SystemExit("Usage: ukdocs_worker.py <analyze|generate|import-examples>")
     command = sys.argv[1]
     payload = json.loads(sys.stdin.read() or "{}")
+    if command == "import-examples":
+        print(json.dumps(json_decimal(import_example_payload(payload))))
+        return
     analysis = analyze_payload(payload)
     if command == "analyze":
         print(json.dumps(json_decimal(analysis)))

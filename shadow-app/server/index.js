@@ -883,6 +883,7 @@ function normalizeUkdocsCustomer(customer) {
     default_currency: normalizeUkdocsText(customer?.default_currency),
     default_invoice_language_text: String(customer?.default_invoice_language_text || "").trim(),
     default_document_references: String(customer?.default_document_references || "").trim(),
+    export_defaults: normalizeUkdocsExportDefaults(customer?.export_defaults || {}),
   };
 }
 
@@ -2066,6 +2067,16 @@ function runUkdocsWorker(args, input = "") {
     child.stdin.end();
   });
 }
+
+function mergeUkdocsStatePatch(currentState, patch) {
+  return normalizeUkdocsState({
+    ...currentState,
+    ...patch,
+    company_settings: patch.company_settings ? { ...currentState.company_settings, ...patch.company_settings } : currentState.company_settings,
+    export_defaults: patch.export_defaults ? { ...currentState.export_defaults, ...patch.export_defaults } : currentState.export_defaults,
+  });
+}
+
 
 function runHalLocationsWorker(args) {
   return new Promise((resolve, reject) => {
@@ -3382,11 +3393,21 @@ async function handleApi(req, res, url) {
     if (req.method === "PATCH") {
       const body = await readRequestJson(req);
       const currentState = await readUkdocsState();
-      const nextState = normalizeUkdocsState({ ...currentState, ...body });
+      const nextState = mergeUkdocsStatePatch(currentState, body);
       await writeUkdocsState(nextState);
       sendJson(res, 200, { state: nextState });
       return;
     }
+  }
+
+  if (url.pathname === "/api/ukdocs/import-examples" && req.method === "POST") {
+    if (!requirePermission(res, requestUser, PERMISSIONS.UKDOCS_VIEW)) {
+      return;
+    }
+    const body = await readRequestJson(req, 40 * 1024 * 1024);
+    const output = await runUkdocsWorker(["import-examples"], JSON.stringify(body));
+    sendJson(res, 200, JSON.parse(output.toString("utf8")));
+    return;
   }
 
   if (url.pathname === "/api/ukdocs/analyze" && req.method === "POST") {

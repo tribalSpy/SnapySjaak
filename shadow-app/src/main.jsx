@@ -1712,6 +1712,7 @@ function emptyUkdocsCustomer() {
     default_currency: "",
     default_invoice_language_text: "",
     default_document_references: "",
+    export_defaults: Object.fromEntries(UKDOCS_EXPORT_DEFAULT_FIELDS.map(([key]) => [key, ""])),
   };
 }
 
@@ -1775,6 +1776,16 @@ function ukdocsCombinedInvoiceNumbers(invoiceNumbersByCategory, uploadedFiles) {
     .join("/");
 }
 
+function mergeUkdocsExportDefaults(baseDefaults = {}, overrideDefaults = {}) {
+  const next = { ...baseDefaults };
+  for (const [key] of UKDOCS_EXPORT_DEFAULT_FIELDS) {
+    if (String(overrideDefaults?.[key] || "").trim()) {
+      next[key] = overrideDefaults[key];
+    }
+  }
+  return next;
+}
+
 function ukdocsShipmentStatus(shipment) {
   const uploadedCount = Object.values(shipment?.uploaded_files || {}).filter((item) => item?.file_name).length;
   if (!uploadedCount) {
@@ -1806,6 +1817,7 @@ function UkdocsPage({ currentUser }) {
   const [shipmentDraft, setShipmentDraft] = useState(emptyUkdocsShipmentDraft());
   const [analysis, setAnalysis] = useState(null);
   const [generatedFiles, setGeneratedFiles] = useState([]);
+  const [exampleImportFiles, setExampleImportFiles] = useState({ invoice_example: null, export_example: null });
 
   useEffect(() => {
     let cancelled = false;
@@ -1837,6 +1849,11 @@ function UkdocsPage({ currentUser }) {
   const columnMappings = state?.column_mappings || {};
   const shipments = state?.shipments || [];
   const auditReports = state?.audit_reports || [];
+  const selectedUkdocsCustomer = customers.find((item) => item.id === shipmentDraft.customer_id) || null;
+  const activeExportDefaults = useMemo(
+    () => mergeUkdocsExportDefaults(exportDefaults, selectedUkdocsCustomer?.export_defaults || {}),
+    [exportDefaults, selectedUkdocsCustomer],
+  );
   const combinedInvoiceNumbers = useMemo(
     () => ukdocsCombinedInvoiceNumbers(shipmentDraft.invoice_numbers_by_category, shipmentDraft.uploaded_files),
     [shipmentDraft.invoice_numbers_by_category, shipmentDraft.uploaded_files],
@@ -1848,22 +1865,22 @@ function UkdocsPage({ currentUser }) {
     }
     setShipmentDraft((current) => ({
       ...current,
-      currency: current.currency || exportDefaults.currency || "GBP",
-      regulation: current.regulation || exportDefaults.regulation || "Export",
-      destination_country: current.destination_country || exportDefaults.destination_country || "GB / United Kingdom",
-      border_transport_mode: current.border_transport_mode || exportDefaults.border_transport_mode || "Road",
-      border_transport_nationality: current.border_transport_nationality || exportDefaults.border_transport_nationality || "NL",
-      customs_office_of_exit: current.customs_office_of_exit || exportDefaults.customs_office_of_exit || "",
-      location: current.location || exportDefaults.location || "",
-      delivery_terms_city: current.delivery_terms_city || exportDefaults.delivery_terms_city || "",
-      freight_costs: current.freight_costs || exportDefaults.freight_costs || "",
-      insurance: current.insurance || exportDefaults.insurance || "",
-      importer: current.importer || exportDefaults.importer_field || "",
-      vessel: current.vessel || exportDefaults.vessel_field || "",
+      currency: current.currency || activeExportDefaults.currency || "GBP",
+      regulation: current.regulation || activeExportDefaults.regulation || "Export",
+      destination_country: current.destination_country || activeExportDefaults.destination_country || "GB / United Kingdom",
+      border_transport_mode: current.border_transport_mode || activeExportDefaults.border_transport_mode || "Road",
+      border_transport_nationality: current.border_transport_nationality || activeExportDefaults.border_transport_nationality || "NL",
+      customs_office_of_exit: current.customs_office_of_exit || activeExportDefaults.customs_office_of_exit || "",
+      location: current.location || activeExportDefaults.location || "",
+      delivery_terms_city: current.delivery_terms_city || activeExportDefaults.delivery_terms_city || "",
+      freight_costs: current.freight_costs || activeExportDefaults.freight_costs || "",
+      insurance: current.insurance || activeExportDefaults.insurance || "",
+      importer: current.importer || activeExportDefaults.importer_field || "",
+      vessel: current.vessel || activeExportDefaults.vessel_field || "",
       owner: current.owner || companySettings.company_name || "",
       invoice_numbers_by_category: current.invoice_numbers_by_category || Object.fromEntries(UKDOCS_CATEGORY_DEFINITIONS.map((category) => [category.code, ""])),
     }));
-  }, [state, exportDefaults, companySettings]);
+  }, [state, activeExportDefaults, companySettings]);
 
   function resetDrafts() {
     setShipmentDraft(emptyUkdocsShipmentDraft());
@@ -1876,11 +1893,20 @@ function UkdocsPage({ currentUser }) {
     setShipmentDraft((current) => ({
       ...current,
       customer_id: customerId,
-      delivery_terms: customer?.default_delivery_terms || current.delivery_terms,
+      delivery_terms: customer?.default_delivery_terms || customer?.export_defaults?.delivery_terms || current.delivery_terms,
       uk_arrival_port: customer?.default_uk_arrival_port || current.uk_arrival_port,
-      currency: customer?.default_currency || current.currency,
-      importer: customer?.customer_name || current.importer,
-      delivery_terms_city: customer?.default_city || current.delivery_terms_city,
+      currency: customer?.default_currency || customer?.export_defaults?.currency || current.currency,
+      importer: customer?.customer_name || customer?.export_defaults?.importer_field || current.importer,
+      delivery_terms_city: customer?.default_city || customer?.export_defaults?.delivery_terms_city || current.delivery_terms_city,
+      regulation: customer?.export_defaults?.regulation || current.regulation,
+      destination_country: customer?.export_defaults?.destination_country || current.destination_country,
+      customs_office_of_exit: customer?.export_defaults?.customs_office_of_exit || current.customs_office_of_exit,
+      location: customer?.export_defaults?.location || current.location,
+      border_transport_mode: customer?.export_defaults?.border_transport_mode || current.border_transport_mode,
+      border_transport_nationality: customer?.export_defaults?.border_transport_nationality || current.border_transport_nationality,
+      freight_costs: customer?.export_defaults?.freight_costs || current.freight_costs,
+      insurance: customer?.export_defaults?.insurance || current.insurance,
+      vessel: customer?.export_defaults?.vessel_field || current.vessel,
       notes: customer?.default_document_references || current.notes,
     }));
   }
@@ -1909,7 +1935,7 @@ function UkdocsPage({ currentUser }) {
       invoice_numbers: combinedInvoiceNumbers,
       customers,
       company_settings: companySettings,
-      export_defaults: exportDefaults,
+      export_defaults: activeExportDefaults,
       column_mappings: columnMappings,
     };
   }
@@ -1993,6 +2019,50 @@ function UkdocsPage({ currentUser }) {
       setMessage("Shipment draft deleted.");
     } catch (deleteError) {
       setError(deleteError.message);
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function importCustomerFromExamples() {
+    setSaving(true);
+    setError("");
+    setMessage("");
+    try {
+      const payload = await apiJson("/api/ukdocs/import-examples", {
+        method: "POST",
+        body: JSON.stringify({
+          invoice_example: exampleImportFiles.invoice_example,
+          export_example: exampleImportFiles.export_example,
+        }),
+      });
+      const importedCustomer = {
+        ...emptyUkdocsCustomer(),
+        ...(payload.customer || {}),
+        export_defaults: mergeUkdocsExportDefaults(emptyUkdocsCustomer().export_defaults, payload.export_defaults || {}),
+      };
+      const existingCustomer = customers.find((item) => item.customer_name && item.customer_name === importedCustomer.customer_name);
+      const nextCustomer = {
+        ...importedCustomer,
+        id: existingCustomer?.id || `ukdocs-customer-${Date.now()}`,
+      };
+      const nextCustomers = existingCustomer
+        ? customers.map((item) => (item.id === existingCustomer.id ? nextCustomer : item))
+        : [nextCustomer, ...customers];
+      const response = await apiJson("/api/ukdocs/state", {
+        method: "PATCH",
+        body: JSON.stringify({
+          customers: nextCustomers,
+          company_settings: payload.company_settings || {},
+        }),
+      });
+      setState(response.state);
+      setCustomerDraft(nextCustomer);
+      setExampleImportFiles({ invoice_example: null, export_example: null });
+      const warningText = (payload.warnings || []).filter(Boolean).join(" ");
+      setMessage(`Imported example data for ${nextCustomer.customer_name || "customer"}.${warningText ? ` ${warningText}` : ""}`);
+    } catch (importError) {
+      setError(importError.message);
     } finally {
       setSaving(false);
     }
@@ -2196,6 +2266,18 @@ function UkdocsPage({ currentUser }) {
       {activeMenu === "customers" && (
         <div className="data-table-card ukdocs-stack">
           <div className="section-header"><h2>Customers</h2></div>
+          <div className="notice">Upload one invoice example and one export example to create or update a customer and prefill company and export-default data from your real UKdocs files.</div>
+          <div className="ukdocs-upload-grid">
+            <div className="ukdocs-upload-card">
+              <strong>Invoice example</strong>
+              <input type="file" accept=".xlsx,.xls" onChange={async (event) => setExampleImportFiles((current) => ({ ...current, invoice_example: event.target.files?.[0] ? { file_name: event.target.files[0].name, content_base64: await fileToBase64(event.target.files[0]) } : null }))} />
+            </div>
+            <div className="ukdocs-upload-card">
+              <strong>Export example</strong>
+              <input type="file" accept=".xlsx,.xls" onChange={async (event) => setExampleImportFiles((current) => ({ ...current, export_example: event.target.files?.[0] ? { file_name: event.target.files[0].name, content_base64: await fileToBase64(event.target.files[0]) } : null }))} />
+            </div>
+          </div>
+          <div className="row-actions spread-actions"><button type="button" onClick={importCustomerFromExamples} disabled={saving || (!exampleImportFiles.invoice_example && !exampleImportFiles.export_example)}>{saving ? "Importing..." : "Import from example files"}</button></div>
           <div className="form-grid">
             {UKDOCS_CUSTOMER_FIELDS.map(([key, label, kind]) => (
               <label key={key} className={kind === "textarea" ? "wide" : ""}>
@@ -2204,8 +2286,10 @@ function UkdocsPage({ currentUser }) {
               </label>
             ))}
           </div>
+          <div className="section-header"><h3>Customer export defaults</h3></div>
+          <div className="form-grid">{UKDOCS_EXPORT_DEFAULT_FIELDS.map(([key, label, kind]) => <label key={`customer-export-${key}`} className={kind === "textarea" ? "wide" : ""}><span>{label}</span>{kind === "textarea" ? <textarea rows={3} value={customerDraft.export_defaults?.[key] || ""} onChange={(event) => setCustomerDraft((current) => ({ ...current, export_defaults: { ...(current.export_defaults || {}), [key]: event.target.value } }))} /> : <input value={customerDraft.export_defaults?.[key] || ""} onChange={(event) => setCustomerDraft((current) => ({ ...current, export_defaults: { ...(current.export_defaults || {}), [key]: event.target.value } }))} />}</label>)}</div>
           <div className="row-actions spread-actions"><button type="button" className="primary" onClick={saveCustomer} disabled={saving}>{customerDraft.id ? "Update customer" : "Add customer"}</button><button type="button" onClick={() => setCustomerDraft(emptyUkdocsCustomer())} disabled={saving}>Clear form</button></div>
-          <div className="table-wrap"><table className="data-table"><thead><tr><th>Name</th><th>Delivery terms</th><th>UK port</th><th>Currency</th><th>VAT</th><th>Actions</th></tr></thead><tbody>{customers.map((customer) => <tr key={customer.id}><td>{customer.customer_name}</td><td>{customer.default_delivery_terms || "-"}</td><td>{customer.default_uk_arrival_port || "-"}</td><td>{customer.default_currency || "-"}</td><td>{customer.vat_number || "-"}</td><td className="row-actions"><button type="button" onClick={() => startEditCustomer(customer)}>Edit</button></td></tr>)}{!customers.length && <tr><td colSpan="6">No UKdocs customers saved yet.</td></tr>}</tbody></table></div>
+          <div className="table-wrap"><table className="data-table"><thead><tr><th>Name</th><th>Delivery terms</th><th>UK port</th><th>Currency</th><th>VAT</th><th>Actions</th></tr></thead><tbody>{customers.map((customer) => <tr key={customer.id}><td>{customer.customer_name}</td><td>{customer.default_delivery_terms || customer.export_defaults?.delivery_terms || "-"}</td><td>{customer.default_uk_arrival_port || "-"}</td><td>{customer.default_currency || customer.export_defaults?.currency || "-"}</td><td>{customer.vat_number || "-"}</td><td className="row-actions"><button type="button" onClick={() => startEditCustomer(customer)}>Edit</button></td></tr>)}{!customers.length && <tr><td colSpan="6">No UKdocs customers saved yet.</td></tr>}</tbody></table></div>
         </div>
       )}
 
@@ -2219,9 +2303,10 @@ function UkdocsPage({ currentUser }) {
 
       {activeMenu === "defaults" && (
         <div className="data-table-card ukdocs-stack">
-          <div className="section-header"><h2>Export defaults</h2></div>
+          <div className="section-header"><h2>Global export defaults</h2></div>
           <div className="form-grid">{UKDOCS_EXPORT_DEFAULT_FIELDS.map(([key, label, kind]) => <label key={key} className={kind === "textarea" ? "wide" : ""}><span>{label}</span>{kind === "textarea" ? <textarea rows={3} value={exportDefaults[key] || ""} onChange={(event) => setState((current) => ({ ...current, export_defaults: { ...current.export_defaults, [key]: event.target.value } }))} /> : <input value={exportDefaults[key] || ""} onChange={(event) => setState((current) => ({ ...current, export_defaults: { ...current.export_defaults, [key]: event.target.value } }))} />}</label>)}</div>
-          <div className="row-actions spread-actions"><button type="button" className="primary" onClick={() => saveStatePatch({ export_defaults: exportDefaults }, "Export defaults saved.")} disabled={saving}>{saving ? "Saving..." : "Save export defaults"}</button></div>
+          <div className="notice">These are fallback defaults and tolerances. A customer can override them with its own export defaults.</div>
+          <div className="row-actions spread-actions"><button type="button" className="primary" onClick={() => saveStatePatch({ export_defaults: exportDefaults }, "Global export defaults saved.")} disabled={saving}>{saving ? "Saving..." : "Save global defaults"}</button></div>
         </div>
       )}
 
