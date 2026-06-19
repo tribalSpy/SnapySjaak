@@ -812,17 +812,24 @@ def write_invoice_template(workbook, sheet, analysis, category_code):
         licence_row, licence_col = find_cell_containing(sheet, "License Truck")
     delivery_row, delivery_col = find_cell_containing(sheet, "Delivery T")
 
-    if date_row and date_col:
-        set_sheet_value(sheet, date_row, date_col + 1, format_shipment_date(shipment.get("shipment_date_excel")))
-    if invoice_row and invoice_col:
-        set_sheet_value(sheet, invoice_row, invoice_col + 1, category.get("invoice_number", ""))
-        set_sheet_value(sheet, invoice_row, invoice_col + 2, "custom summary")
-    if licence_row and licence_col:
-        set_sheet_value(sheet, licence_row, licence_col + 1, shipment.get("trailer_number", ""))
-    if delivery_row and delivery_col:
-        set_sheet_value(sheet, delivery_row, delivery_col + 1, shipment.get("delivery_terms", ""))
+    date_col = date_col or 1
+    invoice_col = invoice_col or date_col
+    licence_col = licence_col or date_col
+    delivery_col = delivery_col or date_col
 
-    table_header_row = find_row_with_terms(sheet, ["goods description", "origin"], 1) or 16
+    info_start_row = 17
+    clear_sheet_range(sheet, 16, 21, 1, 6)
+    set_sheet_value(sheet, info_start_row, date_col, "Date :")
+    set_sheet_value(sheet, info_start_row, date_col + 1, format_shipment_date(shipment.get("shipment_date_excel")))
+    set_sheet_value(sheet, info_start_row + 1, invoice_col, "Invoice nr :")
+    set_sheet_value(sheet, info_start_row + 1, invoice_col + 1, category.get("invoice_number", ""))
+    set_sheet_value(sheet, info_start_row + 1, invoice_col + 2, "custom summary")
+    set_sheet_value(sheet, info_start_row + 2, licence_col, "Licence Truck :")
+    set_sheet_value(sheet, info_start_row + 2, licence_col + 1, shipment.get("trailer_number", ""))
+    set_sheet_value(sheet, info_start_row + 3, delivery_col, "Delivery Terms :")
+    set_sheet_value(sheet, info_start_row + 3, delivery_col + 1, shipment.get("delivery_terms", ""))
+
+    table_header_row = 22
     hs_header_row = find_row_with_terms(sheet, ["goods description", "packages"], table_header_row + 1) or (table_header_row + 4)
     original_footer_row = find_row_with_terms(sheet, ["vat nr"], hs_header_row + 1) or max(sheet.max_row - 7, hs_header_row + 8)
     footer_row = original_footer_row
@@ -864,6 +871,7 @@ def write_invoice_template(workbook, sheet, analysis, category_code):
         set_sheet_value(sheet, hs_header_row, offset, value)
 
     hs_start_row = hs_header_row + 1
+    data_style_row = hs_start_row
     existing_hs_space = max(footer_row - hs_start_row - 1, 0)
     needed_hs_space = len(category["hs_summary_rows"]) + 2
     if needed_hs_space > existing_hs_space:
@@ -877,6 +885,7 @@ def write_invoice_template(workbook, sheet, analysis, category_code):
     clear_sheet_range(sheet, hs_start_row, footer_row - 1, 3, 10)
     row_number = hs_start_row
     for line in category["hs_summary_rows"]:
+        copy_row_format(sheet, data_style_row, row_number, 10)
         set_sheet_value(sheet, row_number, 3, normalize_invoice_hs_code(line["hs_code"]))
         set_sheet_value(sheet, row_number, 4, line["description"])
         set_sheet_value(sheet, row_number, 5, line["quantity"])
@@ -886,7 +895,8 @@ def write_invoice_template(workbook, sheet, analysis, category_code):
         set_sheet_value(sheet, row_number, 9, line["customs_value"])
         row_number += 1
 
-    totals_row = row_number + 1
+    totals_row = row_number
+    copy_row_format(sheet, data_style_row, totals_row, 10)
     set_sheet_value(sheet, totals_row, 6, "TOTALS")
     set_sheet_value(sheet, totals_row, 7, category["totals"]["net_kg"])
     set_sheet_value(sheet, totals_row, 9, category["totals"]["customs_value"])
@@ -933,7 +943,7 @@ def write_export_template(workbook, sheet, analysis):
         set_sheet_value(sheet, header_row, index, value)
 
     value_values = [
-        shipment.get("export_header_reference") or shipment["reference_line"], shipment["owner"], shipment["regulation"], shipment["destination_country"], analysis["combined_totals"]["gross_kg"], analysis["combined_totals"]["packages"], shipment["location"], shipment["marks_and_numbers"], shipment["container_number"], shipment["border_transport_mode"], shipment["border_transport_nationality"], shipment["delivery_terms"], shipment["delivery_terms_city"], shipment["customs_office_of_exit"],
+        shipment.get("export_header_reference") or shipment["reference_line"], shipment["owner"], shipment["regulation"], shipment["destination_country"], f"=SUM(G{data_start_row}:G99)", f"=SUM(F{data_start_row}:F99)", shipment["location"], shipment["marks_and_numbers"], shipment["container_number"], shipment["border_transport_mode"], shipment["border_transport_nationality"], shipment["delivery_terms"], shipment["delivery_terms_city"], shipment["customs_office_of_exit"],
     ]
     for index, value in enumerate(value_values, start=1):
         set_sheet_value(sheet, value_row, index, value)
