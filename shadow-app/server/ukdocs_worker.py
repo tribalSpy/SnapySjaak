@@ -749,6 +749,11 @@ def copy_row_format(sheet, source_row, target_row, max_col):
             target_cell.protection = copy(source_cell.protection)
 
 
+def copy_block_format(sheet, source_row, target_row, row_count, max_col):
+    for offset in range(row_count):
+        copy_row_format(sheet, source_row + offset, target_row + offset, max_col)
+
+
 def row_contains_terms(sheet, row_index, terms):
     values = [clean_text(sheet.cell(row=row_index, column=col).value).lower() for col in range(1, sheet.max_column + 1)]
     return all(any(term in value for value in values) for term in terms)
@@ -795,7 +800,9 @@ def write_invoice_template(workbook, sheet, analysis, category_code):
     customer_lines.append(customer.get("importer_number") or "")
     while len(customer_lines) < 6:
         customer_lines.append("")
-    for offset, value in enumerate(customer_lines[:6], start=4):
+    customer_start_row = 10
+    clear_sheet_range(sheet, customer_start_row, customer_start_row + 5, 2, 3)
+    for offset, value in enumerate(customer_lines[:6], start=customer_start_row):
         set_sheet_value(sheet, offset, 2, value)
 
     date_row, date_col = find_cell_containing(sheet, "Date")
@@ -817,7 +824,8 @@ def write_invoice_template(workbook, sheet, analysis, category_code):
 
     table_header_row = find_row_with_terms(sheet, ["goods description", "origin"], 1) or 16
     hs_header_row = find_row_with_terms(sheet, ["goods description", "packages"], table_header_row + 1) or (table_header_row + 4)
-    footer_row = find_row_with_terms(sheet, ["vat nr"], hs_header_row + 1) or max(sheet.max_row - 7, hs_header_row + 8)
+    original_footer_row = find_row_with_terms(sheet, ["vat nr"], hs_header_row + 1) or max(sheet.max_row - 7, hs_header_row + 8)
+    footer_row = original_footer_row
 
     invoice_start_row = table_header_row + 1
     existing_invoice_space = max(hs_header_row - invoice_start_row - 1, 0)
@@ -883,6 +891,10 @@ def write_invoice_template(workbook, sheet, analysis, category_code):
     set_sheet_value(sheet, totals_row, 7, category["totals"]["net_kg"])
     set_sheet_value(sheet, totals_row, 9, category["totals"]["customs_value"])
 
+    footer_row = max(totals_row + 4, hs_header_row + 6)
+    if original_footer_row > 0 and footer_row != original_footer_row:
+        copy_block_format(sheet, original_footer_row, footer_row, 8, 10)
+        clear_sheet_range(sheet, original_footer_row, original_footer_row + 7, 3, 8)
     clear_sheet_range(sheet, footer_row, footer_row + 7, 3, 8)
     set_sheet_value(sheet, footer_row, 3, company.get("company_name", ""))
     set_sheet_value(sheet, footer_row, 7, f'VAT nr : {company.get("vat_number", "")}')
