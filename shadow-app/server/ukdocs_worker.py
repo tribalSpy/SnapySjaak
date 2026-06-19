@@ -726,8 +726,18 @@ def set_cell_alignment(sheet, row, col, horizontal):
     cell.alignment = cell.alignment.copy(horizontal=horizontal)
 
 
-def set_currency_format(sheet, row, col):
-    sheet.cell(row=row, column=col).number_format = '[$EUR ]#,##0.00'
+def currency_symbol(currency_code):
+    code = clean_text(currency_code).upper()
+    if code == 'GBP':
+        return '£'
+    if code == 'EUR':
+        return '€'
+    return code or '€'
+
+
+def set_currency_format(sheet, row, col, currency_code='EUR'):
+    symbol = currency_symbol(currency_code)
+    sheet.cell(row=row, column=col).number_format = f'"{symbol}" #,##0.00'
 
 
 def set_number_format(sheet, row, col, decimals=2):
@@ -745,15 +755,10 @@ def apply_table_frame(sheet, start_row, end_row, start_col, end_col):
     thin = Side(style='thin', color='000000')
     for row in range(start_row, end_row + 1):
         for col in range(start_col, end_col + 1):
-            cell = sheet.cell(row=row, column=col)
-            left = thin if col == start_col else (cell.border.left if cell.border else Side())
-            right = thin if col == end_col else (cell.border.right if cell.border else Side())
-            top = thin if row == start_row else (cell.border.top if cell.border else Side())
-            bottom = thin if row == end_row else (cell.border.bottom if cell.border else Side())
-            cell.border = Border(left=left, right=right, top=top, bottom=bottom)
+            sheet.cell(row=row, column=col).border = Border(left=thin, right=thin, top=thin, bottom=thin)
 
 
-def format_invoice_row(sheet, row, value_col):
+def format_invoice_row(sheet, row, value_col, currency_code='EUR'):
     set_cell_alignment(sheet, row, 2, 'right')
     set_cell_alignment(sheet, row, 3, 'left')
     set_cell_alignment(sheet, row, 4, 'right')
@@ -763,10 +768,10 @@ def format_invoice_row(sheet, row, value_col):
     set_number_format(sheet, row, 6, 2)
     set_number_format(sheet, row, 7, 2)
     set_number_format(sheet, row, 8, 0)
-    set_currency_format(sheet, row, value_col)
+    set_currency_format(sheet, row, value_col, currency_code)
 
 
-def format_summary_row(sheet, row, value_col):
+def format_summary_row(sheet, row, value_col, currency_code='EUR'):
     set_cell_alignment(sheet, row, 2, 'right')
     set_cell_alignment(sheet, row, 3, 'left')
     for col in [5, 6, 7, 8, value_col]:
@@ -775,7 +780,7 @@ def format_summary_row(sheet, row, value_col):
     set_number_format(sheet, row, 6, 2)
     set_number_format(sheet, row, 7, 2)
     set_number_format(sheet, row, 8, 0)
-    set_currency_format(sheet, row, value_col)
+    set_currency_format(sheet, row, value_col, currency_code)
 
 
 def clear_sheet_range(sheet, start_row, end_row, start_col, end_col):
@@ -921,6 +926,7 @@ def write_invoice_template(workbook, sheet, analysis, category_code):
     headers = ["classificationType TARIC", "Goods description", "Origin", "Quantity", "Gross kg", "Net kg", "Packages", "Value"]
     for offset, value in enumerate(headers, start=2):
         set_sheet_value(sheet, table_header_row, offset, value)
+        set_cell_alignment(sheet, table_header_row, offset, 'right')
 
     row_number = invoice_start_row
     invoice_style_row = invoice_start_row
@@ -934,14 +940,14 @@ def write_invoice_template(workbook, sheet, analysis, category_code):
         set_sheet_value(sheet, row_number, 7, line["net_kg"])
         set_sheet_value(sheet, row_number, 8, line["packages"])
         set_sheet_value(sheet, row_number, 9, line["customs_value"])
-        format_invoice_row(sheet, row_number, 9)
+        format_invoice_row(sheet, row_number, 9, shipment.get('currency'))
         row_number += 1
 
     hs_header_row = max(hs_header_row, row_number + 1)
     clear_sheet_range(sheet, row_number, hs_header_row - 1, 1, 10)
 
     hs_headers = ["classificationTyp HS", "Goods description", "Quantity", "gros kg", "net kg", "Packages", "Value"]
-    hs_header_columns = [2, 3, 5, 6, 7, 8, 9]
+    hs_header_columns = [3, 4, 6, 7, 8, 9, 10]
     for column, value in zip(hs_header_columns, hs_headers):
         set_sheet_value(sheet, hs_header_row, column, value)
 
@@ -957,32 +963,32 @@ def write_invoice_template(workbook, sheet, analysis, category_code):
             copy_row_format(sheet, template_row, footer_row + index, 10)
         footer_row += extra_rows
 
-    clear_sheet_range(sheet, hs_start_row, footer_row - 1, 2, 9)
+    clear_sheet_range(sheet, hs_start_row, footer_row - 1, 3, 10)
     row_number = hs_start_row
     for line in category["hs_summary_rows"]:
         copy_row_format(sheet, data_style_row, row_number, 10)
-        set_sheet_value(sheet, row_number, 2, normalize_invoice_hs_code(line["hs_code"]))
-        set_sheet_value(sheet, row_number, 3, line["description"])
-        set_sheet_value(sheet, row_number, 5, line["quantity"])
-        set_sheet_value(sheet, row_number, 6, line["gross_kg"])
-        set_sheet_value(sheet, row_number, 7, line["net_kg"])
-        set_sheet_value(sheet, row_number, 8, line["packages"])
-        set_sheet_value(sheet, row_number, 9, line["customs_value"])
-        format_summary_row(sheet, row_number, 9)
+        set_sheet_value(sheet, row_number, 3, normalize_invoice_hs_code(line["hs_code"]))
+        set_sheet_value(sheet, row_number, 4, line["description"])
+        set_sheet_value(sheet, row_number, 6, line["quantity"])
+        set_sheet_value(sheet, row_number, 7, line["gross_kg"])
+        set_sheet_value(sheet, row_number, 8, line["net_kg"])
+        set_sheet_value(sheet, row_number, 9, line["packages"])
+        set_sheet_value(sheet, row_number, 10, line["customs_value"])
+        format_summary_row(sheet, row_number, 10, shipment.get('currency'))
         row_number += 1
 
     totals_row = row_number
     copy_row_format(sheet, data_style_row, totals_row, 10)
-    set_sheet_value(sheet, totals_row, 3, "TOTALS")
-    set_sheet_value(sheet, totals_row, 5, sum(line["quantity"] for line in category["hs_summary_rows"]))
-    set_sheet_value(sheet, totals_row, 6, category["totals"]["gross_kg"])
-    set_sheet_value(sheet, totals_row, 7, category["totals"]["net_kg"])
-    set_sheet_value(sheet, totals_row, 8, category["totals"]["packages"])
-    set_sheet_value(sheet, totals_row, 9, category["totals"]["customs_value"])
-    format_summary_row(sheet, totals_row, 9)
-    set_cell_alignment(sheet, totals_row, 3, 'center')
+    set_sheet_value(sheet, totals_row, 4, "TOTALS")
+    set_sheet_value(sheet, totals_row, 6, sum(line["quantity"] for line in category["hs_summary_rows"]))
+    set_sheet_value(sheet, totals_row, 7, category["totals"]["gross_kg"])
+    set_sheet_value(sheet, totals_row, 8, category["totals"]["net_kg"])
+    set_sheet_value(sheet, totals_row, 9, category["totals"]["packages"])
+    set_sheet_value(sheet, totals_row, 10, category["totals"]["customs_value"])
+    format_summary_row(sheet, totals_row, 10, shipment.get('currency'))
+    set_cell_alignment(sheet, totals_row, 4, 'center')
 
-    apply_table_frame(sheet, hs_header_row, totals_row, 2, 9)
+    apply_table_frame(sheet, hs_header_row, totals_row, 3, 10)
 
     footer_row = max(totals_row + 4, hs_header_row + 6)
     if original_footer_row > 0 and footer_row != original_footer_row:
