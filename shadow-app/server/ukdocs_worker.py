@@ -7,6 +7,7 @@ import sys
 from collections import defaultdict
 from datetime import datetime
 from decimal import Decimal, InvalidOperation
+from pathlib import Path
 from zipfile import ZIP_DEFLATED, ZipFile
 import xml.etree.ElementTree as ET
 
@@ -422,19 +423,72 @@ def column_name(index):
     return result
 
 
-def build_sheet_xml(cell_map):
+STYLE_NAME_TO_ID = {
+    "default": 0,
+    "bold": 1,
+    "export_header": 2,
+    "export_goods": 3,
+    "detail_label": 4,
+    "detail_value": 5,
+    "table_header": 6,
+    "footer": 7,
+    "detail_value_plain": 8,
+    "detail_label_plain": 9,
+}
+
+
+def png_dimensions(raw_bytes):
+    if raw_bytes[:8] != b"\x89PNG\r\n\x1a\n":
+        return 220, 70
+    width = int.from_bytes(raw_bytes[16:20], "big")
+    height = int.from_bytes(raw_bytes[20:24], "big")
+    return width or 220, height or 70
+
+
+def resolve_logo_image(company):
+    candidates = []
+    logo_name = clean_text((company or {}).get("logo_name"))
+    if logo_name:
+        candidates.append(logo_name.lstrip("/"))
+    candidates.append("logosjaak.png")
+    base_dir = Path(__file__).resolve().parent.parent / "public"
+    for relative in candidates:
+        file_path = base_dir / relative
+        if file_path.exists() and file_path.is_file():
+            raw = file_path.read_bytes()
+            width, height = png_dimensions(raw)
+            return {
+                "bytes": raw,
+                "ext": file_path.suffix.lower().lstrip(".") or "png",
+                "width": width,
+                "height": height,
+                "from_col": 0,
+                "from_row": 0,
+            }
+    return None
+
+
+def build_sheet_xml(cell_map, style_map=None, column_widths=None, row_heights=None, include_drawing=False):
+    style_map = style_map or {}
+    column_widths = column_widths or {}
+    row_heights = row_heights or {}
     if not cell_map:
         cell_map = {(1, 1): ""}
-    max_row = max(row for row, _ in cell_map)
-    max_col = max(col for _, col in cell_map)
+    max_row = max(max((row for row, _ in cell_map), default=1), max(row_heights.keys(), default=1))
+    max_col = max(max((col for _, col in cell_map), default=1), max(column_widths.keys(), default=1))
     lines = [
         '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>',
         f'<worksheet xmlns="{NS_MAIN}" xmlns:r="{NS_REL}">',
         f'<dimension ref="A1:{column_name(max_col)}{max_row}"/>',
         '<sheetViews><sheetView workbookViewId="0"/></sheetViews>',
-        '<sheetFormatPr defaultRowHeight="15"/>',
-        '<sheetData>',
     ]
+    if column_widths:
+        lines.append('<cols>')
+        for col_index in sorted(column_widths):
+            lines.append(f'<col min="{col_index}" max="{col_index}" width="{column_widths[col_index]}" customWidth="1"/>')
+        lines.append('</cols>')
+    lines.append('<sheetFormatPr defaultRowHeight="15"/>')
+    lines.append('<sheetData>')
     for row_index in range(1, max_row + 1):
         row_cells = []
         for col_index in range(1, max_col + 1):
@@ -442,79 +496,197 @@ def build_sheet_xml(cell_map):
             if value is None or value == "":
                 continue
             ref = f'{column_name(col_index)}{row_index}'
+            style_name = style_map.get((row_index, col_index), "default")
+            style_id = STYLE_NAME_TO_ID.get(style_name, 0)
+            style_attr = f' s="{style_id}"' if style_id else ""
             if isinstance(value, Decimal):
-                row_cells.append(f'<c r="{ref}"><v>{format(value, "f")}</v></c>')
+                row_cells.append(f'<c r="{ref}"{style_attr}><v>{format(value, "f")}</v></c>')
             elif isinstance(value, (int, float)) and not isinstance(value, bool):
-                row_cells.append(f'<c r="{ref}"><v>{value}</v></c>')
+                row_cells.append(f'<c r="{ref}"{style_attr}><v>{value}</v></c>')
             else:
-                row_cells.append(f'<c r="{ref}" t="inlineStr"><is><t>{escape_xml(value)}</t></is></c>')
-        if row_cells:
-            lines.append(f'<row r="{row_index}">' + "".join(row_cells) + '</row>')
-    lines.extend(['</sheetData>', '</worksheet>'])
-    return "".join(lines).encode("utf-8")
+                row_cells.append(f'<c r="{ref}" t="inlineStr"{style_attr}><is><t>{escape_xml(value)}</t></is></c>')
+        if row_cells or row_index in row_heights:
+            height_attr = f' ht="{row_heights[row_index]}" customHeight="1"' if row_index in row_heights else ""
+            lines.append(f'<row r="{row_index}"{height_attr}>' + ''.join(row_cells) + '</row>')
+    lines.append('</sheetData>')
+    if include_drawing:
+        lines.append('<drawing r:id="rId1"/>')
+    lines.append('</worksheet>')
+    return ''.join(lines).encode('utf-8')
 
 
-def build_xlsx(cell_map, sheet_name="Blad1"):
+STYLES_XML = """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
+  <fonts count="8">
+    <font><sz val="11"/><color rgb="FF000000"/><name val="Calibri"/></font>
+    <font><b/><sz val="11"/><color rgb="FF000000"/><name val="Calibri"/></font>
+    <font><b/><sz val="11"/><color rgb="FF006100"/><name val="Calibri"/></font>
+    <font><sz val="11"/><color rgb="FF000000"/><name val="Calibri"/></font>
+    <font><sz val="11"/><color rgb="FFFF0000"/><name val="Calibri"/></font>
+    <font><sz val="11"/><color rgb="FF000099"/><name val="Calibri"/></font>
+    <font><b/><sz val="11"/><color rgb="FF000000"/><name val="Calibri"/></font>
+    <font><sz val="10"/><color rgb="FF000000"/><name val="Calibri"/></font>
+  </fonts>
+  <fills count="4">
+    <fill><patternFill patternType="none"/></fill>
+    <fill><patternFill patternType="gray125"/></fill>
+    <fill><patternFill patternType="solid"><fgColor rgb="FFC6EFCE"/><bgColor indexed="64"/></patternFill></fill>
+    <fill><patternFill patternType="solid"><fgColor rgb="FFFFFFFF"/><bgColor indexed="64"/></patternFill></fill>
+  </fills>
+  <borders count="2">
+    <border><left/><right/><top/><bottom/><diagonal/></border>
+    <border><left style="thin"><color auto="1"/></left><right style="thin"><color auto="1"/></right><top style="thin"><color auto="1"/></top><bottom style="thin"><color auto="1"/></bottom><diagonal/></border>
+  </borders>
+  <cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs>
+  <cellXfs count="10">
+    <xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/>
+    <xf numFmtId="0" fontId="1" fillId="0" borderId="0" xfId="0" applyFont="1"/>
+    <xf numFmtId="0" fontId="2" fillId="2" borderId="1" xfId="0" applyFont="1" applyFill="1" applyBorder="1"/>
+    <xf numFmtId="0" fontId="3" fillId="2" borderId="1" xfId="0" applyFont="1" applyFill="1" applyBorder="1"/>
+    <xf numFmtId="0" fontId="4" fillId="3" borderId="1" xfId="0" applyFont="1" applyFill="1" applyBorder="1"/>
+    <xf numFmtId="0" fontId="5" fillId="3" borderId="1" xfId="0" applyFont="1" applyFill="1" applyBorder="1"/>
+    <xf numFmtId="0" fontId="6" fillId="2" borderId="1" xfId="0" applyFont="1" applyFill="1" applyBorder="1"/>
+    <xf numFmtId="0" fontId="7" fillId="0" borderId="0" xfId="0" applyFont="1"/>
+    <xf numFmtId="0" fontId="5" fillId="3" borderId="0" xfId="0" applyFont="1" applyFill="1"/>
+    <xf numFmtId="0" fontId="4" fillId="3" borderId="0" xfId="0" applyFont="1" applyFill="1"/>
+  </cellXfs>
+  <cellStyles count="1"><cellStyle name="Normal" xfId="0" builtinId="0"/></cellStyles>
+</styleSheet>"""
+
+
+def build_drawing_xml(image):
+    width = int(image.get("width", 220) * 9525)
+    height = int(image.get("height", 70) * 9525)
+    from_col = int(image.get("from_col", 0))
+    from_row = int(image.get("from_row", 0))
+    return f'''<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<xdr:wsDr xmlns:xdr="http://schemas.openxmlformats.org/drawingml/2006/spreadsheetDrawing" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
+  <xdr:oneCellAnchor>
+    <xdr:from>
+      <xdr:col>{from_col}</xdr:col>
+      <xdr:colOff>0</xdr:colOff>
+      <xdr:row>{from_row}</xdr:row>
+      <xdr:rowOff>0</xdr:rowOff>
+    </xdr:from>
+    <xdr:ext cx="{width}" cy="{height}"/>
+    <xdr:pic>
+      <xdr:nvPicPr>
+        <xdr:cNvPr id="1" name="Picture 1"/>
+        <xdr:cNvPicPr/>
+      </xdr:nvPicPr>
+      <xdr:blipFill>
+        <a:blip r:embed="rId1"/>
+        <a:stretch><a:fillRect/></a:stretch>
+      </xdr:blipFill>
+      <xdr:spPr>
+        <a:prstGeom prst="rect"><a:avLst/></a:prstGeom>
+      </xdr:spPr>
+    </xdr:pic>
+    <xdr:clientData/>
+  </xdr:oneCellAnchor>
+</xdr:wsDr>'''.encode('utf-8')
+
+
+def build_xlsx(cell_map, sheet_name="Blad1", style_map=None, column_widths=None, row_heights=None, image=None):
     output = io.BytesIO()
+    include_image = bool(image and image.get("bytes"))
+    image_ext = (image or {}).get("ext", "png")
     with ZipFile(output, "w", ZIP_DEFLATED) as zf:
-        zf.writestr("[Content_Types].xml", """<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>
+        content_types = ["""<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>
 <Types xmlns=\"http://schemas.openxmlformats.org/package/2006/content-types\">
   <Default Extension=\"rels\" ContentType=\"application/vnd.openxmlformats-package.relationships+xml\"/>
   <Default Extension=\"xml\" ContentType=\"application/xml\"/>
-  <Override PartName=\"/xl/workbook.xml\" ContentType=\"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml\"/>
+"""]
+        if include_image:
+            content_types.append(f'  <Default Extension="{image_ext}" ContentType="image/{"jpeg" if image_ext in ("jpg", "jpeg") else image_ext}"/>\n')
+        content_types.append("""  <Override PartName=\"/xl/workbook.xml\" ContentType=\"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml\"/>
   <Override PartName=\"/xl/worksheets/sheet1.xml\" ContentType=\"application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml\"/>
   <Override PartName=\"/xl/styles.xml\" ContentType=\"application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml\"/>
-  <Override PartName=\"/docProps/core.xml\" ContentType=\"application/vnd.openxmlformats-package.core-properties+xml\"/>
+""")
+        if include_image:
+            content_types.append('  <Override PartName="/xl/drawings/drawing1.xml" ContentType="application/vnd.openxmlformats-officedocument.drawing+xml"/>\n')
+        content_types.append("""  <Override PartName=\"/docProps/core.xml\" ContentType=\"application/vnd.openxmlformats-package.core-properties+xml\"/>
   <Override PartName=\"/docProps/app.xml\" ContentType=\"application/vnd.openxmlformats-officedocument.extended-properties+xml\"/>
 </Types>""")
-        zf.writestr("_rels/.rels", f"""<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>
-<Relationships xmlns=\"{NS_PKG_REL}\">
-  <Relationship Id=\"rId1\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument\" Target=\"xl/workbook.xml\"/>
-  <Relationship Id=\"rId2\" Type=\"http://schemas.openxmlformats.org/package/2006/relationships/metadata/core-properties\" Target=\"docProps/core.xml\"/>
-  <Relationship Id=\"rId3\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/extended-properties\" Target=\"docProps/app.xml\"/>
-</Relationships>""")
-        zf.writestr("docProps/core.xml", """<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>
-<cp:coreProperties xmlns:cp=\"http://schemas.openxmlformats.org/package/2006/metadata/core-properties\" xmlns:dc=\"http://purl.org/dc/elements/1.1/\" xmlns:dcterms=\"http://purl.org/dc/terms/\" xmlns:dcmitype=\"http://purl.org/dc/dcmitype/\" xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\">
+        zf.writestr('[Content_Types].xml', ''.join(content_types))
+        zf.writestr("_rels/.rels", f'''<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="{NS_PKG_REL}">
+  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/>
+  <Relationship Id="rId2" Type="http://schemas.openxmlformats.org/package/2006/relationships/metadata/core-properties" Target="docProps/core.xml"/>
+  <Relationship Id="rId3" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/extended-properties" Target="docProps/app.xml"/>
+</Relationships>''')
+        zf.writestr("docProps/core.xml", '''<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<cp:coreProperties xmlns:cp="http://schemas.openxmlformats.org/package/2006/metadata/core-properties" xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:dcterms="http://purl.org/dc/terms/" xmlns:dcmitype="http://purl.org/dc/dcmitype/" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
   <dc:creator>SnappySjaak UKdocs</dc:creator>
   <cp:lastModifiedBy>SnappySjaak UKdocs</cp:lastModifiedBy>
-  <dcterms:created xsi:type=\"dcterms:W3CDTF\">2026-06-18T00:00:00Z</dcterms:created>
-  <dcterms:modified xsi:type=\"dcterms:W3CDTF\">2026-06-18T00:00:00Z</dcterms:modified>
-</cp:coreProperties>""")
-        zf.writestr("docProps/app.xml", f"""<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>
-<Properties xmlns=\"http://schemas.openxmlformats.org/officeDocument/2006/extended-properties\" xmlns:vt=\"http://schemas.openxmlformats.org/officeDocument/2006/docPropsVTypes\">
+  <dcterms:created xsi:type="dcterms:W3CDTF">2026-06-18T00:00:00Z</dcterms:created>
+  <dcterms:modified xsi:type="dcterms:W3CDTF">2026-06-18T00:00:00Z</dcterms:modified>
+</cp:coreProperties>''')
+        zf.writestr("docProps/app.xml", f'''<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Properties xmlns="http://schemas.openxmlformats.org/officeDocument/2006/extended-properties" xmlns:vt="http://schemas.openxmlformats.org/officeDocument/2006/docPropsVTypes">
   <Application>SnappySjaak UKdocs</Application>
-  <TitlesOfParts><vt:vector size=\"1\" baseType=\"lpstr\"><vt:lpstr>{escape_xml(sheet_name)}</vt:lpstr></vt:vector></TitlesOfParts>
-</Properties>""")
-        zf.writestr("xl/workbook.xml", f"""<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>
-<workbook xmlns=\"{NS_MAIN}\" xmlns:r=\"{NS_REL}\">
-  <sheets><sheet name=\"{escape_xml(sheet_name)}\" sheetId=\"1\" r:id=\"rId1\"/></sheets>
-</workbook>""")
-        zf.writestr("xl/_rels/workbook.xml.rels", f"""<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>
-<Relationships xmlns=\"{NS_PKG_REL}\">
-  <Relationship Id=\"rId1\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet\" Target=\"worksheets/sheet1.xml\"/>
-  <Relationship Id=\"rId2\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles\" Target=\"styles.xml\"/>
-</Relationships>""")
-        zf.writestr("xl/styles.xml", """<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>
-<styleSheet xmlns=\"http://schemas.openxmlformats.org/spreadsheetml/2006/main\">
-  <fonts count=\"1\"><font><sz val=\"11\"/><name val=\"Calibri\"/></font></fonts>
-  <fills count=\"1\"><fill><patternFill patternType=\"none\"/></fill></fills>
-  <borders count=\"1\"><border/></borders>
-  <cellStyleXfs count=\"1\"><xf/></cellStyleXfs>
-  <cellXfs count=\"1\"><xf xfId=\"0\"/></cellXfs>
-  <cellStyles count=\"1\"><cellStyle name=\"Normal\" xfId=\"0\" builtinId=\"0\"/></cellStyles>
-</styleSheet>""")
-        zf.writestr("xl/worksheets/sheet1.xml", build_sheet_xml(cell_map))
+  <TitlesOfParts><vt:vector size="1" baseType="lpstr"><vt:lpstr>{escape_xml(sheet_name)}</vt:lpstr></vt:vector></TitlesOfParts>
+</Properties>''')
+        zf.writestr("xl/workbook.xml", f'''<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<workbook xmlns="{NS_MAIN}" xmlns:r="{NS_REL}">
+  <sheets><sheet name="{escape_xml(sheet_name)}" sheetId="1" r:id="rId1"/></sheets>
+</workbook>''')
+        zf.writestr("xl/_rels/workbook.xml.rels", f'''<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="{NS_PKG_REL}">
+  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/>
+  <Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/>
+</Relationships>''')
+        zf.writestr("xl/styles.xml", STYLES_XML)
+        zf.writestr("xl/worksheets/sheet1.xml", build_sheet_xml(cell_map, style_map=style_map, column_widths=column_widths, row_heights=row_heights, include_drawing=include_image))
+        if include_image:
+            zf.writestr("xl/worksheets/_rels/sheet1.xml.rels", f'''<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="{NS_PKG_REL}">
+  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/drawing" Target="../drawings/drawing1.xml"/>
+</Relationships>''')
+            zf.writestr("xl/drawings/drawing1.xml", build_drawing_xml(image))
+            zf.writestr("xl/drawings/_rels/drawing1.xml.rels", f'''<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="{NS_PKG_REL}">
+  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="../media/image1.{image_ext}"/>
+</Relationships>''')
+            zf.writestr(f"xl/media/image1.{image_ext}", image["bytes"])
     return output.getvalue()
 
 
 def build_export_workbook(analysis):
     shipment = analysis["shipment"]
     customer = analysis.get("customer") or {}
+    company = analysis.get("company") or {}
     cells = rows_to_dense_map([
         ["Reference", "Owner", "Regulation", "Country of destination", "Total gross mass", "Total number of packages", "Location", "Marks and numbers", "Container number", "Border transport mode", "Border transport nationality", "Delivery terms", "Delivery terms city", "Customs office of exit"],
         [shipment.get("export_header_reference") or shipment["reference_line"], shipment["owner"], shipment["regulation"], shipment["destination_country"], analysis["combined_totals"]["gross_kg"], analysis["combined_totals"]["packages"], shipment["location"], shipment["marks_and_numbers"], shipment["container_number"], shipment["border_transport_mode"], shipment["border_transport_nationality"], shipment["delivery_terms"], shipment["delivery_terms_city"], shipment["customs_office_of_exit"]],
-        ["Goods description", "Commodity code", "Net weight", "Quantity", "Customs value", "Ctns per regel ", "Bruto per regel ", "oorsprong ", "Certificate Origin", "Bio Certificate ", "KCB Number", "Phyto number "],
+        ["Goods description", "Commodity code", "Net weight", "Quantity", "Customs value", "Ctns per regel", "Bruto per regel", "oorsprong", "Certificate Origin", "Bio Certificate", "KCB Number", "Phyto number"],
     ])
+    style_map = {}
+    column_widths = {
+        1: 22.73,
+        2: 15.27,
+        3: 10.86,
+        4: 18.86,
+        5: 18.40,
+        6: 21.13,
+        7: 15.13,
+        8: 15.60,
+        9: 15.60,
+        10: 19.13,
+        11: 23.40,
+        12: 14.73,
+        13: 18.86,
+        14: 21.86,
+        15: 19.13,
+    }
+    row_heights = {1: 18, 2: 18, 3: 18}
+
+    for col in range(1, 15):
+        style_map[(1, col)] = "export_header"
+    for col in range(1, 13):
+        style_map[(3, col)] = "table_header"
+    cells[(1, 15)] = " "
+
     export_row_start = 4
     for index, row in enumerate(analysis["export_rows"]):
         row_number = export_row_start + index
@@ -526,24 +698,44 @@ def build_export_workbook(analysis):
         cells[(row_number, 6)] = row["packages"]
         cells[(row_number, 7)] = row["gross_kg"]
         cells[(row_number, 8)] = row["origin"]
+        for col in range(1, 13):
+            if col <= 8:
+                style_map[(row_number, col)] = "export_goods"
+            else:
+                cells[(row_number, col)] = " "
+                style_map[(row_number, col)] = "default"
+
     details = [
-        (4, 13, "Additional Information "),
+        (4, 13, "Additional Information"),
         (5, 13, "Importer"), (5, 14, shipment["customer_importer_number"]),
         (6, 14, customer.get("customer_name", "")),
         (7, 13, "Invoice number"), (7, 14, shipment["invoice_numbers"]),
-        (8, 13, "Trailer number "), (8, 14, shipment["trailer_number"]),
+        (8, 13, "Trailer number"), (8, 14, shipment["trailer_number"]),
         (9, 13, "Vessel"), (9, 14, shipment["vessel"]),
         (11, 13, "Port of UK Arrival"), (11, 14, shipment["uk_arrival_port"]),
         (12, 13, "Currency of invoice"), (12, 14, shipment["currency"]),
         (13, 15, "Currency"),
-        (14, 13, "Freight costs"), (14, 15, shipment["currency"]),
-        (15, 13, "Insurance "),
-        (16, 13, "Inland freight "), (16, 15, shipment["currency"]),
+        (14, 13, "Freight costs"), (14, 14, shipment["freight_costs"]), (14, 15, shipment["currency"]),
+        (15, 13, "Insurance"), (15, 14, shipment["insurance"]),
+        (16, 13, "Inland freight"), (16, 15, shipment["currency"]),
     ]
     for row, col, value in details:
         if value:
             cells[(row, col)] = value
-    return build_xlsx(cells)
+            if col == 13 or (row == 13 and col == 15):
+                style_map[(row, col)] = "detail_label"
+            elif col == 14:
+                style_map[(row, col)] = "detail_value"
+            else:
+                style_map[(row, col)] = "detail_value_plain"
+
+    for row in range(4, max(17, export_row_start + len(analysis["export_rows"]))):
+        for col in range(13, 16):
+            if (row, col) not in cells:
+                cells[(row, col)] = " "
+                style_map[(row, col)] = "detail_label_plain" if col == 13 else ("detail_value" if col == 14 else "detail_value_plain")
+
+    return build_xlsx(cells, sheet_name="Export", style_map=style_map, column_widths=column_widths, row_heights=row_heights)
 
 
 def build_invoice_workbook(analysis, category_code):
@@ -552,31 +744,73 @@ def build_invoice_workbook(analysis, category_code):
     shipment = analysis["shipment"]
     company = analysis["company"]
     cells = {}
-    address_lines = str(customer.get("customer_address", "") or "").splitlines()
-    cells[(4, 2)] = customer.get("customer_name", "")
-    if len(address_lines) > 0:
-        cells[(5, 2)] = address_lines[0]
-    if len(address_lines) > 1:
-        cells[(6, 2)] = address_lines[1]
-    cells[(7, 2)] = f'VAT NR {customer.get("vat_number", "")}'
-    cells[(8, 2)] = f'EORI NR {customer.get("importer_number") or customer.get("eori_number") or ""}'
-    cells[(9, 2)] = customer.get("importer_number") or ""
-    cells[(10, 2)] = "Date :"
-    cells[(10, 3)] = excel_date_serial(shipment["shipment_date_excel"])
-    cells[(11, 2)] = "Invoice nr :"
-    cells[(11, 3)] = category["invoice_number"]
-    cells[(11, 4)] = "custom summary"
-    cells[(12, 2)] = "Licence Truck : "
-    cells[(12, 3)] = shipment["trailer_number"]
-    cells[(13, 2)] = "Delivery Terms : "
-    cells[(13, 3)] = shipment["delivery_terms"]
+    style_map = {}
+    column_widths = {
+        1: 4,
+        2: 16,
+        3: 21.86,
+        4: 21.86,
+        5: 12,
+        6: 14.27,
+        7: 14.27,
+        8: 12,
+        9: 14.27,
+    }
+    row_heights = {
+        10: 12.95,
+        11: 12.95,
+        12: 12.95,
+        13: 12.95,
+        14: 12.95,
+        15: 12.95,
+        17: 12.95,
+        18: 13.7,
+        19: 13.7,
+        20: 12.95,
+        24: 12.95,
+    }
 
-    table_header_row = 16
-    header_values = ["classificationType TARIC ", "Goods description", "Origin", "Quantity", "Gross kg", "Net kg", "Packages", "Value"]
+    shipment_date = clean_text(shipment.get("shipment_date_excel"))
+    if shipment_date:
+        try:
+            shipment_date = datetime.strptime(shipment_date, "%Y-%m-%d").strftime("%d-%m-%Y")
+        except ValueError:
+            pass
+
+    customer_lines = [customer.get("customer_name", "")]
+    customer_lines.extend(str(customer.get("customer_address", "") or "").splitlines())
+    customer_lines.append(f'VAT NR {customer.get("vat_number", "")}')
+    customer_lines.append(f'EORI NR {customer.get("importer_number") or customer.get("eori_number") or ""}')
+    customer_lines.append(customer.get("importer_number") or "")
+    for offset, value in enumerate(customer_lines[:6], start=10):
+        cells[(offset, 2)] = value
+        style_map[(offset, 2)] = "footer"
+
+    cells[(17, 2)] = "Date :"
+    cells[(17, 3)] = shipment_date
+    cells[(18, 2)] = "Invoice nr :"
+    cells[(18, 3)] = category["invoice_number"]
+    cells[(18, 4)] = "custom summary"
+    cells[(19, 2)] = "Licence Truck :"
+    cells[(19, 3)] = shipment["trailer_number"]
+    cells[(20, 2)] = "Delivery Terms :"
+    cells[(20, 3)] = shipment["delivery_terms"]
+    for row, col in [(17, 2), (18, 2), (18, 4), (19, 2), (20, 2)]:
+        style_map[(row, col)] = "bold"
+    for row, col in [(17, 3), (18, 3), (19, 3), (20, 3)]:
+        style_map[(row, col)] = "footer"
+
+    table_header_row = 24
+    cells[(table_header_row, 1)] = " "
+    style_map[(table_header_row, 1)] = "table_header"
+    header_values = ["classificationType TARIC", "Goods description", "Origin", "Quantity", "Gross kg", "Net kg", "Packages", "Value"]
     for offset, value in enumerate(header_values, start=2):
         cells[(table_header_row, offset)] = value
+        style_map[(table_header_row, offset)] = "table_header"
     row_number = table_header_row + 1
     for line in category["invoice_rows"]:
+        cells[(row_number, 1)] = " "
+        style_map[(row_number, 1)] = "footer"
         cells[(row_number, 2)] = line["commodity_code"]
         cells[(row_number, 3)] = line["description"]
         cells[(row_number, 4)] = line["origin"]
@@ -585,12 +819,24 @@ def build_invoice_workbook(analysis, category_code):
         cells[(row_number, 7)] = line["net_kg"]
         cells[(row_number, 8)] = line["packages"]
         cells[(row_number, 9)] = line["customs_value"]
+        for col in range(2, 10):
+            style_map[(row_number, col)] = "footer"
+        row_heights[row_number] = 10.9
         row_number += 1
 
-    hs_header_row = row_number + 2
+    separator_row = row_number
+    for col in [6, 7, 9]:
+        cells[(separator_row, col)] = " "
+        style_map[(separator_row, col)] = "footer"
+    row_heights[separator_row] = 10.9
+
+    hs_header_row = separator_row + 1
     hs_header_values = ["classificationTyp HS", "Goods description", "Quantity", "gros kg", "net kg", "Packages", "Value"]
     for offset, value in enumerate(hs_header_values, start=3):
         cells[(hs_header_row, offset)] = value
+        style_map[(hs_header_row, offset)] = "table_header"
+    row_heights[hs_header_row] = 10.9
+
     row_number = hs_header_row + 1
     for line in category["hs_summary_rows"]:
         cells[(row_number, 3)] = normalize_invoice_hs_code(line["hs_code"])
@@ -600,18 +846,25 @@ def build_invoice_workbook(analysis, category_code):
         cells[(row_number, 7)] = line["net_kg"]
         cells[(row_number, 8)] = line["packages"]
         cells[(row_number, 9)] = line["customs_value"]
+        for col in range(3, 10):
+            style_map[(row_number, col)] = "footer"
+        row_heights[row_number] = 10.9
         row_number += 1
-    totals_row = row_number
-    cells[(totals_row, 4)] = "TOTALS"
-    cells[(totals_row, 5)] = category["totals"]["quantity"]
-    cells[(totals_row, 6)] = category["totals"]["gross_kg"]
-    cells[(totals_row, 7)] = category["totals"]["net_kg"]
-    cells[(totals_row, 8)] = category["totals"]["packages"]
-    cells[(totals_row, 9)] = category["totals"]["customs_value"]
 
-    footer_row = totals_row + 7
+    totals_row = row_number + 1
+    cells[(totals_row, 6)] = "TOTALS"
+    cells[(totals_row, 7)] = category["totals"]["net_kg"]
+    cells[(totals_row, 9)] = category["totals"]["customs_value"]
+    style_map[(totals_row, 6)] = "bold"
+    style_map[(totals_row, 7)] = "footer"
+    style_map[(totals_row, 9)] = "footer"
+    row_heights[totals_row] = 10.9
+
+    footer_row = max(totals_row + 6, 36)
     cells[(footer_row, 3)] = company.get("company_name", "")
+    style_map[(footer_row, 3)] = "bold"
     cells[(footer_row, 7)] = f'VAT nr : {company.get("vat_number", "")}'
+    style_map[(footer_row, 7)] = "footer"
     address_lines = str(company.get("address", "") or "").splitlines()
     if len(address_lines) > 0:
         cells[(footer_row + 1, 3)] = address_lines[0]
@@ -627,7 +880,17 @@ def build_invoice_workbook(analysis, category_code):
     cells[(footer_row + 5, 7)] = f'rex registration : {company.get("rex_registration", "")}'
     cells[(footer_row + 6, 3)] = company.get("default_footer_text", "")
     cells[(footer_row + 7, 3)] = company.get("preferential_origin_declaration", "")
-    return build_xlsx(cells)
+    for row in range(footer_row + 1, footer_row + 8):
+        row_heights[row] = 10.9
+        if cells.get((row, 3)):
+            style_map[(row, 3)] = "footer"
+        if cells.get((row, 7)):
+            style_map[(row, 7)] = "footer"
+
+    logo_image = resolve_logo_image(company)
+    if logo_image:
+        logo_image = {**logo_image, "from_col": 1, "from_row": 1}
+    return build_xlsx(cells, sheet_name="Invoice", style_map=style_map, column_widths=column_widths, row_heights=row_heights, image=logo_image)
 
 
 def build_audit_workbook(analysis):
