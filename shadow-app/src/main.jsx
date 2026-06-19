@@ -1939,6 +1939,7 @@ function UkdocsPage({ currentUser }) {
       company_settings: companySettings,
       export_defaults: activeExportDefaults,
       column_mappings: columnMappings,
+      templates: state?.templates || {},
     };
   }
 

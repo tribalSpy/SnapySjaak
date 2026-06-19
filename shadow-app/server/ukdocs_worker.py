@@ -4,12 +4,18 @@ import io
 import json
 import re
 import sys
+from copy import copy
 from collections import defaultdict
 from datetime import datetime
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from zipfile import ZIP_DEFLATED, ZipFile
 import xml.etree.ElementTree as ET
+
+try:
+    from openpyxl import load_workbook
+except ImportError:
+    load_workbook = None
 
 NS_MAIN = "http://schemas.openxmlformats.org/spreadsheetml/2006/main"
 NS_REL = "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
@@ -666,7 +672,302 @@ def build_xlsx(cell_map, sheet_name="Blad1", style_map=None, column_widths=None,
     return output.getvalue()
 
 
-def build_export_workbook(analysis):
+PUBLIC_DIR = Path(__file__).resolve().parent.parent / "public"
+
+
+def resolve_template_path(name):
+    template_name = clean_text(name)
+    if not template_name:
+        return None
+    candidate = PUBLIC_DIR / template_name.lstrip("/")
+    if candidate.exists() and candidate.is_file():
+        return candidate
+    return None
+
+
+def load_template_sheet(template_name, kind):
+    if not clean_text(template_name):
+        return None, None
+    if load_workbook is None:
+        raise RuntimeError(f"openpyxl is required to generate {kind} files from templates")
+    template_path = resolve_template_path(template_name)
+    if not template_path:
+        raise RuntimeError(f'{kind.title()} template not found: {template_name}')
+    workbook = load_workbook(template_path)
+    return workbook, workbook[workbook.sheetnames[0]]
+
+
+def workbook_to_bytes(workbook):
+    output = io.BytesIO()
+    workbook.save(output)
+    return output.getvalue()
+
+
+def excel_value(value):
+    if isinstance(value, Decimal):
+        return float(value)
+    if isinstance(value, str):
+        return strip_invalid_xml_chars(value)
+    return value
+
+
+def set_sheet_value(sheet, row, col, value):
+    sheet.cell(row=row, column=col).value = excel_value(value)
+
+
+def clear_sheet_range(sheet, start_row, end_row, start_col, end_col):
+    if end_row < start_row or end_col < start_col:
+        return
+    for row in range(start_row, end_row + 1):
+        for col in range(start_col, end_col + 1):
+            sheet.cell(row=row, column=col).value = None
+
+
+def copy_row_format(sheet, source_row, target_row, max_col):
+    if source_row <= 0 or target_row <= 0 or source_row == target_row:
+        return
+    source_dimensions = sheet.row_dimensions[source_row]
+    target_dimensions = sheet.row_dimensions[target_row]
+    target_dimensions.height = source_dimensions.height
+    target_dimensions.hidden = source_dimensions.hidden
+    for col in range(1, max_col + 1):
+        source_cell = sheet.cell(row=source_row, column=col)
+        target_cell = sheet.cell(row=target_row, column=col)
+        if source_cell.has_style:
+            target_cell._style = copy(source_cell._style)
+        if source_cell.number_format:
+            target_cell.number_format = source_cell.number_format
+        if source_cell.font:
+            target_cell.font = copy(source_cell.font)
+        if source_cell.fill:
+            target_cell.fill = copy(source_cell.fill)
+        if source_cell.border:
+            target_cell.border = copy(source_cell.border)
+        if source_cell.alignment:
+            target_cell.alignment = copy(source_cell.alignment)
+        if source_cell.protection:
+            target_cell.protection = copy(source_cell.protection)
+
+
+def row_contains_terms(sheet, row_index, terms):
+    values = [clean_text(sheet.cell(row=row_index, column=col).value).lower() for col in range(1, sheet.max_column + 1)]
+    return all(any(term in value for value in values) for term in terms)
+
+
+def find_row_with_terms(sheet, terms, start_row=1):
+    normalized_terms = [clean_text(term).lower() for term in terms if clean_text(term)]
+    for row_index in range(max(1, start_row), sheet.max_row + 1):
+        if row_contains_terms(sheet, row_index, normalized_terms):
+            return row_index
+    return 0
+
+
+def find_cell_containing(sheet, needle, start_row=1):
+    wanted = clean_text(needle).lower()
+    for row_index in range(max(1, start_row), sheet.max_row + 1):
+        for col_index in range(1, sheet.max_column + 1):
+            value = clean_text(sheet.cell(row=row_index, column=col_index).value).lower()
+            if wanted and wanted in value:
+                return row_index, col_index
+    return 0, 0
+
+
+def format_shipment_date(date_text):
+    text = clean_text(date_text)
+    if not text:
+        return ""
+    try:
+        return datetime.strptime(text, "%Y-%m-%d").strftime("%d-%m-%Y")
+    except ValueError:
+        return text
+
+
+def write_invoice_template(workbook, sheet, analysis, category_code):
+    category = next(item for item in analysis["categories"] if item["code"] == category_code)
+    customer = analysis["customer"]
+    shipment = analysis["shipment"]
+    company = analysis["company"]
+
+    customer_lines = [customer.get("customer_name", "")]
+    customer_lines.extend(str(customer.get("customer_address", "") or "").splitlines())
+    customer_lines.append(f'VAT NR {customer.get("vat_number", "")}')
+    customer_lines.append(f'EORI NR {customer.get("importer_number") or customer.get("eori_number") or ""}')
+    customer_lines.append(customer.get("importer_number") or "")
+    while len(customer_lines) < 6:
+        customer_lines.append("")
+    for offset, value in enumerate(customer_lines[:6], start=4):
+        set_sheet_value(sheet, offset, 2, value)
+
+    date_row, date_col = find_cell_containing(sheet, "Date")
+    invoice_row, invoice_col = find_cell_containing(sheet, "Invoice nr")
+    licence_row, licence_col = find_cell_containing(sheet, "Licence Truck")
+    if not licence_row:
+        licence_row, licence_col = find_cell_containing(sheet, "License Truck")
+    delivery_row, delivery_col = find_cell_containing(sheet, "Delivery T")
+
+    if date_row and date_col:
+        set_sheet_value(sheet, date_row, date_col + 1, format_shipment_date(shipment.get("shipment_date_excel")))
+    if invoice_row and invoice_col:
+        set_sheet_value(sheet, invoice_row, invoice_col + 1, category.get("invoice_number", ""))
+        set_sheet_value(sheet, invoice_row, invoice_col + 2, "custom summary")
+    if licence_row and licence_col:
+        set_sheet_value(sheet, licence_row, licence_col + 1, shipment.get("trailer_number", ""))
+    if delivery_row and delivery_col:
+        set_sheet_value(sheet, delivery_row, delivery_col + 1, shipment.get("delivery_terms", ""))
+
+    table_header_row = find_row_with_terms(sheet, ["goods description", "origin"], 1) or 16
+    hs_header_row = find_row_with_terms(sheet, ["goods description", "packages"], table_header_row + 1) or (table_header_row + 4)
+    footer_row = find_row_with_terms(sheet, ["vat nr"], hs_header_row + 1) or max(sheet.max_row - 7, hs_header_row + 8)
+
+    invoice_start_row = table_header_row + 1
+    existing_invoice_space = max(hs_header_row - invoice_start_row - 1, 0)
+    needed_invoice_space = len(category["invoice_rows"]) + 1
+    if needed_invoice_space > existing_invoice_space:
+        extra_rows = needed_invoice_space - existing_invoice_space
+        template_row = invoice_start_row
+        sheet.insert_rows(hs_header_row, extra_rows)
+        for index in range(extra_rows):
+            copy_row_format(sheet, template_row, hs_header_row + index, 10)
+        hs_header_row += extra_rows
+        footer_row += extra_rows
+
+    clear_sheet_range(sheet, invoice_start_row, hs_header_row - 1, 1, 10)
+    headers = ["classificationType TARIC", "Goods description", "Origin", "Quantity", "Gross kg", "Net kg", "Packages", "Value"]
+    for offset, value in enumerate(headers, start=2):
+        set_sheet_value(sheet, table_header_row, offset, value)
+
+    row_number = invoice_start_row
+    for line in category["invoice_rows"]:
+        set_sheet_value(sheet, row_number, 2, line["commodity_code"])
+        set_sheet_value(sheet, row_number, 3, line["description"])
+        set_sheet_value(sheet, row_number, 4, line["origin"])
+        set_sheet_value(sheet, row_number, 5, line["quantity"])
+        set_sheet_value(sheet, row_number, 6, line["gross_kg"])
+        set_sheet_value(sheet, row_number, 7, line["net_kg"])
+        set_sheet_value(sheet, row_number, 8, line["packages"])
+        set_sheet_value(sheet, row_number, 9, line["customs_value"])
+        row_number += 1
+
+    hs_header_row = max(hs_header_row, row_number + 1)
+    clear_sheet_range(sheet, row_number, hs_header_row - 1, 1, 10)
+
+    hs_headers = ["classificationTyp HS", "Goods description", "Quantity", "gros kg", "net kg", "Packages", "Value"]
+    for offset, value in enumerate(hs_headers, start=3):
+        set_sheet_value(sheet, hs_header_row, offset, value)
+
+    hs_start_row = hs_header_row + 1
+    existing_hs_space = max(footer_row - hs_start_row - 1, 0)
+    needed_hs_space = len(category["hs_summary_rows"]) + 2
+    if needed_hs_space > existing_hs_space:
+        extra_rows = needed_hs_space - existing_hs_space
+        template_row = hs_start_row
+        sheet.insert_rows(footer_row, extra_rows)
+        for index in range(extra_rows):
+            copy_row_format(sheet, template_row, footer_row + index, 10)
+        footer_row += extra_rows
+
+    clear_sheet_range(sheet, hs_start_row, footer_row - 1, 3, 10)
+    row_number = hs_start_row
+    for line in category["hs_summary_rows"]:
+        set_sheet_value(sheet, row_number, 3, normalize_invoice_hs_code(line["hs_code"]))
+        set_sheet_value(sheet, row_number, 4, line["description"])
+        set_sheet_value(sheet, row_number, 5, line["quantity"])
+        set_sheet_value(sheet, row_number, 6, line["gross_kg"])
+        set_sheet_value(sheet, row_number, 7, line["net_kg"])
+        set_sheet_value(sheet, row_number, 8, line["packages"])
+        set_sheet_value(sheet, row_number, 9, line["customs_value"])
+        row_number += 1
+
+    totals_row = row_number + 1
+    set_sheet_value(sheet, totals_row, 6, "TOTALS")
+    set_sheet_value(sheet, totals_row, 7, category["totals"]["net_kg"])
+    set_sheet_value(sheet, totals_row, 9, category["totals"]["customs_value"])
+
+    clear_sheet_range(sheet, footer_row, footer_row + 7, 3, 8)
+    set_sheet_value(sheet, footer_row, 3, company.get("company_name", ""))
+    set_sheet_value(sheet, footer_row, 7, f'VAT nr : {company.get("vat_number", "")}')
+    address_lines = str(company.get("address", "") or "").splitlines()
+    if len(address_lines) > 0:
+        set_sheet_value(sheet, footer_row + 1, 3, address_lines[0])
+    if len(address_lines) > 1:
+        set_sheet_value(sheet, footer_row + 2, 3, address_lines[1])
+    set_sheet_value(sheet, footer_row + 1, 7, f'EORI nr:{company.get("eori_number", "")}')
+    set_sheet_value(sheet, footer_row + 2, 7, f'Chamber of Commerce : {company.get("chamber_of_commerce_number", "")}')
+    set_sheet_value(sheet, footer_row + 3, 3, f'tel {company.get("phone", "")}'.strip())
+    set_sheet_value(sheet, footer_row + 3, 7, f'IBAN : {company.get("iban", "")}')
+    set_sheet_value(sheet, footer_row + 4, 3, f'email : {company.get("email", "")}'.strip())
+    set_sheet_value(sheet, footer_row + 4, 7, f'BIC/SWIFT : {company.get("bic_swift", "")}')
+    set_sheet_value(sheet, footer_row + 5, 3, f'web :  {company.get("website", "")}'.strip())
+    set_sheet_value(sheet, footer_row + 5, 7, f'rex registration : {company.get("rex_registration", "")}')
+    set_sheet_value(sheet, footer_row + 6, 3, company.get("default_footer_text", ""))
+    set_sheet_value(sheet, footer_row + 7, 3, company.get("preferential_origin_declaration", ""))
+
+    return workbook_to_bytes(workbook)
+
+
+def write_export_template(workbook, sheet, analysis):
+    shipment = analysis["shipment"]
+    customer = analysis.get("customer") or {}
+
+    header_row = find_row_with_terms(sheet, ["reference", "owner", "regulation"], 1) or 1
+    value_row = header_row + 1
+    goods_header_row = find_row_with_terms(sheet, ["goods description", "commodity code", "net weight"], value_row) or 3
+    data_start_row = goods_header_row + 1
+
+    header_values = [
+        "Reference", "Owner", "Regulation", "Country of destination", "Total gross mass", "Total number of packages", "Location", "Marks and numbers", "Container number", "Border transport mode", "Border transport nationality", "Delivery terms", "Delivery terms city", "Customs office of exit"
+    ]
+    for index, value in enumerate(header_values, start=1):
+        set_sheet_value(sheet, header_row, index, value)
+
+    value_values = [
+        shipment.get("export_header_reference") or shipment["reference_line"], shipment["owner"], shipment["regulation"], shipment["destination_country"], analysis["combined_totals"]["gross_kg"], analysis["combined_totals"]["packages"], shipment["location"], shipment["marks_and_numbers"], shipment["container_number"], shipment["border_transport_mode"], shipment["border_transport_nationality"], shipment["delivery_terms"], shipment["delivery_terms_city"], shipment["customs_office_of_exit"],
+    ]
+    for index, value in enumerate(value_values, start=1):
+        set_sheet_value(sheet, value_row, index, value)
+
+    goods_headers = ["Goods description", "Commodity code", "Net weight", "Quantity", "Customs value", "Ctns per regel", "Bruto per regel", "oorsprong", "Certificate Origin", "Bio Certificate", "KCB Number", "Phyto number"]
+    for index, value in enumerate(goods_headers, start=1):
+        set_sheet_value(sheet, goods_header_row, index, value)
+
+    existing_max_row = max(sheet.max_row, data_start_row + len(analysis["export_rows"]) + 5)
+    clear_sheet_range(sheet, data_start_row, existing_max_row, 1, 12)
+    template_row = data_start_row
+    for index, row in enumerate(analysis["export_rows"]):
+        row_number = data_start_row + index
+        if row_number > sheet.max_row:
+            copy_row_format(sheet, template_row, row_number, 15)
+        set_sheet_value(sheet, row_number, 1, row["description"])
+        set_sheet_value(sheet, row_number, 2, row["commodity_code"])
+        set_sheet_value(sheet, row_number, 3, row["net_kg"])
+        set_sheet_value(sheet, row_number, 4, row["quantity"])
+        set_sheet_value(sheet, row_number, 5, row["customs_value"])
+        set_sheet_value(sheet, row_number, 6, row["packages"])
+        set_sheet_value(sheet, row_number, 7, row["gross_kg"])
+        set_sheet_value(sheet, row_number, 8, row["origin"])
+
+    detail_values = {
+        4: {13: "Additional Information"},
+        5: {13: "Importer", 14: shipment["customer_importer_number"]},
+        6: {14: customer.get("customer_name", "")},
+        7: {13: "Invoice number", 14: shipment["invoice_numbers"]},
+        8: {13: "Trailer number", 14: shipment["trailer_number"]},
+        9: {13: "Vessel", 14: shipment["vessel"]},
+        11: {13: "Port of UK Arrival", 14: shipment["uk_arrival_port"]},
+        12: {13: "Currency of invoice", 14: shipment["currency"]},
+        13: {15: "Currency"},
+        14: {13: "Freight costs", 14: shipment["freight_costs"], 15: shipment["currency"]},
+        15: {13: "Insurance", 14: shipment["insurance"]},
+        16: {13: "Inland freight", 15: shipment["currency"]},
+    }
+    for row_index, columns in detail_values.items():
+        for col_index, value in columns.items():
+            set_sheet_value(sheet, row_index, col_index, value)
+
+    return workbook_to_bytes(workbook)
+
+
+def build_export_workbook_raw(analysis):
     shipment = analysis["shipment"]
     customer = analysis.get("customer") or {}
     company = analysis.get("company") or {}
@@ -752,7 +1053,7 @@ def build_export_workbook(analysis):
     return build_xlsx(cells, sheet_name="Export", style_map=style_map, column_widths=column_widths, row_heights=row_heights)
 
 
-def build_invoice_workbook(analysis, category_code):
+def build_invoice_workbook_raw(analysis, category_code):
     category = next(item for item in analysis["categories"] if item["code"] == category_code)
     customer = analysis["customer"]
     shipment = analysis["shipment"]
@@ -905,6 +1206,22 @@ def build_invoice_workbook(analysis, category_code):
     if logo_image:
         logo_image = {**logo_image, "from_col": 1, "from_row": 1}
     return build_xlsx(cells, sheet_name="Invoice", style_map=style_map, column_widths=column_widths, row_heights=row_heights, image=logo_image)
+
+
+def build_export_workbook(analysis):
+    template_name = clean_text((analysis.get("templates") or {}).get("export_template_name"))
+    if template_name:
+        workbook, sheet = load_template_sheet(template_name, "export")
+        return write_export_template(workbook, sheet, analysis)
+    return build_export_workbook_raw(analysis)
+
+
+def build_invoice_workbook(analysis, category_code):
+    template_name = clean_text((analysis.get("templates") or {}).get("invoice_template_name"))
+    if template_name:
+        workbook, sheet = load_template_sheet(template_name, "invoice")
+        return write_invoice_template(workbook, sheet, analysis, category_code)
+    return build_invoice_workbook_raw(analysis, category_code)
 
 
 def build_audit_workbook(analysis):
@@ -1065,6 +1382,7 @@ def analyze_payload(payload):
         "shipment": shipment,
         "customer": customer,
         "company": company,
+        "templates": payload.get("templates") or {},
     }
 
 
