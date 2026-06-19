@@ -877,6 +877,8 @@ function normalizeUkdocsCustomer(customer) {
     vat_number: normalizeUkdocsText(customer?.vat_number),
     eori_number: normalizeUkdocsText(customer?.eori_number),
     importer_number: normalizeUkdocsText(customer?.importer_number),
+    default_owner: normalizeUkdocsText(customer?.default_owner),
+    default_importer: normalizeUkdocsText(customer?.default_importer),
     default_delivery_terms: normalizeUkdocsText(customer?.default_delivery_terms),
     default_city: normalizeUkdocsText(customer?.default_city),
     default_uk_arrival_port: normalizeUkdocsText(customer?.default_uk_arrival_port),
