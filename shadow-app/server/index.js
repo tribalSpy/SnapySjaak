@@ -1777,7 +1777,7 @@ function parseDashboardSheetRows(rows) {
 
   return sourceRows
     .map((row, index) => normalizeFustAction({
-      id: `sheet-${index + 1}`,
+      id: rowValue(row, 17) || `sheet-${index + 1}`,
       type: rowValue(row, 0).toLowerCase() === "uitgaand" ? "OUT" : "IN",
       day_name: rowValue(row, 1),
       action_date: parseSheetDateToIso(rowValue(row, 2)),
@@ -1799,7 +1799,7 @@ function parseDashboardSheetRows(rows) {
       },
       created_by: "spreadsheet",
       created_at: "",
-      sheet_sync: { ok: true, target_sheets: ["Dashboard"], error: "" },
+      sheet_sync: { ok: true, target_sheets: ["Dashboard"], error: "", row_number: index + (hasHeaderRow ? 2 : 1) },
       email_sync: { ok: true, recipients: [], error: "" },
     }))
     .filter((action) => action.customer_name && action.country);
@@ -1816,7 +1816,7 @@ function parseRegistrySheetRows(rows, type) {
 
   return sourceRows
     .map((row, index) => normalizeFustAction({
-      id: `${type.toLowerCase()}-sheet-${index + 1}`,
+      id: rowValue(row, 16) || `${type.toLowerCase()}-sheet-${index + 1}`,
       type,
       day_name: rowValue(row, 0),
       action_date: parseSheetDateToIso(rowValue(row, 1)),
@@ -1838,7 +1838,7 @@ function parseRegistrySheetRows(rows, type) {
       },
       created_by: "spreadsheet",
       created_at: "",
-      sheet_sync: { ok: true, target_sheets: [type === "OUT" ? "Uitgaand" : "Retour"], error: "" },
+      sheet_sync: { ok: true, target_sheets: [type === "OUT" ? "Uitgaand" : "Retour"], error: "", row_number: index + (hasHeaderRow ? 2 : 1) },
       email_sync: { ok: true, recipients: [], error: "" },
     }))
     .filter((action) => action.customer_name && action.country);
@@ -1862,7 +1862,7 @@ function fustSheetRow(action) {
     "",
     action.fustbon_reference || "",
     action.fustfactuur_reference || "",
-    "",
+    action.id || "",
   ];
 }
 
@@ -1885,8 +1885,25 @@ function fustDashboardRow(action) {
     "",
     action.fustbon_reference || "",
     action.fustfactuur_reference || "",
-    "",
+    action.id || "",
   ];
+}
+
+function findFustSheetRowNumberByActionId(rows, actionId) {
+  if (!actionId || !Array.isArray(rows) || !rows.length) {
+    return 0;
+  }
+  const headers = Array.isArray(rows[0]) ? rows[0].map(normalizeHeader) : [];
+  const hasHeaderRow = headers.includes("klantnaam") || headers.includes("dag") || headers.includes("richting");
+  const idIndex = firstMatchingIndex(headers, ["id", "action id", "actie id"]);
+  const fallbackIdIndex = headers.includes("richting") ? 17 : 16;
+  for (const [offset, row] of (hasHeaderRow ? rows.slice(1) : rows).entries()) {
+    const candidate = rowValue(row, idIndex >= 0 ? idIndex : fallbackIdIndex);
+    if (candidate && candidate === actionId) {
+      return offset + (hasHeaderRow ? 2 : 1);
+    }
+  }
+  return 0;
 }
 
 async function readUsers() {
@@ -2380,9 +2397,14 @@ async function syncFustActionToSheets(action, settings) {
     return { ok: false, target_sheets: [], error: "Target sheet is not configured" };
   }
 
-  const previousRowNumber = Number(action?.sheet_sync?.row_number || 0);
-  const output = previousRowNumber >= 2
-    ? await writeSheetRowAt(settings.spreadsheet_id, targetSheet, previousRowNumber, fustSheetRow(action))
+  let targetRowNumber = Number(action?.sheet_sync?.row_number || 0);
+  if (targetRowNumber < 2 && action?.id) {
+    const existingRows = await loadSheetRows(settings.spreadsheet_id, targetSheet);
+    targetRowNumber = findFustSheetRowNumberByActionId(existingRows, action.id);
+  }
+
+  const output = targetRowNumber >= 2
+    ? await writeSheetRowAt(settings.spreadsheet_id, targetSheet, targetRowNumber, fustSheetRow(action))
     : await writeSheetRowToFirstEmpty(settings.spreadsheet_id, targetSheet, fustSheetRow(action));
 
   return {
@@ -2390,7 +2412,7 @@ async function syncFustActionToSheets(action, settings) {
     target_sheets: [targetSheet],
     error: "",
     synced_at: new Date().toISOString(),
-    row_number: Number(output?.row_number || previousRowNumber || 0),
+    row_number: Number(output?.row_number || targetRowNumber || 0),
   };
 }
 
