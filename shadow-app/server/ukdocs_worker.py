@@ -822,11 +822,11 @@ def write_invoice_template(workbook, sheet, analysis, category_code):
     delivery_row, delivery_col = find_cell_containing(sheet, "Delivery T")
 
     info_label_col = 2
-    info_value_col = 4
-    info_extra_col = 5
+    info_value_col = 3
+    info_extra_col = 4
 
     info_start_row = 17
-    clear_sheet_range(sheet, 16, 21, 2, 6)
+    clear_sheet_range(sheet, 16, 21, 2, 5)
     set_sheet_value(sheet, info_start_row, info_label_col, "Date :")
     set_sheet_value(sheet, info_start_row, info_value_col, format_shipment_date(shipment.get("shipment_date_excel")))
     set_sheet_value(sheet, info_start_row + 1, info_label_col, "Invoice nr :")
@@ -860,7 +860,9 @@ def write_invoice_template(workbook, sheet, analysis, category_code):
         set_sheet_value(sheet, table_header_row, offset, value)
 
     row_number = invoice_start_row
+    invoice_style_row = invoice_start_row
     for line in category["invoice_rows"]:
+        copy_row_format(sheet, invoice_style_row, row_number, 10)
         set_sheet_value(sheet, row_number, 2, line["commodity_code"])
         set_sheet_value(sheet, row_number, 3, line["description"])
         set_sheet_value(sheet, row_number, 4, line["origin"])
@@ -875,7 +877,7 @@ def write_invoice_template(workbook, sheet, analysis, category_code):
     clear_sheet_range(sheet, row_number, hs_header_row - 1, 1, 10)
 
     hs_headers = ["classificationTyp HS", "Goods description", "Quantity", "gros kg", "net kg", "Packages", "Value"]
-    hs_header_columns = [2, 3, 5, 6, 7, 8, 9]
+    hs_header_columns = [3, 4, 6, 7, 8, 9, 10]
     for column, value in zip(hs_header_columns, hs_headers):
         set_sheet_value(sheet, hs_header_row, column, value)
 
@@ -891,27 +893,27 @@ def write_invoice_template(workbook, sheet, analysis, category_code):
             copy_row_format(sheet, template_row, footer_row + index, 10)
         footer_row += extra_rows
 
-    clear_sheet_range(sheet, hs_start_row, footer_row - 1, 2, 9)
+    clear_sheet_range(sheet, hs_start_row, footer_row - 1, 3, 10)
     row_number = hs_start_row
     for line in category["hs_summary_rows"]:
         copy_row_format(sheet, data_style_row, row_number, 10)
-        set_sheet_value(sheet, row_number, 2, normalize_invoice_hs_code(line["hs_code"]))
-        set_sheet_value(sheet, row_number, 3, line["description"])
-        set_sheet_value(sheet, row_number, 5, line["quantity"])
-        set_sheet_value(sheet, row_number, 6, line["gross_kg"])
-        set_sheet_value(sheet, row_number, 7, line["net_kg"])
-        set_sheet_value(sheet, row_number, 8, line["packages"])
-        set_sheet_value(sheet, row_number, 9, line["customs_value"])
+        set_sheet_value(sheet, row_number, 3, normalize_invoice_hs_code(line["hs_code"]))
+        set_sheet_value(sheet, row_number, 4, line["description"])
+        set_sheet_value(sheet, row_number, 6, line["quantity"])
+        set_sheet_value(sheet, row_number, 7, line["gross_kg"])
+        set_sheet_value(sheet, row_number, 8, line["net_kg"])
+        set_sheet_value(sheet, row_number, 9, line["packages"])
+        set_sheet_value(sheet, row_number, 10, line["customs_value"])
         row_number += 1
 
     totals_row = row_number
     copy_row_format(sheet, data_style_row, totals_row, 10)
-    set_sheet_value(sheet, totals_row, 3, "TOTALS")
-    set_sheet_value(sheet, totals_row, 5, sum(line["quantity"] for line in category["hs_summary_rows"]))
-    set_sheet_value(sheet, totals_row, 6, category["totals"]["gross_kg"])
-    set_sheet_value(sheet, totals_row, 7, category["totals"]["net_kg"])
-    set_sheet_value(sheet, totals_row, 8, category["totals"]["packages"])
-    set_sheet_value(sheet, totals_row, 9, category["totals"]["customs_value"])
+    set_sheet_value(sheet, totals_row, 4, "TOTALS")
+    set_sheet_value(sheet, totals_row, 6, sum(line["quantity"] for line in category["hs_summary_rows"]))
+    set_sheet_value(sheet, totals_row, 7, category["totals"]["gross_kg"])
+    set_sheet_value(sheet, totals_row, 8, category["totals"]["net_kg"])
+    set_sheet_value(sheet, totals_row, 9, category["totals"]["packages"])
+    set_sheet_value(sheet, totals_row, 10, category["totals"]["customs_value"])
 
     footer_row = max(totals_row + 4, hs_header_row + 6)
     if original_footer_row > 0 and footer_row != original_footer_row:
