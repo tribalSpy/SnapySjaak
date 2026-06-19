@@ -1906,6 +1906,16 @@ function findFustSheetRowNumberByActionId(rows, actionId) {
   return 0;
 }
 
+function findFustSheetRowNumberBySignature(rows, type, action) {
+  if (!Array.isArray(rows) || rows.length < 2 || !action) {
+    return 0;
+  }
+  const parsedRows = parseRegistrySheetRows(rows, type);
+  const targetSignature = buildActionSignature(action);
+  const matched = parsedRows.find((entry) => buildActionSignature(entry) === targetSignature);
+  return Number(matched?.sheet_sync?.row_number || 0);
+}
+
 async function readUsers() {
   await ensureUsersSeeded();
   const payload = await readJsonFile(usersPath, { users: [] });
@@ -2387,7 +2397,7 @@ function contentDispositionFilename(filename) {
     .slice(0, 160) || "fust-document";
 }
 
-async function syncFustActionToSheets(action, settings) {
+async function syncFustActionToSheets(action, settings, options = {}) {
   if (!settings.spreadsheet_id) {
     return { ok: false, target_sheets: [], error: "Spreadsheet ID is not configured" };
   }
@@ -2398,9 +2408,14 @@ async function syncFustActionToSheets(action, settings) {
   }
 
   let targetRowNumber = Number(action?.sheet_sync?.row_number || 0);
-  if (targetRowNumber < 2 && action?.id) {
+  if (targetRowNumber < 2) {
     const existingRows = await loadSheetRows(settings.spreadsheet_id, targetSheet);
-    targetRowNumber = findFustSheetRowNumberByActionId(existingRows, action.id);
+    if (action?.id) {
+      targetRowNumber = findFustSheetRowNumberByActionId(existingRows, action.id);
+    }
+    if (targetRowNumber < 2) {
+      targetRowNumber = findFustSheetRowNumberBySignature(existingRows, action.type, options.previousAction || action);
+    }
   }
 
   const output = targetRowNumber >= 2
@@ -4028,7 +4043,7 @@ async function handleApi(req, res, url) {
 
     const settings = await readFustSettings();
     try {
-      updatedAction.sheet_sync = await syncFustActionToSheets(updatedAction, settings);
+      updatedAction.sheet_sync = await syncFustActionToSheets(updatedAction, settings, { previousAction: existingAction });
     } catch (sheetError) {
       updatedAction.sheet_sync = {
         ...(updatedAction.sheet_sync || {}),
