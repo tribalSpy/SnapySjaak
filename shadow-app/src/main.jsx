@@ -1898,7 +1898,7 @@ function UkdocsPage({ currentUser }) {
       delivery_terms: customer?.default_delivery_terms || customer?.export_defaults?.delivery_terms || current.delivery_terms,
       uk_arrival_port: customer?.default_uk_arrival_port || current.uk_arrival_port,
       currency: customer?.default_currency || customer?.export_defaults?.currency || current.currency,
-      importer: customer?.customer_name || customer?.export_defaults?.importer_field || current.importer,
+      importer: customer?.importer_number || customer?.eori_number || customer?.export_defaults?.importer_field || current.importer,
       delivery_terms_city: customer?.default_city || customer?.export_defaults?.delivery_terms_city || current.delivery_terms_city,
       regulation: customer?.export_defaults?.regulation || current.regulation,
       destination_country: customer?.export_defaults?.destination_country || current.destination_country,
@@ -2214,7 +2214,7 @@ function UkdocsPage({ currentUser }) {
             <label><span>Currency</span><input value={shipmentDraft.currency} onChange={(event) => setShipmentDraft({ ...shipmentDraft, currency: event.target.value })} /></label>
             <label><span>Delivery terms</span><input value={shipmentDraft.delivery_terms} onChange={(event) => setShipmentDraft({ ...shipmentDraft, delivery_terms: event.target.value })} /></label>
             <label><span>UK arrival port</span><input value={shipmentDraft.uk_arrival_port} onChange={(event) => setShipmentDraft({ ...shipmentDraft, uk_arrival_port: event.target.value })} /></label>
-            <label><span>Owner</span><input value={shipmentDraft.owner} onChange={(event) => setShipmentDraft({ ...shipmentDraft, owner: event.target.value })} /></label>
+            <label><span>Owner (export header)</span><input value={shipmentDraft.owner} onChange={(event) => setShipmentDraft({ ...shipmentDraft, owner: event.target.value })} placeholder="Exact owner text for the export file" /></label>
             <label><span>Regulation</span><input value={shipmentDraft.regulation} onChange={(event) => setShipmentDraft({ ...shipmentDraft, regulation: event.target.value })} /></label>
             <label><span>Country of destination</span><input value={shipmentDraft.destination_country} onChange={(event) => setShipmentDraft({ ...shipmentDraft, destination_country: event.target.value })} /></label>
             <label><span>Customs office of exit</span><input value={shipmentDraft.customs_office_of_exit} onChange={(event) => setShipmentDraft({ ...shipmentDraft, customs_office_of_exit: event.target.value })} /></label>
@@ -2222,7 +2222,7 @@ function UkdocsPage({ currentUser }) {
             <label><span>Delivery terms city</span><input value={shipmentDraft.delivery_terms_city} onChange={(event) => setShipmentDraft({ ...shipmentDraft, delivery_terms_city: event.target.value })} /></label>
             <label><span>Border transport mode</span><input value={shipmentDraft.border_transport_mode} onChange={(event) => setShipmentDraft({ ...shipmentDraft, border_transport_mode: event.target.value })} /></label>
             <label><span>Border transport nationality</span><input value={shipmentDraft.border_transport_nationality} onChange={(event) => setShipmentDraft({ ...shipmentDraft, border_transport_nationality: event.target.value })} /></label>
-            <label><span>Importer</span><input value={shipmentDraft.importer} onChange={(event) => setShipmentDraft({ ...shipmentDraft, importer: event.target.value })} /></label>
+            <label><span>Importer number / reference</span><input value={shipmentDraft.importer} onChange={(event) => setShipmentDraft({ ...shipmentDraft, importer: event.target.value })} placeholder="Shown next to Importer in the export file" /></label>
             <label><span>Vessel</span><input value={shipmentDraft.vessel} onChange={(event) => setShipmentDraft({ ...shipmentDraft, vessel: event.target.value })} /></label>
             <label><span>Freight costs</span><input value={shipmentDraft.freight_costs} onChange={(event) => setShipmentDraft({ ...shipmentDraft, freight_costs: event.target.value })} /></label>
             <label><span>Insurance</span><input value={shipmentDraft.insurance} onChange={(event) => setShipmentDraft({ ...shipmentDraft, insurance: event.target.value })} /></label>

@@ -1382,7 +1382,7 @@ def analyze_payload(payload):
         "currency": clean_text(payload.get("currency")) or "GBP",
         "freight_costs": clean_text(payload.get("freight_costs")),
         "insurance": clean_text(payload.get("insurance")),
-        "customer_importer_number": clean_text(customer.get("importer_number") or customer.get("eori_number") or payload.get("importer")),
+        "customer_importer_number": clean_text(payload.get("importer")) or clean_text(customer.get("importer_number") or customer.get("eori_number")),
         "shipment_date_excel": clean_text(payload.get("shipment_date")),
     }
     return {
