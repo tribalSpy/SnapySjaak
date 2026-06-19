@@ -948,6 +948,7 @@ function normalizeUkdocsUploadedFiles(files) {
       file_name: normalizeUkdocsText(file.file_name),
       uploaded_at: normalizeUkdocsText(file.uploaded_at),
       size: Number.isFinite(Number(file.size)) ? Number(file.size) : 0,
+      content_base64: String(file.content_base64 || "").trim(),
     };
   }
   return next;

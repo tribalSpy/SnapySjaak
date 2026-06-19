@@ -1818,6 +1818,7 @@ function UkdocsPage({ currentUser }) {
   const [analysis, setAnalysis] = useState(null);
   const [generatedFiles, setGeneratedFiles] = useState([]);
   const [exampleImportFiles, setExampleImportFiles] = useState({ invoice_example: null, export_example: null });
+  const [shipmentUploadInputVersion, setShipmentUploadInputVersion] = useState(0);
 
   useEffect(() => {
     let cancelled = false;
@@ -1886,6 +1887,7 @@ function UkdocsPage({ currentUser }) {
     setShipmentDraft(emptyUkdocsShipmentDraft());
     setAnalysis(null);
     setGeneratedFiles([]);
+    setShipmentUploadInputVersion((value) => value + 1);
   }
 
   function applyCustomerDefaults(customerId) {
@@ -2124,6 +2126,7 @@ function UkdocsPage({ currentUser }) {
     });
     setAnalysis(null);
     setGeneratedFiles([]);
+    setShipmentUploadInputVersion((value) => value + 1);
     setActiveMenu("new");
   }
 
@@ -2234,7 +2237,7 @@ function UkdocsPage({ currentUser }) {
               return (
                 <div key={category.code} className="ukdocs-upload-card">
                   <strong>{category.shortLabel}</strong>
-                  <input type="file" accept=".xlsx,.xls,.csv" onChange={async (event) => updateUploadedFile(category.code, event.target.files?.[0] || null)} />
+                  <input key={`${shipmentUploadInputVersion}-${category.code}`} type="file" accept=".xlsx,.xls,.csv" onChange={async (event) => updateUploadedFile(category.code, event.target.files?.[0] || null)} />
                   <label>
                     <span>Invoice number for this upload</span>
                     <input value={shipmentDraft.invoice_numbers_by_category?.[category.code] || ""} onChange={(event) => setShipmentDraft({ ...shipmentDraft, invoice_numbers_by_category: { ...(shipmentDraft.invoice_numbers_by_category || {}), [category.code]: event.target.value } })} placeholder={`External invoice number for ${category.label}`} />
