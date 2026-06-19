@@ -736,8 +736,11 @@ def currency_symbol(currency_code):
 
 
 def set_currency_format(sheet, row, col, currency_code='EUR'):
-    symbol = currency_symbol(currency_code)
-    sheet.cell(row=row, column=col).number_format = f'"{symbol}" #,##0.00'
+    code = clean_text(currency_code).upper()
+    if code == 'GBP':
+        sheet.cell(row=row, column=col).number_format = '£#,##0.00'
+        return
+    sheet.cell(row=row, column=col).number_format = '€#,##0.00'
 
 
 def set_number_format(sheet, row, col, decimals=2):
@@ -772,8 +775,8 @@ def format_invoice_row(sheet, row, value_col, currency_code='EUR'):
 
 
 def format_summary_row(sheet, row, value_col, currency_code='EUR'):
-    set_cell_alignment(sheet, row, 2, 'right')
-    set_cell_alignment(sheet, row, 3, 'left')
+    set_cell_alignment(sheet, row, 3, 'right')
+    set_cell_alignment(sheet, row, 4, 'left')
     for col in [5, 6, 7, 8, value_col]:
         set_cell_alignment(sheet, row, col, 'right')
     set_number_format(sheet, row, 5, 0)
@@ -926,7 +929,7 @@ def write_invoice_template(workbook, sheet, analysis, category_code):
     headers = ["classificationType TARIC", "Goods description", "Origin", "Quantity", "Gross kg", "Net kg", "Packages", "Value"]
     for offset, value in enumerate(headers, start=2):
         set_sheet_value(sheet, table_header_row, offset, value)
-        set_cell_alignment(sheet, table_header_row, offset, 'right')
+        set_cell_alignment(sheet, table_header_row, offset, 'left' if offset == 3 else 'right')
 
     row_number = invoice_start_row
     invoice_style_row = invoice_start_row
@@ -950,6 +953,7 @@ def write_invoice_template(workbook, sheet, analysis, category_code):
     hs_header_columns = [3, 4, 6, 7, 8, 9, 10]
     for column, value in zip(hs_header_columns, hs_headers):
         set_sheet_value(sheet, hs_header_row, column, value)
+        set_cell_alignment(sheet, hs_header_row, column, 'left' if column == 4 else 'right')
 
     hs_start_row = hs_header_row + 1
     data_style_row = hs_start_row
