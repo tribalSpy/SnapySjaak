@@ -1905,7 +1905,7 @@ function UkdocsPage({ currentUser }) {
       currency: customer?.default_currency || customer?.export_defaults?.currency || current.currency,
       owner: customer?.default_owner || current.owner,
       importer: customer?.default_importer || customer?.importer_number || customer?.eori_number || customer?.export_defaults?.importer_field || current.importer,
-      delivery_terms_city: customer?.default_city || customer?.export_defaults?.delivery_terms_city || current.delivery_terms_city,
+      delivery_terms_city: customer?.export_defaults?.delivery_terms_city || customer?.default_city || current.delivery_terms_city,
       regulation: customer?.export_defaults?.regulation || current.regulation,
       destination_country: customer?.export_defaults?.destination_country || current.destination_country,
       customs_office_of_exit: customer?.export_defaults?.customs_office_of_exit || current.customs_office_of_exit,
