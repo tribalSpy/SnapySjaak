@@ -885,6 +885,9 @@ function normalizeUkdocsCustomer(customer) {
     default_currency: normalizeUkdocsText(customer?.default_currency),
     default_invoice_language_text: String(customer?.default_invoice_language_text || "").trim(),
     default_document_references: String(customer?.default_document_references || "").trim(),
+    show_invoice_vat_number: customer?.show_invoice_vat_number !== false,
+    show_invoice_eori_number: customer?.show_invoice_eori_number !== false,
+    show_invoice_importer_number: customer?.show_invoice_importer_number !== false,
     export_defaults: normalizeUkdocsExportDefaults(customer?.export_defaults || {}),
   };
 }

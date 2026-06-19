@@ -867,17 +867,31 @@ def build_export_header_reference(invoice_numbers, shipment_date, truck_number, 
     return clean_text(fallback_reference) or invoice_text
 
 
+def build_invoice_customer_lines(customer):
+    customer_lines = [customer.get("customer_name", "")]
+    customer_lines.extend(str(customer.get("customer_address", "") or "").splitlines())
+    if customer.get("show_invoice_vat_number", True):
+        vat_number = clean_text(customer.get("vat_number"))
+        if vat_number:
+            customer_lines.append(f"VAT NR {vat_number}")
+    if customer.get("show_invoice_eori_number", True):
+        eori_number = clean_text(customer.get("eori_number") or customer.get("importer_number"))
+        if eori_number:
+            customer_lines.append(f"EORI NR {eori_number}")
+    if customer.get("show_invoice_importer_number", True):
+        importer_number = clean_text(customer.get("importer_number"))
+        if importer_number:
+            customer_lines.append(importer_number)
+    return customer_lines
+
+
 def write_invoice_template(workbook, sheet, analysis, category_code):
     category = next(item for item in analysis["categories"] if item["code"] == category_code)
     customer = analysis["customer"]
     shipment = analysis["shipment"]
     company = analysis["company"]
 
-    customer_lines = [customer.get("customer_name", "")]
-    customer_lines.extend(str(customer.get("customer_address", "") or "").splitlines())
-    customer_lines.append(f'VAT NR {customer.get("vat_number", "")}')
-    customer_lines.append(f'EORI NR {customer.get("importer_number") or customer.get("eori_number") or ""}')
-    customer_lines.append(customer.get("importer_number") or "")
+    customer_lines = build_invoice_customer_lines(customer)
     while len(customer_lines) < 6:
         customer_lines.append("")
     customer_start_row = 10
@@ -1207,11 +1221,7 @@ def build_invoice_workbook_raw(analysis, category_code):
         except ValueError:
             pass
 
-    customer_lines = [customer.get("customer_name", "")]
-    customer_lines.extend(str(customer.get("customer_address", "") or "").splitlines())
-    customer_lines.append(f'VAT NR {customer.get("vat_number", "")}')
-    customer_lines.append(f'EORI NR {customer.get("importer_number") or customer.get("eori_number") or ""}')
-    customer_lines.append(customer.get("importer_number") or "")
+    customer_lines = build_invoice_customer_lines(customer)
     for offset, value in enumerate(customer_lines[:6], start=10):
         cells[(offset, 2)] = value
         style_map[(offset, 2)] = "footer"

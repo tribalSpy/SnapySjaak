@@ -1670,6 +1670,12 @@ const UKDOCS_CUSTOMER_FIELDS = [
   ["default_document_references", "Default document references", "textarea"],
 ];
 
+const UKDOCS_CUSTOMER_INVOICE_VISIBILITY_FIELDS = [
+  ["show_invoice_vat_number", "Show VAT number on invoice"],
+  ["show_invoice_eori_number", "Show EORI number on invoice"],
+  ["show_invoice_importer_number", "Show importer / DAN number on invoice"],
+];
+
 const UKDOCS_EXPORT_DEFAULT_FIELDS = [
   ["destination_country", "Country of destination"],
   ["regulation", "Regulation"],
@@ -1716,6 +1722,9 @@ function emptyUkdocsCustomer() {
     default_currency: "",
     default_invoice_language_text: "",
     default_document_references: "",
+    show_invoice_vat_number: true,
+    show_invoice_eori_number: true,
+    show_invoice_importer_number: true,
     export_defaults: Object.fromEntries(UKDOCS_EXPORT_DEFAULT_FIELDS.map(([key]) => [key, ""])),
   };
 }
@@ -2328,6 +2337,19 @@ function UkdocsPage({ currentUser }) {
               <label key={key} className={kind === "textarea" ? "wide" : ""}>
                 <span>{label}</span>
                 {kind === "textarea" ? <textarea rows={3} value={customerDraft[key] || ""} onChange={(event) => setCustomerDraft({ ...customerDraft, [key]: event.target.value })} /> : <input value={customerDraft[key] || ""} onChange={(event) => setCustomerDraft({ ...customerDraft, [key]: event.target.value })} />}
+              </label>
+            ))}
+          </div>
+          <div className="section-header"><h3>Invoice line visibility</h3></div>
+          <div className="form-grid">
+            {UKDOCS_CUSTOMER_INVOICE_VISIBILITY_FIELDS.map(([key, label]) => (
+              <label key={key} className="checkbox-label">
+                <input
+                  type="checkbox"
+                  checked={customerDraft[key] !== false}
+                  onChange={(event) => setCustomerDraft({ ...customerDraft, [key]: event.target.checked })}
+                />
+                <span>{label}</span>
               </label>
             ))}
           </div>
