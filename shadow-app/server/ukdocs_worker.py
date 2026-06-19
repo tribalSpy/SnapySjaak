@@ -59,8 +59,16 @@ def dec(value, default=ZERO):
         return default
 
 
+def strip_invalid_xml_chars(value):
+    text = str(value or "")
+    return "".join(
+        ch for ch in text
+        if ch in ("\t", "\n", "\r") or ord(ch) >= 32
+    )
+
+
 def clean_text(value):
-    return str(value or "").strip()
+    return strip_invalid_xml_chars(value).strip()
 
 
 def lower_key(value):
@@ -89,7 +97,7 @@ def col_letters_to_index(ref):
 
 
 def escape_xml(value):
-    text = str(value)
+    text = strip_invalid_xml_chars(value)
     return (
         text.replace("&", "&amp;")
         .replace("<", "&lt;")
@@ -561,7 +569,7 @@ def build_drawing_xml(image):
     from_row = int(image.get("from_row", 0))
     return f'''<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <xdr:wsDr xmlns:xdr="http://schemas.openxmlformats.org/drawingml/2006/spreadsheetDrawing" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
-  <xdr:oneCellAnchor>
+  <xdr:oneCellAnchor editAs="oneCell">
     <xdr:from>
       <xdr:col>{from_col}</xdr:col>
       <xdr:colOff>0</xdr:colOff>
@@ -571,14 +579,20 @@ def build_drawing_xml(image):
     <xdr:ext cx="{width}" cy="{height}"/>
     <xdr:pic>
       <xdr:nvPicPr>
-        <xdr:cNvPr id="1" name="Picture 1"/>
-        <xdr:cNvPicPr/>
+        <xdr:cNvPr id="1" name="Picture 1" descr="Company logo"/>
+        <xdr:cNvPicPr>
+          <a:picLocks noChangeAspect="1"/>
+        </xdr:cNvPicPr>
       </xdr:nvPicPr>
       <xdr:blipFill>
-        <a:blip r:embed="rId1"/>
+        <a:blip r:embed="rId1" cstate="print"/>
         <a:stretch><a:fillRect/></a:stretch>
       </xdr:blipFill>
       <xdr:spPr>
+        <a:xfrm>
+          <a:off x="0" y="0"/>
+          <a:ext cx="{width}" cy="{height}"/>
+        </a:xfrm>
         <a:prstGeom prst="rect"><a:avLst/></a:prstGeom>
       </xdr:spPr>
     </xdr:pic>
