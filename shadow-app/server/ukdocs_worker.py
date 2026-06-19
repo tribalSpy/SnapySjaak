@@ -787,6 +787,15 @@ def format_shipment_date(date_text):
         return text
 
 
+def build_export_header_reference(invoice_numbers, shipment_date, truck_number, fallback_reference=""):
+    invoice_text = clean_text(invoice_numbers)
+    date_text = clean_text(shipment_date).replace("-", "")
+    truck_text = clean_text(truck_number)
+    if invoice_text and date_text and truck_text:
+        return f"{invoice_text} {date_text[:4]} {date_text[4:]} truck {truck_text}".strip()
+    return clean_text(fallback_reference) or invoice_text
+
+
 def write_invoice_template(workbook, sheet, analysis, category_code):
     category = next(item for item in analysis["categories"] if item["code"] == category_code)
     customer = analysis["customer"]
@@ -812,22 +821,21 @@ def write_invoice_template(workbook, sheet, analysis, category_code):
         licence_row, licence_col = find_cell_containing(sheet, "License Truck")
     delivery_row, delivery_col = find_cell_containing(sheet, "Delivery T")
 
-    date_col = date_col or 1
-    invoice_col = invoice_col or date_col
-    licence_col = licence_col or date_col
-    delivery_col = delivery_col or date_col
+    info_label_col = 2
+    info_value_col = 4
+    info_extra_col = 5
 
     info_start_row = 17
-    clear_sheet_range(sheet, 16, 21, 1, 6)
-    set_sheet_value(sheet, info_start_row, date_col, "Date :")
-    set_sheet_value(sheet, info_start_row, date_col + 1, format_shipment_date(shipment.get("shipment_date_excel")))
-    set_sheet_value(sheet, info_start_row + 1, invoice_col, "Invoice nr :")
-    set_sheet_value(sheet, info_start_row + 1, invoice_col + 1, category.get("invoice_number", ""))
-    set_sheet_value(sheet, info_start_row + 1, invoice_col + 2, "custom summary")
-    set_sheet_value(sheet, info_start_row + 2, licence_col, "Licence Truck :")
-    set_sheet_value(sheet, info_start_row + 2, licence_col + 1, shipment.get("trailer_number", ""))
-    set_sheet_value(sheet, info_start_row + 3, delivery_col, "Delivery Terms :")
-    set_sheet_value(sheet, info_start_row + 3, delivery_col + 1, shipment.get("delivery_terms", ""))
+    clear_sheet_range(sheet, 16, 21, 2, 6)
+    set_sheet_value(sheet, info_start_row, info_label_col, "Date :")
+    set_sheet_value(sheet, info_start_row, info_value_col, format_shipment_date(shipment.get("shipment_date_excel")))
+    set_sheet_value(sheet, info_start_row + 1, info_label_col, "Invoice nr :")
+    set_sheet_value(sheet, info_start_row + 1, info_value_col, category.get("invoice_number", ""))
+    set_sheet_value(sheet, info_start_row + 1, info_extra_col, "custom summary")
+    set_sheet_value(sheet, info_start_row + 2, info_label_col, "Licence Truck :")
+    set_sheet_value(sheet, info_start_row + 2, info_value_col, shipment.get("trailer_number", ""))
+    set_sheet_value(sheet, info_start_row + 3, info_label_col, "Delivery Terms :")
+    set_sheet_value(sheet, info_start_row + 3, info_value_col, shipment.get("delivery_terms", ""))
 
     table_header_row = 22
     hs_header_row = find_row_with_terms(sheet, ["goods description", "packages"], table_header_row + 1) or (table_header_row + 4)
@@ -867,8 +875,9 @@ def write_invoice_template(workbook, sheet, analysis, category_code):
     clear_sheet_range(sheet, row_number, hs_header_row - 1, 1, 10)
 
     hs_headers = ["classificationTyp HS", "Goods description", "Quantity", "gros kg", "net kg", "Packages", "Value"]
-    for offset, value in enumerate(hs_headers, start=3):
-        set_sheet_value(sheet, hs_header_row, offset, value)
+    hs_header_columns = [2, 3, 5, 6, 7, 8, 9]
+    for column, value in zip(hs_header_columns, hs_headers):
+        set_sheet_value(sheet, hs_header_row, column, value)
 
     hs_start_row = hs_header_row + 1
     data_style_row = hs_start_row
@@ -882,12 +891,12 @@ def write_invoice_template(workbook, sheet, analysis, category_code):
             copy_row_format(sheet, template_row, footer_row + index, 10)
         footer_row += extra_rows
 
-    clear_sheet_range(sheet, hs_start_row, footer_row - 1, 3, 10)
+    clear_sheet_range(sheet, hs_start_row, footer_row - 1, 2, 9)
     row_number = hs_start_row
     for line in category["hs_summary_rows"]:
         copy_row_format(sheet, data_style_row, row_number, 10)
-        set_sheet_value(sheet, row_number, 3, normalize_invoice_hs_code(line["hs_code"]))
-        set_sheet_value(sheet, row_number, 4, line["description"])
+        set_sheet_value(sheet, row_number, 2, normalize_invoice_hs_code(line["hs_code"]))
+        set_sheet_value(sheet, row_number, 3, line["description"])
         set_sheet_value(sheet, row_number, 5, line["quantity"])
         set_sheet_value(sheet, row_number, 6, line["gross_kg"])
         set_sheet_value(sheet, row_number, 7, line["net_kg"])
@@ -897,8 +906,11 @@ def write_invoice_template(workbook, sheet, analysis, category_code):
 
     totals_row = row_number
     copy_row_format(sheet, data_style_row, totals_row, 10)
-    set_sheet_value(sheet, totals_row, 6, "TOTALS")
+    set_sheet_value(sheet, totals_row, 3, "TOTALS")
+    set_sheet_value(sheet, totals_row, 5, sum(line["quantity"] for line in category["hs_summary_rows"]))
+    set_sheet_value(sheet, totals_row, 6, category["totals"]["gross_kg"])
     set_sheet_value(sheet, totals_row, 7, category["totals"]["net_kg"])
+    set_sheet_value(sheet, totals_row, 8, category["totals"]["packages"])
     set_sheet_value(sheet, totals_row, 9, category["totals"]["customs_value"])
 
     footer_row = max(totals_row + 4, hs_header_row + 6)
@@ -1373,7 +1385,7 @@ def analyze_payload(payload):
     company = payload.get("company_settings") or {}
     shipment = {
         "reference_line": reference_line,
-        "export_header_reference": clean_text(payload.get("invoice_numbers")) + "  " + clean_text(payload.get("shipment_date", "")).replace("-", "") + " " + clean_text(payload.get("trailer_number")) if clean_text(payload.get("invoice_numbers")) and clean_text(payload.get("shipment_date")) and clean_text(payload.get("trailer_number")) else reference_line,
+        "export_header_reference": build_export_header_reference(payload.get("invoice_numbers"), payload.get("shipment_date"), payload.get("truck_number"), reference_line),
         "owner": clean_text(payload.get("owner")) or clean_text(company.get("eori_number")) or clean_text(company.get("vat_number")) or clean_text(company.get("company_name")),
         "regulation": clean_text(payload.get("regulation")) or "Export",
         "destination_country": clean_text(payload.get("destination_country")) or "GB",
@@ -1394,6 +1406,7 @@ def analyze_payload(payload):
         "insurance": clean_text(payload.get("insurance")),
         "customer_importer_number": clean_text(payload.get("importer")) or clean_text(customer.get("importer_number") or customer.get("eori_number")),
         "shipment_date_excel": clean_text(payload.get("shipment_date")),
+        "truck_number": clean_text(payload.get("truck_number")),
     }
     return {
         "categories": categories,

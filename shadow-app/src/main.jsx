@@ -1725,6 +1725,7 @@ function emptyUkdocsShipmentDraft() {
     id: "",
     customer_id: "",
     shipment_date: new Date().toISOString().slice(0, 10),
+    truck_number: "",
     trailer_number: "",
     invoice_numbers: "",
     invoice_numbers_by_category: Object.fromEntries(UKDOCS_CATEGORY_DEFINITIONS.map((category) => [category.code, ""])),
@@ -2213,6 +2214,7 @@ function UkdocsPage({ currentUser }) {
           <div className="form-grid">
             <label><span>Customer / export user</span><select value={shipmentDraft.customer_id} onChange={(event) => applyCustomerDefaults(event.target.value)}><option value="">Choose customer</option>{customers.map((customer) => <option key={customer.id} value={customer.id}>{customer.customer_name}</option>)}</select></label>
             <label><span>Date</span><input type="date" value={shipmentDraft.shipment_date} onChange={(event) => setShipmentDraft({ ...shipmentDraft, shipment_date: event.target.value })} /></label>
+            <label><span>Truck number</span><input value={shipmentDraft.truck_number || ""} onChange={(event) => setShipmentDraft({ ...shipmentDraft, truck_number: event.target.value })} placeholder="For example: 1 BHM" /></label>
             <label><span>Truck / trailer licence plate</span><input value={shipmentDraft.trailer_number} onChange={(event) => setShipmentDraft({ ...shipmentDraft, trailer_number: event.target.value })} placeholder="One licence plate for the whole export" /></label>
             <label><span>Combined export invoice numbers</span><input value={combinedInvoiceNumbers} readOnly placeholder="Filled automatically from the category invoice inputs below" /></label>
             <label><span>Export reference</span><input value={shipmentDraft.export_reference} onChange={(event) => setShipmentDraft({ ...shipmentDraft, export_reference: event.target.value })} /></label>

@@ -981,6 +981,7 @@ function normalizeUkdocsShipment(shipment) {
     id: normalizeUkdocsText(shipment?.id) || crypto.randomUUID(),
     customer_id: normalizeUkdocsText(shipment?.customer_id),
     shipment_date: normalizeUkdocsText(shipment?.shipment_date),
+    truck_number: normalizeUkdocsText(shipment?.truck_number),
     trailer_number: normalizeUkdocsText(shipment?.trailer_number),
     invoice_numbers: String(shipment?.invoice_numbers || "").trim(),
     invoice_numbers_by_category: normalizeUkdocsInvoiceNumbersByCategory(shipment?.invoice_numbers_by_category),
