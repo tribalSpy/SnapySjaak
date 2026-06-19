@@ -2379,13 +2379,17 @@ async function syncFustActionToSheets(action, settings) {
     return { ok: false, target_sheets: [], error: "Target sheet is not configured" };
   }
 
-  await writeSheetRowToFirstEmpty(settings.spreadsheet_id, targetSheet, fustSheetRow(action));
+  const previousRowNumber = Number(action?.sheet_sync?.row_number || 0);
+  const output = previousRowNumber >= 2
+    ? await writeSheetRowAt(settings.spreadsheet_id, targetSheet, previousRowNumber, fustSheetRow(action))
+    : await writeSheetRowToFirstEmpty(settings.spreadsheet_id, targetSheet, fustSheetRow(action));
 
   return {
     ok: true,
     target_sheets: [targetSheet],
     error: "",
     synced_at: new Date().toISOString(),
+    row_number: Number(output?.row_number || previousRowNumber || 0),
   };
 }
 
@@ -3994,6 +3998,21 @@ async function handleApi(req, res, url) {
     const newRequiredPermission = updatedAction.type === "OUT" ? PERMISSIONS.FUST_OUT : PERMISSIONS.FUST_IN;
     if (!requirePermission(res, requestUser, newRequiredPermission)) {
       return;
+    }
+
+    actions[actionIndex] = updatedAction;
+    await writeFustActions(actions);
+
+    const settings = await readFustSettings();
+    try {
+      updatedAction.sheet_sync = await syncFustActionToSheets(updatedAction, settings);
+    } catch (sheetError) {
+      updatedAction.sheet_sync = {
+        ...(updatedAction.sheet_sync || {}),
+        ok: false,
+        target_sheets: [],
+        error: sheetError instanceof Error ? sheetError.message : String(sheetError),
+      };
     }
 
     actions[actionIndex] = updatedAction;
