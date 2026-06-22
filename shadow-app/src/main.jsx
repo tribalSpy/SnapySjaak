@@ -1631,10 +1631,10 @@ function CmrPrintPage({ currentUser }) {
 }
 
 const UKDOCS_CATEGORY_DEFINITIONS = [
-  { code: "508", label: "Flowers", shortLabel: "Flowers dump 508" },
-  { code: "515", label: "Accessories", shortLabel: "Accessories dump 515" },
-  { code: "1000", label: "Bouquets / BQ", shortLabel: "Bouquets dump 1000" },
-  { code: "920", label: "Plants", shortLabel: "Plants dump 920" },
+  { code: "508", label: "Flowers", shortLabel: "Flowers" },
+  { code: "515", label: "Accessories", shortLabel: "Accessories" },
+  { code: "1000", label: "Bouquets", shortLabel: "Bouquets" },
+  { code: "920", label: "Plants", shortLabel: "Plants" },
 ];
 
 const UKDOCS_COMPANY_FIELDS = [
@@ -2558,7 +2558,7 @@ function App() {
 
   if (!auth.user) {
     return (
-      <AuthShell title="Sjaak vd Vijver Expedition Photo Dashboard">
+      <AuthShell title="Sjaak vd Vijver App">
         {auth.setupRequired ? (
           <SetupForm onSetup={(user) => {
             setAuth({ loading: false, user, setupRequired: false });
@@ -2604,7 +2604,7 @@ function App() {
       <aside className={`sidebar ${sidebarOpen ? "open" : ""}`}>
         <div>
           <p className="eyebrow">SnappySjaak</p>
-          <h1>Sjaak vd Vijver Expedition Shadow App</h1>
+          <h1>Sjaak vd Vijver App</h1>
           <p className="sidebar-note">Photos stays separate while Fust gets its own protected workspace.</p>
         </div>
 
