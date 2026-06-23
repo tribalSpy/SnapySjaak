@@ -193,13 +193,15 @@ def _column_name(index: int) -> str:
 
 def _drive_service(oauth: dict[str, str] | None = None):
     if oauth and oauth.get("refresh_token") and oauth.get("client_id") and oauth.get("client_secret"):
+        # Reuse the refresh token without overriding its granted scopes.
+        # Google can reject refreshes with invalid_scope if the app rebuilds
+        # the credential with a scope set that does not match the token.
         credentials = UserCredentials(
             token=None,
             refresh_token=oauth["refresh_token"],
             token_uri="https://oauth2.googleapis.com/token",
             client_id=oauth["client_id"],
             client_secret=oauth["client_secret"],
-            scopes=DRIVE_FILE_SCOPES,
         )
     else:
         credentials = _service_account_credentials(DRIVE_FILE_SCOPES)
