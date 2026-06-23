@@ -58,6 +58,7 @@ const allPermissions = [
   "fust:overview",
   "cmr:view",
   "hal_locations:view",
+  "expedition_stickers:view",
   "cmr:manage",
   "clock:view",
   "clock:manage",
@@ -73,6 +74,7 @@ const PERMISSIONS = {
   FUST_OVERVIEW: "fust:overview",
   CMR_VIEW: "cmr:view",
   HAL_LOCATIONS_VIEW: "hal_locations:view",
+  EXPEDITION_STICKERS_VIEW: "expedition_stickers:view",
   CMR_MANAGE: "cmr:manage",
   CLOCK_VIEW: "clock:view",
   CLOCK_MANAGE: "clock:manage",
@@ -3124,7 +3126,7 @@ async function handleApi(req, res, url) {
   }
 
   if (url.pathname === "/api/expedition-stickers" && req.method === "GET") {
-    if (!requirePermission(res, requestUser, PERMISSIONS.HAL_LOCATIONS_VIEW)) {
+    if (!requirePermission(res, requestUser, PERMISSIONS.EXPEDITION_STICKERS_VIEW)) {
       return;
     }
 
@@ -3161,7 +3163,7 @@ async function handleApi(req, res, url) {
   }
 
   if (url.pathname === "/api/expedition-stickers/upload" && req.method === "POST") {
-    if (!requirePermission(res, requestUser, PERMISSIONS.HAL_LOCATIONS_VIEW)) {
+    if (!requirePermission(res, requestUser, PERMISSIONS.EXPEDITION_STICKERS_VIEW)) {
       return;
     }
 
@@ -3202,7 +3204,7 @@ async function handleApi(req, res, url) {
   }
 
   if (url.pathname === "/api/expedition-stickers/load-sheet" && req.method === "POST") {
-    if (!requirePermission(res, requestUser, PERMISSIONS.HAL_LOCATIONS_VIEW)) {
+    if (!requirePermission(res, requestUser, PERMISSIONS.EXPEDITION_STICKERS_VIEW)) {
       return;
     }
 
@@ -3249,7 +3251,7 @@ async function handleApi(req, res, url) {
   }
 
   if (url.pathname === "/api/expedition-stickers/generate" && req.method === "POST") {
-    if (!requirePermission(res, requestUser, PERMISSIONS.HAL_LOCATIONS_VIEW)) {
+    if (!requirePermission(res, requestUser, PERMISSIONS.EXPEDITION_STICKERS_VIEW)) {
       return;
     }
 
