@@ -22,10 +22,13 @@ const syncScriptPath = path.join(repoRoot, "sync_index.py");
 const driveBridgePath = path.join(appRoot, "server", "drive_bridge.py");
 const syncWorkerPath = path.join(appRoot, "server", "sync_worker.js");
 const halLocationsWorkerPath = path.join(appRoot, "server", "hal_locations_worker.py");
+const expeditionStickerWorkerPath = path.join(appRoot, "server", "expedition_sticker_worker.py");
 const ukdocsWorkerPath = path.join(appRoot, "server", "ukdocs_worker.py");
 const googleImageCacheDir = path.join(cacheDir, "shadow-google-images");
 const googleRunDetailsCacheDir = path.join(cacheDir, "shadow-google-run-details");
 const halLocationsCacheDir = path.join(cacheDir, "hal-locations");
+const expeditionStickerStatePath = path.join(cacheDir, "expedition-stickers.json");
+const expeditionStickerFilesDir = path.join(cacheDir, "expedition-stickers");
 const usersSeedPathCandidates = [
   process.env.SHADOW_USERS_SEED_PATH,
   process.platform === "win32" ? null : "/etc/secrets/shadow-users.json",
@@ -162,6 +165,11 @@ const defaultUkdocsState = {
   },
   shipments: [],
   audit_reports: [],
+};
+
+const defaultExpeditionStickerState = {
+  planning_file: null,
+  split_file: null,
 };
 
 const cmrPrintDataDirCandidates = [
@@ -1052,6 +1060,76 @@ async function readUkdocsState() {
 
 async function writeUkdocsState(state) {
   await writeJsonFile(ukdocsStatePath, normalizeUkdocsState(state));
+}
+
+function normalizeExpeditionStickerFile(file) {
+  if (!file || typeof file !== "object") {
+    return null;
+  }
+  const storageName = String(file.storage_name || "").trim();
+  return storageName ? {
+    storage_name: storageName,
+    original_name: String(file.original_name || storageName).trim() || storageName,
+    saved_at: String(file.saved_at || "").trim(),
+    saved_by: String(file.saved_by || "").trim(),
+    size_bytes: Number(file.size_bytes || 0),
+  } : null;
+}
+
+function normalizeExpeditionStickerState(state) {
+  return {
+    planning_file: normalizeExpeditionStickerFile(state?.planning_file),
+    split_file: normalizeExpeditionStickerFile(state?.split_file),
+  };
+}
+
+async function readExpeditionStickerState() {
+  const payload = await readJsonFile(expeditionStickerStatePath, defaultExpeditionStickerState);
+  return normalizeExpeditionStickerState(payload);
+}
+
+async function writeExpeditionStickerState(state) {
+  await writeJsonFile(expeditionStickerStatePath, normalizeExpeditionStickerState(state));
+}
+
+function expeditionStickerFilePath(file) {
+  if (!file?.storage_name) {
+    return "";
+  }
+  return path.join(expeditionStickerFilesDir, file.storage_name);
+}
+
+async function inspectExpeditionStickerSource(kind, filePath) {
+  const output = await runExpeditionStickerWorker([
+    "inspect-source",
+    "--kind",
+    kind,
+    "--input",
+    filePath,
+  ]);
+  return JSON.parse(output.toString("utf8"));
+}
+
+async function saveExpeditionStickerUpload(kind, filePayload, requestUser) {
+  const originalName = path.basename(String(filePayload?.name || "").trim());
+  const contentBase64 = String(filePayload?.content_base64 || "").trim();
+  if (!originalName || !contentBase64) {
+    throw new Error(`Choose a ${kind} file first`);
+  }
+
+  const extension = path.extname(originalName).toLowerCase() || ".xlsx";
+  const storageName = `${kind}${extension}`;
+  const fileBuffer = Buffer.from(contentBase64, "base64");
+  await fs.mkdir(expeditionStickerFilesDir, { recursive: true });
+  await fs.writeFile(path.join(expeditionStickerFilesDir, storageName), fileBuffer);
+
+  return {
+    storage_name: storageName,
+    original_name: originalName,
+    saved_at: new Date().toISOString(),
+    saved_by: requestUser.username,
+    size_bytes: fileBuffer.length,
+  };
 }
 
 function normalizeFustAction(action) {
@@ -2138,6 +2216,32 @@ function runHalLocationsWorker(args) {
   });
 }
 
+function runExpeditionStickerWorker(args) {
+  return new Promise((resolve, reject) => {
+    const child = spawn(resolvePythonCommand(), [expeditionStickerWorkerPath, ...args], {
+      cwd: repoRoot,
+      windowsHide: true,
+    });
+
+    const stdout = [];
+    const stderr = [];
+    child.stdout.on("data", (chunk) => stdout.push(chunk));
+    child.stderr.on("data", (chunk) => stderr.push(chunk));
+    child.on("error", reject);
+    child.on("close", (code) => {
+      const output = Buffer.concat(stdout);
+      if (code === 0) {
+        resolve(output);
+        return;
+      }
+
+      reject(new Error(summarizeBridgeError(Buffer.concat(stderr).toString("utf8")) || `Expedition Sticker worker exited with ${code}`));
+    });
+
+    child.stdin.end();
+  });
+}
+
 async function cleanupExpiredHalLocationSessions() {
   const now = Date.now();
   for (const [sessionId, session] of halLocationSessions.entries()) {
@@ -3016,6 +3120,199 @@ async function handleApi(req, res, url) {
   const requestUser = await getRequestUser(req);
   if (!requestUser) {
     sendUnauthorized(res);
+    return;
+  }
+
+  if (url.pathname === "/api/expedition-stickers" && req.method === "GET") {
+    if (!requirePermission(res, requestUser, PERMISSIONS.HAL_LOCATIONS_VIEW)) {
+      return;
+    }
+
+    try {
+      const settings = await readFustSettings();
+      const state = await readExpeditionStickerState();
+      const payload = {
+        planning_file: state.planning_file,
+        split_file: state.split_file,
+        sheet_source: {
+          spreadsheet_id: String(settings.hal_locations_spreadsheet_id || settings.spreadsheet_id || "").trim(),
+          sheet_name: String(settings.hal_locations_sheet_name || "ERP_PASTE").trim() || "ERP_PASTE",
+        },
+      };
+
+      if (state.planning_file) {
+        const planningPath = expeditionStickerFilePath(state.planning_file);
+        if (planningPath && existsSync(planningPath)) {
+          payload.planning_summary = await inspectExpeditionStickerSource("planning", planningPath);
+        }
+      }
+      if (state.split_file) {
+        const splitPath = expeditionStickerFilePath(state.split_file);
+        if (splitPath && existsSync(splitPath)) {
+          payload.split_summary = await inspectExpeditionStickerSource("split", splitPath);
+        }
+      }
+
+      sendJson(res, 200, payload);
+    } catch (error) {
+      sendJson(res, 400, { error: error instanceof Error ? error.message : String(error) });
+    }
+    return;
+  }
+
+  if (url.pathname === "/api/expedition-stickers/upload" && req.method === "POST") {
+    if (!requirePermission(res, requestUser, PERMISSIONS.HAL_LOCATIONS_VIEW)) {
+      return;
+    }
+
+    try {
+      const body = await readRequestJson(req, 50 * 1024 * 1024);
+      const currentState = await readExpeditionStickerState();
+      const nextState = { ...currentState };
+
+      if (body?.planning_file?.content_base64) {
+        nextState.planning_file = await saveExpeditionStickerUpload("planning", body.planning_file, requestUser);
+      }
+      if (body?.split_file?.content_base64) {
+        nextState.split_file = await saveExpeditionStickerUpload("split", body.split_file, requestUser);
+      }
+      if (!body?.planning_file?.content_base64 && !body?.split_file?.content_base64) {
+        sendJson(res, 400, { error: "Upload a planning file or a split file first" });
+        return;
+      }
+
+      await writeExpeditionStickerState(nextState);
+      const responsePayload = {
+        planning_file: nextState.planning_file,
+        split_file: nextState.split_file,
+      };
+
+      if (nextState.planning_file) {
+        responsePayload.planning_summary = await inspectExpeditionStickerSource("planning", expeditionStickerFilePath(nextState.planning_file));
+      }
+      if (nextState.split_file) {
+        responsePayload.split_summary = await inspectExpeditionStickerSource("split", expeditionStickerFilePath(nextState.split_file));
+      }
+
+      sendJson(res, 200, responsePayload);
+    } catch (error) {
+      sendJson(res, 400, { error: error instanceof Error ? error.message : String(error) });
+    }
+    return;
+  }
+
+  if (url.pathname === "/api/expedition-stickers/load-sheet" && req.method === "POST") {
+    if (!requirePermission(res, requestUser, PERMISSIONS.HAL_LOCATIONS_VIEW)) {
+      return;
+    }
+
+    let session = null;
+    try {
+      const settings = await readFustSettings();
+      const spreadsheetId = String(settings.hal_locations_spreadsheet_id || settings.spreadsheet_id || "").trim();
+      const sheetName = String(settings.hal_locations_sheet_name || "ERP_PASTE").trim() || "ERP_PASTE";
+      if (!spreadsheetId) {
+        sendJson(res, 400, { error: "Set a Hal Locations spreadsheet ID in Settings first" });
+        return;
+      }
+
+      const rows = await loadSheetRows(spreadsheetId, sheetName);
+      session = await createHalLocationSheetSession(rows, { spreadsheet_id: spreadsheetId, sheet_name: sheetName });
+      const output = await runHalLocationsWorker([
+        "inspect",
+        "--input",
+        session.file_path,
+      ]);
+      const payload = JSON.parse(output.toString("utf8"));
+      sendJson(res, 200, {
+        id: session.id,
+        locPrefixes: Array.isArray(payload.locPrefixes) ? payload.locPrefixes : [],
+        custPrefixes: Array.isArray(payload.custPrefixes) ? payload.custPrefixes : [],
+        custByLoc: payload.custByLoc && typeof payload.custByLoc === "object" ? payload.custByLoc : {},
+        totalRows: Number(payload.totalRows || 0),
+        source: {
+          type: "sheet",
+          spreadsheet_id: spreadsheetId,
+          sheet_name: sheetName,
+        },
+      });
+    } catch (error) {
+      if (session?.id) {
+        halLocationSessions.delete(session.id);
+      }
+      if (session?.dir_path) {
+        await fs.rm(session.dir_path, { recursive: true, force: true }).catch(() => {});
+      }
+      sendJson(res, 400, { error: error instanceof Error ? error.message : String(error) });
+    }
+    return;
+  }
+
+  if (url.pathname === "/api/expedition-stickers/generate" && req.method === "POST") {
+    if (!requirePermission(res, requestUser, PERMISSIONS.HAL_LOCATIONS_VIEW)) {
+      return;
+    }
+
+    const body = await readRequestJson(req, 2 * 1024 * 1024);
+    const session = await getHalLocationSession(body.id);
+    if (!session) {
+      sendJson(res, 404, { error: "Session expired. Load ERP_PASTE again first." });
+      return;
+    }
+
+    const state = await readExpeditionStickerState();
+    const planningPath = state.planning_file ? expeditionStickerFilePath(state.planning_file) : "";
+    const splitPath = state.split_file ? expeditionStickerFilePath(state.split_file) : "";
+    if (!planningPath && !splitPath) {
+      sendJson(res, 400, { error: "Upload and save a planning file or split file first" });
+      return;
+    }
+
+    const outputDir = path.join(session.dir_path, `expedition-${Date.now()}`);
+    try {
+      const args = [
+        "generate",
+        "--hal-input",
+        session.file_path,
+        "--output-dir",
+        outputDir,
+      ];
+      if (planningPath && existsSync(planningPath)) {
+        args.push("--planning-input", planningPath);
+      }
+      if (splitPath && existsSync(splitPath)) {
+        args.push("--split-input", splitPath);
+      }
+
+      const output = await runExpeditionStickerWorker(args);
+      const payload = JSON.parse(output.toString("utf8"));
+      const files = await Promise.all(
+        (Array.isArray(payload.files) ? payload.files : []).map(async (file) => {
+          const fileBuffer = await fs.readFile(String(file.path || ""));
+          return {
+            name: String(file.name || "stickers.pdf"),
+            mime_type: "application/pdf",
+            content_base64: fileBuffer.toString("base64"),
+            split: file.split ?? null,
+            customer_count: Number(file.customer_count || 0),
+            sticker_count: Number(file.sticker_count || 0),
+          };
+        }),
+      );
+
+      sendJson(res, 200, {
+        summary: {
+          hal_customer_count: Number(payload.hal_customer_count || 0),
+          combined_row_count: Number(payload.combined_row_count || 0),
+          missing_locations: Array.isArray(payload.missing_locations) ? payload.missing_locations : [],
+        },
+        files,
+      });
+    } catch (error) {
+      sendJson(res, 400, { error: error instanceof Error ? error.message : String(error) });
+    } finally {
+      await fs.rm(outputDir, { recursive: true, force: true }).catch(() => {});
+    }
     return;
   }
 

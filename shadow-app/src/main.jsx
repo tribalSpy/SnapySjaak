@@ -33,6 +33,7 @@ const PAGE_DEFINITIONS = [
   { key: "fust", label: "Fust", permission: PERMISSIONS.FUST_VIEW },
   { key: "cmrprint", label: "CMR Print", permission: PERMISSIONS.CMR_VIEW },
   { key: "hallocations", label: "Hal Locations", permission: PERMISSIONS.HAL_LOCATIONS_VIEW },
+  { key: "expeditionstickers", label: "Expedition Sticker", permission: PERMISSIONS.HAL_LOCATIONS_VIEW },
   { key: "clock", label: "Inklokken", permission: PERMISSIONS.CLOCK_VIEW },
   { key: "users", label: "Users", permission: PERMISSIONS.USERS_MANAGE },
   { key: "settings", label: "Settings", permission: PERMISSIONS.SETTINGS_MANAGE },
@@ -103,6 +104,11 @@ function pageHeading(page) {
       return {
         title: "Hal Locations",
         caption: "Upload a halindeling and generate the same sticker PDF flow directly inside the Shadow app.",
+      };
+    case "expeditionstickers":
+      return {
+        title: "Expedition Sticker",
+        caption: "Save shared planning and split files, refresh ERP_PASTE, and generate expedition sticker PDFs for the team.",
       };
     case "cmrprint":
       return {
@@ -526,6 +532,243 @@ function HalLocationsPage() {
         {generateMessage ? <div className="notice success">{generateMessage}</div> : null}
         {generateError ? <div className="notice danger">{generateError}</div> : null}
       </article>
+    </section>
+  );
+}
+
+function ExpeditionStickerPage() {
+  const [planningFile, setPlanningFile] = useState(null);
+  const [splitFile, setSplitFile] = useState(null);
+  const [savedState, setSavedState] = useState(null);
+  const [loadingState, setLoadingState] = useState(true);
+  const [savingSources, setSavingSources] = useState(false);
+  const [sheetBusy, setSheetBusy] = useState(false);
+  const [generating, setGenerating] = useState(false);
+  const [halSessionId, setHalSessionId] = useState("");
+  const [halSummary, setHalSummary] = useState(null);
+  const [generatedFiles, setGeneratedFiles] = useState([]);
+  const [message, setMessage] = useState("");
+  const [error, setError] = useState("");
+
+  async function loadState() {
+    setLoadingState(true);
+    try {
+      const payload = await apiJson("/api/expedition-stickers");
+      setSavedState(payload);
+      setError("");
+    } catch (loadError) {
+      setError(loadError.message);
+    } finally {
+      setLoadingState(false);
+    }
+  }
+
+  useEffect(() => {
+    loadState();
+  }, []);
+
+  async function saveSources() {
+    if (!planningFile && !splitFile) {
+      setError("Choose a planning file or split file first");
+      setMessage("");
+      return;
+    }
+
+    setSavingSources(true);
+    setError("");
+    setMessage("");
+    try {
+      const body = {};
+      if (planningFile) {
+        body.planning_file = {
+          name: planningFile.name,
+          content_base64: await fileToBase64(planningFile),
+        };
+      }
+      if (splitFile) {
+        body.split_file = {
+          name: splitFile.name,
+          content_base64: await fileToBase64(splitFile),
+        };
+      }
+      const payload = await apiJson("/api/expedition-stickers/upload", {
+        method: "POST",
+        body: JSON.stringify(body),
+      });
+      setSavedState((current) => ({
+        ...(current || {}),
+        ...payload,
+      }));
+      setPlanningFile(null);
+      setSplitFile(null);
+      setMessage("Shared expedition source files saved.");
+    } catch (saveError) {
+      setError(saveError.message);
+      setMessage("");
+    } finally {
+      setSavingSources(false);
+    }
+  }
+
+  async function loadHalindelingFromSheet() {
+    setSheetBusy(true);
+    setError("");
+    setMessage("Loading ERP_PASTE from Google Sheets...");
+    setGeneratedFiles([]);
+    try {
+      const payload = await apiJson("/api/expedition-stickers/load-sheet", {
+        method: "POST",
+        body: JSON.stringify({}),
+      });
+      setHalSessionId(payload.id || "");
+      setHalSummary(payload);
+      setMessage(`ERP_PASTE loaded: ${payload.totalRows || 0} rows, ${(payload.locPrefixes || []).length} location prefixes.`);
+    } catch (sheetError) {
+      setHalSessionId("");
+      setHalSummary(null);
+      setError(sheetError.message);
+      setMessage("");
+    } finally {
+      setSheetBusy(false);
+    }
+  }
+
+  async function generateExpeditionStickers() {
+    if (!halSessionId) {
+      setError("Load ERP_PASTE first");
+      setMessage("");
+      return;
+    }
+
+    setGenerating(true);
+    setError("");
+    setMessage("Generating expedition sticker PDFs...");
+    try {
+      const payload = await apiJson("/api/expedition-stickers/generate", {
+        method: "POST",
+        body: JSON.stringify({ id: halSessionId }),
+      });
+      setGeneratedFiles(payload.files || []);
+      const missing = Array.isArray(payload.summary?.missing_locations) ? payload.summary.missing_locations : [];
+      setMessage(
+        `Generated ${(payload.files || []).length} PDF file(s) from ${payload.summary?.combined_row_count || 0} sticker rows.${missing.length ? ` Missing hal locations for: ${missing.join(", ")}` : ""}`,
+      );
+    } catch (generateError) {
+      setError(generateError.message);
+      setMessage("");
+    } finally {
+      setGenerating(false);
+    }
+  }
+
+  return (
+    <section className="overview-stack">
+      <article className="panel hal-panel">
+        <div className="section-header">
+          <div>
+            <h2>Shared source files</h2>
+            <p>The planner uploads the latest planning and split files here once. Everyone else can reuse them later without uploading again.</p>
+          </div>
+          <button type="button" onClick={loadState} disabled={loadingState}>
+            {loadingState ? "Refreshing..." : "Refresh saved state"}
+          </button>
+        </div>
+        <div className="form-grid">
+          <label>
+            <span>Planning file</span>
+            <input type="file" accept=".xlsx,.xls,.csv" onChange={(event) => setPlanningFile(event.target.files?.[0] || null)} />
+          </label>
+          <label>
+            <span>Split file</span>
+            <input type="file" accept=".xlsx,.xls,.csv" onChange={(event) => setSplitFile(event.target.files?.[0] || null)} />
+          </label>
+        </div>
+        <div className="row-actions hal-actions-row">
+          <button type="button" className="primary" onClick={saveSources} disabled={savingSources}>
+            {savingSources ? "Saving..." : "Save shared files"}
+          </button>
+        </div>
+        <div className="table-wrap">
+          <table className="data-table">
+            <thead>
+              <tr>
+                <th>Source</th>
+                <th>Saved file</th>
+                <th>Rows</th>
+                <th>Saved by</th>
+                <th>Saved at</th>
+              </tr>
+            </thead>
+            <tbody>
+              {[
+                ["Planning", savedState?.planning_file, savedState?.planning_summary],
+                ["Split", savedState?.split_file, savedState?.split_summary],
+              ].map(([label, file, summary]) => (
+                <tr key={label}>
+                  <td>{label}</td>
+                  <td>{file?.original_name || "-"}</td>
+                  <td>{summary?.row_count || 0}</td>
+                  <td>{file?.saved_by || "-"}</td>
+                  <td>{file?.saved_at ? formatTimestamp(file.saved_at) : "-"}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </article>
+
+      <article className="panel hal-panel">
+        <div className="section-header">
+          <div>
+            <h2>Live halindeling</h2>
+            <p>Reuse the same ERP_PASTE spreadsheet source as Hal Locations so the latest location lookup is always loaded right before generation.</p>
+          </div>
+        </div>
+        <div className="row-actions hal-actions-row">
+          <button type="button" className="primary" onClick={loadHalindelingFromSheet} disabled={sheetBusy}>
+            {sheetBusy ? "Loading sheet..." : "Load ERP_PASTE from spreadsheet"}
+          </button>
+        </div>
+        {savedState?.sheet_source?.spreadsheet_id ? (
+          <p className="sidebar-note">
+            Source: {savedState.sheet_source.sheet_name || "ERP_PASTE"} ({savedState.sheet_source.spreadsheet_id})
+          </p>
+        ) : null}
+        {halSummary ? (
+          <p className="sidebar-note">
+            Loaded {halSummary.totalRows || 0} rows, {(halSummary.locPrefixes || []).length} location prefixes, and {(halSummary.custPrefixes || []).length} customer prefixes.
+          </p>
+        ) : null}
+      </article>
+
+      <article className="panel hal-panel">
+        <div className="section-header">
+          <div>
+            <h2>Generate expedition stickers</h2>
+            <p>The PDFs follow the old sticker app flow: one file per split / truck plus one overig file when rows have no split.</p>
+          </div>
+        </div>
+        <div className="row-actions hal-actions-row">
+          <button type="button" className="primary" onClick={generateExpeditionStickers} disabled={generating || !halSessionId}>
+            {generating ? "Generating..." : "Generate PDFs"}
+          </button>
+          <button type="button" disabled={!generatedFiles.length} onClick={() => generatedFiles.forEach((file) => downloadBase64File(file.name, file.content_base64, file.mime_type))}>
+            Download all
+          </button>
+        </div>
+        {!!generatedFiles.length && (
+          <div className="row-actions hal-actions-row">
+            {generatedFiles.map((file) => (
+              <button key={file.name} type="button" onClick={() => downloadBase64File(file.name, file.content_base64, file.mime_type)}>
+                {file.name}
+              </button>
+            ))}
+          </div>
+        )}
+      </article>
+
+      {message ? <div className="notice success">{message}</div> : null}
+      {error ? <div className="notice danger">{error}</div> : null}
     </section>
   );
 }
@@ -2665,6 +2908,7 @@ function App() {
         {page === "cmrprint" && <CmrPrintPage currentUser={auth.user} />}
         {page === "clock" && <ClockPage currentUser={auth.user} />}
         {page === "hallocations" && <HalLocationsPage currentUser={auth.user} />}
+        {page === "expeditionstickers" && <ExpeditionStickerPage currentUser={auth.user} />}
         {page === "settings" && <SettingsPage currentUser={auth.user} />}
         {page === "ukdocs" && <UkdocsPage currentUser={auth.user} />}
         {page === "dashboard" && canViewPhotos && (
