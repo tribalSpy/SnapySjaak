@@ -1907,31 +1907,32 @@ function parseRegistrySheetRows(rows, type) {
     return [];
   }
 
-  const headers = rows[0].map(normalizeHeader);
-  const hasHeaderRow = headers.includes("klantnaam") || headers.includes("dag");
+  const layout = getRegistrySheetLayout(rows);
+  const headers = layout.headers;
+  const hasHeaderRow = layout.hasHeaderRow;
   const sourceRows = hasHeaderRow ? rows.slice(1) : rows;
 
   return sourceRows
     .map((row, index) => normalizeFustAction({
-      id: rowValue(row, 16) || `${type.toLowerCase()}-sheet-${index + 1}`,
+      id: rowValue(row, layout.idIndex) || `${type.toLowerCase()}-sheet-${index + 1}`,
       type,
-      day_name: rowValue(row, 0),
-      action_date: parseSheetDateToIso(rowValue(row, 1)),
-      week: rowValue(row, 2) ? Number(rowValue(row, 2)) : null,
-      customer_name: rowValue(row, 3),
-      country: rowValue(row, 4),
-      customer_code: rowValue(row, 5),
-      connect_name: rowValue(row, 5),
-      remark: rowValue(row, 6),
-      fustbon_reference: rowValue(row, 14),
-      fustfactuur_reference: rowValue(row, 15),
+      day_name: rowValue(row, layout.dayIndex),
+      action_date: parseSheetDateToIso(rowValue(row, layout.dateIndex)),
+      week: rowValue(row, layout.weekIndex) ? Number(rowValue(row, layout.weekIndex)) : null,
+      customer_name: rowValue(row, layout.customerNameIndex),
+      country: rowValue(row, layout.countryIndex),
+      customer_code: rowValue(row, layout.connectIndex),
+      connect_name: rowValue(row, layout.connectIndex),
+      remark: rowValue(row, layout.remarkIndex),
+      fustbon_reference: rowValue(row, layout.fustbonIndex),
+      fustfactuur_reference: rowValue(row, layout.fustfactuurIndex),
       metrics: {
-        dc: normalizeNumber(rowValue(row, 7)),
-        cctag: normalizeNumber(rowValue(row, 8)),
-        dcs: normalizeNumber(rowValue(row, 9)),
-        dco: normalizeNumber(rowValue(row, 10)),
-        pal: normalizeNumber(rowValue(row, 11)),
-        vk: normalizeNumber(rowValue(row, 12)),
+        dc: normalizeNumber(rowValue(row, layout.dcIndex)),
+        cctag: normalizeNumber(rowValue(row, layout.cctagIndex)),
+        dcs: normalizeNumber(rowValue(row, layout.dcsIndex)),
+        dco: normalizeNumber(rowValue(row, layout.dcoIndex)),
+        pal: normalizeNumber(rowValue(row, layout.palIndex)),
+        vk: normalizeNumber(rowValue(row, layout.vkIndex)),
       },
       created_by: "spreadsheet",
       created_at: "",
@@ -1941,26 +1942,61 @@ function parseRegistrySheetRows(rows, type) {
     .filter((action) => action.customer_name && action.country);
 }
 
-function fustSheetRow(action) {
-  return [
-    action.day_name,
-    isoDateForDisplay(action.action_date),
-    action.week ?? "",
-    action.customer_name,
-    action.country,
-    action.customer_code || action.connect_name,
-    action.remark,
-    action.metrics.dc || "",
-    action.metrics.cctag || "",
-    action.metrics.dcs || "",
-    action.metrics.dco || "",
-    action.metrics.pal || "",
-    action.metrics.vk || "",
-    "",
-    action.fustbon_reference || "",
-    action.fustfactuur_reference || "",
-    action.id || "",
-  ];
+function getRegistrySheetLayout(rows) {
+  const headers = Array.isArray(rows?.[0]) ? rows[0].map(normalizeHeader) : [];
+  const hasHeaderRow = headers.includes("klantnaam") || headers.includes("dag");
+  const pick = (aliases, fallbackIndex) => {
+    const index = firstMatchingIndex(headers, aliases);
+    return index >= 0 ? index : fallbackIndex;
+  };
+  const rowLength = Math.max(
+    headers.length,
+    pick(["id", "action id", "actie id"], 18) + 1,
+    19,
+  );
+  return {
+    headers,
+    hasHeaderRow,
+    rowLength,
+    dayIndex: pick(["dag", "day"], 0),
+    dateIndex: pick(["datum", "date"], 1),
+    weekIndex: pick(["week"], 2),
+    customerNameIndex: pick(["klantnaam", "customer name", "customer"], 3),
+    countryIndex: pick(["co", "country", "land"], 4),
+    connectIndex: pick(["klantcode connect", "connect", "connect code", "klantcode connector"], 5),
+    remarkIndex: pick(["remark", "opmerking"], 6),
+    dcIndex: pick(["dc"], 7),
+    cctagIndex: pick(["cctag", "cc tag"], 8),
+    dcsIndex: pick(["dcs"], 9),
+    dcoIndex: pick(["dco"], 10),
+    palIndex: pick(["pal", "pallet", "pallets"], 11),
+    vkIndex: pick(["vk"], 12),
+    fustbonIndex: pick(["fustbon"], 14),
+    fustfactuurIndex: pick(["fustfactuur", "fust factuur"], 15),
+    idIndex: pick(["id", "action id", "actie id"], 18),
+  };
+}
+
+function buildRegistrySheetRow(action, rows, existingRow = []) {
+  const layout = getRegistrySheetLayout(rows);
+  const row = Array.from({ length: layout.rowLength }, (_, index) => String(existingRow?.[index] || ""));
+  row[layout.dayIndex] = action.day_name || "";
+  row[layout.dateIndex] = isoDateForDisplay(action.action_date);
+  row[layout.weekIndex] = action.week ?? "";
+  row[layout.customerNameIndex] = action.customer_name || "";
+  row[layout.countryIndex] = action.country || "";
+  row[layout.connectIndex] = action.customer_code || action.connect_name || "";
+  row[layout.remarkIndex] = action.remark || "";
+  row[layout.dcIndex] = action.metrics.dc || "";
+  row[layout.cctagIndex] = action.metrics.cctag || "";
+  row[layout.dcsIndex] = action.metrics.dcs || "";
+  row[layout.dcoIndex] = action.metrics.dco || "";
+  row[layout.palIndex] = action.metrics.pal || "";
+  row[layout.vkIndex] = action.metrics.vk || "";
+  row[layout.fustbonIndex] = action.fustbon_reference || "";
+  row[layout.fustfactuurIndex] = action.fustfactuur_reference || "";
+  row[layout.idIndex] = action.id || "";
+  return row;
 }
 
 function fustDashboardRow(action) {
@@ -2530,9 +2566,9 @@ async function syncFustActionToSheets(action, settings, options = {}) {
     return { ok: false, target_sheets: [], error: "Target sheet is not configured" };
   }
 
+  const existingRows = await loadSheetRows(settings.spreadsheet_id, targetSheet);
   let targetRowNumber = Number(action?.sheet_sync?.row_number || 0);
   if (targetRowNumber < 2) {
-    const existingRows = await loadSheetRows(settings.spreadsheet_id, targetSheet);
     if (action?.id) {
       targetRowNumber = findFustSheetRowNumberByActionId(existingRows, action.id);
     }
@@ -2541,9 +2577,11 @@ async function syncFustActionToSheets(action, settings, options = {}) {
     }
   }
 
+  const existingRow = targetRowNumber >= 1 ? (existingRows[targetRowNumber - 1] || []) : [];
+  const rowPayload = buildRegistrySheetRow(action, existingRows, existingRow);
   const output = targetRowNumber >= 2
-    ? await writeSheetRowAt(settings.spreadsheet_id, targetSheet, targetRowNumber, fustSheetRow(action))
-    : await writeSheetRowToFirstEmpty(settings.spreadsheet_id, targetSheet, fustSheetRow(action));
+    ? await writeSheetRowAt(settings.spreadsheet_id, targetSheet, targetRowNumber, rowPayload)
+    : await writeSheetRowToFirstEmpty(settings.spreadsheet_id, targetSheet, rowPayload);
 
   return {
     ok: true,
@@ -4076,7 +4114,6 @@ async function handleApi(req, res, url) {
     const localActions = await readFustActions();
     let inSheetActions = [];
     let outSheetActions = [];
-    let sheetActions = [];
     const sourceDebug = {
       local: {
         action_count: localActions.length,
@@ -4089,12 +4126,6 @@ async function handleApi(req, res, url) {
       },
       out_sheet: {
         sheet_name: settings.out_sheet_name,
-        row_count: 0,
-        action_count: 0,
-        error: "",
-      },
-      dashboard_sheet: {
-        sheet_name: settings.dashboard_sheet_name,
         row_count: 0,
         action_count: 0,
         error: "",
@@ -4120,16 +4151,6 @@ async function handleApi(req, res, url) {
       sourceDebug.out_sheet.error = error instanceof Error ? error.message : String(error || "Unknown error");
     }
 
-    try {
-      const dashboardRows = await loadSheetRows(settings.spreadsheet_id, settings.dashboard_sheet_name);
-      sourceDebug.dashboard_sheet.row_count = dashboardRows.length;
-      sheetActions = parseDashboardSheetRows(dashboardRows);
-      sourceDebug.dashboard_sheet.action_count = sheetActions.length;
-    } catch (error) {
-      sheetActions = [];
-      sourceDebug.dashboard_sheet.error = error instanceof Error ? error.message : String(error || "Unknown error");
-    }
-
     const deletedActionIds = new Set(
       localActions
         .filter((action) => action.deleted)
@@ -4137,7 +4158,7 @@ async function handleApi(req, res, url) {
         .filter(Boolean),
     );
     const dedupedActions = new Map();
-    for (const action of [...inSheetActions, ...outSheetActions, ...sheetActions, ...localActions]) {
+    for (const action of [...inSheetActions, ...outSheetActions, ...localActions]) {
       const actionId = String(action?.id || "").trim();
       if (actionId && deletedActionIds.has(actionId)) {
         continue;
@@ -4402,15 +4423,13 @@ async function handleApi(req, res, url) {
       const settings = await readFustSettings();
       let candidates = [];
       try {
-        const [retourRows, uitgaandRows, dashboardRows] = await Promise.all([
+        const [retourRows, uitgaandRows] = await Promise.all([
           loadSheetRows(settings.spreadsheet_id, settings.in_sheet_name).catch(() => []),
           loadSheetRows(settings.spreadsheet_id, settings.out_sheet_name).catch(() => []),
-          loadSheetRows(settings.spreadsheet_id, settings.dashboard_sheet_name).catch(() => []),
         ]);
         candidates = [
           ...parseRegistrySheetRows(retourRows, "IN"),
           ...parseRegistrySheetRows(uitgaandRows, "OUT"),
-          ...parseDashboardSheetRows(dashboardRows),
         ];
       } catch {
         candidates = [];
