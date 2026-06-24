@@ -1158,6 +1158,9 @@ function normalizeFustAction(action) {
     },
     created_by: String(action?.created_by || ""),
     created_at: String(action?.created_at || ""),
+    deleted: action?.deleted === true,
+    deleted_at: String(action?.deleted_at || ""),
+    deleted_by: String(action?.deleted_by || ""),
     sheet_sync: action?.sheet_sync || { ok: false, target_sheets: [], error: "Not attempted" },
     email_sync: action?.email_sync || { ok: false, recipients: [], error: "Not attempted" },
     cmr: normalizeCmrInfo(action?.cmr),
@@ -1850,6 +1853,14 @@ function buildActionSignature(action) {
     action.metrics?.pal || 0,
     action.metrics?.vk || 0,
   ].join("|");
+}
+
+function buildActionMergeKey(action) {
+  const actionId = String(action?.id || "").trim();
+  if (actionId) {
+    return `id:${actionId}`;
+  }
+  return `sig:${buildActionSignature(action)}`;
 }
 
 function parseDashboardSheetRows(rows) {
@@ -4119,9 +4130,22 @@ async function handleApi(req, res, url) {
       sourceDebug.dashboard_sheet.error = error instanceof Error ? error.message : String(error || "Unknown error");
     }
 
+    const deletedActionIds = new Set(
+      localActions
+        .filter((action) => action.deleted)
+        .map((action) => String(action.id || "").trim())
+        .filter(Boolean),
+    );
     const dedupedActions = new Map();
     for (const action of [...inSheetActions, ...outSheetActions, ...sheetActions, ...localActions]) {
-      dedupedActions.set(buildActionSignature(action), action);
+      const actionId = String(action?.id || "").trim();
+      if (actionId && deletedActionIds.has(actionId)) {
+        continue;
+      }
+      if (action.deleted) {
+        continue;
+      }
+      dedupedActions.set(buildActionMergeKey(action), action);
     }
 
     const actions = [...dedupedActions.values()];
@@ -4142,6 +4166,10 @@ async function handleApi(req, res, url) {
       overview: buildOverview(filteredActions),
       source_debug: {
         ...sourceDebug,
+        local: {
+          action_count: localActions.filter((action) => !action.deleted).length,
+          deleted_action_count: localActions.filter((action) => action.deleted).length,
+        },
         merged_action_count: actions.length,
         filtered_action_count: filteredActions.length,
       },
@@ -4368,19 +4396,59 @@ async function handleApi(req, res, url) {
     const parts = url.pathname.split("/").filter(Boolean);
     const actionId = decodeURIComponent(parts[3] || "");
     const actions = await readFustActions();
-    const actionIndex = actions.findIndex((item) => item.id === actionId);
-    if (actionIndex < 0) {
-      sendJson(res, 404, { error: "Fust action not found" });
-      return;
+    let actionIndex = actions.findIndex((item) => item.id === actionId);
+    let action = actionIndex >= 0 ? actions[actionIndex] : null;
+    if (!action) {
+      const settings = await readFustSettings();
+      let candidates = [];
+      try {
+        const [retourRows, uitgaandRows, dashboardRows] = await Promise.all([
+          loadSheetRows(settings.spreadsheet_id, settings.in_sheet_name).catch(() => []),
+          loadSheetRows(settings.spreadsheet_id, settings.out_sheet_name).catch(() => []),
+          loadSheetRows(settings.spreadsheet_id, settings.dashboard_sheet_name).catch(() => []),
+        ]);
+        candidates = [
+          ...parseRegistrySheetRows(retourRows, "IN"),
+          ...parseRegistrySheetRows(uitgaandRows, "OUT"),
+          ...parseDashboardSheetRows(dashboardRows),
+        ];
+      } catch {
+        candidates = [];
+      }
+      action = candidates.find((item) => item.id === actionId) || null;
+      if (!action) {
+        sendJson(res, 404, { error: "Fust action not found" });
+        return;
+      }
+      actionIndex = -1;
     }
 
-    const action = actions[actionIndex];
     const requiredPermission = action.type === "OUT" ? PERMISSIONS.FUST_OUT : PERMISSIONS.FUST_IN;
     if (!requirePermission(res, requestUser, requiredPermission)) {
       return;
     }
 
-    actions.splice(actionIndex, 1);
+    const deletedAction = normalizeFustAction({
+      ...action,
+      deleted: true,
+      deleted_at: new Date().toISOString(),
+      deleted_by: requestUser.username,
+      sheet_sync: {
+        ...(action.sheet_sync || {}),
+        ok: false,
+        error: "Deleted locally",
+      },
+      email_sync: {
+        ...(action.email_sync || {}),
+        ok: false,
+        error: "Deleted locally",
+      },
+    });
+    if (actionIndex >= 0) {
+      actions[actionIndex] = deletedAction;
+    } else {
+      actions.push(deletedAction);
+    }
     await writeFustActions(actions);
     sendJson(res, 200, { ok: true, deleted_action_id: actionId });
     return;
