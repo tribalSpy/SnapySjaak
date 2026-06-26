@@ -17,6 +17,7 @@ const fustActionsPath = path.join(cacheDir, "fust-actions.json");
 const fustSettingsPath = path.join(cacheDir, "fust-settings.json");
 const clockRecordsPath = path.join(cacheDir, "clock-records.json");
 const ukdocsStatePath = path.join(cacheDir, "ukdocs-state.json");
+const ukdocsPrintFilesDir = path.join(cacheDir, "ukdocs-print-files");
 const fustBackupDir = path.join(cacheDir, "fust-backups");
 const syncScriptPath = path.join(repoRoot, "sync_index.py");
 const driveBridgePath = path.join(appRoot, "server", "drive_bridge.py");
@@ -105,6 +106,8 @@ const defaultFustSettings = {
   cmr_google_client_secret: "",
   cmr_google_refresh_token: "",
   cmr_google_connected_email: "",
+  gmail_refresh_token: "",
+  gmail_connected_email: "",
   clock_spreadsheet_id: "",
   clock_employee_sheet_name: "badges",
   clock_records_sheet_name: "backup",
@@ -167,6 +170,7 @@ const defaultUkdocsState = {
   },
   shipments: [],
   audit_reports: [],
+  print_collections: [],
 };
 
 const defaultExpeditionStickerState = {
@@ -685,6 +689,9 @@ function guessMimeType(filePath) {
     ".css": "text/css",
     ".js": "text/javascript",
     ".svg": "image/svg+xml",
+    ".pdf": "application/pdf",
+    ".xls": "application/vnd.ms-excel",
+    ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
   };
   return map[extension] || "application/octet-stream";
 }
@@ -821,6 +828,8 @@ function normalizeFustSettings(settings) {
     cmr_google_client_secret: String(settings?.cmr_google_client_secret || ""),
     cmr_google_refresh_token: String(settings?.cmr_google_refresh_token || ""),
     cmr_google_connected_email: String(settings?.cmr_google_connected_email || "").trim(),
+    gmail_refresh_token: String(settings?.gmail_refresh_token || ""),
+    gmail_connected_email: String(settings?.gmail_connected_email || "").trim(),
     clock_spreadsheet_id: String(settings?.clock_spreadsheet_id || "").trim(),
     clock_employee_sheet_name: String(settings?.clock_employee_sheet_name || defaultFustSettings.clock_employee_sheet_name).trim() || defaultFustSettings.clock_employee_sheet_name,
     clock_records_sheet_name: String(settings?.clock_records_sheet_name || defaultFustSettings.clock_records_sheet_name).trim() || defaultFustSettings.clock_records_sheet_name,
@@ -969,6 +978,16 @@ function normalizeUkdocsUploadedFiles(files) {
   return next;
 }
 
+function ukdocsUploadedFilesWithoutContent(files) {
+  const normalized = normalizeUkdocsUploadedFiles(files);
+  return Object.fromEntries(
+    Object.entries(normalized).map(([category, file]) => [category, {
+      ...file,
+      content_base64: "",
+    }]),
+  );
+}
+
 function deriveUkdocsShipmentStatus(shipment) {
   const uploadedCategories = Object.values(shipment.uploaded_files || {}).filter((item) => item.file_name);
   if (!uploadedCategories.length) {
@@ -1036,11 +1055,74 @@ function normalizeUkdocsAuditReport(report) {
     id: normalizeUkdocsText(report?.id) || crypto.randomUUID(),
     shipment_id: normalizeUkdocsText(report?.shipment_id),
     shipment_reference: normalizeUkdocsText(report?.shipment_reference),
+    shipment_date: normalizeUkdocsText(report?.shipment_date),
+    customer_name: normalizeUkdocsText(report?.customer_name),
     created_at: normalizeUkdocsText(report?.created_at),
     final_status: normalizeUkdocsText(report?.final_status),
     warnings: Array.isArray(report?.warnings) ? report.warnings.map((item) => String(item || "").trim()).filter(Boolean) : [],
     summary: String(report?.summary || "").trim(),
+    summary_rows: Array.isArray(report?.summary_rows) ? report.summary_rows : [],
   };
+}
+
+function normalizeUkdocsPrintDocument(document) {
+  if (!document || typeof document !== "object") {
+    return null;
+  }
+  const storageName = normalizeUkdocsText(document.storage_name);
+  return storageName ? {
+    storage_name: storageName,
+    original_name: String(document.original_name || storageName).trim() || storageName,
+    mime_type: normalizeUkdocsText(document.mime_type),
+    size_bytes: Number(document.size_bytes || 0),
+    saved_at: normalizeUkdocsText(document.saved_at),
+    saved_by: normalizeUkdocsText(document.saved_by),
+  } : null;
+}
+
+function deriveUkdocsPrintCollectionStatus(collection) {
+  const phytoReady = Boolean(collection?.documents?.phyto?.storage_name);
+  const extraReady = Boolean(collection?.documents?.export_extra?.storage_name);
+  if (phytoReady && extraReady) {
+    return "complete";
+  }
+  if (phytoReady || extraReady) {
+    return "partial";
+  }
+  return "pending";
+}
+
+function normalizeUkdocsPrintCollection(collection) {
+  const normalized = {
+    id: normalizeUkdocsText(collection?.id) || crypto.randomUUID(),
+    shipment_id: normalizeUkdocsText(collection?.shipment_id),
+    shipment_reference: normalizeUkdocsText(collection?.shipment_reference),
+    shipment_date: normalizeUkdocsText(collection?.shipment_date),
+    customer_id: normalizeUkdocsText(collection?.customer_id),
+    customer_name: normalizeUkdocsText(collection?.customer_name),
+    invoice_numbers: String(collection?.invoice_numbers || "").trim(),
+    truck_number: normalizeUkdocsText(collection?.truck_number),
+    trailer_number: normalizeUkdocsText(collection?.trailer_number),
+    generated_at: normalizeUkdocsText(collection?.generated_at),
+    updated_at: normalizeUkdocsText(collection?.updated_at),
+    notes: String(collection?.notes || "").trim(),
+    documents: {
+      phyto: normalizeUkdocsPrintDocument(collection?.documents?.phyto),
+      export_extra: normalizeUkdocsPrintDocument(collection?.documents?.export_extra),
+    },
+  };
+  normalized.status = deriveUkdocsPrintCollectionStatus(normalized);
+  return normalized;
+}
+
+function summarizeUkdocsWarnings(warnings) {
+  if (!Array.isArray(warnings) || !warnings.length) {
+    return "";
+  }
+  return warnings
+    .map((warning) => String(warning?.message || warning || "").trim())
+    .filter(Boolean)
+    .join(" | ");
 }
 
 function normalizeUkdocsState(state) {
@@ -1052,6 +1134,7 @@ function normalizeUkdocsState(state) {
     column_mappings: normalizeUkdocsColumnMappings(state?.column_mappings || defaultUkdocsState.column_mappings),
     shipments: Array.isArray(state?.shipments) ? state.shipments.map(normalizeUkdocsShipment).sort((a, b) => String(b.shipment_date || b.updated_at).localeCompare(String(a.shipment_date || a.updated_at))) : [],
     audit_reports: Array.isArray(state?.audit_reports) ? state.audit_reports.map(normalizeUkdocsAuditReport).sort((a, b) => String(b.created_at).localeCompare(String(a.created_at))) : [],
+    print_collections: Array.isArray(state?.print_collections) ? state.print_collections.map(normalizeUkdocsPrintCollection).sort((a, b) => String(b.shipment_date || b.updated_at).localeCompare(String(a.shipment_date || a.updated_at))) : [],
   };
 }
 
@@ -2238,6 +2321,228 @@ function mergeUkdocsStatePatch(currentState, patch) {
   });
 }
 
+function ukdocsPrintDocumentPath(document) {
+  if (!document?.storage_name) {
+    return "";
+  }
+  return path.join(ukdocsPrintFilesDir, document.storage_name);
+}
+
+function upsertUkdocsPrintCollection(collections, nextCollection) {
+  const existingIndex = collections.findIndex((item) => item.id === nextCollection.id || item.shipment_id === nextCollection.shipment_id);
+  if (existingIndex >= 0) {
+    const nextCollections = [...collections];
+    nextCollections[existingIndex] = nextCollection;
+    return nextCollections;
+  }
+  return [nextCollection, ...collections];
+}
+
+function buildUkdocsPrintCollectionFromShipment(existingCollection, shipment, customerName) {
+  return normalizeUkdocsPrintCollection({
+    ...existingCollection,
+    id: existingCollection?.id || shipment.id,
+    shipment_id: shipment.id,
+    shipment_reference: shipment.export_reference || shipment.invoice_numbers,
+    shipment_date: shipment.shipment_date,
+    customer_id: shipment.customer_id,
+    customer_name: customerName || existingCollection?.customer_name || "",
+    invoice_numbers: shipment.invoice_numbers,
+    truck_number: shipment.truck_number,
+    trailer_number: shipment.trailer_number,
+    generated_at: existingCollection?.generated_at || new Date().toISOString(),
+    updated_at: new Date().toISOString(),
+    documents: existingCollection?.documents || {},
+    notes: existingCollection?.notes || "",
+  });
+}
+
+async function saveUkdocsPrintUpload(collectionId, kind, filePayload, requestUser) {
+  const originalName = path.basename(String(filePayload?.file_name || filePayload?.name || "").trim());
+  const contentBase64 = String(filePayload?.content_base64 || "").trim();
+  const mimeType = String(filePayload?.mime_type || guessMimeType(originalName)).trim() || "application/octet-stream";
+  if (!["phyto", "export_extra"].includes(kind)) {
+    throw new Error("Unknown UKdocs Print document type");
+  }
+  if (!originalName || !contentBase64) {
+    throw new Error("Choose a file first");
+  }
+
+  const extension = safeExtension(originalName, mimeType);
+  const fileBuffer = Buffer.from(contentBase64, "base64");
+  const storageName = `${sanitizeDriveName(collectionId)}-${kind}-${Date.now()}${extension}`;
+  await fs.mkdir(ukdocsPrintFilesDir, { recursive: true });
+  await fs.writeFile(path.join(ukdocsPrintFilesDir, storageName), fileBuffer);
+  return {
+    storage_name: storageName,
+    original_name: originalName,
+    mime_type: mimeType,
+    size_bytes: fileBuffer.length,
+    saved_at: new Date().toISOString(),
+    saved_by: requestUser.username,
+  };
+}
+
+async function saveUkdocsPrintBuffer(collectionId, kind, originalName, mimeType, fileBuffer, savedBy) {
+  if (!["phyto", "export_extra"].includes(kind)) {
+    throw new Error("Unknown UKdocs Print document type");
+  }
+  const extension = safeExtension(originalName, mimeType);
+  const storageName = `${sanitizeDriveName(collectionId)}-${kind}-${Date.now()}${extension}`;
+  await fs.mkdir(ukdocsPrintFilesDir, { recursive: true });
+  await fs.writeFile(path.join(ukdocsPrintFilesDir, storageName), fileBuffer);
+  return {
+    storage_name: storageName,
+    original_name: path.basename(originalName || storageName),
+    mime_type: mimeType || guessMimeType(originalName),
+    size_bytes: fileBuffer.length,
+    saved_at: new Date().toISOString(),
+    saved_by: savedBy || "gmail-sync",
+  };
+}
+
+function normalizeUkdocsPrintToken(value) {
+  return String(value || "").toUpperCase().replace(/[^A-Z0-9]/g, "");
+}
+
+function ukdocsPrintCollectionMatchScore(collection, haystackRaw) {
+  const haystack = normalizeUkdocsPrintToken(haystackRaw);
+  if (!haystack) {
+    return 0;
+  }
+  let score = 0;
+  const invoices = String(collection?.invoice_numbers || "")
+    .split(/[\/,\s;]+/)
+    .map(normalizeUkdocsPrintToken)
+    .filter((item) => item.length >= 4);
+  for (const invoice of invoices) {
+    if (invoice && haystack.includes(invoice)) {
+      score += 5;
+    }
+  }
+  const truck = normalizeUkdocsPrintToken(collection?.truck_number);
+  const trailer = normalizeUkdocsPrintToken(collection?.trailer_number);
+  if (truck && haystack.includes(truck)) {
+    score += 2;
+  }
+  if (trailer && haystack.includes(trailer)) {
+    score += 2;
+  }
+  return score;
+}
+
+function detectUkdocsPrintDocumentKind(text) {
+  const normalized = String(text || "").toLowerCase();
+  if (/(phyto|phytosan|kcb|certificate|certificaat)/.test(normalized)) {
+    return "phyto";
+  }
+  return "export_extra";
+}
+
+async function gmailApiJson(accessToken, resourcePath) {
+  const response = await fetch(`https://gmail.googleapis.com/gmail/v1/users/me/${resourcePath}`, {
+    headers: { authorization: `Bearer ${accessToken}` },
+  });
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    throw new Error(payload.error?.message || payload.error_description || `Gmail API failed with ${response.status}`);
+  }
+  return payload;
+}
+
+async function gmailAttachmentBuffer(accessToken, messageId, attachmentId) {
+  const payload = await gmailApiJson(accessToken, `messages/${encodeURIComponent(messageId)}/attachments/${encodeURIComponent(attachmentId)}`);
+  const base64Url = String(payload.data || "").trim();
+  if (!base64Url) {
+    return Buffer.alloc(0);
+  }
+  return Buffer.from(base64Url.replace(/-/g, "+").replace(/_/g, "/"), "base64");
+}
+
+function gmailHeaderValue(headers, name) {
+  const header = Array.isArray(headers) ? headers.find((item) => String(item?.name || "").toLowerCase() === String(name || "").toLowerCase()) : null;
+  return String(header?.value || "");
+}
+
+function collectGmailAttachments(parts, bucket = []) {
+  for (const part of Array.isArray(parts) ? parts : []) {
+    if (part?.body?.attachmentId && part?.filename) {
+      bucket.push({
+        filename: String(part.filename || ""),
+        mime_type: String(part.mimeType || ""),
+        attachment_id: String(part.body.attachmentId || ""),
+      });
+    }
+    if (Array.isArray(part?.parts) && part.parts.length) {
+      collectGmailAttachments(part.parts, bucket);
+    }
+  }
+  return bucket;
+}
+
+async function syncUkdocsPrintFromGmail(settings, requestUser, query) {
+  if (!settings.gmail_refresh_token) {
+    throw new Error("Connect Gmail first");
+  }
+  const accessToken = await refreshGoogleAccessToken(settings, settings.gmail_refresh_token);
+  const state = await readUkdocsState();
+  const syncQuery = String(query || "").trim() || "has:attachment newer_than:30d";
+  const listPayload = await gmailApiJson(accessToken, `messages?q=${encodeURIComponent(syncQuery)}&maxResults=25`);
+  const messages = Array.isArray(listPayload.messages) ? listPayload.messages : [];
+  const results = [];
+
+  for (const message of messages) {
+    const detail = await gmailApiJson(accessToken, `messages/${encodeURIComponent(message.id)}?format=full`);
+    const subject = gmailHeaderValue(detail.payload?.headers, "subject");
+    const textBlob = [subject, detail.snippet, detail.id].join(" ");
+    const attachments = collectGmailAttachments(detail.payload?.parts || []);
+    for (const attachment of attachments) {
+      const attachmentName = attachment.filename || "attachment";
+      if (!/\.(pdf|xls|xlsx)$/i.test(attachmentName)) {
+        results.push({ status: "skipped", file_name: attachmentName, reason: "Unsupported file type" });
+        continue;
+      }
+      const candidateText = `${textBlob} ${attachmentName}`;
+      const ranked = state.print_collections
+        .map((collection) => ({ collection, score: ukdocsPrintCollectionMatchScore(collection, candidateText) }))
+        .filter((item) => item.score >= 5 || item.score >= 2)
+        .sort((a, b) => b.score - a.score);
+      const bestMatch = ranked[0]?.collection || null;
+      if (!bestMatch) {
+        results.push({ status: "unmatched", file_name: attachmentName, reason: "No shipment matched invoice or truck data" });
+        continue;
+      }
+      const kind = detectUkdocsPrintDocumentKind(candidateText);
+      if (bestMatch.documents?.[kind]?.storage_name) {
+        results.push({ status: "skipped", file_name: attachmentName, shipment_reference: bestMatch.shipment_reference, reason: `${kind} already exists` });
+        continue;
+      }
+      const buffer = await gmailAttachmentBuffer(accessToken, detail.id, attachment.attachment_id);
+      const savedDocument = await saveUkdocsPrintBuffer(bestMatch.id, kind, attachmentName, attachment.mime_type, buffer, requestUser.username);
+      const updatedCollection = normalizeUkdocsPrintCollection({
+        ...bestMatch,
+        updated_at: new Date().toISOString(),
+        documents: {
+          ...(bestMatch.documents || {}),
+          [kind]: savedDocument,
+        },
+      });
+      state.print_collections = upsertUkdocsPrintCollection(state.print_collections, updatedCollection);
+      results.push({ status: "matched", file_name: attachmentName, shipment_reference: updatedCollection.shipment_reference, kind });
+    }
+  }
+
+  await writeUkdocsState(state);
+  return {
+    query: syncQuery,
+    matched: results.filter((item) => item.status === "matched").length,
+    unmatched: results.filter((item) => item.status === "unmatched").length,
+    skipped: results.filter((item) => item.status === "skipped").length,
+    results,
+    print_collections: normalizeUkdocsState(state).print_collections,
+  };
+}
+
 
 function runHalLocationsWorker(args) {
   return new Promise((resolve, reject) => {
@@ -2429,6 +2734,12 @@ function safeExtension(filename, mimeType) {
   const extension = path.extname(String(filename || "")).toLowerCase();
   if (extension && extension.length <= 10) {
     return extension;
+  }
+  if (mimeType === "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet") {
+    return ".xlsx";
+  }
+  if (mimeType === "application/vnd.ms-excel") {
+    return ".xls";
   }
   if (mimeType === "application/pdf") {
     return ".pdf";
@@ -3007,19 +3318,49 @@ function cmrGoogleRedirectUri(req) {
   return `${publicBaseUrl(req)}/api/fust/google/callback`;
 }
 
-function cmrGoogleAuthUrl(settings, req) {
+function ukdocsGmailRedirectUri(req) {
+  return `${publicBaseUrl(req)}/api/ukdocs-print/gmail/callback`;
+}
+
+function googleAuthUrl(settings, req, redirectUri, scopes) {
   const params = new URLSearchParams({
     client_id: settings.cmr_google_client_id,
-    redirect_uri: cmrGoogleRedirectUri(req),
+    redirect_uri: redirectUri,
     response_type: "code",
-    scope: "https://www.googleapis.com/auth/drive https://www.googleapis.com/auth/userinfo.email openid",
+    scope: scopes.join(" "),
     access_type: "offline",
     prompt: "consent",
   });
   return `https://accounts.google.com/o/oauth2/v2/auth?${params.toString()}`;
 }
 
-async function exchangeGoogleAuthCode(settings, req, code) {
+function cmrGoogleAuthUrl(settings, req) {
+  return googleAuthUrl(
+    settings,
+    req,
+    cmrGoogleRedirectUri(req),
+    [
+      "https://www.googleapis.com/auth/drive",
+      "https://www.googleapis.com/auth/userinfo.email",
+      "openid",
+    ],
+  );
+}
+
+function ukdocsGmailAuthUrl(settings, req) {
+  return googleAuthUrl(
+    settings,
+    req,
+    ukdocsGmailRedirectUri(req),
+    [
+      "https://www.googleapis.com/auth/gmail.readonly",
+      "https://www.googleapis.com/auth/userinfo.email",
+      "openid",
+    ],
+  );
+}
+
+async function exchangeGoogleAuthCode(settings, code, redirectUri) {
   const response = await fetch("https://oauth2.googleapis.com/token", {
     method: "POST",
     headers: { "content-type": "application/x-www-form-urlencoded" },
@@ -3027,7 +3368,7 @@ async function exchangeGoogleAuthCode(settings, req, code) {
       code,
       client_id: settings.cmr_google_client_id,
       client_secret: settings.cmr_google_client_secret,
-      redirect_uri: cmrGoogleRedirectUri(req),
+      redirect_uri: redirectUri,
       grant_type: "authorization_code",
     }),
   });
@@ -3036,6 +3377,27 @@ async function exchangeGoogleAuthCode(settings, req, code) {
     throw new Error(payload.error_description || payload.error || `Google token exchange failed with ${response.status}`);
   }
   return payload;
+}
+
+async function refreshGoogleAccessToken(settings, refreshToken) {
+  if (!settings.cmr_google_client_id || !settings.cmr_google_client_secret || !refreshToken) {
+    throw new Error("Google OAuth is not fully configured");
+  }
+  const response = await fetch("https://oauth2.googleapis.com/token", {
+    method: "POST",
+    headers: { "content-type": "application/x-www-form-urlencoded" },
+    body: new URLSearchParams({
+      client_id: settings.cmr_google_client_id,
+      client_secret: settings.cmr_google_client_secret,
+      refresh_token: refreshToken,
+      grant_type: "refresh_token",
+    }),
+  });
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok || !payload.access_token) {
+    throw new Error(payload.error_description || payload.error || `Google token refresh failed with ${response.status}`);
+  }
+  return String(payload.access_token);
 }
 
 async function loadGoogleUserEmail(accessToken) {
@@ -3821,8 +4183,59 @@ async function handleApi(req, res, url) {
       return;
     }
     const body = await readRequestJson(req, 60 * 1024 * 1024);
-    const output = await runUkdocsWorker(["generate"], JSON.stringify(body));
-    sendJson(res, 200, JSON.parse(output.toString("utf8")));
+    const generatedPayload = JSON.parse((await runUkdocsWorker(["generate"], JSON.stringify(body))).toString("utf8"));
+    const analysis = generatedPayload.analysis || {};
+    const state = await readUkdocsState();
+    const warningMessages = Array.isArray(analysis?.audit?.warnings)
+      ? analysis.audit.warnings.map((warning) => String(warning?.message || warning || "").trim()).filter(Boolean)
+      : [];
+    const shipment = normalizeUkdocsShipment({
+      ...body,
+      id: body?.id || crypto.randomUUID(),
+      invoice_numbers: body?.invoice_numbers || "",
+      uploaded_files: ukdocsUploadedFilesWithoutContent(body?.uploaded_files),
+      validation_warnings: warningMessages,
+      audit_status: analysis?.audit?.final_status === "PASS" ? "passed" : "failed",
+      ready: analysis?.audit?.final_status === "PASS",
+      created_by: body?.created_by || requestUser.username,
+      created_at: body?.created_at || new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+    });
+    const existingIndex = state.shipments.findIndex((item) => item.id === shipment.id);
+    if (existingIndex >= 0) {
+      shipment.created_at = state.shipments[existingIndex].created_at || shipment.created_at;
+      shipment.created_by = state.shipments[existingIndex].created_by || shipment.created_by;
+      state.shipments[existingIndex] = shipment;
+    } else {
+      state.shipments.unshift(shipment);
+    }
+
+    const customer = state.customers.find((item) => item.id === shipment.customer_id);
+    const existingCollection = state.print_collections.find((item) => item.shipment_id === shipment.id || item.id === shipment.id);
+    const printCollection = buildUkdocsPrintCollectionFromShipment(existingCollection, shipment, customer?.customer_name || "");
+    state.print_collections = upsertUkdocsPrintCollection(state.print_collections, printCollection);
+    const auditReport = normalizeUkdocsAuditReport({
+      shipment_id: shipment.id,
+      shipment_reference: shipment.export_reference || shipment.invoice_numbers || analysis?.shipment?.reference_line || "",
+      shipment_date: shipment.shipment_date,
+      customer_name: customer?.customer_name || "",
+      created_at: new Date().toISOString(),
+      final_status: analysis?.audit?.final_status || "",
+      warnings: warningMessages,
+      summary: summarizeUkdocsWarnings(analysis?.audit?.warnings) || `${analysis?.categories?.length || 0} categories checked`,
+      summary_rows: analysis?.audit?.summary_rows || [],
+    });
+    state.audit_reports = [auditReport, ...state.audit_reports];
+    await writeUkdocsState(state);
+
+    sendJson(res, 200, {
+      analysis,
+      files: (generatedPayload.files || []).filter((file) => file.kind !== "audit"),
+      shipment,
+      shipments: normalizeUkdocsState(state).shipments,
+      audit_reports: normalizeUkdocsState(state).audit_reports,
+      print_collections: normalizeUkdocsState(state).print_collections,
+    });
     return;
   }
 
@@ -3866,6 +4279,87 @@ async function handleApi(req, res, url) {
     state.shipments = nextShipments;
     await writeUkdocsState(state);
     sendJson(res, 200, { ok: true, shipments: normalizeUkdocsState(state).shipments });
+    return;
+  }
+
+  if (url.pathname.startsWith("/api/ukdocs-print/collections/") && req.method === "PATCH") {
+    if (!requirePermission(res, requestUser, PERMISSIONS.UKDOCS_VIEW)) {
+      return;
+    }
+    const collectionId = decodeURIComponent(url.pathname.slice("/api/ukdocs-print/collections/".length));
+    const body = await readRequestJson(req);
+    const state = await readUkdocsState();
+    const existingCollection = state.print_collections.find((item) => item.id === collectionId || item.shipment_id === collectionId);
+    if (!existingCollection) {
+      sendJson(res, 404, { error: "UKdocs Print collection not found" });
+      return;
+    }
+    const updatedCollection = normalizeUkdocsPrintCollection({
+      ...existingCollection,
+      notes: body?.notes ?? existingCollection.notes,
+      updated_at: new Date().toISOString(),
+    });
+    state.print_collections = upsertUkdocsPrintCollection(state.print_collections, updatedCollection);
+    await writeUkdocsState(state);
+    sendJson(res, 200, { collection: updatedCollection, print_collections: normalizeUkdocsState(state).print_collections });
+    return;
+  }
+
+  if (url.pathname.startsWith("/api/ukdocs-print/collections/") && url.pathname.endsWith("/upload") && req.method === "POST") {
+    if (!requirePermission(res, requestUser, PERMISSIONS.UKDOCS_VIEW)) {
+      return;
+    }
+    const basePath = url.pathname.slice("/api/ukdocs-print/collections/".length, -"/upload".length);
+    const collectionId = decodeURIComponent(basePath);
+    const body = await readRequestJson(req, 40 * 1024 * 1024);
+    const kind = String(body?.kind || "").trim();
+    const state = await readUkdocsState();
+    const existingCollection = state.print_collections.find((item) => item.id === collectionId || item.shipment_id === collectionId);
+    if (!existingCollection) {
+      sendJson(res, 404, { error: "UKdocs Print collection not found" });
+      return;
+    }
+    const savedDocument = await saveUkdocsPrintUpload(existingCollection.id, kind, body?.file || {}, requestUser);
+    const updatedCollection = normalizeUkdocsPrintCollection({
+      ...existingCollection,
+      updated_at: new Date().toISOString(),
+      documents: {
+        ...(existingCollection.documents || {}),
+        [kind]: savedDocument,
+      },
+    });
+    state.print_collections = upsertUkdocsPrintCollection(state.print_collections, updatedCollection);
+    await writeUkdocsState(state);
+    sendJson(res, 200, { collection: updatedCollection, print_collections: normalizeUkdocsState(state).print_collections });
+    return;
+  }
+
+  if (url.pathname.startsWith("/api/ukdocs-print/collections/") && url.pathname.includes("/documents/") && req.method === "GET") {
+    if (!requirePermission(res, requestUser, PERMISSIONS.UKDOCS_VIEW)) {
+      return;
+    }
+    const suffix = url.pathname.slice("/api/ukdocs-print/collections/".length);
+    const [collectionIdRaw, kindRaw] = suffix.split("/documents/");
+    const collectionId = decodeURIComponent(collectionIdRaw || "");
+    const kind = decodeURIComponent(kindRaw || "");
+    const state = await readUkdocsState();
+    const collection = state.print_collections.find((item) => item.id === collectionId || item.shipment_id === collectionId);
+    const document = collection?.documents?.[kind];
+    if (!collection || !document?.storage_name) {
+      sendText(res, 404, "UKdocs Print document not found");
+      return;
+    }
+    const resolvedPath = path.resolve(ukdocsPrintDocumentPath(document));
+    if (!resolvedPath.startsWith(path.resolve(ukdocsPrintFilesDir)) || !existsSync(resolvedPath)) {
+      sendText(res, 404, "Stored document not found");
+      return;
+    }
+    res.writeHead(200, {
+      "content-type": document.mime_type || guessMimeType(document.original_name),
+      "content-disposition": `attachment; filename="${path.basename(document.original_name || resolvedPath)}"`,
+      "cache-control": "no-store",
+    });
+    createReadStream(resolvedPath).pipe(res);
     return;
   }
 
@@ -3929,7 +4423,7 @@ async function handleApi(req, res, url) {
     }
     try {
       const settings = await readFustSettings();
-      const tokenPayload = await exchangeGoogleAuthCode(settings, req, code);
+      const tokenPayload = await exchangeGoogleAuthCode(settings, code, cmrGoogleRedirectUri(req));
       if (!tokenPayload.refresh_token) {
         sendText(res, 400, "Google did not return a refresh token. Try Connect Google Drive again and approve offline access.");
         return;
@@ -3945,6 +4439,60 @@ async function handleApi(req, res, url) {
     } catch (error) {
       sendText(res, 500, error instanceof Error ? error.message : String(error));
     }
+    return;
+  }
+
+  if (url.pathname === "/api/ukdocs-print/gmail/auth-url") {
+    if (!requirePermission(res, requestUser, PERMISSIONS.SETTINGS_MANAGE)) {
+      return;
+    }
+    const settings = await readFustSettings();
+    if (!settings.cmr_google_client_id || !settings.cmr_google_client_secret) {
+      sendJson(res, 400, { error: "Set Google OAuth client ID and secret first" });
+      return;
+    }
+    sendJson(res, 200, { auth_url: ukdocsGmailAuthUrl(settings, req), redirect_uri: ukdocsGmailRedirectUri(req) });
+    return;
+  }
+
+  if (url.pathname === "/api/ukdocs-print/gmail/callback") {
+    if (!requirePermission(res, requestUser, PERMISSIONS.SETTINGS_MANAGE)) {
+      return;
+    }
+    const code = String(url.searchParams.get("code") || "");
+    if (!code) {
+      sendText(res, 400, "Missing Google authorization code");
+      return;
+    }
+    try {
+      const settings = await readFustSettings();
+      const tokenPayload = await exchangeGoogleAuthCode(settings, code, ukdocsGmailRedirectUri(req));
+      if (!tokenPayload.refresh_token) {
+        sendText(res, 400, "Google did not return a refresh token. Try Connect Gmail again and approve offline access.");
+        return;
+      }
+      const connectedEmail = await loadGoogleUserEmail(tokenPayload.access_token);
+      await writeFustSettings({
+        ...settings,
+        gmail_refresh_token: tokenPayload.refresh_token,
+        gmail_connected_email: connectedEmail,
+      });
+      res.writeHead(200, { "content-type": "text/html; charset=utf-8" });
+      res.end("<p>Gmail connected for UKdocs Print. You can close this tab and return to SnappySjaak.</p>");
+    } catch (error) {
+      sendText(res, 500, error instanceof Error ? error.message : String(error));
+    }
+    return;
+  }
+
+  if (url.pathname === "/api/ukdocs-print/gmail/sync" && req.method === "POST") {
+    if (!requirePermission(res, requestUser, PERMISSIONS.UKDOCS_VIEW)) {
+      return;
+    }
+    const body = await readRequestJson(req);
+    const settings = await readFustSettings();
+    const payload = await syncUkdocsPrintFromGmail(settings, requestUser, body?.query);
+    sendJson(res, 200, payload);
     return;
   }
 

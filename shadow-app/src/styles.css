@@ -1536,3 +1536,15 @@ pre {
   display: grid;
   gap: 10px;
 }
+
+.ukdocs-print-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1.2fr) minmax(0, 1fr);
+  gap: 18px;
+}
+
+@media (max-width: 1100px) {
+  .ukdocs-print-layout {
+    grid-template-columns: 1fr;
+  }
+}

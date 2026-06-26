@@ -35,6 +35,7 @@ const PAGE_DEFINITIONS = [
   { key: "cmrprint", label: "CMR Print", permission: PERMISSIONS.CMR_VIEW },
   { key: "hallocations", label: "Hal Locations", permission: PERMISSIONS.HAL_LOCATIONS_VIEW },
   { key: "expeditionstickers", label: "Expedition Sticker", permission: PERMISSIONS.EXPEDITION_STICKERS_VIEW },
+  { key: "ukdocsprint", label: "UKdocs Print", permission: PERMISSIONS.UKDOCS_VIEW },
   { key: "clock", label: "Inklokken", permission: PERMISSIONS.CLOCK_VIEW },
   { key: "users", label: "Users", permission: PERMISSIONS.USERS_MANAGE },
   { key: "settings", label: "Settings", permission: PERMISSIONS.SETTINGS_MANAGE },
@@ -130,6 +131,11 @@ function pageHeading(page) {
       return {
         title: "UKdocs",
         caption: "Prepare UK export shipments, saved mappings, audit checks, and document generation workflows inside Shadow App.",
+      };
+    case "ukdocsprint":
+      return {
+        title: "UKdocs Print",
+        caption: "Collect the extra export files per finished UK shipment and keep everything together by invoice and truck registration.",
       };
     default:
       return {
@@ -2014,7 +2020,7 @@ function ukdocsStatusDefinition(status) {
     case "files_uploaded":
       return { label: "Files uploaded", tone: "info" };
     case "validated":
-      return { label: "Validated", tone: "success" };
+      return { label: "Ready to continue", tone: "info" };
     case "audit_passed":
       return { label: "Audit passed", tone: "success" };
     case "ready":
@@ -2064,6 +2070,55 @@ function ukdocsShipmentStatus(shipment) {
   return "files_uploaded";
 }
 
+async function downloadUkdocsFilesWithPrompt(files) {
+  if (!Array.isArray(files) || !files.length) {
+    return;
+  }
+  if (typeof window.showDirectoryPicker !== "function") {
+    files.forEach((file) => downloadBase64File(file.name, file.content_base64, file.mime_type));
+    return;
+  }
+
+  const directoryHandle = await window.showDirectoryPicker();
+  for (const file of files) {
+    const fileHandle = await directoryHandle.getFileHandle(file.name, { create: true });
+    const writable = await fileHandle.createWritable();
+    const binary = window.atob(file.content_base64);
+    const bytes = new Uint8Array(binary.length);
+    for (let index = 0; index < binary.length; index += 1) {
+      bytes[index] = binary.charCodeAt(index);
+    }
+    await writable.write(new Blob([bytes], { type: file.mime_type || "application/octet-stream" }));
+    await writable.close();
+  }
+}
+
+async function downloadUkdocsFileWithPrompt(file) {
+  if (!file) {
+    return;
+  }
+  if (typeof window.showSaveFilePicker !== "function") {
+    downloadBase64File(file.name, file.content_base64, file.mime_type);
+    return;
+  }
+
+  const handle = await window.showSaveFilePicker({
+    suggestedName: file.name,
+    types: [{
+      description: "UKdocs file",
+      accept: { [file.mime_type || "application/octet-stream"]: [".xlsx"] },
+    }],
+  });
+  const writable = await handle.createWritable();
+  const binary = window.atob(file.content_base64);
+  const bytes = new Uint8Array(binary.length);
+  for (let index = 0; index < binary.length; index += 1) {
+    bytes[index] = binary.charCodeAt(index);
+  }
+  await writable.write(new Blob([bytes], { type: file.mime_type || "application/octet-stream" }));
+  await writable.close();
+}
+
 function UkdocsPage({ currentUser }) {
   const [activeMenu, setActiveMenu] = useState("new");
   const [loading, setLoading] = useState(true);
@@ -2075,6 +2130,7 @@ function UkdocsPage({ currentUser }) {
   const [shipmentDraft, setShipmentDraft] = useState(emptyUkdocsShipmentDraft());
   const [analysis, setAnalysis] = useState(null);
   const [generatedFiles, setGeneratedFiles] = useState([]);
+  const [selectedAuditReportId, setSelectedAuditReportId] = useState("");
   const [exampleImportFiles, setExampleImportFiles] = useState({ invoice_example: null, export_example: null });
   const [shipmentUploadInputVersion, setShipmentUploadInputVersion] = useState(0);
 
@@ -2108,6 +2164,7 @@ function UkdocsPage({ currentUser }) {
   const columnMappings = state?.column_mappings || {};
   const shipments = state?.shipments || [];
   const auditReports = state?.audit_reports || [];
+  const selectedAuditReport = auditReports.find((report) => report.id === selectedAuditReportId) || auditReports[0] || null;
   const selectedUkdocsCustomer = customers.find((item) => item.id === shipmentDraft.customer_id) || null;
   const activeExportDefaults = useMemo(
     () => mergeUkdocsExportDefaults(exportDefaults, selectedUkdocsCustomer?.export_defaults || {}),
@@ -2221,6 +2278,10 @@ function UkdocsPage({ currentUser }) {
     }
   }
 
+  async function continueShipment() {
+    await analyzeShipment();
+  }
+
   async function generateDocuments() {
     setSaving(true);
     setError("");
@@ -2232,34 +2293,19 @@ function UkdocsPage({ currentUser }) {
       });
       setAnalysis(payload.analysis);
       setGeneratedFiles(payload.files || []);
-      setMessage(`Generated ${payload.files?.length || 0} UKdocs files.`);
+      setState((current) => ({
+        ...current,
+        shipments: payload.shipments || current.shipments,
+        audit_reports: payload.audit_reports || current.audit_reports,
+      }));
+      if (payload.audit_reports?.[0]?.id) {
+        setSelectedAuditReportId(payload.audit_reports[0].id);
+      }
+      setShipmentDraft(payload.shipment || shipmentDraft);
+      setMessage(`Generated ${payload.files?.length || 0} UKdocs files and saved the finished shipment.`);
+      await downloadUkdocsFilesWithPrompt(payload.files || []);
     } catch (generateError) {
       setError(generateError.message);
-    } finally {
-      setSaving(false);
-    }
-  }
-
-  async function saveShipment() {
-    setSaving(true);
-    setError("");
-    setMessage("");
-    try {
-      const payload = await apiJson("/api/ukdocs/shipments", {
-        method: "POST",
-        body: JSON.stringify({
-          ...shipmentDraft,
-          invoice_numbers: combinedInvoiceNumbers,
-          status: ukdocsShipmentStatus(shipmentDraft),
-        }),
-      });
-      setState((current) => ({ ...current, shipments: payload.shipments }));
-      setShipmentDraft(payload.shipment);
-      setAnalysis(null);
-      setGeneratedFiles([]);
-      setMessage("Shipment draft saved to UKdocs history.");
-    } catch (saveError) {
-      setError(saveError.message);
     } finally {
       setSaving(false);
     }
@@ -2412,6 +2458,10 @@ function UkdocsPage({ currentUser }) {
     setGeneratedFiles([]);
   }
 
+  const uploadedCount = Object.values(shipmentDraft.uploaded_files || {}).filter((item) => item?.file_name).length;
+  const canContinue = uploadedCount > 0 && !saving;
+  const canGenerate = analysis?.audit?.final_status === "PASS" && !saving;
+
   function mappingText(categoryCode, columnName) {
     return ((columnMappings[categoryCode]?.aliases || {})[columnName] || []).join("\n");
   }
@@ -2510,13 +2560,20 @@ function UkdocsPage({ currentUser }) {
           </div>
 
           <div className="section-header"><h3>Workflow status</h3></div>
-          <div className="ukdocs-badge-row">{["not_started", "files_uploaded", "validated", "audit_passed", "ready", "failed"].map((status) => { const definition = ukdocsStatusDefinition(status); return <div key={status} className={`ukdocs-status-badge ${definition.tone}`}>{definition.label}</div>; })}</div>
+          <div className="ukdocs-badge-row">{["not_started", "files_uploaded", "audit_passed", "ready", "failed"].map((status) => { const definition = ukdocsStatusDefinition(status); return <div key={status} className={`ukdocs-status-badge ${definition.tone}`}>{definition.label}</div>; })}</div>
           <div className="row-actions spread-actions">
-            <button type="button" className="primary" onClick={saveShipment} disabled={saving}>{saving ? "Saving..." : "Save shipment draft"}</button>
             <button type="button" onClick={resetDrafts} disabled={saving}>New blank shipment</button>
-            <button type="button" onClick={analyzeShipment} disabled={saving}>Run audit</button>
-            <button type="button" onClick={generateDocuments} disabled={saving || analysis?.audit?.final_status !== "PASS"}>Generate documents</button>
-            <button type="button" disabled={!generatedFiles.length} onClick={() => generatedFiles.forEach((file) => downloadBase64File(file.name, file.content_base64, file.mime_type))}>Download files</button>
+            {!analysis && (
+              <button type="button" className="primary" onClick={continueShipment} disabled={!canContinue}>
+                {saving ? "Continuing..." : "Continue"}
+              </button>
+            )}
+            {analysis && (
+              <button type="button" className="primary" onClick={generateDocuments} disabled={!canGenerate}>
+                {saving ? "Generating..." : "Generate documents"}
+              </button>
+            )}
+            <button type="button" disabled={!generatedFiles.length} onClick={() => downloadUkdocsFilesWithPrompt(generatedFiles)}>Download files</button>
           </div>
 
           {analysis && (
@@ -2555,7 +2612,7 @@ function UkdocsPage({ currentUser }) {
                   <tbody>{analysis.export_rows.map((row, index) => <tr key={`${row.description}-${row.commodity_code}-${row.origin}-${index}`}><td>{row.description}</td><td>{row.commodity_code}</td><td>{row.origin}</td><td>{row.quantity}</td><td>{row.net_kg}</td><td>{row.gross_kg}</td><td>{row.packages}</td><td>{row.customs_value}</td></tr>)}</tbody>
                 </table>
               </div>
-              {!!generatedFiles.length && <div className="row-actions spread-actions">{generatedFiles.map((file) => <button key={file.name} type="button" onClick={() => downloadBase64File(file.name, file.content_base64, file.mime_type)}>{file.name}</button>)}</div>}
+              {!!generatedFiles.length && <div className="row-actions spread-actions">{generatedFiles.map((file) => <button key={file.name} type="button" onClick={() => downloadUkdocsFileWithPrompt(file)}>{file.name}</button>)}</div>}
             </div>
           )}
         </div>
@@ -2653,17 +2710,289 @@ function UkdocsPage({ currentUser }) {
       {activeMenu === "history" && (
         <div className="data-table-card ukdocs-stack">
           <div className="section-header"><h2>Shipment history</h2></div>
-          <div className="table-wrap"><table className="data-table"><thead><tr><th>Date</th><th>Reference</th><th>Customer</th><th>Invoices</th><th>Categories</th><th>Status</th><th>Updated</th><th>Actions</th></tr></thead><tbody>{shipments.map((shipment) => { const customer = customers.find((item) => item.id === shipment.customer_id); const status = ukdocsStatusDefinition(shipment.status || ukdocsShipmentStatus(shipment)); return <tr key={shipment.id}><td>{shipment.shipment_date || "-"}</td><td>{shipment.export_reference || "-"}</td><td>{customer?.customer_name || "-"}</td><td>{shipment.invoice_numbers || "-"}</td><td>{(shipment.categories_included || []).join(", ") || "-"}</td><td><span className={`ukdocs-status-badge ${status.tone}`}>{status.label}</span></td><td>{formatTimestamp(shipment.updated_at || shipment.created_at)}</td><td className="row-actions"><button type="button" onClick={() => selectShipment(shipment)}>Open</button><button type="button" onClick={() => deleteShipment(shipment.id)}>Delete</button></td></tr>; })}{!shipments.length && <tr><td colSpan="8">No UKdocs shipments saved yet.</td></tr>}</tbody></table></div>
+          <div className="notice">Only finished shipments are saved here automatically after successful document generation.</div>
+          <div className="table-wrap"><table className="data-table"><thead><tr><th>Date</th><th>Reference</th><th>Customer</th><th>Invoices</th><th>Categories</th><th>Status</th><th>Updated</th><th>Actions</th></tr></thead><tbody>{shipments.map((shipment) => { const customer = customers.find((item) => item.id === shipment.customer_id); const status = ukdocsStatusDefinition(shipment.status || ukdocsShipmentStatus(shipment)); return <tr key={shipment.id}><td>{shipment.shipment_date || "-"}</td><td>{shipment.export_reference || "-"}</td><td>{customer?.customer_name || "-"}</td><td>{shipment.invoice_numbers || "-"}</td><td>{(shipment.categories_included || []).join(", ") || "-"}</td><td><span className={`ukdocs-status-badge ${status.tone}`}>{status.label}</span></td><td>{formatTimestamp(shipment.updated_at || shipment.created_at)}</td><td className="row-actions"><button type="button" onClick={() => selectShipment(shipment)}>Open</button><button type="button" onClick={() => deleteShipment(shipment.id)}>Delete</button></td></tr>; })}{!shipments.length && <tr><td colSpan="8">No finished UKdocs shipments saved yet.</td></tr>}</tbody></table></div>
         </div>
       )}
 
       {activeMenu === "audits" && (
         <div className="data-table-card ukdocs-stack">
           <div className="section-header"><h2>Audit reports</h2></div>
-          <div className="notice">Audit history storage is ready. The live audit details are visible immediately on the New shipment screen after each run.</div>
-          <div className="table-wrap"><table className="data-table"><thead><tr><th>Shipment reference</th><th>Created</th><th>Status</th><th>Warnings</th><th>Summary</th></tr></thead><tbody>{auditReports.map((report) => <tr key={report.id}><td>{report.shipment_reference || "-"}</td><td>{formatTimestamp(report.created_at)}</td><td>{report.final_status || "Pending"}</td><td>{(report.warnings || []).join("; ") || "-"}</td><td>{report.summary || "-"}</td></tr>)}{!auditReports.length && <tr><td colSpan="5">No audit reports saved yet.</td></tr>}</tbody></table></div>
+          <div className="table-wrap"><table className="data-table"><thead><tr><th>Shipment reference</th><th>Date</th><th>Customer</th><th>Created</th><th>Status</th><th>Warnings</th><th>Actions</th></tr></thead><tbody>{auditReports.map((report) => <tr key={report.id}><td>{report.shipment_reference || "-"}</td><td>{report.shipment_date || "-"}</td><td>{report.customer_name || "-"}</td><td>{formatTimestamp(report.created_at)}</td><td>{report.final_status || "Pending"}</td><td>{(report.warnings || []).join("; ") || "-"}</td><td className="row-actions"><button type="button" onClick={() => setSelectedAuditReportId(report.id)}>Open</button></td></tr>)}{!auditReports.length && <tr><td colSpan="7">No audit reports saved yet.</td></tr>}</tbody></table></div>
+          {selectedAuditReport && (
+            <>
+              <div className="section-header"><h3>Audit detail</h3><div className={`ukdocs-status-badge ${selectedAuditReport.final_status === "PASS" ? "success" : "danger"}`}>{selectedAuditReport.final_status}</div></div>
+              <p className="sidebar-note">{selectedAuditReport.summary || "-"}</p>
+              <div className="table-wrap">
+                <table className="data-table">
+                  <thead><tr><th>Scope</th><th>Group</th><th>Field</th><th>Dump</th><th>Invoice</th><th>Export</th><th>Invoice diff</th><th>Export diff</th><th>Status</th></tr></thead>
+                  <tbody>
+                    {(selectedAuditReport.summary_rows || []).map((row, index) => <tr key={`${row.scope}-${row.group_label}-${row.field}-${index}`}><td>{row.scope}</td><td>{row.group_label}</td><td>{row.field}</td><td>{row.dump_value || "0"}</td><td>{row.invoice_value || "-"}</td><td>{row.export_value || "-"}</td><td>{row.invoice_difference || "-"}</td><td>{row.export_difference || "-"}</td><td><span className={`ukdocs-status-badge ${row.status === "MATCH" ? "success" : "danger"}`}>{row.status}</span></td></tr>)}
+                  </tbody>
+                </table>
+              </div>
+            </>
+          )}
         </div>
       )}
+    </section>
+  );
+}
+
+const UKDOCS_PRINT_DOCUMENTS = [
+  { key: "phyto", label: "Phytosanitaire document", accept: ".pdf,.xlsx,.xls" },
+  { key: "export_extra", label: "Second export file", accept: ".pdf,.xlsx,.xls" },
+];
+
+function ukdocsPrintStatusDefinition(status) {
+  switch (status) {
+    case "complete":
+      return { label: "Complete", tone: "success" };
+    case "partial":
+      return { label: "Partly collected", tone: "info" };
+    default:
+      return { label: "Waiting for files", tone: "muted" };
+  }
+}
+
+function UkdocsPrintPage({ currentUser }) {
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [state, setState] = useState(null);
+  const [message, setMessage] = useState("");
+  const [error, setError] = useState("");
+  const [selectedCollectionId, setSelectedCollectionId] = useState("");
+  const [notesDraft, setNotesDraft] = useState("");
+  const [gmailQuery, setGmailQuery] = useState("has:attachment newer_than:30d");
+  const [gmailSyncResults, setGmailSyncResults] = useState([]);
+  const [gmailBusy, setGmailBusy] = useState(false);
+  const [gmailSettings, setGmailSettings] = useState({ gmail_connected_email: "" });
+  const canManageSettings = hasPermission(currentUser, PERMISSIONS.SETTINGS_MANAGE);
+
+  useEffect(() => {
+    let cancelled = false;
+    Promise.all([
+      apiJson("/api/ukdocs/state"),
+      apiJson("/api/fust/settings").catch(() => ({ settings: { gmail_connected_email: "" } })),
+    ])
+      .then(([ukdocsPayload, settingsPayload]) => {
+        if (!cancelled) {
+          setState(ukdocsPayload.state);
+          setGmailSettings(settingsPayload.settings || { gmail_connected_email: "" });
+        }
+      })
+      .catch((loadError) => {
+        if (!cancelled) {
+          setError(loadError.message);
+        }
+      })
+      .finally(() => {
+        if (!cancelled) {
+          setLoading(false);
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [currentUser]);
+
+  const collections = state?.print_collections || [];
+  const selectedCollection = collections.find((item) => item.id === selectedCollectionId || item.shipment_id === selectedCollectionId) || collections[0] || null;
+
+  useEffect(() => {
+    if (selectedCollection?.id && selectedCollection.id !== selectedCollectionId) {
+      setSelectedCollectionId(selectedCollection.id);
+    }
+  }, [selectedCollection?.id, selectedCollectionId]);
+
+  useEffect(() => {
+    setNotesDraft(selectedCollection?.notes || "");
+  }, [selectedCollection?.id, selectedCollection?.notes]);
+
+  async function uploadCollectionFile(kind, file) {
+    if (!selectedCollection || !file) {
+      return;
+    }
+    setSaving(true);
+    setMessage("");
+    setError("");
+    try {
+      const contentBase64 = await fileToBase64(file);
+      const payload = await apiJson(`/api/ukdocs-print/collections/${encodeURIComponent(selectedCollection.id)}/upload`, {
+        method: "POST",
+        body: JSON.stringify({
+          kind,
+          file: {
+            file_name: file.name,
+            mime_type: file.type || "application/octet-stream",
+            content_base64: contentBase64,
+          },
+        }),
+      });
+      setState((current) => ({ ...current, print_collections: payload.print_collections || current?.print_collections || [] }));
+      setMessage(`${UKDOCS_PRINT_DOCUMENTS.find((item) => item.key === kind)?.label || "File"} saved.`);
+    } catch (uploadError) {
+      setError(uploadError.message);
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function saveNotes() {
+    if (!selectedCollection) {
+      return;
+    }
+    setSaving(true);
+    setMessage("");
+    setError("");
+    try {
+      const payload = await apiJson(`/api/ukdocs-print/collections/${encodeURIComponent(selectedCollection.id)}`, {
+        method: "PATCH",
+        body: JSON.stringify({ notes: notesDraft }),
+      });
+      setState((current) => ({ ...current, print_collections: payload.print_collections || current?.print_collections || [] }));
+      setMessage("Collection notes saved.");
+    } catch (saveError) {
+      setError(saveError.message);
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function connectGmail() {
+    setGmailBusy(true);
+    setError("");
+    setMessage("");
+    try {
+      const payload = await apiJson("/api/ukdocs-print/gmail/auth-url");
+      window.location.href = payload.auth_url;
+    } catch (connectError) {
+      setError(connectError.message);
+      setGmailBusy(false);
+    }
+  }
+
+  async function syncGmail() {
+    setGmailBusy(true);
+    setError("");
+    setMessage("");
+    try {
+      const payload = await apiJson("/api/ukdocs-print/gmail/sync", {
+        method: "POST",
+        body: JSON.stringify({ query: gmailQuery }),
+      });
+      setState((current) => ({ ...current, print_collections: payload.print_collections || current?.print_collections || [] }));
+      setGmailSyncResults(payload.results || []);
+      setMessage(`Gmail sync finished. ${payload.matched || 0} matched, ${payload.unmatched || 0} unmatched, ${payload.skipped || 0} skipped.`);
+    } catch (syncError) {
+      setError(syncError.message);
+    } finally {
+      setGmailBusy(false);
+    }
+  }
+
+  if (loading) {
+    return <div className="notice">Loading UKdocs Print workspace...</div>;
+  }
+
+  return (
+    <section className="overview-stack ukdocs-page">
+      {message && <div className="notice">{message}</div>}
+      {error && <div className="notice danger">{error}</div>}
+      <div className="notice">Every shipment that successfully generates UKdocs files is added here automatically. Use the saved invoice numbers and truck or trailer registration to match the extra export files.</div>
+
+      <div className="data-table-card ukdocs-stack">
+        <div className="section-header"><h2>Gmail Inbox Pickup</h2></div>
+        <div className="form-grid">
+          <label><span>Connected Gmail account</span><input value={gmailSettings.gmail_connected_email || ""} readOnly placeholder="Not connected yet" /></label>
+          <label className="wide"><span>Gmail search query</span><input value={gmailQuery} onChange={(event) => setGmailQuery(event.target.value)} placeholder="has:attachment newer_than:30d" /></label>
+        </div>
+        <div className="row-actions spread-actions">
+          {canManageSettings && <button type="button" onClick={connectGmail} disabled={gmailBusy}>{gmailBusy ? "Connecting..." : "Connect Gmail"}</button>}
+          <button type="button" className="primary" onClick={syncGmail} disabled={gmailBusy}>{gmailBusy ? "Syncing..." : "Sync Gmail attachments"}</button>
+        </div>
+        <div className="notice">The sync checks Gmail attachments against invoice numbers first and truck or trailer registration second. Files only fill empty slots automatically, so manual uploads stay safe.</div>
+        {!!gmailSyncResults.length && (
+          <div className="table-wrap">
+            <table className="data-table">
+              <thead><tr><th>Status</th><th>File</th><th>Shipment</th><th>Type</th><th>Reason</th></tr></thead>
+              <tbody>
+                {gmailSyncResults.map((item, index) => <tr key={`${item.file_name}-${index}`}><td>{item.status}</td><td>{item.file_name || "-"}</td><td>{item.shipment_reference || "-"}</td><td>{item.kind || "-"}</td><td>{item.reason || "-"}</td></tr>)}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
+
+      <div className="ukdocs-print-layout">
+        <div className="data-table-card ukdocs-stack">
+          <div className="section-header"><h2>Collections</h2></div>
+          <div className="table-wrap">
+            <table className="data-table">
+              <thead><tr><th>Date</th><th>Reference</th><th>Customer</th><th>Invoices</th><th>Truck</th><th>Status</th><th>Open</th></tr></thead>
+              <tbody>
+                {collections.map((collection) => {
+                  const status = ukdocsPrintStatusDefinition(collection.status);
+                  return (
+                    <tr key={collection.id}>
+                      <td>{collection.shipment_date || "-"}</td>
+                      <td>{collection.shipment_reference || "-"}</td>
+                      <td>{collection.customer_name || "-"}</td>
+                      <td>{collection.invoice_numbers || "-"}</td>
+                      <td>{collection.truck_number || collection.trailer_number || "-"}</td>
+                      <td><span className={`ukdocs-status-badge ${status.tone}`}>{status.label}</span></td>
+                      <td className="row-actions"><button type="button" onClick={() => setSelectedCollectionId(collection.id)}>Open</button></td>
+                    </tr>
+                  );
+                })}
+                {!collections.length && <tr><td colSpan="7">No finished UKdocs shipments have been generated yet.</td></tr>}
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+        <div className="data-table-card ukdocs-stack">
+          <div className="section-header">
+            <h2>Collection detail</h2>
+            {selectedCollection && <div className={`ukdocs-status-badge ${ukdocsPrintStatusDefinition(selectedCollection.status).tone}`}>{ukdocsPrintStatusDefinition(selectedCollection.status).label}</div>}
+          </div>
+
+          {!selectedCollection && <div className="notice">Choose a generated shipment first.</div>}
+
+          {selectedCollection && (
+            <>
+              <div className="form-grid">
+                <label><span>Shipment reference</span><input value={selectedCollection.shipment_reference || ""} readOnly /></label>
+                <label><span>Shipment date</span><input value={selectedCollection.shipment_date || ""} readOnly /></label>
+                <label><span>Customer</span><input value={selectedCollection.customer_name || ""} readOnly /></label>
+                <label><span>Invoice numbers</span><input value={selectedCollection.invoice_numbers || ""} readOnly /></label>
+                <label><span>Truck registration</span><input value={selectedCollection.truck_number || ""} readOnly /></label>
+                <label><span>Trailer registration</span><input value={selectedCollection.trailer_number || ""} readOnly /></label>
+              </div>
+
+              <div className="ukdocs-upload-grid">
+                {UKDOCS_PRINT_DOCUMENTS.map((documentDefinition) => {
+                  const document = selectedCollection.documents?.[documentDefinition.key] || null;
+                  return (
+                    <div key={documentDefinition.key} className="ukdocs-upload-card">
+                      <strong>{documentDefinition.label}</strong>
+                      <input type="file" accept={documentDefinition.accept} onChange={(event) => uploadCollectionFile(documentDefinition.key, event.target.files?.[0] || null)} disabled={saving} />
+                      <small>{document?.original_name ? `${document.original_name} saved ${formatTimestamp(document.saved_at)}` : "No file saved yet."}</small>
+                      {document?.storage_name && <div className="row-actions"><a href={`/api/ukdocs-print/collections/${encodeURIComponent(selectedCollection.id)}/documents/${documentDefinition.key}`}>Download</a></div>}
+                    </div>
+                  );
+                })}
+              </div>
+
+              <label className="wide">
+                <span>Collection notes</span>
+                <textarea rows={4} value={notesDraft} onChange={(event) => setNotesDraft(event.target.value)} placeholder="Optional notes about received emails or missing documents" />
+              </label>
+              <div className="row-actions spread-actions"><button type="button" className="primary" onClick={saveNotes} disabled={saving}>{saving ? "Saving..." : "Save notes"}</button></div>
+            </>
+          )}
+        </div>
+      </div>
     </section>
   );
 }
@@ -2910,6 +3239,7 @@ function App() {
         {page === "clock" && <ClockPage currentUser={auth.user} />}
         {page === "hallocations" && <HalLocationsPage currentUser={auth.user} />}
         {page === "expeditionstickers" && <ExpeditionStickerPage currentUser={auth.user} />}
+        {page === "ukdocsprint" && <UkdocsPrintPage currentUser={auth.user} />}
         {page === "settings" && <SettingsPage currentUser={auth.user} />}
         {page === "ukdocs" && <UkdocsPage currentUser={auth.user} />}
         {page === "dashboard" && canViewPhotos && (
