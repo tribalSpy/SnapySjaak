@@ -2418,26 +2418,33 @@ function upsertUkdocsPrintCollection(collections, nextCollection) {
   return [nextCollection, ...collections];
 }
 
+function ukdocsPrintMatchLines(value) {
+  return String(value || "")
+    .split(/\r?\n+/)
+    .map(normalizeUkdocsPrintToken)
+    .filter(Boolean);
+}
+
 function matchUkdocsCustomerForPrintCollection(customers, collection) {
   const hubCode = normalizeUkdocsPrintToken(collection?.hub_code);
   const remark = normalizeUkdocsPrintToken(collection?.remark);
   let bestMatch = null;
   let bestScore = 0;
   for (const customer of Array.isArray(customers) ? customers : []) {
-    const customerHubCode = normalizeUkdocsPrintToken(customer?.match_hub_code);
-    const customerRemark = normalizeUkdocsPrintToken(customer?.match_remark);
-    if (!customerHubCode && !customerRemark) {
+    const customerHubCodes = ukdocsPrintMatchLines(customer?.match_hub_code);
+    const customerRemarks = ukdocsPrintMatchLines(customer?.match_remark);
+    if (!customerHubCodes.length && !customerRemarks.length) {
       continue;
     }
     let score = 0;
-    if (customerHubCode) {
-      if (!hubCode || customerHubCode !== hubCode) {
+    if (customerHubCodes.length) {
+      if (!hubCode || !customerHubCodes.includes(hubCode)) {
         continue;
       }
       score += 2;
     }
-    if (customerRemark) {
-      if (!remark || !remark.includes(customerRemark)) {
+    if (customerRemarks.length) {
+      if (!remark || !customerRemarks.some((item) => remark.includes(item))) {
         continue;
       }
       score += 1;

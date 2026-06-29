@@ -1948,8 +1948,8 @@ const UKDOCS_COMPANY_FIELDS = [
 
 const UKDOCS_CUSTOMER_FIELDS = [
   ["customer_name", "Customer name"],
-  ["match_hub_code", "Hub code match"],
-  ["match_remark", "Remark match"],
+  ["match_hub_code", "Hub code match", "textarea"],
+  ["match_remark", "Remark match", "textarea"],
   ["customer_address", "Customer address", "textarea"],
   ["vat_number", "VAT number"],
   ["eori_number", "EORI number"],
@@ -2102,26 +2102,33 @@ function normalizeUkdocsMatchToken(value) {
   return String(value || "").toUpperCase().replace(/[^A-Z0-9]/g, "");
 }
 
+function ukdocsMatchLines(value) {
+  return String(value || "")
+    .split(/\r?\n+/)
+    .map(normalizeUkdocsMatchToken)
+    .filter(Boolean);
+}
+
 function findUkdocsCustomerMatch(customers, collection) {
   const hubCode = normalizeUkdocsMatchToken(collection?.hub_code);
   const remark = normalizeUkdocsMatchToken(collection?.remark);
   let bestMatch = null;
   let bestScore = 0;
   for (const customer of customers || []) {
-    const customerHubCode = normalizeUkdocsMatchToken(customer?.match_hub_code);
-    const customerRemark = normalizeUkdocsMatchToken(customer?.match_remark);
-    if (!customerHubCode && !customerRemark) {
+    const customerHubCodes = ukdocsMatchLines(customer?.match_hub_code);
+    const customerRemarks = ukdocsMatchLines(customer?.match_remark);
+    if (!customerHubCodes.length && !customerRemarks.length) {
       continue;
     }
     let score = 0;
-    if (customerHubCode) {
-      if (!hubCode || customerHubCode !== hubCode) {
+    if (customerHubCodes.length) {
+      if (!hubCode || !customerHubCodes.includes(hubCode)) {
         continue;
       }
       score += 2;
     }
-    if (customerRemark) {
-      if (!remark || !remark.includes(customerRemark)) {
+    if (customerRemarks.length) {
+      if (!remark || !customerRemarks.some((item) => remark.includes(item))) {
         continue;
       }
       score += 1;
