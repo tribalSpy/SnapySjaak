@@ -896,6 +896,8 @@ function normalizeUkdocsCustomer(customer) {
   return {
     id: normalizeUkdocsText(customer?.id) || crypto.randomUUID(),
     customer_name: normalizeUkdocsText(customer?.customer_name),
+    match_hub_code: normalizeUkdocsText(customer?.match_hub_code),
+    match_remark: String(customer?.match_remark || "").trim(),
     customer_address: String(customer?.customer_address || "").trim(),
     vat_number: normalizeUkdocsText(customer?.vat_number),
     eori_number: normalizeUkdocsText(customer?.eori_number),
@@ -2406,13 +2408,46 @@ function ukdocsPrintDocumentPath(document) {
 }
 
 function upsertUkdocsPrintCollection(collections, nextCollection) {
-  const existingIndex = collections.findIndex((item) => item.id === nextCollection.id || item.shipment_id === nextCollection.shipment_id);
+  const nextShipmentId = normalizeUkdocsText(nextCollection?.shipment_id);
+  const existingIndex = collections.findIndex((item) => item.id === nextCollection.id || (nextShipmentId && item.shipment_id === nextShipmentId));
   if (existingIndex >= 0) {
     const nextCollections = [...collections];
     nextCollections[existingIndex] = nextCollection;
     return nextCollections;
   }
   return [nextCollection, ...collections];
+}
+
+function matchUkdocsCustomerForPrintCollection(customers, collection) {
+  const hubCode = normalizeUkdocsPrintToken(collection?.hub_code);
+  const remark = normalizeUkdocsPrintToken(collection?.remark);
+  let bestMatch = null;
+  let bestScore = 0;
+  for (const customer of Array.isArray(customers) ? customers : []) {
+    const customerHubCode = normalizeUkdocsPrintToken(customer?.match_hub_code);
+    const customerRemark = normalizeUkdocsPrintToken(customer?.match_remark);
+    if (!customerHubCode && !customerRemark) {
+      continue;
+    }
+    let score = 0;
+    if (customerHubCode) {
+      if (!hubCode || customerHubCode !== hubCode) {
+        continue;
+      }
+      score += 2;
+    }
+    if (customerRemark) {
+      if (!remark || !remark.includes(customerRemark)) {
+        continue;
+      }
+      score += 1;
+    }
+    if (score > bestScore) {
+      bestScore = score;
+      bestMatch = customer;
+    }
+  }
+  return bestMatch;
 }
 
 function buildUkdocsPrintCollectionFromShipment(existingCollection, shipment, customerName) {
@@ -2726,12 +2761,14 @@ async function syncUkdocsPrintCollectionsFromSheet(settings, date) {
   const state = await readUkdocsState();
   for (const sending of sendings) {
     const existingCollection = findMatchingUkdocsPrintCollection(state.print_collections, sending, { allowInvoiceFallback: false });
+    const matchedCustomer = matchUkdocsCustomerForPrintCollection(state.customers, sending);
     const nextCollection = normalizeUkdocsPrintCollection({
       ...existingCollection,
       id: existingCollection?.id || sending.id,
       source: "sheet",
       shipment_date: sending.shipment_date,
-      customer_name: existingCollection?.customer_name || sending.city_name || "",
+      customer_id: existingCollection?.customer_id || matchedCustomer?.id || "",
+      customer_name: existingCollection?.customer_name || matchedCustomer?.customer_name || sending.city_name || "",
       city_name: sending.city_name,
       border_crossing: sending.border_crossing,
       hub_code: sending.hub_code,

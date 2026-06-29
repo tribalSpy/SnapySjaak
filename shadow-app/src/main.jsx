@@ -1948,6 +1948,8 @@ const UKDOCS_COMPANY_FIELDS = [
 
 const UKDOCS_CUSTOMER_FIELDS = [
   ["customer_name", "Customer name"],
+  ["match_hub_code", "Hub code match"],
+  ["match_remark", "Remark match"],
   ["customer_address", "Customer address", "textarea"],
   ["vat_number", "VAT number"],
   ["eori_number", "EORI number"],
@@ -2002,6 +2004,8 @@ function emptyUkdocsCustomer() {
   return {
     id: "",
     customer_name: "",
+    match_hub_code: "",
+    match_remark: "",
     customer_address: "",
     vat_number: "",
     eori_number: "",
@@ -2092,6 +2096,42 @@ function mergeUkdocsExportDefaults(baseDefaults = {}, overrideDefaults = {}) {
     }
   }
   return next;
+}
+
+function normalizeUkdocsMatchToken(value) {
+  return String(value || "").toUpperCase().replace(/[^A-Z0-9]/g, "");
+}
+
+function findUkdocsCustomerMatch(customers, collection) {
+  const hubCode = normalizeUkdocsMatchToken(collection?.hub_code);
+  const remark = normalizeUkdocsMatchToken(collection?.remark);
+  let bestMatch = null;
+  let bestScore = 0;
+  for (const customer of customers || []) {
+    const customerHubCode = normalizeUkdocsMatchToken(customer?.match_hub_code);
+    const customerRemark = normalizeUkdocsMatchToken(customer?.match_remark);
+    if (!customerHubCode && !customerRemark) {
+      continue;
+    }
+    let score = 0;
+    if (customerHubCode) {
+      if (!hubCode || customerHubCode !== hubCode) {
+        continue;
+      }
+      score += 2;
+    }
+    if (customerRemark) {
+      if (!remark || !remark.includes(customerRemark)) {
+        continue;
+      }
+      score += 1;
+    }
+    if (score > bestScore) {
+      bestScore = score;
+      bestMatch = customer;
+    }
+  }
+  return bestMatch;
 }
 
 function ukdocsShipmentStatus(shipment) {
@@ -2286,13 +2326,30 @@ function UkdocsPage({ currentUser }) {
 
   function applyPrintCollection(collectionId) {
     const collection = printCollections.find((item) => item.id === collectionId) || null;
+    const matchedCustomer = (collection?.customer_id && customers.find((item) => item.id === collection.customer_id)) || findUkdocsCustomerMatch(customers, collection);
     setShipmentDraft((current) => ({
       ...current,
       print_collection_id: collectionId,
+      customer_id: matchedCustomer?.id || current.customer_id,
       reference_connect: collection?.reference_connect || current.reference_connect,
       shipment_date: collection?.shipment_date || current.shipment_date,
       trailer_number: current.trailer_number || collection?.trailer_number || "",
       truck_number: current.truck_number || collection?.truck_number || "",
+      delivery_terms: matchedCustomer?.default_delivery_terms || matchedCustomer?.export_defaults?.delivery_terms || current.delivery_terms,
+      uk_arrival_port: matchedCustomer?.default_uk_arrival_port || current.uk_arrival_port,
+      currency: matchedCustomer?.default_currency || matchedCustomer?.export_defaults?.currency || current.currency,
+      owner: matchedCustomer?.default_owner || current.owner,
+      importer: matchedCustomer?.default_importer || matchedCustomer?.importer_number || matchedCustomer?.eori_number || matchedCustomer?.export_defaults?.importer_field || current.importer,
+      delivery_terms_city: matchedCustomer?.export_defaults?.delivery_terms_city || matchedCustomer?.default_city || current.delivery_terms_city,
+      regulation: matchedCustomer?.export_defaults?.regulation || current.regulation,
+      destination_country: matchedCustomer?.export_defaults?.destination_country || current.destination_country,
+      customs_office_of_exit: matchedCustomer?.export_defaults?.customs_office_of_exit || current.customs_office_of_exit,
+      location: matchedCustomer?.export_defaults?.location || current.location,
+      border_transport_mode: matchedCustomer?.export_defaults?.border_transport_mode || current.border_transport_mode,
+      border_transport_nationality: matchedCustomer?.export_defaults?.border_transport_nationality || current.border_transport_nationality,
+      freight_costs: matchedCustomer?.export_defaults?.freight_costs || current.freight_costs,
+      insurance: matchedCustomer?.export_defaults?.insurance || current.insurance,
+      vessel: matchedCustomer?.export_defaults?.vessel_field || current.vessel,
       notes: collection
         ? [current.notes, `Reference connect: ${collection.reference_connect || "-"}`, collection.city_name ? `Sending city: ${collection.city_name}` : "", collection.hub_code ? `Hub: ${collection.hub_code}` : ""]
           .filter(Boolean)
@@ -2755,7 +2812,7 @@ function UkdocsPage({ currentUser }) {
             ))}
           </div>
           <div className="row-actions spread-actions"><button type="button" className="primary" onClick={saveCustomer} disabled={saving}>{customerDraft.id ? "Update customer" : "Add customer"}</button><button type="button" onClick={() => setCustomerDraft(emptyUkdocsCustomer())} disabled={saving}>Clear form</button></div>
-          <div className="table-wrap"><table className="data-table"><thead><tr><th>Name</th><th>Delivery terms</th><th>UK port</th><th>Currency</th><th>VAT</th><th>Actions</th></tr></thead><tbody>{customers.map((customer) => <tr key={customer.id}><td>{customer.customer_name}</td><td>{customer.default_delivery_terms || customer.export_defaults?.delivery_terms || "-"}</td><td>{customer.default_uk_arrival_port || "-"}</td><td>{customer.default_currency || customer.export_defaults?.currency || "-"}</td><td>{customer.vat_number || "-"}</td><td className="row-actions"><button type="button" onClick={() => startEditCustomer(customer)}>Edit</button></td></tr>)}{!customers.length && <tr><td colSpan="6">No UKdocs customers saved yet.</td></tr>}</tbody></table></div>
+          <div className="table-wrap"><table className="data-table"><thead><tr><th>Name</th><th>Hub match</th><th>Remark match</th><th>Delivery terms</th><th>UK port</th><th>Currency</th><th>VAT</th><th>Actions</th></tr></thead><tbody>{customers.map((customer) => <tr key={customer.id}><td>{customer.customer_name}</td><td>{customer.match_hub_code || "-"}</td><td>{customer.match_remark || "-"}</td><td>{customer.default_delivery_terms || customer.export_defaults?.delivery_terms || "-"}</td><td>{customer.default_uk_arrival_port || "-"}</td><td>{customer.default_currency || customer.export_defaults?.currency || "-"}</td><td>{customer.vat_number || "-"}</td><td className="row-actions"><button type="button" onClick={() => startEditCustomer(customer)}>Edit</button></td></tr>)}{!customers.length && <tr><td colSpan="8">No UKdocs customers saved yet.</td></tr>}</tbody></table></div>
         </div>
       )}
 
