@@ -1086,8 +1086,15 @@ function normalizeUkdocsPrintDocument(document) {
   } : null;
 }
 
+function normalizeUkdocsPrintDocumentList(documents) {
+  if (!Array.isArray(documents)) {
+    return [];
+  }
+  return documents.map(normalizeUkdocsPrintDocument).filter(Boolean);
+}
+
 function deriveUkdocsPrintCollectionStatus(collection) {
-  const phytoReady = Boolean(collection?.documents?.phyto?.storage_name);
+  const phytoReady = Array.isArray(collection?.documents?.phyto_files) && collection.documents.phyto_files.length > 0;
   const extraReady = Boolean(collection?.documents?.export_extra?.storage_name);
   if (phytoReady && extraReady) {
     return "complete";
@@ -1124,7 +1131,7 @@ function normalizeUkdocsPrintCollection(collection) {
     updated_at: normalizeUkdocsText(collection?.updated_at),
     notes: String(collection?.notes || "").trim(),
     documents: {
-      phyto: normalizeUkdocsPrintDocument(collection?.documents?.phyto),
+      phyto_files: normalizeUkdocsPrintDocumentList(collection?.documents?.phyto_files || (collection?.documents?.phyto ? [collection.documents.phyto] : [])),
       export_extra: normalizeUkdocsPrintDocument(collection?.documents?.export_extra),
     },
   };
@@ -2476,6 +2483,65 @@ function normalizeUkdocsPrintToken(value) {
   return String(value || "").toUpperCase().replace(/[^A-Z0-9]/g, "");
 }
 
+function ukdocsPrintInvoiceTokens(value) {
+  return String(value || "")
+    .split(/[\/,\s;]+/)
+    .map(normalizeUkdocsPrintToken)
+    .filter((item) => item.length >= 4);
+}
+
+function findMatchingUkdocsPrintCollection(collections, candidate) {
+  const shipmentId = normalizeUkdocsText(candidate?.shipment_id);
+  const collectionId = normalizeUkdocsText(candidate?.id);
+  const shipmentDate = normalizeUkdocsText(candidate?.shipment_date);
+  const referenceConnect = normalizeUkdocsPrintToken(candidate?.reference_connect);
+  const invoiceTokens = ukdocsPrintInvoiceTokens(candidate?.invoice_numbers);
+  const truckNumber = normalizeUkdocsPrintToken(candidate?.truck_number);
+  const trailerNumber = normalizeUkdocsPrintToken(candidate?.trailer_number);
+
+  return (Array.isArray(collections) ? collections : []).find((item) => {
+    if (collectionId && item.id === collectionId) {
+      return true;
+    }
+    if (shipmentId && item.shipment_id === shipmentId) {
+      return true;
+    }
+    if (!shipmentDate || item.shipment_date !== shipmentDate) {
+      return false;
+    }
+
+    const itemReferenceConnect = normalizeUkdocsPrintToken(item.reference_connect);
+    if (referenceConnect && itemReferenceConnect === referenceConnect) {
+      return true;
+    }
+
+    if (!invoiceTokens.length) {
+      return false;
+    }
+
+    const itemInvoiceTokens = ukdocsPrintInvoiceTokens(item.invoice_numbers);
+    if (!itemInvoiceTokens.length) {
+      return false;
+    }
+
+    const invoiceOverlap = invoiceTokens.some((token) => itemInvoiceTokens.includes(token));
+    if (!invoiceOverlap) {
+      return false;
+    }
+
+    const itemTruckNumber = normalizeUkdocsPrintToken(item.truck_number);
+    const itemTrailerNumber = normalizeUkdocsPrintToken(item.trailer_number);
+    if (truckNumber && itemTruckNumber && truckNumber === itemTruckNumber) {
+      return true;
+    }
+    if (trailerNumber && itemTrailerNumber && trailerNumber === itemTrailerNumber) {
+      return true;
+    }
+
+    return !referenceConnect && !itemReferenceConnect;
+  }) || null;
+}
+
 function ukdocsPrintCollectionMatchScore(collection, haystackRaw) {
   const haystack = normalizeUkdocsPrintToken(haystackRaw);
   if (!haystack) {
@@ -2486,10 +2552,7 @@ function ukdocsPrintCollectionMatchScore(collection, haystackRaw) {
   if (referenceConnect && haystack.includes(referenceConnect)) {
     score += 8;
   }
-  const invoices = String(collection?.invoice_numbers || "")
-    .split(/[\/,\s;]+/)
-    .map(normalizeUkdocsPrintToken)
-    .filter((item) => item.length >= 4);
+  const invoices = ukdocsPrintInvoiceTokens(collection?.invoice_numbers);
   for (const invoice of invoices) {
     if (invoice && haystack.includes(invoice)) {
       score += 5;
@@ -2592,7 +2655,7 @@ async function syncUkdocsPrintFromGmail(settings, requestUser, query) {
         continue;
       }
       const kind = detectUkdocsPrintDocumentKind(candidateText);
-      if (bestMatch.documents?.[kind]?.storage_name) {
+      if (kind !== "phyto" && bestMatch.documents?.[kind]?.storage_name) {
         results.push({ status: "skipped", file_name: attachmentName, shipment_reference: bestMatch.shipment_reference, reason: `${kind} already exists` });
         continue;
       }
@@ -2603,7 +2666,9 @@ async function syncUkdocsPrintFromGmail(settings, requestUser, query) {
         updated_at: new Date().toISOString(),
         documents: {
           ...(bestMatch.documents || {}),
-          [kind]: savedDocument,
+          ...(kind === "phyto"
+            ? { phyto_files: [...(bestMatch.documents?.phyto_files || []), savedDocument] }
+            : { [kind]: savedDocument }),
         },
       });
       state.print_collections = upsertUkdocsPrintCollection(state.print_collections, updatedCollection);
@@ -2632,7 +2697,7 @@ async function syncUkdocsPrintCollectionsFromSheet(settings, date) {
   const sendings = parseUkdocsPrintSheetRows(rows, date);
   const state = await readUkdocsState();
   for (const sending of sendings) {
-    const existingCollection = state.print_collections.find((item) => item.id === sending.id || (item.reference_connect && item.reference_connect === sending.reference_connect && item.shipment_date === sending.shipment_date));
+    const existingCollection = findMatchingUkdocsPrintCollection(state.print_collections, sending);
     const nextCollection = normalizeUkdocsPrintCollection({
       ...existingCollection,
       id: existingCollection?.id || sending.id,
@@ -4337,7 +4402,15 @@ async function handleApi(req, res, url) {
     }
 
     const customer = state.customers.find((item) => item.id === shipment.customer_id);
-    const existingCollection = state.print_collections.find((item) => item.id === shipment.print_collection_id || item.shipment_id === shipment.id || item.id === shipment.id);
+    const existingCollection = findMatchingUkdocsPrintCollection(state.print_collections, {
+      id: shipment.print_collection_id || shipment.id,
+      shipment_id: shipment.id,
+      shipment_date: shipment.shipment_date,
+      reference_connect: shipment.reference_connect,
+      invoice_numbers: shipment.invoice_numbers,
+      truck_number: shipment.truck_number,
+      trailer_number: shipment.trailer_number,
+    });
     const printCollection = buildUkdocsPrintCollectionFromShipment(existingCollection, shipment, customer?.customer_name || "");
     state.print_collections = upsertUkdocsPrintCollection(state.print_collections, printCollection);
     const auditReport = normalizeUkdocsAuditReport({
@@ -4451,7 +4524,9 @@ async function handleApi(req, res, url) {
       updated_at: new Date().toISOString(),
       documents: {
         ...(existingCollection.documents || {}),
-        [kind]: savedDocument,
+        ...(kind === "phyto"
+          ? { phyto_files: [...(existingCollection.documents?.phyto_files || []), savedDocument] }
+          : { [kind]: savedDocument }),
       },
     });
     state.print_collections = upsertUkdocsPrintCollection(state.print_collections, updatedCollection);
@@ -4467,10 +4542,14 @@ async function handleApi(req, res, url) {
     const suffix = url.pathname.slice("/api/ukdocs-print/collections/".length);
     const [collectionIdRaw, kindRaw] = suffix.split("/documents/");
     const collectionId = decodeURIComponent(collectionIdRaw || "");
-    const kind = decodeURIComponent(kindRaw || "");
+    const kindParts = decodeURIComponent(kindRaw || "").split("/");
+    const kind = kindParts[0] || "";
+    const documentIndex = Number(kindParts[1] || 0);
     const state = await readUkdocsState();
     const collection = state.print_collections.find((item) => item.id === collectionId || item.shipment_id === collectionId);
-    const document = collection?.documents?.[kind];
+    const document = kind === "phyto"
+      ? (collection?.documents?.phyto_files || [])[documentIndex]
+      : collection?.documents?.[kind];
     if (!collection || !document?.storage_name) {
       sendText(res, 404, "UKdocs Print document not found");
       return;

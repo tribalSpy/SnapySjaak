@@ -2887,6 +2887,7 @@ function UkdocsPrintPage({ currentUser }) {
 
   const collections = state?.print_collections || [];
   const selectedCollection = collections.find((item) => item.id === selectedCollectionId || item.shipment_id === selectedCollectionId) || collections[0] || null;
+  const selectedPhytoFiles = selectedCollection?.documents?.phyto_files || [];
 
   useEffect(() => {
     if (selectedCollection?.id && selectedCollection.id !== selectedCollectionId) {
@@ -2919,7 +2920,7 @@ function UkdocsPrintPage({ currentUser }) {
         }),
       });
       setState((current) => ({ ...current, print_collections: payload.print_collections || current?.print_collections || [] }));
-      setMessage(`${UKDOCS_PRINT_DOCUMENTS.find((item) => item.key === kind)?.label || "File"} saved.`);
+      setMessage(kind === "phyto" ? "Phytosanitary document added." : `${UKDOCS_PRINT_DOCUMENTS.find((item) => item.key === kind)?.label || "File"} saved.`);
     } catch (uploadError) {
       setError(uploadError.message);
     } finally {
@@ -3056,7 +3057,7 @@ function UkdocsPrintPage({ currentUser }) {
                   return (
                     <tr key={collection.id}>
                       <td>{collection.shipment_date || "-"}</td>
-                      <td>{collection.reference_connect || collection.shipment_reference || "-"}</td>
+                      <td>{collection.reference_connect || "-"}</td>
                       <td>{collection.city_name || collection.customer_name || "-"}</td>
                       <td>{collection.invoice_numbers || "-"}</td>
                       <td>{collection.truck_number || collection.trailer_number || "-"}</td>
@@ -3099,13 +3100,32 @@ function UkdocsPrintPage({ currentUser }) {
 
               <div className="ukdocs-upload-grid">
                 {UKDOCS_PRINT_DOCUMENTS.map((documentDefinition) => {
-                  const document = selectedCollection.documents?.[documentDefinition.key] || null;
+                  const document = documentDefinition.key === "phyto"
+                    ? null
+                    : selectedCollection.documents?.[documentDefinition.key] || null;
                   return (
                     <div key={documentDefinition.key} className="ukdocs-upload-card">
                       <strong>{documentDefinition.label}</strong>
                       <input type="file" accept={documentDefinition.accept} onChange={(event) => uploadCollectionFile(documentDefinition.key, event.target.files?.[0] || null)} disabled={saving} />
-                      <small>{document?.original_name ? `${document.original_name} saved ${formatTimestamp(document.saved_at)}` : "No file saved yet."}</small>
-                      {document?.storage_name && <div className="row-actions"><a href={`/api/ukdocs-print/collections/${encodeURIComponent(selectedCollection.id)}/documents/${documentDefinition.key}`}>Download</a></div>}
+                      {documentDefinition.key === "phyto" ? (
+                        <>
+                          <small>{selectedPhytoFiles.length ? `${selectedPhytoFiles.length} phytosanitary document(s) saved.` : "No file saved yet."}</small>
+                          {!!selectedPhytoFiles.length && (
+                            <div className="row-actions spread-actions">
+                              {selectedPhytoFiles.map((phytoFile, index) => (
+                                <a key={`${phytoFile.storage_name}-${index}`} href={`/api/ukdocs-print/collections/${encodeURIComponent(selectedCollection.id)}/documents/phyto/${index}`}>
+                                  {phytoFile.original_name || `Phyto ${index + 1}`}
+                                </a>
+                              ))}
+                            </div>
+                          )}
+                        </>
+                      ) : (
+                        <>
+                          <small>{document?.original_name ? `${document.original_name} saved ${formatTimestamp(document.saved_at)}` : "No file saved yet."}</small>
+                          {document?.storage_name && <div className="row-actions"><a href={`/api/ukdocs-print/collections/${encodeURIComponent(selectedCollection.id)}/documents/${documentDefinition.key}`}>Download</a></div>}
+                        </>
+                      )}
                     </div>
                   );
                 })}
