@@ -2490,7 +2490,8 @@ function ukdocsPrintInvoiceTokens(value) {
     .filter((item) => item.length >= 4);
 }
 
-function findMatchingUkdocsPrintCollection(collections, candidate) {
+function findMatchingUkdocsPrintCollection(collections, candidate, options = {}) {
+  const allowInvoiceFallback = options.allowInvoiceFallback !== false;
   const shipmentId = normalizeUkdocsText(candidate?.shipment_id);
   const collectionId = normalizeUkdocsText(candidate?.id);
   const shipmentDate = normalizeUkdocsText(candidate?.shipment_date);
@@ -2513,6 +2514,10 @@ function findMatchingUkdocsPrintCollection(collections, candidate) {
     const itemReferenceConnect = normalizeUkdocsPrintToken(item.reference_connect);
     if (referenceConnect && itemReferenceConnect === referenceConnect) {
       return true;
+    }
+
+    if (!allowInvoiceFallback) {
+      return false;
     }
 
     if (!invoiceTokens.length) {
@@ -2540,6 +2545,29 @@ function findMatchingUkdocsPrintCollection(collections, candidate) {
 
     return !referenceConnect && !itemReferenceConnect;
   }) || null;
+}
+
+async function deleteUkdocsPrintCollectionFiles(collection) {
+  const documents = [];
+  if (Array.isArray(collection?.documents?.phyto_files)) {
+    documents.push(...collection.documents.phyto_files);
+  }
+  if (collection?.documents?.export_extra) {
+    documents.push(collection.documents.export_extra);
+  }
+  await Promise.all(documents.map(async (document) => {
+    const resolvedPath = path.resolve(ukdocsPrintDocumentPath(document));
+    if (!resolvedPath.startsWith(path.resolve(ukdocsPrintFilesDir))) {
+      return;
+    }
+    try {
+      await fs.unlink(resolvedPath);
+    } catch (error) {
+      if (error?.code !== "ENOENT") {
+        throw error;
+      }
+    }
+  }));
 }
 
 function ukdocsPrintCollectionMatchScore(collection, haystackRaw) {
@@ -2697,7 +2725,7 @@ async function syncUkdocsPrintCollectionsFromSheet(settings, date) {
   const sendings = parseUkdocsPrintSheetRows(rows, date);
   const state = await readUkdocsState();
   for (const sending of sendings) {
-    const existingCollection = findMatchingUkdocsPrintCollection(state.print_collections, sending);
+    const existingCollection = findMatchingUkdocsPrintCollection(state.print_collections, sending, { allowInvoiceFallback: false });
     const nextCollection = normalizeUkdocsPrintCollection({
       ...existingCollection,
       id: existingCollection?.id || sending.id,
@@ -4501,6 +4529,24 @@ async function handleApi(req, res, url) {
     state.print_collections = upsertUkdocsPrintCollection(state.print_collections, updatedCollection);
     await writeUkdocsState(state);
     sendJson(res, 200, { collection: updatedCollection, print_collections: normalizeUkdocsState(state).print_collections });
+    return;
+  }
+
+  if (url.pathname.startsWith("/api/ukdocs-print/collections/") && req.method === "DELETE") {
+    if (!requirePermission(res, requestUser, PERMISSIONS.UKDOCS_VIEW)) {
+      return;
+    }
+    const collectionId = decodeURIComponent(url.pathname.slice("/api/ukdocs-print/collections/".length));
+    const state = await readUkdocsState();
+    const existingCollection = state.print_collections.find((item) => item.id === collectionId || item.shipment_id === collectionId);
+    if (!existingCollection) {
+      sendJson(res, 404, { error: "UKdocs Print collection not found" });
+      return;
+    }
+    await deleteUkdocsPrintCollectionFiles(existingCollection);
+    state.print_collections = state.print_collections.filter((item) => item.id !== existingCollection.id && item.shipment_id !== existingCollection.shipment_id);
+    await writeUkdocsState(state);
+    sendJson(res, 200, { ok: true, print_collections: normalizeUkdocsState(state).print_collections });
     return;
   }
 

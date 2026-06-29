@@ -2949,6 +2949,29 @@ function UkdocsPrintPage({ currentUser }) {
     }
   }
 
+  async function deleteCollection(collectionId) {
+    if (!window.confirm("Delete this UKdocs Print collection and its saved files?")) {
+      return;
+    }
+    setSaving(true);
+    setMessage("");
+    setError("");
+    try {
+      const payload = await apiJson(`/api/ukdocs-print/collections/${encodeURIComponent(collectionId)}`, {
+        method: "DELETE",
+      });
+      const nextCollections = payload.print_collections || [];
+      setState((current) => ({ ...current, print_collections: nextCollections }));
+      setSelectedCollectionId(nextCollections[0]?.id || "");
+      setNotesDraft(nextCollections[0]?.notes || "");
+      setMessage("Collection deleted.");
+    } catch (deleteError) {
+      setError(deleteError.message);
+    } finally {
+      setSaving(false);
+    }
+  }
+
   async function connectGmail() {
     setGmailBusy(true);
     setError("");
@@ -3050,7 +3073,7 @@ function UkdocsPrintPage({ currentUser }) {
           <div className="section-header"><h2>Collections</h2></div>
           <div className="table-wrap">
             <table className="data-table">
-              <thead><tr><th>Date</th><th>Connect ref</th><th>City / customer</th><th>Invoices</th><th>Truck</th><th>Status</th><th>Open</th></tr></thead>
+              <thead><tr><th>Date</th><th>Connect ref</th><th>City / customer</th><th>Invoices</th><th>Truck</th><th>Status</th><th>Actions</th></tr></thead>
               <tbody>
                 {collections.map((collection) => {
                   const status = ukdocsPrintStatusDefinition(collection.status);
@@ -3062,7 +3085,7 @@ function UkdocsPrintPage({ currentUser }) {
                       <td>{collection.invoice_numbers || "-"}</td>
                       <td>{collection.truck_number || collection.trailer_number || "-"}</td>
                       <td><span className={`ukdocs-status-badge ${status.tone}`}>{status.label}</span></td>
-                      <td className="row-actions"><button type="button" onClick={() => setSelectedCollectionId(collection.id)}>Open</button></td>
+                      <td className="row-actions"><button type="button" onClick={() => setSelectedCollectionId(collection.id)}>Open</button><button type="button" onClick={() => deleteCollection(collection.id)}>Delete</button></td>
                     </tr>
                   );
                 })}
@@ -3075,7 +3098,7 @@ function UkdocsPrintPage({ currentUser }) {
         <div className="data-table-card ukdocs-stack">
           <div className="section-header">
             <h2>Collection detail</h2>
-            {selectedCollection && <div className={`ukdocs-status-badge ${ukdocsPrintStatusDefinition(selectedCollection.status).tone}`}>{ukdocsPrintStatusDefinition(selectedCollection.status).label}</div>}
+            {selectedCollection && <div className="row-actions"><div className={`ukdocs-status-badge ${ukdocsPrintStatusDefinition(selectedCollection.status).tone}`}>{ukdocsPrintStatusDefinition(selectedCollection.status).label}</div><button type="button" onClick={() => deleteCollection(selectedCollection.id)}>Delete</button></div>}
           </div>
 
           {!selectedCollection && <div className="notice">Choose a generated shipment first.</div>}
