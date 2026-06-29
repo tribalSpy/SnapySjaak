@@ -2718,11 +2718,15 @@ function UkdocsPage({ currentUser }) {
               <span>Available sending</span>
               <select value={shipmentDraft.print_collection_id || ""} onChange={(event) => applyPrintCollection(event.target.value)}>
                 <option value="">Choose a sending from UKdocs Print</option>
-                {availablePrintCollections.map((collection) => (
-                  <option key={collection.id} value={collection.id}>
-                    {`${collection.shipment_date || "-"} | ${collection.reference_connect || "-"} | ${collection.city_name || collection.customer_name || "-"} | ${collection.hub_code || "-"}`}
-                  </option>
-                ))}
+                {availablePrintCollections.map((collection) => {
+                  const progress = ukdocsPrintCollectionProgress(collection, customers);
+                  const donePrefix = progress.status === "complete" ? "[Done] " : "";
+                  return (
+                    <option key={collection.id} value={collection.id}>
+                      {`${donePrefix}${collection.shipment_date || "-"} | ${collection.reference_connect || "-"} | ${collection.city_name || collection.customer_name || "-"} | ${collection.hub_code || "-"}`}
+                    </option>
+                  );
+                })}
               </select>
             </label>
             <label><span>Customer / export user</span><select value={shipmentDraft.customer_id} onChange={(event) => applyCustomerDefaults(event.target.value)}><option value="">Choose customer</option>{customers.map((customer) => <option key={customer.id} value={customer.id}>{customer.customer_name}</option>)}</select></label>

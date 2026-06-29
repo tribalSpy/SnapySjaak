@@ -867,6 +867,13 @@ def build_export_header_reference(invoice_numbers, shipment_date, truck_number, 
     return clean_text(fallback_reference) or invoice_text
 
 
+def build_export_transport_lines(shipment):
+    return [
+        ("Truck number", clean_text(shipment.get("truck_number"))),
+        ("Trailer number", clean_text(shipment.get("trailer_number"))),
+    ]
+
+
 def build_invoice_customer_lines(customer):
     customer_lines = [customer.get("customer_name", "")]
     customer_lines.extend(str(customer.get("customer_address", "") or "").splitlines())
@@ -1075,16 +1082,17 @@ def write_export_template(workbook, sheet, analysis):
         set_sheet_value(sheet, row_number, 7, row["gross_kg"])
         set_sheet_value(sheet, row_number, 8, row["origin"])
 
+    transport_lines = build_export_transport_lines(shipment)
     detail_values = {
         4: {13: "Additional Information"},
         5: {13: "Importer", 14: shipment["customer_importer_number"]},
         6: {14: customer.get("customer_name", "")},
         7: {13: "Invoice number", 14: shipment["invoice_numbers"]},
-        8: {13: "Trailer number", 14: shipment["trailer_number"]},
-        9: {13: "Vessel", 14: shipment["vessel"]},
-        11: {13: "Port of UK Arrival", 14: shipment["uk_arrival_port"]},
-        12: {13: "Currency of invoice", 14: shipment["currency"]},
-        13: {15: "Currency"},
+        8: {13: transport_lines[0][0], 14: transport_lines[0][1]},
+        9: {13: transport_lines[1][0], 14: transport_lines[1][1]},
+        10: {13: "Vessel", 14: shipment["vessel"]},
+        12: {13: "Port of UK Arrival", 14: shipment["uk_arrival_port"]},
+        13: {13: "Currency of invoice", 14: shipment["currency"], 15: "Currency"},
         14: {13: "Freight costs", 14: shipment["freight_costs"], 15: shipment["currency"]},
         15: {13: "Insurance", 14: shipment["insurance"]},
         16: {13: "Inland freight", 15: shipment["currency"]},
@@ -1149,16 +1157,17 @@ def build_export_workbook_raw(analysis):
                 cells[(row_number, col)] = " "
                 style_map[(row_number, col)] = "default"
 
+    transport_lines = build_export_transport_lines(shipment)
     details = [
         (4, 13, "Additional Information"),
         (5, 13, "Importer"), (5, 14, shipment["customer_importer_number"]),
         (6, 14, customer.get("customer_name", "")),
         (7, 13, "Invoice number"), (7, 14, shipment["invoice_numbers"]),
-        (8, 13, "Trailer number"), (8, 14, shipment["trailer_number"]),
-        (9, 13, "Vessel"), (9, 14, shipment["vessel"]),
-        (11, 13, "Port of UK Arrival"), (11, 14, shipment["uk_arrival_port"]),
-        (12, 13, "Currency of invoice"), (12, 14, shipment["currency"]),
-        (13, 15, "Currency"),
+        (8, 13, transport_lines[0][0]), (8, 14, transport_lines[0][1]),
+        (9, 13, transport_lines[1][0]), (9, 14, transport_lines[1][1]),
+        (10, 13, "Vessel"), (10, 14, shipment["vessel"]),
+        (12, 13, "Port of UK Arrival"), (12, 14, shipment["uk_arrival_port"]),
+        (13, 13, "Currency of invoice"), (13, 14, shipment["currency"]), (13, 15, "Currency"),
         (14, 13, "Freight costs"), (14, 14, shipment["freight_costs"]), (14, 15, shipment["currency"]),
         (15, 13, "Insurance"), (15, 14, shipment["insurance"]),
         (16, 13, "Inland freight"), (16, 15, shipment["currency"]),
