@@ -2952,6 +2952,7 @@ function UkdocsPrintPage({ currentUser }) {
   const collections = state?.print_collections || [];
   const selectedCollection = collections.find((item) => item.id === selectedCollectionId || item.shipment_id === selectedCollectionId) || collections[0] || null;
   const selectedPhytoFiles = selectedCollection?.documents?.phyto_files || [];
+  const selectedGeneratedFiles = selectedCollection?.documents?.generated_files || [];
 
   useEffect(() => {
     if (selectedCollection?.id && selectedCollection.id !== selectedCollectionId) {
@@ -3094,7 +3095,7 @@ function UkdocsPrintPage({ currentUser }) {
     <section className="overview-stack ukdocs-page">
       {message && <div className="notice">{message}</div>}
       {error && <div className="notice danger">{error}</div>}
-      <div className="notice">Use the spreadsheet to load the day sendings first. Then link UKdocs generated files to one of those sendings, and let Gmail attach the phytosanitary and second export documents onto the same record.</div>
+      <div className="notice">Use the spreadsheet to load the day sendings first. Then link UKdocs generated files to one of those sendings, and let Gmail attach the phytosanitary and second export documents onto the same record. Shipments with the same city, hub code, and remark are grouped together, so one shipment can hold multiple phyto references and files.</div>
 
       <div className="data-table-card ukdocs-stack">
         <div className="section-header"><h2>Today Sendings Spreadsheet</h2></div>
@@ -3216,6 +3217,20 @@ function UkdocsPrintPage({ currentUser }) {
                     </div>
                   );
                 })}
+              </div>
+
+              <div className="ukdocs-upload-card">
+                <strong>Generated UKdocs files</strong>
+                <small>{selectedGeneratedFiles.length ? `${selectedGeneratedFiles.length} generated file(s) saved.` : "No generated files saved yet."}</small>
+                {!!selectedGeneratedFiles.length && (
+                  <div className="row-actions spread-actions">
+                    {selectedGeneratedFiles.map((generatedFile, index) => (
+                      <a key={`${generatedFile.storage_name}-${index}`} href={`/api/ukdocs-print/collections/${encodeURIComponent(selectedCollection.id)}/documents/generated/${index}`}>
+                        {generatedFile.original_name || `Generated file ${index + 1}`}
+                      </a>
+                    ))}
+                  </div>
+                )}
               </div>
 
               <label className="wide">
