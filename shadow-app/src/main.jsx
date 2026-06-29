@@ -2203,6 +2203,14 @@ function ukdocsPrintCollectionProgress(collection, customers) {
   };
 }
 
+function ukdocsGeneratedShipmentReady(collection) {
+  const generatedFiles = collection?.documents?.generated_files || [];
+  const generatedExportReady = generatedFiles.some((file) => file.document_kind === "export");
+  const generatedInvoiceCount = generatedFiles.filter((file) => file.document_kind === "invoice").length;
+  const invoiceExpected = ukdocsPrintSplitTokens(collection?.invoice_numbers).length;
+  return generatedExportReady && invoiceExpected > 0 && generatedInvoiceCount >= invoiceExpected;
+}
+
 function ukdocsShipmentStatus(shipment) {
   const uploadedCount = Object.values(shipment?.uploaded_files || {}).filter((item) => item?.file_name).length;
   if (!uploadedCount) {
@@ -2537,7 +2545,7 @@ function UkdocsPage({ currentUser }) {
     setMessage("");
     try {
       const payload = await apiJson(`/api/ukdocs/shipments/${encodeURIComponent(shipmentId)}`, { method: "DELETE" });
-      setState((current) => ({ ...current, shipments: payload.shipments }));
+      setState((current) => ({ ...current, shipments: payload.shipments, print_collections: payload.print_collections || current.print_collections }));
       if (shipmentDraft.id === shipmentId) {
         resetDrafts();
       }
@@ -2737,8 +2745,7 @@ function UkdocsPage({ currentUser }) {
               <select value={shipmentDraft.print_collection_id || ""} onChange={(event) => applyPrintCollection(event.target.value)}>
                 <option value="">Choose a sending from UKdocs Print</option>
                 {availablePrintCollections.map((collection) => {
-                  const generatedShipment = shipments.find((shipment) => shipment.print_collection_id === collection.id) || null;
-                  const donePrefix = generatedShipment?.ready === true ? "[Done] " : "";
+                  const donePrefix = ukdocsGeneratedShipmentReady(collection) ? "[Done] " : "";
                   const remarkSuffix = String(collection.remark || "").trim() ? ` | ${String(collection.remark || "").trim()}` : "";
                   return (
                     <option key={collection.id} value={collection.id}>

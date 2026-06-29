@@ -4793,14 +4793,39 @@ async function handleApi(req, res, url) {
     }
     const shipmentId = decodeURIComponent(url.pathname.slice("/api/ukdocs/shipments/".length));
     const state = await readUkdocsState();
+    const deletedShipment = state.shipments.find((item) => item.id === shipmentId) || null;
     const nextShipments = state.shipments.filter((item) => item.id !== shipmentId);
     if (nextShipments.length === state.shipments.length) {
       sendJson(res, 404, { error: "Shipment not found" });
       return;
     }
     state.shipments = nextShipments;
+    if (deletedShipment?.print_collection_id) {
+      const linkedCollection = state.print_collections.find((item) => item.id === deletedShipment.print_collection_id || item.shipment_id === deletedShipment.id);
+      if (linkedCollection) {
+        await deleteUkdocsGeneratedFiles(linkedCollection);
+        const resetCollection = normalizeUkdocsPrintCollection({
+          ...linkedCollection,
+          shipment_id: "",
+          shipment_reference: "",
+          generated_at: "",
+          updated_at: new Date().toISOString(),
+          delivery_email: {
+            ok: false,
+            recipients: [],
+            sent_at: "",
+            error: "",
+          },
+          documents: {
+            ...(linkedCollection.documents || {}),
+            generated_files: [],
+          },
+        });
+        state.print_collections = upsertUkdocsPrintCollection(state.print_collections, resetCollection);
+      }
+    }
     await writeUkdocsState(state);
-    sendJson(res, 200, { ok: true, shipments: normalizeUkdocsState(state).shipments });
+    sendJson(res, 200, { ok: true, shipments: normalizeUkdocsState(state).shipments, print_collections: normalizeUkdocsState(state).print_collections });
     return;
   }
 
