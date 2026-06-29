@@ -2986,6 +2986,7 @@ function UkdocsPrintPage({ currentUser }) {
   const [gmailSettings, setGmailSettings] = useState({ gmail_connected_email: "" });
   const [sheetSyncDate, setSheetSyncDate] = useState(new Date().toISOString().slice(0, 10));
   const [sheetBusy, setSheetBusy] = useState(false);
+  const [autoSyncEnabled, setAutoSyncEnabled] = useState(true);
   const canManageSettings = hasPermission(currentUser, PERMISSIONS.SETTINGS_MANAGE);
 
   useEffect(() => {
@@ -3031,6 +3032,27 @@ function UkdocsPrintPage({ currentUser }) {
   useEffect(() => {
     setNotesDraft(selectedCollection?.notes || "");
   }, [selectedCollection?.id, selectedCollection?.notes]);
+
+  useEffect(() => {
+    if (!autoSyncEnabled || !gmailSettings.gmail_connected_email) {
+      return undefined;
+    }
+    const intervalId = window.setInterval(async () => {
+      if (document.visibilityState !== "visible") {
+        return;
+      }
+      try {
+        const payload = await apiJson("/api/ukdocs-print/gmail/sync", {
+          method: "POST",
+          body: JSON.stringify({ query: gmailQuery }),
+        });
+        setState((current) => ({ ...current, print_collections: payload.print_collections || current?.print_collections || [] }));
+        setGmailSyncResults(payload.results || []);
+      } catch {
+      }
+    }, 120000);
+    return () => window.clearInterval(intervalId);
+  }, [autoSyncEnabled, gmailSettings.gmail_connected_email, gmailQuery]);
 
   async function uploadCollectionFile(kind, file) {
     if (!selectedCollection || !file) {
@@ -3183,6 +3205,12 @@ function UkdocsPrintPage({ currentUser }) {
           <label><span>Connected Gmail account</span><input value={gmailSettings.gmail_connected_email || ""} readOnly placeholder="Not connected yet" /></label>
           <label className="wide"><span>Gmail search query</span><input value={gmailQuery} onChange={(event) => setGmailQuery(event.target.value)} placeholder="has:attachment newer_than:30d" /></label>
         </div>
+        <div className="checkbox-grid">
+          <label className="checkbox-field">
+            <input type="checkbox" checked={autoSyncEnabled} onChange={(event) => setAutoSyncEnabled(event.target.checked)} />
+            <span>Auto listen for Gmail attachments while this page is open</span>
+          </label>
+        </div>
         <div className="row-actions spread-actions">
           {canManageSettings && <button type="button" onClick={connectGmail} disabled={gmailBusy}>{gmailBusy ? "Connecting..." : "Connect Gmail"}</button>}
           <button type="button" className="primary" onClick={syncGmail} disabled={gmailBusy}>{gmailBusy ? "Syncing..." : "Sync Gmail attachments"}</button>
@@ -3203,28 +3231,28 @@ function UkdocsPrintPage({ currentUser }) {
       <div className="ukdocs-print-layout">
         <div className="data-table-card ukdocs-stack">
           <div className="section-header"><h2>Collections</h2></div>
-          <div className="table-wrap">
-            <table className="data-table">
-              <thead><tr><th>Date</th><th>Connect ref</th><th>City / customer</th><th>Invoices</th><th>Truck</th><th>Status</th><th>Actions</th></tr></thead>
-              <tbody>
-                {collections.map((collection) => {
-                  const progress = ukdocsPrintCollectionProgress(collection, customers);
-                  const status = ukdocsPrintStatusDefinition(progress.status);
-                  return (
-                    <tr key={collection.id}>
-                      <td>{collection.shipment_date || "-"}</td>
-                      <td>{collection.reference_connect || "-"}</td>
-                      <td>{collection.customer_name || collection.city_name || "-"}</td>
-                      <td>{collection.invoice_numbers || "-"}</td>
-                      <td>{collection.truck_number || collection.trailer_number || "-"}</td>
-                      <td><span className={`ukdocs-status-badge ${status.tone}`}>{progress.missing.length ? `${status.label} (${progress.missing.join(", ")})` : status.label}</span></td>
-                      <td className="row-actions"><button type="button" onClick={() => setSelectedCollectionId(collection.id)}>Open</button><button type="button" onClick={() => deleteCollection(collection.id)}>Delete</button></td>
-                    </tr>
-                  );
-                })}
-                {!collections.length && <tr><td colSpan="7">No spreadsheet sendings or UKdocs-linked collections are loaded yet.</td></tr>}
-              </tbody>
-            </table>
+          <div className="ukdocs-upload-grid">
+            {collections.map((collection) => {
+              const progress = ukdocsPrintCollectionProgress(collection, customers);
+              const status = ukdocsPrintStatusDefinition(progress.status);
+              const isActive = selectedCollection?.id === collection.id;
+              return (
+                <div key={collection.id} className="ukdocs-upload-card">
+                  <strong>{progress.customer?.customer_name || collection.customer_name || collection.city_name || "Shipment"}</strong>
+                  <small>{collection.shipment_date || "-"}</small>
+                  <small>{collection.city_name ? `City: ${collection.city_name}` : "City not linked yet"}</small>
+                  <small>{collection.reference_connect ? `Connect: ${collection.reference_connect}` : "No connect ref yet"}</small>
+                  <small>{collection.invoice_numbers ? `Invoices: ${collection.invoice_numbers}` : "No invoices linked yet"}</small>
+                  <small>{collection.truck_number || collection.trailer_number ? `Truck: ${collection.truck_number || collection.trailer_number}` : "No truck linked yet"}</small>
+                  <div className={`ukdocs-status-badge ${status.tone}`}>{progress.missing.length ? `${status.label} • ${progress.missing.join(", ")}` : status.label}</div>
+                  <div className="row-actions spread-actions">
+                    <button type="button" className={isActive ? "primary" : ""} onClick={() => setSelectedCollectionId(collection.id)}>{isActive ? "Opened" : "Info"}</button>
+                    <button type="button" onClick={() => deleteCollection(collection.id)}>Delete</button>
+                  </div>
+                </div>
+              );
+            })}
+            {!collections.length && <div className="notice">No spreadsheet sendings or UKdocs-linked collections are loaded yet.</div>}
           </div>
         </div>
 
@@ -5844,6 +5872,12 @@ function SettingsPage({ currentUser }) {
   const [error, setError] = useState("");
   const [message, setMessage] = useState("");
   const [saving, setSaving] = useState(false);
+  const SETTINGS_SECTIONS = [
+    { id: "settings-sheets", label: "Sheets" },
+    { id: "settings-ukdocs", label: "UKdocs Print" },
+    { id: "settings-cmr", label: "CMR / Drive" },
+    { id: "settings-mail", label: "Mail" },
+  ];
   const { loading: metaLoading, data: metaData, error: metaError } = useFustMeta(Boolean(currentUser));
   const [backups, setBackups] = useState([]);
   const [backupBusy, setBackupBusy] = useState(false);
@@ -5984,7 +6018,22 @@ function SettingsPage({ currentUser }) {
   return (
     <section className="settings-page">
       <form className="settings-form" onSubmit={submit}>
+        <div className="tab-strip">
+          {SETTINGS_SECTIONS.map((section) => (
+            <button
+              key={section.id}
+              type="button"
+              onClick={() => document.getElementById(section.id)?.scrollIntoView({ behavior: "smooth", block: "start" })}
+            >
+              {section.label}
+            </button>
+          ))}
+        </div>
         <div className="form-grid">
+          <div id="settings-sheets" className="wide data-table-card">
+            <div className="section-header"><h2>Sheet settings</h2></div>
+            <p className="sidebar-note">Main spreadsheet, clock tabs, hal locations, and shared spreadsheet IDs.</p>
+          </div>
           <label>
             <span>Spreadsheet ID</span>
             <input
@@ -6036,28 +6085,12 @@ function SettingsPage({ currentUser }) {
               placeholder="Defaults to the main spreadsheet ID when left empty"
             />
           </label>
-          <label className="wide">
-            <span>UKdocs Print spreadsheet ID</span>
-            <input
-              value={form.ukdocs_print_spreadsheet_id || ""}
-              onChange={(event) => setForm({ ...form, ukdocs_print_spreadsheet_id: event.target.value })}
-              placeholder="Spreadsheet ID for PD keuringen sendings"
-            />
-          </label>
           <label>
             <span>Hal Locations tab</span>
             <input
               value={form.hal_locations_sheet_name || "ERP_PASTE"}
               onChange={(event) => setForm({ ...form, hal_locations_sheet_name: event.target.value })}
               placeholder="ERP_PASTE"
-            />
-          </label>
-          <label>
-            <span>UKdocs Print tab</span>
-            <input
-              value={form.ukdocs_print_sheet_name || "PD keuringen"}
-              onChange={(event) => setForm({ ...form, ukdocs_print_sheet_name: event.target.value })}
-              placeholder="PD keuringen"
             />
           </label>
           <label>
@@ -6076,6 +6109,36 @@ function SettingsPage({ currentUser }) {
               placeholder="backup"
             />
           </label>
+          <div id="settings-ukdocs" className="wide data-table-card">
+            <div className="section-header"><h2>UKdocs Print settings</h2></div>
+            <p className="sidebar-note">These settings control spreadsheet loading and Gmail pickup for the UKdocs Print page.</p>
+            <div className="form-grid">
+              <label>
+                <span>UKdocs Print spreadsheet ID</span>
+                <input
+                  value={form.ukdocs_print_spreadsheet_id || ""}
+                  onChange={(event) => setForm({ ...form, ukdocs_print_spreadsheet_id: event.target.value })}
+                  placeholder="Spreadsheet ID for PD keuringen sendings"
+                />
+              </label>
+              <label>
+                <span>UKdocs Print tab</span>
+                <input
+                  value={form.ukdocs_print_sheet_name || "PD keuringen"}
+                  onChange={(event) => setForm({ ...form, ukdocs_print_sheet_name: event.target.value })}
+                  placeholder="PD keuringen"
+                />
+              </label>
+              <label className="wide">
+                <span>Connected Gmail account</span>
+                <input value={form.gmail_connected_email || ""} readOnly placeholder="Connect from UKdocs Print page" />
+              </label>
+            </div>
+          </div>
+          <div id="settings-cmr" className="wide data-table-card">
+            <div className="section-header"><h2>CMR / Drive settings</h2></div>
+            <p className="sidebar-note">Google Drive upload, CMR templates, folders, and allowed usernames.</p>
+          </div>
           <label className="wide">
             <span>Document country folder IDs</span>
             <textarea
@@ -6140,6 +6203,10 @@ function SettingsPage({ currentUser }) {
             <button type="button" onClick={connectGoogleDrive} disabled={googleBusy}>
               {googleBusy ? "Connecting..." : "Connect Google Drive"}
             </button>
+          </div>
+          <div id="settings-mail" className="wide data-table-card">
+            <div className="section-header"><h2>Mail settings</h2></div>
+            <p className="sidebar-note">Recipients and SMTP account used when papers are ready to send.</p>
           </div>
           <label className="wide">
             <span>Target email recipients</span>
