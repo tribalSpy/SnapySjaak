@@ -912,6 +912,8 @@ function normalizeUkdocsCustomer(customer) {
     default_city: normalizeUkdocsText(customer?.default_city),
     default_uk_arrival_port: normalizeUkdocsText(customer?.default_uk_arrival_port),
     default_currency: normalizeUkdocsText(customer?.default_currency),
+    ready_email_subject: String(customer?.ready_email_subject || "").trim(),
+    ready_email_body: String(customer?.ready_email_body || "").trim(),
     default_invoice_language_text: String(customer?.default_invoice_language_text || "").trim(),
     default_document_references: String(customer?.default_document_references || "").trim(),
     show_invoice_vat_number: customer?.show_invoice_vat_number !== false,
@@ -3369,26 +3371,56 @@ async function ukdocsPrintCollectionAttachments(collection) {
   return attachments;
 }
 
+function buildUkdocsPrintReadyTemplateContext(collection, requirements) {
+  return {
+    customer_name: requirements.customer?.customer_name || collection.customer_name || collection.city_name || "-",
+    shipment_date: collection.shipment_date || "-",
+    city: collection.city_name || "-",
+    hub_code: collection.hub_code || "-",
+    reference_connect: collection.reference_connect || "-",
+    invoice_numbers: collection.invoice_numbers || "-",
+    truck_number: collection.truck_number || "-",
+    trailer_number: collection.trailer_number || "-",
+    border_crossing: collection.border_crossing || "-",
+    pd_form: collection.pd_form || "-",
+    re_export: collection.re_export || "-",
+    pd_type: collection.pd_type || "-",
+    pd_code: collection.pd_code || "-",
+    notes: collection.notes || "",
+  };
+}
+
+function applyUkdocsReadyTemplate(template, context) {
+  return String(template || "").replace(/\{([a-z_]+)\}/gi, (match, key) => {
+    const normalizedKey = String(key || "").toLowerCase();
+    return Object.prototype.hasOwnProperty.call(context, normalizedKey) ? String(context[normalizedKey] || "") : match;
+  });
+}
+
 function buildUkdocsPrintReadyEmail(collection, requirements) {
+  const context = buildUkdocsPrintReadyTemplateContext(collection, requirements);
+  if (String(requirements.customer?.ready_email_body || "").trim()) {
+    return applyUkdocsReadyTemplate(requirements.customer.ready_email_body, context).trim();
+  }
   return [
     "UKdocs shipment papers are ready.",
     "",
-    `Customer: ${requirements.customer?.customer_name || collection.customer_name || collection.city_name || "-"}`,
-    `Shipment date: ${collection.shipment_date || "-"}`,
-    `City: ${collection.city_name || "-"}`,
-    `Hub code: ${collection.hub_code || "-"}`,
-    `Reference connect: ${collection.reference_connect || "-"}`,
-    `Invoices: ${collection.invoice_numbers || "-"}`,
-    `Truck: ${collection.truck_number || "-"}`,
-    `Trailer: ${collection.trailer_number || "-"}`,
+    `Customer: ${context.customer_name}`,
+    `Shipment date: ${context.shipment_date}`,
+    `City: ${context.city}`,
+    `Hub code: ${context.hub_code}`,
+    `Reference connect: ${context.reference_connect}`,
+    `Invoices: ${context.invoice_numbers}`,
+    `Truck: ${context.truck_number}`,
+    `Trailer: ${context.trailer_number}`,
     "",
-    `Border crossing: ${collection.border_crossing || "-"}`,
-    `PD form: ${collection.pd_form || "-"}`,
-    `Re-export: ${collection.re_export || "-"}`,
-    `PD type: ${collection.pd_type || "-"}`,
-    `PD code: ${collection.pd_code || "-"}`,
+    `Border crossing: ${context.border_crossing}`,
+    `PD form: ${context.pd_form}`,
+    `Re-export: ${context.re_export}`,
+    `PD type: ${context.pd_type}`,
+    `PD code: ${context.pd_code}`,
     "",
-    collection.notes ? `Notes: ${collection.notes}` : "",
+    context.notes ? `Notes: ${context.notes}` : "",
   ].filter(Boolean).join("\n");
 }
 
@@ -3402,11 +3434,15 @@ async function sendUkdocsPrintReadyEmail(collection, customers, settings) {
     return { ok: false, recipients, error: `Still missing: ${requirements.missing.join(", ")}` };
   }
   const attachments = await ukdocsPrintCollectionAttachments(collection);
+  const context = buildUkdocsPrintReadyTemplateContext(collection, requirements);
+  const subject = String(requirements.customer?.ready_email_subject || "").trim()
+    ? applyUkdocsReadyTemplate(requirements.customer.ready_email_subject, context).trim()
+    : `UKdocs ready | ${context.customer_name} | ${context.shipment_date}`;
   await runPythonBridge(
     ["email-send"],
     JSON.stringify({
       recipients,
-      subject: `UKdocs ready | ${requirements.customer?.customer_name || collection.customer_name || collection.city_name || "-"} | ${collection.shipment_date || "-"}`,
+      subject,
       body: buildUkdocsPrintReadyEmail(collection, requirements),
       attachments,
       smtp: {

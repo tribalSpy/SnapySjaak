@@ -1960,6 +1960,8 @@ const UKDOCS_CUSTOMER_FIELDS = [
   ["default_city", "Default city"],
   ["default_uk_arrival_port", "Default UK arrival port"],
   ["default_currency", "Default currency"],
+  ["ready_email_subject", "Ready email subject template", "textarea"],
+  ["ready_email_body", "Ready email body template", "textarea"],
   ["default_invoice_language_text", "Default invoice language / text", "textarea"],
   ["default_document_references", "Default document references", "textarea"],
 ];
@@ -2023,6 +2025,8 @@ function emptyUkdocsCustomer() {
     default_city: "",
     default_uk_arrival_port: "",
     default_currency: "",
+    ready_email_subject: "",
+    ready_email_body: "",
     default_invoice_language_text: "",
     default_document_references: "",
     show_invoice_vat_number: true,
@@ -2846,6 +2850,7 @@ function UkdocsPage({ currentUser }) {
               </label>
             ))}
           </div>
+          <div className="notice">Ready email templates can use placeholders like `{"{customer_name}"}`, `{"{shipment_date}"}`, `{"{city}"}`, `{"{reference_connect}"}`, `{"{invoice_numbers}"}`, `{"{truck_number}"}`, `{"{trailer_number}"}`, `{"{border_crossing}"}`, `{"{pd_form}"}`, `{"{re_export}"}`, `{"{pd_type}"}`, `{"{pd_code}"}`, and `{"{notes}"}`.</div>
           <div className="section-header"><h3>Invoice line visibility</h3></div>
           <div className="form-grid">
             {UKDOCS_CUSTOMER_INVOICE_VISIBILITY_FIELDS.map(([key, label]) => (
@@ -2885,7 +2890,7 @@ function UkdocsPage({ currentUser }) {
               </label>
             ))}
           </div>
-          <div className="table-wrap"><table className="data-table"><thead><tr><th>Name</th><th>Hub match</th><th>Remark match</th><th>Delivery terms</th><th>UK port</th><th>Currency</th><th>VAT</th><th>Actions</th></tr></thead><tbody>{customers.map((customer) => <tr key={customer.id}><td>{customer.customer_name}</td><td>{customer.match_hub_code || "-"}</td><td>{customer.match_remark || "-"}</td><td>{customer.default_delivery_terms || customer.export_defaults?.delivery_terms || "-"}</td><td>{customer.default_uk_arrival_port || "-"}</td><td>{customer.default_currency || customer.export_defaults?.currency || "-"}</td><td>{customer.vat_number || "-"}</td><td className="row-actions"><button type="button" onClick={() => startEditCustomer(customer)}>Edit</button></td></tr>)}{!customers.length && <tr><td colSpan="8">No UKdocs customers saved yet.</td></tr>}</tbody></table></div>
+          <div className="table-wrap"><table className="data-table"><thead><tr><th>Name</th><th>Hub match</th><th>Remark match</th><th>Delivery terms</th><th>Ready mail template</th><th>UK port</th><th>Currency</th><th>VAT</th><th>Actions</th></tr></thead><tbody>{customers.map((customer) => <tr key={customer.id}><td>{customer.customer_name}</td><td>{customer.match_hub_code || "-"}</td><td>{customer.match_remark || "-"}</td><td>{customer.default_delivery_terms || customer.export_defaults?.delivery_terms || "-"}</td><td>{customer.ready_email_subject || customer.ready_email_body ? "Custom" : "Default"}</td><td>{customer.default_uk_arrival_port || "-"}</td><td>{customer.default_currency || customer.export_defaults?.currency || "-"}</td><td>{customer.vat_number || "-"}</td><td className="row-actions"><button type="button" onClick={() => startEditCustomer(customer)}>Edit</button></td></tr>)}{!customers.length && <tr><td colSpan="9">No UKdocs customers saved yet.</td></tr>}</tbody></table></div>
         </div>
       )}
 
@@ -2979,6 +2984,7 @@ function UkdocsPrintPage({ currentUser }) {
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
   const [selectedCollectionId, setSelectedCollectionId] = useState("");
+  const [detailDrawerOpen, setDetailDrawerOpen] = useState(false);
   const [notesDraft, setNotesDraft] = useState("");
   const [gmailQuery, setGmailQuery] = useState("has:attachment newer_than:30d");
   const [gmailSyncResults, setGmailSyncResults] = useState([]);
@@ -3018,20 +3024,35 @@ function UkdocsPrintPage({ currentUser }) {
 
   const collections = state?.print_collections || [];
   const customers = state?.customers || [];
-  const selectedCollection = collections.find((item) => item.id === selectedCollectionId || item.shipment_id === selectedCollectionId) || collections[0] || null;
+  const selectedCollection = collections.find((item) => item.id === selectedCollectionId || item.shipment_id === selectedCollectionId) || null;
   const selectedPhytoFiles = selectedCollection?.documents?.phyto_files || [];
   const selectedGeneratedFiles = selectedCollection?.documents?.generated_files || [];
   const selectedCollectionProgress = selectedCollection ? ukdocsPrintCollectionProgress(selectedCollection, customers) : null;
 
   useEffect(() => {
-    if (selectedCollection?.id && selectedCollection.id !== selectedCollectionId) {
-      setSelectedCollectionId(selectedCollection.id);
-    }
-  }, [selectedCollection?.id, selectedCollectionId]);
-
-  useEffect(() => {
     setNotesDraft(selectedCollection?.notes || "");
   }, [selectedCollection?.id, selectedCollection?.notes]);
+
+  useEffect(() => {
+    if (!collections.length) {
+      setSelectedCollectionId("");
+      setDetailDrawerOpen(false);
+      return;
+    }
+    if (selectedCollectionId && !collections.some((item) => item.id === selectedCollectionId || item.shipment_id === selectedCollectionId)) {
+      setSelectedCollectionId("");
+      setDetailDrawerOpen(false);
+    }
+  }, [collections, selectedCollectionId]);
+
+  function openCollectionDetail(collectionId) {
+    setSelectedCollectionId(collectionId);
+    setDetailDrawerOpen(true);
+  }
+
+  function closeCollectionDetail() {
+    setDetailDrawerOpen(false);
+  }
 
   useEffect(() => {
     if (!autoSyncEnabled || !gmailSettings.gmail_connected_email) {
@@ -3136,6 +3157,9 @@ function UkdocsPrintPage({ currentUser }) {
       setState((current) => ({ ...current, print_collections: nextCollections }));
       setSelectedCollectionId(nextCollections[0]?.id || "");
       setNotesDraft(nextCollections[0]?.notes || "");
+      if (!nextCollections.length || collectionId === selectedCollectionId) {
+        setDetailDrawerOpen(false);
+      }
       setMessage("Collection deleted.");
     } catch (deleteError) {
       setError(deleteError.message);
@@ -3252,9 +3276,9 @@ function UkdocsPrintPage({ currentUser }) {
             {collections.map((collection) => {
               const progress = ukdocsPrintCollectionProgress(collection, customers);
               const status = ukdocsPrintStatusDefinition(progress.status);
-              const isActive = selectedCollection?.id === collection.id;
+              const isActive = detailDrawerOpen && selectedCollection?.id === collection.id;
               return (
-                <div key={collection.id} className="ukdocs-upload-card">
+                <div key={collection.id} className={`ukdocs-upload-card ukdocs-collection-tile${isActive ? " active" : ""}`}>
                   <strong>{progress.customer?.customer_name || collection.customer_name || collection.city_name || "Shipment"}</strong>
                   <small>{collection.shipment_date || "-"}</small>
                   <small>{collection.city_name ? `City: ${collection.city_name}` : "City not linked yet"}</small>
@@ -3264,7 +3288,7 @@ function UkdocsPrintPage({ currentUser }) {
                   <div className={`ukdocs-status-badge ${status.tone}`}>{progress.missing.length ? `${status.label} • ${progress.missing.join(", ")}` : status.label}</div>
                   {!!collection.delivery_email?.sent_at && <small>Sent {formatTimestamp(collection.delivery_email.sent_at)}</small>}
                   <div className="row-actions spread-actions">
-                    <button type="button" className={isActive ? "primary" : ""} onClick={() => setSelectedCollectionId(collection.id)}>{isActive ? "Opened" : "Info"}</button>
+                    <button type="button" className="primary" onClick={() => openCollectionDetail(collection.id)}>{isActive ? "Opened" : "Info"}</button>
                     {!progress.missing.length && <button type="button" onClick={() => sendReady(collection.id)} disabled={saving}>Send papers</button>}
                     <button type="button" onClick={() => deleteCollection(collection.id)}>Delete</button>
                   </div>
@@ -3275,13 +3299,14 @@ function UkdocsPrintPage({ currentUser }) {
           </div>
         </div>
 
-        <div className="data-table-card ukdocs-stack">
+        {detailDrawerOpen && <button type="button" className="ukdocs-drawer-backdrop" onClick={closeCollectionDetail} aria-label="Close shipment detail" />}
+        <div className={`data-table-card ukdocs-stack ukdocs-drawer-panel${detailDrawerOpen ? " open" : ""}`}>
           <div className="section-header">
             <h2>Collection detail</h2>
-            {selectedCollection && selectedCollectionProgress && <div className="row-actions"><div className={`ukdocs-status-badge ${ukdocsPrintStatusDefinition(selectedCollectionProgress.status).tone}`}>{ukdocsPrintStatusDefinition(selectedCollectionProgress.status).label}</div>{!selectedCollectionProgress.missing.length && <button type="button" className="primary" onClick={() => sendReady(selectedCollection.id)} disabled={saving}>{saving ? "Sending..." : "Send papers ready"}</button>}<button type="button" onClick={() => deleteCollection(selectedCollection.id)}>Delete</button></div>}
+            {selectedCollection && selectedCollectionProgress && <div className="row-actions"><div className={`ukdocs-status-badge ${ukdocsPrintStatusDefinition(selectedCollectionProgress.status).tone}`}>{ukdocsPrintStatusDefinition(selectedCollectionProgress.status).label}</div>{!selectedCollectionProgress.missing.length && <button type="button" className="primary" onClick={() => sendReady(selectedCollection.id)} disabled={saving}>{saving ? "Sending..." : "Send papers ready"}</button>}<button type="button" onClick={closeCollectionDetail}>Close</button><button type="button" onClick={() => deleteCollection(selectedCollection.id)}>Delete</button></div>}
           </div>
 
-          {!selectedCollection && <div className="notice">Choose a generated shipment first.</div>}
+          {!selectedCollection && <div className="notice">Tap Info on a shipment tile first.</div>}
 
           {selectedCollection && (
             <>
@@ -6132,28 +6157,39 @@ function SettingsPage({ currentUser }) {
           </label>
           <div id="settings-ukdocs" className="wide data-table-card">
             <div className="section-header"><h2>UKdocs Print settings</h2></div>
-            <p className="sidebar-note">These settings control spreadsheet loading and Gmail pickup for the UKdocs Print page.</p>
-            <div className="form-grid">
-              <label>
-                <span>UKdocs Print spreadsheet ID</span>
-                <input
-                  value={form.ukdocs_print_spreadsheet_id || ""}
-                  onChange={(event) => setForm({ ...form, ukdocs_print_spreadsheet_id: event.target.value })}
-                  placeholder="Spreadsheet ID for PD keuringen sendings"
-                />
-              </label>
-              <label>
-                <span>UKdocs Print tab</span>
-                <input
-                  value={form.ukdocs_print_sheet_name || "PD keuringen"}
-                  onChange={(event) => setForm({ ...form, ukdocs_print_sheet_name: event.target.value })}
-                  placeholder="PD keuringen"
-                />
-              </label>
-              <label className="wide">
-                <span>Connected Gmail account</span>
-                <input value={form.gmail_connected_email || ""} readOnly placeholder="Connect from UKdocs Print page" />
-              </label>
+            <p className="sidebar-note">Keep the UKdocs Print source and Gmail pickup together here, so the collection page stays focused on the day workflow.</p>
+            <div className="settings-subsection-grid">
+              <div className="settings-subsection-card">
+                <div className="section-header"><h3>Spreadsheet source</h3></div>
+                <div className="form-grid">
+                  <label>
+                    <span>UKdocs Print spreadsheet ID</span>
+                    <input
+                      value={form.ukdocs_print_spreadsheet_id || ""}
+                      onChange={(event) => setForm({ ...form, ukdocs_print_spreadsheet_id: event.target.value })}
+                      placeholder="Spreadsheet ID for PD keuringen sendings"
+                    />
+                  </label>
+                  <label>
+                    <span>UKdocs Print tab</span>
+                    <input
+                      value={form.ukdocs_print_sheet_name || "PD keuringen"}
+                      onChange={(event) => setForm({ ...form, ukdocs_print_sheet_name: event.target.value })}
+                      placeholder="PD keuringen"
+                    />
+                  </label>
+                </div>
+              </div>
+              <div className="settings-subsection-card">
+                <div className="section-header"><h3>Gmail pickup</h3></div>
+                <div className="form-grid">
+                  <label className="wide">
+                    <span>Connected Gmail account</span>
+                    <input value={form.gmail_connected_email || ""} readOnly placeholder="Connect from UKdocs Print page" />
+                  </label>
+                </div>
+                <p className="sidebar-note">The live UKdocs Print page can still reconnect Gmail and run a manual sync whenever needed.</p>
+              </div>
             </div>
           </div>
           <div id="settings-cmr" className="wide data-table-card">

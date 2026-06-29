@@ -1488,6 +1488,38 @@ pre {
   color: #5d7088;
 }
 
+.ukdocs-collection-tile {
+  transition: border-color 0.2s ease, box-shadow 0.2s ease, transform 0.2s ease;
+}
+
+.ukdocs-collection-tile.active {
+  border-color: #94b8a6;
+  box-shadow: 0 10px 24px rgba(18, 68, 49, 0.12);
+}
+
+.ukdocs-drawer-backdrop {
+  display: none;
+}
+
+.ukdocs-drawer-panel .section-header {
+  gap: 12px;
+}
+
+.settings-subsection-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  gap: 14px;
+}
+
+.settings-subsection-card {
+  display: grid;
+  gap: 12px;
+  padding: 14px;
+  border: 1px solid #d6dde5;
+  border-radius: 10px;
+  background: #fbfcfd;
+}
+
 .ukdocs-badge-row {
   display: flex;
   gap: 10px;
@@ -1546,5 +1578,40 @@ pre {
 @media (max-width: 1100px) {
   .ukdocs-print-layout {
     grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 980px) {
+  .ukdocs-print-layout {
+    display: block;
+  }
+
+  .ukdocs-drawer-backdrop {
+    position: fixed;
+    inset: 0;
+    z-index: 39;
+    display: block;
+    border: 0;
+    background: rgba(15, 23, 42, 0.35);
+  }
+
+  .ukdocs-drawer-panel {
+    position: fixed;
+    right: 0;
+    top: 0;
+    bottom: 0;
+    z-index: 40;
+    width: min(100vw, 560px);
+    max-width: 100%;
+    height: 100vh;
+    overflow: auto;
+    border-radius: 18px 0 0 18px;
+    box-shadow: -18px 0 40px rgba(15, 23, 42, 0.18);
+    transform: translateX(102%);
+    transition: transform 0.24s ease;
+  }
+
+  .ukdocs-drawer-panel.open {
+    transform: translateX(0);
   }
 }
