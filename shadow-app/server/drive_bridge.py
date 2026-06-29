@@ -409,6 +409,15 @@ def email_send() -> int:
     message["From"] = smtp_from
     message["To"] = ", ".join(recipients)
     message.set_content(body)
+    for attachment in payload.get("attachments") or []:
+        file_name = str(attachment.get("file_name") or attachment.get("name") or "attachment").strip() or "attachment"
+        mime_type = str(attachment.get("mime_type") or mimetypes.guess_type(file_name)[0] or "application/octet-stream").strip()
+        content_base64 = str(attachment.get("content_base64") or "").strip()
+        if not content_base64:
+            continue
+        content_bytes = base64.b64decode(content_base64)
+        maintype, subtype = (mime_type.split("/", 1) + ["octet-stream"])[:2]
+        message.add_attachment(content_bytes, maintype=maintype, subtype=subtype, filename=file_name)
 
     with smtplib.SMTP(smtp_host, smtp_port, timeout=30) as server:
         server.ehlo()

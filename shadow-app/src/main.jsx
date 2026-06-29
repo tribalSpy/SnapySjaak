@@ -3104,6 +3104,23 @@ function UkdocsPrintPage({ currentUser }) {
     }
   }
 
+  async function sendReady(collectionId) {
+    setSaving(true);
+    setMessage("");
+    setError("");
+    try {
+      const payload = await apiJson(`/api/ukdocs-print/collections/${encodeURIComponent(collectionId)}/send-ready`, {
+        method: "POST",
+      });
+      setState((current) => ({ ...current, print_collections: payload.print_collections || current?.print_collections || [] }));
+      setMessage(payload.delivery_email?.ok ? `Papers sent to ${payload.delivery_email.recipients.join(", ")}` : (payload.delivery_email?.error || "Could not send papers."));
+    } catch (sendError) {
+      setError(sendError.message);
+    } finally {
+      setSaving(false);
+    }
+  }
+
   async function deleteCollection(collectionId) {
     if (!window.confirm("Delete this UKdocs Print collection and its saved files?")) {
       return;
@@ -3245,8 +3262,10 @@ function UkdocsPrintPage({ currentUser }) {
                   <small>{collection.invoice_numbers ? `Invoices: ${collection.invoice_numbers}` : "No invoices linked yet"}</small>
                   <small>{collection.truck_number || collection.trailer_number ? `Truck: ${collection.truck_number || collection.trailer_number}` : "No truck linked yet"}</small>
                   <div className={`ukdocs-status-badge ${status.tone}`}>{progress.missing.length ? `${status.label} • ${progress.missing.join(", ")}` : status.label}</div>
+                  {!!collection.delivery_email?.sent_at && <small>Sent {formatTimestamp(collection.delivery_email.sent_at)}</small>}
                   <div className="row-actions spread-actions">
                     <button type="button" className={isActive ? "primary" : ""} onClick={() => setSelectedCollectionId(collection.id)}>{isActive ? "Opened" : "Info"}</button>
+                    {!progress.missing.length && <button type="button" onClick={() => sendReady(collection.id)} disabled={saving}>Send papers</button>}
                     <button type="button" onClick={() => deleteCollection(collection.id)}>Delete</button>
                   </div>
                 </div>
@@ -3259,7 +3278,7 @@ function UkdocsPrintPage({ currentUser }) {
         <div className="data-table-card ukdocs-stack">
           <div className="section-header">
             <h2>Collection detail</h2>
-            {selectedCollection && selectedCollectionProgress && <div className="row-actions"><div className={`ukdocs-status-badge ${ukdocsPrintStatusDefinition(selectedCollectionProgress.status).tone}`}>{ukdocsPrintStatusDefinition(selectedCollectionProgress.status).label}</div><button type="button" onClick={() => deleteCollection(selectedCollection.id)}>Delete</button></div>}
+            {selectedCollection && selectedCollectionProgress && <div className="row-actions"><div className={`ukdocs-status-badge ${ukdocsPrintStatusDefinition(selectedCollectionProgress.status).tone}`}>{ukdocsPrintStatusDefinition(selectedCollectionProgress.status).label}</div>{!selectedCollectionProgress.missing.length && <button type="button" className="primary" onClick={() => sendReady(selectedCollection.id)} disabled={saving}>{saving ? "Sending..." : "Send papers ready"}</button>}<button type="button" onClick={() => deleteCollection(selectedCollection.id)}>Delete</button></div>}
           </div>
 
           {!selectedCollection && <div className="notice">Choose a generated shipment first.</div>}
@@ -3283,6 +3302,8 @@ function UkdocsPrintPage({ currentUser }) {
                 <label><span>PD code</span><input value={selectedCollection.pd_code || ""} readOnly /></label>
               </div>
               <div className="notice">{selectedCollectionProgress?.missing?.length ? `Still needed: ${selectedCollectionProgress.missing.join(", ")}` : "All required files for this customer are collected."}</div>
+              {!!selectedCollection?.delivery_email?.sent_at && <div className="notice">Last sent: {formatTimestamp(selectedCollection.delivery_email.sent_at)} to {(selectedCollection.delivery_email.recipients || []).join(", ") || "-"}</div>}
+              {!!selectedCollection?.delivery_email?.error && !selectedCollection?.delivery_email?.ok && <div className="notice danger">{selectedCollection.delivery_email.error}</div>}
 
               <div className="ukdocs-upload-grid">
                 {UKDOCS_PRINT_DOCUMENTS.map((documentDefinition) => {
