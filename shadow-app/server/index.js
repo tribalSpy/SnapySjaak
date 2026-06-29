@@ -113,6 +113,8 @@ const defaultFustSettings = {
   clock_records_sheet_name: "backup",
   hal_locations_spreadsheet_id: "",
   hal_locations_sheet_name: "ERP_PASTE",
+  ukdocs_print_spreadsheet_id: "",
+  ukdocs_print_sheet_name: "PD keuringen",
   cmr_default_template_name: "",
   cmr_manage_usernames: [],
 };
@@ -835,6 +837,8 @@ function normalizeFustSettings(settings) {
     clock_records_sheet_name: String(settings?.clock_records_sheet_name || defaultFustSettings.clock_records_sheet_name).trim() || defaultFustSettings.clock_records_sheet_name,
     hal_locations_spreadsheet_id: String(settings?.hal_locations_spreadsheet_id || settings?.spreadsheet_id || "").trim(),
     hal_locations_sheet_name: String(settings?.hal_locations_sheet_name || defaultFustSettings.hal_locations_sheet_name).trim() || defaultFustSettings.hal_locations_sheet_name,
+    ukdocs_print_spreadsheet_id: String(settings?.ukdocs_print_spreadsheet_id || settings?.spreadsheet_id || "").trim(),
+    ukdocs_print_sheet_name: String(settings?.ukdocs_print_sheet_name || defaultFustSettings.ukdocs_print_sheet_name).trim() || defaultFustSettings.ukdocs_print_sheet_name,
     cmr_default_template_name: String(settings?.cmr_default_template_name || "").trim(),
     cmr_manage_usernames: normalizeCmrManageUsernames(settings?.cmr_manage_usernames),
   };
@@ -1042,6 +1046,8 @@ function normalizeUkdocsShipment(shipment) {
     audit_status: normalizeUkdocsText(shipment?.audit_status),
     ready: shipment?.ready === true,
     notes: String(shipment?.notes || "").trim(),
+    print_collection_id: normalizeUkdocsText(shipment?.print_collection_id),
+    reference_connect: normalizeUkdocsText(shipment?.reference_connect),
     created_by: normalizeUkdocsText(shipment?.created_by),
     created_at: normalizeUkdocsText(shipment?.created_at),
     updated_at: normalizeUkdocsText(shipment?.updated_at),
@@ -1095,6 +1101,7 @@ function deriveUkdocsPrintCollectionStatus(collection) {
 function normalizeUkdocsPrintCollection(collection) {
   const normalized = {
     id: normalizeUkdocsText(collection?.id) || crypto.randomUUID(),
+    source: normalizeUkdocsText(collection?.source) || "manual",
     shipment_id: normalizeUkdocsText(collection?.shipment_id),
     shipment_reference: normalizeUkdocsText(collection?.shipment_reference),
     shipment_date: normalizeUkdocsText(collection?.shipment_date),
@@ -1103,6 +1110,16 @@ function normalizeUkdocsPrintCollection(collection) {
     invoice_numbers: String(collection?.invoice_numbers || "").trim(),
     truck_number: normalizeUkdocsText(collection?.truck_number),
     trailer_number: normalizeUkdocsText(collection?.trailer_number),
+    reference_connect: normalizeUkdocsText(collection?.reference_connect),
+    city_name: normalizeUkdocsText(collection?.city_name),
+    border_crossing: normalizeUkdocsText(collection?.border_crossing),
+    hub_code: normalizeUkdocsText(collection?.hub_code),
+    remark: String(collection?.remark || "").trim(),
+    pd_form: normalizeUkdocsText(collection?.pd_form),
+    re_export: String(collection?.re_export || "").trim(),
+    pd_type: String(collection?.pd_type || "").trim(),
+    pd_code: normalizeUkdocsText(collection?.pd_code),
+    sheet_row_number: Number(collection?.sheet_row_number || 0),
     generated_at: normalizeUkdocsText(collection?.generated_at),
     updated_at: normalizeUkdocsText(collection?.updated_at),
     notes: String(collection?.notes || "").trim(),
@@ -1912,6 +1929,9 @@ function normalizeNumber(value) {
 
 function parseSheetDateToIso(value) {
   const raw = String(value || "").trim();
+  if (/^\d{4}-\d{2}-\d{2}$/.test(raw)) {
+    return raw;
+  }
   const match = raw.match(/^(\d{1,2})-(\d{1,2})-(\d{2}|\d{4})$/);
   if (!match) {
     return raw;
@@ -1919,6 +1939,56 @@ function parseSheetDateToIso(value) {
   const [, day, month, year] = match;
   const fullYear = year.length === 2 ? `20${year}` : year;
   return `${fullYear}-${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
+}
+
+function parseUkdocsPrintSheetRows(rows, date = localDateIso()) {
+  if (!Array.isArray(rows) || rows.length < 2) {
+    return [];
+  }
+  const headers = rows[0].map(normalizeHeader);
+  const pick = (aliases, fallbackIndex) => {
+    const index = firstMatchingIndex(headers, aliases);
+    return index >= 0 ? index : fallbackIndex;
+  };
+  const dateIndex = pick(["datum", "date"], 1);
+  const dayIndex = pick(["dag", "day"], 0);
+  const cityIndex = pick(["stad", "city"], 2);
+  const borderIndex = pick(["grensovergang", "border crossing"], 3);
+  const hubIndex = pick(["hubcode", "hub code", "hub"], 4);
+  const remarkIndex = pick(["remark", "opmerking"], 5);
+  const pdFormIndex = pick(["pd form", "pd form.", "pd-form"], 7);
+  const reExportIndex = pick(["re-export", "re export"], 8);
+  const typeIndex = pick(["type"], 9);
+  const pdCodeIndex = pick(["code voor pd", "pd code"], 11);
+  const referenceConnectIndex = pick(["referentie connect", "reference connect", "connect reference"], 12);
+  const trailerIndex = pick(["trailer", "trailer registration", "kenteken trailer"], -1);
+  const truckIndex = pick(["truck", "truck registration", "kenteken truck"], -1);
+  const invoiceIndex = pick(["invoice", "invoice number", "factuur", "factuurnummer"], -1);
+
+  return rows.slice(1)
+    .map((row, index) => {
+      const shipmentDate = parseSheetDateToIso(rowValue(row, dateIndex));
+      return {
+        id: `sheet-${shipmentDate}-${rowValue(row, referenceConnectIndex) || index + 2}`,
+        shipment_date: shipmentDate,
+        day_name: rowValue(row, dayIndex),
+        city_name: rowValue(row, cityIndex),
+        border_crossing: rowValue(row, borderIndex),
+        hub_code: rowValue(row, hubIndex),
+        remark: rowValue(row, remarkIndex),
+        pd_form: rowValue(row, pdFormIndex),
+        re_export: rowValue(row, reExportIndex),
+        pd_type: rowValue(row, typeIndex),
+        pd_code: rowValue(row, pdCodeIndex),
+        reference_connect: rowValue(row, referenceConnectIndex),
+        trailer_number: rowValue(row, trailerIndex),
+        truck_number: rowValue(row, truckIndex),
+        invoice_numbers: rowValue(row, invoiceIndex),
+        sheet_row_number: index + 2,
+      };
+    })
+    .filter((item) => item.shipment_date === String(date || localDateIso()).slice(0, 10))
+    .filter((item) => item.reference_connect || item.city_name || item.hub_code);
 }
 
 function buildActionSignature(action) {
@@ -2341,7 +2411,7 @@ function upsertUkdocsPrintCollection(collections, nextCollection) {
 function buildUkdocsPrintCollectionFromShipment(existingCollection, shipment, customerName) {
   return normalizeUkdocsPrintCollection({
     ...existingCollection,
-    id: existingCollection?.id || shipment.id,
+    id: existingCollection?.id || shipment.print_collection_id || shipment.id,
     shipment_id: shipment.id,
     shipment_reference: shipment.export_reference || shipment.invoice_numbers,
     shipment_date: shipment.shipment_date,
@@ -2350,6 +2420,7 @@ function buildUkdocsPrintCollectionFromShipment(existingCollection, shipment, cu
     invoice_numbers: shipment.invoice_numbers,
     truck_number: shipment.truck_number,
     trailer_number: shipment.trailer_number,
+    reference_connect: shipment.reference_connect || existingCollection?.reference_connect || "",
     generated_at: existingCollection?.generated_at || new Date().toISOString(),
     updated_at: new Date().toISOString(),
     documents: existingCollection?.documents || {},
@@ -2411,6 +2482,10 @@ function ukdocsPrintCollectionMatchScore(collection, haystackRaw) {
     return 0;
   }
   let score = 0;
+  const referenceConnect = normalizeUkdocsPrintToken(collection?.reference_connect);
+  if (referenceConnect && haystack.includes(referenceConnect)) {
+    score += 8;
+  }
   const invoices = String(collection?.invoice_numbers || "")
     .split(/[\/,\s;]+/)
     .map(normalizeUkdocsPrintToken)
@@ -2433,7 +2508,7 @@ function ukdocsPrintCollectionMatchScore(collection, haystackRaw) {
 
 function detectUkdocsPrintDocumentKind(text) {
   const normalized = String(text || "").toLowerCase();
-  if (/(phyto|phytosan|kcb|certificate|certificaat)/.test(normalized)) {
+  if (/(phyto|phytosan|kcb|certificate|certificaat|e-certnl|nvwa\.nl|no-reply@nvwa\.nl)/.test(normalized)) {
     return "phyto";
   }
   return "export_extra";
@@ -2494,7 +2569,8 @@ async function syncUkdocsPrintFromGmail(settings, requestUser, query) {
   for (const message of messages) {
     const detail = await gmailApiJson(accessToken, `messages/${encodeURIComponent(message.id)}?format=full`);
     const subject = gmailHeaderValue(detail.payload?.headers, "subject");
-    const textBlob = [subject, detail.snippet, detail.id].join(" ");
+    const fromHeader = gmailHeaderValue(detail.payload?.headers, "from");
+    const textBlob = [subject, fromHeader, detail.snippet, detail.id].join(" ");
     const attachments = collectGmailAttachments(detail.payload?.parts || []);
     for (const attachment of attachments) {
       const attachmentName = attachment.filename || "attachment";
@@ -2505,11 +2581,14 @@ async function syncUkdocsPrintFromGmail(settings, requestUser, query) {
       const candidateText = `${textBlob} ${attachmentName}`;
       const ranked = state.print_collections
         .map((collection) => ({ collection, score: ukdocsPrintCollectionMatchScore(collection, candidateText) }))
-        .filter((item) => item.score >= 5 || item.score >= 2)
+        .filter((item) => item.score > 0)
         .sort((a, b) => b.score - a.score);
-      const bestMatch = ranked[0]?.collection || null;
+      const bestScore = ranked[0]?.score || 0;
+      const bestMatch = bestScore >= 5 && (ranked.length === 1 || ranked[0].score > ranked[1].score)
+        ? ranked[0].collection
+        : null;
       if (!bestMatch) {
-        results.push({ status: "unmatched", file_name: attachmentName, reason: "No shipment matched invoice or truck data" });
+        results.push({ status: "unmatched", file_name: attachmentName, reason: "No safe match from reference connect, invoice, or truck/trailer" });
         continue;
       }
       const kind = detectUkdocsPrintDocumentKind(candidateText);
@@ -2539,6 +2618,53 @@ async function syncUkdocsPrintFromGmail(settings, requestUser, query) {
     unmatched: results.filter((item) => item.status === "unmatched").length,
     skipped: results.filter((item) => item.status === "skipped").length,
     results,
+    print_collections: normalizeUkdocsState(state).print_collections,
+  };
+}
+
+async function syncUkdocsPrintCollectionsFromSheet(settings, date) {
+  const spreadsheetId = String(settings.ukdocs_print_spreadsheet_id || settings.spreadsheet_id || "").trim();
+  const sheetName = String(settings.ukdocs_print_sheet_name || defaultFustSettings.ukdocs_print_sheet_name).trim();
+  if (!spreadsheetId || !sheetName) {
+    throw new Error("Set a UKdocs Print spreadsheet ID and tab name in Settings first");
+  }
+  const rows = await loadSheetRows(spreadsheetId, sheetName);
+  const sendings = parseUkdocsPrintSheetRows(rows, date);
+  const state = await readUkdocsState();
+  for (const sending of sendings) {
+    const existingCollection = state.print_collections.find((item) => item.id === sending.id || (item.reference_connect && item.reference_connect === sending.reference_connect && item.shipment_date === sending.shipment_date));
+    const nextCollection = normalizeUkdocsPrintCollection({
+      ...existingCollection,
+      id: existingCollection?.id || sending.id,
+      source: "sheet",
+      shipment_date: sending.shipment_date,
+      customer_name: existingCollection?.customer_name || sending.city_name || "",
+      city_name: sending.city_name,
+      border_crossing: sending.border_crossing,
+      hub_code: sending.hub_code,
+      remark: sending.remark,
+      pd_form: sending.pd_form,
+      re_export: sending.re_export,
+      pd_type: sending.pd_type,
+      pd_code: sending.pd_code,
+      reference_connect: sending.reference_connect,
+      trailer_number: existingCollection?.trailer_number || sending.trailer_number || "",
+      truck_number: existingCollection?.truck_number || sending.truck_number || "",
+      invoice_numbers: existingCollection?.invoice_numbers || sending.invoice_numbers || "",
+      sheet_row_number: sending.sheet_row_number,
+      updated_at: new Date().toISOString(),
+      generated_at: existingCollection?.generated_at || "",
+      documents: existingCollection?.documents || {},
+      notes: existingCollection?.notes || "",
+    });
+    state.print_collections = upsertUkdocsPrintCollection(state.print_collections, nextCollection);
+  }
+  await writeUkdocsState(state);
+  return {
+    spreadsheet_id: spreadsheetId,
+    sheet_name: sheetName,
+    date: String(date || localDateIso()).slice(0, 10),
+    imported_count: sendings.length,
     print_collections: normalizeUkdocsState(state).print_collections,
   };
 }
@@ -4211,7 +4337,7 @@ async function handleApi(req, res, url) {
     }
 
     const customer = state.customers.find((item) => item.id === shipment.customer_id);
-    const existingCollection = state.print_collections.find((item) => item.shipment_id === shipment.id || item.id === shipment.id);
+    const existingCollection = state.print_collections.find((item) => item.id === shipment.print_collection_id || item.shipment_id === shipment.id || item.id === shipment.id);
     const printCollection = buildUkdocsPrintCollectionFromShipment(existingCollection, shipment, customer?.customer_name || "");
     state.print_collections = upsertUkdocsPrintCollection(state.print_collections, printCollection);
     const auditReport = normalizeUkdocsAuditReport({
@@ -4492,6 +4618,17 @@ async function handleApi(req, res, url) {
     const body = await readRequestJson(req);
     const settings = await readFustSettings();
     const payload = await syncUkdocsPrintFromGmail(settings, requestUser, body?.query);
+    sendJson(res, 200, payload);
+    return;
+  }
+
+  if (url.pathname === "/api/ukdocs-print/sheet-sync" && req.method === "POST") {
+    if (!requirePermission(res, requestUser, PERMISSIONS.UKDOCS_VIEW)) {
+      return;
+    }
+    const body = await readRequestJson(req);
+    const settings = await readFustSettings();
+    const payload = await syncUkdocsPrintCollectionsFromSheet(settings, body?.date || localDateIso());
     sendJson(res, 200, payload);
     return;
   }

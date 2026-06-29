@@ -1616,8 +1616,10 @@ function CmrPrintPage({ currentUser }) {
   const { loading, data, error, refresh } = useCmrPrintData(enabled);
   const [activeMenu, setActiveMenu] = useState("cmrprint");
   const [message, setMessage] = useState("");
+  const [saveError, setSaveError] = useState("");
   const [saving, setSaving] = useState(false);
   const [draftData, setDraftData] = useState(null);
+  const [hasUnsavedChanges, setHasUnsavedChanges] = useState(false);
   const [selectedCustomerName, setSelectedCustomerName] = useState("");
   const [manualValues, setManualValues] = useState({
     documentsAttached: "",
@@ -1644,6 +1646,8 @@ function CmrPrintPage({ currentUser }) {
       templates_dir: data.templates_dir,
       debug_candidates: data.debug_candidates || [],
     });
+    setHasUnsavedChanges(false);
+    setSaveError("");
   }, [data]);
 
   const cmrData = draftData || data;
@@ -1714,6 +1718,7 @@ function CmrPrintPage({ currentUser }) {
 
   function updateCollections(patch) {
     setDraftData((current) => ({ ...current, ...patch }));
+    setHasUnsavedChanges(true);
   }
 
   async function saveAppData(patchMessage) {
@@ -1722,6 +1727,7 @@ function CmrPrintPage({ currentUser }) {
     }
     setSaving(true);
     setMessage("");
+    setSaveError("");
     try {
       const payload = await apiJson("/api/cmrprint/app-data", {
         method: "PATCH",
@@ -1734,13 +1740,27 @@ function CmrPrintPage({ currentUser }) {
       });
       setDraftData({ ...payload, settings: data?.settings || cmrData.settings, can_manage: cmrData.can_manage });
       setMessage(patchMessage || "CMR data saved.");
+      setHasUnsavedChanges(false);
       refresh();
     } catch (saveError) {
-      setMessage(saveError.message);
+      setSaveError(saveError.message);
     } finally {
       setSaving(false);
     }
   }
+
+  useEffect(() => {
+    if (!hasUnsavedChanges) {
+      return undefined;
+    }
+    const handleBeforeUnload = (event) => {
+      event.preventDefault();
+      event.returnValue = "";
+      return "";
+    };
+    window.addEventListener("beforeunload", handleBeforeUnload);
+    return () => window.removeEventListener("beforeunload", handleBeforeUnload);
+  }, [hasUnsavedChanges]);
 
   async function saveTemplate(templatePayload) {
     const payload = await apiJson("/api/cmrprint/template", { method: "PUT", body: JSON.stringify({ template: templatePayload }) });
@@ -1826,12 +1846,26 @@ function CmrPrintPage({ currentUser }) {
     <section className="overview-stack cmr-print-page">
       <div className="tab-strip cmr-submenu-strip">
         {visibleMenus.map((menu) => (
-          <button key={menu.key} type="button" className={activeMenu === menu.key ? "active" : ""} onClick={() => setActiveMenu(menu.key)}>
+          <button
+            key={menu.key}
+            type="button"
+            className={activeMenu === menu.key ? "active" : ""}
+            onClick={() => {
+              if (menu.key !== activeMenu && hasUnsavedChanges && !window.confirm("You have unsaved CMR changes. Leave this menu without saving?")) {
+                return;
+              }
+              setActiveMenu(menu.key);
+            }}
+          >
             {menu.label}
           </button>
         ))}
       </div>
-      {message && <div className={message.toLowerCase().includes("error") ? "notice danger" : "notice"}>{message}</div>}
+      {message && <div className="notice">{message}</div>}
+      {saveError && <div className="notice danger">{saveError}</div>}
+      {hasUnsavedChanges && canManage && ["customers", "exporters", "transport", "loading"].includes(activeMenu) && (
+        <div className="notice danger">You have unsaved CMR changes. Click Save before leaving this page.</div>
+      )}
 
       {activeMenu === "cmrprint" && (
         <div className="data-table-card cmr-print-grid">
@@ -2012,6 +2046,8 @@ function emptyUkdocsShipmentDraft() {
     audit_status: "",
     ready: false,
     notes: "",
+    print_collection_id: "",
+    reference_connect: "",
   };
 }
 
@@ -2164,8 +2200,11 @@ function UkdocsPage({ currentUser }) {
   const columnMappings = state?.column_mappings || {};
   const shipments = state?.shipments || [];
   const auditReports = state?.audit_reports || [];
+  const printCollections = state?.print_collections || [];
   const selectedAuditReport = auditReports.find((report) => report.id === selectedAuditReportId) || auditReports[0] || null;
   const selectedUkdocsCustomer = customers.find((item) => item.id === shipmentDraft.customer_id) || null;
+  const selectedPrintCollection = printCollections.find((item) => item.id === shipmentDraft.print_collection_id) || null;
+  const availablePrintCollections = printCollections.filter((item) => item.source === "sheet" || item.reference_connect);
   const activeExportDefaults = useMemo(
     () => mergeUkdocsExportDefaults(exportDefaults, selectedUkdocsCustomer?.export_defaults || {}),
     [exportDefaults, selectedUkdocsCustomer],
@@ -2226,6 +2265,23 @@ function UkdocsPage({ currentUser }) {
       insurance: customer?.export_defaults?.insurance || current.insurance,
       vessel: customer?.export_defaults?.vessel_field || current.vessel,
       notes: customer?.default_document_references || current.notes,
+    }));
+  }
+
+  function applyPrintCollection(collectionId) {
+    const collection = printCollections.find((item) => item.id === collectionId) || null;
+    setShipmentDraft((current) => ({
+      ...current,
+      print_collection_id: collectionId,
+      reference_connect: collection?.reference_connect || current.reference_connect,
+      shipment_date: collection?.shipment_date || current.shipment_date,
+      trailer_number: current.trailer_number || collection?.trailer_number || "",
+      truck_number: current.truck_number || collection?.truck_number || "",
+      notes: collection
+        ? [current.notes, `Reference connect: ${collection.reference_connect || "-"}`, collection.city_name ? `Sending city: ${collection.city_name}` : "", collection.hub_code ? `Hub: ${collection.hub_code}` : ""]
+          .filter(Boolean)
+          .join("\n")
+        : current.notes,
     }));
   }
 
@@ -2297,6 +2353,7 @@ function UkdocsPage({ currentUser }) {
         ...current,
         shipments: payload.shipments || current.shipments,
         audit_reports: payload.audit_reports || current.audit_reports,
+        print_collections: payload.print_collections || current.print_collections,
       }));
       if (payload.audit_reports?.[0]?.id) {
         setSelectedAuditReportId(payload.audit_reports[0].id);
@@ -2515,12 +2572,24 @@ function UkdocsPage({ currentUser }) {
             <div className={`ukdocs-status-badge ${ukdocsStatusDefinition(ukdocsShipmentStatus(shipmentDraft)).tone}`}>{ukdocsStatusDefinition(ukdocsShipmentStatus(shipmentDraft)).label}</div>
           </div>
           <div className="form-grid">
+            <label className="wide">
+              <span>Available sending</span>
+              <select value={shipmentDraft.print_collection_id || ""} onChange={(event) => applyPrintCollection(event.target.value)}>
+                <option value="">Choose a sending from UKdocs Print</option>
+                {availablePrintCollections.map((collection) => (
+                  <option key={collection.id} value={collection.id}>
+                    {`${collection.shipment_date || "-"} | ${collection.reference_connect || "-"} | ${collection.city_name || collection.customer_name || "-"} | ${collection.hub_code || "-"}`}
+                  </option>
+                ))}
+              </select>
+            </label>
             <label><span>Customer / export user</span><select value={shipmentDraft.customer_id} onChange={(event) => applyCustomerDefaults(event.target.value)}><option value="">Choose customer</option>{customers.map((customer) => <option key={customer.id} value={customer.id}>{customer.customer_name}</option>)}</select></label>
             <label><span>Date</span><input type="date" value={shipmentDraft.shipment_date} onChange={(event) => setShipmentDraft({ ...shipmentDraft, shipment_date: event.target.value })} /></label>
             <label><span>Truck number</span><input value={shipmentDraft.truck_number || ""} onChange={(event) => setShipmentDraft({ ...shipmentDraft, truck_number: event.target.value })} placeholder="For example: 1 BHM" /></label>
             <label><span>Truck / trailer licence plate</span><input value={shipmentDraft.trailer_number} onChange={(event) => setShipmentDraft({ ...shipmentDraft, trailer_number: event.target.value })} placeholder="One licence plate for the whole export" /></label>
             <label><span>Combined export invoice numbers</span><input value={combinedInvoiceNumbers} readOnly placeholder="Filled automatically from the category invoice inputs below" /></label>
             <label><span>Export reference</span><input value={shipmentDraft.export_reference} onChange={(event) => setShipmentDraft({ ...shipmentDraft, export_reference: event.target.value })} /></label>
+            <label><span>Reference connect</span><input value={shipmentDraft.reference_connect || ""} onChange={(event) => setShipmentDraft({ ...shipmentDraft, reference_connect: event.target.value })} placeholder="For example: 19053" /></label>
             <label><span>Currency</span><input value={shipmentDraft.currency} onChange={(event) => setShipmentDraft({ ...shipmentDraft, currency: event.target.value })} /></label>
             <label><span>Delivery terms</span><input value={shipmentDraft.delivery_terms} onChange={(event) => setShipmentDraft({ ...shipmentDraft, delivery_terms: event.target.value })} /></label>
             <label><span>UK arrival port</span><input value={shipmentDraft.uk_arrival_port} onChange={(event) => setShipmentDraft({ ...shipmentDraft, uk_arrival_port: event.target.value })} /></label>
@@ -2541,6 +2610,7 @@ function UkdocsPage({ currentUser }) {
             <label className="wide"><span>Transport / customs information</span><textarea rows={4} value={shipmentDraft.transport_customs_info} onChange={(event) => setShipmentDraft({ ...shipmentDraft, transport_customs_info: event.target.value })} /></label>
             <label className="wide"><span>Notes / references</span><textarea rows={4} value={shipmentDraft.notes} onChange={(event) => setShipmentDraft({ ...shipmentDraft, notes: event.target.value })} /></label>
           </div>
+          {selectedPrintCollection && <div className="notice">Selected sending: {selectedPrintCollection.city_name || "-"} | connect {selectedPrintCollection.reference_connect || "-"} | hub {selectedPrintCollection.hub_code || "-"} | PD {selectedPrintCollection.pd_form || "-"}</div>}
 
           <div className="ukdocs-upload-grid">
             {UKDOCS_CATEGORY_DEFINITIONS.map((category) => {
@@ -2767,6 +2837,8 @@ function UkdocsPrintPage({ currentUser }) {
   const [gmailSyncResults, setGmailSyncResults] = useState([]);
   const [gmailBusy, setGmailBusy] = useState(false);
   const [gmailSettings, setGmailSettings] = useState({ gmail_connected_email: "" });
+  const [sheetSyncDate, setSheetSyncDate] = useState(new Date().toISOString().slice(0, 10));
+  const [sheetBusy, setSheetBusy] = useState(false);
   const canManageSettings = hasPermission(currentUser, PERMISSIONS.SETTINGS_MANAGE);
 
   useEffect(() => {
@@ -2872,6 +2944,24 @@ function UkdocsPrintPage({ currentUser }) {
     }
   }
 
+  async function syncSheetSendings() {
+    setSheetBusy(true);
+    setError("");
+    setMessage("");
+    try {
+      const payload = await apiJson("/api/ukdocs-print/sheet-sync", {
+        method: "POST",
+        body: JSON.stringify({ date: sheetSyncDate }),
+      });
+      setState((current) => ({ ...current, print_collections: payload.print_collections || current?.print_collections || [] }));
+      setMessage(`Loaded ${payload.imported_count || 0} sendings from ${payload.sheet_name || "spreadsheet"} for ${payload.date}.`);
+    } catch (sheetError) {
+      setError(sheetError.message);
+    } finally {
+      setSheetBusy(false);
+    }
+  }
+
   async function syncGmail() {
     setGmailBusy(true);
     setError("");
@@ -2899,7 +2989,20 @@ function UkdocsPrintPage({ currentUser }) {
     <section className="overview-stack ukdocs-page">
       {message && <div className="notice">{message}</div>}
       {error && <div className="notice danger">{error}</div>}
-      <div className="notice">Every shipment that successfully generates UKdocs files is added here automatically. Use the saved invoice numbers and truck or trailer registration to match the extra export files.</div>
+      <div className="notice">Use the spreadsheet to load the day sendings first. Then link UKdocs generated files to one of those sendings, and let Gmail attach the phytosanitary and second export documents onto the same record.</div>
+
+      <div className="data-table-card ukdocs-stack">
+        <div className="section-header"><h2>Today Sendings Spreadsheet</h2></div>
+        <div className="form-grid">
+          <label><span>Date to import</span><input type="date" value={sheetSyncDate} onChange={(event) => setSheetSyncDate(event.target.value)} /></label>
+          <label><span>Spreadsheet ID</span><input value={gmailSettings.ukdocs_print_spreadsheet_id || ""} readOnly placeholder="Not set in Settings" /></label>
+          <label><span>Spreadsheet tab</span><input value={gmailSettings.ukdocs_print_sheet_name || ""} readOnly placeholder="Not set in Settings" /></label>
+        </div>
+        <div className="row-actions spread-actions">
+          <button type="button" className="primary" onClick={syncSheetSendings} disabled={sheetBusy}>{sheetBusy ? "Loading..." : "Load sendings from spreadsheet"}</button>
+        </div>
+        <div className="notice">This imports the sending list for the selected day from the PD spreadsheet. Then UKdocs shipments can link to one of these sendings, and Gmail can match the phytosanitary PDF by reference connect.</div>
+      </div>
 
       <div className="data-table-card ukdocs-stack">
         <div className="section-header"><h2>Gmail Inbox Pickup</h2></div>
@@ -2911,7 +3014,7 @@ function UkdocsPrintPage({ currentUser }) {
           {canManageSettings && <button type="button" onClick={connectGmail} disabled={gmailBusy}>{gmailBusy ? "Connecting..." : "Connect Gmail"}</button>}
           <button type="button" className="primary" onClick={syncGmail} disabled={gmailBusy}>{gmailBusy ? "Syncing..." : "Sync Gmail attachments"}</button>
         </div>
-        <div className="notice">The sync checks Gmail attachments against invoice numbers first and truck or trailer registration second. Files only fill empty slots automatically, so manual uploads stay safe.</div>
+      <div className="notice">The sync checks the email body and subject for reference connect first, then invoice numbers, then truck or trailer registration. NVWA / e-CertNL emails are treated as phytosanitary documents automatically. Files only fill empty slots automatically, so manual uploads stay safe.</div>
         {!!gmailSyncResults.length && (
           <div className="table-wrap">
             <table className="data-table">
@@ -2929,15 +3032,15 @@ function UkdocsPrintPage({ currentUser }) {
           <div className="section-header"><h2>Collections</h2></div>
           <div className="table-wrap">
             <table className="data-table">
-              <thead><tr><th>Date</th><th>Reference</th><th>Customer</th><th>Invoices</th><th>Truck</th><th>Status</th><th>Open</th></tr></thead>
+              <thead><tr><th>Date</th><th>Connect ref</th><th>City / customer</th><th>Invoices</th><th>Truck</th><th>Status</th><th>Open</th></tr></thead>
               <tbody>
                 {collections.map((collection) => {
                   const status = ukdocsPrintStatusDefinition(collection.status);
                   return (
                     <tr key={collection.id}>
                       <td>{collection.shipment_date || "-"}</td>
-                      <td>{collection.shipment_reference || "-"}</td>
-                      <td>{collection.customer_name || "-"}</td>
+                      <td>{collection.reference_connect || collection.shipment_reference || "-"}</td>
+                      <td>{collection.city_name || collection.customer_name || "-"}</td>
                       <td>{collection.invoice_numbers || "-"}</td>
                       <td>{collection.truck_number || collection.trailer_number || "-"}</td>
                       <td><span className={`ukdocs-status-badge ${status.tone}`}>{status.label}</span></td>
@@ -2945,7 +3048,7 @@ function UkdocsPrintPage({ currentUser }) {
                     </tr>
                   );
                 })}
-                {!collections.length && <tr><td colSpan="7">No finished UKdocs shipments have been generated yet.</td></tr>}
+                {!collections.length && <tr><td colSpan="7">No spreadsheet sendings or UKdocs-linked collections are loaded yet.</td></tr>}
               </tbody>
             </table>
           </div>
@@ -2963,11 +3066,18 @@ function UkdocsPrintPage({ currentUser }) {
             <>
               <div className="form-grid">
                 <label><span>Shipment reference</span><input value={selectedCollection.shipment_reference || ""} readOnly /></label>
+                <label><span>Reference connect</span><input value={selectedCollection.reference_connect || ""} readOnly /></label>
                 <label><span>Shipment date</span><input value={selectedCollection.shipment_date || ""} readOnly /></label>
-                <label><span>Customer</span><input value={selectedCollection.customer_name || ""} readOnly /></label>
+                <label><span>City / customer</span><input value={selectedCollection.city_name || selectedCollection.customer_name || ""} readOnly /></label>
+                <label><span>Border crossing</span><input value={selectedCollection.border_crossing || ""} readOnly /></label>
+                <label><span>Hub code</span><input value={selectedCollection.hub_code || ""} readOnly /></label>
                 <label><span>Invoice numbers</span><input value={selectedCollection.invoice_numbers || ""} readOnly /></label>
                 <label><span>Truck registration</span><input value={selectedCollection.truck_number || ""} readOnly /></label>
                 <label><span>Trailer registration</span><input value={selectedCollection.trailer_number || ""} readOnly /></label>
+                <label><span>PD form</span><input value={selectedCollection.pd_form || ""} readOnly /></label>
+                <label><span>Re-Export</span><input value={selectedCollection.re_export || ""} readOnly /></label>
+                <label><span>PD type</span><input value={selectedCollection.pd_type || ""} readOnly /></label>
+                <label><span>PD code</span><input value={selectedCollection.pd_code || ""} readOnly /></label>
               </div>
 
               <div className="ukdocs-upload-grid">
@@ -5717,12 +5827,28 @@ function SettingsPage({ currentUser }) {
               placeholder="Defaults to the main spreadsheet ID when left empty"
             />
           </label>
+          <label className="wide">
+            <span>UKdocs Print spreadsheet ID</span>
+            <input
+              value={form.ukdocs_print_spreadsheet_id || ""}
+              onChange={(event) => setForm({ ...form, ukdocs_print_spreadsheet_id: event.target.value })}
+              placeholder="Defaults to the main spreadsheet ID when left empty"
+            />
+          </label>
           <label>
             <span>Hal Locations tab</span>
             <input
               value={form.hal_locations_sheet_name || "ERP_PASTE"}
               onChange={(event) => setForm({ ...form, hal_locations_sheet_name: event.target.value })}
               placeholder="ERP_PASTE"
+            />
+          </label>
+          <label>
+            <span>UKdocs Print tab</span>
+            <input
+              value={form.ukdocs_print_sheet_name || "PD keuringen"}
+              onChange={(event) => setForm({ ...form, ukdocs_print_sheet_name: event.target.value })}
+              placeholder="PD keuringen"
             />
           </label>
           <label>
