@@ -252,11 +252,19 @@ function downloadBase64File(filename, contentBase64, mimeType) {
   const url = window.URL.createObjectURL(blob);
   const link = document.createElement("a");
   link.href = url;
-  link.download = filename;
+  link.download = safeDownloadFilename(filename);
   document.body.appendChild(link);
   link.click();
   link.remove();
   window.URL.revokeObjectURL(url);
+}
+
+function safeDownloadFilename(filename) {
+  const cleaned = String(filename || "download")
+    .replace(/[\\/:*?"<>|]/g, "-")
+    .replace(/\s+/g, " ")
+    .trim();
+  return cleaned || "download";
 }
 
 function HalLocationsPage() {
@@ -2115,17 +2123,21 @@ async function downloadUkdocsFilesWithPrompt(files) {
     return;
   }
 
-  const directoryHandle = await window.showDirectoryPicker();
-  for (const file of files) {
-    const fileHandle = await directoryHandle.getFileHandle(file.name, { create: true });
-    const writable = await fileHandle.createWritable();
-    const binary = window.atob(file.content_base64);
-    const bytes = new Uint8Array(binary.length);
-    for (let index = 0; index < binary.length; index += 1) {
-      bytes[index] = binary.charCodeAt(index);
+  try {
+    const directoryHandle = await window.showDirectoryPicker();
+    for (const file of files) {
+      const fileHandle = await directoryHandle.getFileHandle(safeDownloadFilename(file.name), { create: true });
+      const writable = await fileHandle.createWritable();
+      const binary = window.atob(file.content_base64);
+      const bytes = new Uint8Array(binary.length);
+      for (let index = 0; index < binary.length; index += 1) {
+        bytes[index] = binary.charCodeAt(index);
+      }
+      await writable.write(new Blob([bytes], { type: file.mime_type || "application/octet-stream" }));
+      await writable.close();
     }
-    await writable.write(new Blob([bytes], { type: file.mime_type || "application/octet-stream" }));
-    await writable.close();
+  } catch {
+    files.forEach((file) => downloadBase64File(file.name, file.content_base64, file.mime_type));
   }
 }
 
@@ -2138,21 +2150,25 @@ async function downloadUkdocsFileWithPrompt(file) {
     return;
   }
 
-  const handle = await window.showSaveFilePicker({
-    suggestedName: file.name,
-    types: [{
-      description: "UKdocs file",
-      accept: { [file.mime_type || "application/octet-stream"]: [".xlsx"] },
-    }],
-  });
-  const writable = await handle.createWritable();
-  const binary = window.atob(file.content_base64);
-  const bytes = new Uint8Array(binary.length);
-  for (let index = 0; index < binary.length; index += 1) {
-    bytes[index] = binary.charCodeAt(index);
+  try {
+    const handle = await window.showSaveFilePicker({
+      suggestedName: safeDownloadFilename(file.name),
+      types: [{
+        description: "UKdocs file",
+        accept: { [file.mime_type || "application/octet-stream"]: [".xlsx"] },
+      }],
+    });
+    const writable = await handle.createWritable();
+    const binary = window.atob(file.content_base64);
+    const bytes = new Uint8Array(binary.length);
+    for (let index = 0; index < binary.length; index += 1) {
+      bytes[index] = binary.charCodeAt(index);
+    }
+    await writable.write(new Blob([bytes], { type: file.mime_type || "application/octet-stream" }));
+    await writable.close();
+  } catch {
+    downloadBase64File(file.name, file.content_base64, file.mime_type);
   }
-  await writable.write(new Blob([bytes], { type: file.mime_type || "application/octet-stream" }));
-  await writable.close();
 }
 
 function UkdocsPage({ currentUser }) {
@@ -2644,6 +2660,7 @@ function UkdocsPage({ currentUser }) {
               </button>
             )}
             <button type="button" disabled={!generatedFiles.length} onClick={() => downloadUkdocsFilesWithPrompt(generatedFiles)}>Download files</button>
+            <button type="button" disabled={!generatedFiles.length} onClick={() => generatedFiles.forEach((file) => downloadBase64File(file.name, file.content_base64, file.mime_type))}>Download only</button>
           </div>
 
           {analysis && (
