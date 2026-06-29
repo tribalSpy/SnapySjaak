@@ -837,7 +837,7 @@ function normalizeFustSettings(settings) {
     clock_records_sheet_name: String(settings?.clock_records_sheet_name || defaultFustSettings.clock_records_sheet_name).trim() || defaultFustSettings.clock_records_sheet_name,
     hal_locations_spreadsheet_id: String(settings?.hal_locations_spreadsheet_id || settings?.spreadsheet_id || "").trim(),
     hal_locations_sheet_name: String(settings?.hal_locations_sheet_name || defaultFustSettings.hal_locations_sheet_name).trim() || defaultFustSettings.hal_locations_sheet_name,
-    ukdocs_print_spreadsheet_id: String(settings?.ukdocs_print_spreadsheet_id || settings?.spreadsheet_id || "").trim(),
+    ukdocs_print_spreadsheet_id: String(settings?.ukdocs_print_spreadsheet_id || "").trim(),
     ukdocs_print_sheet_name: String(settings?.ukdocs_print_sheet_name || defaultFustSettings.ukdocs_print_sheet_name).trim() || defaultFustSettings.ukdocs_print_sheet_name,
     cmr_default_template_name: String(settings?.cmr_default_template_name || "").trim(),
     cmr_manage_usernames: normalizeCmrManageUsernames(settings?.cmr_manage_usernames),
@@ -2623,7 +2623,7 @@ async function syncUkdocsPrintFromGmail(settings, requestUser, query) {
 }
 
 async function syncUkdocsPrintCollectionsFromSheet(settings, date) {
-  const spreadsheetId = String(settings.ukdocs_print_spreadsheet_id || settings.spreadsheet_id || "").trim();
+  const spreadsheetId = String(settings.ukdocs_print_spreadsheet_id || "").trim();
   const sheetName = String(settings.ukdocs_print_sheet_name || defaultFustSettings.ukdocs_print_sheet_name).trim();
   if (!spreadsheetId || !sheetName) {
     throw new Error("Set a UKdocs Print spreadsheet ID and tab name in Settings first");

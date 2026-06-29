@@ -5832,7 +5832,7 @@ function SettingsPage({ currentUser }) {
             <input
               value={form.ukdocs_print_spreadsheet_id || ""}
               onChange={(event) => setForm({ ...form, ukdocs_print_spreadsheet_id: event.target.value })}
-              placeholder="Defaults to the main spreadsheet ID when left empty"
+              placeholder="Spreadsheet ID for PD keuringen sendings"
             />
           </label>
           <label>
