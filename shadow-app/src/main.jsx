@@ -2187,8 +2187,12 @@ function ukdocsPrintCollectionProgress(collection, customers) {
   if (customer?.required_generated_export !== false && !generatedExportReady) {
     missing.push("Generated export");
   }
-  if (customer?.required_generated_invoices !== false && invoiceExpected > 0 && generatedInvoiceCount < invoiceExpected) {
-    missing.push(`Invoices ${generatedInvoiceCount}/${invoiceExpected}`);
+  if (customer?.required_generated_invoices !== false) {
+    if (invoiceExpected === 0) {
+      missing.push("Invoice numbers");
+    } else if (generatedInvoiceCount < invoiceExpected) {
+      missing.push(`Invoices ${generatedInvoiceCount}/${invoiceExpected}`);
+    }
   }
 
   const complete = missing.length === 0 && (!!customer || !!collection?.customer_name || !!collection?.city_name);
