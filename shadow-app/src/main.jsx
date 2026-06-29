@@ -2737,8 +2737,8 @@ function UkdocsPage({ currentUser }) {
               <select value={shipmentDraft.print_collection_id || ""} onChange={(event) => applyPrintCollection(event.target.value)}>
                 <option value="">Choose a sending from UKdocs Print</option>
                 {availablePrintCollections.map((collection) => {
-                  const progress = ukdocsPrintCollectionProgress(collection, customers);
-                  const donePrefix = progress.status === "complete" ? "[Done] " : "";
+                  const generatedShipment = shipments.find((shipment) => shipment.print_collection_id === collection.id) || null;
+                  const donePrefix = generatedShipment?.ready === true ? "[Done] " : "";
                   const remarkSuffix = String(collection.remark || "").trim() ? ` | ${String(collection.remark || "").trim()}` : "";
                   return (
                     <option key={collection.id} value={collection.id}>
