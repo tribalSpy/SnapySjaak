@@ -2329,7 +2329,7 @@ function UkdocsPage({ currentUser }) {
   const selectedAuditReport = auditReports.find((report) => report.id === selectedAuditReportId) || auditReports[0] || null;
   const selectedUkdocsCustomer = customers.find((item) => item.id === shipmentDraft.customer_id) || null;
   const selectedPrintCollection = printCollections.find((item) => item.id === shipmentDraft.print_collection_id) || null;
-  const availablePrintCollections = printCollections.filter((item) => item.source === "sheet" || item.reference_connect);
+  const availablePrintCollections = printCollections;
   const activeExportDefaults = useMemo(
     () => mergeUkdocsExportDefaults(exportDefaults, selectedUkdocsCustomer?.export_defaults || {}),
     [exportDefaults, selectedUkdocsCustomer],
@@ -2369,6 +2369,40 @@ function UkdocsPage({ currentUser }) {
     setShipmentUploadInputVersion((value) => value + 1);
   }
 
+  function buildDraftFromPrintCollection(collection, matchedCustomer = null) {
+    const baseDraft = emptyUkdocsShipmentDraft();
+    return {
+      ...baseDraft,
+      print_collection_id: collection?.id || "",
+      customer_id: matchedCustomer?.id || "",
+      shipment_date: collection?.shipment_date || baseDraft.shipment_date,
+      truck_number: collection?.truck_number || "",
+      trailer_number: collection?.trailer_number || "",
+      reference_connect: collection?.reference_connect || "",
+      delivery_terms: matchedCustomer?.default_delivery_terms || matchedCustomer?.export_defaults?.delivery_terms || baseDraft.delivery_terms,
+      uk_arrival_port: matchedCustomer?.default_uk_arrival_port || baseDraft.uk_arrival_port,
+      currency: matchedCustomer?.default_currency || matchedCustomer?.export_defaults?.currency || baseDraft.currency,
+      owner: matchedCustomer?.default_owner || baseDraft.owner,
+      importer: matchedCustomer?.default_importer || matchedCustomer?.importer_number || matchedCustomer?.eori_number || matchedCustomer?.export_defaults?.importer_field || baseDraft.importer,
+      delivery_terms_city: matchedCustomer?.export_defaults?.delivery_terms_city || matchedCustomer?.default_city || baseDraft.delivery_terms_city,
+      regulation: matchedCustomer?.export_defaults?.regulation || baseDraft.regulation,
+      destination_country: matchedCustomer?.export_defaults?.destination_country || baseDraft.destination_country,
+      customs_office_of_exit: matchedCustomer?.export_defaults?.customs_office_of_exit || baseDraft.customs_office_of_exit,
+      location: matchedCustomer?.export_defaults?.location || baseDraft.location,
+      border_transport_mode: matchedCustomer?.export_defaults?.border_transport_mode || baseDraft.border_transport_mode,
+      border_transport_nationality: matchedCustomer?.export_defaults?.border_transport_nationality || baseDraft.border_transport_nationality,
+      freight_costs: matchedCustomer?.export_defaults?.freight_costs || baseDraft.freight_costs,
+      insurance: matchedCustomer?.export_defaults?.insurance || baseDraft.insurance,
+      vessel: matchedCustomer?.export_defaults?.vessel_field || baseDraft.vessel,
+      notes: [
+        collection?.reference_connect ? `Reference connect: ${collection.reference_connect}` : "",
+        collection?.city_name ? `Sending city: ${collection.city_name}` : "",
+        collection?.hub_code ? `Hub: ${collection.hub_code}` : "",
+        collection?.remark ? `Remark: ${collection.remark}` : "",
+      ].filter(Boolean).join("\n"),
+    };
+  }
+
   function applyCustomerDefaults(customerId) {
     const customer = customers.find((item) => item.id === customerId);
     setShipmentDraft((current) => ({
@@ -2395,36 +2429,20 @@ function UkdocsPage({ currentUser }) {
 
   function applyPrintCollection(collectionId) {
     const collection = printCollections.find((item) => item.id === collectionId) || null;
+    if (!collection) {
+      resetDrafts();
+      return;
+    }
     const matchedCustomer = (collection?.customer_id && customers.find((item) => item.id === collection.customer_id)) || findUkdocsCustomerMatch(customers, collection);
-    setShipmentDraft((current) => ({
-      ...current,
-      print_collection_id: collectionId,
-      customer_id: matchedCustomer?.id || current.customer_id,
-      reference_connect: collection?.reference_connect || current.reference_connect,
-      shipment_date: collection?.shipment_date || current.shipment_date,
-      trailer_number: current.trailer_number || collection?.trailer_number || "",
-      truck_number: current.truck_number || collection?.truck_number || "",
-      delivery_terms: matchedCustomer?.default_delivery_terms || matchedCustomer?.export_defaults?.delivery_terms || current.delivery_terms,
-      uk_arrival_port: matchedCustomer?.default_uk_arrival_port || current.uk_arrival_port,
-      currency: matchedCustomer?.default_currency || matchedCustomer?.export_defaults?.currency || current.currency,
-      owner: matchedCustomer?.default_owner || current.owner,
-      importer: matchedCustomer?.default_importer || matchedCustomer?.importer_number || matchedCustomer?.eori_number || matchedCustomer?.export_defaults?.importer_field || current.importer,
-      delivery_terms_city: matchedCustomer?.export_defaults?.delivery_terms_city || matchedCustomer?.default_city || current.delivery_terms_city,
-      regulation: matchedCustomer?.export_defaults?.regulation || current.regulation,
-      destination_country: matchedCustomer?.export_defaults?.destination_country || current.destination_country,
-      customs_office_of_exit: matchedCustomer?.export_defaults?.customs_office_of_exit || current.customs_office_of_exit,
-      location: matchedCustomer?.export_defaults?.location || current.location,
-      border_transport_mode: matchedCustomer?.export_defaults?.border_transport_mode || current.border_transport_mode,
-      border_transport_nationality: matchedCustomer?.export_defaults?.border_transport_nationality || current.border_transport_nationality,
-      freight_costs: matchedCustomer?.export_defaults?.freight_costs || current.freight_costs,
-      insurance: matchedCustomer?.export_defaults?.insurance || current.insurance,
-      vessel: matchedCustomer?.export_defaults?.vessel_field || current.vessel,
-      notes: collection
-        ? [current.notes, `Reference connect: ${collection.reference_connect || "-"}`, collection.city_name ? `Sending city: ${collection.city_name}` : "", collection.hub_code ? `Hub: ${collection.hub_code}` : ""]
-          .filter(Boolean)
-          .join("\n")
-        : current.notes,
-    }));
+    const savedShipment = shipments.find((item) => item.print_collection_id === collectionId || item.id === collectionId) || null;
+    if (savedShipment) {
+      selectShipment(savedShipment);
+      return;
+    }
+    setShipmentDraft(buildDraftFromPrintCollection(collection, matchedCustomer));
+    setAnalysis(null);
+    setGeneratedFiles([]);
+    setShipmentUploadInputVersion((value) => value + 1);
   }
 
   async function saveStatePatch(patch, successMessage) {
@@ -2721,9 +2739,10 @@ function UkdocsPage({ currentUser }) {
                 {availablePrintCollections.map((collection) => {
                   const progress = ukdocsPrintCollectionProgress(collection, customers);
                   const donePrefix = progress.status === "complete" ? "[Done] " : "";
+                  const remarkSuffix = String(collection.remark || "").trim() ? ` | ${String(collection.remark || "").trim()}` : "";
                   return (
                     <option key={collection.id} value={collection.id}>
-                      {`${donePrefix}${collection.shipment_date || "-"} | ${collection.reference_connect || "-"} | ${collection.city_name || collection.customer_name || "-"} | ${collection.hub_code || "-"}`}
+                      {`${donePrefix}${collection.shipment_date || "-"} | ${collection.reference_connect || "-"} | ${collection.city_name || collection.customer_name || "-"} | ${collection.hub_code || "-"}${remarkSuffix}`}
                     </option>
                   );
                 })}
