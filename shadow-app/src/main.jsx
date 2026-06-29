@@ -1970,6 +1970,13 @@ const UKDOCS_CUSTOMER_INVOICE_VISIBILITY_FIELDS = [
   ["show_invoice_importer_number", "Show importer / DAN number on invoice"],
 ];
 
+const UKDOCS_CUSTOMER_REQUIRED_DOCUMENT_FIELDS = [
+  ["required_phyto", "Require phytosanitary files"],
+  ["required_export_extra", "Require second export file"],
+  ["required_generated_export", "Require generated export workbook"],
+  ["required_generated_invoices", "Require generated invoice workbooks"],
+];
+
 const UKDOCS_EXPORT_DEFAULT_FIELDS = [
   ["destination_country", "Country of destination"],
   ["regulation", "Regulation"],
@@ -2021,6 +2028,10 @@ function emptyUkdocsCustomer() {
     show_invoice_vat_number: true,
     show_invoice_eori_number: true,
     show_invoice_importer_number: true,
+    required_phyto: true,
+    required_export_extra: false,
+    required_generated_export: true,
+    required_generated_invoices: true,
     export_defaults: Object.fromEntries(UKDOCS_EXPORT_DEFAULT_FIELDS.map(([key]) => [key, ""])),
   };
 }
@@ -2115,6 +2126,9 @@ function findUkdocsCustomerMatch(customers, collection) {
   let bestMatch = null;
   let bestScore = 0;
   for (const customer of customers || []) {
+    if (!String(customer?.customer_name || "").trim()) {
+      continue;
+    }
     const customerHubCodes = ukdocsMatchLines(customer?.match_hub_code);
     const customerRemarks = ukdocsMatchLines(customer?.match_remark);
     if (!customerHubCodes.length && !customerRemarks.length) {
@@ -2139,6 +2153,46 @@ function findUkdocsCustomerMatch(customers, collection) {
     }
   }
   return bestMatch;
+}
+
+function ukdocsPrintSplitTokens(value) {
+  return String(value || "")
+    .split(/[\/,\s;]+/)
+    .map((item) => String(item || "").trim())
+    .filter(Boolean);
+}
+
+function ukdocsPrintCollectionProgress(collection, customers) {
+  const customer = (collection?.customer_id && (customers || []).find((item) => item.id === collection.customer_id))
+    || findUkdocsCustomerMatch(customers || [], collection)
+    || null;
+  const missing = [];
+  const phytoCount = (collection?.documents?.phyto_files || []).length;
+  const phytoExpected = ukdocsPrintSplitTokens(collection?.reference_connect).length;
+  const generatedFiles = collection?.documents?.generated_files || [];
+  const generatedExportReady = generatedFiles.some((file) => file.document_kind === "export");
+  const generatedInvoiceCount = generatedFiles.filter((file) => file.document_kind === "invoice").length;
+  const invoiceExpected = ukdocsPrintSplitTokens(collection?.invoice_numbers).length;
+
+  if (customer?.required_phyto !== false && phytoExpected > 0 && phytoCount < phytoExpected) {
+    missing.push(`Phyto ${phytoCount}/${phytoExpected}`);
+  }
+  if (customer?.required_export_extra === true && !collection?.documents?.export_extra?.storage_name) {
+    missing.push("Second export file");
+  }
+  if (customer?.required_generated_export !== false && !generatedExportReady) {
+    missing.push("Generated export");
+  }
+  if (customer?.required_generated_invoices !== false && invoiceExpected > 0 && generatedInvoiceCount < invoiceExpected) {
+    missing.push(`Invoices ${generatedInvoiceCount}/${invoiceExpected}`);
+  }
+
+  const complete = missing.length === 0 && (!!customer || !!collection?.customer_name || !!collection?.city_name);
+  return {
+    customer,
+    missing,
+    status: complete ? "complete" : (phytoCount || generatedExportReady || generatedInvoiceCount || collection?.documents?.export_extra?.storage_name ? "partial" : "pending"),
+  };
 }
 
 function ukdocsShipmentStatus(shipment) {
@@ -2819,6 +2873,18 @@ function UkdocsPage({ currentUser }) {
             ))}
           </div>
           <div className="row-actions spread-actions"><button type="button" className="primary" onClick={saveCustomer} disabled={saving}>{customerDraft.id ? "Update customer" : "Add customer"}</button><button type="button" onClick={() => setCustomerDraft(emptyUkdocsCustomer())} disabled={saving}>Clear form</button></div>
+          <div className="checkbox-grid">
+            {UKDOCS_CUSTOMER_REQUIRED_DOCUMENT_FIELDS.map(([key, label]) => (
+              <label key={key} className="checkbox-field">
+                <input
+                  type="checkbox"
+                  checked={customerDraft[key] === true}
+                  onChange={(event) => setCustomerDraft({ ...customerDraft, [key]: event.target.checked })}
+                />
+                <span>{label}</span>
+              </label>
+            ))}
+          </div>
           <div className="table-wrap"><table className="data-table"><thead><tr><th>Name</th><th>Hub match</th><th>Remark match</th><th>Delivery terms</th><th>UK port</th><th>Currency</th><th>VAT</th><th>Actions</th></tr></thead><tbody>{customers.map((customer) => <tr key={customer.id}><td>{customer.customer_name}</td><td>{customer.match_hub_code || "-"}</td><td>{customer.match_remark || "-"}</td><td>{customer.default_delivery_terms || customer.export_defaults?.delivery_terms || "-"}</td><td>{customer.default_uk_arrival_port || "-"}</td><td>{customer.default_currency || customer.export_defaults?.currency || "-"}</td><td>{customer.vat_number || "-"}</td><td className="row-actions"><button type="button" onClick={() => startEditCustomer(customer)}>Edit</button></td></tr>)}{!customers.length && <tr><td colSpan="8">No UKdocs customers saved yet.</td></tr>}</tbody></table></div>
         </div>
       )}
@@ -2950,9 +3016,11 @@ function UkdocsPrintPage({ currentUser }) {
   }, [currentUser]);
 
   const collections = state?.print_collections || [];
+  const customers = state?.customers || [];
   const selectedCollection = collections.find((item) => item.id === selectedCollectionId || item.shipment_id === selectedCollectionId) || collections[0] || null;
   const selectedPhytoFiles = selectedCollection?.documents?.phyto_files || [];
   const selectedGeneratedFiles = selectedCollection?.documents?.generated_files || [];
+  const selectedCollectionProgress = selectedCollection ? ukdocsPrintCollectionProgress(selectedCollection, customers) : null;
 
   useEffect(() => {
     if (selectedCollection?.id && selectedCollection.id !== selectedCollectionId) {
@@ -3101,8 +3169,7 @@ function UkdocsPrintPage({ currentUser }) {
         <div className="section-header"><h2>Today Sendings Spreadsheet</h2></div>
         <div className="form-grid">
           <label><span>Date to import</span><input type="date" value={sheetSyncDate} onChange={(event) => setSheetSyncDate(event.target.value)} /></label>
-          <label><span>Spreadsheet ID</span><input value={gmailSettings.ukdocs_print_spreadsheet_id || ""} readOnly placeholder="Not set in Settings" /></label>
-          <label><span>Spreadsheet tab</span><input value={gmailSettings.ukdocs_print_sheet_name || ""} readOnly placeholder="Not set in Settings" /></label>
+          <label><span>Spreadsheet settings</span><input value={gmailSettings.ukdocs_print_spreadsheet_id ? "Managed in Settings" : "Not set in Settings"} readOnly /></label>
         </div>
         <div className="row-actions spread-actions">
           <button type="button" className="primary" onClick={syncSheetSendings} disabled={sheetBusy}>{sheetBusy ? "Loading..." : "Load sendings from spreadsheet"}</button>
@@ -3141,15 +3208,16 @@ function UkdocsPrintPage({ currentUser }) {
               <thead><tr><th>Date</th><th>Connect ref</th><th>City / customer</th><th>Invoices</th><th>Truck</th><th>Status</th><th>Actions</th></tr></thead>
               <tbody>
                 {collections.map((collection) => {
-                  const status = ukdocsPrintStatusDefinition(collection.status);
+                  const progress = ukdocsPrintCollectionProgress(collection, customers);
+                  const status = ukdocsPrintStatusDefinition(progress.status);
                   return (
                     <tr key={collection.id}>
                       <td>{collection.shipment_date || "-"}</td>
                       <td>{collection.reference_connect || "-"}</td>
-                      <td>{collection.city_name || collection.customer_name || "-"}</td>
+                      <td>{collection.customer_name || collection.city_name || "-"}</td>
                       <td>{collection.invoice_numbers || "-"}</td>
                       <td>{collection.truck_number || collection.trailer_number || "-"}</td>
-                      <td><span className={`ukdocs-status-badge ${status.tone}`}>{status.label}</span></td>
+                      <td><span className={`ukdocs-status-badge ${status.tone}`}>{progress.missing.length ? `${status.label} (${progress.missing.join(", ")})` : status.label}</span></td>
                       <td className="row-actions"><button type="button" onClick={() => setSelectedCollectionId(collection.id)}>Open</button><button type="button" onClick={() => deleteCollection(collection.id)}>Delete</button></td>
                     </tr>
                   );
@@ -3163,7 +3231,7 @@ function UkdocsPrintPage({ currentUser }) {
         <div className="data-table-card ukdocs-stack">
           <div className="section-header">
             <h2>Collection detail</h2>
-            {selectedCollection && <div className="row-actions"><div className={`ukdocs-status-badge ${ukdocsPrintStatusDefinition(selectedCollection.status).tone}`}>{ukdocsPrintStatusDefinition(selectedCollection.status).label}</div><button type="button" onClick={() => deleteCollection(selectedCollection.id)}>Delete</button></div>}
+            {selectedCollection && selectedCollectionProgress && <div className="row-actions"><div className={`ukdocs-status-badge ${ukdocsPrintStatusDefinition(selectedCollectionProgress.status).tone}`}>{ukdocsPrintStatusDefinition(selectedCollectionProgress.status).label}</div><button type="button" onClick={() => deleteCollection(selectedCollection.id)}>Delete</button></div>}
           </div>
 
           {!selectedCollection && <div className="notice">Choose a generated shipment first.</div>}
@@ -3174,7 +3242,8 @@ function UkdocsPrintPage({ currentUser }) {
                 <label><span>Shipment reference</span><input value={selectedCollection.shipment_reference || ""} readOnly /></label>
                 <label><span>Reference connect</span><input value={selectedCollection.reference_connect || ""} readOnly /></label>
                 <label><span>Shipment date</span><input value={selectedCollection.shipment_date || ""} readOnly /></label>
-                <label><span>City / customer</span><input value={selectedCollection.city_name || selectedCollection.customer_name || ""} readOnly /></label>
+                <label><span>Customer</span><input value={selectedCollectionProgress?.customer?.customer_name || selectedCollection.customer_name || ""} readOnly /></label>
+                <label><span>City</span><input value={selectedCollection.city_name || ""} readOnly /></label>
                 <label><span>Border crossing</span><input value={selectedCollection.border_crossing || ""} readOnly /></label>
                 <label><span>Hub code</span><input value={selectedCollection.hub_code || ""} readOnly /></label>
                 <label><span>Invoice numbers</span><input value={selectedCollection.invoice_numbers || ""} readOnly /></label>
@@ -3185,6 +3254,7 @@ function UkdocsPrintPage({ currentUser }) {
                 <label><span>PD type</span><input value={selectedCollection.pd_type || ""} readOnly /></label>
                 <label><span>PD code</span><input value={selectedCollection.pd_code || ""} readOnly /></label>
               </div>
+              <div className="notice">{selectedCollectionProgress?.missing?.length ? `Still needed: ${selectedCollectionProgress.missing.join(", ")}` : "All required files for this customer are collected."}</div>
 
               <div className="ukdocs-upload-grid">
                 {UKDOCS_PRINT_DOCUMENTS.map((documentDefinition) => {

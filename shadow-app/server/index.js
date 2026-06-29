@@ -898,6 +898,10 @@ function normalizeUkdocsCustomer(customer) {
     customer_name: normalizeUkdocsText(customer?.customer_name),
     match_hub_code: normalizeUkdocsText(customer?.match_hub_code),
     match_remark: String(customer?.match_remark || "").trim(),
+    required_phyto: customer?.required_phyto !== false,
+    required_export_extra: customer?.required_export_extra === true,
+    required_generated_export: customer?.required_generated_export !== false,
+    required_generated_invoices: customer?.required_generated_invoices !== false,
     customer_address: String(customer?.customer_address || "").trim(),
     vat_number: normalizeUkdocsText(customer?.vat_number),
     eori_number: normalizeUkdocsText(customer?.eori_number),
@@ -2001,8 +2005,7 @@ function parseUkdocsPrintSheetRows(rows, date = localDateIso()) {
       };
     })
     .filter((item) => item.shipment_date === String(date || localDateIso()).slice(0, 10))
-    .filter((item) => item.reference_connect || item.city_name || item.hub_code)
-    .filter((item) => !normalizeUkdocsPrintToken(item.pd_type).includes("VOORRAAD"));
+    .filter((item) => item.reference_connect || item.city_name || item.hub_code);
 
   const uniqueJoin = (values, separator = "/") => [...new Set(values.map((item) => String(item || "").trim()).filter(Boolean))].join(separator);
   const grouped = new Map();
@@ -2465,6 +2468,9 @@ function matchUkdocsCustomerForPrintCollection(customers, collection) {
   let bestMatch = null;
   let bestScore = 0;
   for (const customer of Array.isArray(customers) ? customers : []) {
+    if (!normalizeUkdocsText(customer?.customer_name)) {
+      continue;
+    }
     const customerHubCodes = ukdocsPrintMatchLines(customer?.match_hub_code);
     const customerRemarks = ukdocsPrintMatchLines(customer?.match_remark);
     if (!customerHubCodes.length && !customerRemarks.length) {
