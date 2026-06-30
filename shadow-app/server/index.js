@@ -1104,11 +1104,31 @@ function normalizeUkdocsPrintDocument(document) {
   } : null;
 }
 
+function ukdocsPrintDocumentIdentity(document) {
+  const originalName = String(document?.original_name || "").trim().toLowerCase();
+  if (originalName) {
+    return originalName;
+  }
+  return String(document?.storage_name || "").trim().toLowerCase();
+}
+
 function normalizeUkdocsPrintDocumentList(documents) {
   if (!Array.isArray(documents)) {
     return [];
   }
-  return documents.map(normalizeUkdocsPrintDocument).filter(Boolean);
+  const seen = new Set();
+  const normalized = [];
+  for (const document of documents.map(normalizeUkdocsPrintDocument).filter(Boolean)) {
+    const identity = ukdocsPrintDocumentIdentity(document);
+    if (identity && seen.has(identity)) {
+      continue;
+    }
+    if (identity) {
+      seen.add(identity);
+    }
+    normalized.push(document);
+  }
+  return normalized;
 }
 
 function deriveUkdocsPrintCollectionStatus(collection) {
@@ -2891,6 +2911,14 @@ async function saveUkdocsPrintBuffer(collectionId, kind, originalName, mimeType,
   };
 }
 
+function hasUkdocsPrintDocumentWithName(documents, originalName) {
+  const target = String(originalName || "").trim().toLowerCase();
+  if (!target) {
+    return false;
+  }
+  return normalizeUkdocsPrintDocumentList(documents).some((document) => ukdocsPrintDocumentIdentity(document) === target);
+}
+
 function buildUkdocsGeneratedFileName(collection, file) {
   const fallbackName = path.basename(String(file?.name || "ukdocs-file").trim()) || "ukdocs-file";
   const documentKind = normalizeUkdocsText(file?.kind);
@@ -3182,6 +3210,10 @@ async function syncUkdocsPrintFromGmail(settings, requestUser, query, date) {
         continue;
       }
       const kind = detectUkdocsPrintDocumentKind(candidateText);
+      if (kind === "phyto" && hasUkdocsPrintDocumentWithName(bestMatch.documents?.phyto_files, attachmentName)) {
+        results.push({ status: "skipped", file_name: attachmentName, shipment_reference: bestMatch.shipment_reference, reason: "phyto already exists" });
+        continue;
+      }
       if (kind !== "phyto" && bestMatch.documents?.[kind]?.storage_name) {
         results.push({ status: "skipped", file_name: attachmentName, shipment_reference: bestMatch.shipment_reference, reason: `${kind} already exists` });
         continue;
@@ -5334,6 +5366,15 @@ async function handleApi(req, res, url) {
     const existingCollection = state.print_collections.find((item) => item.id === collectionId || item.shipment_id === collectionId);
     if (!existingCollection) {
       sendJson(res, 404, { error: "UKdocs Print collection not found" });
+      return;
+    }
+    const originalName = path.basename(String(body?.file?.file_name || body?.file?.name || "").trim());
+    if (kind === "phyto" && hasUkdocsPrintDocumentWithName(existingCollection.documents?.phyto_files, originalName)) {
+      sendJson(res, 200, { collection: existingCollection, print_collections: normalizeUkdocsState(state).print_collections, skipped: true, reason: "phyto already exists" });
+      return;
+    }
+    if (kind === "export_extra" && existingCollection.documents?.export_extra?.storage_name) {
+      sendJson(res, 200, { collection: existingCollection, print_collections: normalizeUkdocsState(state).print_collections, skipped: true, reason: "export_extra already exists" });
       return;
     }
     const savedDocument = await saveUkdocsPrintUpload(existingCollection.id, kind, body?.file || {}, requestUser);
