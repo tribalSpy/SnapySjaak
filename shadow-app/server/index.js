@@ -2274,6 +2274,17 @@ function parseSheetDateToIso(value) {
   return `${fullYear}-${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
 }
 
+function sanitizeUkdocsPrintRemark(value) {
+  const raw = String(value || "").trim();
+  if (!raw) {
+    return "";
+  }
+  if (/^\(?\s*incl\s+ltd\b/i.test(raw)) {
+    return "";
+  }
+  return raw;
+}
+
 function parseUkdocsPrintSheetRows(rows, date = localDateIso()) {
   if (!Array.isArray(rows) || rows.length < 2) {
     return [];
@@ -2308,7 +2319,7 @@ function parseUkdocsPrintSheetRows(rows, date = localDateIso()) {
         city_name: rowValue(row, cityIndex),
         border_crossing: rowValue(row, borderIndex),
         hub_code: rowValue(row, hubIndex),
-        remark: rowValue(row, remarkIndex),
+        remark: sanitizeUkdocsPrintRemark(rowValue(row, remarkIndex)),
         pd_form: rowValue(row, pdFormIndex),
         re_export: rowValue(row, reExportIndex),
         pd_type: rowValue(row, typeIndex),
