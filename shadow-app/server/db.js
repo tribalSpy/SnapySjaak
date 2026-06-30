@@ -157,6 +157,35 @@ export async function markFustActionDeletedInDatabase(actionId) {
   );
 }
 
+export async function getFustDatabaseStats() {
+  if (!pool) {
+    return {
+      total_actions: 0,
+      active_actions: 0,
+      deleted_actions: 0,
+      document_rows: 0,
+    };
+  }
+
+  const [actionsResult, documentsResult] = await Promise.all([
+    pool.query(`
+      SELECT
+        COUNT(*)::int AS total_actions,
+        COUNT(*) FILTER (WHERE deleted = false)::int AS active_actions,
+        COUNT(*) FILTER (WHERE deleted = true)::int AS deleted_actions
+      FROM fust_actions
+    `),
+    pool.query("SELECT COUNT(*)::int AS document_rows FROM fust_action_documents"),
+  ]);
+
+  return {
+    total_actions: Number(actionsResult.rows?.[0]?.total_actions || 0),
+    active_actions: Number(actionsResult.rows?.[0]?.active_actions || 0),
+    deleted_actions: Number(actionsResult.rows?.[0]?.deleted_actions || 0),
+    document_rows: Number(documentsResult.rows?.[0]?.document_rows || 0),
+  };
+}
+
 const databaseMigrations = [
   `
     CREATE TABLE IF NOT EXISTS fust_actions (

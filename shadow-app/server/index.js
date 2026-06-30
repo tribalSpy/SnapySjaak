@@ -6,6 +6,7 @@ import crypto from "node:crypto";
 import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import {
+  getFustDatabaseStats,
   getDatabaseStatus,
   initializeDatabase,
   isDatabaseEnabled,
@@ -1991,6 +1992,73 @@ async function restoreMissingFustDataFromBackup(filename, requestUser) {
     filename: backup.filename,
     summary,
     action_count: nextLocalActions.length,
+  };
+}
+
+async function collectCurrentFustActions(settings) {
+  const localActions = await readFustActions();
+  let inSheetActions = [];
+  let outSheetActions = [];
+
+  try {
+    const retourRows = await loadSheetRows(settings.spreadsheet_id, settings.in_sheet_name);
+    inSheetActions = parseRegistrySheetRows(retourRows, "IN");
+  } catch {
+    inSheetActions = [];
+  }
+
+  try {
+    const uitgaandRows = await loadSheetRows(settings.spreadsheet_id, settings.out_sheet_name);
+    outSheetActions = parseRegistrySheetRows(uitgaandRows, "OUT");
+  } catch {
+    outSheetActions = [];
+  }
+
+  const deletedActionIds = new Set(
+    localActions
+      .filter((action) => action.deleted)
+      .map((action) => String(action.id || "").trim())
+      .filter(Boolean),
+  );
+
+  const dedupedActions = new Map();
+  for (const action of [...inSheetActions, ...outSheetActions, ...localActions]) {
+    const actionId = String(action?.id || "").trim();
+    if (actionId && deletedActionIds.has(actionId)) {
+      continue;
+    }
+    if (action.deleted) {
+      continue;
+    }
+    dedupedActions.set(buildActionMergeKey(action), normalizeFustAction(action));
+  }
+
+  return {
+    activeActions: [...dedupedActions.values()],
+    deletedActionIds: [...deletedActionIds],
+    localActionCount: localActions.length,
+    sheetActionCount: inSheetActions.length + outSheetActions.length,
+  };
+}
+
+async function backfillFustDatabase() {
+  if (!isDatabaseEnabled()) {
+    throw new Error("Database is not configured");
+  }
+  const settings = await readFustSettings();
+  const current = await collectCurrentFustActions(settings);
+  for (const action of current.activeActions) {
+    await saveFustActionToDatabase(action);
+  }
+  for (const actionId of current.deletedActionIds) {
+    await markFustActionDeletedInDatabase(actionId);
+  }
+  return {
+    active_upserted: current.activeActions.length,
+    deleted_marked: current.deletedActionIds.length,
+    local_action_count: current.localActionCount,
+    sheet_action_count: current.sheetActionCount,
+    database: await getFustDatabaseStats(),
   };
 }
 
@@ -5540,8 +5608,22 @@ async function handleApi(req, res, url) {
       row_count,
       headers,
       database: getDatabaseStatus(),
+      database_stats: getDatabaseStatus().ready ? await getFustDatabaseStats().catch(() => null) : null,
       error,
     });
+    return;
+  }
+
+  if (url.pathname === "/api/fust/database/backfill" && req.method === "POST") {
+    if (!requirePermission(res, requestUser, PERMISSIONS.SETTINGS_MANAGE)) {
+      return;
+    }
+    try {
+      const payload = await backfillFustDatabase();
+      sendJson(res, 200, payload);
+    } catch (error) {
+      sendJson(res, 400, { error: error instanceof Error ? error.message : String(error) });
+    }
     return;
   }
 

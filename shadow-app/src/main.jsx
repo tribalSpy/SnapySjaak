@@ -6247,6 +6247,7 @@ function SettingsPage({ currentUser }) {
   const { loading: metaLoading, data: metaData, error: metaError } = useFustMeta(Boolean(currentUser));
   const [backups, setBackups] = useState([]);
   const [backupBusy, setBackupBusy] = useState(false);
+  const [databaseBusy, setDatabaseBusy] = useState(false);
   const [connectionTest, setConnectionTest] = useState(null);
   const [connectionBusy, setConnectionBusy] = useState(false);
   const [googleBusy, setGoogleBusy] = useState(false);
@@ -6339,6 +6340,31 @@ function SettingsPage({ currentUser }) {
       setError(backupError.message);
     } finally {
       setBackupBusy(false);
+    }
+  }
+
+  async function backfillFustDatabase() {
+    if (!window.confirm("Backfill the Fust database now from the current app cache and spreadsheet rows? This will not delete spreadsheet data.")) {
+      return;
+    }
+    setDatabaseBusy(true);
+    setError("");
+    setMessage("");
+    try {
+      const payload = await apiJson("/api/fust/database/backfill", {
+        method: "POST",
+      });
+      setMessage(
+        `Fust database backfill finished. `
+        + `${payload.active_upserted || 0} active action(s) upserted, `
+        + `${payload.deleted_marked || 0} deleted action(s) marked. `
+        + `Database now has ${payload.database?.active_actions || 0} active and ${payload.database?.deleted_actions || 0} deleted actions.`,
+      );
+      await loadConnectionTest();
+    } catch (backfillError) {
+      setError(backfillError.message);
+    } finally {
+      setDatabaseBusy(false);
     }
   }
 
@@ -6695,9 +6721,14 @@ function SettingsPage({ currentUser }) {
       <div className="data-table-card">
         <div className="section-header">
           <h2>Spreadsheet connection test</h2>
-          <button type="button" onClick={loadConnectionTest} disabled={connectionBusy}>
-            {connectionBusy ? "Testing..." : "Test again"}
-          </button>
+          <div className="row-actions">
+            <button type="button" onClick={loadConnectionTest} disabled={connectionBusy || databaseBusy}>
+              {connectionBusy ? "Testing..." : "Test again"}
+            </button>
+            <button type="button" className="primary" onClick={backfillFustDatabase} disabled={databaseBusy || connectionBusy || !connectionTest?.database?.ready}>
+              {databaseBusy ? "Backfilling..." : "Backfill Fust to database"}
+            </button>
+          </div>
         </div>
         {connectionTest && (
           <>
@@ -6713,6 +6744,11 @@ function SettingsPage({ currentUser }) {
             <p className="sidebar-note">
               Database: {connectionTest.database?.enabled ? (connectionTest.database?.ready ? "connected" : `not ready (${connectionTest.database?.error || "unknown error"})`) : "not configured"}
             </p>
+            {!!connectionTest.database_stats && (
+              <p className="sidebar-note">
+                Database rows: {connectionTest.database_stats.active_actions || 0} active, {connectionTest.database_stats.deleted_actions || 0} deleted, {connectionTest.database_stats.document_rows || 0} document rows
+              </p>
+            )}
             <p className="sidebar-note">
               Result: {connectionTest.read_ok ? `read ok (${connectionTest.row_count} rows)` : "read failed"}
             </p>
