@@ -2613,7 +2613,26 @@ async function saveUkdocsPrintBuffer(collectionId, kind, originalName, mimeType,
   };
 }
 
-async function saveUkdocsGeneratedFiles(collectionId, files, requestUser) {
+function buildUkdocsGeneratedFileName(collection, file) {
+  const fallbackName = path.basename(String(file?.name || "ukdocs-file").trim()) || "ukdocs-file";
+  const documentKind = normalizeUkdocsText(file?.kind);
+  if (documentKind !== "export") {
+    return fallbackName;
+  }
+
+  const extension = path.extname(fallbackName) || ".xlsx";
+  const dateText = normalizeUkdocsText(collection?.shipment_date).replace(/-/g, " ").trim();
+  const truckText = normalizeUkdocsText(collection?.truck_number);
+  const trailerText = normalizeUkdocsText(collection?.trailer_number);
+  const referenceText = String(collection?.shipment_reference || collection?.invoice_numbers || "").replace(/[\/\\]+/g, "-").trim();
+  const parts = [dateText, truckText, trailerText, referenceText].filter(Boolean);
+  if (!parts.length) {
+    return fallbackName;
+  }
+  return `${parts.join(" ")}${extension}`.replace(/\s+/g, " ").trim();
+}
+
+async function saveUkdocsGeneratedFiles(collection, files, requestUser) {
   const savedFiles = [];
   for (const file of Array.isArray(files) ? files : []) {
     const contentBase64 = String(file?.content_base64 || "").trim();
@@ -2621,10 +2640,11 @@ async function saveUkdocsGeneratedFiles(collectionId, files, requestUser) {
       continue;
     }
     const fileBuffer = Buffer.from(contentBase64, "base64");
+    const originalName = buildUkdocsGeneratedFileName(collection, file);
     const savedFile = await saveUkdocsPrintBuffer(
-      collectionId,
+      collection?.id,
       "generated",
-      String(file?.name || "ukdocs-file"),
+      originalName,
       String(file?.mime_type || "application/octet-stream"),
       fileBuffer,
       requestUser?.username || "ukdocs-generate",
@@ -4826,7 +4846,7 @@ async function handleApi(req, res, url) {
       trailer_number: shipment.trailer_number,
     });
     let printCollection = buildUkdocsPrintCollectionFromShipment(existingCollection, shipment, customer?.customer_name || "");
-    const generatedFilesForCollection = await saveUkdocsGeneratedFiles(printCollection.id, (generatedPayload.files || []).filter((file) => file.kind !== "audit"), requestUser);
+    const generatedFilesForCollection = await saveUkdocsGeneratedFiles(printCollection, (generatedPayload.files || []).filter((file) => file.kind !== "audit"), requestUser);
     printCollection = normalizeUkdocsPrintCollection({
       ...printCollection,
       documents: {
