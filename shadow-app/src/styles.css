@@ -1497,6 +1497,26 @@ pre {
   box-shadow: 0 10px 24px rgba(18, 68, 49, 0.12);
 }
 
+.ukdocs-download-box {
+  display: grid;
+  gap: 8px;
+  padding: 10px;
+  border: 1px solid #d6dde5;
+  border-radius: 8px;
+  background: #ffffff;
+}
+
+.ukdocs-download-list {
+  display: grid;
+  gap: 6px;
+}
+
+.ukdocs-download-link {
+  color: #1b5fbf;
+  text-decoration: underline;
+  word-break: break-word;
+}
+
 .ukdocs-drawer-backdrop {
   display: none;
 }

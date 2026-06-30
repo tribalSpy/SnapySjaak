@@ -55,6 +55,12 @@ function formatTimestamp(value) {
   return parsed.toLocaleString();
 }
 
+function localDateIso() {
+  const now = new Date();
+  const offsetMinutes = now.getTimezoneOffset();
+  return new Date(now.getTime() - (offsetMinutes * 60 * 1000)).toISOString().slice(0, 10);
+}
+
 function normalizePermissions(role, permissions) {
   if (role === "admin") {
     return [...DEFAULT_PERMISSIONS_BY_ROLE.admin];
@@ -1629,6 +1635,7 @@ function CmrPrintPage({ currentUser }) {
   const [draftData, setDraftData] = useState(null);
   const [hasUnsavedChanges, setHasUnsavedChanges] = useState(false);
   const [selectedCustomerName, setSelectedCustomerName] = useState("");
+  const [selectedTemplateNameOverride, setSelectedTemplateNameOverride] = useState("");
   const [manualValues, setManualValues] = useState({
     documentsAttached: "",
     packagingType: "",
@@ -1685,7 +1692,18 @@ function CmrPrintPage({ currentUser }) {
     }
   }, [customers, selectedCustomerName]);
 
-  const selectedTemplateName = settings.cmr_default_template_name || templates[0]?.name || "";
+  useEffect(() => {
+    const defaultTemplateName = settings.cmr_default_template_name || templates[0]?.name || "";
+    if (!selectedTemplateNameOverride) {
+      setSelectedTemplateNameOverride(defaultTemplateName);
+      return;
+    }
+    if (!templates.some((item) => item.name === selectedTemplateNameOverride)) {
+      setSelectedTemplateNameOverride(defaultTemplateName);
+    }
+  }, [settings.cmr_default_template_name, templates, selectedTemplateNameOverride]);
+
+  const selectedTemplateName = selectedTemplateNameOverride || settings.cmr_default_template_name || templates[0]?.name || "";
   const template = templates.find((item) => item.name === selectedTemplateName) || templates[0] || null;
   const customer = customers.find((item) => item.name === selectedCustomerName) || null;
   const exporter = exporters.find((item) => item.name === customer?.exporter_profile_name) || null;
@@ -1773,6 +1791,7 @@ function CmrPrintPage({ currentUser }) {
   async function saveTemplate(templatePayload) {
     const payload = await apiJson("/api/cmrprint/template", { method: "PUT", body: JSON.stringify({ template: templatePayload }) });
     setDraftData((current) => ({ ...current, templates: payload.templates || [] }));
+    setSelectedTemplateNameOverride(templatePayload?.name || "");
     refresh();
   }
 
@@ -1780,6 +1799,36 @@ function CmrPrintPage({ currentUser }) {
     const payload = await apiJson(`/api/cmrprint/template/${encodeURIComponent(templateName)}`, { method: "DELETE" });
     setDraftData((current) => ({ ...current, templates: payload.templates || [] }));
     refresh();
+  }
+
+  async function saveDefaultTemplate() {
+    const templateName = selectedTemplateNameOverride || "";
+    if (!templateName) {
+      setSaveError("Choose a template first.");
+      return;
+    }
+    setSaving(true);
+    setMessage("");
+    setSaveError("");
+    try {
+      const payload = await apiJson("/api/cmrprint/settings", {
+        method: "PATCH",
+        body: JSON.stringify({ cmr_default_template_name: templateName }),
+      });
+      setDraftData((current) => ({
+        ...current,
+        settings: {
+          ...(current?.settings || {}),
+          ...(payload.settings || {}),
+        },
+      }));
+      setMessage(`Default CMR template saved as ${templateName}.`);
+      refresh();
+    } catch (error) {
+      setSaveError(error.message);
+    } finally {
+      setSaving(false);
+    }
   }
 
   function buildPrintPageForCustomer(customerRecord, manualOverride = {}) {
@@ -1882,11 +1931,12 @@ function CmrPrintPage({ currentUser }) {
           </div>
           <div className="form-grid cmr-print-selectors">
             <label><span>Customer</span><select value={selectedCustomerName} onChange={(event) => setSelectedCustomerName(event.target.value)}><option value="">Choose customer</option>{sortByName(customers).map((item) => <option key={item.name} value={item.name}>{item.name}</option>)}</select></label>
+            <label><span>Template</span><select value={selectedTemplateNameOverride} onChange={(event) => setSelectedTemplateNameOverride(event.target.value)}><option value="">Choose template</option>{sortByName(templates).map((item) => <option key={item.name} value={item.name}>{item.name}</option>)}</select></label>
             <label><span>Exporter</span><input value={exporter?.name || "-"} readOnly /></label>
             <label><span>Transport</span><input value={transportInfo?.name || "-"} readOnly /></label>
             <label className="wide"><span>Customer block</span><textarea rows={4} value={buildCmrCustomerBlock(customer)} readOnly /></label>
           </div>
-          <div className="cmr-print-toolbar"><div className="row-actions spread-actions"><button type="button" onClick={() => openCurrentCustomerPrint(false)}>Preview Print</button><button type="button" className="primary" onClick={() => openCurrentCustomerPrint(true)}>Print CMR</button></div></div>
+          <div className="cmr-print-toolbar"><div className="row-actions spread-actions"><button type="button" onClick={() => openCurrentCustomerPrint(false)}>Preview Print</button><button type="button" className="primary" onClick={() => openCurrentCustomerPrint(true)}>Print CMR</button>{canManage && <button type="button" onClick={saveDefaultTemplate} disabled={saving || !selectedTemplateNameOverride}>{saving ? "Saving..." : "Save as default template"}</button>}</div></div>
           <div className="cmr-print-workspace">
             <div className="cmr-print-fields">
               <label><span>Field 5 - Documents attached</span><textarea rows={4} value={manualValues.documentsAttached} onChange={(event) => setManualValues({ ...manualValues, documentsAttached: event.target.value })} /></label>
@@ -3011,6 +3061,44 @@ function ukdocsPrintStatusDefinition(status) {
   }
 }
 
+function ukdocsCollectionDownloadEntries(collection) {
+  if (!collection?.id) {
+    return [];
+  }
+
+  const collectionId = encodeURIComponent(collection.id);
+  const entries = [];
+  const phytoFiles = collection.documents?.phyto_files || [];
+  const generatedFiles = collection.documents?.generated_files || [];
+  const exportExtra = collection.documents?.export_extra || null;
+
+  generatedFiles.forEach((generatedFile, index) => {
+    entries.push({
+      key: `generated-${generatedFile.storage_name || index}`,
+      label: generatedFile.original_name || `Generated ${index + 1}`,
+      href: `/api/ukdocs-print/collections/${collectionId}/documents/generated/${index}`,
+    });
+  });
+
+  phytoFiles.forEach((phytoFile, index) => {
+    entries.push({
+      key: `phyto-${phytoFile.storage_name || index}`,
+      label: phytoFile.original_name || `Phyto ${index + 1}`,
+      href: `/api/ukdocs-print/collections/${collectionId}/documents/phyto/${index}`,
+    });
+  });
+
+  if (exportExtra?.storage_name) {
+    entries.push({
+      key: `export-extra-${exportExtra.storage_name}`,
+      label: exportExtra.original_name || "Second export file",
+      href: `/api/ukdocs-print/collections/${collectionId}/documents/export_extra`,
+    });
+  }
+
+  return entries;
+}
+
 function UkdocsPrintPage({ currentUser }) {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -3018,6 +3106,7 @@ function UkdocsPrintPage({ currentUser }) {
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
   const [selectedCollectionId, setSelectedCollectionId] = useState("");
+  const [selectedCollectionDate, setSelectedCollectionDate] = useState(() => localDateIso());
   const [detailDrawerOpen, setDetailDrawerOpen] = useState(false);
   const [notesDraft, setNotesDraft] = useState("");
   const [gmailQuery, setGmailQuery] = useState("has:attachment newer_than:30d");
@@ -3058,7 +3147,15 @@ function UkdocsPrintPage({ currentUser }) {
 
   const collections = state?.print_collections || [];
   const customers = state?.customers || [];
-  const selectedCollection = collections.find((item) => item.id === selectedCollectionId || item.shipment_id === selectedCollectionId) || null;
+  const availableCollectionDates = useMemo(
+    () => [...new Set(collections.map((item) => String(item.shipment_date || "").slice(0, 10)).filter(Boolean))].sort(),
+    [collections],
+  );
+  const filteredCollections = useMemo(
+    () => collections.filter((item) => String(item.shipment_date || "").slice(0, 10) === selectedCollectionDate),
+    [collections, selectedCollectionDate],
+  );
+  const selectedCollection = filteredCollections.find((item) => item.id === selectedCollectionId || item.shipment_id === selectedCollectionId) || null;
   const selectedPhytoFiles = selectedCollection?.documents?.phyto_files || [];
   const selectedGeneratedFiles = selectedCollection?.documents?.generated_files || [];
   const selectedCollectionProgress = selectedCollection ? ukdocsPrintCollectionProgress(selectedCollection, customers) : null;
@@ -3073,11 +3170,17 @@ function UkdocsPrintPage({ currentUser }) {
       setDetailDrawerOpen(false);
       return;
     }
-    if (selectedCollectionId && !collections.some((item) => item.id === selectedCollectionId || item.shipment_id === selectedCollectionId)) {
+    if (selectedCollectionId && !filteredCollections.some((item) => item.id === selectedCollectionId || item.shipment_id === selectedCollectionId)) {
       setSelectedCollectionId("");
       setDetailDrawerOpen(false);
     }
-  }, [collections, selectedCollectionId]);
+  }, [collections, filteredCollections, selectedCollectionId]);
+
+  function stepCollectionDate(days) {
+    const current = new Date(`${selectedCollectionDate}T12:00:00`);
+    current.setDate(current.getDate() + days);
+    setSelectedCollectionDate(current.toISOString().slice(0, 10));
+  }
 
   function openCollectionDetail(collectionId) {
     setSelectedCollectionId(collectionId);
@@ -3188,10 +3291,11 @@ function UkdocsPrintPage({ currentUser }) {
         method: "DELETE",
       });
       const nextCollections = payload.print_collections || [];
+      const nextFilteredCollections = nextCollections.filter((item) => String(item.shipment_date || "").slice(0, 10) === selectedCollectionDate);
       setState((current) => ({ ...current, print_collections: nextCollections }));
-      setSelectedCollectionId(nextCollections[0]?.id || "");
-      setNotesDraft(nextCollections[0]?.notes || "");
-      if (!nextCollections.length || collectionId === selectedCollectionId) {
+      setSelectedCollectionId(nextFilteredCollections[0]?.id || "");
+      setNotesDraft(nextFilteredCollections[0]?.notes || "");
+      if (!nextFilteredCollections.length || collectionId === selectedCollectionId) {
         setDetailDrawerOpen(false);
       }
       setMessage("Collection deleted.");
@@ -3306,11 +3410,22 @@ function UkdocsPrintPage({ currentUser }) {
       <div className="ukdocs-print-layout">
         <div className="data-table-card ukdocs-stack">
           <div className="section-header"><h2>Collections</h2></div>
+          <div className="form-grid">
+            <label><span>Collection date</span><input type="date" value={selectedCollectionDate} onChange={(event) => setSelectedCollectionDate(event.target.value)} /></label>
+            <label><span>Saved collection dates</span><input value={availableCollectionDates.length ? `${availableCollectionDates.length} day(s) saved` : "No saved dates yet"} readOnly /></label>
+          </div>
+          <div className="row-actions spread-actions">
+            <button type="button" onClick={() => stepCollectionDate(-1)}>Previous day</button>
+            <button type="button" className="primary" onClick={() => setSelectedCollectionDate(localDateIso())}>Today</button>
+            <button type="button" onClick={() => stepCollectionDate(1)}>Next day</button>
+          </div>
+          <div className="notice">Showing collections for {selectedCollectionDate}. Saved shipments stay stored, but this view only shows the selected day.</div>
           <div className="ukdocs-upload-grid">
-            {collections.map((collection) => {
+            {filteredCollections.map((collection) => {
               const progress = ukdocsPrintCollectionProgress(collection, customers);
               const status = ukdocsPrintStatusDefinition(progress.status);
               const isActive = detailDrawerOpen && selectedCollection?.id === collection.id;
+              const downloadEntries = ukdocsCollectionDownloadEntries(collection);
               return (
                 <div key={collection.id} className={`ukdocs-upload-card ukdocs-collection-tile${isActive ? " active" : ""}`}>
                   <strong>{progress.customer?.customer_name || collection.customer_name || collection.city_name || "Shipment"}</strong>
@@ -3326,10 +3441,23 @@ function UkdocsPrintPage({ currentUser }) {
                     {!progress.missing.length && <button type="button" onClick={() => sendReady(collection.id)} disabled={saving}>Send papers</button>}
                     <button type="button" onClick={() => deleteCollection(collection.id)}>Delete</button>
                   </div>
+                  {!!downloadEntries.length && (
+                    <div className="ukdocs-download-box">
+                      <strong>Downloads</strong>
+                      <div className="ukdocs-download-list">
+                        {downloadEntries.map((entry) => (
+                          <a key={entry.key} href={entry.href} className="ukdocs-download-link">
+                            {entry.label}
+                          </a>
+                        ))}
+                      </div>
+                    </div>
+                  )}
                 </div>
               );
             })}
             {!collections.length && <div className="notice">No spreadsheet sendings or UKdocs-linked collections are loaded yet.</div>}
+            {!!collections.length && !filteredCollections.length && <div className="notice">No collections saved for {selectedCollectionDate} yet.</div>}
           </div>
         </div>
 
