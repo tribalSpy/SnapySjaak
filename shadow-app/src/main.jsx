@@ -6342,6 +6342,35 @@ function SettingsPage({ currentUser }) {
     }
   }
 
+  async function restoreMissingFromBackup(filename) {
+    if (!window.confirm(`Restore only missing Fust references and CMR/fustbon links from ${filename}? This will not replace the full Fust history.`)) {
+      return;
+    }
+    setBackupBusy(true);
+    setError("");
+    setMessage("");
+    try {
+      const payload = await apiJson("/api/fust/backups/restore-missing", {
+        method: "POST",
+        body: JSON.stringify({ filename }),
+      });
+      const summary = payload.summary || {};
+      setMessage(
+        `Backup merge finished from ${payload.filename || filename}. `
+        + `${summary.updated || 0} action(s) updated, `
+        + `${summary.cmr_restored || 0} CMR, `
+        + `${summary.fustbon_restored || 0} fustbon, `
+        + `${summary.fustbon_reference_restored || 0} fustbon ref, `
+        + `${summary.fustfactuur_reference_restored || 0} fustfactuur ref restored.`,
+      );
+      await loadBackups();
+    } catch (restoreError) {
+      setError(restoreError.message);
+    } finally {
+      setBackupBusy(false);
+    }
+  }
+
 
   async function connectGoogleDrive() {
     setGoogleBusy(true);
@@ -6745,7 +6774,7 @@ function SettingsPage({ currentUser }) {
                 <th>Filename</th>
                 <th>Created</th>
                 <th>Size</th>
-                <th>Download</th>
+                <th>Actions</th>
               </tr>
             </thead>
             <tbody>
@@ -6756,6 +6785,10 @@ function SettingsPage({ currentUser }) {
                   <td>{Math.round((backup.size_bytes || 0) / 1024)} KB</td>
                   <td>
                     <a href={backup.download_path}>Download</a>
+                    {" "}
+                    <button type="button" onClick={() => restoreMissingFromBackup(backup.filename)} disabled={backupBusy}>
+                      Restore missing info
+                    </button>
                   </td>
                 </tr>
               ))}

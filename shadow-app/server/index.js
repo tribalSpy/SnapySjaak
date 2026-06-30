@@ -1838,6 +1838,128 @@ async function listFustBackups() {
   return backups;
 }
 
+async function readFustBackupSnapshot(filename) {
+  const safeName = path.basename(String(filename || "").trim());
+  if (!safeName) {
+    throw new Error("Choose a backup file first");
+  }
+  const resolvedPath = path.resolve(fustBackupDir, safeName);
+  if (!resolvedPath.startsWith(path.resolve(fustBackupDir))) {
+    throw new Error("Forbidden backup path");
+  }
+  if (!existsSync(resolvedPath)) {
+    throw new Error("Backup not found");
+  }
+  const payload = await readJsonFile(resolvedPath, { actions: [] });
+  return {
+    filename: safeName,
+    actions: Array.isArray(payload?.actions) ? payload.actions.map(normalizeFustAction) : [],
+  };
+}
+
+function fustDocumentHasSavedValue(documentInfo) {
+  return ["uploaded", "skipped", "failed"].includes(String(documentInfo?.status || "")) && (
+    String(documentInfo?.file_id || "").trim()
+    || String(documentInfo?.file_name || "").trim()
+    || String(documentInfo?.web_link || "").trim()
+    || String(documentInfo?.uploaded_at || "").trim()
+    || String(documentInfo?.error || "").trim()
+    || String(documentInfo?.status || "").trim() === "skipped"
+  );
+}
+
+function mergeMissingFustActionData(currentAction, backupAction) {
+  const mergedAction = normalizeFustAction({
+    ...currentAction,
+    fustbon_reference: currentAction?.fustbon_reference || backupAction?.fustbon_reference || "",
+    fustfactuur_reference: currentAction?.fustfactuur_reference || backupAction?.fustfactuur_reference || "",
+    cmr: fustDocumentHasSavedValue(currentAction?.cmr) ? currentAction?.cmr : backupAction?.cmr,
+    fustbon: fustDocumentHasSavedValue(currentAction?.fustbon) ? currentAction?.fustbon : backupAction?.fustbon,
+  });
+
+  const changes = {
+    fustbon_reference_restored: !currentAction?.fustbon_reference && !!mergedAction.fustbon_reference,
+    fustfactuur_reference_restored: !currentAction?.fustfactuur_reference && !!mergedAction.fustfactuur_reference,
+    cmr_restored: !fustDocumentHasSavedValue(currentAction?.cmr) && fustDocumentHasSavedValue(mergedAction?.cmr),
+    fustbon_restored: !fustDocumentHasSavedValue(currentAction?.fustbon) && fustDocumentHasSavedValue(mergedAction?.fustbon),
+  };
+
+  return { mergedAction, changes };
+}
+
+async function restoreMissingFustDataFromBackup(filename, requestUser) {
+  const backup = await readFustBackupSnapshot(filename);
+  const settings = await readFustSettings();
+  const [localActions, retourRows, uitgaandRows] = await Promise.all([
+    readFustActions(),
+    loadSheetRows(settings.spreadsheet_id, settings.in_sheet_name).catch(() => []),
+    loadSheetRows(settings.spreadsheet_id, settings.out_sheet_name).catch(() => []),
+  ]);
+
+  const sheetActions = [
+    ...parseRegistrySheetRows(retourRows, "IN"),
+    ...parseRegistrySheetRows(uitgaandRows, "OUT"),
+  ];
+  const currentCandidates = [...localActions, ...sheetActions];
+  const currentById = new Map(currentCandidates.map((action) => [String(action.id || "").trim(), action]).filter(([id]) => id));
+  const currentBySignature = new Map(currentCandidates.map((action) => [buildActionSignature(action), action]));
+
+  const nextLocalMap = new Map(localActions.map((action) => [buildActionMergeKey(action), action]));
+  const summary = {
+    matched: 0,
+    updated: 0,
+    cmr_restored: 0,
+    fustbon_restored: 0,
+    fustbon_reference_restored: 0,
+    fustfactuur_reference_restored: 0,
+    skipped: 0,
+  };
+
+  for (const backupAction of backup.actions) {
+    if (backupAction.deleted) {
+      summary.skipped += 1;
+      continue;
+    }
+    const currentMatch = currentById.get(String(backupAction.id || "").trim()) || currentBySignature.get(buildActionSignature(backupAction)) || null;
+    if (!currentMatch) {
+      summary.skipped += 1;
+      continue;
+    }
+    summary.matched += 1;
+    const existingLocalKey = buildActionMergeKey(currentMatch);
+    const baseAction = nextLocalMap.get(existingLocalKey) || currentMatch;
+    const { mergedAction, changes } = mergeMissingFustActionData(baseAction, backupAction);
+    const changed = changes.cmr_restored || changes.fustbon_restored || changes.fustbon_reference_restored || changes.fustfactuur_reference_restored;
+    if (!changed) {
+      continue;
+    }
+    mergedAction.created_by = baseAction.created_by || backupAction.created_by || requestUser.username;
+    mergedAction.created_at = baseAction.created_at || backupAction.created_at || new Date().toISOString();
+    nextLocalMap.set(existingLocalKey, mergedAction);
+    summary.updated += 1;
+    if (changes.cmr_restored) {
+      summary.cmr_restored += 1;
+    }
+    if (changes.fustbon_restored) {
+      summary.fustbon_restored += 1;
+    }
+    if (changes.fustbon_reference_restored) {
+      summary.fustbon_reference_restored += 1;
+    }
+    if (changes.fustfactuur_reference_restored) {
+      summary.fustfactuur_reference_restored += 1;
+    }
+  }
+
+  const nextLocalActions = [...nextLocalMap.values()];
+  await writeFustActions(nextLocalActions);
+  return {
+    filename: backup.filename,
+    summary,
+    action_count: nextLocalActions.length,
+  };
+}
+
 function isoDateForDisplay(value) {
   if (!value) {
     return "";
@@ -5293,6 +5415,20 @@ async function handleApi(req, res, url) {
       "cache-control": "no-store",
     });
     createReadStream(resolvedPath).pipe(res);
+    return;
+  }
+
+  if (url.pathname === "/api/fust/backups/restore-missing" && req.method === "POST") {
+    if (!requirePermission(res, requestUser, PERMISSIONS.SETTINGS_MANAGE)) {
+      return;
+    }
+    const body = await readRequestJson(req);
+    try {
+      const payload = await restoreMissingFustDataFromBackup(body?.filename, requestUser);
+      sendJson(res, 200, payload);
+    } catch (error) {
+      sendJson(res, 400, { error: error instanceof Error ? error.message : String(error) });
+    }
     return;
   }
 
