@@ -2342,11 +2342,13 @@ function UkdocsPage({ currentUser }) {
   const [activeMenu, setActiveMenu] = useState("new");
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
+  const [daySendingsBusy, setDaySendingsBusy] = useState(false);
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
   const [state, setState] = useState(null);
   const [customerDraft, setCustomerDraft] = useState(emptyUkdocsCustomer());
   const [shipmentDraft, setShipmentDraft] = useState(emptyUkdocsShipmentDraft());
+  const [shipmentLoadDate, setShipmentLoadDate] = useState("");
   const [analysis, setAnalysis] = useState(null);
   const [generatedFiles, setGeneratedFiles] = useState([]);
   const [selectedAuditReportId, setSelectedAuditReportId] = useState("");
@@ -2387,7 +2389,11 @@ function UkdocsPage({ currentUser }) {
   const selectedAuditReport = auditReports.find((report) => report.id === selectedAuditReportId) || auditReports[0] || null;
   const selectedUkdocsCustomer = customers.find((item) => item.id === shipmentDraft.customer_id) || null;
   const selectedPrintCollection = printCollections.find((item) => item.id === shipmentDraft.print_collection_id) || null;
-  const availablePrintCollections = printCollections;
+  const availablePrintCollections = useMemo(
+    () => printCollections.filter((item) => String(item.shipment_date || "").slice(0, 10) === shipmentLoadDate),
+    [printCollections, shipmentLoadDate],
+  );
+  const hasSelectedShipmentContext = Boolean(shipmentDraft.id || shipmentDraft.print_collection_id);
   const activeExportDefaults = useMemo(
     () => mergeUkdocsExportDefaults(exportDefaults, selectedUkdocsCustomer?.export_defaults || {}),
     [exportDefaults, selectedUkdocsCustomer],
@@ -2425,6 +2431,23 @@ function UkdocsPage({ currentUser }) {
     setAnalysis(null);
     setGeneratedFiles([]);
     setShipmentUploadInputVersion((value) => value + 1);
+  }
+
+  function shipmentDraftHasWork(draft = shipmentDraft) {
+    const uploadedAnyFile = Object.values(draft?.uploaded_files || {}).some((item) => item?.file_name);
+    return Boolean(
+      draft?.id
+      || draft?.print_collection_id
+      || draft?.customer_id
+      || draft?.export_reference
+      || draft?.reference_connect
+      || draft?.truck_number
+      || draft?.trailer_number
+      || draft?.notes
+      || uploadedAnyFile
+      || analysis
+      || generatedFiles.length,
+    );
   }
 
   function buildDraftFromPrintCollection(collection, matchedCustomer = null) {
@@ -2485,14 +2508,55 @@ function UkdocsPage({ currentUser }) {
     }));
   }
 
+  async function loadPrintCollectionsForDate(date, options = {}) {
+    const normalizedDate = String(date || "").slice(0, 10);
+    setShipmentLoadDate(normalizedDate);
+    if (!normalizedDate) {
+      if (options.resetDraft !== false) {
+        resetDrafts();
+      }
+      return;
+    }
+    setDaySendingsBusy(true);
+    setError("");
+    if (!options.keepMessage) {
+      setMessage("");
+    }
+    try {
+      const payload = await apiJson("/api/ukdocs-print/sheet-sync", {
+        method: "POST",
+        body: JSON.stringify({ date: normalizedDate }),
+      });
+      setState((current) => ({
+        ...current,
+        print_collections: payload.print_collections || current?.print_collections || [],
+      }));
+      if (options.resetDraft !== false) {
+        resetDrafts();
+      }
+      if (!options.silent) {
+        setMessage(`Loaded ${payload.imported_count || 0} available sendings for ${payload.date}.`);
+      }
+    } catch (loadError) {
+      setError(loadError.message);
+    } finally {
+      setDaySendingsBusy(false);
+    }
+  }
+
   function applyPrintCollection(collectionId) {
     const collection = printCollections.find((item) => item.id === collectionId) || null;
     if (!collection) {
       resetDrafts();
       return;
     }
+    setShipmentLoadDate(String(collection.shipment_date || "").slice(0, 10));
     const matchedCustomer = (collection?.customer_id && customers.find((item) => item.id === collection.customer_id)) || findUkdocsCustomerMatch(customers, collection);
     const savedShipment = shipments.find((item) => item.print_collection_id === collectionId || item.id === collectionId) || null;
+    const alreadyDone = Boolean(savedShipment || ukdocsGeneratedShipmentReady(collection));
+    if (alreadyDone && !window.confirm("This sending already has saved UKdocs data. Opening or generating it again can replace the saved files and details. Do you want to continue?")) {
+      return;
+    }
     if (savedShipment) {
       selectShipment(savedShipment);
       return;
@@ -2700,6 +2764,7 @@ function UkdocsPage({ currentUser }) {
   }
 
   function selectShipment(shipment) {
+    setShipmentLoadDate(String(shipment?.shipment_date || "").slice(0, 10));
     setShipmentDraft({
       ...emptyUkdocsShipmentDraft(),
       ...shipment,
@@ -2758,6 +2823,20 @@ function UkdocsPage({ currentUser }) {
     }));
   }
 
+  function openNewShipmentScreen() {
+    if (activeMenu === "new") {
+      return;
+    }
+    if (shipmentDraftHasWork() && !window.confirm("Start a new UKdocs shipment screen and clear the current shipment view?")) {
+      return;
+    }
+    resetDrafts();
+    setShipmentLoadDate("");
+    setMessage("");
+    setError("");
+    setActiveMenu("new");
+  }
+
   if (loading) {
     return <div className="notice">Loading UKdocs workspace...</div>;
   }
@@ -2775,7 +2854,7 @@ function UkdocsPage({ currentUser }) {
           ["history", "Shipment history"],
           ["audits", "Audit reports"],
         ].map(([key, label]) => (
-          <button key={key} type="button" className={activeMenu === key ? "active" : ""} onClick={() => setActiveMenu(key)}>{label}</button>
+          <button key={key} type="button" className={activeMenu === key ? "active" : ""} onClick={() => (key === "new" ? openNewShipmentScreen() : setActiveMenu(key))}>{label}</button>
         ))}
       </div>
 
@@ -2790,23 +2869,55 @@ function UkdocsPage({ currentUser }) {
             <div className={`ukdocs-status-badge ${ukdocsStatusDefinition(ukdocsShipmentStatus(shipmentDraft)).tone}`}>{ukdocsStatusDefinition(ukdocsShipmentStatus(shipmentDraft)).label}</div>
           </div>
           <div className="form-grid">
-            <label className="wide">
-              <span>Available sending</span>
-              <select value={shipmentDraft.print_collection_id || ""} onChange={(event) => applyPrintCollection(event.target.value)}>
-                <option value="">Choose a sending from UKdocs Print</option>
-                {availablePrintCollections.map((collection) => {
-                  const donePrefix = ukdocsGeneratedShipmentReady(collection) ? "[Done] " : "";
-                  const remarkSuffix = String(collection.remark || "").trim() ? ` | ${String(collection.remark || "").trim()}` : "";
-                  return (
-                    <option key={collection.id} value={collection.id}>
-                      {`${donePrefix}${collection.shipment_date || "-"} | ${collection.reference_connect || "-"} | ${collection.city_name || collection.customer_name || "-"} | ${collection.hub_code || "-"}${remarkSuffix}`}
-                    </option>
-                  );
-                })}
-              </select>
+            <label>
+              <span>Shipment date</span>
+              <input
+                type="date"
+                value={shipmentLoadDate}
+                onChange={async (event) => {
+                  const nextDate = event.target.value;
+                  if (nextDate === shipmentLoadDate) {
+                    return;
+                  }
+                  if (shipmentDraftHasWork() && !window.confirm("Changing the day will clear the current shipment screen first. Continue?")) {
+                    return;
+                  }
+                  await loadPrintCollectionsForDate(nextDate);
+                }}
+              />
             </label>
-            <label><span>Customer / export user</span><select value={shipmentDraft.customer_id} onChange={(event) => applyCustomerDefaults(event.target.value)}><option value="">Choose customer</option>{customers.map((customer) => <option key={customer.id} value={customer.id}>{customer.customer_name}</option>)}</select></label>
-            <label><span>Date</span><input type="date" value={shipmentDraft.shipment_date} onChange={(event) => setShipmentDraft({ ...shipmentDraft, shipment_date: event.target.value })} /></label>
+            <label>
+              <span>&nbsp;</span>
+              <button type="button" onClick={() => loadPrintCollectionsForDate(shipmentLoadDate, { resetDraft: false, keepMessage: true })} disabled={!shipmentLoadDate || daySendingsBusy || saving}>
+                {daySendingsBusy ? "Loading..." : "Reload day sendings"}
+              </button>
+            </label>
+            {!!shipmentLoadDate && (
+              <label className="wide">
+                <span>Available sending</span>
+                <select value={shipmentDraft.print_collection_id || ""} onChange={(event) => applyPrintCollection(event.target.value)} disabled={daySendingsBusy}>
+                  <option value="">Choose a sending from UKdocs Print</option>
+                  {availablePrintCollections.map((collection) => {
+                    const donePrefix = ukdocsGeneratedShipmentReady(collection) ? "[Done] " : "";
+                    const remarkSuffix = String(collection.remark || "").trim() ? ` | ${String(collection.remark || "").trim()}` : "";
+                    return (
+                      <option key={collection.id} value={collection.id}>
+                        {`${donePrefix}${collection.shipment_date || "-"} | ${collection.reference_connect || "-"} | ${collection.city_name || collection.customer_name || "-"} | ${collection.hub_code || "-"}${remarkSuffix}`}
+                      </option>
+                    );
+                  })}
+                </select>
+              </label>
+            )}
+          </div>
+          {!shipmentLoadDate && <div className="notice">Choose a date first. After that, UKdocs will show only the sendings available for that day.</div>}
+          {!!shipmentLoadDate && !daySendingsBusy && !availablePrintCollections.length && !hasSelectedShipmentContext && <div className="notice">No UKdocs Print sendings are available for {shipmentLoadDate}.</div>}
+          {!!shipmentLoadDate && !hasSelectedShipmentContext && !!availablePrintCollections.length && <div className="notice">Choose one of the {availablePrintCollections.length} available sendings for {shipmentLoadDate} to load its shipment details.</div>}
+          {hasSelectedShipmentContext && (
+            <>
+              <div className="form-grid">
+                <label><span>Customer / export user</span><select value={shipmentDraft.customer_id} onChange={(event) => applyCustomerDefaults(event.target.value)}><option value="">Choose customer</option>{customers.map((customer) => <option key={customer.id} value={customer.id}>{customer.customer_name}</option>)}</select></label>
+                <label><span>Date</span><input type="date" value={shipmentDraft.shipment_date} onChange={(event) => setShipmentDraft({ ...shipmentDraft, shipment_date: event.target.value })} /></label>
             <label><span>Truck number</span><input value={shipmentDraft.truck_number || ""} onChange={(event) => setShipmentDraft({ ...shipmentDraft, truck_number: event.target.value })} placeholder="For example: 1 BHM" /></label>
             <label><span>Truck / trailer licence plate</span><input value={shipmentDraft.trailer_number} onChange={(event) => setShipmentDraft({ ...shipmentDraft, trailer_number: event.target.value })} placeholder="One licence plate for the whole export" /></label>
             <label><span>Combined export invoice numbers</span><input value={combinedInvoiceNumbers} readOnly placeholder="Filled automatically from the category invoice inputs below" /></label>
@@ -2831,10 +2942,10 @@ function UkdocsPage({ currentUser }) {
             <label><span>Container number</span><input value={shipmentDraft.container_number} onChange={(event) => setShipmentDraft({ ...shipmentDraft, container_number: event.target.value })} /></label>
             <label className="wide"><span>Transport / customs information</span><textarea rows={4} value={shipmentDraft.transport_customs_info} onChange={(event) => setShipmentDraft({ ...shipmentDraft, transport_customs_info: event.target.value })} /></label>
             <label className="wide"><span>Notes / references</span><textarea rows={4} value={shipmentDraft.notes} onChange={(event) => setShipmentDraft({ ...shipmentDraft, notes: event.target.value })} /></label>
-          </div>
-          {selectedPrintCollection && <div className="notice">Selected sending: {selectedPrintCollection.city_name || "-"} | connect {selectedPrintCollection.reference_connect || "-"} | hub {selectedPrintCollection.hub_code || "-"} | PD {selectedPrintCollection.pd_form || "-"}</div>}
+              </div>
+              {selectedPrintCollection && <div className="notice">Selected sending: {selectedPrintCollection.city_name || "-"} | connect {selectedPrintCollection.reference_connect || "-"} | hub {selectedPrintCollection.hub_code || "-"} | PD {selectedPrintCollection.pd_form || "-"}</div>}
 
-          <div className="ukdocs-upload-grid">
+              <div className="ukdocs-upload-grid">
             {UKDOCS_CATEGORY_DEFINITIONS.map((category) => {
               const fileInfo = shipmentDraft.uploaded_files?.[category.code] || {};
               return (
@@ -2849,12 +2960,12 @@ function UkdocsPage({ currentUser }) {
                 </div>
               );
             })}
-          </div>
+              </div>
 
-          <div className="section-header"><h3>Workflow status</h3></div>
-          <div className="ukdocs-badge-row">{["not_started", "files_uploaded", "audit_passed", "ready", "failed"].map((status) => { const definition = ukdocsStatusDefinition(status); return <div key={status} className={`ukdocs-status-badge ${definition.tone}`}>{definition.label}</div>; })}</div>
-          <div className="row-actions spread-actions">
-            <button type="button" onClick={resetDrafts} disabled={saving}>New blank shipment</button>
+              <div className="section-header"><h3>Workflow status</h3></div>
+              <div className="ukdocs-badge-row">{["not_started", "files_uploaded", "audit_passed", "ready", "failed"].map((status) => { const definition = ukdocsStatusDefinition(status); return <div key={status} className={`ukdocs-status-badge ${definition.tone}`}>{definition.label}</div>; })}</div>
+              <div className="row-actions spread-actions">
+            <button type="button" onClick={resetDrafts} disabled={saving || daySendingsBusy}>Choose another sending</button>
             {!analysis && (
               <button type="button" className="primary" onClick={continueShipment} disabled={!canContinue}>
                 {saving ? "Continuing..." : "Continue"}
@@ -2867,10 +2978,10 @@ function UkdocsPage({ currentUser }) {
             )}
             <button type="button" disabled={!generatedFiles.length} onClick={() => downloadUkdocsFilesWithPrompt(generatedFiles)}>Download files</button>
             <button type="button" disabled={!generatedFiles.length} onClick={() => generatedFiles.forEach((file) => downloadBase64File(file.name, file.content_base64, file.mime_type))}>Download only</button>
-          </div>
+              </div>
 
-          {analysis && (
-            <div className="ukdocs-stack">
+              {analysis && (
+                <div className="ukdocs-stack">
               <div className="section-header"><h3>Audit result</h3><div className={`ukdocs-status-badge ${analysis.audit.final_status === "PASS" ? "success" : "danger"}`}>{analysis.audit.final_status}</div></div>
               {!!analysis.audit.warnings?.length && <div className="notice danger">{analysis.audit.warnings.map((warning) => warning.message).join(" | ")}</div>}
               <div className="table-wrap">
@@ -2906,7 +3017,9 @@ function UkdocsPage({ currentUser }) {
                 </table>
               </div>
               {!!generatedFiles.length && <div className="row-actions spread-actions">{generatedFiles.map((file) => <button key={file.name} type="button" onClick={() => downloadUkdocsFileWithPrompt(file)}>{file.name}</button>)}</div>}
-            </div>
+                </div>
+              )}
+            </>
           )}
         </div>
       )}
