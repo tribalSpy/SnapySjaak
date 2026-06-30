@@ -3068,35 +3068,74 @@ function ukdocsCollectionDownloadEntries(collection) {
 
   const collectionId = encodeURIComponent(collection.id);
   const entries = [];
+  const seen = new Set();
   const phytoFiles = collection.documents?.phyto_files || [];
   const generatedFiles = collection.documents?.generated_files || [];
   const exportExtra = collection.documents?.export_extra || null;
 
-  generatedFiles.forEach((generatedFile, index) => {
+  function pushEntry(prefix, file, href, fallbackLabel) {
+    if (!file && !href) {
+      return;
+    }
+    const normalizedName = String(file?.original_name || fallbackLabel || "").trim().toLowerCase();
+    const identity = [
+      prefix,
+      normalizedName || String(file?.storage_name || "").trim().toLowerCase(),
+    ].join("|");
+    if (seen.has(identity)) {
+      return;
+    }
+    seen.add(identity);
     entries.push({
-      key: `generated-${generatedFile.storage_name || index}`,
-      label: generatedFile.original_name || `Generated ${index + 1}`,
-      href: `/api/ukdocs-print/collections/${collectionId}/documents/generated/${index}`,
-    });
-  });
-
-  phytoFiles.forEach((phytoFile, index) => {
-    entries.push({
-      key: `phyto-${phytoFile.storage_name || index}`,
-      label: phytoFile.original_name || `Phyto ${index + 1}`,
-      href: `/api/ukdocs-print/collections/${collectionId}/documents/phyto/${index}`,
-    });
-  });
-
-  if (exportExtra?.storage_name) {
-    entries.push({
-      key: `export-extra-${exportExtra.storage_name}`,
-      label: exportExtra.original_name || "Second export file",
-      href: `/api/ukdocs-print/collections/${collectionId}/documents/export_extra`,
+      key: `${prefix}-${file?.storage_name || entries.length}`,
+      label: file?.original_name || fallbackLabel,
+      href,
     });
   }
 
+  generatedFiles.forEach((generatedFile, index) => {
+    pushEntry(
+      "generated",
+      generatedFile,
+      `/api/ukdocs-print/collections/${collectionId}/documents/generated/${index}`,
+      `Generated ${index + 1}`,
+    );
+  });
+
+  phytoFiles.forEach((phytoFile, index) => {
+    pushEntry(
+      "phyto",
+      phytoFile,
+      `/api/ukdocs-print/collections/${collectionId}/documents/phyto/${index}`,
+      `Phyto ${index + 1}`,
+    );
+  });
+
+  if (exportExtra?.storage_name) {
+    pushEntry(
+      "export-extra",
+      exportExtra,
+      `/api/ukdocs-print/collections/${collectionId}/documents/export_extra`,
+      "Second export file",
+    );
+  }
+
   return entries;
+}
+
+async function downloadCollectionEntries(entries) {
+  if (!Array.isArray(entries) || !entries.length) {
+    return;
+  }
+
+  entries.forEach((entry) => {
+    const link = document.createElement("a");
+    link.href = entry.href;
+    link.download = safeDownloadFilename(entry.label);
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+  });
 }
 
 function UkdocsPrintPage({ currentUser }) {
@@ -3443,7 +3482,12 @@ function UkdocsPrintPage({ currentUser }) {
                   </div>
                   {!!downloadEntries.length && (
                     <div className="ukdocs-download-box">
-                      <strong>Downloads</strong>
+                      <div className="row-actions spread-actions">
+                        <strong>Downloads</strong>
+                        <button type="button" onClick={() => downloadCollectionEntries(downloadEntries)}>
+                          Download all
+                        </button>
+                      </div>
                       <div className="ukdocs-download-list">
                         {downloadEntries.map((entry) => (
                           <a key={entry.key} href={entry.href} className="ukdocs-download-link">
