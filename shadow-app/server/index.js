@@ -5,6 +5,13 @@ import path from "node:path";
 import crypto from "node:crypto";
 import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
+import {
+  getDatabaseStatus,
+  initializeDatabase,
+  isDatabaseEnabled,
+  markFustActionDeletedInDatabase,
+  saveFustActionToDatabase,
+} from "./db.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const appRoot = path.resolve(__dirname, "..");
@@ -1343,6 +1350,28 @@ async function writeFustActions(actions) {
   await writeJsonFile(fustActionsPath, { actions: actions.map(normalizeFustAction) });
 }
 
+async function mirrorFustActionToDatabase(action) {
+  if (!isDatabaseEnabled()) {
+    return;
+  }
+  try {
+    await saveFustActionToDatabase(normalizeFustAction(action));
+  } catch (error) {
+    console.error("Fust database mirror failed:", error instanceof Error ? error.message : String(error));
+  }
+}
+
+async function mirrorFustDeleteToDatabase(actionId) {
+  if (!isDatabaseEnabled()) {
+    return;
+  }
+  try {
+    await markFustActionDeletedInDatabase(String(actionId || "").trim());
+  } catch (error) {
+    console.error("Fust database delete mirror failed:", error instanceof Error ? error.message : String(error));
+  }
+}
+
 function normalizeClockEmployee(employee) {
   return {
     tbnr: String(employee?.tbnr || employee?.TBNR || "").trim().toUpperCase(),
@@ -1905,6 +1934,7 @@ async function restoreMissingFustDataFromBackup(filename, requestUser) {
   const currentBySignature = new Map(currentCandidates.map((action) => [buildActionSignature(action), action]));
 
   const nextLocalMap = new Map(localActions.map((action) => [buildActionMergeKey(action), action]));
+  const restoredActions = [];
   const summary = {
     matched: 0,
     updated: 0,
@@ -1936,6 +1966,7 @@ async function restoreMissingFustDataFromBackup(filename, requestUser) {
     mergedAction.created_by = baseAction.created_by || backupAction.created_by || requestUser.username;
     mergedAction.created_at = baseAction.created_at || backupAction.created_at || new Date().toISOString();
     nextLocalMap.set(existingLocalKey, mergedAction);
+    restoredActions.push(mergedAction);
     summary.updated += 1;
     if (changes.cmr_restored) {
       summary.cmr_restored += 1;
@@ -1953,6 +1984,9 @@ async function restoreMissingFustDataFromBackup(filename, requestUser) {
 
   const nextLocalActions = [...nextLocalMap.values()];
   await writeFustActions(nextLocalActions);
+  for (const restoredAction of restoredActions) {
+    await mirrorFustActionToDatabase(restoredAction);
+  }
   return {
     filename: backup.filename,
     summary,
@@ -5505,6 +5539,7 @@ async function handleApi(req, res, url) {
       read_ok,
       row_count,
       headers,
+      database: getDatabaseStatus(),
       error,
     });
     return;
@@ -5680,6 +5715,7 @@ async function handleApi(req, res, url) {
       });
       actions[actionIndex] = action;
       await writeFustActions(actions);
+      await mirrorFustActionToDatabase(action);
       sendJson(res, 200, { action });
       return;
     }
@@ -5707,12 +5743,14 @@ async function handleApi(req, res, url) {
       });
       actions[actionIndex] = action;
       await writeFustActions(actions);
+      await mirrorFustActionToDatabase(action);
       sendJson(res, 500, { error: action[documentConfig.field].error, action });
       return;
     }
 
     actions[actionIndex] = action;
     await writeFustActions(actions);
+    await mirrorFustActionToDatabase(action);
     sendJson(res, 200, { action });
     return;
   }
@@ -5749,6 +5787,7 @@ async function handleApi(req, res, url) {
 
       actions[actionIndex] = action;
       await writeFustActions(actions);
+      await mirrorFustActionToDatabase(action);
       sendJson(res, 200, { action });
       return;
     }
@@ -5771,6 +5810,7 @@ async function handleApi(req, res, url) {
 
       actions[actionIndex] = action;
       await writeFustActions(actions);
+      await mirrorFustActionToDatabase(action);
       sendJson(res, 200, { action });
       return;
     }
@@ -5836,6 +5876,7 @@ async function handleApi(req, res, url) {
 
     actions[actionIndex] = updatedAction;
     await writeFustActions(actions);
+    await mirrorFustActionToDatabase(updatedAction);
 
     const settings = await readFustSettings();
     try {
@@ -5851,6 +5892,7 @@ async function handleApi(req, res, url) {
 
     actions[actionIndex] = updatedAction;
     await writeFustActions(actions);
+    await mirrorFustActionToDatabase(updatedAction);
     sendJson(res, 200, { action: updatedAction });
     return;
   }
@@ -5905,6 +5947,7 @@ async function handleApi(req, res, url) {
       nextActions = actions.filter((item) => item.id !== actionId);
       await writeFustActions(nextActions);
     }
+    await mirrorFustDeleteToDatabase(actionId);
 
     sendJson(res, 200, {
       ok: true,
@@ -5967,6 +6010,7 @@ async function handleApi(req, res, url) {
     const actions = await readFustActions();
     actions.push(action);
     await writeFustActions(actions);
+    await mirrorFustActionToDatabase(action);
 
     const settings = await readFustSettings();
     try {
@@ -6002,6 +6046,7 @@ async function handleApi(req, res, url) {
       savedActions[actionIndex] = action;
       await writeFustActions(savedActions);
     }
+    await mirrorFustActionToDatabase(action);
 
     sendJson(res, 201, { action });
     return;
@@ -6263,12 +6308,30 @@ server.on("error", (error) => {
   process.exit(1);
 });
 
-server.listen(port, host, () => {
-  console.log("SnappySjaak shadow app is running.");
-  console.log("Open on this PC:");
-  console.log(`  http://127.0.0.1:${port}`);
-  console.log("Open from another PC on the same network:");
-  for (const url of lanUrls().filter((url) => !url.includes("127.0.0.1"))) {
-    console.log(`  ${url}`);
+async function startServer() {
+  if (isDatabaseEnabled()) {
+    try {
+      await initializeDatabase();
+      console.log("Postgres is connected and ready.");
+    } catch (error) {
+      console.error("Postgres initialization failed:", error instanceof Error ? error.message : String(error));
+    }
+  } else {
+    console.log("Postgres is not configured yet. DATABASE_URL is not set.");
   }
+
+  server.listen(port, host, () => {
+    console.log("SnappySjaak shadow app is running.");
+    console.log("Open on this PC:");
+    console.log(`  http://127.0.0.1:${port}`);
+    console.log("Open from another PC on the same network:");
+    for (const url of lanUrls().filter((url) => !url.includes("127.0.0.1"))) {
+      console.log(`  ${url}`);
+    }
+  });
+}
+
+startServer().catch((error) => {
+  console.error(error);
+  process.exit(1);
 });

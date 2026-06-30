@@ -6711,6 +6711,9 @@ function SettingsPage({ currentUser }) {
               Spreadsheet ID: {connectionTest.spreadsheet_id || "(empty)"} | Tab: {connectionTest.sheet_name || "(empty)"}
             </p>
             <p className="sidebar-note">
+              Database: {connectionTest.database?.enabled ? (connectionTest.database?.ready ? "connected" : `not ready (${connectionTest.database?.error || "unknown error"})`) : "not configured"}
+            </p>
+            <p className="sidebar-note">
               Result: {connectionTest.read_ok ? `read ok (${connectionTest.row_count} rows)` : "read failed"}
             </p>
             <p className="sidebar-note">
