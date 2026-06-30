@@ -189,6 +189,7 @@ const defaultExpeditionStickerState = {
 };
 
 const cmrPrintDataDirCandidates = [
+  path.join(cacheDir, "cmrprint-data"),
   path.join(repoRoot, "cmrprint", "CMRPrint", "Data"),
   path.join(repoRoot, "cmrprint", "CMRPrint", "bin", "Release", "net9.0-windows", "win-x64", "publish", "Data"),
   path.join(repoRoot, "cmrprint", "CMRPrint", "bin", "Release", "net9.0-windows", "win-x64", "Data"),
@@ -410,7 +411,8 @@ function resolveCmrPrintDataDir() {
 }
 
 async function loadCmrPrintData() {
-  const { dataDir, candidates } = resolveCmrPrintDataDir();
+  const candidates = cmrPrintCandidateStatus();
+  const { dataDir } = await ensureCmrPrintPersistentDataDir();
   if (!dataDir) {
     return {
       available: false,
@@ -460,14 +462,61 @@ async function loadCmrPrintData() {
 }
 
 function cmrPrintPrimaryDataDir() {
-  return path.join(repoRoot, "cmrprint", "CMRPrint", "Data");
+  return path.join(cacheDir, "cmrprint-data");
+}
+
+async function copyCmrPrintDirectoryIfMissing(sourceDir, targetDir) {
+  if (!sourceDir || !targetDir || path.resolve(sourceDir) === path.resolve(targetDir)) {
+    return;
+  }
+  await fs.mkdir(targetDir, { recursive: true });
+  const sourceAppDataPath = path.join(sourceDir, "app-data.xml");
+  const targetAppDataPath = path.join(targetDir, "app-data.xml");
+  if (existsSync(sourceAppDataPath) && !existsSync(targetAppDataPath)) {
+    await fs.copyFile(sourceAppDataPath, targetAppDataPath);
+  }
+  const sourceTemplatesDir = path.join(sourceDir, "Templates");
+  const targetTemplatesDir = path.join(targetDir, "Templates");
+  if (existsSync(sourceTemplatesDir)) {
+    await fs.mkdir(targetTemplatesDir, { recursive: true });
+    const entries = await fs.readdir(sourceTemplatesDir, { withFileTypes: true });
+    for (const entry of entries) {
+      if (!entry.isFile()) {
+        continue;
+      }
+      const sourcePath = path.join(sourceTemplatesDir, entry.name);
+      const targetPath = path.join(targetTemplatesDir, entry.name);
+      if (!existsSync(targetPath)) {
+        await fs.copyFile(sourcePath, targetPath);
+      }
+    }
+  }
+}
+
+async function ensureCmrPrintPersistentDataDir() {
+  const persistentDataDir = cmrPrintPrimaryDataDir();
+  const persistentTemplatesDir = path.join(persistentDataDir, "Templates");
+  await fs.mkdir(persistentTemplatesDir, { recursive: true });
+  const hasPersistentData = existsSync(path.join(persistentDataDir, "app-data.xml"))
+    || existsSync(persistentTemplatesDir);
+  if (!hasPersistentData) {
+    const bootstrapSource = cmrPrintCandidateStatus()
+      .map((candidate) => candidate.path)
+      .find((candidate) => path.resolve(candidate) !== path.resolve(persistentDataDir)
+        && (existsSync(path.join(candidate, "app-data.xml")) || existsSync(path.join(candidate, "Templates"))));
+    if (bootstrapSource) {
+      await copyCmrPrintDirectoryIfMissing(bootstrapSource, persistentDataDir);
+    }
+  }
+  return {
+    dataDir: persistentDataDir,
+    templatesDir: persistentTemplatesDir,
+    appDataPath: path.join(persistentDataDir, "app-data.xml"),
+  };
 }
 
 async function ensureCmrPrintDataDir() {
-  const dataDir = resolveCmrPrintDataDir().dataDir || cmrPrintPrimaryDataDir();
-  const templatesDir = path.join(dataDir, "Templates");
-  await fs.mkdir(templatesDir, { recursive: true });
-  return { dataDir, templatesDir, appDataPath: path.join(dataDir, "app-data.xml") };
+  return ensureCmrPrintPersistentDataDir();
 }
 
 function xmlEscape(value) {
