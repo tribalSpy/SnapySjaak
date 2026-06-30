@@ -493,20 +493,27 @@ async function copyCmrPrintDirectoryIfMissing(sourceDir, targetDir) {
   }
 }
 
+async function countCmrTemplateFiles(dataDir) {
+  const templatesDir = path.join(dataDir, "Templates");
+  if (!existsSync(templatesDir)) {
+    return 0;
+  }
+  const entries = await fs.readdir(templatesDir, { withFileTypes: true });
+  return entries.filter((entry) => entry.isFile() && path.extname(entry.name).toLowerCase() === ".xml").length;
+}
+
 async function ensureCmrPrintPersistentDataDir() {
   const persistentDataDir = cmrPrintPrimaryDataDir();
   const persistentTemplatesDir = path.join(persistentDataDir, "Templates");
   await fs.mkdir(persistentTemplatesDir, { recursive: true });
-  const hasPersistentData = existsSync(path.join(persistentDataDir, "app-data.xml"))
-    || existsSync(persistentTemplatesDir);
-  if (!hasPersistentData) {
-    const bootstrapSource = cmrPrintCandidateStatus()
-      .map((candidate) => candidate.path)
-      .find((candidate) => path.resolve(candidate) !== path.resolve(persistentDataDir)
-        && (existsSync(path.join(candidate, "app-data.xml")) || existsSync(path.join(candidate, "Templates"))));
-    if (bootstrapSource) {
-      await copyCmrPrintDirectoryIfMissing(bootstrapSource, persistentDataDir);
-    }
+  const persistentHasAppData = existsSync(path.join(persistentDataDir, "app-data.xml"));
+  const persistentTemplateCount = await countCmrTemplateFiles(persistentDataDir);
+  const bootstrapSource = cmrPrintCandidateStatus()
+    .map((candidate) => candidate.path)
+    .find((candidate) => path.resolve(candidate) !== path.resolve(persistentDataDir)
+      && (existsSync(path.join(candidate, "app-data.xml")) || existsSync(path.join(candidate, "Templates"))));
+  if (bootstrapSource && (!persistentHasAppData || persistentTemplateCount === 0)) {
+    await copyCmrPrintDirectoryIfMissing(bootstrapSource, persistentDataDir);
   }
   return {
     dataDir: persistentDataDir,
