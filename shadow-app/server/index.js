@@ -181,9 +181,9 @@ const defaultExpeditionStickerState = {
 };
 
 const cmrPrintDataDirCandidates = [
+  path.join(repoRoot, "cmrprint", "CMRPrint", "Data"),
   path.join(repoRoot, "cmrprint", "CMRPrint", "bin", "Release", "net9.0-windows", "win-x64", "publish", "Data"),
   path.join(repoRoot, "cmrprint", "CMRPrint", "bin", "Release", "net9.0-windows", "win-x64", "Data"),
-  path.join(repoRoot, "cmrprint", "CMRPrint", "Data"),
   path.join(process.cwd(), "cmrprint", "CMRPrint", "Data"),
   path.join(appRoot, "..", "cmrprint", "CMRPrint", "Data"),
   path.join(appRoot, "cmrprint", "CMRPrint", "Data"),
@@ -3114,6 +3114,10 @@ async function writeSheetRowAt(spreadsheetId, sheetName, rowNumber, row) {
   return JSON.parse(output.toString("utf8"));
 }
 
+function emptySheetRow(length) {
+  return Array.from({ length: Math.max(1, Number(length) || 1) }, () => "");
+}
+
 function sanitizeDriveName(value) {
   return String(value || "unknown")
     .trim()
@@ -3259,6 +3263,63 @@ function contentDispositionFilename(filename) {
     .slice(0, 160) || "fust-document";
 }
 
+async function clearFustActionRowInSheet(spreadsheetId, sheetName, type, action, explicitRowNumber = 0) {
+  if (!spreadsheetId || !sheetName) {
+    return 0;
+  }
+
+  const rows = await loadSheetRows(spreadsheetId, sheetName);
+  const layout = getRegistrySheetLayout(rows);
+  let targetRowNumber = Number(explicitRowNumber || action?.sheet_sync?.row_number || 0);
+  if (targetRowNumber < 2 && action?.id) {
+    targetRowNumber = findFustSheetRowNumberByActionId(rows, action.id);
+  }
+  if (targetRowNumber < 2) {
+    targetRowNumber = findFustSheetRowNumberBySignature(rows, type, action);
+  }
+  if (targetRowNumber < 2) {
+    return 0;
+  }
+
+  const existingRow = rows[targetRowNumber - 1] || [];
+  const rowLength = Math.max(layout.rowLength, existingRow.length, 19);
+  await writeSheetRowAt(spreadsheetId, sheetName, targetRowNumber, emptySheetRow(rowLength));
+  return targetRowNumber;
+}
+
+async function deleteFustActionFromSheets(action, settings) {
+  if (!settings.spreadsheet_id) {
+    return { ok: false, target_sheets: [], error: "Spreadsheet ID is not configured" };
+  }
+
+  const clearTargets = [
+    { type: "IN", sheetName: settings.in_sheet_name, explicitRowNumber: action?.type === "IN" ? action?.sheet_sync?.row_number : 0 },
+    { type: "OUT", sheetName: settings.out_sheet_name, explicitRowNumber: action?.type === "OUT" ? action?.sheet_sync?.row_number : 0 },
+  ].filter((item) => item.sheetName);
+
+  const clearedSheets = [];
+  for (const target of clearTargets) {
+    const clearedRowNumber = await clearFustActionRowInSheet(
+      settings.spreadsheet_id,
+      target.sheetName,
+      target.type,
+      action,
+      target.explicitRowNumber,
+    );
+    if (clearedRowNumber >= 2) {
+      clearedSheets.push(target.sheetName);
+    }
+  }
+
+  return {
+    ok: true,
+    target_sheets: clearedSheets,
+    error: "",
+    synced_at: new Date().toISOString(),
+    row_number: 0,
+  };
+}
+
 async function syncFustActionToSheets(action, settings, options = {}) {
   if (!settings.spreadsheet_id) {
     return { ok: false, target_sheets: [], error: "Spreadsheet ID is not configured" };
@@ -3267,6 +3328,20 @@ async function syncFustActionToSheets(action, settings, options = {}) {
   const targetSheet = action.type === "OUT" ? settings.out_sheet_name : settings.in_sheet_name;
   if (!targetSheet) {
     return { ok: false, target_sheets: [], error: "Target sheet is not configured" };
+  }
+
+  const previousAction = options.previousAction || null;
+  const previousTargetSheet = previousAction
+    ? (previousAction.type === "OUT" ? settings.out_sheet_name : settings.in_sheet_name)
+    : "";
+  if (previousAction && previousTargetSheet && previousTargetSheet !== targetSheet) {
+    await clearFustActionRowInSheet(
+      settings.spreadsheet_id,
+      previousTargetSheet,
+      previousAction.type,
+      previousAction,
+      previousAction?.sheet_sync?.row_number || 0,
+    );
   }
 
   const existingRows = await loadSheetRows(settings.spreadsheet_id, targetSheet);
@@ -4405,6 +4480,30 @@ async function handleApi(req, res, url) {
     const body = await readRequestJson(req);
     await saveCmrPrintTemplate(body.template || body);
     sendJson(res, 200, await loadCmrPrintData());
+    return;
+  }
+
+  if (url.pathname === "/api/cmrprint/settings" && req.method === "PATCH") {
+    if (!requirePermission(res, requestUser, PERMISSIONS.CMR_VIEW)) {
+      return;
+    }
+    const settings = await readFustSettings();
+    if (!canManageCmrWorkspace(requestUser, settings)) {
+      sendForbidden(res);
+      return;
+    }
+    const body = await readRequestJson(req);
+    const nextSettings = normalizeFustSettings({
+      ...settings,
+      cmr_default_template_name: body?.cmr_default_template_name,
+    });
+    await writeFustSettings(nextSettings);
+    sendJson(res, 200, {
+      settings: {
+        cmr_default_template_name: nextSettings.cmr_default_template_name,
+        cmr_manage_usernames: nextSettings.cmr_manage_usernames,
+      },
+    });
     return;
   }
 
@@ -5603,29 +5702,28 @@ async function handleApi(req, res, url) {
       return;
     }
 
-    const deletedAction = normalizeFustAction({
-      ...action,
-      deleted: true,
-      deleted_at: new Date().toISOString(),
-      deleted_by: requestUser.username,
-      sheet_sync: {
-        ...(action.sheet_sync || {}),
-        ok: false,
-        error: "Deleted locally",
-      },
-      email_sync: {
-        ...(action.email_sync || {}),
-        ok: false,
-        error: "Deleted locally",
-      },
-    });
-    if (actionIndex >= 0) {
-      actions[actionIndex] = deletedAction;
-    } else {
-      actions.push(deletedAction);
+    const settings = await readFustSettings();
+    let deleteSync;
+    try {
+      deleteSync = await deleteFustActionFromSheets(action, settings);
+    } catch (deleteError) {
+      sendJson(res, 500, {
+        error: deleteError instanceof Error ? deleteError.message : String(deleteError),
+      });
+      return;
     }
-    await writeFustActions(actions);
-    sendJson(res, 200, { ok: true, deleted_action_id: actionId });
+
+    let nextActions = actions;
+    if (actionIndex >= 0) {
+      nextActions = actions.filter((item) => item.id !== actionId);
+      await writeFustActions(nextActions);
+    }
+
+    sendJson(res, 200, {
+      ok: true,
+      deleted_action_id: actionId,
+      sheet_sync: deleteSync,
+    });
     return;
   }
 

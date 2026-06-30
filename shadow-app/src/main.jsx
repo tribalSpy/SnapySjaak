@@ -5117,7 +5117,7 @@ function FustLastActions({ loading, actions, onRefresh }) {
       await apiJson(`/api/fust/actions/${encodeURIComponent(actionId)}`, {
         method: "DELETE",
       });
-      setMessage("Local action deleted.");
+      setMessage("Action deleted.");
       onRefresh();
     } catch (deleteError) {
       setError(deleteError.message);
