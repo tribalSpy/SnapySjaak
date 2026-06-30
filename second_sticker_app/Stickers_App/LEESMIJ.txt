@@ -1,0 +1,33 @@
+STICKERS GENEREREN
+==================
+
+Inhoud van deze map:
+  - Sticker test.xlsx        (klantgegevens; pas aan zoals nodig)
+  - Halindeling.xlsx         (locatiebron - klant -> hal-locatie)
+  - Maak_Stickers.py         (het script)
+  - Maak_Stickers.bat        (dubbelklik om te draaien op Windows)
+  - LEESMIJ.txt              (dit bestand)
+
+Hoe werkt het?
+--------------
+1. Zorg dat Python 3 geinstalleerd is (https://www.python.org/downloads/)
+   - Bij installatie: vink "Add Python to PATH" aan.
+2. Werk eventueel "Sticker test.xlsx" en "Halindeling.xlsx" bij.
+3. Sluit beide Excel-bestanden voordat je het script start (anders is het bestand vergrendeld).
+4. Dubbelklik op "Maak_Stickers.bat".
+
+Het script maakt in deze map de PDF's aan:
+  - Stickers_truck_1.pdf, Stickers_truck_2.pdf, ...  (per Split-nummer)
+  - Stickers_overig.pdf                              (rijen zonder Split)
+
+Kolommen in Sticker test.xlsx:
+  A = Split          (truck-nummer; leeg = "overig", geen truck-label op de sticker)
+  B = Split CC       (aantal stickers voor deze klant)
+  C = klant          (klantcode, opzoekwaarde in Halindeling)
+  D = naam           (klantnaam)
+  E = Carrier 1      (eerste vervoerder-regel op de sticker)
+  F = Carrier 2      (tweede vervoerder-regel; leeg = niet tonen)
+
+Halindeling.xlsx:
+  Kolom A = Locatie, Kolom B = Klantcode. De locatie wordt opgezocht
+  bij de overeenkomende klantcode en linksboven op de sticker gezet.

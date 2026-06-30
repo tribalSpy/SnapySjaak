@@ -13,7 +13,7 @@ using System.Reflection;
 [assembly: System.Reflection.AssemblyCompanyAttribute("InKlokken")]
 [assembly: System.Reflection.AssemblyConfigurationAttribute("Debug")]
 [assembly: System.Reflection.AssemblyFileVersionAttribute("1.0.0.0")]
-[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0")]
+[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+8e1dc420f4c1ef6c1fc33c9c5ceae43d3eab59a8")]
 [assembly: System.Reflection.AssemblyProductAttribute("InKlokken")]
 [assembly: System.Reflection.AssemblyTitleAttribute("InKlokken")]
 [assembly: System.Reflection.AssemblyVersionAttribute("1.0.0.0")]

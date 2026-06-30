@@ -1,8 +1,8 @@
 {
   "version": 2,
-  "dgSpecHash": "eoDCt/RKHiE=",
+  "dgSpecHash": "nYfxoZ5VwRA=",
   "success": true,
-  "projectFilePath": "C:\\CMRPrint\\CMRPrint.csproj",
+  "projectFilePath": "C:\\Users\\vdvfi\\SynologyDrive\\SnappySjaak\\cmrprint\\CMRPrint\\CMRPrint.csproj",
   "expectedPackageFiles": [
     "C:\\Users\\vdvfi\\.nuget\\packages\\closedxml\\0.104.0\\closedxml.0.104.0.nupkg.sha512",
     "C:\\Users\\vdvfi\\.nuget\\packages\\closedxml.parser\\1.2.0\\closedxml.parser.1.2.0.nupkg.sha512",
@@ -22,9 +22,9 @@
       "code": "NU1603",
       "level": "Warning",
       "message": "CMRPrint depends on ClosedXML (>= 0.103.1) but ClosedXML 0.103.1 was not found. ClosedXML 0.104.0 was resolved instead.",
-      "projectPath": "C:\\CMRPrint\\CMRPrint.csproj",
+      "projectPath": "C:\\Users\\vdvfi\\SynologyDrive\\SnappySjaak\\cmrprint\\CMRPrint\\CMRPrint.csproj",
       "warningLevel": 1,
-      "filePath": "C:\\CMRPrint\\CMRPrint.csproj",
+      "filePath": "C:\\Users\\vdvfi\\SynologyDrive\\SnappySjaak\\cmrprint\\CMRPrint\\CMRPrint.csproj",
       "libraryId": "ClosedXML",
       "targetGraphs": [
         "net9.0-windows7.0",

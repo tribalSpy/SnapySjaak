@@ -1,17 +1,17 @@
 {
   "format": 1,
   "restore": {
-    "C:\\CMRPrint\\CMRPrint.csproj": {}
+    "C:\\Users\\vdvfi\\SynologyDrive\\SnappySjaak\\cmrprint\\CMRPrint\\CMRPrint.csproj": {}
   },
   "projects": {
-    "C:\\CMRPrint\\CMRPrint.csproj": {
+    "C:\\Users\\vdvfi\\SynologyDrive\\SnappySjaak\\cmrprint\\CMRPrint\\CMRPrint.csproj": {
       "version": "1.0.0",
       "restore": {
-        "projectUniqueName": "C:\\CMRPrint\\CMRPrint.csproj",
+        "projectUniqueName": "C:\\Users\\vdvfi\\SynologyDrive\\SnappySjaak\\cmrprint\\CMRPrint\\CMRPrint.csproj",
         "projectName": "CMRPrint",
-        "projectPath": "C:\\CMRPrint\\CMRPrint.csproj",
+        "projectPath": "C:\\Users\\vdvfi\\SynologyDrive\\SnappySjaak\\cmrprint\\CMRPrint\\CMRPrint.csproj",
         "packagesPath": "C:\\Users\\vdvfi\\.nuget\\packages\\",
-        "outputPath": "C:\\CMRPrint\\obj\\",
+        "outputPath": "C:\\Users\\vdvfi\\SynologyDrive\\SnappySjaak\\cmrprint\\CMRPrint\\obj\\",
         "projectStyle": "PackageReference",
         "fallbackFolders": [
           "C:\\Program Files (x86)\\Microsoft Visual Studio\\Shared\\NuGetPackages"

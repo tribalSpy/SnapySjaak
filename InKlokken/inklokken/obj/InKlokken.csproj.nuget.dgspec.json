@@ -1,17 +1,17 @@
 {
   "format": 1,
   "restore": {
-    "C:\\inklokken\\InKlokken.csproj": {}
+    "C:\\Users\\vdvfi\\SynologyDrive\\SnappySjaak\\InKlokken\\inklokken\\InKlokken.csproj": {}
   },
   "projects": {
-    "C:\\inklokken\\InKlokken.csproj": {
+    "C:\\Users\\vdvfi\\SynologyDrive\\SnappySjaak\\InKlokken\\inklokken\\InKlokken.csproj": {
       "version": "1.0.0",
       "restore": {
-        "projectUniqueName": "C:\\inklokken\\InKlokken.csproj",
+        "projectUniqueName": "C:\\Users\\vdvfi\\SynologyDrive\\SnappySjaak\\InKlokken\\inklokken\\InKlokken.csproj",
         "projectName": "InKlokken",
-        "projectPath": "C:\\inklokken\\InKlokken.csproj",
+        "projectPath": "C:\\Users\\vdvfi\\SynologyDrive\\SnappySjaak\\InKlokken\\inklokken\\InKlokken.csproj",
         "packagesPath": "C:\\Users\\vdvfi\\.nuget\\packages\\",
-        "outputPath": "C:\\inklokken\\obj\\",
+        "outputPath": "C:\\Users\\vdvfi\\SynologyDrive\\SnappySjaak\\InKlokken\\inklokken\\obj\\",
         "projectStyle": "PackageReference",
         "fallbackFolders": [
           "C:\\Program Files (x86)\\Microsoft Visual Studio\\Shared\\NuGetPackages"
@@ -49,14 +49,6 @@
       "frameworks": {
         "net9.0-windows7.0": {
           "targetAlias": "net9.0-windows",
-          "dependencies": {
-            "Microsoft.NET.ILLink.Tasks": {
-              "suppressParent": "All",
-              "target": "Package",
-              "version": "[9.0.9, )",
-              "autoReferenced": true
-            }
-          },
           "imports": [
             "net461",
             "net462",
@@ -68,20 +60,6 @@
           ],
           "assetTargetFallback": true,
           "warn": true,
-          "downloadDependencies": [
-            {
-              "name": "Microsoft.AspNetCore.App.Runtime.win-x64",
-              "version": "[9.0.9, 9.0.9]"
-            },
-            {
-              "name": "Microsoft.NETCore.App.Runtime.win-x64",
-              "version": "[9.0.9, 9.0.9]"
-            },
-            {
-              "name": "Microsoft.WindowsDesktop.App.Runtime.win-x64",
-              "version": "[9.0.9, 9.0.9]"
-            }
-          ],
           "frameworkReferences": {
             "Microsoft.NETCore.App": {
               "privateAssets": "all"
@@ -91,11 +69,6 @@
             }
           },
           "runtimeIdentifierGraphPath": "C:\\Program Files\\dotnet\\sdk\\9.0.305/PortableRuntimeIdentifierGraph.json"
-        }
-      },
-      "runtimes": {
-        "win-x64": {
-          "#import": []
         }
       }
     }
