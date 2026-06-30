@@ -5373,7 +5373,7 @@ function FustLastActions({ loading, actions, onRefresh }) {
             <tbody>
               {visibleActions.map((action) => {
                 const isEditing = editingActionId === action.id && editForm;
-                const canModify = action.created_by !== "spreadsheet";
+                const canModify = true;
                 return (
                   <tr key={action.id}>
                     <td>
@@ -5481,7 +5481,7 @@ function FustLastActions({ loading, actions, onRefresh }) {
                             disabled={busyActionId === `${action.id}:delete`}
                             onClick={() => deleteLocalAction(action.id)}
                           >
-                            Delete local
+                            Delete
                           </button>
                         )}
                       </div>

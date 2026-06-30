@@ -2062,6 +2062,49 @@ async function backfillFustDatabase() {
   };
 }
 
+async function findCurrentFustActionById(actionId, settings) {
+  const current = await collectCurrentFustActions(settings);
+  return current.activeActions.find((action) => String(action.id || "").trim() === String(actionId || "").trim()) || null;
+}
+
+async function ensureLocalFustAction(actionId, settings) {
+  const normalizedActionId = String(actionId || "").trim();
+  const actions = await readFustActions();
+  let actionIndex = actions.findIndex((item) => String(item.id || "").trim() === normalizedActionId);
+  if (actionIndex >= 0) {
+    return {
+      actions,
+      actionIndex,
+      action: actions[actionIndex],
+      seededFromSheet: false,
+    };
+  }
+
+  const currentAction = await findCurrentFustActionById(normalizedActionId, settings);
+  if (!currentAction) {
+    return {
+      actions,
+      actionIndex: -1,
+      action: null,
+      seededFromSheet: false,
+    };
+  }
+
+  const seededAction = normalizeFustAction({
+    ...currentAction,
+    created_by: currentAction.created_by === "spreadsheet" ? "sheet-import" : (currentAction.created_by || "sheet-import"),
+    created_at: currentAction.created_at || new Date().toISOString(),
+  });
+  actions.push(seededAction);
+  await writeFustActions(actions);
+  return {
+    actions,
+    actionIndex: actions.length - 1,
+    action: seededAction,
+    seededFromSheet: true,
+  };
+}
+
 function isoDateForDisplay(value) {
   if (!value) {
     return "";
@@ -5640,15 +5683,15 @@ async function handleApi(req, res, url) {
         sendText(res, 404, "Document not found");
         return;
       }
-      const actions = await readFustActions();
-      const action = actions.find((item) => item.id === actionId);
+      const settings = await readFustSettings();
+      const localMatch = await ensureLocalFustAction(actionId, settings);
+      const action = localMatch.action;
       const documentInfo = normalizeCmrInfo(action?.[documentKind]);
       if (!action || documentInfo.status !== "uploaded" || !documentInfo.file_id) {
         sendText(res, 404, "Document not found");
         return;
       }
       try {
-        const settings = await readFustSettings();
         const fileBuffer = await downloadFustDocumentFromDrive(documentInfo, settings);
         const fileName = contentDispositionFilename(documentInfo.file_name || `${documentKind}-${actionId}`);
         res.writeHead(200, {
@@ -5772,14 +5815,16 @@ async function handleApi(req, res, url) {
       return;
     }
 
-    const actions = await readFustActions();
-    const actionIndex = actions.findIndex((item) => item.id === actionId);
-    if (actionIndex < 0) {
+    const settings = await readFustSettings();
+    const localMatch = await ensureLocalFustAction(actionId, settings);
+    const actions = localMatch.actions;
+    const actionIndex = localMatch.actionIndex;
+    if (actionIndex < 0 || !localMatch.action) {
       sendJson(res, 404, { error: "Fust action not found" });
       return;
     }
 
-    const action = actions[actionIndex];
+    const action = localMatch.action;
     if (action.type !== documentConfig.type) {
       sendJson(res, 400, { error: `${documentConfig.label} files can only be attached to ${documentConfig.type} actions` });
       return;
@@ -5809,7 +5854,6 @@ async function handleApi(req, res, url) {
       return;
     }
 
-    const settings = await readFustSettings();
     try {
       action[documentConfig.field] = normalizeCmrInfo({
         ...(await uploadFustDocumentToDrive(action, settings, filePayload, documentConfig.field)),
@@ -5841,15 +5885,16 @@ async function handleApi(req, res, url) {
     const parts = url.pathname.split("/").filter(Boolean);
     const actionId = decodeURIComponent(parts[3] || "");
     const retryKind = parts[4] || "";
-    const actions = await readFustActions();
-    const actionIndex = actions.findIndex((item) => item.id === actionId);
-    if (actionIndex < 0) {
+    const settings = await readFustSettings();
+    const localMatch = await ensureLocalFustAction(actionId, settings);
+    const actions = localMatch.actions;
+    const actionIndex = localMatch.actionIndex;
+    if (actionIndex < 0 || !localMatch.action) {
       sendJson(res, 404, { error: "Fust action not found" });
       return;
     }
 
-    const action = actions[actionIndex];
-    const settings = await readFustSettings();
+    const action = localMatch.action;
 
     if (retryKind === "retry-sheet") {
       const requiredPermission = action.type === "OUT" ? PERMISSIONS.FUST_OUT : PERMISSIONS.FUST_IN;
@@ -5904,14 +5949,16 @@ async function handleApi(req, res, url) {
   if (url.pathname.startsWith("/api/fust/actions/") && req.method === "PUT") {
     const parts = url.pathname.split("/").filter(Boolean);
     const actionId = decodeURIComponent(parts[3] || "");
-    const actions = await readFustActions();
-    const actionIndex = actions.findIndex((item) => item.id === actionId);
-    if (actionIndex < 0) {
+    const settings = await readFustSettings();
+    const localMatch = await ensureLocalFustAction(actionId, settings);
+    const actions = localMatch.actions;
+    const actionIndex = localMatch.actionIndex;
+    if (actionIndex < 0 || !localMatch.action) {
       sendJson(res, 404, { error: "Fust action not found" });
       return;
     }
 
-    const existingAction = actions[actionIndex];
+    const existingAction = localMatch.action;
     const type = String(existingAction.type || "").trim().toUpperCase() === "OUT" ? "OUT" : "IN";
     const requiredPermission = type === "OUT" ? PERMISSIONS.FUST_OUT : PERMISSIONS.FUST_IN;
     if (!requirePermission(res, requestUser, requiredPermission)) {
@@ -5960,7 +6007,6 @@ async function handleApi(req, res, url) {
     await writeFustActions(actions);
     await mirrorFustActionToDatabase(updatedAction);
 
-    const settings = await readFustSettings();
     try {
       updatedAction.sheet_sync = await syncFustActionToSheets(updatedAction, settings, { previousAction: existingAction });
     } catch (sheetError) {
