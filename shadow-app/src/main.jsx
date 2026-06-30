@@ -216,6 +216,7 @@ function emptyFustMetrics() {
 }
 
 function DocumentStatus({ action }) {
+  const [showError, setShowError] = useState(false);
   const documentKind = action?.type === "IN" ? "fustbon" : "cmr";
   const document = action?.type === "IN" ? action?.fustbon || {} : action?.cmr || {};
   const label = action?.type === "IN" ? "Fustbon" : "CMR";
@@ -233,7 +234,14 @@ function DocumentStatus({ action }) {
     return "Skipped";
   }
   if (document.status === "failed") {
-    return document.error || "Upload failed";
+    return (
+      <div>
+        <button type="button" className="link-button" onClick={() => setShowError((value) => !value)}>
+          Not available
+        </button>
+        {showError && <div>{document.error || "Upload failed"}</div>}
+      </div>
+    );
   }
   return "Missing";
 }
