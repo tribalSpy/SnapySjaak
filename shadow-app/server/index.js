@@ -2837,15 +2837,45 @@ function collectGmailAttachments(parts, bucket = []) {
   return bucket;
 }
 
-async function syncUkdocsPrintFromGmail(settings, requestUser, query) {
+function formatGmailQueryDate(date) {
+  const value = String(date || "").slice(0, 10);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) {
+    return "";
+  }
+  return value.replace(/-/g, "/");
+}
+
+function nextIsoDate(date) {
+  const value = String(date || "").slice(0, 10);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) {
+    return "";
+  }
+  const current = new Date(`${value}T12:00:00`);
+  current.setDate(current.getDate() + 1);
+  return current.toISOString().slice(0, 10);
+}
+
+function buildUkdocsGmailSyncQuery(baseQuery, date) {
+  const trimmedQuery = String(baseQuery || "").trim() || "has:attachment";
+  const startDate = formatGmailQueryDate(date);
+  const nextDate = formatGmailQueryDate(nextIsoDate(date));
+  if (!startDate || !nextDate) {
+    return trimmedQuery;
+  }
+  return `${trimmedQuery} after:${startDate} before:${nextDate}`.trim();
+}
+
+async function syncUkdocsPrintFromGmail(settings, requestUser, query, date) {
   if (!settings.gmail_refresh_token) {
     throw new Error("Connect Gmail first");
   }
   const accessToken = await refreshGoogleAccessToken(settings, settings.gmail_refresh_token);
   const state = await readUkdocsState();
-  const syncQuery = String(query || "").trim() || "has:attachment newer_than:30d";
+  const syncDate = String(date || localDateIso()).slice(0, 10);
+  const syncQuery = buildUkdocsGmailSyncQuery(query, syncDate);
   const listPayload = await gmailApiJson(accessToken, `messages?q=${encodeURIComponent(syncQuery)}&maxResults=25`);
   const messages = Array.isArray(listPayload.messages) ? listPayload.messages : [];
+  const dayCollections = state.print_collections.filter((item) => String(item.shipment_date || "").slice(0, 10) === syncDate);
   const results = [];
 
   for (const message of messages) {
@@ -2861,7 +2891,7 @@ async function syncUkdocsPrintFromGmail(settings, requestUser, query) {
         continue;
       }
       const candidateText = `${textBlob} ${attachmentName}`;
-      const ranked = state.print_collections
+      const ranked = dayCollections
         .map((collection) => ({ collection, score: ukdocsPrintCollectionMatchScore(collection, candidateText) }))
         .filter((item) => item.score > 0)
         .sort((a, b) => b.score - a.score);
@@ -2897,6 +2927,7 @@ async function syncUkdocsPrintFromGmail(settings, requestUser, query) {
 
   await writeUkdocsState(state);
   return {
+    date: syncDate,
     query: syncQuery,
     matched: results.filter((item) => item.status === "matched").length,
     unmatched: results.filter((item) => item.status === "unmatched").length,
@@ -5207,7 +5238,7 @@ async function handleApi(req, res, url) {
     }
     const body = await readRequestJson(req);
     const settings = await readFustSettings();
-    const payload = await syncUkdocsPrintFromGmail(settings, requestUser, body?.query);
+    const payload = await syncUkdocsPrintFromGmail(settings, requestUser, body?.query, body?.date || localDateIso());
     sendJson(res, 200, payload);
     return;
   }

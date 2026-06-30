@@ -3354,7 +3354,7 @@ function UkdocsPrintPage({ currentUser }) {
       try {
         const payload = await apiJson("/api/ukdocs-print/gmail/sync", {
           method: "POST",
-          body: JSON.stringify({ query: gmailQuery }),
+          body: JSON.stringify({ query: gmailQuery, date: sheetSyncDate }),
         });
         setState((current) => ({ ...current, print_collections: payload.print_collections || current?.print_collections || [] }));
         setGmailSyncResults(payload.results || []);
@@ -3496,11 +3496,11 @@ function UkdocsPrintPage({ currentUser }) {
     try {
       const payload = await apiJson("/api/ukdocs-print/gmail/sync", {
         method: "POST",
-        body: JSON.stringify({ query: gmailQuery }),
+        body: JSON.stringify({ query: gmailQuery, date: sheetSyncDate }),
       });
       setState((current) => ({ ...current, print_collections: payload.print_collections || current?.print_collections || [] }));
       setGmailSyncResults(payload.results || []);
-      setMessage(`Gmail sync finished. ${payload.matched || 0} matched, ${payload.unmatched || 0} unmatched, ${payload.skipped || 0} skipped.`);
+      setMessage(`Gmail sync finished for ${payload.date || sheetSyncDate}. ${payload.matched || 0} matched, ${payload.unmatched || 0} unmatched, ${payload.skipped || 0} skipped.`);
     } catch (syncError) {
       setError(syncError.message);
     } finally {
@@ -3534,7 +3534,8 @@ function UkdocsPrintPage({ currentUser }) {
         <div className="section-header"><h2>Gmail Inbox Pickup</h2></div>
         <div className="form-grid">
           <label><span>Connected Gmail account</span><input value={gmailSettings.gmail_connected_email || ""} readOnly placeholder="Not connected yet" /></label>
-          <label className="wide"><span>Gmail search query</span><input value={gmailQuery} onChange={(event) => setGmailQuery(event.target.value)} placeholder="has:attachment newer_than:30d" /></label>
+          <label><span>Export date</span><input type="date" value={sheetSyncDate} onChange={(event) => setSheetSyncDate(event.target.value)} /></label>
+          <label className="wide"><span>Extra Gmail filter</span><input value={gmailQuery} onChange={(event) => setGmailQuery(event.target.value)} placeholder="has:attachment" /></label>
         </div>
         <div className="checkbox-grid">
           <label className="checkbox-field">
@@ -3546,7 +3547,7 @@ function UkdocsPrintPage({ currentUser }) {
           {canManageSettings && <button type="button" onClick={connectGmail} disabled={gmailBusy}>{gmailBusy ? "Connecting..." : "Connect Gmail"}</button>}
           <button type="button" className="primary" onClick={syncGmail} disabled={gmailBusy}>{gmailBusy ? "Syncing..." : "Sync Gmail attachments"}</button>
         </div>
-      <div className="notice">The sync checks the email body and subject for reference connect first, then invoice numbers, then truck or trailer registration. NVWA / e-CertNL emails are treated as phytosanitary documents automatically. Files only fill empty slots automatically, so manual uploads stay safe.</div>
+      <div className="notice">The sync only checks emails for the selected export date, not the whole mailbox. It matches reference connect first, then invoice numbers, then truck or trailer registration. NVWA / e-CertNL emails are treated as phytosanitary documents automatically. Files only fill empty slots automatically, so manual uploads stay safe.</div>
         {!!gmailSyncResults.length && (
           <div className="table-wrap">
             <table className="data-table">
