@@ -243,7 +243,7 @@ function DocumentStatus({ action }) {
       </div>
     );
   }
-  return "Missing";
+  return "Not available";
 }
 
 
