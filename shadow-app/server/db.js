@@ -189,7 +189,7 @@ export async function getFustDatabaseStats() {
 const databaseMigrations = [
   `
     CREATE TABLE IF NOT EXISTS fust_actions (
-      id uuid PRIMARY KEY,
+      id text PRIMARY KEY,
       type text NOT NULL,
       action_date date NOT NULL,
       week integer,
@@ -216,7 +216,7 @@ const databaseMigrations = [
   `
     CREATE TABLE IF NOT EXISTS fust_action_documents (
       id bigserial PRIMARY KEY,
-      action_id uuid NOT NULL REFERENCES fust_actions(id) ON DELETE CASCADE,
+      action_id text NOT NULL REFERENCES fust_actions(id) ON DELETE CASCADE,
       document_kind text NOT NULL,
       status text NOT NULL DEFAULT 'missing',
       file_id text,
@@ -231,6 +231,32 @@ const databaseMigrations = [
       updated_at timestamptz NOT NULL DEFAULT now(),
       UNIQUE(action_id, document_kind)
     )
+  `,
+  `
+    ALTER TABLE IF EXISTS fust_action_documents
+    DROP CONSTRAINT IF EXISTS fust_action_documents_action_id_fkey
+  `,
+  `
+    ALTER TABLE IF EXISTS fust_action_documents
+    ALTER COLUMN action_id TYPE text USING action_id::text
+  `,
+  `
+    ALTER TABLE IF EXISTS fust_actions
+    ALTER COLUMN id TYPE text USING id::text
+  `,
+  `
+    DO $$
+    BEGIN
+      IF NOT EXISTS (
+        SELECT 1
+        FROM pg_constraint
+        WHERE conname = 'fust_action_documents_action_id_fkey'
+      ) THEN
+        ALTER TABLE fust_action_documents
+        ADD CONSTRAINT fust_action_documents_action_id_fkey
+        FOREIGN KEY (action_id) REFERENCES fust_actions(id) ON DELETE CASCADE;
+      END IF;
+    END $$;
   `,
 ];
 
