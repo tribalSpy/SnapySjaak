@@ -4272,9 +4272,8 @@ function App() {
       )}
       <aside className={`sidebar ${sidebarOpen ? "open" : ""}`}>
         <div>
-          <p className="eyebrow">SnappySjaak</p>
-          <h1>Sjaak vd Vijver App</h1>
-          <p className="sidebar-note">Photos stays separate while Fust gets its own protected workspace.</p>
+          <h1>Sjaak vd Vijver</h1>
+          <p className="eyebrow">Dashboard</p>
         </div>
 
         <nav className="side-nav" aria-label="Shadow app pages">
