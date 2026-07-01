@@ -3783,6 +3783,7 @@ function DagFoutjesPage() {
           style={{
             display: "block",
             width: "100%",
+            height: "calc(100vh - 10rem)",
             minHeight: "78vh",
             border: "none",
             background: "#fff",

@@ -1650,6 +1650,156 @@ async function mergeDagFoutjesPeopleFromClock(state) {
   return { state: nextState, changed };
 }
 
+const dagFoutjesSheetHeaders = ["week", "day", "name", "type", "comment"];
+
+function dagFoutjesDateParts(dateStr) {
+  const normalized = String(dateStr || "").slice(0, 10);
+  const parsed = new Date(`${normalized}T00:00:00`);
+  if (Number.isNaN(parsed.getTime())) {
+    return { date: normalized, week: "", day: normalized };
+  }
+  const day = normalized;
+  const utcDate = new Date(Date.UTC(parsed.getFullYear(), parsed.getMonth(), parsed.getDate()));
+  const dayNumber = utcDate.getUTCDay() || 7;
+  utcDate.setUTCDate(utcDate.getUTCDate() + 4 - dayNumber);
+  const yearStart = new Date(Date.UTC(utcDate.getUTCFullYear(), 0, 1));
+  const week = Math.ceil((((utcDate - yearStart) / 86400000) + 1) / 7);
+  return { date: normalized, week: String(week), day };
+}
+
+function normalizeDagFoutjesSheetSync(value) {
+  return {
+    row_number: Math.max(0, Number(value?.row_number || 0)),
+    synced_at: String(value?.synced_at || ""),
+    ok: value?.ok !== false,
+    error: String(value?.error || ""),
+  };
+}
+
+function normalizeDagFoutjesEntry(entry, fallbackDate = "") {
+  return {
+    id: String(entry?.id || crypto.randomUUID()),
+    personId: String(entry?.personId || "").trim(),
+    personName: String(entry?.personName || "").trim(),
+    type: String(entry?.type || "").trim(),
+    typeLabel: String(entry?.typeLabel || entry?.type || "").trim(),
+    comment: String(entry?.comment || ""),
+    time: String(entry?.time || "").trim(),
+    timestamp: Number(entry?.timestamp || 0) || Date.now(),
+    dateKey: String(entry?.dateKey || fallbackDate || "").slice(0, 10),
+    sheet_sync: normalizeDagFoutjesSheetSync(entry?.sheet_sync || {}),
+  };
+}
+
+async function ensureDagFoutjesSheetHeader(spreadsheetId, sheetName) {
+  const rows = await loadSheetRows(spreadsheetId, sheetName);
+  const firstRow = Array.isArray(rows[0]) ? rows[0].map((value) => String(value || "").trim().toLowerCase()) : [];
+  const matchesHeader = dagFoutjesSheetHeaders.every((value, index) => firstRow[index] === value);
+  if (!matchesHeader) {
+    await writeSheetRowAt(spreadsheetId, sheetName, 1, dagFoutjesSheetHeaders);
+  }
+}
+
+function buildDagFoutjesSheetRow(dateStr, entry) {
+  const parts = dagFoutjesDateParts(dateStr || entry?.dateKey || "");
+  return [
+    parts.week,
+    parts.day,
+    String(entry?.personName || "").trim(),
+    String(entry?.typeLabel || entry?.type || "").trim(),
+    String(entry?.comment || ""),
+  ];
+}
+
+async function syncDagFoutjesEntriesToSheet(entries, dateStr, settings) {
+  if (!settings.clock_spreadsheet_id) {
+    throw new Error("Clock spreadsheet ID is not configured");
+  }
+  const sheetName = "fouten";
+  await ensureDagFoutjesSheetHeader(settings.clock_spreadsheet_id, sheetName);
+
+  const normalizedDate = String(dateStr || "").slice(0, 10);
+  const nextEntries = [];
+  for (const rawEntry of Array.isArray(entries) ? entries : []) {
+    const entry = normalizeDagFoutjesEntry(rawEntry, normalizedDate);
+    const rowPayload = buildDagFoutjesSheetRow(normalizedDate, entry);
+    const rowNumber = Math.max(0, Number(entry?.sheet_sync?.row_number || 0));
+    const output = rowNumber >= 2
+      ? await writeSheetRowAt(settings.clock_spreadsheet_id, sheetName, rowNumber, rowPayload)
+      : await writeSheetRowToFirstEmpty(settings.clock_spreadsheet_id, sheetName, rowPayload);
+    nextEntries.push({
+      ...entry,
+      sheet_sync: {
+        ok: true,
+        error: "",
+        synced_at: new Date().toISOString(),
+        row_number: Number(output?.row_number || rowNumber || 0),
+      },
+    });
+  }
+  return nextEntries;
+}
+
+async function clearDagFoutjesEntryFromSheet(entry, settings) {
+  if (!settings.clock_spreadsheet_id) {
+    throw new Error("Clock spreadsheet ID is not configured");
+  }
+  const rowNumber = Math.max(0, Number(entry?.sheet_sync?.row_number || 0));
+  if (rowNumber < 2) {
+    return { ok: true, row_number: 0 };
+  }
+  await writeSheetRowAt(settings.clock_spreadsheet_id, "fouten", rowNumber, emptySheetRow(dagFoutjesSheetHeaders.length));
+  return { ok: true, row_number: rowNumber };
+}
+
+let dagFoutjesSheetSyncRunning = false;
+
+async function syncPendingDagFoutjesDaysToSheet() {
+  if (dagFoutjesSheetSyncRunning) {
+    return;
+  }
+  dagFoutjesSheetSyncRunning = true;
+  try {
+    const settings = await readFustSettings();
+    if (!settings.clock_spreadsheet_id) {
+      return;
+    }
+    const state = await readDagFoutjesState();
+    const today = localDateIso();
+    const keys = Object.keys(state.shared || {}).filter((key) => key.startsWith("errors:")).sort();
+    let changed = false;
+    for (const key of keys) {
+      const dateKey = key.replace(/^errors:/, "").slice(0, 10);
+      if (!dateKey || dateKey >= today) {
+        continue;
+      }
+      let entries = [];
+      try {
+        entries = JSON.parse(String(state.shared[key] || "[]"));
+      } catch {
+        entries = [];
+      }
+      if (!Array.isArray(entries) || !entries.length) {
+        continue;
+      }
+      const needsSync = entries.some((entry) => Number(entry?.sheet_sync?.row_number || 0) < 2);
+      if (!needsSync) {
+        continue;
+      }
+      const syncedEntries = await syncDagFoutjesEntriesToSheet(entries, dateKey, settings);
+      state.shared[key] = JSON.stringify(syncedEntries);
+      changed = true;
+    }
+    if (changed) {
+      await writeDagFoutjesState(state);
+    }
+  } catch (error) {
+    console.error("Dag Foutjes sheet auto-sync failed:", error instanceof Error ? error.message : String(error));
+  } finally {
+    dagFoutjesSheetSyncRunning = false;
+  }
+}
+
 function dagFoutjesBridgeScript() {
   return `<script>
 window.storage = {
@@ -5047,6 +5197,45 @@ async function handleApi(req, res, url) {
     return;
   }
 
+  if (url.pathname === "/api/dag-foutjes/sheet-sync" && req.method === "POST") {
+    if (!requirePermission(res, requestUser, PERMISSIONS.EXPEDITION_STICKERS_VIEW)) {
+      return;
+    }
+
+    const body = await readRequestJson(req, 2 * 1024 * 1024);
+    const date = String(body?.date || "").slice(0, 10);
+    const entries = Array.isArray(body?.entries) ? body.entries : [];
+    if (!date) {
+      sendJson(res, 400, { error: "date is required" });
+      return;
+    }
+
+    try {
+      const settings = await readFustSettings();
+      const syncedEntries = await syncDagFoutjesEntriesToSheet(entries, date, settings);
+      sendJson(res, 200, { ok: true, date, entries: syncedEntries });
+    } catch (error) {
+      sendJson(res, 400, { error: error instanceof Error ? error.message : String(error) });
+    }
+    return;
+  }
+
+  if (url.pathname === "/api/dag-foutjes/sheet-delete" && req.method === "POST") {
+    if (!requirePermission(res, requestUser, PERMISSIONS.EXPEDITION_STICKERS_VIEW)) {
+      return;
+    }
+
+    const body = await readRequestJson(req, 512 * 1024);
+    try {
+      const settings = await readFustSettings();
+      const payload = await clearDagFoutjesEntryFromSheet(body?.entry || {}, settings);
+      sendJson(res, 200, payload);
+    } catch (error) {
+      sendJson(res, 400, { error: error instanceof Error ? error.message : String(error) });
+    }
+    return;
+  }
+
   if (url.pathname === "/api/hal-locations/load-sheet" && req.method === "POST") {
     if (!requirePermission(res, requestUser, PERMISSIONS.HAL_LOCATIONS_VIEW)) {
       return;
@@ -6848,6 +7037,11 @@ async function startServer() {
   } else {
     console.log("Postgres is not configured yet. DATABASE_URL is not set.");
   }
+
+  syncPendingDagFoutjesDaysToSheet().catch(() => {});
+  setInterval(() => {
+    syncPendingDagFoutjesDaysToSheet().catch(() => {});
+  }, 15 * 60 * 1000);
 
   server.listen(port, host, () => {
     console.log("SnappySjaak shadow app is running.");

@@ -94,6 +94,19 @@
     flex-shrink: 0;
   }
   header.topbar .icon-btn:active { background: rgba(255,255,255,0.25); }
+  header.topbar .save-shortcut {
+    background: var(--amber);
+    border: 1px solid rgba(255,255,255,0.35);
+    color: white;
+    min-width: 112px;
+    height: 44px;
+    border-radius: 12px;
+    font-weight: 700;
+    cursor: pointer;
+    padding: 0 14px;
+    flex-shrink: 0;
+  }
+  header.topbar .save-shortcut:active { background: var(--amber-dark); }
 
   .lang-switch {
     display: flex;
@@ -437,6 +450,7 @@
     padding: 9px 0;
     border-bottom: 1px dashed var(--line);
     font-size: 13.5px;
+    align-items: flex-start;
   }
   .entry-row:last-child { border-bottom: none; }
   .entry-row .time { font-family: var(--mono); color: var(--steel-mid); width: 46px; flex-shrink: 0; }
@@ -446,10 +460,72 @@
     flex-shrink: 0;
   }
   .entry-row .comment { color: var(--steel-mid); flex: 1; }
+  .entry-main {
+    display: flex;
+    gap: 10px;
+    align-items: flex-start;
+    flex: 1;
+    min-width: 0;
+  }
+  .entry-actions {
+    display: flex;
+    gap: 8px;
+    flex-shrink: 0;
+  }
+  .entry-actions button,
+  .entry-edit button {
+    border-radius: 8px;
+    padding: 7px 12px;
+    font-size: 12.5px;
+    font-weight: 700;
+    cursor: pointer;
+  }
+  .entry-actions .edit-entry-btn,
+  .entry-edit .save-entry-btn {
+    background: var(--steel);
+    color: white;
+    border: 1px solid var(--steel);
+  }
+  .entry-actions .delete-entry-btn,
+  .entry-edit .cancel-entry-btn {
+    background: white;
+    color: var(--danger);
+    border: 1px solid var(--danger);
+  }
+  .entry-edit {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    flex: 1;
+  }
+  .entry-edit select,
+  .entry-edit textarea {
+    width: 100%;
+    border: 1.5px solid var(--line);
+    border-radius: 10px;
+    padding: 10px 12px;
+    font-family: var(--sans);
+    font-size: 14px;
+    background: white;
+  }
+  .entry-edit textarea {
+    min-height: 72px;
+    resize: vertical;
+  }
+  .entry-edit .edit-row {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 10px;
+  }
+  .entry-edit .edit-actions {
+    display: flex;
+    gap: 10px;
+  }
 
   /* TEAM TODAY */
   .team-toolbar {
     display: flex; gap: 10px; margin-bottom: 16px;
+    flex-wrap: wrap;
   }
   .team-toolbar button {
     background: var(--frost-card);
@@ -460,6 +536,16 @@
     font-weight: 600;
     color: var(--steel-mid);
     cursor: pointer;
+  }
+  .team-search {
+    width: 100%;
+    padding: 12px 14px;
+    border-radius: 12px;
+    border: 1.5px solid var(--line);
+    font-family: var(--sans);
+    font-size: 15px;
+    background: white;
+    margin-bottom: 12px;
   }
   .team-list { display: flex; flex-direction: column; gap: 10px; margin-bottom: 90px; }
   .team-row {
@@ -497,6 +583,83 @@
     font-size: 16px;
     font-weight: 700;
     cursor: pointer;
+  }
+
+  @media (max-width: 900px) {
+    main {
+      padding: 14px;
+    }
+    .grid-tiles {
+      grid-template-columns: repeat(auto-fill, minmax(128px, 1fr));
+    }
+  }
+
+  @media (max-width: 680px) {
+    header.topbar {
+      padding: 14px;
+      gap: 10px;
+      flex-wrap: wrap;
+    }
+    header.topbar h1 {
+      font-size: 22px;
+    }
+    header.topbar .sub {
+      font-size: 11px;
+    }
+    header.topbar .save-shortcut {
+      min-width: 0;
+      width: 100%;
+      order: 3;
+    }
+    .lang-switch {
+      margin-left: auto;
+    }
+    .type-grid {
+      grid-template-columns: 1fr;
+    }
+    .type-btn.other {
+      grid-column: span 1;
+    }
+    .bottom-actions {
+      padding-left: 14px;
+      padding-right: 14px;
+    }
+    .bottom-actions button {
+      min-width: 100%;
+    }
+    .filter-bar .export-btn {
+      margin-left: 0;
+      width: 100%;
+    }
+    .entry-row,
+    .entry-main {
+      flex-direction: column;
+    }
+    .entry-row .time,
+    .entry-row .type-tag {
+      width: auto;
+    }
+    .entry-actions {
+      width: 100%;
+    }
+    .entry-actions button,
+    .entry-edit .edit-actions button {
+      flex: 1;
+    }
+    .entry-edit .edit-row {
+      grid-template-columns: 1fr;
+    }
+    .add-person-row {
+      flex-direction: column;
+    }
+    .add-person-row button {
+      min-height: 48px;
+    }
+    .total-banner {
+      flex-direction: column;
+      align-items: flex-start;
+      gap: 10px;
+    }
   }
 
   .badge-count {
@@ -745,7 +908,10 @@ let state = {
   summaryData: null,
   openPersonId: null,
   activeIds: null,
-  teamDraft: []
+  teamDraft: [],
+  teamSearch: '',
+  editingEntryId: null,
+  pastSheetSyncStarted: false
 };
 
 function pad(n) { return n < 10 ? '0' + n : '' + n; }
@@ -798,7 +964,8 @@ async function loadAllErrors() {
       const res = await window.storage.get(k, true);
       if (res) {
         const arr = JSON.parse(res.value);
-        arr.forEach(e => all.push(e));
+        const dateKey = k.replace(/^errors:/, '').slice(0, 10);
+        arr.forEach(e => all.push({ ...e, dateKey }));
       }
     } catch (e) { /* skip */ }
   }
@@ -822,6 +989,60 @@ function yesterdayStr() {
   return todayStr(d);
 }
 
+async function postJson(url, payload) {
+  const response = await fetch(url, {
+    method: 'POST',
+    credentials: 'same-origin',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(payload || {}),
+  });
+  const body = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    throw new Error(body.error || ('Request failed with ' + response.status));
+  }
+  return body;
+}
+
+async function syncErrorsForDateToSheet(dateStr, entries) {
+  const payload = await postJson('/api/dag-foutjes/sheet-sync', {
+    date: String(dateStr || '').slice(0, 10),
+    entries: Array.isArray(entries) ? entries : [],
+  });
+  const syncedEntries = Array.isArray(payload.entries) ? payload.entries : [];
+  await saveDayErrors(dateStr, syncedEntries);
+  return syncedEntries;
+}
+
+async function deleteErrorFromSheet(entry) {
+  return postJson('/api/dag-foutjes/sheet-delete', { entry });
+}
+
+async function syncPastDaysToSheet() {
+  if (state.pastSheetSyncStarted) return;
+  state.pastSheetSyncStarted = true;
+  const today = todayStr();
+  let keys = [];
+  try {
+    const res = await window.storage.list('errors:', true);
+    keys = Array.isArray(res?.keys) ? res.keys : [];
+  } catch (e) {
+    keys = [];
+  }
+  for (const key of keys) {
+    const dateKey = key.replace(/^errors:/, '').slice(0, 10);
+    if (!dateKey || dateKey >= today) continue;
+    const entries = await loadDayErrors(dateKey);
+    if (!entries.length) continue;
+    const needsSync = entries.some(entry => Number(entry?.sheet_sync?.row_number || 0) < 2);
+    if (!needsSync) continue;
+    try {
+      await syncErrorsForDateToSheet(dateKey, entries);
+    } catch (error) {
+      console.warn('Dag Foutjes sheet sync failed for', dateKey, error);
+    }
+  }
+}
+
 /* ---------- RENDER ---------- */
 function render() {
   if (state.view === 'home') renderHome();
@@ -833,6 +1054,7 @@ function render() {
 }
 
 async function renderHome() {
+  syncPastDaysToSheet().catch(() => {});
   app.innerHTML = `
     <header class="topbar">
       <div style="flex:1;">
@@ -1067,6 +1289,7 @@ async function renderTeamToday() {
   }
 
   const today = todayStr();
+  state.teamSearch = '';
   let existing = await loadActiveIds(today);
   if (existing === null) {
     // default draft to yesterday's team, if any, as a convenient starting point
@@ -1083,6 +1306,7 @@ function renderTeamTodayScreen() {
     <header class="topbar">
       <button class="back-btn" id="backBtn">‹</button>
       <div style="flex:1;"><h1>${T('selectTeamTitle')}</h1></div>
+      <button class="save-shortcut" id="saveTeamTopBtn">Save team</button>
       ${langSwitcherHtml()}
     </header>
     <main>
@@ -1090,6 +1314,7 @@ function renderTeamTodayScreen() {
         <button id="selectAllBtn">${T('selectAll')}</button>
         <button id="deselectAllBtn">${T('deselectAll')}</button>
       </div>
+      <input class="team-search" id="teamSearchInput" type="search" placeholder="Search person..." value="${escapeHtml(state.teamSearch)}">
       <div class="team-list" id="teamList"></div>
     </main>
     <div class="team-save-bar">
@@ -1106,20 +1331,30 @@ function renderTeamTodayScreen() {
     state.teamDraft = [];
     renderTeamList();
   };
-  document.getElementById('saveTeamBtn').onclick = async () => {
-    const btn = document.getElementById('saveTeamBtn');
+  const saveTeam = async (buttonId) => {
+    const btn = document.getElementById(buttonId);
     btn.disabled = true;
     btn.textContent = '...';
     await saveActiveIds(todayStr(), state.teamDraft);
     state.view = 'home';
     render();
   };
+  document.getElementById('saveTeamBtn').onclick = () => saveTeam('saveTeamBtn');
+  document.getElementById('saveTeamTopBtn').onclick = () => saveTeam('saveTeamTopBtn');
+  document.getElementById('teamSearchInput').oninput = (event) => {
+    state.teamSearch = event.target.value || '';
+    renderTeamList();
+  };
   renderTeamList();
 }
 
 function renderTeamList() {
   const listEl = document.getElementById('teamList');
-  listEl.innerHTML = state.people.map(p => {
+  const query = state.teamSearch.trim().toLowerCase();
+  const filteredPeople = !query
+    ? state.people
+    : state.people.filter((person) => person.name.toLowerCase().includes(query));
+  listEl.innerHTML = filteredPeople.map(p => {
     const checked = state.teamDraft.includes(p.id);
     return `<div class="team-row ${checked ? 'checked' : ''}" data-id="${p.id}">
       <span class="check-box">${checked ? '✓' : ''}</span>
@@ -1147,11 +1382,11 @@ function renderManagePeople() {
       ${langSwitcherHtml()}
     </header>
     <main>
-      <div class="people-list" id="peopleList"></div>
       <div class="add-person-row">
         <input type="text" id="newPersonInput" placeholder="${T('addPersonPlaceholder')}">
         <button id="addPersonBtn">${T('add')}</button>
       </div>
+      <div class="people-list" id="peopleList"></div>
     </main>
   `;
   bindLangSwitcher();
@@ -1209,6 +1444,8 @@ function renderPeopleList() {
 }
 
 async function renderSummary() {
+  if (!state.peopleLoaded) await loadPeople();
+  syncPastDaysToSheet().catch(() => {});
   app.innerHTML = `
     <header class="topbar">
       <button class="back-btn" id="backBtn">‹</button>
@@ -1248,10 +1485,10 @@ async function loadAndRenderSummary() {
   if (state.summaryMode === 'all') {
     errors = await loadAllErrors();
   } else {
-    errors = await loadDayErrors(state.summaryDate);
+    errors = (await loadDayErrors(state.summaryDate)).map((entry) => ({ ...entry, dateKey: state.summaryDate }));
   }
   state.summaryData = errors;
-  renderSummaryContent(errors);
+  renderSummaryContentWithActions(errors);
 }
 
 function renderSummaryContent(errors) {
@@ -1314,6 +1551,164 @@ function renderSummaryContent(errors) {
       const id = head.dataset.id;
       state.openPersonId = state.openPersonId === id ? null : id;
       renderSummaryContent(state.summaryData);
+    };
+  });
+}
+
+function renderSummaryContentWithActions(errors) {
+  const content = document.getElementById('summaryContent');
+  if (!errors.length) {
+    content.innerHTML = `
+      <div class="empty-state">
+        <div class="big">âœ…</div>
+        <p><strong>${T('emptySummary')}</strong></p>
+      </div>`;
+    return;
+  }
+
+  const byPerson = {};
+  errors.forEach((entry) => {
+    if (!byPerson[entry.personId]) byPerson[entry.personId] = { name: entry.personName, entries: [] };
+    byPerson[entry.personId].entries.push(entry);
+  });
+  const personGroups = Object.entries(byPerson).sort((a, b) => b[1].entries.length - a[1].entries.length);
+  const total = errors.length;
+
+  let html = `
+    <div class="total-banner">
+      <div><div class="num">${total}</div><div class="lbl">${T('totalErrors')}</div></div>
+      <div style="text-align:right;"><div class="num">${personGroups.length}</div><div class="lbl">${T('peopleWithErrors')}</div></div>
+    </div>
+  `;
+
+  html += personGroups.map(([personId, data]) => {
+    const tally = {};
+    data.entries.forEach((entry) => { tally[entry.type] = (tally[entry.type] || 0) + 1; });
+    const isOpen = state.openPersonId === personId;
+    return `
+      <div class="person-summary-card">
+        <div class="person-summary-head ${isOpen ? 'open' : ''}" data-id="${personId}">
+          <span class="name">${escapeHtml(data.name)}</span>
+          <span class="count-pill">${data.entries.length}</span>
+          <span class="chev">â–¾</span>
+        </div>
+        <div class="type-tally">
+          ${ERROR_TYPES.filter((type) => tally[type.key]).map((type) => `<span>${type.icon} ${TT(type.key)}: ${tally[type.key]}</span>`).join('')}
+        </div>
+        <div class="entries-detail ${isOpen ? 'open' : ''}">
+          ${data.entries.slice().sort((a, b) => b.timestamp - a.timestamp).map((entry) => {
+            if (state.editingEntryId === entry.id) {
+              return `
+                <div class="entry-row" data-entry-id="${entry.id}">
+                  <div class="entry-edit">
+                    <div class="edit-row">
+                      <select class="edit-person">
+                        ${state.people.map((person) => `<option value="${person.id}" ${person.id === entry.personId ? 'selected' : ''}>${escapeHtml(person.name)}</option>`).join('')}
+                      </select>
+                      <select class="edit-type">
+                        ${ERROR_TYPES.map((type) => `<option value="${type.key}" ${type.key === entry.type ? 'selected' : ''}>${escapeHtml(TT(type.key))}</option>`).join('')}
+                      </select>
+                    </div>
+                    <textarea class="edit-comment" placeholder="Comment">${escapeHtml(entry.comment || '')}</textarea>
+                    <div class="edit-actions">
+                      <button class="save-entry-btn">Save</button>
+                      <button class="cancel-entry-btn">Cancel</button>
+                    </div>
+                  </div>
+                </div>
+              `;
+            }
+            return `
+              <div class="entry-row" data-entry-id="${entry.id}">
+                <div class="entry-main">
+                  <span class="time">${entry.time || ''}</span>
+                  <span class="type-tag">${TYPE_MAP[entry.type] ? TYPE_MAP[entry.type].icon : ''} ${TT(entry.type)}</span>
+                  <span class="comment">${entry.comment ? escapeHtml(entry.comment) : '<em style="opacity:0.5;">' + T('noComment') + '</em>'}</span>
+                </div>
+                <div class="entry-actions">
+                  <button class="edit-entry-btn">Edit</button>
+                  <button class="delete-entry-btn">${T('delete')}</button>
+                </div>
+              </div>
+            `;
+          }).join('')}
+        </div>
+      </div>
+    `;
+  }).join('');
+
+  content.innerHTML = html;
+  content.querySelectorAll('.person-summary-head').forEach((head) => {
+    head.onclick = () => {
+      const id = head.dataset.id;
+      state.openPersonId = state.openPersonId === id ? null : id;
+      renderSummaryContentWithActions(state.summaryData);
+    };
+  });
+  content.querySelectorAll('.edit-entry-btn').forEach((button) => {
+    button.onclick = () => {
+      const row = button.closest('[data-entry-id]');
+      state.editingEntryId = row?.dataset.entryId || null;
+      renderSummaryContentWithActions(state.summaryData);
+    };
+  });
+  content.querySelectorAll('.cancel-entry-btn').forEach((button) => {
+    button.onclick = () => {
+      state.editingEntryId = null;
+      renderSummaryContentWithActions(state.summaryData);
+    };
+  });
+  content.querySelectorAll('.save-entry-btn').forEach((button) => {
+    button.onclick = async () => {
+      const row = button.closest('[data-entry-id]');
+      const entryId = row?.dataset.entryId || '';
+      const sourceEntry = state.summaryData.find((entry) => entry.id === entryId);
+      if (!sourceEntry) return;
+      const personId = row.querySelector('.edit-person')?.value || sourceEntry.personId;
+      const person = state.people.find((item) => item.id === personId) || sourceEntry;
+      const nextType = row.querySelector('.edit-type')?.value || sourceEntry.type;
+      const nextComment = row.querySelector('.edit-comment')?.value?.trim() || '';
+      const dateKey = sourceEntry.dateKey || state.summaryDate;
+      const dayEntries = await loadDayErrors(dateKey);
+      const updatedEntries = dayEntries.map((entry) => entry.id === entryId ? {
+        ...entry,
+        personId,
+        personName: person.name,
+        type: nextType,
+        typeLabel: TT(nextType),
+        comment: nextComment,
+      } : entry);
+      await saveDayErrors(dateKey, updatedEntries);
+      if (dateKey < todayStr()) {
+        try {
+          await syncErrorsForDateToSheet(dateKey, updatedEntries);
+        } catch (error) {
+          alert('Could not sync the data to the "fouten" sheet.');
+        }
+      }
+      state.editingEntryId = null;
+      await loadAndRenderSummary();
+    };
+  });
+  content.querySelectorAll('.delete-entry-btn').forEach((button) => {
+    button.onclick = async () => {
+      const row = button.closest('[data-entry-id]');
+      const entryId = row?.dataset.entryId || '';
+      const sourceEntry = state.summaryData.find((entry) => entry.id === entryId);
+      if (!sourceEntry || !window.confirm('Delete this entry?')) return;
+      const dateKey = sourceEntry.dateKey || state.summaryDate;
+      const dayEntries = await loadDayErrors(dateKey);
+      const updatedEntries = dayEntries.filter((entry) => entry.id !== entryId);
+      await saveDayErrors(dateKey, updatedEntries);
+      if (Number(sourceEntry?.sheet_sync?.row_number || 0) >= 2) {
+        try {
+          await deleteErrorFromSheet(sourceEntry);
+        } catch (error) {
+          alert('Could not sync the data to the "fouten" sheet.');
+        }
+      }
+      state.editingEntryId = null;
+      await loadAndRenderSummary();
     };
   });
 }
