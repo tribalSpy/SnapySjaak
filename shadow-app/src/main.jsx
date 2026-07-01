@@ -2225,6 +2225,21 @@ function ukdocsPrintSplitTokens(value) {
 }
 
 function ukdocsPrintCollectionProgress(collection, customers) {
+  if (collection?.collection_type === "stock_control") {
+    const missing = [];
+    if (!collection?.documents?.inspection_list?.storage_name) {
+      missing.push("Inspection list");
+    }
+    if (!collection?.documents?.locations_file?.storage_name) {
+      missing.push("Locations file");
+    }
+    const hasAny = Boolean(collection?.documents?.inspection_list?.storage_name || collection?.documents?.locations_file?.storage_name);
+    return {
+      customer: null,
+      missing,
+      status: missing.length === 0 ? "complete" : (hasAny ? "partial" : "pending"),
+    };
+  }
   const customer = (collection?.customer_id && (customers || []).find((item) => item.id === collection.customer_id))
     || findUkdocsCustomerMatch(customers || [], collection)
     || null;
@@ -2398,7 +2413,7 @@ function UkdocsPage({ currentUser }) {
   const selectedUkdocsCustomer = customers.find((item) => item.id === shipmentDraft.customer_id) || null;
   const selectedPrintCollection = printCollections.find((item) => item.id === shipmentDraft.print_collection_id) || null;
   const availablePrintCollections = useMemo(
-    () => printCollections.filter((item) => String(item.shipment_date || "").slice(0, 10) === shipmentLoadDate),
+    () => printCollections.filter((item) => String(item.shipment_date || "").slice(0, 10) === shipmentLoadDate && item.collection_type !== "stock_control"),
     [printCollections, shipmentLoadDate],
   );
   const hasSelectedShipmentContext = Boolean(shipmentDraft.id || shipmentDraft.print_collection_id);
@@ -3169,6 +3184,8 @@ function UkdocsPage({ currentUser }) {
 const UKDOCS_PRINT_DOCUMENTS = [
   { key: "phyto", label: "Phytosanitaire document", accept: ".pdf,.xlsx,.xls" },
   { key: "export_extra", label: "Second export file", accept: ".pdf,.xlsx,.xls" },
+  { key: "inspection_list", label: "Inspection list", accept: ".pdf,.xlsx,.xls" },
+  { key: "locations_file", label: "Locations file", accept: ".pdf,.xlsx,.xls" },
 ];
 
 function ukdocsPrintStatusDefinition(status) {
@@ -3193,6 +3210,8 @@ function ukdocsCollectionDownloadEntries(collection) {
   const phytoFiles = collection.documents?.phyto_files || [];
   const generatedFiles = collection.documents?.generated_files || [];
   const exportExtra = collection.documents?.export_extra || null;
+  const inspectionList = collection.documents?.inspection_list || null;
+  const locationsFile = collection.documents?.locations_file || null;
 
   function pushEntry(prefix, file, href, fallbackLabel) {
     if (!file && !href) {
@@ -3238,6 +3257,24 @@ function ukdocsCollectionDownloadEntries(collection) {
       exportExtra,
       `/api/ukdocs-print/collections/${collectionId}/documents/export_extra`,
       "Second export file",
+    );
+  }
+
+  if (inspectionList?.storage_name) {
+    pushEntry(
+      "inspection-list",
+      inspectionList,
+      `/api/ukdocs-print/collections/${collectionId}/documents/inspection_list`,
+      "Inspection list",
+    );
+  }
+
+  if (locationsFile?.storage_name) {
+    pushEntry(
+      "locations-file",
+      locationsFile,
+      `/api/ukdocs-print/collections/${collectionId}/documents/locations_file`,
+      "Locations file",
     );
   }
 
@@ -3312,7 +3349,13 @@ function UkdocsPrintPage({ currentUser }) {
     [collections],
   );
   const filteredCollections = useMemo(
-    () => collections.filter((item) => String(item.shipment_date || "").slice(0, 10) === selectedCollectionDate),
+    () => collections
+      .filter((item) => String(item.shipment_date || "").slice(0, 10) === selectedCollectionDate)
+      .sort((left, right) => {
+        const leftRank = left.collection_type === "stock_control" ? 0 : 1;
+        const rightRank = right.collection_type === "stock_control" ? 0 : 1;
+        return leftRank - rightRank;
+      }),
     [collections, selectedCollectionDate],
   );
   const selectedCollection = filteredCollections.find((item) => item.id === selectedCollectionId || item.shipment_id === selectedCollectionId) || null;
@@ -3587,9 +3630,10 @@ function UkdocsPrintPage({ currentUser }) {
               const status = ukdocsPrintStatusDefinition(progress.status);
               const isActive = detailDrawerOpen && selectedCollection?.id === collection.id;
               const downloadEntries = ukdocsCollectionDownloadEntries(collection);
+              const isStockControl = collection.collection_type === "stock_control";
               return (
                 <div key={collection.id} className={`ukdocs-upload-card ukdocs-collection-tile${isActive ? " active" : ""}`}>
-                  <strong>{progress.customer?.customer_name || collection.customer_name || collection.city_name || "Shipment"}</strong>
+                  <strong>{isStockControl ? "Honselersdijk stock control" : (progress.customer?.customer_name || collection.customer_name || collection.city_name || "Shipment")}</strong>
                   <small>{collection.shipment_date || "-"}</small>
                   <small>{collection.city_name ? `City: ${collection.city_name}` : "City not linked yet"}</small>
                   <small>{collection.reference_connect ? `Connect: ${collection.reference_connect}` : "No connect ref yet"}</small>
@@ -3599,7 +3643,7 @@ function UkdocsPrintPage({ currentUser }) {
                   {!!collection.delivery_email?.sent_at && <small>Sent {formatTimestamp(collection.delivery_email.sent_at)}</small>}
                   <div className="row-actions spread-actions">
                     <button type="button" className="primary" onClick={() => openCollectionDetail(collection.id)}>{isActive ? "Opened" : "Info"}</button>
-                    {!progress.missing.length && <button type="button" onClick={() => sendReady(collection.id)} disabled={saving}>Send papers</button>}
+                    {!isStockControl && !progress.missing.length && <button type="button" onClick={() => sendReady(collection.id)} disabled={saving}>Send papers</button>}
                     <button type="button" onClick={() => deleteCollection(collection.id)}>Delete</button>
                   </div>
                   {!!downloadEntries.length && (
@@ -3631,7 +3675,7 @@ function UkdocsPrintPage({ currentUser }) {
         <div className={`data-table-card ukdocs-stack ukdocs-drawer-panel${detailDrawerOpen ? " open" : ""}`}>
           <div className="section-header">
             <h2>Collection detail</h2>
-            {selectedCollection && selectedCollectionProgress && <div className="row-actions"><div className={`ukdocs-status-badge ${ukdocsPrintStatusDefinition(selectedCollectionProgress.status).tone}`}>{ukdocsPrintStatusDefinition(selectedCollectionProgress.status).label}</div>{!selectedCollectionProgress.missing.length && <button type="button" className="primary" onClick={() => sendReady(selectedCollection.id)} disabled={saving}>{saving ? "Sending..." : "Send papers ready"}</button>}<button type="button" onClick={closeCollectionDetail}>Close</button><button type="button" onClick={() => deleteCollection(selectedCollection.id)}>Delete</button></div>}
+            {selectedCollection && selectedCollectionProgress && <div className="row-actions"><div className={`ukdocs-status-badge ${ukdocsPrintStatusDefinition(selectedCollectionProgress.status).tone}`}>{ukdocsPrintStatusDefinition(selectedCollectionProgress.status).label}</div>{selectedCollection.collection_type !== "stock_control" && !selectedCollectionProgress.missing.length && <button type="button" className="primary" onClick={() => sendReady(selectedCollection.id)} disabled={saving}>{saving ? "Sending..." : "Send papers ready"}</button>}<button type="button" onClick={closeCollectionDetail}>Close</button><button type="button" onClick={() => deleteCollection(selectedCollection.id)}>Delete</button></div>}
           </div>
 
           {!selectedCollection && <div className="notice">Tap Info on a shipment tile first.</div>}
@@ -3654,12 +3698,16 @@ function UkdocsPrintPage({ currentUser }) {
                 <label><span>PD type</span><input value={selectedCollection.pd_type || ""} readOnly /></label>
                 <label><span>PD code</span><input value={selectedCollection.pd_code || ""} readOnly /></label>
               </div>
-              <div className="notice">{selectedCollectionProgress?.missing?.length ? `Still needed: ${selectedCollectionProgress.missing.join(", ")}` : "All required files for this customer are collected."}</div>
-              {!!selectedCollection?.delivery_email?.sent_at && <div className="notice">Last sent: {formatTimestamp(selectedCollection.delivery_email.sent_at)} to {(selectedCollection.delivery_email.recipients || []).join(", ") || "-"}</div>}
+              <div className="notice">{selectedCollection.collection_type === "stock_control" ? (selectedCollectionProgress?.missing?.length ? `Still needed for stock control: ${selectedCollectionProgress.missing.join(", ")}` : "All stock control working papers are collected.") : (selectedCollectionProgress?.missing?.length ? `Still needed: ${selectedCollectionProgress.missing.join(", ")}` : "All required files for this customer are collected.")}</div>
+              {selectedCollection.collection_type !== "stock_control" && !!selectedCollection?.delivery_email?.sent_at && <div className="notice">Last sent: {formatTimestamp(selectedCollection.delivery_email.sent_at)} to {(selectedCollection.delivery_email.recipients || []).join(", ") || "-"}</div>}
               {!!selectedCollection?.delivery_email?.error && !selectedCollection?.delivery_email?.ok && <div className="notice danger">{selectedCollection.delivery_email.error}</div>}
 
               <div className="ukdocs-upload-grid">
-                {UKDOCS_PRINT_DOCUMENTS.map((documentDefinition) => {
+                {UKDOCS_PRINT_DOCUMENTS.filter((documentDefinition) => (
+                  selectedCollection.collection_type === "stock_control"
+                    ? ["inspection_list", "locations_file"].includes(documentDefinition.key)
+                    : ["phyto", "export_extra"].includes(documentDefinition.key)
+                )).map((documentDefinition) => {
                   const document = documentDefinition.key === "phyto"
                     ? null
                     : selectedCollection.documents?.[documentDefinition.key] || null;
@@ -3691,7 +3739,7 @@ function UkdocsPrintPage({ currentUser }) {
                 })}
               </div>
 
-              <div className="ukdocs-upload-card">
+              {selectedCollection.collection_type !== "stock_control" && <div className="ukdocs-upload-card">
                 <strong>Generated UKdocs files</strong>
                 <small>{selectedGeneratedFiles.length ? `${selectedGeneratedFiles.length} generated file(s) saved.` : "No generated files saved yet."}</small>
                 {!!selectedGeneratedFiles.length && (
@@ -3703,7 +3751,7 @@ function UkdocsPrintPage({ currentUser }) {
                     ))}
                   </div>
                 )}
-              </div>
+              </div>}
 
               <label className="wide">
                 <span>Collection notes</span>

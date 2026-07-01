@@ -921,6 +921,11 @@ function normalizeUkdocsText(value) {
   return String(value || "").trim();
 }
 
+function isHonselersdijkStockControl(collection) {
+  const city = normalizeUkdocsText(collection?.city_name).toUpperCase();
+  return city === "HONSELERSDIJK";
+}
+
 function normalizeUkdocsAliases(aliases) {
   if (!aliases || typeof aliases !== "object") {
     return {};
@@ -1188,6 +1193,17 @@ function normalizeUkdocsPrintDocumentList(documents) {
 }
 
 function deriveUkdocsPrintCollectionStatus(collection) {
+  if (collection?.collection_type === "stock_control") {
+    const inspectionReady = Boolean(collection?.documents?.inspection_list?.storage_name);
+    const locationsReady = Boolean(collection?.documents?.locations_file?.storage_name);
+    if (inspectionReady && locationsReady) {
+      return "complete";
+    }
+    if (inspectionReady || locationsReady) {
+      return "partial";
+    }
+    return "pending";
+  }
   const phytoReady = Array.isArray(collection?.documents?.phyto_files) && collection.documents.phyto_files.length > 0;
   const extraReady = Boolean(collection?.documents?.export_extra?.storage_name);
   const generatedReady = Array.isArray(collection?.documents?.generated_files) && collection.documents.generated_files.length > 0;
@@ -1209,6 +1225,7 @@ function normalizeUkdocsPrintCollection(collection) {
     shipment_date: normalizeUkdocsText(collection?.shipment_date),
     customer_id: normalizeUkdocsText(collection?.customer_id),
     customer_name: normalizeUkdocsText(collection?.customer_name),
+    collection_type: normalizeUkdocsText(collection?.collection_type) || (isHonselersdijkStockControl(collection) ? "stock_control" : "export"),
     invoice_numbers: String(collection?.invoice_numbers || "").trim(),
     truck_number: normalizeUkdocsText(collection?.truck_number),
     trailer_number: normalizeUkdocsText(collection?.trailer_number),
@@ -1235,6 +1252,8 @@ function normalizeUkdocsPrintCollection(collection) {
       phyto_files: normalizeUkdocsPrintDocumentList(collection?.documents?.phyto_files || (collection?.documents?.phyto ? [collection.documents.phyto] : [])),
       export_extra: normalizeUkdocsPrintDocument(collection?.documents?.export_extra),
       generated_files: normalizeUkdocsPrintDocumentList(collection?.documents?.generated_files),
+      inspection_list: normalizeUkdocsPrintDocument(collection?.documents?.inspection_list),
+      locations_file: normalizeUkdocsPrintDocument(collection?.documents?.locations_file),
     },
   };
   normalized.status = deriveUkdocsPrintCollectionStatus(normalized);
@@ -1249,6 +1268,20 @@ function ukdocsPrintSplitTokens(value) {
 }
 
 function getUkdocsPrintCollectionRequirements(collection, customers) {
+  if (collection?.collection_type === "stock_control") {
+    const missing = [];
+    if (!collection?.documents?.inspection_list?.storage_name) {
+      missing.push("Inspection list");
+    }
+    if (!collection?.documents?.locations_file?.storage_name) {
+      missing.push("Locations file");
+    }
+    return {
+      customer: null,
+      missing,
+      complete: missing.length === 0,
+    };
+  }
   const customer = (collection?.customer_id && (Array.isArray(customers) ? customers.find((item) => item.id === collection.customer_id) : null))
     || matchUkdocsCustomerForPrintCollection(customers || [], collection)
     || null;
@@ -2404,6 +2437,7 @@ function parseUkdocsPrintSheetRows(rows, date = localDateIso()) {
         trailer_number: rowValue(row, trailerIndex),
         truck_number: rowValue(row, truckIndex),
         invoice_numbers: rowValue(row, invoiceIndex),
+        collection_type: normalizeUkdocsText(rowValue(row, cityIndex)).toUpperCase() === "HONSELERSDIJK" ? "stock_control" : "export",
         sheet_row_number: index + 2,
       };
     })
@@ -2909,6 +2943,7 @@ function buildUkdocsPrintCollectionFromShipment(existingCollection, shipment, cu
     shipment_date: shipment.shipment_date,
     customer_id: shipment.customer_id,
     customer_name: customerName || existingCollection?.customer_name || "",
+    collection_type: existingCollection?.collection_type || "export",
     invoice_numbers: shipment.invoice_numbers,
     truck_number: shipment.truck_number,
     trailer_number: shipment.trailer_number,
@@ -2927,7 +2962,7 @@ async function saveUkdocsPrintUpload(collectionId, kind, filePayload, requestUse
   const originalName = path.basename(String(filePayload?.file_name || filePayload?.name || "").trim());
   const contentBase64 = String(filePayload?.content_base64 || "").trim();
   const mimeType = String(filePayload?.mime_type || guessMimeType(originalName)).trim() || "application/octet-stream";
-  if (!["phyto", "export_extra"].includes(kind)) {
+  if (!["phyto", "export_extra", "inspection_list", "locations_file"].includes(kind)) {
     throw new Error("Unknown UKdocs Print document type");
   }
   if (!originalName || !contentBase64) {
@@ -2950,7 +2985,7 @@ async function saveUkdocsPrintUpload(collectionId, kind, filePayload, requestUse
 }
 
 async function saveUkdocsPrintBuffer(collectionId, kind, originalName, mimeType, fileBuffer, savedBy) {
-  if (!["phyto", "export_extra", "generated"].includes(kind)) {
+  if (!["phyto", "export_extra", "generated", "inspection_list", "locations_file"].includes(kind)) {
     throw new Error("Unknown UKdocs Print document type");
   }
   const extension = safeExtension(originalName, mimeType);
@@ -3106,6 +3141,12 @@ async function deleteUkdocsPrintCollectionFiles(collection) {
   if (Array.isArray(collection?.documents?.generated_files)) {
     documents.push(...collection.documents.generated_files);
   }
+  if (collection?.documents?.inspection_list) {
+    documents.push(collection.documents.inspection_list);
+  }
+  if (collection?.documents?.locations_file) {
+    documents.push(collection.documents.locations_file);
+  }
   await Promise.all(documents.map(async (document) => {
     const resolvedPath = path.resolve(ukdocsPrintDocumentPath(document));
     if (!resolvedPath.startsWith(path.resolve(ukdocsPrintFilesDir))) {
@@ -3237,7 +3278,7 @@ async function syncUkdocsPrintFromGmail(settings, requestUser, query, date) {
   const syncQuery = buildUkdocsGmailSyncQuery(query, syncDate);
   const listPayload = await gmailApiJson(accessToken, `messages?q=${encodeURIComponent(syncQuery)}&maxResults=25`);
   const messages = Array.isArray(listPayload.messages) ? listPayload.messages : [];
-  const dayCollections = state.print_collections.filter((item) => String(item.shipment_date || "").slice(0, 10) === syncDate);
+  const dayCollections = state.print_collections.filter((item) => String(item.shipment_date || "").slice(0, 10) === syncDate && item.collection_type !== "stock_control");
   const results = [];
 
   for (const message of messages) {
@@ -3322,6 +3363,7 @@ async function syncUkdocsPrintCollectionsFromSheet(settings, date) {
       shipment_date: sending.shipment_date,
       customer_id: existingCollection?.customer_id || matchedCustomer?.id || "",
       customer_name: existingCollection?.customer_name || matchedCustomer?.customer_name || sending.city_name || "",
+      collection_type: existingCollection?.collection_type || sending.collection_type || (isHonselersdijkStockControl(sending) ? "stock_control" : "export"),
       city_name: sending.city_name,
       border_crossing: sending.border_crossing,
       hub_code: sending.hub_code,
@@ -5380,6 +5422,10 @@ async function handleApi(req, res, url) {
       sendJson(res, 404, { error: "UKdocs Print collection not found" });
       return;
     }
+    if (existingCollection.collection_type === "stock_control") {
+      sendJson(res, 400, { error: "Stock control collections do not send export papers" });
+      return;
+    }
     const deliveryEmail = await sendUkdocsPrintReadyEmail(existingCollection, state.customers, settings);
     const updatedCollection = normalizeUkdocsPrintCollection({
       ...existingCollection,
@@ -5431,6 +5477,10 @@ async function handleApi(req, res, url) {
     }
     if (kind === "export_extra" && existingCollection.documents?.export_extra?.storage_name) {
       sendJson(res, 200, { collection: existingCollection, print_collections: normalizeUkdocsState(state).print_collections, skipped: true, reason: "export_extra already exists" });
+      return;
+    }
+    if (["inspection_list", "locations_file"].includes(kind) && existingCollection.documents?.[kind]?.storage_name) {
+      sendJson(res, 200, { collection: existingCollection, print_collections: normalizeUkdocsState(state).print_collections, skipped: true, reason: `${kind} already exists` });
       return;
     }
     const savedDocument = await saveUkdocsPrintUpload(existingCollection.id, kind, body?.file || {}, requestUser);
