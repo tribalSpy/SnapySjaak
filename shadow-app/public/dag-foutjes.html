@@ -876,6 +876,64 @@ const TRANSLATIONS = {
   }
 };
 
+savedOverlay.querySelector('.check').innerHTML = '&#10003;';
+ERROR_TYPES[0].icon = '&#9650;';
+ERROR_TYPES[1].icon = '&#9660;';
+ERROR_TYPES[2].icon = '&#9632;';
+ERROR_TYPES[3].icon = '&#10047;';
+ERROR_TYPES[4].icon = '&#9998;';
+LANG_FLAG.pl = 'PL';
+LANG_FLAG.nl = 'NL';
+LANG_FLAG.en = 'GB';
+
+Object.assign(TRANSLATIONS.pl, {
+  appTitle: 'Rejestr bledow',
+  subtitlePrefix: 'Chlodnia',
+  refresh: 'Odswiez',
+  manage: 'Lista osob',
+  todayTeamBtn: 'Zespol dzis',
+  selectTeamTitle: 'Kto dzis pracuje?',
+  saveTeamBtn: 'Zapisz zespol',
+  noTeamTodayTitle: 'Nie wybrano jeszcze zespolu na dzis.',
+  noTeamTodayDesc: 'Wybierz osoby, ktore dzis pracuja na chlodni.',
+  selectTeamCta: 'Wybierz zespol na dzis',
+  noMasterPeople: 'Brak osob na liscie glownej. Dodaj je najpierw w sekcji "Lista osob".',
+  emptyTeamTitle: 'Wybrany zespol jest pusty.',
+  emptyTeamDesc: 'Zmien wybor w sekcji "Zespol dzis".',
+  summaryBtn: 'Podsumowanie',
+  chooseError: 'Wybierz blad',
+  confirm: 'Potwierdz',
+  describeError: 'Opisz blad',
+  errorType: 'Rodzaj bledu',
+  commentPlaceholderOther: 'Opisz, na czym polegal blad...',
+  commentPlaceholderNormal: 'Np. numer zamowienia, dodatkowe informacje...',
+  reqHint: 'To pole jest wymagane dla bledu typu "inne".',
+  confirmBtnLabel: 'Confirm',
+  managePeopleTitle: 'Zarzadzaj osobami',
+  addPersonPlaceholder: 'Imie i nazwisko...',
+  delete: 'Usun',
+  emptyPeopleShort: 'Brak osob. Dodaj pierwsza ponizej.',
+  totalErrors: 'lacznie bledow',
+  errorSaveFailed: 'Nie udalo sie zapisac bledu. Sprawdz polaczenie i sprobuj ponownie.',
+  errorSavePeopleFailed: 'Nie udalo sie zapisac listy osob. Sprobuj ponownie.',
+  noDataExport: 'Brak danych do wyeksportowania dla wybranego okresu.',
+  types: { za_duzo: 'za duzo', za_malo: 'za malo', zla_polka: 'zla polka', zle_kwiaty: 'zle kwiaty', inne: 'inne' },
+});
+
+Object.assign(TRANSLATIONS.nl, {
+  manage: 'Personenlijst',
+  todayTeamBtn: 'Team vandaag',
+  summaryBtn: 'Overzicht',
+  exportBtn: 'Export .xlsx',
+});
+
+Object.assign(TRANSLATIONS.en, {
+  manage: 'People list',
+  todayTeamBtn: 'Today team',
+  summaryBtn: 'Summary',
+  exportBtn: 'Export .xlsx',
+});
+
 function T(key) { return TRANSLATIONS[state.lang][key]; }
 function TT(typeKey) { return TRANSLATIONS[state.lang].types[typeKey] || typeKey; }
 
@@ -1560,7 +1618,7 @@ function renderSummaryContentWithActions(errors) {
   if (!errors.length) {
     content.innerHTML = `
       <div class="empty-state">
-        <div class="big">âœ…</div>
+        <div class="big">OK</div>
         <p><strong>${T('emptySummary')}</strong></p>
       </div>`;
     return;
@@ -1590,7 +1648,7 @@ function renderSummaryContentWithActions(errors) {
         <div class="person-summary-head ${isOpen ? 'open' : ''}" data-id="${personId}">
           <span class="name">${escapeHtml(data.name)}</span>
           <span class="count-pill">${data.entries.length}</span>
-          <span class="chev">â–¾</span>
+          <span class="chev">&#9662;</span>
         </div>
         <div class="type-tally">
           ${ERROR_TYPES.filter((type) => tally[type.key]).map((type) => `<span>${type.icon} ${TT(type.key)}: ${tally[type.key]}</span>`).join('')}
