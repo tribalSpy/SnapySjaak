@@ -17,6 +17,7 @@ const PERMISSIONS = {
   CMR_VIEW: "cmr:view",
   HAL_LOCATIONS_VIEW: "hal_locations:view",
   EXPEDITION_STICKERS_VIEW: "expedition_stickers:view",
+  DAG_FOUTJES_VIEW: "expedition_stickers:view",
   CMR_MANAGE: "cmr:manage",
   CLOCK_VIEW: "clock:view",
   CLOCK_MANAGE: "clock:manage",
@@ -35,6 +36,7 @@ const PAGE_DEFINITIONS = [
   { key: "cmrprint", label: "CMR Print", permission: PERMISSIONS.CMR_VIEW },
   { key: "hallocations", label: "Hal Locations", permission: PERMISSIONS.HAL_LOCATIONS_VIEW },
   { key: "expeditionstickers", label: "Expedition Sticker", permission: PERMISSIONS.EXPEDITION_STICKERS_VIEW },
+  { key: "dagfoutjes", label: "Dag Foutjes", permission: PERMISSIONS.DAG_FOUTJES_VIEW },
   { key: "ukdocsprint", label: "UKdocs Print", permission: PERMISSIONS.UKDOCS_VIEW },
   { key: "clock", label: "Inklokken", permission: PERMISSIONS.CLOCK_VIEW },
   { key: "users", label: "Users", permission: PERMISSIONS.USERS_MANAGE },
@@ -117,6 +119,11 @@ function pageHeading(page) {
       return {
         title: "Expedition Sticker",
         caption: "Save shared planning and split files, refresh ERP_PASTE, and generate expedition sticker PDFs for the team.",
+      };
+    case "dagfoutjes":
+      return {
+        title: "Dag Foutjes",
+        caption: "Use the existing koelcel fouten app directly inside Shadow without changing its own workflow.",
       };
     case "cmrprint":
       return {
@@ -3766,6 +3773,26 @@ function UkdocsPrintPage({ currentUser }) {
   );
 }
 
+function DagFoutjesPage() {
+  return (
+    <section className="overview-stack">
+      <article className="panel" style={{ padding: 0, overflow: "hidden" }}>
+        <iframe
+          title="Dag Foutjes"
+          src="/api/dag-foutjes/app"
+          style={{
+            display: "block",
+            width: "100%",
+            minHeight: "78vh",
+            border: "none",
+            background: "#fff",
+          }}
+        />
+      </article>
+    </section>
+  );
+}
+
 function App() {
   const [auth, setAuth] = useState({ loading: true, user: null, setupRequired: false });
   const rawPathname = typeof window !== "undefined" ? window.location.pathname : "/";
@@ -4008,6 +4035,7 @@ function App() {
         {page === "clock" && <ClockPage currentUser={auth.user} />}
         {page === "hallocations" && <HalLocationsPage currentUser={auth.user} />}
         {page === "expeditionstickers" && <ExpeditionStickerPage currentUser={auth.user} />}
+        {page === "dagfoutjes" && <DagFoutjesPage currentUser={auth.user} />}
         {page === "ukdocsprint" && <UkdocsPrintPage currentUser={auth.user} />}
         {page === "settings" && <SettingsPage currentUser={auth.user} />}
         {page === "ukdocs" && <UkdocsPage currentUser={auth.user} />}

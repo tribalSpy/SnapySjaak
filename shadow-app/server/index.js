@@ -33,6 +33,7 @@ const syncWorkerPath = path.join(appRoot, "server", "sync_worker.js");
 const halLocationsWorkerPath = path.join(appRoot, "server", "hal_locations_worker.py");
 const expeditionStickerWorkerPath = path.join(appRoot, "server", "expedition_sticker_worker.py");
 const ukdocsWorkerPath = path.join(appRoot, "server", "ukdocs_worker.py");
+const dagFoutjesHtmlPath = path.join(repoRoot, "foutjeskoelcel", "bledy-chlodnia (1).html");
 const googleImageCacheDir = path.join(cacheDir, "shadow-google-images");
 const googleRunDetailsCacheDir = path.join(cacheDir, "shadow-google-run-details");
 const halLocationsCacheDir = path.join(cacheDir, "hal-locations");
@@ -4801,6 +4802,23 @@ async function handleApi(req, res, url) {
       }
       sendJson(res, 400, { error: error instanceof Error ? error.message : String(error) });
     }
+    return;
+  }
+
+  if (url.pathname === "/api/dag-foutjes/app" && req.method === "GET") {
+    if (!requirePermission(res, requestUser, PERMISSIONS.EXPEDITION_STICKERS_VIEW)) {
+      return;
+    }
+    if (!existsSync(dagFoutjesHtmlPath)) {
+      sendText(res, 404, "Dag Foutjes app not found");
+      return;
+    }
+    const html = await fs.readFile(dagFoutjesHtmlPath, "utf8");
+    res.writeHead(200, {
+      "content-type": "text/html; charset=utf-8",
+      "cache-control": "no-store",
+    });
+    res.end(html);
     return;
   }
 
