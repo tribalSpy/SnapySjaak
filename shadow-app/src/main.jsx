@@ -120,7 +120,7 @@ function pageHeading(page) {
     case "expeditionstickers":
       return {
         title: "Expedition Sticker",
-        caption: "Save shared planning and split files, refresh ERP_PASTE, and generate expedition sticker PDFs for the team.",
+        caption: "",
       };
     case "dagfoutjes":
       return {
@@ -610,6 +610,8 @@ function ExpeditionStickerPage() {
     loadState();
   }, []);
 
+  const hasSavedSources = Boolean(savedState?.planning_file || savedState?.split_file);
+
   async function saveSources() {
     if (!planningFile && !splitFile) {
       setError("Choose a planning file or split file first");
@@ -644,7 +646,7 @@ function ExpeditionStickerPage() {
       }));
       setPlanningFile(null);
       setSplitFile(null);
-      setMessage("Shared expedition source files saved.");
+      setMessage("Source files saved.");
     } catch (saveError) {
       setError(saveError.message);
       setMessage("");
@@ -666,18 +668,21 @@ function ExpeditionStickerPage() {
       setHalSessionId(payload.id || "");
       setHalSummary(payload);
       setMessage(`ERP_PASTE loaded: ${payload.totalRows || 0} rows, ${(payload.locPrefixes || []).length} location prefixes.`);
+      return payload;
     } catch (sheetError) {
       setHalSessionId("");
       setHalSummary(null);
       setError(sheetError.message);
       setMessage("");
+      return null;
     } finally {
       setSheetBusy(false);
     }
   }
 
-  async function generateExpeditionStickers() {
-    if (!halSessionId) {
+  async function generateExpeditionStickers(nextSessionId = "") {
+    const activeSessionId = nextSessionId || halSessionId;
+    if (!activeSessionId) {
       setError("Load ERP_PASTE first");
       setMessage("");
       return;
@@ -689,7 +694,7 @@ function ExpeditionStickerPage() {
     try {
       const payload = await apiJson("/api/expedition-stickers/generate", {
         method: "POST",
-        body: JSON.stringify({ id: halSessionId }),
+        body: JSON.stringify({ id: activeSessionId }),
       });
       setGeneratedFiles(payload.files || []);
       const missing = Array.isArray(payload.summary?.missing_locations) ? payload.summary.missing_locations : [];
@@ -704,13 +709,67 @@ function ExpeditionStickerPage() {
     }
   }
 
+  async function handleSourceFileChange(nextPlanningFile, nextSplitFile) {
+    setPlanningFile(nextPlanningFile);
+    setSplitFile(nextSplitFile);
+    if (!nextPlanningFile && !nextSplitFile) {
+      return;
+    }
+    setSavingSources(true);
+    setError("");
+    setMessage("");
+    try {
+      const body = {};
+      if (nextPlanningFile) {
+        body.planning_file = {
+          name: nextPlanningFile.name,
+          content_base64: await fileToBase64(nextPlanningFile),
+        };
+      }
+      if (nextSplitFile) {
+        body.split_file = {
+          name: nextSplitFile.name,
+          content_base64: await fileToBase64(nextSplitFile),
+        };
+      }
+      const payload = await apiJson("/api/expedition-stickers/upload", {
+        method: "POST",
+        body: JSON.stringify(body),
+      });
+      setSavedState((current) => ({
+        ...(current || {}),
+        ...payload,
+      }));
+      setPlanningFile(null);
+      setSplitFile(null);
+      setMessage("Source files saved.");
+    } catch (saveError) {
+      setError(saveError.message);
+      setMessage("");
+    } finally {
+      setSavingSources(false);
+    }
+  }
+
+  async function handleContinue() {
+    if (!hasSavedSources && !planningFile && !splitFile) {
+      setError("Upload at least one source file first");
+      setMessage("");
+      return;
+    }
+    const sheetPayload = await loadHalindelingFromSheet();
+    if (!sheetPayload?.id) {
+      return;
+    }
+    await generateExpeditionStickers(sheetPayload.id);
+  }
+
   return (
     <section className="overview-stack">
       <article className="panel hal-panel">
         <div className="section-header">
           <div>
-            <h2>Shared source files</h2>
-            <p>The planner uploads the latest planning and split files here once. Everyone else can reuse them later without uploading again.</p>
+            <h2>Source files</h2>
           </div>
           <button type="button" onClick={loadState} disabled={loadingState}>
             {loadingState ? "Refreshing..." : "Refresh saved state"}
@@ -719,18 +778,14 @@ function ExpeditionStickerPage() {
         <div className="form-grid">
           <label>
             <span>Planning file</span>
-            <input type="file" accept=".xlsx,.xls,.csv" onChange={(event) => setPlanningFile(event.target.files?.[0] || null)} />
+            <input type="file" accept=".xlsx,.xls,.csv" onChange={(event) => handleSourceFileChange(event.target.files?.[0] || null, null)} />
           </label>
           <label>
             <span>Split file</span>
-            <input type="file" accept=".xlsx,.xls,.csv" onChange={(event) => setSplitFile(event.target.files?.[0] || null)} />
+            <input type="file" accept=".xlsx,.xls,.csv" onChange={(event) => handleSourceFileChange(null, event.target.files?.[0] || null)} />
           </label>
         </div>
-        <div className="row-actions hal-actions-row">
-          <button type="button" className="primary" onClick={saveSources} disabled={savingSources}>
-            {savingSources ? "Saving..." : "Save shared files"}
-          </button>
-        </div>
+        {savingSources ? <div className="notice">Saving source files...</div> : null}
         <div className="table-wrap">
           <table className="data-table">
             <thead>
@@ -763,42 +818,18 @@ function ExpeditionStickerPage() {
       <article className="panel hal-panel">
         <div className="section-header">
           <div>
-            <h2>Live halindeling</h2>
-            <p>Reuse the same ERP_PASTE spreadsheet source as Hal Locations so the latest location lookup is always loaded right before generation.</p>
+            <h2>Continue</h2>
           </div>
         </div>
         <div className="row-actions hal-actions-row">
-          <button type="button" className="primary" onClick={loadHalindelingFromSheet} disabled={sheetBusy}>
-            {sheetBusy ? "Loading sheet..." : "Load ERP_PASTE from spreadsheet"}
-          </button>
-        </div>
-        {savedState?.sheet_source?.spreadsheet_id ? (
-          <p className="sidebar-note">
-            Source: {savedState.sheet_source.sheet_name || "ERP_PASTE"} ({savedState.sheet_source.spreadsheet_id})
-          </p>
-        ) : null}
-        {halSummary ? (
-          <p className="sidebar-note">
-            Loaded {halSummary.totalRows || 0} rows, {(halSummary.locPrefixes || []).length} location prefixes, and {(halSummary.custPrefixes || []).length} customer prefixes.
-          </p>
-        ) : null}
-      </article>
-
-      <article className="panel hal-panel">
-        <div className="section-header">
-          <div>
-            <h2>Generate expedition stickers</h2>
-            <p>The PDFs follow the old sticker app flow: one file per split / truck plus one overig file when rows have no split.</p>
-          </div>
-        </div>
-        <div className="row-actions hal-actions-row">
-          <button type="button" className="primary" onClick={generateExpeditionStickers} disabled={generating || !halSessionId}>
-            {generating ? "Generating..." : "Generate PDFs"}
+          <button type="button" className="primary" onClick={handleContinue} disabled={savingSources || sheetBusy || generating || !hasSavedSources}>
+            {sheetBusy ? "Loading ERP_PASTE..." : generating ? "Generating..." : "Continue"}
           </button>
           <button type="button" disabled={!generatedFiles.length} onClick={() => generatedFiles.forEach((file) => downloadBase64File(file.name, file.content_base64, file.mime_type))}>
             Download all
           </button>
         </div>
+        {halSummary ? <p className="sidebar-note">ERP_PASTE rows: {halSummary.totalRows || 0}</p> : null}
         {!!generatedFiles.length && (
           <div className="row-actions hal-actions-row">
             {generatedFiles.map((file) => (
