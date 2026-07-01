@@ -1231,13 +1231,33 @@ pre {
 
 .cmr-batch-row {
   display: grid;
-  grid-template-columns: minmax(240px, 1fr) minmax(240px, 320px) auto;
+  grid-template-columns: minmax(240px, 1.2fr) minmax(160px, 220px) minmax(150px, 210px) minmax(160px, 210px) minmax(160px, 220px) auto;
   gap: 14px;
   align-items: start;
   padding: 12px;
   border: 1px solid #d6dde5;
   border-radius: 8px;
   background: #fbfcfd;
+}
+
+.cmr-batch-field {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+}
+
+.cmr-batch-field span {
+  font-weight: 700;
+  font-size: 0.95rem;
+}
+
+.cmr-batch-field textarea {
+  width: 100%;
+  min-height: 96px;
+}
+
+.cmr-batch-field-9 textarea {
+  min-height: 84px;
 }
 
 .cmr-print-toolbar {

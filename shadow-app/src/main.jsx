@@ -1685,20 +1685,20 @@ function CmrBatchPrintView({ customers, buildPrintPage, defaultManualValues }) {
                 <strong>{customer.name}</strong>
                 <div className="sidebar-note">{customer.address || "-"}</div>
               </div>
-              <label>
-                <span>Field 5</span>
+              <label className="cmr-batch-field cmr-batch-field-5">
+                <span>5 - Documents attached</span>
                 <textarea rows={3} value={manualOverride.documentsAttached} onChange={(event) => updateCustomerManualValue(customer.name, "documentsAttached", event.target.value)} />
               </label>
-              <label>
-                <span>Field 7</span>
+              <label className="cmr-batch-field cmr-batch-field-7">
+                <span>7 - Packaging / marks</span>
                 <textarea rows={3} value={manualOverride.packagingType} onChange={(event) => updateCustomerManualValue(customer.name, "packagingType", event.target.value)} />
               </label>
-              <label>
-                <span>Field 9</span>
-                <textarea rows={4} value={manualOverride.natureOfGoods} onChange={(event) => updateCustomerManualValue(customer.name, "natureOfGoods", event.target.value)} />
+              <label className="cmr-batch-field cmr-batch-field-9">
+                <span>9 - Nature of goods</span>
+                <textarea rows={3} value={manualOverride.natureOfGoods} onChange={(event) => updateCustomerManualValue(customer.name, "natureOfGoods", event.target.value)} />
               </label>
-              <label>
-                <span>Field 17</span>
+              <label className="cmr-batch-field cmr-batch-field-17">
+                <span>17 - Transport authorizations</span>
                 <textarea rows={3} value={manualOverride.transportAuthorizations} onChange={(event) => updateCustomerManualValue(customer.name, "transportAuthorizations", event.target.value)} />
               </label>
               <label className="checkbox-row">
@@ -1761,8 +1761,21 @@ function CmrPrintPage({ currentUser }) {
   const loadingPlaces = cmrData?.loading_places || [];
   const templates = cmrData?.templates || [];
   const canManage = Boolean(cmrData?.can_manage);
+  const latestCmrCollectionsRef = useRef({
+    customers,
+    exporters,
+    transport_infos: transportInfos,
+    loading_places: loadingPlaces,
+  });
   const visibleMenus = canManage ? CMR_MENU_DEFINITIONS : CMR_MENU_DEFINITIONS.filter((item) => item.key === "cmrprint");
   const settings = cmrData?.settings || {};
+
+  latestCmrCollectionsRef.current = {
+    customers,
+    exporters,
+    transport_infos: transportInfos,
+    loading_places: loadingPlaces,
+  };
 
   useEffect(() => {
     if (!visibleMenus.some((item) => item.key === activeMenu)) {
@@ -1839,18 +1852,18 @@ function CmrPrintPage({ currentUser }) {
     if (!cmrData) {
       return;
     }
+    if (document.activeElement instanceof HTMLElement) {
+      document.activeElement.blur();
+    }
     setSaving(true);
     setMessage("");
     setSaveError("");
     try {
+      await new Promise((resolve) => window.requestAnimationFrame(resolve));
+      const latestCollections = latestCmrCollectionsRef.current;
       const payload = await apiJson("/api/cmrprint/app-data", {
         method: "PATCH",
-        body: JSON.stringify({
-          customers,
-          exporters,
-          transport_infos: transportInfos,
-          loading_places: loadingPlaces,
-        }),
+        body: JSON.stringify(latestCollections),
       });
       setDraftData({ ...payload, settings: data?.settings || cmrData.settings, can_manage: cmrData.can_manage });
       setMessage(patchMessage || "CMR data saved.");
