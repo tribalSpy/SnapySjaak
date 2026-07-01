@@ -1625,11 +1625,31 @@ function CmrTemplateEditor({ templates, places, defaultTemplateName, onSaveTempl
   );
 }
 
-function CmrBatchPrintView({ customers, buildPrintPage, defaultNatureOfGoods }) {
+function CmrBatchPrintView({ customers, buildPrintPage, defaultManualValues }) {
   const [search, setSearch] = useState("");
   const [selectedNames, setSelectedNames] = useState([]);
   const [overrides, setOverrides] = useState({});
   const visibleCustomers = useMemo(() => sortByName(customers).filter((item) => `${item.name} ${item.address || ""}`.toLowerCase().includes(search.trim().toLowerCase())), [customers, search]);
+
+  function customerManualValues(name) {
+    const manualOverride = overrides[name] || {};
+    return {
+      documentsAttached: manualOverride.documentsAttached ?? defaultManualValues.documentsAttached,
+      packagingType: manualOverride.packagingType ?? defaultManualValues.packagingType,
+      natureOfGoods: manualOverride.natureOfGoods ?? defaultManualValues.natureOfGoods,
+      transportAuthorizations: manualOverride.transportAuthorizations ?? defaultManualValues.transportAuthorizations,
+    };
+  }
+
+  function updateCustomerManualValue(name, field, value) {
+    setOverrides((current) => ({
+      ...current,
+      [name]: {
+        ...current[name],
+        [field]: value,
+      },
+    }));
+  }
 
   function toggle(name) {
     setSelectedNames((current) => current.includes(name) ? current.filter((item) => item !== name) : [...current, name]);
@@ -1639,7 +1659,7 @@ function CmrBatchPrintView({ customers, buildPrintPage, defaultNatureOfGoods }) 
     const pages = selectedNames
       .map((name) => visibleCustomers.find((item) => item.name === name) || customers.find((item) => item.name === name))
       .filter(Boolean)
-      .map((customer) => buildPrintPage(customer, { natureOfGoods: overrides[customer.name] || defaultNatureOfGoods }));
+      .map((customer) => buildPrintPage(customer, customerManualValues(customer.name)));
     if (!pages.length) {
       window.alert("Choose at least one customer.");
       return;
@@ -1651,28 +1671,43 @@ function CmrBatchPrintView({ customers, buildPrintPage, defaultNatureOfGoods }) 
     <div className="data-table-card cmr-batch-panel">
       <div className="cmr-batch-header">
         <label className="wide"><span>Search customer</span><input value={search} onChange={(event) => setSearch(event.target.value)} /></label>
+        <div className="row-actions spread-actions">
+          <button type="button" onClick={() => openBatch(false)}>Preview selected</button>
+          <button type="button" className="primary" onClick={() => openBatch(true)}>Print selected</button>
+        </div>
       </div>
       <div className="cmr-batch-list-table">
-        {visibleCustomers.map((customer) => (
-          <div key={customer.name} className="cmr-batch-row">
-            <div>
-              <strong>{customer.name}</strong>
-              <div className="sidebar-note">{customer.address || "-"}</div>
+        {visibleCustomers.map((customer) => {
+          const manualOverride = customerManualValues(customer.name);
+          return (
+            <div key={customer.name} className="cmr-batch-row">
+              <div>
+                <strong>{customer.name}</strong>
+                <div className="sidebar-note">{customer.address || "-"}</div>
+              </div>
+              <label>
+                <span>Field 5</span>
+                <textarea rows={3} value={manualOverride.documentsAttached} onChange={(event) => updateCustomerManualValue(customer.name, "documentsAttached", event.target.value)} />
+              </label>
+              <label>
+                <span>Field 7</span>
+                <textarea rows={3} value={manualOverride.packagingType} onChange={(event) => updateCustomerManualValue(customer.name, "packagingType", event.target.value)} />
+              </label>
+              <label>
+                <span>Field 9</span>
+                <textarea rows={4} value={manualOverride.natureOfGoods} onChange={(event) => updateCustomerManualValue(customer.name, "natureOfGoods", event.target.value)} />
+              </label>
+              <label>
+                <span>Field 17</span>
+                <textarea rows={3} value={manualOverride.transportAuthorizations} onChange={(event) => updateCustomerManualValue(customer.name, "transportAuthorizations", event.target.value)} />
+              </label>
+              <label className="checkbox-row">
+                <input type="checkbox" checked={selectedNames.includes(customer.name)} onChange={() => toggle(customer.name)} />
+                <span>Add</span>
+              </label>
             </div>
-            <label>
-              <span>Field 9</span>
-              <textarea rows={4} value={overrides[customer.name] || defaultNatureOfGoods} onChange={(event) => setOverrides((current) => ({ ...current, [customer.name]: event.target.value }))} />
-            </label>
-            <label className="checkbox-row">
-              <input type="checkbox" checked={selectedNames.includes(customer.name)} onChange={() => toggle(customer.name)} />
-              <span>Add</span>
-            </label>
-          </div>
-        ))}
-      </div>
-      <div className="row-actions spread-actions">
-        <button type="button" onClick={() => openBatch(false)}>Preview selected</button>
-        <button type="button" className="primary" onClick={() => openBatch(true)}>Print selected</button>
+          );
+        })}
       </div>
     </div>
   );
@@ -2020,7 +2055,7 @@ function CmrPrintPage({ currentUser }) {
       {canManage && activeMenu === "transport" && <><CmrProfileManager title="Transport" records={transportInfos} onChange={(value) => updateCollections({ transport_infos: value })} places={places} /><div className="row-actions spread-actions"><button type="button" className="primary" onClick={() => saveAppData("Transport info saved.")} disabled={saving}>{saving ? "Saving..." : "Save"}</button></div></>}
       {canManage && activeMenu === "loading" && <><CmrProfileManager title="Loading place" records={loadingPlaces} onChange={(value) => updateCollections({ loading_places: value })} places={places} /><div className="row-actions spread-actions"><button type="button" className="primary" onClick={() => saveAppData("Loading places saved.")} disabled={saving}>{saving ? "Saving..." : "Save"}</button></div></>}
       {canManage && activeMenu === "customers" && <><CmrCustomerManager customers={customers} exporters={exporters} transportInfos={transportInfos} loadingPlaces={loadingPlaces} onChange={(value) => updateCollections({ customers: value })} places={places} /><div className="row-actions spread-actions"><button type="button" className="primary" onClick={() => saveAppData("Customer info saved.")} disabled={saving}>{saving ? "Saving..." : "Save"}</button></div></>}
-      {canManage && activeMenu === "batch" && <CmrBatchPrintView customers={customers} buildPrintPage={buildPrintPageForCustomer} defaultNatureOfGoods={manualValues.natureOfGoods} />}
+      {canManage && activeMenu === "batch" && <CmrBatchPrintView customers={customers} buildPrintPage={buildPrintPageForCustomer} defaultManualValues={manualValues} />}
     </section>
   );
 }
