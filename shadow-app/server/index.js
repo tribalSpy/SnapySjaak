@@ -33,7 +33,13 @@ const syncWorkerPath = path.join(appRoot, "server", "sync_worker.js");
 const halLocationsWorkerPath = path.join(appRoot, "server", "hal_locations_worker.py");
 const expeditionStickerWorkerPath = path.join(appRoot, "server", "expedition_sticker_worker.py");
 const ukdocsWorkerPath = path.join(appRoot, "server", "ukdocs_worker.py");
-const dagFoutjesHtmlPath = path.join(repoRoot, "foutjeskoelcel", "bledy-chlodnia (1).html");
+const dagFoutjesHtmlPathCandidates = [
+  path.join(repoRoot, "foutjeskoelcel", "bledy-chlodnia (1).html"),
+  path.join(process.cwd(), "foutjeskoelcel", "bledy-chlodnia (1).html"),
+  path.join(appRoot, "..", "foutjeskoelcel", "bledy-chlodnia (1).html"),
+  path.join(appRoot, "foutjeskoelcel", "bledy-chlodnia (1).html"),
+  path.join(appRoot, "public", "dag-foutjes.html"),
+];
 const googleImageCacheDir = path.join(cacheDir, "shadow-google-images");
 const googleRunDetailsCacheDir = path.join(cacheDir, "shadow-google-run-details");
 const halLocationsCacheDir = path.join(cacheDir, "hal-locations");
@@ -1568,6 +1574,10 @@ async function writeDagFoutjesState(state) {
   await writeJsonFile(dagFoutjesStatePath, {
     shared: state && typeof state.shared === "object" && !Array.isArray(state.shared) ? state.shared : {},
   });
+}
+
+function resolveDagFoutjesHtmlPath() {
+  return dagFoutjesHtmlPathCandidates.find((candidate) => existsSync(candidate)) || null;
 }
 
 async function mergeDagFoutjesPeopleFromClock(state) {
@@ -4959,8 +4969,9 @@ async function handleApi(req, res, url) {
     if (!requirePermission(res, requestUser, PERMISSIONS.EXPEDITION_STICKERS_VIEW)) {
       return;
     }
-    if (!existsSync(dagFoutjesHtmlPath)) {
-      sendText(res, 404, "Dag Foutjes app not found");
+    const dagFoutjesHtmlPath = resolveDagFoutjesHtmlPath();
+    if (!dagFoutjesHtmlPath) {
+      sendText(res, 404, `Dag Foutjes app not found. Checked: ${dagFoutjesHtmlPathCandidates.join(" | ")}`);
       return;
     }
     const html = await fs.readFile(dagFoutjesHtmlPath, "utf8");
