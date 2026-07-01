@@ -18,6 +18,7 @@ const PERMISSIONS = {
   HAL_LOCATIONS_VIEW: "hal_locations:view",
   EXPEDITION_STICKERS_VIEW: "expedition_stickers:view",
   DAG_FOUTJES_VIEW: "expedition_stickers:view",
+  FOUTEN_OVERVIEW_VIEW: "fouten_overview:view",
   CMR_MANAGE: "cmr:manage",
   CLOCK_VIEW: "clock:view",
   CLOCK_MANAGE: "clock:manage",
@@ -37,6 +38,7 @@ const PAGE_DEFINITIONS = [
   { key: "hallocations", label: "Hal Locations", permission: PERMISSIONS.HAL_LOCATIONS_VIEW },
   { key: "expeditionstickers", label: "Expedition Sticker", permission: PERMISSIONS.EXPEDITION_STICKERS_VIEW },
   { key: "dagfoutjes", label: "Dag Foutjes", permission: PERMISSIONS.DAG_FOUTJES_VIEW },
+  { key: "foutenoverzicht", label: "Fouten Overzicht", permission: PERMISSIONS.FOUTEN_OVERVIEW_VIEW },
   { key: "ukdocsprint", label: "UKdocs Print", permission: PERMISSIONS.UKDOCS_VIEW },
   { key: "clock", label: "Inklokken", permission: PERMISSIONS.CLOCK_VIEW },
   { key: "users", label: "Users", permission: PERMISSIONS.USERS_MANAGE },
@@ -124,6 +126,11 @@ function pageHeading(page) {
       return {
         title: "Dag Foutjes",
         caption: "Use the existing koelcel fouten app directly inside Shadow without changing its own workflow.",
+      };
+    case "foutenoverzicht":
+      return {
+        title: "Fouten Overzicht",
+        caption: "Review mistakes by person, type, day, week, and month in a separate protected overview.",
       };
     case "cmrprint":
       return {
@@ -3794,6 +3801,267 @@ function DagFoutjesPage() {
   );
 }
 
+function foutenOverviewTypeSummary(entries) {
+  const counts = new Map();
+  for (const entry of entries) {
+    const label = String(entry.type_label || entry.type_key || "-");
+    counts.set(label, (counts.get(label) || 0) + 1);
+  }
+  return [...counts.entries()]
+    .map(([label, count]) => ({ label, count }))
+    .sort((left, right) => right.count - left.count || left.label.localeCompare(right.label));
+}
+
+function foutenOverviewPersonSummary(entries) {
+  const people = new Map();
+  for (const entry of entries) {
+    const personKey = String(entry.person_id || entry.person_name || "");
+    const current = people.get(personKey) || { person_name: entry.person_name || "-", total: 0, types: {} };
+    current.total += 1;
+    current.types[entry.type_label || entry.type_key || "-"] = (current.types[entry.type_label || entry.type_key || "-"] || 0) + 1;
+    people.set(personKey, current);
+  }
+  return [...people.values()]
+    .sort((left, right) => right.total - left.total || left.person_name.localeCompare(right.person_name));
+}
+
+function foutenOverviewPeriodSummary(entries, field) {
+  const periods = new Map();
+  for (const entry of entries) {
+    const periodKey = String(entry[field] || "").trim();
+    if (!periodKey) {
+      continue;
+    }
+    const current = periods.get(periodKey) || { period: periodKey, total: 0, people: new Set(), types: {} };
+    current.total += 1;
+    current.people.add(entry.person_name || "-");
+    current.types[entry.type_label || entry.type_key || "-"] = (current.types[entry.type_label || entry.type_key || "-"] || 0) + 1;
+    periods.set(periodKey, current);
+  }
+  return [...periods.values()]
+    .map((item) => ({
+      period: item.period,
+      total: item.total,
+      people_count: item.people.size,
+      top_type: Object.entries(item.types).sort((a, b) => b[1] - a[1])[0]?.[0] || "-",
+    }))
+    .sort((left, right) => right.period.localeCompare(left.period));
+}
+
+function FoutenOverviewPage() {
+  const [data, setData] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState("");
+  const [fromDate, setFromDate] = useState("");
+  const [toDate, setToDate] = useState("");
+  const [personFilter, setPersonFilter] = useState("");
+
+  useEffect(() => {
+    let cancelled = false;
+    setLoading(true);
+    setError("");
+    apiJson("/api/dag-foutjes/overview")
+      .then((payload) => {
+        if (cancelled) {
+          return;
+        }
+        setData(payload);
+      })
+      .catch((nextError) => {
+        if (!cancelled) {
+          setError(nextError.message || String(nextError));
+        }
+      })
+      .finally(() => {
+        if (!cancelled) {
+          setLoading(false);
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const entries = data?.entries || [];
+  const filteredEntries = useMemo(() => {
+    const personNeedle = personFilter.trim().toLowerCase();
+    return entries.filter((entry) => {
+      if (fromDate && String(entry.date || "") < fromDate) {
+        return false;
+      }
+      if (toDate && String(entry.date || "") > toDate) {
+        return false;
+      }
+      if (personNeedle && !String(entry.person_name || "").toLowerCase().includes(personNeedle)) {
+        return false;
+      }
+      return true;
+    });
+  }, [entries, fromDate, toDate, personFilter]);
+
+  const peopleSummary = useMemo(() => foutenOverviewPersonSummary(filteredEntries), [filteredEntries]);
+  const typeSummary = useMemo(() => foutenOverviewTypeSummary(filteredEntries), [filteredEntries]);
+  const daySummary = useMemo(() => foutenOverviewPeriodSummary(filteredEntries, "date"), [filteredEntries]);
+  const weekSummary = useMemo(() => foutenOverviewPeriodSummary(filteredEntries, "iso_week"), [filteredEntries]);
+  const monthSummary = useMemo(() => foutenOverviewPeriodSummary(filteredEntries, "month"), [filteredEntries]);
+
+  return (
+    <section className="overview-stack">
+      <div className="data-table-card">
+        <section className="toolbar" aria-label="Fouten overzicht filters">
+          <label>
+            <span>From date</span>
+            <input type="date" value={fromDate} onChange={(event) => setFromDate(event.target.value)} />
+          </label>
+          <label>
+            <span>To date</span>
+            <input type="date" value={toDate} onChange={(event) => setToDate(event.target.value)} />
+          </label>
+          <label>
+            <span>Search person</span>
+            <input value={personFilter} onChange={(event) => setPersonFilter(event.target.value)} placeholder="Name" />
+          </label>
+          <Metric label="Mistakes" value={filteredEntries.length} />
+          <Metric label="People" value={new Set(filteredEntries.map((entry) => entry.person_name)).size} />
+          <Metric label="Types" value={typeSummary.length} />
+        </section>
+      </div>
+
+      {loading && <div className="notice">Loading Fouten Overzicht...</div>}
+      {error && <div className="notice danger">Unable to load Fouten Overzicht: {error}</div>}
+      {!loading && !error && !filteredEntries.length && <div className="notice">No fouten records found for the selected filters.</div>}
+
+      {!loading && !error && !!filteredEntries.length && (
+        <>
+          <div className="data-table-card">
+            <h2>People ranking</h2>
+            <div className="table-wrap">
+              <table className="data-table">
+                <thead>
+                  <tr>
+                    <th>Person</th>
+                    <th>Total mistakes</th>
+                    <th>Types</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {peopleSummary.map((row) => (
+                    <tr key={row.person_name}>
+                      <td>{row.person_name}</td>
+                      <td>{row.total}</td>
+                      <td>{Object.entries(row.types).sort((a, b) => b[1] - a[1]).map(([label, count]) => `${label}: ${count}`).join(", ")}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+
+          <div className="data-table-card">
+            <h2>Mistake types</h2>
+            <div className="table-wrap">
+              <table className="data-table">
+                <thead>
+                  <tr>
+                    <th>Type</th>
+                    <th>Total</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {typeSummary.map((row) => (
+                    <tr key={row.label}>
+                      <td>{row.label}</td>
+                      <td>{row.count}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+
+          <div className="data-table-card">
+            <h2>Per day</h2>
+            <div className="table-wrap">
+              <table className="data-table">
+                <thead>
+                  <tr>
+                    <th>Day</th>
+                    <th>Total mistakes</th>
+                    <th>People</th>
+                    <th>Top type</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {daySummary.map((row) => (
+                    <tr key={row.period}>
+                      <td>{row.period}</td>
+                      <td>{row.total}</td>
+                      <td>{row.people_count}</td>
+                      <td>{row.top_type}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+
+          <div className="data-table-card">
+            <h2>Per week</h2>
+            <div className="table-wrap">
+              <table className="data-table">
+                <thead>
+                  <tr>
+                    <th>Week</th>
+                    <th>Total mistakes</th>
+                    <th>People</th>
+                    <th>Top type</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {weekSummary.map((row) => (
+                    <tr key={row.period}>
+                      <td>{row.period}</td>
+                      <td>{row.total}</td>
+                      <td>{row.people_count}</td>
+                      <td>{row.top_type}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+
+          <div className="data-table-card">
+            <h2>Per month</h2>
+            <div className="table-wrap">
+              <table className="data-table">
+                <thead>
+                  <tr>
+                    <th>Month</th>
+                    <th>Total mistakes</th>
+                    <th>People</th>
+                    <th>Top type</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {monthSummary.map((row) => (
+                    <tr key={row.period}>
+                      <td>{row.period}</td>
+                      <td>{row.total}</td>
+                      <td>{row.people_count}</td>
+                      <td>{row.top_type}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </>
+      )}
+    </section>
+  );
+}
+
 function App() {
   const [auth, setAuth] = useState({ loading: true, user: null, setupRequired: false });
   const rawPathname = typeof window !== "undefined" ? window.location.pathname : "/";
@@ -4037,6 +4305,7 @@ function App() {
         {page === "hallocations" && <HalLocationsPage currentUser={auth.user} />}
         {page === "expeditionstickers" && <ExpeditionStickerPage currentUser={auth.user} />}
         {page === "dagfoutjes" && <DagFoutjesPage currentUser={auth.user} />}
+        {page === "foutenoverzicht" && <FoutenOverviewPage currentUser={auth.user} />}
         {page === "ukdocsprint" && <UkdocsPrintPage currentUser={auth.user} />}
         {page === "settings" && <SettingsPage currentUser={auth.user} />}
         {page === "ukdocs" && <UkdocsPage currentUser={auth.user} />}

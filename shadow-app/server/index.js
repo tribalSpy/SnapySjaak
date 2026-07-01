@@ -76,6 +76,7 @@ const allPermissions = [
   "cmr:view",
   "hal_locations:view",
   "expedition_stickers:view",
+  "fouten_overview:view",
   "cmr:manage",
   "clock:view",
   "clock:manage",
@@ -92,6 +93,7 @@ const PERMISSIONS = {
   CMR_VIEW: "cmr:view",
   HAL_LOCATIONS_VIEW: "hal_locations:view",
   EXPEDITION_STICKERS_VIEW: "expedition_stickers:view",
+  FOUTEN_OVERVIEW_VIEW: "fouten_overview:view",
   CMR_MANAGE: "cmr:manage",
   CLOCK_VIEW: "clock:view",
   CLOCK_MANAGE: "clock:manage",
@@ -1574,6 +1576,143 @@ async function writeDagFoutjesState(state) {
   await writeJsonFile(dagFoutjesStatePath, {
     shared: state && typeof state.shared === "object" && !Array.isArray(state.shared) ? state.shared : {},
   });
+}
+
+function dagFoutjesIsoWeekParts(dateStr) {
+  const normalized = String(dateStr || "").slice(0, 10);
+  const parsed = new Date(`${normalized}T00:00:00`);
+  if (Number.isNaN(parsed.getTime())) {
+    return { iso_week: "", iso_week_label: "", month: "" };
+  }
+  const utcDate = new Date(Date.UTC(parsed.getFullYear(), parsed.getMonth(), parsed.getDate()));
+  const dayNumber = utcDate.getUTCDay() || 7;
+  utcDate.setUTCDate(utcDate.getUTCDate() + 4 - dayNumber);
+  const isoYear = utcDate.getUTCFullYear();
+  const yearStart = new Date(Date.UTC(isoYear, 0, 1));
+  const week = Math.ceil((((utcDate - yearStart) / 86400000) + 1) / 7);
+  const isoWeek = `${isoYear}-W${String(week).padStart(2, "0")}`;
+  const month = normalized.slice(0, 7);
+  return { iso_week: isoWeek, iso_week_label: isoWeek, month };
+}
+
+function normalizeDagFoutjesOverviewEntry(entry, dateKey) {
+  const normalizedDate = String(dateKey || entry?.dateKey || "").slice(0, 10);
+  const parts = dagFoutjesIsoWeekParts(normalizedDate);
+  return {
+    id: String(entry?.id || ""),
+    date: normalizedDate,
+    iso_week: parts.iso_week,
+    month: parts.month,
+    person_id: String(entry?.personId || "").trim(),
+    person_name: String(entry?.personName || "").trim(),
+    type_key: String(entry?.type || "").trim(),
+    type_label: String(entry?.typeLabel || entry?.type || "").trim(),
+    comment: String(entry?.comment || ""),
+    time: String(entry?.time || "").trim(),
+    timestamp: Number(entry?.timestamp || 0) || 0,
+  };
+}
+
+async function buildDagFoutjesOverviewPayload() {
+  const state = await readDagFoutjesState();
+  const keys = Object.keys(state.shared || {}).filter((key) => key.startsWith("errors:")).sort();
+  const entries = [];
+
+  for (const key of keys) {
+    const dateKey = key.replace(/^errors:/, "").slice(0, 10);
+    if (!dateKey) {
+      continue;
+    }
+    let dayEntries = [];
+    try {
+      dayEntries = JSON.parse(String(state.shared[key] || "[]"));
+    } catch {
+      dayEntries = [];
+    }
+    if (!Array.isArray(dayEntries)) {
+      continue;
+    }
+    for (const entry of dayEntries) {
+      const normalized = normalizeDagFoutjesOverviewEntry(entry, dateKey);
+      if (!normalized.person_name || !normalized.type_key || !normalized.date) {
+        continue;
+      }
+      entries.push(normalized);
+    }
+  }
+
+  entries.sort((left, right) => {
+    if (left.date !== right.date) {
+      return left.date.localeCompare(right.date);
+    }
+    return left.timestamp - right.timestamp;
+  });
+
+  const byType = new Map();
+  const byPerson = new Map();
+  const byDay = new Map();
+  const byWeek = new Map();
+  const byMonth = new Map();
+
+  const bumpTypeMap = (map, key, label) => {
+    const current = map.get(key) || { key, label, count: 0 };
+    current.count += 1;
+    map.set(key, current);
+  };
+
+  for (const entry of entries) {
+    bumpTypeMap(byType, entry.type_key, entry.type_label);
+
+    const person = byPerson.get(entry.person_id) || {
+      person_id: entry.person_id,
+      person_name: entry.person_name,
+      total: 0,
+      types: {},
+    };
+    person.total += 1;
+    person.types[entry.type_label] = (person.types[entry.type_label] || 0) + 1;
+    byPerson.set(entry.person_id, person);
+
+    const day = byDay.get(entry.date) || { period: entry.date, total: 0, people: new Set(), types: {} };
+    day.total += 1;
+    day.people.add(entry.person_name);
+    day.types[entry.type_label] = (day.types[entry.type_label] || 0) + 1;
+    byDay.set(entry.date, day);
+
+    const week = byWeek.get(entry.iso_week) || { period: entry.iso_week, total: 0, people: new Set(), types: {} };
+    week.total += 1;
+    week.people.add(entry.person_name);
+    week.types[entry.type_label] = (week.types[entry.type_label] || 0) + 1;
+    byWeek.set(entry.iso_week, week);
+
+    const month = byMonth.get(entry.month) || { period: entry.month, total: 0, people: new Set(), types: {} };
+    month.total += 1;
+    month.people.add(entry.person_name);
+    month.types[entry.type_label] = (month.types[entry.type_label] || 0) + 1;
+    byMonth.set(entry.month, month);
+  }
+
+  const summarizePeriodMap = (map) =>
+    [...map.values()]
+      .map((item) => ({
+        period: item.period,
+        total: item.total,
+        people_count: item.people.size,
+        top_type: Object.entries(item.types).sort((a, b) => b[1] - a[1])[0]?.[0] || "",
+        types: item.types,
+      }))
+      .sort((left, right) => right.period.localeCompare(left.period));
+
+  return {
+    total_entries: entries.length,
+    people_count: byPerson.size,
+    type_totals: [...byType.values()].sort((left, right) => right.count - left.count || left.label.localeCompare(right.label)),
+    person_totals: [...byPerson.values()].sort((left, right) => right.total - left.total || left.person_name.localeCompare(right.person_name)),
+    day_totals: summarizePeriodMap(byDay),
+    week_totals: summarizePeriodMap(byWeek),
+    month_totals: summarizePeriodMap(byMonth),
+    entries,
+  };
 }
 
 function resolveDagFoutjesHtmlPath() {
@@ -5133,6 +5272,19 @@ async function handleApi(req, res, url) {
       "cache-control": "no-store",
     });
     res.end(withBridge);
+    return;
+  }
+
+  if (url.pathname === "/api/dag-foutjes/overview" && req.method === "GET") {
+    if (!requirePermission(res, requestUser, PERMISSIONS.FOUTEN_OVERVIEW_VIEW)) {
+      return;
+    }
+    try {
+      const payload = await buildDagFoutjesOverviewPayload();
+      sendJson(res, 200, payload);
+    } catch (error) {
+      sendJson(res, 400, { error: error instanceof Error ? error.message : String(error) });
+    }
     return;
   }
 
