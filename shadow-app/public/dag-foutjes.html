@@ -1,0 +1,1354 @@
+<!DOCTYPE html>
+<html lang="pl">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>Rejestr błędów — chłodnia</title>
+<style>
+  :root {
+    --frost: #EAF3F6;
+    --frost-card: #FFFFFF;
+    --steel: #1F3A52;
+    --steel-mid: #3D5A73;
+    --ice: #8FC1D4;
+    --ice-pale: #D8EBF1;
+    --amber: #E8871E;
+    --amber-dark: #B4630F;
+    --danger: #B23A3A;
+    --ok: #2F8A5B;
+    --bloom: #A6577A;
+    --line: #C7D8DE;
+    --display: 'Barlow Condensed', 'Arial Narrow', sans-serif;
+    --sans: 'Work Sans', system-ui, sans-serif;
+    --mono: 'IBM Plex Mono', 'Courier New', monospace;
+  }
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  html, body {
+    margin: 0; padding: 0;
+    background: var(--frost);
+    color: var(--steel);
+    font-family: var(--sans);
+    height: 100%;
+    overscroll-behavior-y: contain;
+  }
+  #app { min-height: 100vh; display: flex; flex-direction: column; }
+
+  /* frost texture backdrop */
+  body::before {
+    content: '';
+    position: fixed; inset: 0;
+    background:
+      radial-gradient(circle at 10% 10%, rgba(143,193,212,0.18), transparent 40%),
+      radial-gradient(circle at 90% 25%, rgba(143,193,212,0.14), transparent 35%),
+      radial-gradient(circle at 50% 90%, rgba(31,58,82,0.06), transparent 45%);
+    pointer-events: none;
+    z-index: 0;
+  }
+
+  header.topbar {
+    position: relative;
+    z-index: 1;
+    background: var(--steel);
+    color: white;
+    padding: 18px 20px;
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    box-shadow: 0 2px 10px rgba(31,58,82,0.25);
+  }
+  header.topbar .back-btn {
+    background: rgba(255,255,255,0.12);
+    border: none;
+    color: white;
+    width: 44px; height: 44px;
+    border-radius: 10px;
+    font-size: 22px;
+    cursor: pointer;
+    display: flex; align-items: center; justify-content: center;
+    flex-shrink: 0;
+  }
+  header.topbar .back-btn:active { background: rgba(255,255,255,0.25); }
+  header.topbar h1 {
+    font-family: var(--display);
+    font-size: 26px;
+    font-weight: 700;
+    letter-spacing: 0.01em;
+    margin: 0;
+    flex: 1;
+  }
+  header.topbar .sub {
+    font-family: var(--mono);
+    font-size: 12px;
+    opacity: 0.75;
+    display: block;
+    margin-top: 2px;
+  }
+  header.topbar .icon-btn {
+    background: rgba(255,255,255,0.1);
+    border: 1px solid rgba(255,255,255,0.25);
+    color: white;
+    width: 46px; height: 46px;
+    border-radius: 10px;
+    font-size: 20px;
+    cursor: pointer;
+    flex-shrink: 0;
+  }
+  header.topbar .icon-btn:active { background: rgba(255,255,255,0.25); }
+
+  .lang-switch {
+    display: flex;
+    gap: 4px;
+    flex-shrink: 0;
+  }
+  .lang-switch button {
+    background: rgba(255,255,255,0.1);
+    border: 1px solid rgba(255,255,255,0.25);
+    color: white;
+    width: 40px; height: 40px;
+    border-radius: 8px;
+    font-size: 18px;
+    cursor: pointer;
+    opacity: 0.55;
+  }
+  .lang-switch button.active { opacity: 1; background: rgba(255,255,255,0.22); border-color: white; }
+  .lang-switch button:active { opacity: 1; }
+
+  main { position: relative; z-index: 1; flex: 1; padding: 20px; max-width: 980px; margin: 0 auto; width: 100%; }
+
+  /* HOME - tile grid */
+  .grid-tiles {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+    gap: 14px;
+    margin-top: 4px;
+  }
+  .person-tile {
+    background: var(--frost-card);
+    border: 1px solid var(--line);
+    border-radius: 16px;
+    padding: 22px 14px 16px;
+    text-align: center;
+    cursor: pointer;
+    position: relative;
+    min-height: 108px;
+    display: flex; flex-direction: column; align-items: center; justify-content: center;
+    box-shadow: 0 1px 0 rgba(31,58,82,0.05), inset 0 0 0 1px rgba(255,255,255,0.6);
+    transition: transform 0.08s ease, box-shadow 0.08s ease;
+  }
+  .person-tile::before {
+    content: '';
+    position: absolute; inset: 0;
+    border-radius: 16px;
+    background: linear-gradient(160deg, rgba(143,193,212,0.16), transparent 55%);
+    pointer-events: none;
+  }
+  .person-tile:active { transform: scale(0.97); box-shadow: 0 0 0 2px var(--ice); }
+  .person-tile .name {
+    font-family: var(--display);
+    font-size: 21px;
+    font-weight: 700;
+    color: var(--steel);
+    line-height: 1.1;
+  }
+  .person-tile .badge {
+    position: absolute;
+    top: 10px; right: 10px;
+    background: var(--amber);
+    color: white;
+    font-family: var(--mono);
+    font-size: 12px;
+    font-weight: 700;
+    min-width: 22px;
+    height: 22px;
+    border-radius: 11px;
+    display: flex; align-items: center; justify-content: center;
+    padding: 0 6px;
+  }
+  .person-tile .badge.zero { background: var(--line); color: var(--steel-mid); }
+
+  .empty-state {
+    text-align: center;
+    padding: 60px 20px;
+    color: var(--steel-mid);
+  }
+  .empty-state .big { font-size: 40px; margin-bottom: 10px; }
+  .empty-state p { font-size: 15px; margin: 6px 0; }
+
+  .bottom-actions {
+    position: sticky;
+    bottom: 0;
+    z-index: 1;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 10px;
+    padding: 14px 20px calc(14px + env(safe-area-inset-bottom));
+    background: linear-gradient(to top, var(--frost) 60%, transparent);
+  }
+  .bottom-actions button {
+    flex: 1;
+    min-width: 140px;
+    font-family: var(--sans);
+    font-weight: 600;
+    font-size: 15px;
+    padding: 14px;
+    border-radius: 12px;
+    border: 1px solid var(--steel);
+    background: var(--frost-card);
+    color: var(--steel);
+    cursor: pointer;
+  }
+  .bottom-actions button:active { background: var(--ice-pale); }
+  .bottom-actions button.primary { background: var(--steel); color: white; }
+  .bottom-actions button.primary:active { background: var(--steel-mid); }
+
+  /* ERROR TYPE screen */
+  .person-banner {
+    font-family: var(--display);
+    font-size: 30px;
+    font-weight: 700;
+    margin: 4px 0 20px;
+    color: var(--steel);
+  }
+  .type-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 14px;
+  }
+  .type-btn {
+    background: var(--frost-card);
+    border: 2px solid var(--line);
+    border-radius: 16px;
+    padding: 26px 12px;
+    text-align: center;
+    cursor: pointer;
+    min-height: 120px;
+    display: flex; flex-direction: column; align-items: center; justify-content: center;
+    gap: 8px;
+  }
+  .type-btn:active { transform: scale(0.97); }
+  .type-btn .icon { font-size: 32px; }
+  .type-btn .label { font-family: var(--display); font-size: 20px; font-weight: 700; }
+  .type-btn.too-much { border-color: var(--amber); }
+  .type-btn.too-much .icon { color: var(--amber); }
+  .type-btn.too-little { border-color: var(--steel-mid); }
+  .type-btn.too-little .icon { color: var(--steel-mid); }
+  .type-btn.wrong-shelf { border-color: var(--ice); }
+  .type-btn.wrong-shelf .icon { color: var(--amber-dark); }
+  .type-btn.wrong-flowers { border-color: var(--bloom); }
+  .type-btn.wrong-flowers .icon { color: var(--bloom); }
+  .type-btn.other { border-color: var(--danger); grid-column: span 2; }
+  .type-btn.other .icon { color: var(--danger); }
+
+  /* CONFIRM screen */
+  .confirm-card {
+    background: var(--frost-card);
+    border: 1px solid var(--line);
+    border-radius: 16px;
+    padding: 22px;
+  }
+  .confirm-card .row {
+    display: flex; justify-content: space-between; align-items: baseline;
+    padding: 10px 0;
+    border-bottom: 1px solid var(--line);
+    font-size: 15px;
+  }
+  .confirm-card .row:last-of-type { border-bottom: none; }
+  .confirm-card .row .k { color: var(--steel-mid); }
+  .confirm-card .row .v { font-weight: 700; font-family: var(--display); font-size: 19px; }
+  .comment-label {
+    display: block;
+    margin: 18px 0 8px;
+    font-size: 14px;
+    font-weight: 600;
+    color: var(--steel-mid);
+  }
+  .comment-label .req { color: var(--danger); }
+  textarea.comment {
+    width: 100%;
+    min-height: 90px;
+    border: 1.5px solid var(--line);
+    border-radius: 10px;
+    padding: 12px 14px;
+    font-family: var(--sans);
+    font-size: 15px;
+    resize: vertical;
+    background: white;
+  }
+  textarea.comment:focus { outline: 2px solid var(--ice); border-color: var(--ice); }
+  .confirm-actions {
+    display: flex; gap: 10px; margin-top: 20px;
+  }
+  .confirm-actions button {
+    flex: 1;
+    font-family: var(--sans);
+    font-weight: 700;
+    font-size: 16px;
+    padding: 16px;
+    border-radius: 12px;
+    border: none;
+    cursor: pointer;
+  }
+  .confirm-actions .btn-cancel { background: var(--frost); color: var(--steel-mid); border: 1px solid var(--line); }
+  .confirm-actions .btn-confirm { background: var(--ok); color: white; }
+  .confirm-actions .btn-confirm:disabled { background: var(--line); color: var(--steel-mid); cursor: not-allowed; }
+
+  .req-hint { font-size: 12.5px; color: var(--danger); margin-top: 6px; display: none; }
+  .req-hint.show { display: block; }
+
+  /* SAVED overlay */
+  .saved-overlay {
+    position: fixed; inset: 0;
+    background: rgba(31,58,82,0.92);
+    color: white;
+    display: none;
+    align-items: center; justify-content: center;
+    flex-direction: column;
+    gap: 12px;
+    z-index: 50;
+  }
+  .saved-overlay.show { display: flex; }
+  .saved-overlay .check { font-size: 54px; color: var(--ok); }
+  .saved-overlay .msg { font-family: var(--display); font-size: 26px; font-weight: 700; }
+
+  /* MANAGE PEOPLE */
+  .people-list { display: flex; flex-direction: column; gap: 10px; margin-bottom: 20px; }
+  .people-row {
+    display: flex; align-items: center; gap: 10px;
+    background: var(--frost-card);
+    border: 1px solid var(--line);
+    border-radius: 12px;
+    padding: 12px 14px;
+  }
+  .people-row .name { flex: 1; font-weight: 600; font-size: 16px; }
+  .people-row button {
+    background: none; border: 1px solid var(--danger); color: var(--danger);
+    border-radius: 8px; padding: 8px 12px; font-size: 13px; cursor: pointer; font-weight: 600;
+  }
+  .people-row .confirm-del { display: flex; gap: 6px; }
+  .people-row .confirm-del button.yes { background: var(--danger); color: white; }
+  .add-person-row {
+    display: flex; gap: 10px;
+  }
+  .add-person-row input {
+    flex: 1;
+    padding: 14px;
+    border: 1.5px solid var(--line);
+    border-radius: 10px;
+    font-size: 16px;
+  }
+  .add-person-row button {
+    background: var(--steel);
+    color: white;
+    border: none;
+    border-radius: 10px;
+    padding: 0 22px;
+    font-weight: 700;
+    font-size: 15px;
+    cursor: pointer;
+  }
+
+  /* SUMMARY */
+  .filter-bar {
+    display: flex; flex-wrap: wrap; gap: 8px; align-items: center;
+    margin-bottom: 18px;
+  }
+  .filter-bar button {
+    background: var(--frost-card);
+    border: 1.5px solid var(--line);
+    border-radius: 20px;
+    padding: 9px 16px;
+    font-size: 13.5px;
+    font-weight: 600;
+    color: var(--steel-mid);
+    cursor: pointer;
+  }
+  .filter-bar button.active { background: var(--steel); color: white; border-color: var(--steel); }
+  .filter-bar input[type=date] {
+    padding: 9px 12px;
+    border-radius: 20px;
+    border: 1.5px solid var(--line);
+    font-family: var(--sans);
+    font-size: 13.5px;
+  }
+  .filter-bar .export-btn {
+    margin-left: auto;
+    background: var(--ok) !important;
+    color: white !important;
+    border-color: var(--ok) !important;
+  }
+
+  .total-banner {
+    background: var(--steel);
+    color: white;
+    border-radius: 14px;
+    padding: 16px 20px;
+    margin-bottom: 18px;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+  }
+  .total-banner .num { font-family: var(--display); font-size: 34px; font-weight: 700; }
+  .total-banner .lbl { font-size: 13px; opacity: 0.85; }
+
+  .person-summary-card {
+    background: var(--frost-card);
+    border: 1px solid var(--line);
+    border-radius: 14px;
+    margin-bottom: 12px;
+    overflow: hidden;
+  }
+  .person-summary-head {
+    display: flex; align-items: center; gap: 12px;
+    padding: 16px 18px;
+    cursor: pointer;
+  }
+  .person-summary-head .name { font-family: var(--display); font-size: 20px; font-weight: 700; flex: 1; }
+  .person-summary-head .count-pill {
+    background: var(--amber);
+    color: white;
+    font-family: var(--mono);
+    font-weight: 700;
+    font-size: 13px;
+    padding: 4px 10px;
+    border-radius: 12px;
+  }
+  .person-summary-head .chev { color: var(--steel-mid); transition: transform 0.15s; font-size: 14px; }
+  .person-summary-head.open .chev { transform: rotate(180deg); }
+  .type-tally {
+    display: flex; gap: 6px; padding: 0 18px 14px; flex-wrap: wrap;
+  }
+  .type-tally span {
+    font-family: var(--mono);
+    font-size: 11.5px;
+    background: var(--frost);
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    padding: 3px 8px;
+    color: var(--steel-mid);
+  }
+  .entries-detail {
+    display: none;
+    border-top: 1px solid var(--line);
+    padding: 4px 18px 14px;
+  }
+  .entries-detail.open { display: block; }
+  .entry-row {
+    display: flex; gap: 10px;
+    padding: 9px 0;
+    border-bottom: 1px dashed var(--line);
+    font-size: 13.5px;
+  }
+  .entry-row:last-child { border-bottom: none; }
+  .entry-row .time { font-family: var(--mono); color: var(--steel-mid); width: 46px; flex-shrink: 0; }
+  .entry-row .type-tag {
+    font-weight: 700;
+    width: 90px;
+    flex-shrink: 0;
+  }
+  .entry-row .comment { color: var(--steel-mid); flex: 1; }
+
+  /* TEAM TODAY */
+  .team-toolbar {
+    display: flex; gap: 10px; margin-bottom: 16px;
+  }
+  .team-toolbar button {
+    background: var(--frost-card);
+    border: 1.5px solid var(--line);
+    border-radius: 20px;
+    padding: 8px 16px;
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--steel-mid);
+    cursor: pointer;
+  }
+  .team-list { display: flex; flex-direction: column; gap: 10px; margin-bottom: 90px; }
+  .team-row {
+    display: flex; align-items: center; gap: 14px;
+    background: var(--frost-card);
+    border: 2px solid var(--line);
+    border-radius: 12px;
+    padding: 16px 16px;
+    cursor: pointer;
+    transition: border-color 0.1s, background 0.1s;
+  }
+  .team-row.checked { border-color: var(--ok); background: rgba(47,138,91,0.07); }
+  .team-row .check-box {
+    width: 26px; height: 26px;
+    border-radius: 7px;
+    border: 2px solid var(--line);
+    flex-shrink: 0;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 16px; color: white;
+  }
+  .team-row.checked .check-box { background: var(--ok); border-color: var(--ok); }
+  .team-row .name { font-size: 17px; font-weight: 600; flex: 1; }
+  .team-save-bar {
+    position: sticky; bottom: 0;
+    padding: 14px 20px calc(14px + env(safe-area-inset-bottom));
+    background: linear-gradient(to top, var(--frost) 65%, transparent);
+  }
+  .team-save-bar button {
+    width: 100%;
+    background: var(--steel);
+    color: white;
+    border: none;
+    border-radius: 12px;
+    padding: 16px;
+    font-size: 16px;
+    font-weight: 700;
+    cursor: pointer;
+  }
+
+  .badge-count {
+    background: var(--amber);
+    color: white;
+    font-family: var(--mono);
+    font-size: 11px;
+    font-weight: 700;
+    border-radius: 10px;
+    padding: 1px 7px;
+    margin-left: 6px;
+  }
+
+  .spinner {
+    width: 16px; height: 16px;
+    border: 2.5px solid rgba(255,255,255,0.4);
+    border-top-color: white;
+    border-radius: 50%;
+    animation: spin 0.7s linear infinite;
+    display: inline-block;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  .loading-row { text-align: center; padding: 40px; color: var(--steel-mid); }
+</style>
+</head>
+<body>
+<div id="app"></div>
+<div class="saved-overlay" id="savedOverlay">
+  <div class="check">✓</div>
+  <div class="msg" id="savedMsg">Zapisano</div>
+</div>
+
+<script>
+const app = document.getElementById('app');
+const savedOverlay = document.getElementById('savedOverlay');
+
+const ERROR_TYPES = [
+  { key: 'za_duzo', icon: '▲', cls: 'too-much' },
+  { key: 'za_malo', icon: '▼', cls: 'too-little' },
+  { key: 'zla_polka', icon: '▤', cls: 'wrong-shelf' },
+  { key: 'zle_kwiaty', icon: '✿', cls: 'wrong-flowers' },
+  { key: 'inne', icon: '✎', cls: 'other' }
+];
+const TYPE_MAP = Object.fromEntries(ERROR_TYPES.map(t => [t.key, t]));
+
+const LANGS = ['pl', 'nl', 'en'];
+const LANG_FLAG = { pl: '🇵🇱', nl: '🇳🇱', en: '🇬🇧' };
+
+const TRANSLATIONS = {
+  pl: {
+    locale: 'pl-PL',
+    appTitle: 'Rejestr błędów',
+    subtitlePrefix: 'Chłodnia',
+    refresh: 'Odśwież',
+    manage: '👤 Lista osób',
+    todayTeamBtn: '🧑‍🤝‍🧑 Zespół dziś',
+    selectTeamTitle: 'Kto dziś pracuje?',
+    selectAll: 'Zaznacz wszystkich',
+    deselectAll: 'Odznacz wszystkich',
+    saveTeamBtn: 'Zapisz zespół',
+    noTeamTodayTitle: 'Nie wybrano jeszcze zespołu na dziś.',
+    noTeamTodayDesc: 'Wybierz osoby, które dziś pracują na chłodni.',
+    selectTeamCta: 'Wybierz zespół na dziś',
+    noMasterPeople: 'Brak osób na liście głównej. Dodaj je najpierw w sekcji „Lista osób”.',
+    emptyTeamTitle: 'Wybrany zespół jest pusty.',
+    emptyTeamDesc: 'Zmień wybór w sekcji „Zespół dziś”.',
+    summaryBtn: '📋 Podsumowanie',
+    emptyPeopleTitle: 'Brak osób na liście.',
+    emptyPeopleDesc: 'Dodaj pierwszą osobę w sekcji „Osoby” na dole ekranu.',
+    chooseError: 'Wybierz błąd',
+    confirm: 'Potwierdź',
+    describeError: 'Opisz błąd',
+    person: 'Osoba',
+    errorType: 'Rodzaj błędu',
+    commentLabel: 'Komentarz',
+    optional: '(opcjonalny)',
+    required: '(wymagany)',
+    commentPlaceholderOther: 'Opisz, na czym polegał błąd...',
+    commentPlaceholderNormal: 'Np. numer zamówienia, dodatkowe informacje...',
+    reqHint: 'To pole jest wymagane dla błędu typu „inne”.',
+    back: 'Wstecz',
+    confirmBtnLabel: '✓ Zatwierdź',
+    savedPrefix: 'Zapisano:',
+    managePeopleTitle: 'Zarządzaj osobami',
+    addPersonPlaceholder: 'Imię i nazwisko...',
+    add: 'Dodaj',
+    delete: 'Usuń',
+    confirmDelete: 'Na pewno?',
+    yes: 'Tak',
+    no: 'Nie',
+    emptyPeopleShort: 'Brak osób. Dodaj pierwszą poniżej.',
+    summaryTitle: 'Podsumowanie',
+    today: 'Dzisiaj',
+    allDays: 'Wszystkie dni',
+    exportBtn: '⬇ Eksportuj .xlsx',
+    totalErrors: 'łącznie błędów',
+    peopleWithErrors: 'osób z błędami',
+    emptySummary: 'Brak zarejestrowanych błędów dla wybranego okresu.',
+    noComment: 'brak komentarza',
+    errorSaveFailed: 'Nie udało się zapisać błędu. Sprawdź połączenie i spróbuj ponownie.',
+    errorSavePeopleFailed: 'Nie udało się zapisać listy osób. Spróbuj ponownie.',
+    noDataExport: 'Brak danych do wyeksportowania dla wybranego okresu.',
+    types: { za_duzo: 'za dużo', za_malo: 'za mało', zla_polka: 'zła półka', zle_kwiaty: 'złe kwiaty', inne: 'inne' }
+  },
+  nl: {
+    locale: 'nl-NL',
+    appTitle: 'Foutregistratie',
+    subtitlePrefix: 'Koelcel',
+    refresh: 'Vernieuwen',
+    manage: '👤 Personenlijst',
+    todayTeamBtn: '🧑‍🤝‍🧑 Team vandaag',
+    selectTeamTitle: 'Wie werkt er vandaag?',
+    selectAll: 'Alles selecteren',
+    deselectAll: 'Alles deselecteren',
+    saveTeamBtn: 'Team opslaan',
+    noTeamTodayTitle: 'Nog geen team gekozen voor vandaag.',
+    noTeamTodayDesc: 'Selecteer de personen die vandaag in de koelcel werken.',
+    selectTeamCta: 'Kies team voor vandaag',
+    noMasterPeople: 'Geen personen in de hoofdlijst. Voeg ze eerst toe bij „Personenlijst".',
+    emptyTeamTitle: 'Het gekozen team is leeg.',
+    emptyTeamDesc: 'Pas de selectie aan bij „Team vandaag".',
+    summaryBtn: '📋 Overzicht',
+    emptyPeopleTitle: 'Geen personen in de lijst.',
+    emptyPeopleDesc: 'Voeg de eerste persoon toe bij „Personen" onderaan het scherm.',
+    chooseError: 'Kies fout',
+    confirm: 'Bevestigen',
+    describeError: 'Beschrijf de fout',
+    person: 'Persoon',
+    errorType: 'Soort fout',
+    commentLabel: 'Opmerking',
+    optional: '(optioneel)',
+    required: '(verplicht)',
+    commentPlaceholderOther: 'Beschrijf wat er mis ging...',
+    commentPlaceholderNormal: 'Bijv. ordernummer, extra informatie...',
+    reqHint: 'Dit veld is verplicht bij het type „overig".',
+    back: 'Terug',
+    confirmBtnLabel: '✓ Bevestigen',
+    savedPrefix: 'Opgeslagen:',
+    managePeopleTitle: 'Personen beheren',
+    addPersonPlaceholder: 'Voor- en achternaam...',
+    add: 'Toevoegen',
+    delete: 'Verwijderen',
+    confirmDelete: 'Weet je het zeker?',
+    yes: 'Ja',
+    no: 'Nee',
+    emptyPeopleShort: 'Geen personen. Voeg hieronder de eerste toe.',
+    summaryTitle: 'Overzicht',
+    today: 'Vandaag',
+    allDays: 'Alle dagen',
+    exportBtn: '⬇ Exporteren .xlsx',
+    totalErrors: 'totaal fouten',
+    peopleWithErrors: 'personen met fouten',
+    emptySummary: 'Geen geregistreerde fouten voor de geselecteerde periode.',
+    noComment: 'geen opmerking',
+    errorSaveFailed: 'Opslaan van de fout is mislukt. Controleer de verbinding en probeer opnieuw.',
+    errorSavePeopleFailed: 'Opslaan van de personenlijst is mislukt. Probeer opnieuw.',
+    noDataExport: 'Geen gegevens om te exporteren voor de geselecteerde periode.',
+    types: { za_duzo: 'te veel', za_malo: 'te weinig', zla_polka: 'verkeerd laag', zle_kwiaty: 'verkeerde bloemen', inne: 'overig' }
+  },
+  en: {
+    locale: 'en-US',
+    appTitle: 'Error log',
+    subtitlePrefix: 'Cold storage',
+    refresh: 'Refresh',
+    manage: '👤 People list',
+    todayTeamBtn: '🧑‍🤝‍🧑 Today\'s team',
+    selectTeamTitle: 'Who is working today?',
+    selectAll: 'Select all',
+    deselectAll: 'Deselect all',
+    saveTeamBtn: 'Save team',
+    noTeamTodayTitle: 'No team selected for today yet.',
+    noTeamTodayDesc: 'Select the people working in cold storage today.',
+    selectTeamCta: "Choose today's team",
+    noMasterPeople: 'No people on the master list. Add them first under "People list".',
+    emptyTeamTitle: 'The selected team is empty.',
+    emptyTeamDesc: 'Change the selection under "Today\'s team".',
+    summaryBtn: '📋 Summary',
+    emptyPeopleTitle: 'No people on the list.',
+    emptyPeopleDesc: 'Add the first person under "People" at the bottom of the screen.',
+    chooseError: 'Choose error',
+    confirm: 'Confirm',
+    describeError: 'Describe the error',
+    person: 'Person',
+    errorType: 'Error type',
+    commentLabel: 'Comment',
+    optional: '(optional)',
+    required: '(required)',
+    commentPlaceholderOther: 'Describe what went wrong...',
+    commentPlaceholderNormal: 'E.g. order number, extra details...',
+    reqHint: 'This field is required for the "other" error type.',
+    back: 'Back',
+    confirmBtnLabel: '✓ Confirm',
+    savedPrefix: 'Saved:',
+    managePeopleTitle: 'Manage people',
+    addPersonPlaceholder: 'Full name...',
+    add: 'Add',
+    delete: 'Delete',
+    confirmDelete: 'Are you sure?',
+    yes: 'Yes',
+    no: 'No',
+    emptyPeopleShort: 'No people yet. Add the first one below.',
+    summaryTitle: 'Summary',
+    today: 'Today',
+    allDays: 'All days',
+    exportBtn: '⬇ Export .xlsx',
+    totalErrors: 'total errors',
+    peopleWithErrors: 'people with errors',
+    emptySummary: 'No errors recorded for the selected period.',
+    noComment: 'no comment',
+    errorSaveFailed: 'Could not save the error. Check your connection and try again.',
+    errorSavePeopleFailed: 'Could not save the people list. Please try again.',
+    noDataExport: 'No data to export for the selected period.',
+    types: { za_duzo: 'too much', za_malo: 'too little', zla_polka: 'wrong shelf', zle_kwiaty: 'wrong flowers', inne: 'other' }
+  }
+};
+
+function T(key) { return TRANSLATIONS[state.lang][key]; }
+function TT(typeKey) { return TRANSLATIONS[state.lang].types[typeKey] || typeKey; }
+
+function langSwitcherHtml() {
+  return `<div class="lang-switch">${LANGS.map(l =>
+    `<button data-lang="${l}" class="${state.lang === l ? 'active' : ''}" title="${l.toUpperCase()}">${LANG_FLAG[l]}</button>`
+  ).join('')}</div>`;
+}
+function bindLangSwitcher() {
+  document.querySelectorAll('.lang-switch button').forEach(btn => {
+    btn.onclick = async () => {
+      if (btn.dataset.lang === state.lang) return;
+      state.lang = btn.dataset.lang;
+      try { await window.storage.set('app_language', state.lang, false); } catch (e) {}
+      render();
+    };
+  });
+}
+
+let state = {
+  view: 'home',
+  lang: 'pl',
+  people: [],
+  peopleLoaded: false,
+  selectedPerson: null,
+  selectedType: null,
+  todayCounts: {},
+  summaryDate: todayStr(),
+  summaryMode: 'day', // 'day' | 'all'
+  summaryData: null,
+  openPersonId: null,
+  activeIds: null,
+  teamDraft: []
+};
+
+function pad(n) { return n < 10 ? '0' + n : '' + n; }
+function todayStr(d = new Date()) { return d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate()); }
+function timeStr(d = new Date()) { return pad(d.getHours()) + ':' + pad(d.getMinutes()); }
+function uid(prefix) { return prefix + '_' + Date.now().toString(36) + '_' + Math.random().toString(36).slice(2, 8); }
+function escapeHtml(s) {
+  return (s || '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
+
+/* ---------- STORAGE HELPERS ---------- */
+async function loadPeople() {
+  try {
+    const res = await window.storage.get('people', true);
+    state.people = res ? JSON.parse(res.value) : [];
+  } catch (e) {
+    state.people = [];
+  }
+  state.peopleLoaded = true;
+}
+async function savePeople() {
+  try {
+    await window.storage.set('people', JSON.stringify(state.people), true);
+  } catch (e) {
+    alert(T('errorSavePeopleFailed'));
+  }
+}
+async function loadDayErrors(dateStr) {
+  try {
+    const res = await window.storage.get('errors:' + dateStr, true);
+    return res ? JSON.parse(res.value) : [];
+  } catch (e) {
+    return [];
+  }
+}
+async function saveDayErrors(dateStr, arr) {
+  await window.storage.set('errors:' + dateStr, JSON.stringify(arr), true);
+}
+async function loadAllErrors() {
+  let keys = [];
+  try {
+    const res = await window.storage.list('errors:', true);
+    keys = res ? res.keys : [];
+  } catch (e) {
+    keys = [];
+  }
+  const all = [];
+  for (const k of keys) {
+    try {
+      const res = await window.storage.get(k, true);
+      if (res) {
+        const arr = JSON.parse(res.value);
+        arr.forEach(e => all.push(e));
+      }
+    } catch (e) { /* skip */ }
+  }
+  return all;
+}
+
+async function loadActiveIds(dateStr) {
+  try {
+    const res = await window.storage.get('active:' + dateStr, true);
+    return res ? JSON.parse(res.value) : null; // null = never configured for this day
+  } catch (e) {
+    return null;
+  }
+}
+async function saveActiveIds(dateStr, arr) {
+  await window.storage.set('active:' + dateStr, JSON.stringify(arr), true);
+}
+function yesterdayStr() {
+  const d = new Date();
+  d.setDate(d.getDate() - 1);
+  return todayStr(d);
+}
+
+/* ---------- RENDER ---------- */
+function render() {
+  if (state.view === 'home') renderHome();
+  else if (state.view === 'errorType') renderErrorType();
+  else if (state.view === 'confirm') renderConfirm();
+  else if (state.view === 'managePeople') renderManagePeople();
+  else if (state.view === 'summary') renderSummary();
+  else if (state.view === 'teamToday') renderTeamToday();
+}
+
+async function renderHome() {
+  app.innerHTML = `
+    <header class="topbar">
+      <div style="flex:1;">
+        <h1>${T('appTitle')}</h1>
+        <span class="sub">${T('subtitlePrefix')} · ${new Date().toLocaleDateString(T('locale'), {weekday:'long', day:'numeric', month:'long'})}</span>
+      </div>
+      ${langSwitcherHtml()}
+      <button class="icon-btn" id="refreshBtn" title="${T('refresh')}">⟳</button>
+    </header>
+    <main>
+      <div id="tilesWrap"><div class="loading-row"><span class="spinner" style="border-color:#C7D8DE; border-top-color:#1F3A52;"></span></div></div>
+    </main>
+    <div class="bottom-actions">
+      <button id="teamTodayBtn">${T('todayTeamBtn')}<span id="teamCountBadge"></span></button>
+      <button id="manageBtn">${T('manage')}</button>
+      <button class="primary" id="summaryBtn">${T('summaryBtn')}</button>
+    </div>
+  `;
+  bindLangSwitcher();
+  document.getElementById('teamTodayBtn').onclick = () => { state.view = 'teamToday'; render(); };
+  document.getElementById('manageBtn').onclick = () => { state.view = 'managePeople'; render(); };
+  document.getElementById('summaryBtn').onclick = () => { state.view = 'summary'; state.summaryMode = 'day'; state.summaryDate = todayStr(); state.summaryData = null; render(); };
+  document.getElementById('refreshBtn').onclick = async () => { await refreshHomeData(); };
+
+  await refreshHomeData();
+}
+
+async function refreshHomeData() {
+  if (!state.peopleLoaded) await loadPeople();
+  const today = todayStr();
+  const todayErrors = await loadDayErrors(today);
+  state.todayCounts = {};
+  todayErrors.forEach(e => {
+    state.todayCounts[e.personId] = (state.todayCounts[e.personId] || 0) + 1;
+  });
+  const wrap = document.getElementById('tilesWrap');
+  if (!wrap) return;
+
+  if (!state.people.length) {
+    wrap.innerHTML = `
+      <div class="empty-state">
+        <div class="big">📋</div>
+        <p><strong>${T('emptyPeopleTitle')}</strong></p>
+        <p>${T('emptyPeopleDesc')}</p>
+      </div>`;
+    return;
+  }
+
+  const activeIds = await loadActiveIds(today);
+  state.activeIds = activeIds;
+  const badgeEl = document.getElementById('teamCountBadge');
+  if (badgeEl) {
+    badgeEl.className = 'badge-count';
+    badgeEl.textContent = activeIds ? activeIds.length : '!';
+  }
+
+  if (activeIds === null) {
+    wrap.innerHTML = `
+      <div class="empty-state">
+        <div class="big">🧑‍🤝‍🧑</div>
+        <p><strong>${T('noTeamTodayTitle')}</strong></p>
+        <p>${T('noTeamTodayDesc')}</p>
+        <button class="primary" id="goSelectTeamBtn" style="margin-top:14px; padding:14px 26px; border-radius:12px; border:none; background:var(--steel); color:white; font-weight:700; font-size:15px; cursor:pointer;">${T('selectTeamCta')}</button>
+      </div>`;
+    document.getElementById('goSelectTeamBtn').onclick = () => { state.view = 'teamToday'; render(); };
+    return;
+  }
+
+  const activePeople = state.people.filter(p => activeIds.includes(p.id));
+  if (!activePeople.length) {
+    wrap.innerHTML = `
+      <div class="empty-state">
+        <div class="big">🧑‍🤝‍🧑</div>
+        <p><strong>${T('emptyTeamTitle')}</strong></p>
+        <p>${T('emptyTeamDesc')}</p>
+        <button class="primary" id="goSelectTeamBtn2" style="margin-top:14px; padding:14px 26px; border-radius:12px; border:none; background:var(--steel); color:white; font-weight:700; font-size:15px; cursor:pointer;">${T('selectTeamCta')}</button>
+      </div>`;
+    document.getElementById('goSelectTeamBtn2').onclick = () => { state.view = 'teamToday'; render(); };
+    return;
+  }
+
+  wrap.innerHTML = `<div class="grid-tiles">${activePeople.map(p => {
+    const c = state.todayCounts[p.id] || 0;
+    return `<div class="person-tile" data-id="${p.id}">
+      <span class="badge ${c === 0 ? 'zero' : ''}">${c}</span>
+      <span class="name">${escapeHtml(p.name)}</span>
+    </div>`;
+  }).join('')}</div>`;
+  wrap.querySelectorAll('.person-tile').forEach(el => {
+    el.onclick = () => {
+      const person = state.people.find(p => p.id === el.dataset.id);
+      state.selectedPerson = person;
+      state.view = 'errorType';
+      render();
+    };
+  });
+}
+
+function renderErrorType() {
+  app.innerHTML = `
+    <header class="topbar">
+      <button class="back-btn" id="backBtn">‹</button>
+      <div style="flex:1;"><h1>${T('chooseError')}</h1></div>
+      ${langSwitcherHtml()}
+    </header>
+    <main>
+      <div class="person-banner">${escapeHtml(state.selectedPerson.name)}</div>
+      <div class="type-grid">
+        ${ERROR_TYPES.map(t => `
+          <div class="type-btn ${t.cls}" data-key="${t.key}">
+            <div class="icon">${t.icon}</div>
+            <div class="label">${TT(t.key)}</div>
+          </div>`).join('')}
+      </div>
+    </main>
+  `;
+  bindLangSwitcher();
+  document.getElementById('backBtn').onclick = () => { state.view = 'home'; render(); };
+  app.querySelectorAll('.type-btn').forEach(el => {
+    el.onclick = () => {
+      state.selectedType = TYPE_MAP[el.dataset.key];
+      state.view = 'confirm';
+      render();
+    };
+  });
+}
+
+function renderConfirm() {
+  const isOther = state.selectedType.key === 'inne';
+  app.innerHTML = `
+    <header class="topbar">
+      <button class="back-btn" id="backBtn">‹</button>
+      <div style="flex:1;"><h1>${isOther ? T('describeError') : T('confirm')}</h1></div>
+      ${langSwitcherHtml()}
+    </header>
+    <main>
+      <div class="confirm-card">
+        <div class="row"><span class="k">${T('person')}</span><span class="v">${escapeHtml(state.selectedPerson.name)}</span></div>
+        <div class="row"><span class="k">${T('errorType')}</span><span class="v">${state.selectedType.icon} ${TT(state.selectedType.key)}</span></div>
+        <label class="comment-label">
+          ${T('commentLabel')} ${isOther ? '<span class="req">' + T('required') + '</span>' : T('optional')}
+        </label>
+        <textarea class="comment" id="commentInput" placeholder="${isOther ? T('commentPlaceholderOther') : T('commentPlaceholderNormal')}"></textarea>
+        <div class="req-hint" id="reqHint">${T('reqHint')}</div>
+        <div class="confirm-actions">
+          <button class="btn-cancel" id="cancelBtn">${T('back')}</button>
+          <button class="btn-confirm" id="confirmBtn">${T('confirmBtnLabel')}</button>
+        </div>
+      </div>
+    </main>
+  `;
+  bindLangSwitcher();
+  document.getElementById('backBtn').onclick = () => { state.view = 'errorType'; render(); };
+  document.getElementById('cancelBtn').onclick = () => { state.view = 'errorType'; render(); };
+  const commentInput = document.getElementById('commentInput');
+  const confirmBtn = document.getElementById('confirmBtn');
+  const reqHint = document.getElementById('reqHint');
+
+  function updateBtnState() {
+    if (isOther && !commentInput.value.trim()) {
+      confirmBtn.disabled = true;
+    } else {
+      confirmBtn.disabled = false;
+    }
+  }
+  if (isOther) {
+    commentInput.addEventListener('input', updateBtnState);
+    updateBtnState();
+  }
+
+  confirmBtn.onclick = async () => {
+    const comment = commentInput.value.trim();
+    if (isOther && !comment) {
+      reqHint.classList.add('show');
+      return;
+    }
+    confirmBtn.disabled = true;
+    confirmBtn.innerHTML = '<span class="spinner"></span>';
+    try {
+      const dateStr = todayStr();
+      const entry = {
+        id: uid('e'),
+        personId: state.selectedPerson.id,
+        personName: state.selectedPerson.name,
+        type: state.selectedType.key,
+        typeLabel: TT(state.selectedType.key),
+        comment: comment,
+        time: timeStr(),
+        timestamp: Date.now()
+      };
+      const current = await loadDayErrors(dateStr);
+      current.push(entry);
+      await saveDayErrors(dateStr, current);
+
+      document.getElementById('savedMsg').textContent = T('savedPrefix') + ' ' + state.selectedPerson.name;
+      savedOverlay.classList.add('show');
+      setTimeout(() => {
+        savedOverlay.classList.remove('show');
+        state.view = 'home';
+        state.selectedPerson = null;
+        state.selectedType = null;
+        render();
+      }, 1100);
+    } catch (e) {
+      alert(T('errorSaveFailed'));
+      confirmBtn.disabled = false;
+      confirmBtn.innerHTML = T('confirmBtnLabel');
+    }
+  };
+}
+
+async function renderTeamToday() {
+  if (!state.peopleLoaded) await loadPeople();
+
+  if (!state.people.length) {
+    app.innerHTML = `
+      <header class="topbar">
+        <button class="back-btn" id="backBtn">‹</button>
+        <div style="flex:1;"><h1>${T('selectTeamTitle')}</h1></div>
+        ${langSwitcherHtml()}
+      </header>
+      <main>
+        <div class="empty-state">
+          <div class="big">📋</div>
+          <p>${T('noMasterPeople')}</p>
+        </div>
+      </main>
+    `;
+    bindLangSwitcher();
+    document.getElementById('backBtn').onclick = () => { state.view = 'home'; render(); };
+    return;
+  }
+
+  const today = todayStr();
+  let existing = await loadActiveIds(today);
+  if (existing === null) {
+    // default draft to yesterday's team, if any, as a convenient starting point
+    const prev = await loadActiveIds(yesterdayStr());
+    existing = prev || [];
+  }
+  state.teamDraft = existing.slice();
+
+  renderTeamTodayScreen();
+}
+
+function renderTeamTodayScreen() {
+  app.innerHTML = `
+    <header class="topbar">
+      <button class="back-btn" id="backBtn">‹</button>
+      <div style="flex:1;"><h1>${T('selectTeamTitle')}</h1></div>
+      ${langSwitcherHtml()}
+    </header>
+    <main>
+      <div class="team-toolbar">
+        <button id="selectAllBtn">${T('selectAll')}</button>
+        <button id="deselectAllBtn">${T('deselectAll')}</button>
+      </div>
+      <div class="team-list" id="teamList"></div>
+    </main>
+    <div class="team-save-bar">
+      <button id="saveTeamBtn">${T('saveTeamBtn')}</button>
+    </div>
+  `;
+  bindLangSwitcher();
+  document.getElementById('backBtn').onclick = () => { state.view = 'home'; render(); };
+  document.getElementById('selectAllBtn').onclick = () => {
+    state.teamDraft = state.people.map(p => p.id);
+    renderTeamList();
+  };
+  document.getElementById('deselectAllBtn').onclick = () => {
+    state.teamDraft = [];
+    renderTeamList();
+  };
+  document.getElementById('saveTeamBtn').onclick = async () => {
+    const btn = document.getElementById('saveTeamBtn');
+    btn.disabled = true;
+    btn.textContent = '...';
+    await saveActiveIds(todayStr(), state.teamDraft);
+    state.view = 'home';
+    render();
+  };
+  renderTeamList();
+}
+
+function renderTeamList() {
+  const listEl = document.getElementById('teamList');
+  listEl.innerHTML = state.people.map(p => {
+    const checked = state.teamDraft.includes(p.id);
+    return `<div class="team-row ${checked ? 'checked' : ''}" data-id="${p.id}">
+      <span class="check-box">${checked ? '✓' : ''}</span>
+      <span class="name">${escapeHtml(p.name)}</span>
+    </div>`;
+  }).join('');
+  listEl.querySelectorAll('.team-row').forEach(row => {
+    row.onclick = () => {
+      const id = row.dataset.id;
+      if (state.teamDraft.includes(id)) {
+        state.teamDraft = state.teamDraft.filter(x => x !== id);
+      } else {
+        state.teamDraft.push(id);
+      }
+      renderTeamList();
+    };
+  });
+}
+
+function renderManagePeople() {
+  app.innerHTML = `
+    <header class="topbar">
+      <button class="back-btn" id="backBtn">‹</button>
+      <div style="flex:1;"><h1>${T('managePeopleTitle')}</h1></div>
+      ${langSwitcherHtml()}
+    </header>
+    <main>
+      <div class="people-list" id="peopleList"></div>
+      <div class="add-person-row">
+        <input type="text" id="newPersonInput" placeholder="${T('addPersonPlaceholder')}">
+        <button id="addPersonBtn">${T('add')}</button>
+      </div>
+    </main>
+  `;
+  bindLangSwitcher();
+  document.getElementById('backBtn').onclick = () => { state.view = 'home'; render(); };
+  renderPeopleList();
+
+  const input = document.getElementById('newPersonInput');
+  const addBtn = document.getElementById('addPersonBtn');
+  async function addPerson() {
+    const name = input.value.trim();
+    if (!name) return;
+    addBtn.disabled = true;
+    state.people.push({ id: uid('p'), name });
+    await savePeople();
+    input.value = '';
+    addBtn.disabled = false;
+    renderPeopleList();
+  }
+  addBtn.onclick = addPerson;
+  input.addEventListener('keydown', e => { if (e.key === 'Enter') addPerson(); });
+}
+
+function renderPeopleList() {
+  const wrap = document.getElementById('peopleList');
+  if (!state.people.length) {
+    wrap.innerHTML = `<div class="empty-state" style="padding:30px;"><p>${T('emptyPeopleShort')}</p></div>`;
+    return;
+  }
+  wrap.innerHTML = state.people.map(p => `
+    <div class="people-row" data-id="${p.id}">
+      <span class="name">${escapeHtml(p.name)}</span>
+      <button class="del-btn">${T('delete')}</button>
+    </div>
+  `).join('');
+  wrap.querySelectorAll('.people-row').forEach(row => {
+    const id = row.dataset.id;
+    const delBtn = row.querySelector('.del-btn');
+    delBtn.onclick = () => {
+      row.innerHTML = `
+        <span class="name">${escapeHtml(state.people.find(p=>p.id===id).name)}</span>
+        <div class="confirm-del">
+          <span style="font-size:13px;color:var(--steel-mid);align-self:center;">${T('confirmDelete')}</span>
+          <button class="yes">${T('yes')}</button>
+          <button class="no">${T('no')}</button>
+        </div>
+      `;
+      row.querySelector('.yes').onclick = async () => {
+        state.people = state.people.filter(p => p.id !== id);
+        await savePeople();
+        renderPeopleList();
+      };
+      row.querySelector('.no').onclick = () => renderPeopleList();
+    };
+  });
+}
+
+async function renderSummary() {
+  app.innerHTML = `
+    <header class="topbar">
+      <button class="back-btn" id="backBtn">‹</button>
+      <div style="flex:1;"><h1>${T('summaryTitle')}</h1></div>
+      ${langSwitcherHtml()}
+    </header>
+    <main>
+      <div class="filter-bar">
+        <button id="todayFilterBtn" class="${state.summaryMode==='day' ? 'active' : ''}">${T('today')}</button>
+        <input type="date" id="dateFilterInput" value="${state.summaryDate}">
+        <button id="allFilterBtn" class="${state.summaryMode==='all' ? 'active' : ''}">${T('allDays')}</button>
+        <button class="export-btn" id="exportBtn">${T('exportBtn')}</button>
+      </div>
+      <div id="summaryContent"><div class="loading-row"><span class="spinner" style="border-color:#C7D8DE; border-top-color:#1F3A52;"></span></div></div>
+    </main>
+  `;
+  bindLangSwitcher();
+  document.getElementById('backBtn').onclick = () => { state.view = 'home'; render(); };
+  document.getElementById('todayFilterBtn').onclick = () => { state.summaryMode = 'day'; state.summaryDate = todayStr(); loadAndRenderSummary(); };
+  document.getElementById('allFilterBtn').onclick = () => { state.summaryMode = 'all'; loadAndRenderSummary(); };
+  document.getElementById('dateFilterInput').onchange = (e) => { state.summaryMode = 'day'; state.summaryDate = e.target.value; loadAndRenderSummary(); };
+  document.getElementById('exportBtn').onclick = exportSummaryToExcel;
+
+  await loadAndRenderSummary();
+}
+
+async function loadAndRenderSummary() {
+  // refresh filter bar active states
+  document.getElementById('todayFilterBtn').className = state.summaryMode === 'day' && state.summaryDate === todayStr() ? 'active' : '';
+  document.getElementById('allFilterBtn').className = state.summaryMode === 'all' ? 'active' : '';
+  document.getElementById('dateFilterInput').value = state.summaryDate;
+
+  const content = document.getElementById('summaryContent');
+  content.innerHTML = `<div class="loading-row"><span class="spinner" style="border-color:#C7D8DE; border-top-color:#1F3A52;"></span></div>`;
+
+  let errors;
+  if (state.summaryMode === 'all') {
+    errors = await loadAllErrors();
+  } else {
+    errors = await loadDayErrors(state.summaryDate);
+  }
+  state.summaryData = errors;
+  renderSummaryContent(errors);
+}
+
+function renderSummaryContent(errors) {
+  const content = document.getElementById('summaryContent');
+  if (!errors.length) {
+    content.innerHTML = `
+      <div class="empty-state">
+        <div class="big">✅</div>
+        <p><strong>${T('emptySummary')}</strong></p>
+      </div>`;
+    return;
+  }
+
+  // group by person
+  const byPerson = {};
+  errors.forEach(e => {
+    if (!byPerson[e.personId]) byPerson[e.personId] = { name: e.personName, entries: [] };
+    byPerson[e.personId].entries.push(e);
+  });
+  const personGroups = Object.entries(byPerson).sort((a, b) => b[1].entries.length - a[1].entries.length);
+
+  const total = errors.length;
+  let html = `
+    <div class="total-banner">
+      <div><div class="num">${total}</div><div class="lbl">${T('totalErrors')}</div></div>
+      <div style="text-align:right;"><div class="num">${personGroups.length}</div><div class="lbl">${T('peopleWithErrors')}</div></div>
+    </div>
+  `;
+
+  html += personGroups.map(([personId, data]) => {
+    const tally = {};
+    data.entries.forEach(e => { tally[e.type] = (tally[e.type] || 0) + 1; });
+    const isOpen = state.openPersonId === personId;
+    return `
+      <div class="person-summary-card">
+        <div class="person-summary-head ${isOpen ? 'open' : ''}" data-id="${personId}">
+          <span class="name">${escapeHtml(data.name)}</span>
+          <span class="count-pill">${data.entries.length}</span>
+          <span class="chev">▾</span>
+        </div>
+        <div class="type-tally">
+          ${ERROR_TYPES.filter(t => tally[t.key]).map(t => `<span>${t.icon} ${TT(t.key)}: ${tally[t.key]}</span>`).join('')}
+        </div>
+        <div class="entries-detail ${isOpen ? 'open' : ''}">
+          ${data.entries.slice().sort((a,b)=>b.timestamp-a.timestamp).map(e => `
+            <div class="entry-row">
+              <span class="time">${e.time || ''}</span>
+              <span class="type-tag">${TYPE_MAP[e.type] ? TYPE_MAP[e.type].icon : ''} ${TT(e.type)}</span>
+              <span class="comment">${e.comment ? escapeHtml(e.comment) : '<em style="opacity:0.5;">' + T('noComment') + '</em>'}</span>
+            </div>
+          `).join('')}
+        </div>
+      </div>
+    `;
+  }).join('');
+
+  content.innerHTML = html;
+  content.querySelectorAll('.person-summary-head').forEach(head => {
+    head.onclick = () => {
+      const id = head.dataset.id;
+      state.openPersonId = state.openPersonId === id ? null : id;
+      renderSummaryContent(state.summaryData);
+    };
+  });
+}
+
+function exportSummaryToExcel() {
+  if (!state.summaryData || !state.summaryData.length) {
+    alert(T('noDataExport'));
+    return;
+  }
+  const rows = state.summaryData
+    .slice()
+    .sort((a, b) => a.timestamp - b.timestamp)
+    .map(e => ({
+      'Date': e.timestamp ? new Date(e.timestamp).toISOString().slice(0,10) : state.summaryDate,
+      'Time': e.time || '',
+      'Person': e.personName,
+      'Error type': TT(e.type),
+      'Comment': e.comment || ''
+    }));
+  const ws = XLSX.utils.json_to_sheet(rows);
+  ws['!cols'] = [{wch:11},{wch:7},{wch:18},{wch:14},{wch:40}];
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, 'Errors');
+  const label = state.summaryMode === 'all' ? 'all' : state.summaryDate;
+  XLSX.writeFile(wb, `errors_${label}.xlsx`);
+}
+async function initLang() {
+  try {
+    const res = await window.storage.get('app_language', false);
+    if (res && LANGS.includes(res.value)) state.lang = res.value;
+  } catch (e) { /* default pl */ }
+}
+
+initLang().then(render);
+</script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+</body>
+</html>
