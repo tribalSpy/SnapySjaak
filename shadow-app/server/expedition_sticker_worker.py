@@ -14,6 +14,7 @@ PAGE_H = 841.8897637795277
 DRAW_W = PAGE_H
 HEADER_MATCH_LIMIT = 12
 HAL_ALLOWED_CUSTOMER = re.compile(r"^[A-Za-z0-9#]+$")
+STICKER_CUSTOMER_CODE = re.compile(r"^[A-Za-z0-9]{6}$")
 
 
 def select_sheet_name(sheet_names: list[str]) -> str:
@@ -67,6 +68,13 @@ def clean_text(value: object) -> str:
     if isinstance(value, float) and value.is_integer():
         return str(int(value))
     return str(value).strip()
+
+
+def normalize_sticker_customer(value: object) -> str:
+    text = clean_text(value).upper()
+    if not text or not STICKER_CUSTOMER_CODE.fullmatch(text):
+        return ""
+    return text
 
 
 def header_key(value: object) -> str:
@@ -139,7 +147,7 @@ def parse_halindeling(input_path: Path) -> dict[str, str]:
                 continue
             current_location = location_text
 
-        customer_text = clean_text(customer_value)
+        customer_text = normalize_sticker_customer(customer_value)
         if not current_location or not customer_text or not HAL_ALLOWED_CUSTOMER.match(customer_text):
             continue
         lookup.setdefault(customer_text, current_location)
@@ -168,7 +176,7 @@ def parse_planning_rows(input_path: Path) -> list[dict[str, object]]:
 
     parsed = []
     for row in rows[header_row_index + 1:]:
-        customer = clean_text(row[customer_index] if customer_index >= 0 and customer_index < len(row) else "")
+        customer = normalize_sticker_customer(row[customer_index] if customer_index >= 0 and customer_index < len(row) else "")
         if not customer:
             continue
         parsed.append({
@@ -205,7 +213,7 @@ def parse_split_rows(input_path: Path) -> list[dict[str, object]]:
 
     parsed = []
     for row in rows[header_row_index + 1:]:
-        customer = clean_text(row[customer_index] if customer_index >= 0 and customer_index < len(row) else "")
+        customer = normalize_sticker_customer(row[customer_index] if customer_index >= 0 and customer_index < len(row) else "")
         split_value = clean_text(row[split_index] if split_index >= 0 and split_index < len(row) else "")
         if not customer:
             continue
