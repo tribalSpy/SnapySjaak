@@ -37,7 +37,7 @@ const PAGE_DEFINITIONS = [
   { key: "cmrprint", label: "CMR Print", permission: PERMISSIONS.CMR_VIEW },
   { key: "hallocations", label: "Hal Locations", permission: PERMISSIONS.HAL_LOCATIONS_VIEW },
   { key: "expeditionstickers", label: "Expedition Sticker", permission: PERMISSIONS.EXPEDITION_STICKERS_VIEW },
-  { key: "dagfoutjes", label: "Dag Foutjes", permission: PERMISSIONS.DAG_FOUTJES_VIEW },
+  { key: "dagfoutjes", label: "Fout Registratie", permission: PERMISSIONS.DAG_FOUTJES_VIEW },
   { key: "foutenoverzicht", label: "Fouten Overzicht", permission: PERMISSIONS.FOUTEN_OVERVIEW_VIEW },
   { key: "ukdocsprint", label: "UKdocs Print", permission: PERMISSIONS.UKDOCS_VIEW },
   { key: "clock", label: "Inklokken", permission: PERMISSIONS.CLOCK_VIEW },
@@ -124,8 +124,8 @@ function pageHeading(page) {
       };
     case "dagfoutjes":
       return {
-        title: "Dag Foutjes",
-        caption: "Use the existing koelcel fouten app directly inside Shadow without changing its own workflow.",
+        title: "Fout Registratie",
+        caption: "",
       };
     case "foutenoverzicht":
       return {
@@ -4183,7 +4183,7 @@ function App() {
       <main className="workspace public-clock-workspace">
         <header className="page-header">
           <h1>{heading.title}</h1>
-          <p>{heading.caption}</p>
+          {heading.caption ? <p>{heading.caption}</p> : null}
         </header>
         <ClockPage currentUser={null} publicMode />
       </main>
