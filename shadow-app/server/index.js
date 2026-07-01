@@ -39,6 +39,7 @@ const googleRunDetailsCacheDir = path.join(cacheDir, "shadow-google-run-details"
 const halLocationsCacheDir = path.join(cacheDir, "hal-locations");
 const expeditionStickerStatePath = path.join(cacheDir, "expedition-stickers.json");
 const expeditionStickerFilesDir = path.join(cacheDir, "expedition-stickers");
+const dagFoutjesStatePath = path.join(cacheDir, "dag-foutjes.json");
 const usersSeedPathCandidates = [
   process.env.SHADOW_USERS_SEED_PATH,
   process.platform === "win32" ? null : "/etc/secrets/shadow-users.json",
@@ -187,6 +188,10 @@ const defaultUkdocsState = {
 const defaultExpeditionStickerState = {
   planning_file: null,
   split_file: null,
+};
+
+const defaultDagFoutjesState = {
+  shared: {},
 };
 
 const cmrPrintDataDirCandidates = [
@@ -1549,6 +1554,151 @@ async function readClockRecords() {
 
 async function writeClockRecords(records) {
   await writeJsonFile(clockRecordsPath, { records: records.map(normalizeClockRecord) });
+}
+
+async function readDagFoutjesState() {
+  const payload = await readJsonFile(dagFoutjesStatePath, defaultDagFoutjesState);
+  const shared = payload && typeof payload.shared === "object" && !Array.isArray(payload.shared)
+    ? payload.shared
+    : {};
+  return { shared };
+}
+
+async function writeDagFoutjesState(state) {
+  await writeJsonFile(dagFoutjesStatePath, {
+    shared: state && typeof state.shared === "object" && !Array.isArray(state.shared) ? state.shared : {},
+  });
+}
+
+async function mergeDagFoutjesPeopleFromClock(state) {
+  const nextState = {
+    shared: state && typeof state.shared === "object" && !Array.isArray(state.shared) ? { ...state.shared } : {},
+  };
+  const settings = await readFustSettings();
+  if (!settings.clock_spreadsheet_id || !settings.clock_employee_sheet_name) {
+    return { state: nextState, changed: false };
+  }
+
+  let existingPeople = [];
+  try {
+    existingPeople = JSON.parse(String(nextState.shared.people || "[]"));
+  } catch {
+    existingPeople = [];
+  }
+  if (!Array.isArray(existingPeople)) {
+    existingPeople = [];
+  }
+
+  const rows = await loadSheetRows(settings.clock_spreadsheet_id, settings.clock_employee_sheet_name);
+  const employees = buildClockEmployeesFromSheetRows(rows).employees || [];
+  const people = existingPeople
+    .filter((person) => person && typeof person === "object")
+    .map((person) => ({
+      id: String(person.id || "").trim(),
+      name: String(person.name || "").trim(),
+    }))
+    .filter((person) => person.id && person.name);
+
+  const byId = new Map(people.map((person) => [person.id, person]));
+  const byName = new Map(people.map((person) => [person.name.toLowerCase(), person]));
+  let changed = false;
+
+  for (const employee of employees) {
+    const employeeName = String(employee?.name || "").trim();
+    const employeeId = `clock-${String(employee?.tbnr || "").trim().toUpperCase()}`;
+    if (!employeeName || employeeId === "clock-") {
+      continue;
+    }
+    const existing = byId.get(employeeId) || byName.get(employeeName.toLowerCase()) || null;
+    if (existing) {
+      if (!byId.has(employeeId)) {
+        existing.id = employeeId;
+        byId.set(employeeId, existing);
+        changed = true;
+      }
+      if (existing.name !== employeeName) {
+        byName.delete(existing.name.toLowerCase());
+        existing.name = employeeName;
+        byName.set(employeeName.toLowerCase(), existing);
+        changed = true;
+      }
+      continue;
+    }
+    const person = { id: employeeId, name: employeeName };
+    people.push(person);
+    byId.set(employeeId, person);
+    byName.set(employeeName.toLowerCase(), person);
+    changed = true;
+  }
+
+  if (changed) {
+    nextState.shared.people = JSON.stringify(
+      people.sort((left, right) => left.name.localeCompare(right.name)),
+    );
+  }
+
+  return { state: nextState, changed };
+}
+
+function dagFoutjesBridgeScript() {
+  return `<script>
+window.storage = {
+  async get(key, shared) {
+    if (!shared) {
+      const value = window.localStorage.getItem(String(key || ""));
+      return value === null ? null : { key: String(key || ""), value };
+    }
+    const response = await fetch('/api/dag-foutjes/storage?op=get&key=' + encodeURIComponent(String(key || '')), {
+      credentials: 'same-origin',
+      cache: 'no-store',
+    });
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      throw new Error(payload.error || ('Request failed with ' + response.status));
+    }
+    return payload.found ? { key: payload.key, value: payload.value } : null;
+  },
+  async set(key, value, shared) {
+    if (!shared) {
+      window.localStorage.setItem(String(key || ''), String(value ?? ''));
+      return { ok: true, key: String(key || '') };
+    }
+    const response = await fetch('/api/dag-foutjes/storage', {
+      method: 'POST',
+      credentials: 'same-origin',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ op: 'set', key: String(key || ''), value: String(value ?? '') }),
+    });
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      throw new Error(payload.error || ('Request failed with ' + response.status));
+    }
+    return payload;
+  },
+  async list(prefix, shared) {
+    if (!shared) {
+      const keys = [];
+      const normalizedPrefix = String(prefix || '');
+      for (let index = 0; index < window.localStorage.length; index += 1) {
+        const key = window.localStorage.key(index);
+        if (key && key.startsWith(normalizedPrefix)) {
+          keys.push(key);
+        }
+      }
+      return { keys };
+    }
+    const response = await fetch('/api/dag-foutjes/storage?op=list&prefix=' + encodeURIComponent(String(prefix || '')), {
+      credentials: 'same-origin',
+      cache: 'no-store',
+    });
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      throw new Error(payload.error || ('Request failed with ' + response.status));
+    }
+    return { keys: Array.isArray(payload.keys) ? payload.keys : [] };
+  }
+};
+</script>`;
 }
 
 function clockTimestampMs(record) {
@@ -4814,11 +4964,75 @@ async function handleApi(req, res, url) {
       return;
     }
     const html = await fs.readFile(dagFoutjesHtmlPath, "utf8");
+    const withBridge = html.includes("window.storage")
+      ? html.replace("<script>", `${dagFoutjesBridgeScript()}\n<script>`)
+      : `${dagFoutjesBridgeScript()}\n${html}`;
     res.writeHead(200, {
       "content-type": "text/html; charset=utf-8",
       "cache-control": "no-store",
     });
-    res.end(html);
+    res.end(withBridge);
+    return;
+  }
+
+  if (url.pathname === "/api/dag-foutjes/storage") {
+    if (!requirePermission(res, requestUser, PERMISSIONS.EXPEDITION_STICKERS_VIEW)) {
+      return;
+    }
+
+    if (req.method === "GET") {
+      const op = String(url.searchParams.get("op") || "get").trim().toLowerCase();
+      let state = await readDagFoutjesState();
+      if (op === "get" && String(url.searchParams.get("key") || "") === "people") {
+        try {
+          const merged = await mergeDagFoutjesPeopleFromClock(state);
+          state = merged.state;
+          if (merged.changed) {
+            await writeDagFoutjesState(state);
+          }
+        } catch {
+        }
+      }
+      if (op === "list") {
+        const prefix = String(url.searchParams.get("prefix") || "");
+        const keys = Object.keys(state.shared).filter((key) => key.startsWith(prefix)).sort();
+        sendJson(res, 200, { keys });
+        return;
+      }
+      const key = String(url.searchParams.get("key") || "");
+      if (!key) {
+        sendJson(res, 400, { error: "key is required" });
+        return;
+      }
+      const found = Object.prototype.hasOwnProperty.call(state.shared, key);
+      sendJson(res, 200, {
+        found,
+        key,
+        value: found ? String(state.shared[key] ?? "") : "",
+      });
+      return;
+    }
+
+    if (req.method === "POST") {
+      const body = await readRequestJson(req, 2 * 1024 * 1024);
+      const op = String(body?.op || "set").trim().toLowerCase();
+      if (op !== "set") {
+        sendJson(res, 400, { error: "Unsupported operation" });
+        return;
+      }
+      const key = String(body?.key || "");
+      if (!key) {
+        sendJson(res, 400, { error: "key is required" });
+        return;
+      }
+      const state = await readDagFoutjesState();
+      state.shared[key] = String(body?.value ?? "");
+      await writeDagFoutjesState(state);
+      sendJson(res, 200, { ok: true, key });
+      return;
+    }
+
+    sendJson(res, 405, { error: "Method not allowed" });
     return;
   }
 
