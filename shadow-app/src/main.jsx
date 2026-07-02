@@ -3721,6 +3721,24 @@ function UkdocsPrintPage({ currentUser }) {
     }
   }
 
+  async function refreshReferenceConnectOnly() {
+    setSheetBusy(true);
+    setError("");
+    setMessage("");
+    try {
+      const payload = await apiJson("/api/ukdocs-print/sheet-sync", {
+        method: "POST",
+        body: JSON.stringify({ date: sheetSyncDate, reference_connect_only: true }),
+      });
+      setState((current) => ({ ...current, print_collections: payload.print_collections || current?.print_collections || [] }));
+      setMessage(`Reference connect refreshed for ${payload.updated_count || 0} shipments on ${payload.date}. Saved files and manual shipment data stayed untouched.`);
+    } catch (sheetError) {
+      setError(sheetError.message);
+    } finally {
+      setSheetBusy(false);
+    }
+  }
+
   async function syncGmail() {
     setGmailBusy(true);
     setError("");
@@ -3758,6 +3776,7 @@ function UkdocsPrintPage({ currentUser }) {
         </div>
         <div className="row-actions spread-actions">
           <button type="button" className="primary" onClick={syncSheetSendings} disabled={sheetBusy}>{sheetBusy ? "Loading..." : "Load sendings from spreadsheet"}</button>
+          <button type="button" onClick={refreshReferenceConnectOnly} disabled={sheetBusy}>{sheetBusy ? "Refreshing..." : "Refresh reference connect only"}</button>
         </div>
         <div className="notice">This imports the sending list for the selected day from the PD spreadsheet. Then UKdocs shipments can link to one of these sendings, and Gmail can match the phytosanitary PDF by reference connect.</div>
       </div>

@@ -3910,7 +3910,7 @@ async function syncUkdocsPrintFromGmail(settings, requestUser, query, date) {
   };
 }
 
-async function syncUkdocsPrintCollectionsFromSheet(settings, date) {
+async function syncUkdocsPrintCollectionsFromSheet(settings, date, options = {}) {
   const spreadsheetId = String(settings.ukdocs_print_spreadsheet_id || "").trim();
   const sheetName = String(settings.ukdocs_print_sheet_name || defaultFustSettings.ukdocs_print_sheet_name).trim();
   if (!spreadsheetId || !sheetName) {
@@ -3919,36 +3919,46 @@ async function syncUkdocsPrintCollectionsFromSheet(settings, date) {
   const rows = await loadSheetRows(spreadsheetId, sheetName);
   const sendings = parseUkdocsPrintSheetRows(rows, date);
   const state = await readUkdocsState();
+  const referenceConnectOnly = options.reference_connect_only === true;
+  let updatedCount = 0;
   for (const sending of sendings) {
     const existingCollection = findMatchingUkdocsPrintCollection(state.print_collections, sending, { allowInvoiceFallback: false });
     const matchedCustomer = matchUkdocsCustomerForPrintCollection(state.customers, sending);
-    const nextCollection = normalizeUkdocsPrintCollection({
-      ...existingCollection,
-      id: existingCollection?.id || sending.id,
-      source: "sheet",
-      shipment_date: sending.shipment_date,
-      customer_id: existingCollection?.customer_id || matchedCustomer?.id || "",
-      customer_name: existingCollection?.customer_name || matchedCustomer?.customer_name || sending.city_name || "",
-      collection_type: existingCollection?.collection_type || sending.collection_type || (isHonselersdijkStockControl(sending) ? "stock_control" : "export"),
-      city_name: sending.city_name,
-      border_crossing: sending.border_crossing,
-      hub_code: sending.hub_code,
-      remark: sending.remark,
-      pd_form: sending.pd_form,
-      re_export: sending.re_export,
-      pd_type: sending.pd_type,
-      pd_code: sending.pd_code,
-      reference_connect: sending.reference_connect,
-      trailer_number: existingCollection?.trailer_number || sending.trailer_number || "",
-      truck_number: existingCollection?.truck_number || sending.truck_number || "",
-      invoice_numbers: existingCollection?.invoice_numbers || sending.invoice_numbers || "",
-      sheet_row_number: sending.sheet_row_number,
-      updated_at: new Date().toISOString(),
-      generated_at: existingCollection?.generated_at || "",
-      documents: existingCollection?.documents || {},
-      notes: existingCollection?.notes || "",
-    });
+    const nextCollection = referenceConnectOnly && existingCollection
+      ? normalizeUkdocsPrintCollection({
+        ...existingCollection,
+        reference_connect: sending.reference_connect || existingCollection.reference_connect || "",
+        sheet_row_number: sending.sheet_row_number || existingCollection.sheet_row_number || 0,
+        updated_at: new Date().toISOString(),
+      })
+      : normalizeUkdocsPrintCollection({
+        ...existingCollection,
+        id: existingCollection?.id || sending.id,
+        source: "sheet",
+        shipment_date: sending.shipment_date,
+        customer_id: existingCollection?.customer_id || matchedCustomer?.id || "",
+        customer_name: existingCollection?.customer_name || matchedCustomer?.customer_name || sending.city_name || "",
+        collection_type: existingCollection?.collection_type || sending.collection_type || (isHonselersdijkStockControl(sending) ? "stock_control" : "export"),
+        city_name: sending.city_name,
+        border_crossing: sending.border_crossing,
+        hub_code: sending.hub_code,
+        remark: sending.remark,
+        pd_form: sending.pd_form,
+        re_export: sending.re_export,
+        pd_type: sending.pd_type,
+        pd_code: sending.pd_code,
+        reference_connect: sending.reference_connect,
+        trailer_number: existingCollection?.trailer_number || sending.trailer_number || "",
+        truck_number: existingCollection?.truck_number || sending.truck_number || "",
+        invoice_numbers: existingCollection?.invoice_numbers || sending.invoice_numbers || "",
+        sheet_row_number: sending.sheet_row_number,
+        updated_at: new Date().toISOString(),
+        generated_at: existingCollection?.generated_at || "",
+        documents: existingCollection?.documents || {},
+        notes: existingCollection?.notes || "",
+      });
     state.print_collections = upsertUkdocsPrintCollection(state.print_collections, nextCollection);
+    updatedCount += 1;
   }
   await writeUkdocsState(state);
   return {
@@ -3956,6 +3966,8 @@ async function syncUkdocsPrintCollectionsFromSheet(settings, date) {
     sheet_name: sheetName,
     date: String(date || localDateIso()).slice(0, 10),
     imported_count: sendings.length,
+    updated_count: updatedCount,
+    reference_connect_only: referenceConnectOnly,
     print_collections: normalizeUkdocsState(state).print_collections,
   };
 }
@@ -6374,7 +6386,9 @@ async function handleApi(req, res, url) {
     }
     const body = await readRequestJson(req);
     const settings = await readFustSettings();
-    const payload = await syncUkdocsPrintCollectionsFromSheet(settings, body?.date || localDateIso());
+    const payload = await syncUkdocsPrintCollectionsFromSheet(settings, body?.date || localDateIso(), {
+      reference_connect_only: body?.reference_connect_only === true,
+    });
     sendJson(res, 200, payload);
     return;
   }
