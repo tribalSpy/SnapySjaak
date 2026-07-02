@@ -83,6 +83,7 @@ const allPermissions = [
   "users:manage",
   "settings:manage",
   "ukdocs:view",
+  "ukdocs_inspection:view",
 ];
 const PERMISSIONS = {
   PHOTOS_VIEW: "photos:view",
@@ -100,6 +101,7 @@ const PERMISSIONS = {
   USERS_MANAGE: "users:manage",
   SETTINGS_MANAGE: "settings:manage",
   UKDOCS_VIEW: "ukdocs:view",
+  UKDOCS_INSPECTION_VIEW: "ukdocs_inspection:view",
 };
 const roleDefaultPermissions = {
   admin: allPermissions,
@@ -1206,14 +1208,40 @@ function normalizeUkdocsPrintDocumentList(documents) {
   return normalized;
 }
 
-function deriveUkdocsPrintCollectionStatus(collection) {
+function ukdocsPrintInspectionMode(collection) {
+  const pdType = String(collection?.pd_type || "").trim().toLowerCase();
+  if (pdType.includes("nakeuring")) {
+    return "reinspection";
+  }
+  if (pdType.includes("voorraad")) {
+    return "stock_control";
+  }
   if (collection?.collection_type === "stock_control") {
+    return "stock_control";
+  }
+  return "";
+}
+
+function deriveUkdocsPrintCollectionStatus(collection) {
+  const inspectionMode = ukdocsPrintInspectionMode(collection);
+  if (inspectionMode === "stock_control") {
     const inspectionReady = Boolean(collection?.documents?.inspection_list?.storage_name);
     const locationsReady = Boolean(collection?.documents?.locations_file?.storage_name);
     if (inspectionReady && locationsReady) {
       return "complete";
     }
     if (inspectionReady || locationsReady) {
+      return "partial";
+    }
+    return "pending";
+  }
+  if (inspectionMode === "reinspection") {
+    const phytoReady = Array.isArray(collection?.documents?.phyto_files) && collection.documents.phyto_files.length > 0;
+    const inspectionReady = Boolean(collection?.documents?.inspection_list?.storage_name);
+    if (phytoReady && inspectionReady) {
+      return "complete";
+    }
+    if (phytoReady || inspectionReady) {
       return "partial";
     }
     return "pending";
@@ -1282,13 +1310,28 @@ function ukdocsPrintSplitTokens(value) {
 }
 
 function getUkdocsPrintCollectionRequirements(collection, customers) {
-  if (collection?.collection_type === "stock_control") {
+  const inspectionMode = ukdocsPrintInspectionMode(collection);
+  if (inspectionMode === "stock_control") {
     const missing = [];
     if (!collection?.documents?.inspection_list?.storage_name) {
       missing.push("Inspection list");
     }
     if (!collection?.documents?.locations_file?.storage_name) {
       missing.push("Locations file");
+    }
+    return {
+      customer: null,
+      missing,
+      complete: missing.length === 0,
+    };
+  }
+  if (inspectionMode === "reinspection") {
+    const missing = [];
+    if (!Array.isArray(collection?.documents?.phyto_files) || !collection.documents.phyto_files.length) {
+      missing.push("Phyto");
+    }
+    if (!collection?.documents?.inspection_list?.storage_name) {
+      missing.push("Inspection list");
     }
     return {
       customer: null,
@@ -1598,6 +1641,7 @@ function dagFoutjesIsoWeekParts(dateStr) {
 function normalizeDagFoutjesOverviewEntry(entry, dateKey) {
   const normalizedDate = String(dateKey || entry?.dateKey || "").slice(0, 10);
   const parts = dagFoutjesIsoWeekParts(normalizedDate);
+  const typeKey = String(entry?.type || "").trim();
   return {
     id: String(entry?.id || ""),
     date: normalizedDate,
@@ -1605,8 +1649,8 @@ function normalizeDagFoutjesOverviewEntry(entry, dateKey) {
     month: parts.month,
     person_id: String(entry?.personId || "").trim(),
     person_name: String(entry?.personName || "").trim(),
-    type_key: String(entry?.type || "").trim(),
-    type_label: String(entry?.typeLabel || entry?.type || "").trim(),
+    type_key: typeKey,
+    type_label: dagFoutjesEnglishTypeLabel(typeKey, entry?.typeLabel || entry?.type || ""),
     comment: String(entry?.comment || ""),
     time: String(entry?.time || "").trim(),
     timestamp: Number(entry?.timestamp || 0) || 0,
@@ -1790,6 +1834,18 @@ async function mergeDagFoutjesPeopleFromClock(state) {
 }
 
 const dagFoutjesSheetHeaders = ["week", "day", "name", "type", "comment"];
+const dagFoutjesEnglishTypeLabels = {
+  za_duzo: "too much",
+  za_malo: "too little",
+  zla_polka: "wrong shelf",
+  zle_kwiaty: "wrong flowers",
+  inne: "other",
+};
+
+function dagFoutjesEnglishTypeLabel(typeKey, fallbackLabel = "") {
+  const normalizedKey = String(typeKey || "").trim();
+  return dagFoutjesEnglishTypeLabels[normalizedKey] || String(fallbackLabel || normalizedKey).trim();
+}
 
 function dagFoutjesDateParts(dateStr) {
   const normalized = String(dateStr || "").slice(0, 10);
@@ -1816,12 +1872,13 @@ function normalizeDagFoutjesSheetSync(value) {
 }
 
 function normalizeDagFoutjesEntry(entry, fallbackDate = "") {
+  const typeKey = String(entry?.type || "").trim();
   return {
     id: String(entry?.id || crypto.randomUUID()),
     personId: String(entry?.personId || "").trim(),
     personName: String(entry?.personName || "").trim(),
-    type: String(entry?.type || "").trim(),
-    typeLabel: String(entry?.typeLabel || entry?.type || "").trim(),
+    type: typeKey,
+    typeLabel: dagFoutjesEnglishTypeLabel(typeKey, entry?.typeLabel || entry?.type || ""),
     comment: String(entry?.comment || ""),
     time: String(entry?.time || "").trim(),
     timestamp: Number(entry?.timestamp || 0) || Date.now(),
@@ -2701,6 +2758,15 @@ function weekdayNameForDate(dateString) {
 function requirePermission(res, requestUser, permission) {
   const permissions = normalizePermissions(requestUser?.role, requestUser?.permissions);
   if (!permissions.includes(permission)) {
+    sendJson(res, 403, { error: "You do not have access to this action" });
+    return false;
+  }
+  return true;
+}
+
+function requireAnyPermission(res, requestUser, allowedPermissions) {
+  const permissions = normalizePermissions(requestUser?.role, requestUser?.permissions);
+  if (!Array.isArray(allowedPermissions) || !allowedPermissions.some((permission) => permissions.includes(permission))) {
     sendJson(res, 403, { error: "You do not have access to this action" });
     return false;
   }
@@ -3728,7 +3794,7 @@ async function syncUkdocsPrintFromGmail(settings, requestUser, query, date) {
   const syncQuery = buildUkdocsGmailSyncQuery(query, syncDate);
   const listPayload = await gmailApiJson(accessToken, `messages?q=${encodeURIComponent(syncQuery)}&maxResults=25`);
   const messages = Array.isArray(listPayload.messages) ? listPayload.messages : [];
-  const dayCollections = state.print_collections.filter((item) => String(item.shipment_date || "").slice(0, 10) === syncDate && item.collection_type !== "stock_control");
+  const dayCollections = state.print_collections.filter((item) => String(item.shipment_date || "").slice(0, 10) === syncDate && !ukdocsPrintInspectionMode(item));
   const results = [];
 
   for (const message of messages) {
@@ -5786,7 +5852,7 @@ async function handleApi(req, res, url) {
   }
 
   if (url.pathname === "/api/ukdocs/state") {
-    if (!requirePermission(res, requestUser, PERMISSIONS.UKDOCS_VIEW)) {
+    if (!requireAnyPermission(res, requestUser, [PERMISSIONS.UKDOCS_VIEW, PERMISSIONS.UKDOCS_INSPECTION_VIEW])) {
       return;
     }
 
@@ -5972,7 +6038,7 @@ async function handleApi(req, res, url) {
   }
 
   if (url.pathname.startsWith("/api/ukdocs-print/collections/") && req.method === "PATCH") {
-    if (!requirePermission(res, requestUser, PERMISSIONS.UKDOCS_VIEW)) {
+    if (!requireAnyPermission(res, requestUser, [PERMISSIONS.UKDOCS_VIEW, PERMISSIONS.UKDOCS_INSPECTION_VIEW])) {
       return;
     }
     const collectionId = decodeURIComponent(url.pathname.slice("/api/ukdocs-print/collections/".length));
@@ -6023,7 +6089,7 @@ async function handleApi(req, res, url) {
   }
 
   if (url.pathname.startsWith("/api/ukdocs-print/collections/") && req.method === "DELETE") {
-    if (!requirePermission(res, requestUser, PERMISSIONS.UKDOCS_VIEW)) {
+    if (!requireAnyPermission(res, requestUser, [PERMISSIONS.UKDOCS_VIEW, PERMISSIONS.UKDOCS_INSPECTION_VIEW])) {
       return;
     }
     const collectionId = decodeURIComponent(url.pathname.slice("/api/ukdocs-print/collections/".length));
@@ -6041,7 +6107,7 @@ async function handleApi(req, res, url) {
   }
 
   if (url.pathname.startsWith("/api/ukdocs-print/collections/") && url.pathname.endsWith("/upload") && req.method === "POST") {
-    if (!requirePermission(res, requestUser, PERMISSIONS.UKDOCS_VIEW)) {
+    if (!requireAnyPermission(res, requestUser, [PERMISSIONS.UKDOCS_VIEW, PERMISSIONS.UKDOCS_INSPECTION_VIEW])) {
       return;
     }
     const basePath = url.pathname.slice("/api/ukdocs-print/collections/".length, -"/upload".length);
@@ -6085,7 +6151,7 @@ async function handleApi(req, res, url) {
   }
 
   if (url.pathname.startsWith("/api/ukdocs-print/collections/") && url.pathname.includes("/documents/") && req.method === "GET") {
-    if (!requirePermission(res, requestUser, PERMISSIONS.UKDOCS_VIEW)) {
+    if (!requireAnyPermission(res, requestUser, [PERMISSIONS.UKDOCS_VIEW, PERMISSIONS.UKDOCS_INSPECTION_VIEW])) {
       return;
     }
     const suffix = url.pathname.slice("/api/ukdocs-print/collections/".length);
@@ -6253,7 +6319,7 @@ async function handleApi(req, res, url) {
   }
 
   if (url.pathname === "/api/ukdocs-print/sheet-sync" && req.method === "POST") {
-    if (!requirePermission(res, requestUser, PERMISSIONS.UKDOCS_VIEW)) {
+    if (!requireAnyPermission(res, requestUser, [PERMISSIONS.UKDOCS_VIEW, PERMISSIONS.UKDOCS_INSPECTION_VIEW])) {
       return;
     }
     const body = await readRequestJson(req);
