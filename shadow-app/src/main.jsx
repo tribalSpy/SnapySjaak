@@ -3523,15 +3523,19 @@ function UkdocsPrintPage({ currentUser }) {
     () => [...new Set(collections.map((item) => String(item.shipment_date || "").slice(0, 10)).filter(Boolean))].sort(),
     [collections],
   );
+  const shipmentCollections = useMemo(
+    () => collections.filter((item) => item.collection_type !== "stock_control"),
+    [collections],
+  );
   const filteredCollections = useMemo(
-    () => collections
+    () => shipmentCollections
       .filter((item) => String(item.shipment_date || "").slice(0, 10) === selectedCollectionDate)
       .sort((left, right) => {
-        const leftRank = left.collection_type === "stock_control" ? 0 : 1;
-        const rightRank = right.collection_type === "stock_control" ? 0 : 1;
+        const leftRank = ukdocsPrintInspectionMode(left) ? 1 : 0;
+        const rightRank = ukdocsPrintInspectionMode(right) ? 1 : 0;
         return leftRank - rightRank;
       }),
-    [collections, selectedCollectionDate],
+    [shipmentCollections, selectedCollectionDate],
   );
   const selectedCollection = filteredCollections.find((item) => item.id === selectedCollectionId || item.shipment_id === selectedCollectionId) || null;
   const selectedPhytoFiles = selectedCollection?.documents?.phyto_files || [];
@@ -3543,7 +3547,7 @@ function UkdocsPrintPage({ currentUser }) {
   }, [selectedCollection?.id, selectedCollection?.notes]);
 
   useEffect(() => {
-    if (!collections.length) {
+    if (!shipmentCollections.length) {
       setSelectedCollectionId("");
       setDetailDrawerOpen(false);
       return;
@@ -3552,7 +3556,7 @@ function UkdocsPrintPage({ currentUser }) {
       setSelectedCollectionId("");
       setDetailDrawerOpen(false);
     }
-  }, [collections, filteredCollections, selectedCollectionId]);
+  }, [shipmentCollections, filteredCollections, selectedCollectionId]);
 
   function stepCollectionDate(days) {
     const current = new Date(`${selectedCollectionDate}T12:00:00`);
@@ -3669,7 +3673,9 @@ function UkdocsPrintPage({ currentUser }) {
         method: "DELETE",
       });
       const nextCollections = payload.print_collections || [];
-      const nextFilteredCollections = nextCollections.filter((item) => String(item.shipment_date || "").slice(0, 10) === selectedCollectionDate);
+      const nextFilteredCollections = nextCollections
+        .filter((item) => item.collection_type !== "stock_control")
+        .filter((item) => String(item.shipment_date || "").slice(0, 10) === selectedCollectionDate);
       setState((current) => ({ ...current, print_collections: nextCollections }));
       setSelectedCollectionId(nextFilteredCollections[0]?.id || "");
       setNotesDraft(nextFilteredCollections[0]?.notes || "");
@@ -3809,7 +3815,7 @@ function UkdocsPrintPage({ currentUser }) {
               const isStockControl = inspectionMode === "stock_control";
               return (
                 <div key={collection.id} className={`ukdocs-upload-card ukdocs-collection-tile${isActive ? " active" : ""}`}>
-                  <strong>{isStockControl ? "Stock control / voorraad" : (inspectionMode === "reinspection" ? "Nakeuring inspection" : (progress.customer?.customer_name || collection.customer_name || collection.city_name || "Shipment"))}</strong>
+                  <strong>{progress.customer?.customer_name || collection.customer_name || collection.city_name || "Shipment"}</strong>
                   <small>{collection.shipment_date || "-"}</small>
                   <small>{collection.city_name ? `City: ${collection.city_name}` : "City not linked yet"}</small>
                   <small>{collection.reference_connect ? `Connect: ${collection.reference_connect}` : "No connect ref yet"}</small>
@@ -3842,8 +3848,8 @@ function UkdocsPrintPage({ currentUser }) {
                 </div>
               );
             })}
-            {!collections.length && <div className="notice">No spreadsheet sendings or UKdocs-linked collections are loaded yet.</div>}
-            {!!collections.length && !filteredCollections.length && <div className="notice">No collections saved for {selectedCollectionDate} yet.</div>}
+            {!shipmentCollections.length && <div className="notice">No spreadsheet sendings or UKdocs-linked collections are loaded yet.</div>}
+            {!!shipmentCollections.length && !filteredCollections.length && <div className="notice">No collections saved for {selectedCollectionDate} yet.</div>}
           </div>
         </div>
 
