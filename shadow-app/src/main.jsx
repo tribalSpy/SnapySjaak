@@ -2135,6 +2135,7 @@ const UKDOCS_CUSTOMER_REQUIRED_DOCUMENT_FIELDS = [
   ["required_export_extra", "Require second export file"],
   ["required_generated_export", "Require generated export workbook"],
   ["required_generated_invoices", "Require generated invoice workbooks"],
+  ["reinspection_uses_email_sync", "Nakeuring gets papers from email sync"],
 ];
 
 const UKDOCS_EXPORT_DEFAULT_FIELDS = [
@@ -2194,6 +2195,7 @@ function emptyUkdocsCustomer() {
     required_export_extra: false,
     required_generated_export: true,
     required_generated_invoices: true,
+    reinspection_uses_email_sync: false,
     export_defaults: Object.fromEntries(UKDOCS_EXPORT_DEFAULT_FIELDS.map(([key]) => [key, ""])),
   };
 }
@@ -2338,13 +2340,26 @@ function ukdocsPrintInspectionMode(collection) {
   return "";
 }
 
+function ukdocsPrintCollectionCustomer(collection, customers) {
+  return (collection?.customer_id && (customers || []).find((item) => item.id === collection.customer_id))
+    || findUkdocsCustomerMatch(customers || [], collection)
+    || null;
+}
+
+function ukdocsReinspectionUsesEmailSync(collection, customers) {
+  if (ukdocsPrintInspectionMode(collection) !== "reinspection") {
+    return false;
+  }
+  return ukdocsPrintCollectionCustomer(collection, customers)?.reinspection_uses_email_sync === true;
+}
+
 function ukdocsInspectionDocumentKeys(collection) {
   const inspectionMode = ukdocsPrintInspectionMode(collection);
   if (inspectionMode === "stock_control") {
     return ["inspection_list", "locations_file"];
   }
   if (inspectionMode === "reinspection") {
-    return ["phyto", "inspection_list"];
+    return ["phyto", "inspection_list", "export_extra"];
   }
   return ["phyto", "export_extra"];
 }
@@ -2367,24 +2382,42 @@ function ukdocsPrintCollectionProgress(collection, customers) {
     };
   }
   if (inspectionMode === "reinspection") {
-    const phytoReady = Array.isArray(collection?.documents?.phyto_files) && collection.documents.phyto_files.length > 0;
-    const inspectionReady = Boolean(collection?.documents?.inspection_list?.storage_name);
+    const customer = ukdocsPrintCollectionCustomer(collection, customers);
     const missing = [];
-    if (!phytoReady) {
-      missing.push("Phyto");
+    const phytoCount = (collection?.documents?.phyto_files || []).length;
+    const phytoExpected = ukdocsPrintSplitTokens(collection?.reference_connect).length;
+    const generatedFiles = collection?.documents?.generated_files || [];
+    const generatedExportReady = generatedFiles.some((file) => file.document_kind === "export");
+    const generatedInvoiceCount = generatedFiles.filter((file) => file.document_kind === "invoice").length;
+    const invoiceExpected = ukdocsPrintSplitTokens(collection?.invoice_numbers).length;
+
+    if (customer?.required_phyto !== false && phytoExpected > 0 && phytoCount < phytoExpected) {
+      missing.push(`Phyto ${phytoCount}/${phytoExpected}`);
     }
-    if (!inspectionReady) {
+    if (customer?.required_export_extra === true && !collection?.documents?.export_extra?.storage_name) {
+      missing.push("Second export file");
+    }
+    if (customer?.required_generated_export !== false && !generatedExportReady) {
+      missing.push("Generated export");
+    }
+    if (customer?.required_generated_invoices !== false) {
+      if (invoiceExpected === 0) {
+        missing.push("Invoice numbers");
+      } else if (generatedInvoiceCount < invoiceExpected) {
+        missing.push(`Invoices ${generatedInvoiceCount}/${invoiceExpected}`);
+      }
+    }
+    if (!collection?.documents?.inspection_list?.storage_name) {
       missing.push("Inspection list");
     }
+
     return {
-      customer: null,
+      customer,
       missing,
-      status: missing.length === 0 ? "complete" : (phytoReady || inspectionReady ? "partial" : "pending"),
+      status: missing.length === 0 ? "complete" : (phytoCount || generatedExportReady || generatedInvoiceCount || collection?.documents?.export_extra?.storage_name || collection?.documents?.inspection_list?.storage_name ? "partial" : "pending"),
     };
   }
-  const customer = (collection?.customer_id && (customers || []).find((item) => item.id === collection.customer_id))
-    || findUkdocsCustomerMatch(customers || [], collection)
-    || null;
+  const customer = ukdocsPrintCollectionCustomer(collection, customers);
   const missing = [];
   const phytoCount = (collection?.documents?.phyto_files || []).length;
   const phytoExpected = ukdocsPrintSplitTokens(collection?.reference_connect).length;
@@ -3252,7 +3285,7 @@ function UkdocsPage({ currentUser }) {
               </label>
             ))}
           </div>
-          <div className="table-wrap"><table className="data-table"><thead><tr><th>Name</th><th>Hub match</th><th>Remark match</th><th>Delivery terms</th><th>Ready mail template</th><th>UK port</th><th>Currency</th><th>VAT</th><th>Actions</th></tr></thead><tbody>{customers.map((customer) => <tr key={customer.id}><td>{customer.customer_name}</td><td>{customer.match_hub_code || "-"}</td><td>{customer.match_remark || "-"}</td><td>{customer.default_delivery_terms || customer.export_defaults?.delivery_terms || "-"}</td><td>{customer.ready_email_subject || customer.ready_email_body ? "Custom" : "Default"}</td><td>{customer.default_uk_arrival_port || "-"}</td><td>{customer.default_currency || customer.export_defaults?.currency || "-"}</td><td>{customer.vat_number || "-"}</td><td className="row-actions"><button type="button" onClick={() => startEditCustomer(customer)}>Edit</button></td></tr>)}{!customers.length && <tr><td colSpan="9">No UKdocs customers saved yet.</td></tr>}</tbody></table></div>
+          <div className="table-wrap"><table className="data-table"><thead><tr><th>Name</th><th>Hub match</th><th>Remark match</th><th>Delivery terms</th><th>Ready mail template</th><th>Nakeuring email</th><th>UK port</th><th>Currency</th><th>VAT</th><th>Actions</th></tr></thead><tbody>{customers.map((customer) => <tr key={customer.id}><td>{customer.customer_name}</td><td>{customer.match_hub_code || "-"}</td><td>{customer.match_remark || "-"}</td><td>{customer.default_delivery_terms || customer.export_defaults?.delivery_terms || "-"}</td><td>{customer.ready_email_subject || customer.ready_email_body ? "Custom" : "Default"}</td><td>{customer.reinspection_uses_email_sync === true ? "Yes" : "No"}</td><td>{customer.default_uk_arrival_port || "-"}</td><td>{customer.default_currency || customer.export_defaults?.currency || "-"}</td><td>{customer.vat_number || "-"}</td><td className="row-actions"><button type="button" onClick={() => startEditCustomer(customer)}>Edit</button></td></tr>)}{!customers.length && <tr><td colSpan="10">No UKdocs customers saved yet.</td></tr>}</tbody></table></div>
         </div>
       )}
 
@@ -3773,7 +3806,6 @@ function UkdocsPrintPage({ currentUser }) {
               const isActive = detailDrawerOpen && selectedCollection?.id === collection.id;
               const downloadEntries = ukdocsCollectionDownloadEntries(collection);
               const inspectionMode = ukdocsPrintInspectionMode(collection);
-              const isInspectionFlow = Boolean(inspectionMode);
               const isStockControl = inspectionMode === "stock_control";
               return (
                 <div key={collection.id} className={`ukdocs-upload-card ukdocs-collection-tile${isActive ? " active" : ""}`}>
@@ -3787,7 +3819,7 @@ function UkdocsPrintPage({ currentUser }) {
                   {!!collection.delivery_email?.sent_at && <small>Sent {formatTimestamp(collection.delivery_email.sent_at)}</small>}
                   <div className="row-actions spread-actions">
                     <button type="button" className="primary" onClick={() => openCollectionDetail(collection.id)}>{isActive ? "Opened" : "Info"}</button>
-                    {!isInspectionFlow && !progress.missing.length && <button type="button" onClick={() => sendReady(collection.id)} disabled={saving}>Send papers</button>}
+                    {!isStockControl && !progress.missing.length && <button type="button" onClick={() => sendReady(collection.id)} disabled={saving}>Send papers</button>}
                     <button type="button" onClick={() => deleteCollection(collection.id)}>Delete</button>
                   </div>
                   {!!downloadEntries.length && (
@@ -3819,7 +3851,7 @@ function UkdocsPrintPage({ currentUser }) {
         <div className={`data-table-card ukdocs-stack ukdocs-drawer-panel${detailDrawerOpen ? " open" : ""}`}>
           <div className="section-header">
             <h2>Collection detail</h2>
-            {selectedCollection && selectedCollectionProgress && <div className="row-actions"><div className={`ukdocs-status-badge ${ukdocsPrintStatusDefinition(selectedCollectionProgress.status).tone}`}>{ukdocsPrintStatusDefinition(selectedCollectionProgress.status).label}</div>{!ukdocsPrintInspectionMode(selectedCollection) && !selectedCollectionProgress.missing.length && <button type="button" className="primary" onClick={() => sendReady(selectedCollection.id)} disabled={saving}>{saving ? "Sending..." : "Send papers ready"}</button>}<button type="button" onClick={closeCollectionDetail}>Close</button><button type="button" onClick={() => deleteCollection(selectedCollection.id)}>Delete</button></div>}
+            {selectedCollection && selectedCollectionProgress && <div className="row-actions"><div className={`ukdocs-status-badge ${ukdocsPrintStatusDefinition(selectedCollectionProgress.status).tone}`}>{ukdocsPrintStatusDefinition(selectedCollectionProgress.status).label}</div>{ukdocsPrintInspectionMode(selectedCollection) !== "stock_control" && !selectedCollectionProgress.missing.length && <button type="button" className="primary" onClick={() => sendReady(selectedCollection.id)} disabled={saving}>{saving ? "Sending..." : "Send papers ready"}</button>}<button type="button" onClick={closeCollectionDetail}>Close</button><button type="button" onClick={() => deleteCollection(selectedCollection.id)}>Delete</button></div>}
           </div>
 
           {!selectedCollection && <div className="notice">Tap Info on a shipment tile first.</div>}
@@ -3842,8 +3874,8 @@ function UkdocsPrintPage({ currentUser }) {
                 <label><span>PD type</span><input value={selectedCollection.pd_type || ""} readOnly /></label>
                 <label><span>PD code</span><input value={selectedCollection.pd_code || ""} readOnly /></label>
               </div>
-              <div className="notice">{ukdocsPrintInspectionMode(selectedCollection) === "stock_control" ? (selectedCollectionProgress?.missing?.length ? `Still needed for stock control: ${selectedCollectionProgress.missing.join(", ")}` : "All stock control working papers are collected.") : (ukdocsPrintInspectionMode(selectedCollection) === "reinspection" ? (selectedCollectionProgress?.missing?.length ? `Still needed for nakeuring: ${selectedCollectionProgress.missing.join(", ")}` : "All nakeuring inspection papers are collected.") : (selectedCollectionProgress?.missing?.length ? `Still needed: ${selectedCollectionProgress.missing.join(", ")}` : "All required files for this customer are collected."))}</div>
-              {!ukdocsPrintInspectionMode(selectedCollection) && !!selectedCollection?.delivery_email?.sent_at && <div className="notice">Last sent: {formatTimestamp(selectedCollection.delivery_email.sent_at)} to {(selectedCollection.delivery_email.recipients || []).join(", ") || "-"}</div>}
+              <div className="notice">{ukdocsPrintInspectionMode(selectedCollection) === "stock_control" ? (selectedCollectionProgress?.missing?.length ? `Still needed for stock control: ${selectedCollectionProgress.missing.join(", ")}` : "All stock control working papers are collected.") : (ukdocsPrintInspectionMode(selectedCollection) === "reinspection" ? (selectedCollectionProgress?.missing?.length ? `Still needed for nakeuring: ${selectedCollectionProgress.missing.join(", ")}. ${ukdocsReinspectionUsesEmailSync(selectedCollection, customers) ? "This customer allows Gmail sync for nakeuring papers." : "This customer is set to manual nakeuring papers only."}` : `${ukdocsReinspectionUsesEmailSync(selectedCollection, customers) ? "This customer allows Gmail sync for nakeuring papers." : "This customer is set to manual nakeuring papers only."} All nakeuring inspection papers are collected.`) : (selectedCollectionProgress?.missing?.length ? `Still needed: ${selectedCollectionProgress.missing.join(", ")}` : "All required files for this customer are collected."))}</div>
+              {ukdocsPrintInspectionMode(selectedCollection) !== "stock_control" && !!selectedCollection?.delivery_email?.sent_at && <div className="notice">Last sent: {formatTimestamp(selectedCollection.delivery_email.sent_at)} to {(selectedCollection.delivery_email.recipients || []).join(", ") || "-"}</div>}
               {!!selectedCollection?.delivery_email?.error && !selectedCollection?.delivery_email?.ok && <div className="notice danger">{selectedCollection.delivery_email.error}</div>}
 
               <div className="ukdocs-upload-grid">
@@ -3879,7 +3911,7 @@ function UkdocsPrintPage({ currentUser }) {
                 })}
               </div>
 
-              {!ukdocsPrintInspectionMode(selectedCollection) && <div className="ukdocs-upload-card">
+              {ukdocsPrintInspectionMode(selectedCollection) !== "stock_control" && <div className="ukdocs-upload-card">
                 <strong>Generated UKdocs files</strong>
                 <small>{selectedGeneratedFiles.length ? `${selectedGeneratedFiles.length} generated file(s) saved.` : "No generated files saved yet."}</small>
                 {!!selectedGeneratedFiles.length && (
@@ -4148,7 +4180,7 @@ function UkdocsInspectionPage({ currentUser }) {
                 <label><span>PD type</span><input value={selectedCollection.pd_type || ""} readOnly /></label>
                 <label><span>PD code</span><input value={selectedCollection.pd_code || ""} readOnly /></label>
               </div>
-              <div className="notice">{ukdocsPrintInspectionMode(selectedCollection) === "stock_control" ? (selectedCollectionProgress?.missing?.length ? `Still needed for voorraad / stock control: ${selectedCollectionProgress.missing.join(", ")}` : "All voorraad / stock control papers are collected.") : (selectedCollectionProgress?.missing?.length ? `Still needed for nakeuring: ${selectedCollectionProgress.missing.join(", ")}` : "All nakeuring papers are collected.")}</div>
+              <div className="notice">{ukdocsPrintInspectionMode(selectedCollection) === "stock_control" ? (selectedCollectionProgress?.missing?.length ? `Still needed for voorraad / stock control: ${selectedCollectionProgress.missing.join(", ")}` : "All voorraad / stock control papers are collected.") : (selectedCollectionProgress?.missing?.length ? `Still needed for nakeuring: ${selectedCollectionProgress.missing.join(", ")}. ${ukdocsReinspectionUsesEmailSync(selectedCollection, customers) ? "This customer allows Gmail sync for nakeuring papers." : "This customer is set to manual nakeuring papers only."}` : `${ukdocsReinspectionUsesEmailSync(selectedCollection, customers) ? "This customer allows Gmail sync for nakeuring papers." : "This customer is set to manual nakeuring papers only."} All nakeuring papers are collected.`)}</div>
 
               <div className="ukdocs-upload-grid">
                 {UKDOCS_PRINT_DOCUMENTS.filter((documentDefinition) => ukdocsInspectionDocumentKeys(selectedCollection).includes(documentDefinition.key)).map((documentDefinition) => {

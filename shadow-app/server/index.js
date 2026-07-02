@@ -987,6 +987,7 @@ function normalizeUkdocsCustomer(customer) {
     required_export_extra: customer?.required_export_extra === true,
     required_generated_export: customer?.required_generated_export !== false,
     required_generated_invoices: customer?.required_generated_invoices !== false,
+    reinspection_uses_email_sync: customer?.reinspection_uses_email_sync === true,
     customer_address: String(customer?.customer_address || "").trim(),
     vat_number: normalizeUkdocsText(customer?.vat_number),
     eori_number: normalizeUkdocsText(customer?.eori_number),
@@ -1222,6 +1223,19 @@ function ukdocsPrintInspectionMode(collection) {
   return "";
 }
 
+function ukdocsPrintCollectionCustomer(collection, customers) {
+  return (collection?.customer_id && (Array.isArray(customers) ? customers.find((item) => item.id === collection.customer_id) : null))
+    || matchUkdocsCustomerForPrintCollection(customers || [], collection)
+    || null;
+}
+
+function ukdocsReinspectionUsesEmailSync(collection, customers) {
+  if (ukdocsPrintInspectionMode(collection) !== "reinspection") {
+    return false;
+  }
+  return ukdocsPrintCollectionCustomer(collection, customers)?.reinspection_uses_email_sync === true;
+}
+
 function deriveUkdocsPrintCollectionStatus(collection) {
   const inspectionMode = ukdocsPrintInspectionMode(collection);
   if (inspectionMode === "stock_control") {
@@ -1238,10 +1252,12 @@ function deriveUkdocsPrintCollectionStatus(collection) {
   if (inspectionMode === "reinspection") {
     const phytoReady = Array.isArray(collection?.documents?.phyto_files) && collection.documents.phyto_files.length > 0;
     const inspectionReady = Boolean(collection?.documents?.inspection_list?.storage_name);
-    if (phytoReady && inspectionReady) {
+    const extraReady = Boolean(collection?.documents?.export_extra?.storage_name);
+    const generatedReady = Array.isArray(collection?.documents?.generated_files) && collection.documents.generated_files.length > 0;
+    if (phytoReady && inspectionReady && (extraReady || generatedReady)) {
       return "complete";
     }
-    if (phytoReady || inspectionReady) {
+    if (phytoReady || inspectionReady || extraReady || generatedReady) {
       return "partial";
     }
     return "pending";
@@ -1326,15 +1342,37 @@ function getUkdocsPrintCollectionRequirements(collection, customers) {
     };
   }
   if (inspectionMode === "reinspection") {
+    const customer = (collection?.customer_id && (Array.isArray(customers) ? customers.find((item) => item.id === collection.customer_id) : null))
+      || matchUkdocsCustomerForPrintCollection(customers || [], collection)
+      || null;
+    const phytoCount = (collection?.documents?.phyto_files || []).length;
+    const phytoExpected = ukdocsPrintSplitTokens(collection?.reference_connect).length;
+    const generatedFiles = collection?.documents?.generated_files || [];
+    const generatedExportReady = generatedFiles.some((file) => file.document_kind === "export");
+    const generatedInvoiceCount = generatedFiles.filter((file) => file.document_kind === "invoice").length;
+    const invoiceExpected = ukdocsPrintSplitTokens(collection?.invoice_numbers).length;
     const missing = [];
-    if (!Array.isArray(collection?.documents?.phyto_files) || !collection.documents.phyto_files.length) {
-      missing.push("Phyto");
+    if ((customer?.required_phyto !== false) && phytoExpected > 0 && phytoCount < phytoExpected) {
+      missing.push(`Phyto ${phytoCount}/${phytoExpected}`);
+    }
+    if (customer?.required_export_extra === true && !collection?.documents?.export_extra?.storage_name) {
+      missing.push("Second export file");
+    }
+    if (customer?.required_generated_export !== false && !generatedExportReady) {
+      missing.push("Generated export");
+    }
+    if (customer?.required_generated_invoices !== false) {
+      if (invoiceExpected === 0) {
+        missing.push("Invoice numbers");
+      } else if (generatedInvoiceCount < invoiceExpected) {
+        missing.push(`Invoices ${generatedInvoiceCount}/${invoiceExpected}`);
+      }
     }
     if (!collection?.documents?.inspection_list?.storage_name) {
       missing.push("Inspection list");
     }
     return {
-      customer: null,
+      customer,
       missing,
       complete: missing.length === 0,
     };
@@ -3794,7 +3832,19 @@ async function syncUkdocsPrintFromGmail(settings, requestUser, query, date) {
   const syncQuery = buildUkdocsGmailSyncQuery(query, syncDate);
   const listPayload = await gmailApiJson(accessToken, `messages?q=${encodeURIComponent(syncQuery)}&maxResults=25`);
   const messages = Array.isArray(listPayload.messages) ? listPayload.messages : [];
-  const dayCollections = state.print_collections.filter((item) => String(item.shipment_date || "").slice(0, 10) === syncDate && !ukdocsPrintInspectionMode(item));
+  const dayCollections = state.print_collections.filter((item) => {
+    if (String(item.shipment_date || "").slice(0, 10) !== syncDate) {
+      return false;
+    }
+    const inspectionMode = ukdocsPrintInspectionMode(item);
+    if (inspectionMode === "stock_control") {
+      return false;
+    }
+    if (inspectionMode === "reinspection") {
+      return ukdocsReinspectionUsesEmailSync(item, state.customers);
+    }
+    return true;
+  });
   const results = [];
 
   for (const message of messages) {
@@ -6072,7 +6122,7 @@ async function handleApi(req, res, url) {
       sendJson(res, 404, { error: "UKdocs Print collection not found" });
       return;
     }
-    if (existingCollection.collection_type === "stock_control") {
+    if (ukdocsPrintInspectionMode(existingCollection) === "stock_control") {
       sendJson(res, 400, { error: "Stock control collections do not send export papers" });
       return;
     }
