@@ -3638,30 +3638,6 @@ function UkdocsPrintPage({ currentUser }) {
     }
   }
 
-  async function deleteCollectionDocument(kind, index = null) {
-    if (!selectedCollection) {
-      return;
-    }
-    if (!window.confirm("Delete this uploaded file?")) {
-      return;
-    }
-    setSaving(true);
-    setMessage("");
-    setError("");
-    try {
-      const documentPath = index === null ? kind : `${kind}/${index}`;
-      const payload = await apiJson(`/api/ukdocs-print/collections/${encodeURIComponent(selectedCollection.id)}/documents/${documentPath}`, {
-        method: "DELETE",
-      });
-      setState((current) => ({ ...current, print_collections: payload.print_collections || current?.print_collections || [] }));
-      setMessage("Uploaded file deleted.");
-    } catch (deleteError) {
-      setError(deleteError.message);
-    } finally {
-      setSaving(false);
-    }
-  }
-
   async function saveNotes() {
     if (!selectedCollection) {
       return;

@@ -3876,24 +3876,25 @@ async function syncUkdocsPrintFromGmail(settings, requestUser, query, date) {
         results.push({ status: "unmatched", file_name: attachmentName, reason: "No safe match from reference connect, invoice, or truck/trailer" });
         continue;
       }
+      const currentMatch = state.print_collections.find((item) => item.id === bestMatch.id || item.shipment_id === bestMatch.shipment_id) || bestMatch;
       const kind = detectUkdocsPrintDocumentKind(candidateText);
-      if (kind === "phyto" && hasUkdocsPrintDocumentWithName(bestMatch.documents?.phyto_files, attachmentName)) {
-        results.push({ status: "skipped", file_name: attachmentName, shipment_reference: bestMatch.shipment_reference, reason: "phyto already exists" });
+      if (kind === "phyto" && hasUkdocsPrintDocumentWithName(currentMatch.documents?.phyto_files, attachmentName)) {
+        results.push({ status: "skipped", file_name: attachmentName, shipment_reference: currentMatch.shipment_reference, reason: "phyto already exists" });
         continue;
       }
-      if (kind !== "phyto" && bestMatch.documents?.[kind]?.storage_name) {
-        results.push({ status: "skipped", file_name: attachmentName, shipment_reference: bestMatch.shipment_reference, reason: `${kind} already exists` });
+      if (kind !== "phyto" && currentMatch.documents?.[kind]?.storage_name) {
+        results.push({ status: "skipped", file_name: attachmentName, shipment_reference: currentMatch.shipment_reference, reason: `${kind} already exists` });
         continue;
       }
       const buffer = await gmailAttachmentBuffer(accessToken, detail.id, attachment.attachment_id);
-      const savedDocument = await saveUkdocsPrintBuffer(bestMatch.id, kind, attachmentName, attachment.mime_type, buffer, requestUser.username);
+      const savedDocument = await saveUkdocsPrintBuffer(currentMatch.id, kind, attachmentName, attachment.mime_type, buffer, requestUser.username);
       const updatedCollection = normalizeUkdocsPrintCollection({
-        ...bestMatch,
+        ...currentMatch,
         updated_at: new Date().toISOString(),
         documents: {
-          ...(bestMatch.documents || {}),
+          ...(currentMatch.documents || {}),
           ...(kind === "phyto"
-            ? { phyto_files: [...(bestMatch.documents?.phyto_files || []), savedDocument] }
+            ? { phyto_files: [...(currentMatch.documents?.phyto_files || []), savedDocument] }
             : { [kind]: savedDocument }),
         },
       });
