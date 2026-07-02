@@ -162,7 +162,7 @@ function pageHeading(page) {
     case "ukdocsinspection":
       return {
         title: "Phyto Inspection",
-        caption: "Handle inspection-needed shipments separately, with the exact working papers required for voorraad and nakeuring flows.",
+        caption: "",
       };
     default:
       return {
@@ -3913,10 +3913,9 @@ function UkdocsInspectionPage({ currentUser }) {
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
   const [selectedCollectionId, setSelectedCollectionId] = useState("");
-  const [selectedCollectionDate, setSelectedCollectionDate] = useState(() => localDateIso());
   const [detailDrawerOpen, setDetailDrawerOpen] = useState(false);
   const [notesDraft, setNotesDraft] = useState("");
-  const [sheetBusy, setSheetBusy] = useState(false);
+  const selectedCollectionDate = localDateIso();
 
   useEffect(() => {
     let cancelled = false;
@@ -3986,24 +3985,6 @@ function UkdocsInspectionPage({ currentUser }) {
 
   function closeCollectionDetail() {
     setDetailDrawerOpen(false);
-  }
-
-  async function syncSheetSendings() {
-    setSheetBusy(true);
-    setError("");
-    setMessage("");
-    try {
-      const payload = await apiJson("/api/ukdocs-print/sheet-sync", {
-        method: "POST",
-        body: JSON.stringify({ date: selectedCollectionDate }),
-      });
-      setState((current) => ({ ...current, print_collections: payload.print_collections || current?.print_collections || [] }));
-      setMessage(`Loaded ${payload.imported_count || 0} sendings from ${payload.sheet_name || "spreadsheet"} for ${payload.date}.`);
-    } catch (sheetError) {
-      setError(sheetError.message);
-    } finally {
-      setSheetBusy(false);
-    }
   }
 
   async function uploadCollectionFile(kind, file) {
@@ -4093,20 +4074,11 @@ function UkdocsInspectionPage({ currentUser }) {
     <section className="overview-stack ukdocs-page">
       {message && <div className="notice">{message}</div>}
       {error && <div className="notice danger">{error}</div>}
-      <div className="notice">This page only shows shipments that need physical inspection papers. Voorraad / stock control uses Inspection list plus Locations file. Nakeuring uses Phyto plus Inspection list. These shipments stay manual and are not filled from Gmail sync.</div>
-
-      <div className="data-table-card ukdocs-stack">
-        <div className="section-header"><h2>Inspection sendings</h2></div>
-        <div className="form-grid">
-          <label><span>Date to load</span><input type="date" value={selectedCollectionDate} onChange={(event) => setSelectedCollectionDate(event.target.value)} /></label>
-          <label><span>&nbsp;</span><button type="button" className="primary" onClick={syncSheetSendings} disabled={sheetBusy}>{sheetBusy ? "Loading..." : "Load sendings from spreadsheet"}</button></label>
-        </div>
-        <div className="notice">Load the selected day from the PD spreadsheet first. Then open only the inspection-needed shipments here and upload the required papers manually.</div>
-      </div>
 
       <div className="ukdocs-print-layout">
         <div className="data-table-card ukdocs-stack">
           <div className="section-header"><h2>Inspection shipments</h2></div>
+          <div className="notice">Showing only today&apos;s inspection shipments from UKdocs Print collections.</div>
           <div className="ukdocs-collection-grid">
             {filteredCollections.map((collection) => {
               const progress = ukdocsPrintCollectionProgress(collection, customers);
@@ -4146,7 +4118,7 @@ function UkdocsInspectionPage({ currentUser }) {
                 </div>
               );
             })}
-            {!inspectionCollections.length && <div className="notice">No inspection-needed shipments are loaded yet.</div>}
+            {!inspectionCollections.length && <div className="notice">No inspection-needed shipments are saved in UKdocs Print collections yet.</div>}
             {!!inspectionCollections.length && !filteredCollections.length && <div className="notice">No inspection shipments saved for {selectedCollectionDate} yet.</div>}
           </div>
         </div>
