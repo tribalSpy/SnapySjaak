@@ -2135,7 +2135,6 @@ const UKDOCS_CUSTOMER_REQUIRED_DOCUMENT_FIELDS = [
   ["required_export_extra", "Require second export file"],
   ["required_generated_export", "Require generated export workbook"],
   ["required_generated_invoices", "Require generated invoice workbooks"],
-  ["reinspection_uses_email_sync", "Nakeuring gets papers from email sync"],
 ];
 
 const UKDOCS_EXPORT_DEFAULT_FIELDS = [
@@ -2195,7 +2194,6 @@ function emptyUkdocsCustomer() {
     required_export_extra: false,
     required_generated_export: true,
     required_generated_invoices: true,
-    reinspection_uses_email_sync: false,
     export_defaults: Object.fromEntries(UKDOCS_EXPORT_DEFAULT_FIELDS.map(([key]) => [key, ""])),
   };
 }
@@ -2344,13 +2342,6 @@ function ukdocsPrintCollectionCustomer(collection, customers) {
   return (collection?.customer_id && (customers || []).find((item) => item.id === collection.customer_id))
     || findUkdocsCustomerMatch(customers || [], collection)
     || null;
-}
-
-function ukdocsReinspectionUsesEmailSync(collection, customers) {
-  if (ukdocsPrintInspectionMode(collection) !== "reinspection") {
-    return false;
-  }
-  return ukdocsPrintCollectionCustomer(collection, customers)?.reinspection_uses_email_sync === true;
 }
 
 function ukdocsInspectionDocumentKeys(collection) {
@@ -3285,7 +3276,7 @@ function UkdocsPage({ currentUser }) {
               </label>
             ))}
           </div>
-          <div className="table-wrap"><table className="data-table"><thead><tr><th>Name</th><th>Hub match</th><th>Remark match</th><th>Delivery terms</th><th>Ready mail template</th><th>Nakeuring email</th><th>UK port</th><th>Currency</th><th>VAT</th><th>Actions</th></tr></thead><tbody>{customers.map((customer) => <tr key={customer.id}><td>{customer.customer_name}</td><td>{customer.match_hub_code || "-"}</td><td>{customer.match_remark || "-"}</td><td>{customer.default_delivery_terms || customer.export_defaults?.delivery_terms || "-"}</td><td>{customer.ready_email_subject || customer.ready_email_body ? "Custom" : "Default"}</td><td>{customer.reinspection_uses_email_sync === true ? "Yes" : "No"}</td><td>{customer.default_uk_arrival_port || "-"}</td><td>{customer.default_currency || customer.export_defaults?.currency || "-"}</td><td>{customer.vat_number || "-"}</td><td className="row-actions"><button type="button" onClick={() => startEditCustomer(customer)}>Edit</button></td></tr>)}{!customers.length && <tr><td colSpan="10">No UKdocs customers saved yet.</td></tr>}</tbody></table></div>
+          <div className="table-wrap"><table className="data-table"><thead><tr><th>Name</th><th>Hub match</th><th>Remark match</th><th>Delivery terms</th><th>Ready mail template</th><th>UK port</th><th>Currency</th><th>VAT</th><th>Actions</th></tr></thead><tbody>{customers.map((customer) => <tr key={customer.id}><td>{customer.customer_name}</td><td>{customer.match_hub_code || "-"}</td><td>{customer.match_remark || "-"}</td><td>{customer.default_delivery_terms || customer.export_defaults?.delivery_terms || "-"}</td><td>{customer.ready_email_subject || customer.ready_email_body ? "Custom" : "Default"}</td><td>{customer.default_uk_arrival_port || "-"}</td><td>{customer.default_currency || customer.export_defaults?.currency || "-"}</td><td>{customer.vat_number || "-"}</td><td className="row-actions"><button type="button" onClick={() => startEditCustomer(customer)}>Edit</button></td></tr>)}{!customers.length && <tr><td colSpan="9">No UKdocs customers saved yet.</td></tr>}</tbody></table></div>
         </div>
       )}
 
@@ -3623,6 +3614,54 @@ function UkdocsPrintPage({ currentUser }) {
     }
   }
 
+  async function deleteCollectionDocument(kind, index = null) {
+    if (!selectedCollection) {
+      return;
+    }
+    if (!window.confirm("Delete this uploaded file?")) {
+      return;
+    }
+    setSaving(true);
+    setMessage("");
+    setError("");
+    try {
+      const documentPath = index === null ? kind : `${kind}/${index}`;
+      const payload = await apiJson(`/api/ukdocs-print/collections/${encodeURIComponent(selectedCollection.id)}/documents/${documentPath}`, {
+        method: "DELETE",
+      });
+      setState((current) => ({ ...current, print_collections: payload.print_collections || current?.print_collections || [] }));
+      setMessage("Uploaded file deleted.");
+    } catch (deleteError) {
+      setError(deleteError.message);
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function deleteCollectionDocument(kind, index = null) {
+    if (!selectedCollection) {
+      return;
+    }
+    if (!window.confirm("Delete this uploaded file?")) {
+      return;
+    }
+    setSaving(true);
+    setMessage("");
+    setError("");
+    try {
+      const documentPath = index === null ? kind : `${kind}/${index}`;
+      const payload = await apiJson(`/api/ukdocs-print/collections/${encodeURIComponent(selectedCollection.id)}/documents/${documentPath}`, {
+        method: "DELETE",
+      });
+      setState((current) => ({ ...current, print_collections: payload.print_collections || current?.print_collections || [] }));
+      setMessage("Uploaded file deleted.");
+    } catch (deleteError) {
+      setError(deleteError.message);
+    } finally {
+      setSaving(false);
+    }
+  }
+
   async function saveNotes() {
     if (!selectedCollection) {
       return;
@@ -3899,7 +3938,7 @@ function UkdocsPrintPage({ currentUser }) {
                 <label><span>PD type</span><input value={selectedCollection.pd_type || ""} readOnly /></label>
                 <label><span>PD code</span><input value={selectedCollection.pd_code || ""} readOnly /></label>
               </div>
-              <div className="notice">{ukdocsPrintInspectionMode(selectedCollection) === "stock_control" ? (selectedCollectionProgress?.missing?.length ? `Still needed for stock control: ${selectedCollectionProgress.missing.join(", ")}` : "All stock control working papers are collected.") : (ukdocsPrintInspectionMode(selectedCollection) === "reinspection" ? (selectedCollectionProgress?.missing?.length ? `Still needed for nakeuring: ${selectedCollectionProgress.missing.join(", ")}. ${ukdocsReinspectionUsesEmailSync(selectedCollection, customers) ? "This customer allows Gmail sync for nakeuring papers." : "This customer is set to manual nakeuring papers only."}` : `${ukdocsReinspectionUsesEmailSync(selectedCollection, customers) ? "This customer allows Gmail sync for nakeuring papers." : "This customer is set to manual nakeuring papers only."} All nakeuring inspection papers are collected.`) : (selectedCollectionProgress?.missing?.length ? `Still needed: ${selectedCollectionProgress.missing.join(", ")}` : "All required files for this customer are collected."))}</div>
+              <div className="notice">{ukdocsPrintInspectionMode(selectedCollection) === "stock_control" ? (selectedCollectionProgress?.missing?.length ? `Still needed for stock control: ${selectedCollectionProgress.missing.join(", ")}` : "All stock control working papers are collected.") : (ukdocsPrintInspectionMode(selectedCollection) === "reinspection" ? (selectedCollectionProgress?.missing?.length ? `Still needed for nakeuring: ${selectedCollectionProgress.missing.join(", ")}. Gmail can match nakeuring files automatically when the reference, invoice, or truck/trailer matches.` : "All nakeuring inspection papers are collected. Gmail can match nakeuring files automatically when the reference, invoice, or truck/trailer matches.") : (selectedCollectionProgress?.missing?.length ? `Still needed: ${selectedCollectionProgress.missing.join(", ")}` : "All required files for this customer are collected."))}</div>
               {ukdocsPrintInspectionMode(selectedCollection) !== "stock_control" && !!selectedCollection?.delivery_email?.sent_at && <div className="notice">Last sent: {formatTimestamp(selectedCollection.delivery_email.sent_at)} to {(selectedCollection.delivery_email.recipients || []).join(", ") || "-"}</div>}
               {!!selectedCollection?.delivery_email?.error && !selectedCollection?.delivery_email?.ok && <div className="notice danger">{selectedCollection.delivery_email.error}</div>}
 
@@ -3918,9 +3957,12 @@ function UkdocsPrintPage({ currentUser }) {
                           {!!selectedPhytoFiles.length && (
                             <div className="row-actions spread-actions">
                               {selectedPhytoFiles.map((phytoFile, index) => (
-                                <a key={`${phytoFile.storage_name}-${index}`} href={`/api/ukdocs-print/collections/${encodeURIComponent(selectedCollection.id)}/documents/phyto/${index}`}>
-                                  {phytoFile.original_name || `Phyto ${index + 1}`}
-                                </a>
+                                <span key={`${phytoFile.storage_name}-${index}`} className="row-actions spread-actions">
+                                  <a href={`/api/ukdocs-print/collections/${encodeURIComponent(selectedCollection.id)}/documents/phyto/${index}`}>
+                                    {phytoFile.original_name || `Phyto ${index + 1}`}
+                                  </a>
+                                  <button type="button" onClick={() => deleteCollectionDocument("phyto", index)} disabled={saving}>Delete</button>
+                                </span>
                               ))}
                             </div>
                           )}
@@ -3928,7 +3970,7 @@ function UkdocsPrintPage({ currentUser }) {
                       ) : (
                         <>
                           <small>{document?.original_name ? `${document.original_name} saved ${formatTimestamp(document.saved_at)}` : "No file saved yet."}</small>
-                          {document?.storage_name && <div className="row-actions"><a href={`/api/ukdocs-print/collections/${encodeURIComponent(selectedCollection.id)}/documents/${documentDefinition.key}`}>Download</a></div>}
+                          {document?.storage_name && <div className="row-actions"><a href={`/api/ukdocs-print/collections/${encodeURIComponent(selectedCollection.id)}/documents/${documentDefinition.key}`}>Download</a><button type="button" onClick={() => deleteCollectionDocument(documentDefinition.key)} disabled={saving}>Delete</button></div>}
                         </>
                       )}
                     </div>
@@ -3942,9 +3984,12 @@ function UkdocsPrintPage({ currentUser }) {
                 {!!selectedGeneratedFiles.length && (
                   <div className="row-actions spread-actions">
                     {selectedGeneratedFiles.map((generatedFile, index) => (
-                      <a key={`${generatedFile.storage_name}-${index}`} href={`/api/ukdocs-print/collections/${encodeURIComponent(selectedCollection.id)}/documents/generated/${index}`}>
-                        {generatedFile.original_name || `Generated file ${index + 1}`}
-                      </a>
+                      <span key={`${generatedFile.storage_name}-${index}`} className="row-actions spread-actions">
+                        <a href={`/api/ukdocs-print/collections/${encodeURIComponent(selectedCollection.id)}/documents/generated/${index}`}>
+                          {generatedFile.original_name || `Generated file ${index + 1}`}
+                        </a>
+                        <button type="button" onClick={() => deleteCollectionDocument("generated", index)} disabled={saving}>Delete</button>
+                      </span>
                     ))}
                   </div>
                 )}
@@ -4205,7 +4250,7 @@ function UkdocsInspectionPage({ currentUser }) {
                 <label><span>PD type</span><input value={selectedCollection.pd_type || ""} readOnly /></label>
                 <label><span>PD code</span><input value={selectedCollection.pd_code || ""} readOnly /></label>
               </div>
-              <div className="notice">{ukdocsPrintInspectionMode(selectedCollection) === "stock_control" ? (selectedCollectionProgress?.missing?.length ? `Still needed for voorraad / stock control: ${selectedCollectionProgress.missing.join(", ")}` : "All voorraad / stock control papers are collected.") : (selectedCollectionProgress?.missing?.length ? `Still needed for nakeuring: ${selectedCollectionProgress.missing.join(", ")}. ${ukdocsReinspectionUsesEmailSync(selectedCollection, customers) ? "This customer allows Gmail sync for nakeuring papers." : "This customer is set to manual nakeuring papers only."}` : `${ukdocsReinspectionUsesEmailSync(selectedCollection, customers) ? "This customer allows Gmail sync for nakeuring papers." : "This customer is set to manual nakeuring papers only."} All nakeuring papers are collected.`)}</div>
+              <div className="notice">{ukdocsPrintInspectionMode(selectedCollection) === "stock_control" ? (selectedCollectionProgress?.missing?.length ? `Still needed for voorraad / stock control: ${selectedCollectionProgress.missing.join(", ")}` : "All voorraad / stock control papers are collected.") : (selectedCollectionProgress?.missing?.length ? `Still needed for nakeuring: ${selectedCollectionProgress.missing.join(", ")}. Gmail can match nakeuring files automatically when the reference, invoice, or truck/trailer matches.` : "All nakeuring papers are collected. Gmail can match nakeuring files automatically when the reference, invoice, or truck/trailer matches.")}</div>
 
               <div className="ukdocs-upload-grid">
                 {UKDOCS_PRINT_DOCUMENTS.filter((documentDefinition) => ukdocsInspectionDocumentKeys(selectedCollection).includes(documentDefinition.key)).map((documentDefinition) => {
@@ -4222,9 +4267,12 @@ function UkdocsInspectionPage({ currentUser }) {
                           {!!selectedPhytoFiles.length && (
                             <div className="row-actions spread-actions">
                               {selectedPhytoFiles.map((phytoFile, index) => (
-                                <a key={`${phytoFile.storage_name}-${index}`} href={`/api/ukdocs-print/collections/${encodeURIComponent(selectedCollection.id)}/documents/phyto/${index}`}>
-                                  {phytoFile.original_name || `Phyto ${index + 1}`}
-                                </a>
+                                <span key={`${phytoFile.storage_name}-${index}`} className="row-actions spread-actions">
+                                  <a href={`/api/ukdocs-print/collections/${encodeURIComponent(selectedCollection.id)}/documents/phyto/${index}`}>
+                                    {phytoFile.original_name || `Phyto ${index + 1}`}
+                                  </a>
+                                  <button type="button" onClick={() => deleteCollectionDocument("phyto", index)} disabled={saving}>Delete</button>
+                                </span>
                               ))}
                             </div>
                           )}
@@ -4232,7 +4280,7 @@ function UkdocsInspectionPage({ currentUser }) {
                       ) : (
                         <>
                           <small>{document?.original_name ? `${document.original_name} saved ${formatTimestamp(document.saved_at)}` : "No file saved yet."}</small>
-                          {document?.storage_name && <div className="row-actions"><a href={`/api/ukdocs-print/collections/${encodeURIComponent(selectedCollection.id)}/documents/${documentDefinition.key}`}>Download</a></div>}
+                          {document?.storage_name && <div className="row-actions"><a href={`/api/ukdocs-print/collections/${encodeURIComponent(selectedCollection.id)}/documents/${documentDefinition.key}`}>Download</a><button type="button" onClick={() => deleteCollectionDocument(documentDefinition.key)} disabled={saving}>Delete</button></div>}
                         </>
                       )}
                     </div>

@@ -1229,13 +1229,6 @@ function ukdocsPrintCollectionCustomer(collection, customers) {
     || null;
 }
 
-function ukdocsReinspectionUsesEmailSync(collection, customers) {
-  if (ukdocsPrintInspectionMode(collection) !== "reinspection") {
-    return false;
-  }
-  return ukdocsPrintCollectionCustomer(collection, customers)?.reinspection_uses_email_sync === true;
-}
-
 function deriveUkdocsPrintCollectionStatus(collection) {
   const inspectionMode = ukdocsPrintInspectionMode(collection);
   if (inspectionMode === "stock_control") {
@@ -3716,6 +3709,23 @@ async function deleteUkdocsPrintCollectionFiles(collection) {
   }));
 }
 
+async function deleteSingleUkdocsPrintDocumentFile(document) {
+  if (!document?.storage_name) {
+    return;
+  }
+  const resolvedPath = path.resolve(ukdocsPrintDocumentPath(document));
+  if (!resolvedPath.startsWith(path.resolve(ukdocsPrintFilesDir))) {
+    return;
+  }
+  try {
+    await fs.unlink(resolvedPath);
+  } catch (error) {
+    if (error?.code !== "ENOENT") {
+      throw error;
+    }
+  }
+}
+
 function ukdocsPrintCollectionMatchScore(collection, haystackRaw) {
   const haystack = normalizeUkdocsPrintToken(haystackRaw);
   if (!haystack) {
@@ -3837,13 +3847,7 @@ async function syncUkdocsPrintFromGmail(settings, requestUser, query, date) {
       return false;
     }
     const inspectionMode = ukdocsPrintInspectionMode(item);
-    if (inspectionMode === "stock_control") {
-      return false;
-    }
-    if (inspectionMode === "reinspection") {
-      return ukdocsReinspectionUsesEmailSync(item, state.customers);
-    }
-    return true;
+    return inspectionMode !== "stock_control";
   });
   const results = [];
 
@@ -6244,6 +6248,68 @@ async function handleApi(req, res, url) {
       "cache-control": "no-store",
     });
     createReadStream(resolvedPath).pipe(res);
+    return;
+  }
+
+  if (url.pathname.startsWith("/api/ukdocs-print/collections/") && url.pathname.includes("/documents/") && req.method === "DELETE") {
+    if (!requireAnyPermission(res, requestUser, [PERMISSIONS.UKDOCS_VIEW, PERMISSIONS.UKDOCS_INSPECTION_VIEW])) {
+      return;
+    }
+    const suffix = url.pathname.slice("/api/ukdocs-print/collections/".length);
+    const [collectionIdRaw, kindRaw] = suffix.split("/documents/");
+    const collectionId = decodeURIComponent(collectionIdRaw || "");
+    const kindParts = decodeURIComponent(kindRaw || "").split("/");
+    const kind = kindParts[0] || "";
+    const documentIndex = Number(kindParts[1] || 0);
+    const state = await readUkdocsState();
+    const existingCollection = state.print_collections.find((item) => item.id === collectionId || item.shipment_id === collectionId);
+    if (!existingCollection) {
+      sendJson(res, 404, { error: "UKdocs Print collection not found" });
+      return;
+    }
+
+    let removedDocument = null;
+    let updatedDocuments = { ...(existingCollection.documents || {}) };
+
+    if (kind === "phyto") {
+      const phytoFiles = [...(existingCollection.documents?.phyto_files || [])];
+      removedDocument = phytoFiles[documentIndex] || null;
+      if (!removedDocument) {
+        sendJson(res, 404, { error: "UKdocs Print document not found" });
+        return;
+      }
+      phytoFiles.splice(documentIndex, 1);
+      updatedDocuments = { ...updatedDocuments, phyto_files: phytoFiles };
+    } else if (kind === "generated") {
+      const generatedFiles = [...(existingCollection.documents?.generated_files || [])];
+      removedDocument = generatedFiles[documentIndex] || null;
+      if (!removedDocument) {
+        sendJson(res, 404, { error: "UKdocs Print document not found" });
+        return;
+      }
+      generatedFiles.splice(documentIndex, 1);
+      updatedDocuments = { ...updatedDocuments, generated_files: generatedFiles };
+    } else if (["export_extra", "inspection_list", "locations_file"].includes(kind)) {
+      removedDocument = existingCollection.documents?.[kind] || null;
+      if (!removedDocument) {
+        sendJson(res, 404, { error: "UKdocs Print document not found" });
+        return;
+      }
+      updatedDocuments = { ...updatedDocuments, [kind]: null };
+    } else {
+      sendJson(res, 400, { error: "Unknown UKdocs Print document type" });
+      return;
+    }
+
+    await deleteSingleUkdocsPrintDocumentFile(removedDocument);
+    const updatedCollection = normalizeUkdocsPrintCollection({
+      ...existingCollection,
+      updated_at: new Date().toISOString(),
+      documents: updatedDocuments,
+    });
+    state.print_collections = upsertUkdocsPrintCollection(state.print_collections, updatedCollection);
+    await writeUkdocsState(state);
+    sendJson(res, 200, { collection: updatedCollection, print_collections: normalizeUkdocsState(state).print_collections });
     return;
   }
 
