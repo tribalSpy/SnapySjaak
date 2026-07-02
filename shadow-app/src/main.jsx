@@ -17,6 +17,7 @@ const PERMISSIONS = {
   CMR_VIEW: "cmr:view",
   HAL_LOCATIONS_VIEW: "hal_locations:view",
   EXPEDITION_STICKERS_VIEW: "expedition_stickers:view",
+  BUNCHES_VIEW: "bunches:view",
   DAG_FOUTJES_VIEW: "expedition_stickers:view",
   FOUTEN_OVERVIEW_VIEW: "fouten_overview:view",
   CMR_MANAGE: "cmr:manage",
@@ -38,6 +39,7 @@ const PAGE_DEFINITIONS = [
   { key: "cmrprint", label: "CMR Print", permission: PERMISSIONS.CMR_VIEW },
   { key: "hallocations", label: "Hal Locations", permission: PERMISSIONS.HAL_LOCATIONS_VIEW },
   { key: "expeditionstickers", label: "Expedition Sticker", permission: PERMISSIONS.EXPEDITION_STICKERS_VIEW },
+  { key: "bunches", label: "Bunches", permission: PERMISSIONS.BUNCHES_VIEW },
   { key: "dagfoutjes", label: "Fout Registratie", permission: PERMISSIONS.DAG_FOUTJES_VIEW },
   { key: "foutenoverzicht", label: "Fouten Overzicht", permission: PERMISSIONS.FOUTEN_OVERVIEW_VIEW },
   { key: "ukdocsprint", label: "UKdocs Print", permission: PERMISSIONS.UKDOCS_VIEW },
@@ -123,6 +125,11 @@ function pageHeading(page) {
       return {
         title: "Expedition Sticker",
         caption: "",
+      };
+    case "bunches":
+      return {
+        title: "Bunches",
+        caption: "Process bunches exports, keep article and APE master data, and reuse saved runs across the team.",
       };
     case "dagfoutjes":
       return {
@@ -4298,6 +4305,27 @@ function DagFoutjesPage() {
   );
 }
 
+function BunchesPage() {
+  return (
+    <section className="overview-stack">
+      <article className="panel" style={{ padding: 0, overflow: "hidden" }}>
+        <iframe
+          title="Bunches"
+          src="/api/bunches/app"
+          style={{
+            display: "block",
+            width: "100%",
+            height: "calc(100vh - 10rem)",
+            minHeight: "78vh",
+            border: "none",
+            background: "#fff",
+          }}
+        />
+      </article>
+    </section>
+  );
+}
+
 function foutenOverviewTypeSummary(entries) {
   const counts = new Map();
   for (const entry of entries) {
@@ -4800,6 +4828,7 @@ function App() {
         {page === "clock" && <ClockPage currentUser={auth.user} />}
         {page === "hallocations" && <HalLocationsPage currentUser={auth.user} />}
         {page === "expeditionstickers" && <ExpeditionStickerPage currentUser={auth.user} />}
+        {page === "bunches" && <BunchesPage currentUser={auth.user} />}
         {page === "dagfoutjes" && <DagFoutjesPage currentUser={auth.user} />}
         {page === "foutenoverzicht" && <FoutenOverviewPage currentUser={auth.user} />}
         {page === "ukdocsprint" && <UkdocsPrintPage currentUser={auth.user} />}

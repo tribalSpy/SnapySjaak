@@ -1,0 +1,867 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Bunches</title>
+  <style>
+    :root {
+      --bg: #f3f8fd;
+      --panel: #ffffff;
+      --line: #c7d6e6;
+      --ink: #17304a;
+      --muted: #5d728b;
+      --accent: #2a8c68;
+      --accent-2: #eef8f3;
+      --warn: #b86823;
+      --danger: #b53d3d;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: "Segoe UI", Arial, sans-serif;
+      color: var(--ink);
+      background:
+        radial-gradient(circle at top left, rgba(71, 159, 120, 0.12), transparent 28%),
+        linear-gradient(180deg, #f7fbff 0%, #eef5fb 100%);
+    }
+    .app {
+      padding: 18px;
+      min-height: 100vh;
+    }
+    .hero, .panel {
+      background: rgba(255,255,255,0.94);
+      border: 1px solid var(--line);
+      border-radius: 18px;
+      box-shadow: 0 16px 40px rgba(17, 40, 67, 0.06);
+    }
+    .hero {
+      padding: 20px 22px;
+      margin-bottom: 18px;
+    }
+    h1 {
+      margin: 0;
+      font-size: 2rem;
+    }
+    .sub {
+      margin: 8px 0 0;
+      color: var(--muted);
+    }
+    .toolbar {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+      margin-top: 16px;
+    }
+    .toolbar button,
+    .button {
+      border: 1px solid var(--line);
+      background: #fff;
+      color: var(--ink);
+      border-radius: 999px;
+      padding: 10px 16px;
+      font-weight: 700;
+      cursor: pointer;
+    }
+    .toolbar button.active,
+    .button.primary {
+      background: var(--accent);
+      border-color: var(--accent);
+      color: #fff;
+    }
+    .button.secondary {
+      background: var(--accent-2);
+      border-color: #b9dccb;
+    }
+    .button.danger {
+      border-color: #e4bbbb;
+      color: var(--danger);
+    }
+    .meta-grid {
+      margin-top: 16px;
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+      gap: 12px;
+    }
+    .meta-card {
+      padding: 14px 16px;
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      background: #f8fbff;
+    }
+    .meta-card strong {
+      display: block;
+      font-size: 1.35rem;
+    }
+    .page { display: none; }
+    .page.active { display: block; }
+    .grid {
+      display: grid;
+      gap: 16px;
+      grid-template-columns: 1.1fr 0.9fr;
+    }
+    .panel {
+      padding: 18px;
+    }
+    h2, h3 {
+      margin: 0 0 12px;
+    }
+    label {
+      display: block;
+      font-weight: 700;
+      margin-bottom: 6px;
+    }
+    input, textarea, select {
+      width: 100%;
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      padding: 10px 12px;
+      font: inherit;
+      color: var(--ink);
+      background: #fff;
+    }
+    textarea {
+      min-height: 280px;
+      resize: vertical;
+    }
+    .form-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+      gap: 12px;
+      margin-bottom: 12px;
+    }
+    .stack { display: grid; gap: 12px; }
+    .row {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+      align-items: center;
+    }
+    .run-list {
+      display: grid;
+      gap: 10px;
+      max-height: 62vh;
+      overflow: auto;
+    }
+    .run-card, .line-card {
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      padding: 14px;
+      background: #fff;
+    }
+    .run-card.active {
+      border-color: var(--accent);
+      box-shadow: inset 0 0 0 1px rgba(42, 140, 104, 0.25);
+    }
+    .run-card h4 {
+      margin: 0 0 8px;
+      font-size: 1.05rem;
+    }
+    .muted {
+      color: var(--muted);
+      font-size: 0.95rem;
+    }
+    .warning {
+      border: 1px solid #ecd6ae;
+      background: #fff8ea;
+      color: #744f0d;
+      border-radius: 12px;
+      padding: 10px 12px;
+    }
+    .tag {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 4px 10px;
+      border-radius: 999px;
+      border: 1px solid var(--line);
+      background: #f5f9fd;
+      font-size: 0.9rem;
+      font-weight: 700;
+    }
+    .downloads, .prints {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+    }
+    .downloads a,
+    .prints a {
+      text-decoration: none;
+      color: var(--ink);
+      border: 1px solid var(--line);
+      padding: 9px 12px;
+      border-radius: 12px;
+      background: #fff;
+      font-weight: 700;
+    }
+    .table-wrap {
+      overflow: auto;
+      border: 1px solid var(--line);
+      border-radius: 16px;
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      min-width: 820px;
+      background: #fff;
+    }
+    th, td {
+      padding: 10px 12px;
+      border-bottom: 1px solid #e5edf6;
+      text-align: left;
+      vertical-align: top;
+    }
+    th {
+      position: sticky;
+      top: 0;
+      background: #f4f8fc;
+      z-index: 1;
+    }
+    .right { text-align: right; }
+    .empty {
+      padding: 16px;
+      border: 1px dashed var(--line);
+      border-radius: 14px;
+      color: var(--muted);
+      background: rgba(255,255,255,0.75);
+    }
+    .flash {
+      margin: 0 0 14px;
+      padding: 12px 14px;
+      border-radius: 12px;
+      display: none;
+      font-weight: 700;
+    }
+    .flash.show { display: block; }
+    .flash.ok { background: #ebf8f0; color: #226546; border: 1px solid #badeca; }
+    .flash.error { background: #fff1f1; color: #8f2e2e; border: 1px solid #eabcbc; }
+    @media (max-width: 1080px) {
+      .grid { grid-template-columns: 1fr; }
+      textarea { min-height: 220px; }
+      .app { padding: 12px; }
+      .hero, .panel { border-radius: 16px; }
+    }
+  </style>
+</head>
+<body>
+  <div class="app">
+    <div class="hero">
+      <h1>Bunches</h1>
+      <p class="sub">Import bunches data, generate Inlezen and YYBU files, and keep saved master data and run history together inside Shadow.</p>
+      <div id="flash" class="flash"></div>
+      <div class="toolbar" id="tabs">
+        <button data-tab="import" class="active">Import</button>
+        <button data-tab="results">Results</button>
+        <button data-tab="articles">Articles</button>
+        <button data-tab="ape">APE</button>
+        <button data-tab="history">History</button>
+      </div>
+      <div class="meta-grid" id="counts"></div>
+    </div>
+
+    <section id="page-import" class="page active">
+      <div class="grid">
+        <article class="panel stack">
+          <h2>New import</h2>
+          <div class="form-grid">
+            <div>
+              <label for="vertrekDatum">Departure date</label>
+              <input id="vertrekDatum" type="date">
+            </div>
+            <div>
+              <label for="runLabel">Run label</label>
+              <input id="runLabel" type="text" placeholder="Optional label">
+            </div>
+            <div>
+              <label for="pasteFile">Load file</label>
+              <input id="pasteFile" type="file" accept=".txt,.csv,.tsv">
+            </div>
+          </div>
+          <div>
+            <label for="pasteText">Paste raw system export or excel.bradley text</label>
+            <textarea id="pasteText" placeholder="Paste the bunches export here"></textarea>
+          </div>
+          <div class="row">
+            <button class="button primary" id="processBtn" type="button">Process import</button>
+            <span class="muted">The run is saved for everyone once processed.</span>
+          </div>
+        </article>
+
+        <article class="panel stack">
+          <h2>Recent runs</h2>
+          <div id="recentRuns" class="run-list"></div>
+        </article>
+      </div>
+    </section>
+
+    <section id="page-results" class="page">
+      <div class="grid">
+        <article class="panel stack">
+          <div class="row" style="justify-content:space-between;">
+            <h2>Saved runs</h2>
+            <button class="button secondary" id="refreshStateBtn" type="button">Refresh</button>
+          </div>
+          <div id="resultsRunList" class="run-list"></div>
+        </article>
+        <article class="panel stack">
+          <div id="resultDetail" class="empty">Choose a run first.</div>
+        </article>
+      </div>
+    </section>
+
+    <section id="page-articles" class="page">
+      <div class="grid">
+        <article class="panel stack">
+          <div class="row" style="justify-content:space-between;">
+            <h2>Article master</h2>
+            <input id="articleSearch" type="search" placeholder="Search broncode, description, variant" style="max-width:320px;">
+          </div>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>Broncode</th>
+                  <th>Description</th>
+                  <th>Variant</th>
+                  <th>Inlezen code</th>
+                  <th>Round</th>
+                  <th>Zonder tak</th>
+                  <th>Status</th>
+                  <th></th>
+                </tr>
+              </thead>
+              <tbody id="articlesBody"></tbody>
+            </table>
+          </div>
+        </article>
+        <article class="panel stack">
+          <h2 id="articleFormTitle">Add or update article</h2>
+          <div class="form-grid">
+            <div><label for="articleBroncode">Broncode</label><input id="articleBroncode" type="number"></div>
+            <div><label for="articleVariant">Variant code</label><input id="articleVariant" type="text" placeholder="YBU3K"></div>
+            <div><label for="articleInlezen">Broncode inlezen</label><input id="articleInlezen" type="number"></div>
+            <div><label for="articleAfronden">Afronden</label><input id="articleAfronden" type="number"></div>
+          </div>
+          <div>
+            <label for="articleOmschrijving">Description</label>
+            <input id="articleOmschrijving" type="text">
+          </div>
+          <div class="row">
+            <label class="tag"><input id="articleZonderTak" type="checkbox" style="width:auto;"> Zonder tak</label>
+          </div>
+          <div class="row">
+            <button class="button primary" id="saveArticleBtn" type="button">Save article</button>
+            <button class="button" id="resetArticleBtn" type="button">Clear form</button>
+          </div>
+          <h3>Bulk zonder tak</h3>
+          <div>
+            <label for="bulkBroncodes">Broncodes</label>
+            <textarea id="bulkBroncodes" style="min-height:120px;" placeholder="2638646 2642668 2646427"></textarea>
+          </div>
+          <div class="row">
+            <button class="button secondary" id="bulkOnBtn" type="button">Set aan</button>
+            <button class="button secondary" id="bulkOffBtn" type="button">Set uit</button>
+          </div>
+        </article>
+      </div>
+    </section>
+
+    <section id="page-ape" class="page">
+      <div class="grid">
+        <article class="panel stack">
+          <div class="row" style="justify-content:space-between;">
+            <h2>APE master</h2>
+            <input id="apeSearch" type="search" placeholder="Search name" style="max-width:320px;">
+          </div>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>Description</th>
+                  <th>APE</th>
+                  <th>Updated</th>
+                  <th></th>
+                </tr>
+              </thead>
+              <tbody id="apeBody"></tbody>
+            </table>
+          </div>
+        </article>
+        <article class="panel stack">
+          <h2>Add or update APE</h2>
+          <div>
+            <label for="apeOmschrijving">Description</label>
+            <input id="apeOmschrijving" type="text">
+          </div>
+          <div>
+            <label for="apeValue">APE</label>
+            <input id="apeValue" type="number">
+          </div>
+          <div class="row">
+            <button class="button primary" id="saveApeBtn" type="button">Save APE</button>
+            <button class="button" id="resetApeBtn" type="button">Clear form</button>
+          </div>
+        </article>
+      </div>
+    </section>
+
+    <section id="page-history" class="page">
+      <article class="panel stack">
+        <h2>Run history</h2>
+        <div id="historyList" class="run-list"></div>
+      </article>
+    </section>
+  </div>
+
+  <script>
+    const state = {
+      payload: { counts: {}, articles: [], ape: [], runs: [] },
+      selectedRunId: null,
+      articleSearch: "",
+      apeSearch: "",
+    };
+
+    const tabs = document.getElementById("tabs");
+    const flash = document.getElementById("flash");
+    const pageIds = ["import", "results", "articles", "ape", "history"];
+
+    function showFlash(message, kind = "ok") {
+      flash.textContent = message;
+      flash.className = `flash show ${kind}`;
+      window.clearTimeout(showFlash._timer);
+      showFlash._timer = window.setTimeout(() => {
+        flash.className = "flash";
+        flash.textContent = "";
+      }, 4200);
+    }
+
+    function escapeHtml(value) {
+      return String(value ?? "").replace(/[&<>"']/g, (character) => ({
+        "&": "&amp;",
+        "<": "&lt;",
+        ">": "&gt;",
+        '"': "&quot;",
+        "'": "&#39;",
+      }[character]));
+    }
+
+    async function api(path, options = {}) {
+      const response = await fetch(path, {
+        credentials: "same-origin",
+        headers: { "content-type": "application/json", ...(options.headers || {}) },
+        ...options,
+      });
+      const contentType = response.headers.get("content-type") || "";
+      const payload = contentType.includes("application/json") ? await response.json() : await response.text();
+      if (!response.ok) {
+        throw new Error(payload?.error || payload || "Request failed");
+      }
+      return payload;
+    }
+
+    function setActiveTab(tab) {
+      for (const button of tabs.querySelectorAll("button")) {
+        button.classList.toggle("active", button.dataset.tab === tab);
+      }
+      for (const pageId of pageIds) {
+        document.getElementById(`page-${pageId}`).classList.toggle("active", pageId === tab);
+      }
+    }
+
+    function formatTimestamp(value) {
+      if (!value) return "-";
+      const parsed = new Date(value);
+      return Number.isNaN(parsed.getTime()) ? value : parsed.toLocaleString();
+    }
+
+    function pickRun(id) {
+      state.selectedRunId = id;
+      renderAll();
+    }
+
+    function currentRun() {
+      return state.payload.runs.find((run) => run.id === state.selectedRunId) || state.payload.runs[0] || null;
+    }
+
+    function renderCounts() {
+      const counts = state.payload.counts || {};
+      document.getElementById("counts").innerHTML = `
+        <div class="meta-card"><strong>${counts.articles || 0}</strong><span>active articles</span></div>
+        <div class="meta-card"><strong>${counts.ape || 0}</strong><span>APE entries</span></div>
+        <div class="meta-card"><strong>${counts.runs || 0}</strong><span>saved runs</span></div>
+      `;
+    }
+
+    function renderRunCards(targetId, compact = false) {
+      const runs = state.payload.runs || [];
+      if (!runs.length) {
+        document.getElementById(targetId).innerHTML = '<div class="empty">No saved runs yet.</div>';
+        return;
+      }
+      document.getElementById(targetId).innerHTML = runs.map((run) => `
+        <div class="run-card ${run.id === currentRun()?.id ? "active" : ""}">
+          <h4>${escapeHtml(run.label || `Run ${run.id}`)}</h4>
+          <div class="muted">${escapeHtml(run.vertrek_datum || "-")} · ${escapeHtml(formatTimestamp(run.created_at))}</div>
+          <div class="row" style="margin-top:10px;">
+            <span class="tag">${escapeHtml(run.status || "ok")}</span>
+            <span class="tag">${run.row_count || 0} rows</span>
+            <span class="tag">${run.total_som || 0} som</span>
+          </div>
+          <div class="row" style="margin-top:10px;">
+            <button class="button secondary" type="button" onclick="pickRun(${run.id}); setActiveTab('results');">Open</button>
+            ${compact ? `<button class="button danger" type="button" onclick="removeRun(${run.id})">Delete</button>` : ""}
+          </div>
+        </div>
+      `).join("");
+    }
+
+    function renderResultDetail() {
+      const run = currentRun();
+      const target = document.getElementById("resultDetail");
+      if (!run || !run.result) {
+        target.className = "empty";
+        target.innerHTML = "Choose a run first.";
+        return;
+      }
+      const result = run.result;
+      const warningBlocks = (run.warnings || []).map((warning) => `
+        <div class="warning">
+          <strong>${escapeHtml(warning.type || "warning")}</strong><br>
+          ${escapeHtml(warning.message || "")}
+          ${Array.isArray(warning.details) && warning.details.length ? `<div class="muted" style="margin-top:6px;">${escapeHtml(warning.details.join(", "))}</div>` : ""}
+        </div>
+      `).join("");
+      const yybuSheets = Object.keys(result.yybu_files || {}).sort();
+      const printLinks = [];
+      [["plast", "Plastic"], ["kraft", "Kraft"]].forEach(([key, label]) => {
+        printLinks.push(`<a href="/api/bunches/printlijst/${run.id}/${key}" target="_blank">${label}</a>`);
+        ((result.availableTaks || {})[label === "Plastic" ? "Plast" : "Kraft"] || []).forEach((tak) => {
+          printLinks.push(`<a href="/api/bunches/printlijst/${run.id}/${key}/${encodeURIComponent(tak)}" target="_blank">${label} ${escapeHtml(tak)}</a>`);
+        });
+      });
+      target.className = "stack";
+      target.innerHTML = `
+        <div class="row" style="justify-content:space-between;">
+          <h2>${escapeHtml(run.label || `Run ${run.id}`)}</h2>
+          <button class="button danger" type="button" onclick="removeRun(${run.id})">Delete run</button>
+        </div>
+        <div class="form-grid">
+          <div>
+            <label for="selectedRunLabel">Label</label>
+            <input id="selectedRunLabel" type="text" value="${escapeHtml(run.label || "")}">
+          </div>
+          <div>
+            <label for="selectedRunDate">Departure date</label>
+            <input id="selectedRunDate" type="date" value="${escapeHtml(run.vertrek_datum || "")}">
+          </div>
+        </div>
+        <div class="row">
+          <button class="button secondary" type="button" onclick="saveRunLabel(${run.id})">Save label</button>
+          <button class="button secondary" type="button" onclick="saveRunDate(${run.id})">Save date</button>
+        </div>
+        <div class="meta-grid">
+          <div class="meta-card"><strong>${result.summary?.input_rows || 0}</strong><span>input rows</span></div>
+          <div class="meta-card"><strong>${result.summary?.enriched_rows || 0}</strong><span>matched rows</span></div>
+          <div class="meta-card"><strong>${result.summary?.inlezen_total_stems || 0}</strong><span>inlezen stems</span></div>
+          <div class="meta-card"><strong>${result.summary?.yybu_sheet_count || 0}</strong><span>YYBU files</span></div>
+        </div>
+        ${warningBlocks || '<div class="empty">No warnings.</div>'}
+        <div class="stack">
+          <div>
+            <h3>Downloads</h3>
+            <div class="downloads">
+              <a href="/api/bunches/download/${run.id}/inlezen.csv">Inlezen.csv</a>
+              ${yybuSheets.map((sheet) => `<a href="/api/bunches/download/${run.id}/yybu/${encodeURIComponent(sheet)}.csv">${escapeHtml(sheet)}.csv</a>`).join("")}
+            </div>
+          </div>
+          <div>
+            <h3>Print lists</h3>
+            <div class="prints">${printLinks.join("")}</div>
+          </div>
+        </div>
+      `;
+    }
+
+    function renderArticles() {
+      const search = state.articleSearch.trim().toLowerCase();
+      const rows = (state.payload.articles || []).filter((article) => {
+        if (!search) return true;
+        return [
+          article.broncode,
+          article.omschrijving,
+          article.variant_code,
+          article.broncode_inlezen,
+        ].join(" ").toLowerCase().includes(search);
+      });
+      document.getElementById("articlesBody").innerHTML = rows.map((article) => {
+        const encoded = encodeURIComponent(JSON.stringify(article));
+        return `
+        <tr>
+          <td>${article.broncode}</td>
+          <td>${escapeHtml(article.omschrijving)}</td>
+          <td>${escapeHtml(article.variant_code)}</td>
+          <td>${article.broncode_inlezen ?? ""}</td>
+          <td>${article.afronden ?? ""}</td>
+          <td>${article.zonder_tak ? "yes" : "no"}</td>
+          <td>${article.active ? "active" : "inactive"}</td>
+          <td class="right">
+            <div class="row" style="justify-content:flex-end;">
+              <button class="button secondary" type="button" onclick="editArticle(decodeURIComponent('${encoded}'))">Edit</button>
+              <button class="button danger" type="button" onclick="deactivateArticle(${article.broncode})">Deactivate</button>
+            </div>
+          </td>
+        </tr>
+      `;
+      }).join("");
+    }
+
+    function renderApe() {
+      const search = state.apeSearch.trim().toLowerCase();
+      const rows = (state.payload.ape || []).filter((entry) => {
+        if (!search) return true;
+        return `${entry.omschrijving} ${entry.ape}`.toLowerCase().includes(search);
+      });
+      document.getElementById("apeBody").innerHTML = rows.map((entry) => {
+        const encodedEntry = encodeURIComponent(JSON.stringify(entry));
+        const encodedName = encodeURIComponent(entry.omschrijving);
+        return `
+        <tr>
+          <td>${escapeHtml(entry.omschrijving)}</td>
+          <td>${entry.ape}</td>
+          <td>${escapeHtml(formatTimestamp(entry.updated_at))}</td>
+          <td class="right">
+            <div class="row" style="justify-content:flex-end;">
+              <button class="button secondary" type="button" onclick="editApe(decodeURIComponent('${encodedEntry}'))">Edit</button>
+              <button class="button danger" type="button" onclick="removeApe(decodeURIComponent('${encodedName}'))">Delete</button>
+            </div>
+          </td>
+        </tr>
+      `;
+      }).join("");
+    }
+
+    function renderHistory() {
+      const runs = state.payload.runs || [];
+      if (!runs.length) {
+        document.getElementById("historyList").innerHTML = '<div class="empty">No run history yet.</div>';
+        return;
+      }
+      document.getElementById("historyList").innerHTML = runs.map((run) => `
+        <div class="line-card">
+          <div class="row" style="justify-content:space-between;">
+            <div>
+              <strong>${escapeHtml(run.label || `Run ${run.id}`)}</strong><br>
+              <span class="muted">${escapeHtml(formatTimestamp(run.created_at))} · ${escapeHtml(run.vertrek_datum || "-")} · ${escapeHtml(run.user || "-")}</span>
+            </div>
+            <div class="row">
+              <span class="tag">${run.row_count || 0} rows</span>
+              <span class="tag">${run.total_som || 0} som</span>
+              <button class="button secondary" type="button" onclick="pickRun(${run.id}); setActiveTab('results');">Open</button>
+              <button class="button danger" type="button" onclick="removeRun(${run.id})">Delete</button>
+            </div>
+          </div>
+        </div>
+      `).join("");
+    }
+
+    function renderAll() {
+      if (!state.selectedRunId && (state.payload.runs || []).length) {
+        state.selectedRunId = state.payload.runs[0].id;
+      }
+      renderCounts();
+      renderRunCards("recentRuns");
+      renderRunCards("resultsRunList");
+      renderResultDetail();
+      renderArticles();
+      renderApe();
+      renderHistory();
+    }
+
+    async function refreshState(showMessage = false) {
+      state.payload = await api("/api/bunches/state");
+      renderAll();
+      if (showMessage) {
+        showFlash("Bunches refreshed.");
+      }
+    }
+
+    async function processImport() {
+      const pasteText = document.getElementById("pasteText").value;
+      const vertrekDatum = document.getElementById("vertrekDatum").value;
+      const label = document.getElementById("runLabel").value;
+      const result = await api("/api/bunches/process", {
+        method: "POST",
+        body: JSON.stringify({ paste_text: pasteText, vertrek_datum: vertrekDatum, label }),
+      });
+      state.selectedRunId = result.run.id;
+      document.getElementById("pasteText").value = "";
+      document.getElementById("runLabel").value = "";
+      await refreshState();
+      setActiveTab("results");
+      showFlash("Bunches import saved.");
+    }
+
+    async function saveRunDate(runId) {
+      const vertrekDatum = document.getElementById("selectedRunDate").value;
+      await api(`/api/bunches/runs/${runId}/date`, {
+        method: "PATCH",
+        body: JSON.stringify({ vertrek_datum: vertrekDatum }),
+      });
+      await refreshState();
+      showFlash("Departure date updated.");
+    }
+
+    async function saveRunLabel(runId) {
+      const label = document.getElementById("selectedRunLabel").value;
+      await api(`/api/bunches/runs/${runId}/label`, {
+        method: "PATCH",
+        body: JSON.stringify({ label }),
+      });
+      await refreshState();
+      showFlash("Run label updated.");
+    }
+
+    async function removeRun(runId) {
+      if (!window.confirm("Delete this saved run?")) return;
+      await api(`/api/bunches/runs/${runId}`, { method: "DELETE" });
+      if (state.selectedRunId === runId) {
+        state.selectedRunId = null;
+      }
+      await refreshState();
+      showFlash("Run deleted.");
+    }
+
+    function editArticle(article) {
+      if (typeof article === "string") article = JSON.parse(article);
+      document.getElementById("articleBroncode").value = article.broncode ?? "";
+      document.getElementById("articleOmschrijving").value = article.omschrijving ?? "";
+      document.getElementById("articleVariant").value = article.variant_code ?? "";
+      document.getElementById("articleInlezen").value = article.broncode_inlezen ?? "";
+      document.getElementById("articleAfronden").value = article.afronden ?? "";
+      document.getElementById("articleZonderTak").checked = Boolean(article.zonder_tak);
+      document.getElementById("articleFormTitle").textContent = `Edit article ${article.broncode}`;
+      setActiveTab("articles");
+    }
+    window.editArticle = editArticle;
+
+    function resetArticleForm() {
+      document.getElementById("articleBroncode").value = "";
+      document.getElementById("articleOmschrijving").value = "";
+      document.getElementById("articleVariant").value = "";
+      document.getElementById("articleInlezen").value = "";
+      document.getElementById("articleAfronden").value = "";
+      document.getElementById("articleZonderTak").checked = false;
+      document.getElementById("articleFormTitle").textContent = "Add or update article";
+    }
+
+    async function saveArticle() {
+      await api("/api/bunches/articles", {
+        method: "POST",
+        body: JSON.stringify({
+          broncode: document.getElementById("articleBroncode").value,
+          omschrijving: document.getElementById("articleOmschrijving").value,
+          variant_code: document.getElementById("articleVariant").value,
+          broncode_inlezen: document.getElementById("articleInlezen").value,
+          afronden: document.getElementById("articleAfronden").value,
+          zonder_tak: document.getElementById("articleZonderTak").checked,
+        }),
+      });
+      resetArticleForm();
+      await refreshState();
+      showFlash("Article saved.");
+    }
+
+    async function deactivateArticle(broncode) {
+      if (!window.confirm("Deactivate this article?")) return;
+      await api(`/api/bunches/articles/${broncode}`, { method: "DELETE" });
+      await refreshState();
+      showFlash("Article deactivated.");
+    }
+    window.deactivateArticle = deactivateArticle;
+
+    async function bulkSetZonderTak(value) {
+      const broncodes = document.getElementById("bulkBroncodes").value;
+      const result = await api("/api/bunches/articles/bulk-zonder-tak", {
+        method: "POST",
+        body: JSON.stringify({ broncodes, value }),
+      });
+      await refreshState();
+      showFlash(`Updated ${result.updated} article(s).${result.missing.length ? ` Missing: ${result.missing.join(", ")}` : ""}`);
+    }
+
+    function editApe(entry) {
+      if (typeof entry === "string") entry = JSON.parse(entry);
+      document.getElementById("apeOmschrijving").value = entry.omschrijving ?? "";
+      document.getElementById("apeValue").value = entry.ape ?? "";
+      setActiveTab("ape");
+    }
+    window.editApe = editApe;
+
+    function resetApeForm() {
+      document.getElementById("apeOmschrijving").value = "";
+      document.getElementById("apeValue").value = "";
+    }
+
+    async function saveApe() {
+      await api("/api/bunches/ape", {
+        method: "POST",
+        body: JSON.stringify({
+          omschrijving: document.getElementById("apeOmschrijving").value,
+          ape: document.getElementById("apeValue").value,
+        }),
+      });
+      resetApeForm();
+      await refreshState();
+      showFlash("APE saved.");
+    }
+
+    async function removeApe(omschrijving) {
+      if (typeof omschrijving === "string" && omschrijving.startsWith('"')) {
+        omschrijving = JSON.parse(omschrijving);
+      }
+      if (!window.confirm("Delete this APE entry?")) return;
+      await api("/api/bunches/ape", {
+        method: "DELETE",
+        body: JSON.stringify({ omschrijving }),
+      });
+      await refreshState();
+      showFlash("APE deleted.");
+    }
+    window.removeApe = removeApe;
+    window.pickRun = pickRun;
+    window.removeRun = removeRun;
+    window.saveRunDate = saveRunDate;
+    window.saveRunLabel = saveRunLabel;
+
+    tabs.addEventListener("click", (event) => {
+      const button = event.target.closest("button[data-tab]");
+      if (!button) return;
+      setActiveTab(button.dataset.tab);
+    });
+
+    window.setActiveTab = setActiveTab;
+
+    document.getElementById("processBtn").addEventListener("click", () => processImport().catch((error) => showFlash(error.message, "error")));
+    document.getElementById("refreshStateBtn").addEventListener("click", () => refreshState(true).catch((error) => showFlash(error.message, "error")));
+    document.getElementById("saveArticleBtn").addEventListener("click", () => saveArticle().catch((error) => showFlash(error.message, "error")));
+    document.getElementById("resetArticleBtn").addEventListener("click", resetArticleForm);
+    document.getElementById("bulkOnBtn").addEventListener("click", () => bulkSetZonderTak(true).catch((error) => showFlash(error.message, "error")));
+    document.getElementById("bulkOffBtn").addEventListener("click", () => bulkSetZonderTak(false).catch((error) => showFlash(error.message, "error")));
+    document.getElementById("saveApeBtn").addEventListener("click", () => saveApe().catch((error) => showFlash(error.message, "error")));
+    document.getElementById("resetApeBtn").addEventListener("click", resetApeForm);
+    document.getElementById("articleSearch").addEventListener("input", (event) => { state.articleSearch = event.target.value; renderArticles(); });
+    document.getElementById("apeSearch").addEventListener("input", (event) => { state.apeSearch = event.target.value; renderApe(); });
+    document.getElementById("pasteFile").addEventListener("change", async (event) => {
+      const file = event.target.files?.[0];
+      if (!file) return;
+      const text = await file.text();
+      document.getElementById("pasteText").value = text;
+      showFlash(`Loaded ${file.name}.`);
+    });
+
+    document.getElementById("vertrekDatum").value = new Date(Date.now() - (new Date().getTimezoneOffset() * 60000)).toISOString().slice(0, 10);
+
+    refreshState().catch((error) => showFlash(error.message, "error"));
+  </script>
+</body>
+</html>

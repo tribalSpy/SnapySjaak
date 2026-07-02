@@ -1,0 +1,2879 @@
+[
+  {
+    "omschrijving": "Bun Als. Kenia Mix Kraft 3T",
+    "broncode": 2638646,
+    "variant_code": "YBU3K",
+    "broncode_inlezen": 2690964,
+    "afronden": null
+  },
+  {
+    "omschrijving": "Bun Als. Kenia Mix Kraft 3T",
+    "broncode": 2642668,
+    "variant_code": "YBU3K",
+    "broncode_inlezen": 2690964,
+    "afronden": null
+  },
+  {
+    "omschrijving": "Bun Als. Kenia Mix Kraft 5T",
+    "broncode": 2638647,
+    "variant_code": "YBU5K",
+    "broncode_inlezen": 2690964,
+    "afronden": null
+  },
+  {
+    "omschrijving": "Bun Als. Kenia Mix Kraft 5T",
+    "broncode": 2642678,
+    "variant_code": "YBU5K",
+    "broncode_inlezen": 2690964,
+    "afronden": null
+  },
+  {
+    "omschrijving": "Bun Als. Kenia Mix Plast 3T",
+    "broncode": 2646427,
+    "variant_code": "YBU3P",
+    "broncode_inlezen": 2690964,
+    "afronden": null
+  },
+  {
+    "omschrijving": "Bun Als. Kenia Mix Plast 3T",
+    "broncode": 2646428,
+    "variant_code": "YBU3P",
+    "broncode_inlezen": 2690964,
+    "afronden": null
+  },
+  {
+    "omschrijving": "Bun Als. Kenia Mix Plast 5T",
+    "broncode": 2646429,
+    "variant_code": "YBU5P",
+    "broncode_inlezen": 2690964,
+    "afronden": null
+  },
+  {
+    "omschrijving": "Bun Als. Kenia Mix Plast 5T",
+    "broncode": 2646430,
+    "variant_code": "YBU5P",
+    "broncode_inlezen": 2690964,
+    "afronden": null
+  },
+  {
+    "omschrijving": "Bun Als. Oranje Kraft 3T",
+    "broncode": 2663649,
+    "variant_code": "YBU3K",
+    "broncode_inlezen": 1149855,
+    "afronden": null
+  },
+  {
+    "omschrijving": "Bun Als. Rood Kraft 3T",
+    "broncode": 2663651,
+    "variant_code": "YBU3K",
+    "broncode_inlezen": 1293331,
+    "afronden": null
+  },
+  {
+    "omschrijving": "Bun Als. Rood Plastic 5T",
+    "broncode": 2696293,
+    "variant_code": "YBU5P",
+    "broncode_inlezen": 1293331,
+    "afronden": null
+  },
+  {
+    "omschrijving": "Bun Als. Rood Kraft 5T",
+    "broncode": 307124,
+    "variant_code": "YBU5K",
+    "broncode_inlezen": 1293331,
+    "afronden": null
+  },
+  {
+    "omschrijving": "Bun Als. Roze Kraft 3T",
+    "broncode": 2663650,
+    "variant_code": "YBU3K",
+    "broncode_inlezen": 1293314,
+    "afronden": null
+  },
+  {
+    "omschrijving": "Bun Als. Roze Plastic 5T",
+    "broncode": 2696292,
+    "variant_code": "YBU5P",
+    "broncode_inlezen": 1293314,
+    "afronden": null
+  },
+  {
+    "omschrijving": "Bun Als. Roze Kraft 5T",
+    "broncode": 276291,
+    "variant_code": "YBU5K",
+    "broncode_inlezen": 1293314,
+    "afronden": null
+  },
+  {
+    "omschrijving": "Bun Als. Wit Kraft 3T",
+    "broncode": 2663648,
+    "variant_code": "YBU3K",
+    "broncode_inlezen": 1016258,
+    "afronden": null
+  },
+  {
+    "omschrijving": "Bun Als. Wit Plastic 5T",
+    "broncode": 2696294,
+    "variant_code": "YBU5P",
+    "broncode_inlezen": 1016258,
+    "afronden": null
+  },
+  {
+    "omschrijving": "Bun Als. Wit Kraft 5T",
+    "broncode": 307128,
+    "variant_code": "YBU5K",
+    "broncode_inlezen": 1016258,
+    "afronden": null
+  },
+  {
+    "omschrijving": "Bun Aster Wit Kraft 3T",
+    "broncode": 2691629,
+    "variant_code": "YBU3K",
+    "broncode_inlezen": 329907,
+    "afronden": 25
+  },
+  {
+    "omschrijving": "Bun Aster Blauw Kraft 3T",
+    "broncode": 2663645,
+    "variant_code": "YBU3K",
+    "broncode_inlezen": 136514,
+    "afronden": 25
+  },
+  {
+    "omschrijving": "Bun Aster Roze Kraft 3T",
+    "broncode": 2663642,
+    "variant_code": "YBU3K",
+    "broncode_inlezen": 2691590,
+    "afronden": 25
+  },
+  {
+    "omschrijving": "Bun Chr G. Green Plastic 3T",
+    "broncode": 2696296,
+    "variant_code": "YBU3P",
+    "broncode_inlezen": 1884976,
+    "afronden": null
+  },
+  {
+    "omschrijving": "Bun Chr G. Mix Kraft 3T",
+    "broncode": 2639644,
+    "variant_code": "YBU3K",
+    "broncode_inlezen": 391764,
+    "afronden": null
+  },
+  {
+    "omschrijving": "Bun Chr G. Mix Kraft 3T",
+    "broncode": 2642758,
+    "variant_code": "YBU3K",
+    "broncode_inlezen": 391764,
+    "afronden": null
+  },
+  {
+    "omschrijving": "Bun Chr G. Mix Kraft 5T",
+    "broncode": 2639646,
+    "variant_code": "YBU5K",
+    "broncode_inlezen": 391764,
+    "afronden": null
+  },
+  {
+    "omschrijving": "Bun Chr G. Mix Kraft 5T",
+    "broncode": 2642759,
+    "variant_code": "YBU5K",
+    "broncode_inlezen": 391764,
+    "afronden": null
+  },
+  {
+    "omschrijving": "Bun Chr G. Mix Plast 3T",
+    "broncode": 2646431,
+    "variant_code": "YBU3P",
+    "broncode_inlezen": 391764,
+    "afronden": null
+  },
+  {
+    "omschrijving": "Bun Chr G. Mix Plast 3T",
+    "broncode": 2646432,
+    "variant_code": "YBU3P",
+    "broncode_inlezen": 391764,
+    "afronden": null
+  },
+  {
+    "omschrijving": "Bun Chr G. Mix Plast 5T",
+    "broncode": 2646433,
+    "variant_code": "YBU5P",
+    "broncode_inlezen": 391764,
+    "afronden": null
+  },
+  {
+    "omschrijving": "Bun Chr G. Mix Plast 5T",
+    "broncode": 2646434,
+    "variant_code": "YBU5P",
+    "broncode_inlezen": 391764,
+    "afronden": null
+  },
+  {
+    "omschrijving": "Bun Chr G. White Plastic 3T",
+    "broncode": 2696295,
+    "variant_code": "YBU3P",
+    "broncode_inlezen": 2138191,
+    "afronden": null
+  },
+  {
+    "omschrijving": "Bun Chr S. Geel Kraft 3T",
+    "broncode": 2663676,
+    "variant_code": "YBU3K",
+    "broncode_inlezen": 65509,
+    "afronden": 25
+  },
+  {
+    "omschrijving": "Bun Chr S. Grn Helv Kraft 3T",
+    "broncode": 2639647,
+    "variant_code": "YBU3K",
+    "broncode_inlezen": 65511,
+    "afronden": 25
+  },
+  {
+    "omschrijving": "Bun Chr S. Grn Helv Kraft 3T",
+    "broncode": 2642760,
+    "variant_code": "YBU3K",
+    "broncode_inlezen": 65511,
+    "afronden": 25
+  },
+  {
+    "omschrijving": "Bun Chr S. Grn Helv Kraft 5T",
+    "broncode": 2639649,
+    "variant_code": "YBU5K",
+    "broncode_inlezen": 65511,
+    "afronden": 25
+  },
+  {
+    "omschrijving": "Bun Chr S. Grn Helv Kraft 5T",
+    "broncode": 2642762,
+    "variant_code": "YBU5K",
+    "broncode_inlezen": 65511,
+    "afronden": 25
+  },
+  {
+    "omschrijving": "Bun Chr S. Grn Helv Plast 3T",
+    "broncode": 2646435,
+    "variant_code": "YBU3P",
+    "broncode_inlezen": 65511,
+    "afronden": 25
+  },
+  {
+    "omschrijving": "Bun Chr S. Grn Helv Plast 3T",
+    "broncode": 2646436,
+    "variant_code": "YBU3P",
+    "broncode_inlezen": 65511,
+    "afronden": 25
+  },
+  {
+    "omschrijving": "Bun Chr S. Grn Helv Plast 3T",
+    "broncode": 2696306,
+    "variant_code": "YBU3P",
+    "broncode_inlezen": 65511,
+    "afronden": 25
+  },
+  {
+    "omschrijving": "Bun Chr S. Grn Helv Plast 5T",
+    "broncode": 2646437,
+    "variant_code": "YBU5P",
+    "broncode_inlezen": 65511,
+    "afronden": 25
+  },
+  {
+    "omschrijving": "Bun Chr S. Grn Helv Plast 5T",
+    "broncode": 2646438,
+    "variant_code": "YBU5P",
+    "broncode_inlezen": 65511,
+    "afronden": 25
+  },
+  {
+    "omschrijving": "Bun Chr S. Orange Plast 3T",
+    "broncode": 2692116,
+    "variant_code": "YBU3P",
+    "broncode_inlezen": 2694432,
+    "afronden": 25
+  },
+  {
+    "omschrijving": "Bun Chr S. Pop Helv Kraft 3T",
+    "broncode": 2639657,
+    "variant_code": "YBU3K",
+    "broncode_inlezen": 2416585,
+    "afronden": 25
+  },
+  {
+    "omschrijving": "Bun Chr S. Pop Helv Kraft 3T",
+    "broncode": 2642765,
+    "variant_code": "YBU3K",
+    "broncode_inlezen": 2416585,
+    "afronden": 25
+  },
+  {
+    "omschrijving": "Bun Chr S. Pop Helv Kraft 5T",
+    "broncode": 2639658,
+    "variant_code": "YBU5K",
+    "broncode_inlezen": 2416585,
+    "afronden": 25
+  },
+  {
+    "omschrijving": "Bun Chr S. Pop Helv Kraft 5T",
+    "broncode": 2642766,
+    "variant_code": "YBU5K",
+    "broncode_inlezen": 2416585,
+    "afronden": 25
+  },
+  {
+    "omschrijving": "Bun Chr S. Pop Helv Plast 3T",
+    "broncode": 2646444,
+    "variant_code": "YBU3P",
+    "broncode_inlezen": 2416585,
+    "afronden": 25
+  },
+  {
+    "omschrijving": "Bun Chr S. Pop Helv Plast 3T",
+    "broncode": 2646446,
+    "variant_code": "YBU3P",
+    "broncode_inlezen": 2416585,
+    "afronden": 25
+  },
+  {
+    "omschrijving": "Bun Chr S. Pop Helv Plast 5T",
+    "broncode": 2646447,
+    "variant_code": "YBU5P",
+    "broncode_inlezen": 2416585,
+    "afronden": 25
+  },
+  {
+    "omschrijving": "Bun Chr S. Pop Helv Plast 5T",
+    "broncode": 2646448,
+    "variant_code": "YBU5P",
+    "broncode_inlezen": 2416585,
+    "afronden": 25
+  },
+  {
+    "omschrijving": "Bun Chr S. Ros Helv Kraft 3T",
+    "broncode": 2639655,
+    "variant_code": "YBU3K",
+    "broncode_inlezen": 2535637,
+    "afronden": 25
+  },
+  {
+    "omschrijving": "Bun Chr S. Ros Helv Kraft 3T",
+    "broncode": 2642763,
+    "variant_code": "YBU3K",
+    "broncode_inlezen": 2535637,
+    "afronden": 25
+  },
+  {
+    "omschrijving": "Bun Chr S. Ros Helv Kraft 5T",
+    "broncode": 2639656,
+    "variant_code": "YBU5K",
+    "broncode_inlezen": 2535637,
+    "afronden": 25
+  },
+  {
+    "omschrijving": "Bun Chr S. Ros Helv Kraft 5T",
+    "broncode": 2642764,
+    "variant_code": "YBU5K",
+    "broncode_inlezen": 2535637,
+    "afronden": 25
+  },
+  {
+    "omschrijving": "Bun Chr S. Ros Helv Plast 3T",
+    "broncode": 2696307,
+    "variant_code": "YBU3P",
+    "broncode_inlezen": 2535637,
+    "afronden": 25
+  },
+  {
+    "omschrijving": "Bun Chr S. Ros Helv Plast 3T",
+    "broncode": 2646439,
+    "variant_code": "YBU3P",
+    "broncode_inlezen": 2535637,
+    "afronden": 25
+  },
+  {
+    "omschrijving": "Bun Chr S. Ros Helv Plast 3T",
+    "broncode": 2646440,
+    "variant_code": "YBU3P",
+    "broncode_inlezen": 2535637,
+    "afronden": 25
+  },
+  {
+    "omschrijving": "Bun Chr S. Ros Helv Plast 5T",
+    "broncode": 2646441,
+    "variant_code": "YBU5P",
+    "broncode_inlezen": 2535637,
+    "afronden": 25
+  },
+  {
+    "omschrijving": "Bun Chr S. Ros Helv Plast 5T",
+    "broncode": 2646442,
+    "variant_code": "YBU5P",
+    "broncode_inlezen": 2535637,
+    "afronden": 25
+  },
+  {
+    "omschrijving": "Bun Chr S. Wit Helv Kraft 3T",
+    "broncode": 2639659,
+    "variant_code": "YBU3K",
+    "broncode_inlezen": 378026,
+    "afronden": 25
+  },
+  {
+    "omschrijving": "Bun Chr S. Wit Helv Kraft 3T",
+    "broncode": 2642767,
+    "variant_code": "YBU3K",
+    "broncode_inlezen": 378026,
+    "afronden": 25
+  },
+  {
+    "omschrijving": "Bun Chr S. Wit Helv Kraft 5T",
+    "broncode": 2639660,
+    "variant_code": "YBU5K",
+    "broncode_inlezen": 378026,
+    "afronden": 25
+  },
+  {
+    "omschrijving": "Bun Chr S. Wit Helv Kraft 5T",
+    "broncode": 2642768,
+    "variant_code": "YBU5K",
+    "broncode_inlezen": 378026,
+    "afronden": 25
+  },
+  {
+    "omschrijving": "Bun Chr S. Wit Helv Plast 3T",
+    "broncode": 2646450,
+    "variant_code": "YBU3P",
+    "broncode_inlezen": 378026,
+    "afronden": 25
+  },
+  {
+    "omschrijving": "Bun Chr S. Wit Helv Plast 3T",
+    "broncode": 2646452,
+    "variant_code": "YBU3P",
+    "broncode_inlezen": 378026,
+    "afronden": 25
+  },
+  {
+    "omschrijving": "Bun Chr S. Wit Helv Plast 3T",
+    "broncode": 2696308,
+    "variant_code": "YBU3P",
+    "broncode_inlezen": 378026,
+    "afronden": 25
+  },
+  {
+    "omschrijving": "Bun Chr S. Wit Helv Plast 5T",
+    "broncode": 2646453,
+    "variant_code": "YBU5P",
+    "broncode_inlezen": 378026,
+    "afronden": 25
+  },
+  {
+    "omschrijving": "Bun Chr S. Wit Helv Plast 5T",
+    "broncode": 2646454,
+    "variant_code": "YBU5P",
+    "broncode_inlezen": 378026,
+    "afronden": 25
+  },
+  {
+    "omschrijving": "Bun Chr S. Yellow Plast 5T",
+    "broncode": 2694840,
+    "variant_code": "YBU5P",
+    "broncode_inlezen": 65509,
+    "afronden": 25
+  },
+  {
+    "omschrijving": "Bun Chr S. Yellow Plastic 3T",
+    "broncode": 2696302,
+    "variant_code": "YBU3P",
+    "broncode_inlezen": 65509,
+    "afronden": 25
+  },
+  {
+    "omschrijving": "Bun Chr S. Yellow Plastic 3T",
+    "broncode": 2696309,
+    "variant_code": "YBU3P",
+    "broncode_inlezen": 65509,
+    "afronden": 25
+  },
+  {
+    "omschrijving": "Bun Chr S. Zalm Kraft 3T",
+    "broncode": 2663677,
+    "variant_code": "YBU3K",
+    "broncode_inlezen": 409260,
+    "afronden": 25
+  },
+  {
+    "omschrijving": "Bun Chr. .Bonito Plastic 3T",
+    "broncode": 2693524,
+    "variant_code": "YBU3P",
+    "broncode_inlezen": 2695416,
+    "afronden": null
+  },
+  {
+    "omschrijving": "Bun Chr. .Balt Ge Kraft 5T",
+    "broncode": 326251,
+    "variant_code": "YBU5K",
+    "broncode_inlezen": 302684,
+    "afronden": null
+  },
+  {
+    "omschrijving": "Bun Chr. .Balt Pin Kraft 3T",
+    "broncode": 328829,
+    "variant_code": "YBU3K",
+    "broncode_inlezen": 408152,
+    "afronden": null
+  },
+  {
+    "omschrijving": "Bun Chr. .Balt Wit Kraft 3T",
+    "broncode": 320645,
+    "variant_code": "YBU3K",
+    "broncode_inlezen": 278458,
+    "afronden": null
+  },
+  {
+    "omschrijving": "Bun Chr. .Blt Wi Kraft 5T SO",
+    "broncode": 423418,
+    "variant_code": "YBU5K",
+    "broncode_inlezen": 278458,
+    "afronden": null
+  },
+  {
+    "omschrijving": "Bun Chr. .Blt Ye Kraft 5T SO",
+    "broncode": 2209286,
+    "variant_code": "YBU5K",
+    "broncode_inlezen": 302684,
+    "afronden": null
+  },
+  {
+    "omschrijving": "Bun Chr. Balt Ge Kraft 3T 25",
+    "broncode": 2639664,
+    "variant_code": "YBU3K",
+    "broncode_inlezen": 302684,
+    "afronden": null
+  },
+  {
+    "omschrijving": "Bun Chr. Balt Ge Kraft 3T 25",
+    "broncode": 2642771,
+    "variant_code": "YBU3K",
+    "broncode_inlezen": 302684,
+    "afronden": null
+  },
+  {
+    "omschrijving": "Bun Chr. Balt Ge Kraft 5T 25",
+    "broncode": 2639665,
+    "variant_code": "YBU5K",
+    "broncode_inlezen": 302684,
+    "afronden": null
+  },
+  {
+    "omschrijving": "Bun Chr. Balt Ge Kraft 5T 25",
+    "broncode": 2642772,
+    "variant_code": "YBU5K",
+    "broncode_inlezen": 302684,
+    "afronden": null
+  },
+  {
+    "omschrijving": "Bun Chr. Balt Ge Plast 3T 25",
+    "broncode": 2646460,
+    "variant_code": "YBU3P",
+    "broncode_inlezen": 302684,
+    "afronden": null
+  },
+  {
+    "omschrijving": "Bun Chr. Balt Ge Plast 3T 25",
+    "broncode": 2646461,
+    "variant_code": "YBU3P",
+    "broncode_inlezen": 302684,
+    "afronden": null
+  },
+  {
+    "omschrijving": "Bun Chr. Balt Ge Plast 5T 25",
+    "broncode": 2646462,
+    "variant_code": "YBU5P",
+    "broncode_inlezen": 302684,
+    "afronden": null
+  },
+  {
+    "omschrijving": "Bun Chr. Balt Ge Plast 5T 25",
+    "broncode": 2646463,
+    "variant_code": "YBU5P",
+    "broncode_inlezen": 302684,
+    "afronden": null
+  },
+  {
+    "omschrijving": "Bun Chr. Balt Wi Kraft 3T 25",
+    "broncode": 2639661,
+    "variant_code": "YBU3K",
+    "broncode_inlezen": 278458,
+    "afronden": null
+  },
+  {
+    "omschrijving": "Bun Chr. Balt Wi Kraft 3T 25",
+    "broncode": 2642769,
+    "variant_code": "YBU3K",
+    "broncode_inlezen": 278458,
+    "afronden": null
+  },
+  {
+    "omschrijving": "Bun Chr. Balt Wi Kraft 5T 25",
+    "broncode": 2639663,
+    "variant_code": "YBU5K",
+    "broncode_inlezen": 278458,
+    "afronden": null
+  },
+  {
+    "omschrijving": "Bun Chr. Balt Wi Kraft 5T 25",
+    "broncode": 2642770,
+    "variant_code": "YBU5K",
+    "broncode_inlezen": 278458,
+    "afronden": null
+  },
+  {
+    "omschrijving": "Bun Chr. Balt Wi Plast 3T 25",
+    "broncode": 2646456,
+    "variant_code": "YBU3P",
+    "broncode_inlezen": 278458,
+    "afronden": null
+  },
+  {
+    "omschrijving": "Bun Chr. Balt Wi Plast 3T 25",
+    "broncode": 2646457,
+    "variant_code": "YBU3P",
+    "broncode_inlezen": 278458,
+    "afronden": null
+  },
+  {
+    "omschrijving": "Bun Chr. Balt Wi Plast 5T 25",
+    "broncode": 2646458,
+    "variant_code": "YBU5P",
+    "broncode_inlezen": 278458,
+    "afronden": null
+  },
+  {
+    "omschrijving": "Bun Chr. Balt Wi Plast 5T 25",
+    "broncode": 2646459,
+    "variant_code": "YBU5P",
+    "broncode_inlezen": 278458,
+    "afronden": null
+  },
+  {
+    "omschrijving": "Bun Chr. Blauw Verf kraft 3T",
+    "broncode": 2663672,
+    "variant_code": "YBU3K",
+    "broncode_inlezen": 65570,
+    "afronden": null
+  },
+  {
+    "omschrijving": "Bun Chr. Blm An Ge Kraft 3T",
+    "broncode": 272462,
+    "variant_code": "YBU3K",
+    "broncode_inlezen": 1062158,
+    "afronden": null
+  },
+  {
+    "omschrijving": "Bun Chr. Blm An Gr Krt 3T SO",
+    "broncode": 1932985,
+    "variant_code": "YBU3K",
+    "broncode_inlezen": 1884976,
+    "afronden": null
+  },
+  {
+    "omschrijving": "Bun Chr. Blm An Wi Kraft 3T",
+    "broncode": 272461,
+    "variant_code": "YBU3K",
+    "broncode_inlezen": 2138191,
+    "afronden": null
+  },
+  {
+    "omschrijving": "Bun Chr. Blm An Wi Kraft 3T",
+    "broncode": 2218790,
+    "variant_code": "YBU3K",
+    "broncode_inlezen": 2138191,
+    "afronden": null
+  },
+  {
+    "omschrijving": "Bun Chr. Blm An Wi Krt 3T SO",
+    "broncode": 1932984,
+    "variant_code": "YBU3K",
+    "broncode_inlezen": 2138191,
+    "afronden": null
+  },
+  {
+    "omschrijving": "Bun Chr. Katinka 85 Kraft 5T",
+    "broncode": 2663671,
+    "variant_code": "YBU5K",
+    "broncode_inlezen": 394244,
+    "afronden": null
+  },
+  {
+    "omschrijving": "Bun Chr. San Ge Kraft 3T",
+    "broncode": 319752,
+    "variant_code": "YBU3K",
+    "broncode_inlezen": 65509,
+    "afronden": 25
+  },
+  {
+    "omschrijving": "Bun Chr. San Ge Kraft 3T SO",
+    "broncode": 390424,
+    "variant_code": "YBU3K",
+    "broncode_inlezen": 65509,
+    "afronden": 25
+  },
+  {
+    "omschrijving": "Bun Chr. San Grn Kraft 3T SO",
+    "broncode": 423414,
+    "variant_code": "YBU3K",
+    "broncode_inlezen": 65511,
+    "afronden": 25
+  },
+  {
+    "omschrijving": "Bun Chr. San Mix Kraft 5T",
+    "broncode": 1806529,
+    "variant_code": "YBU5K",
+    "broncode_inlezen": 2483318,
+    "afronden": 25
+  },
+  {
+    "omschrijving": "Bun Chr. San Ora Kraft 3T SO",
+    "broncode": 319763,
+    "variant_code": "YBU3K",
+    "broncode_inlezen": 260263,
+    "afronden": 25
+  },
+  {
+    "omschrijving": "Bun Chr. San Pin Kraft 3T SO",
+    "broncode": 390425,
+    "variant_code": "YBU3K",
+    "broncode_inlezen": 2535637,
+    "afronden": 25
+  },
+  {
+    "omschrijving": "Bun Chr. San Red Kraft 3T SO",
+    "broncode": 2691658,
+    "variant_code": "YBU3K",
+    "broncode_inlezen": 2694435,
+    "afronden": 25
+  },
+  {
+    "omschrijving": "Bun Chr. San Wit Kraft 3T SO",
+    "broncode": 390423,
+    "variant_code": "YBU3K",
+    "broncode_inlezen": 378026,
+    "afronden": 25
+  },
+  {
+    "omschrijving": "Bun Chr. Wit Kraft 3T",
+    "broncode": 2663675,
+    "variant_code": "YBU3K",
+    "broncode_inlezen": 278458,
+    "afronden": null
+  },
+  {
+    "omschrijving": "Bun Di Spray Mix Plast 5T NW",
+    "broncode": 271414,
+    "variant_code": "YBU5P",
+    "broncode_inlezen": 2511503,
+    "afronden": null
+  },
+  {
+    "omschrijving": "Bun Diant spray Mix Kraft 3T",
+    "broncode": 2640833,
+    "variant_code": "YBU3K",
+    "broncode_inlezen": 2511503,
+    "afronden": null
+  },
+  {
+    "omschrijving": "Bun Diant spray Mix Kraft 3T",
+    "broncode": 2642773,
+    "variant_code": "YBU3K",
+    "broncode_inlezen": 2511503,
+    "afronden": null
+  },
+  {
+    "omschrijving": "Bun Diant spray Mix Kraft 5T",
+    "broncode": 2640835,
+    "variant_code": "YBU5K",
+    "broncode_inlezen": 2511503,
+    "afronden": null
+  },
+  {
+    "omschrijving": "Bun Diant spray Mix Kraft 5T",
+    "broncode": 2642774,
+    "variant_code": "YBU5K",
+    "broncode_inlezen": 2511503,
+    "afronden": null
+  },
+  {
+    "omschrijving": "Bun Diant spray Mix Plast 3T",
+    "broncode": 2646464,
+    "variant_code": "YBU3P",
+    "broncode_inlezen": 2511503,
+    "afronden": null
+  },
+  {
+    "omschrijving": "Bun Diant spray Mix Plast 3T",
+    "broncode": 2646465,
+    "variant_code": "YBU3P",
+    "broncode_inlezen": 2511503,
+    "afronden": null
+  },
+  {
+    "omschrijving": "Bun Diant spray Mix Plast 5T",
+    "broncode": 2646466,
+    "variant_code": "YBU5P",
+    "broncode_inlezen": 2511503,
+    "afronden": null
+  },
+  {
+    "omschrijving": "Bun Diant spray Mix Plast 5T",
+    "broncode": 2646467,
+    "variant_code": "YBU5P",
+    "broncode_inlezen": 2511503,
+    "afronden": null
+  },
+  {
+    "omschrijving": "Bun Diant spray Roze Kraft 3",
+    "broncode": 2663656,
+    "variant_code": "YBU3K",
+    "broncode_inlezen": 1605978,
+    "afronden": null
+  },
+  {
+    "omschrijving": "Bun Diant spray Wit Kraft 3T",
+    "broncode": 2663653,
+    "variant_code": "VIJVER",
+    "broncode_inlezen": 1849553,
+    "afronden": null
+  },
+  {
+    "omschrijving": "Bun Diant spray Wit Kraft 3T",
+    "broncode": 2663654,
+    "variant_code": "YBU3K",
+    "broncode_inlezen": 1849553,
+    "afronden": null
+  },
+  {
+    "omschrijving": "Bun Diant. Mix Kraft 3T",
+    "broncode": 2640830,
+    "variant_code": "YBU3K",
+    "broncode_inlezen": 33633,
+    "afronden": 20
+  },
+  {
+    "omschrijving": "Bun Diant. Mix Kraft 3T",
+    "broncode": 2642802,
+    "variant_code": "YBU3K",
+    "broncode_inlezen": 33633,
+    "afronden": 20
+  },
+  {
+    "omschrijving": "Bun Diant. Mix Kraft 4T SO",
+    "broncode": 1933040,
+    "variant_code": "YBU4K",
+    "broncode_inlezen": 33633,
+    "afronden": 20
+  },
+  {
+    "omschrijving": "Bun Diant. Mix Kraft 5T",
+    "broncode": 2640831,
+    "variant_code": "YBU5K",
+    "broncode_inlezen": 33633,
+    "afronden": 20
+  },
+  {
+    "omschrijving": "Bun Diant. Mix Kraft 5T",
+    "broncode": 2642803,
+    "variant_code": "YBU5K",
+    "broncode_inlezen": 33633,
+    "afronden": 20
+  },
+  {
+    "omschrijving": "Bun Diant. Mix Kraft 5T SO",
+    "broncode": 2206710,
+    "variant_code": "YBU5K",
+    "broncode_inlezen": 33633,
+    "afronden": 20
+  },
+  {
+    "omschrijving": "Bun Diant. Mix Plast 3T",
+    "broncode": 2646555,
+    "variant_code": "YBU3P",
+    "broncode_inlezen": 33633,
+    "afronden": 20
+  },
+  {
+    "omschrijving": "Bun Diant. Mix Plast 3T",
+    "broncode": 2646556,
+    "variant_code": "YBU3P",
+    "broncode_inlezen": 33633,
+    "afronden": 20
+  },
+  {
+    "omschrijving": "Bun Diant. Mix Plast 5T",
+    "broncode": 2646557,
+    "variant_code": "YBU5P",
+    "broncode_inlezen": 33633,
+    "afronden": 20
+  },
+  {
+    "omschrijving": "Bun Diant. Mix Plast 5T",
+    "broncode": 2646558,
+    "variant_code": "YBU5P",
+    "broncode_inlezen": 33633,
+    "afronden": 20
+  },
+  {
+    "omschrijving": "Bun Diant. Rood Kraft 5T",
+    "broncode": 2663661,
+    "variant_code": "YBU5K",
+    "broncode_inlezen": 1911763,
+    "afronden": 20
+  },
+  {
+    "omschrijving": "Bun Diant. Roze Kraft 5T",
+    "broncode": 2663663,
+    "variant_code": "YBU5K",
+    "broncode_inlezen": 2589334,
+    "afronden": 20
+  },
+  {
+    "omschrijving": "Bun Diant. Sp Mi Kraft 5T SO",
+    "broncode": 2206713,
+    "variant_code": "YBU5K",
+    "broncode_inlezen": 2691708,
+    "afronden": 20
+  },
+  {
+    "omschrijving": "Bun Diant. Wit Kraft 5T",
+    "broncode": 2663659,
+    "variant_code": "YBU5K",
+    "broncode_inlezen": 2589337,
+    "afronden": 20
+  },
+  {
+    "omschrijving": "Bun Diant. Zalm Kraft 5T",
+    "broncode": 2663664,
+    "variant_code": "YBU5K",
+    "broncode_inlezen": 2691688,
+    "afronden": 20
+  },
+  {
+    "omschrijving": "Bun Eryng. Blue Lag Kraft 3T",
+    "broncode": 2640836,
+    "variant_code": "YBU3K",
+    "broncode_inlezen": 2052800,
+    "afronden": null
+  },
+  {
+    "omschrijving": "Bun Eryng. Blue Lag Kraft 3T",
+    "broncode": 2642775,
+    "variant_code": "YBU3K",
+    "broncode_inlezen": 2052800,
+    "afronden": null
+  },
+  {
+    "omschrijving": "Bun Eryng. Blue Lag Kraft 5T",
+    "broncode": 2640837,
+    "variant_code": "YBU5K",
+    "broncode_inlezen": 2052800,
+    "afronden": null
+  },
+  {
+    "omschrijving": "Bun Eryng. Blue Lag Kraft 5T",
+    "broncode": 2642776,
+    "variant_code": "YBU5K",
+    "broncode_inlezen": 2052800,
+    "afronden": null
+  },
+  {
+    "omschrijving": "Bun Eryng. Blue Lag Plast 3T",
+    "broncode": 2646468,
+    "variant_code": "YBU3P",
+    "broncode_inlezen": 2052800,
+    "afronden": null
+  },
+  {
+    "omschrijving": "Bun Eryng. Blue Lag Plast 3T",
+    "broncode": 2646469,
+    "variant_code": "YBU3P",
+    "broncode_inlezen": 2052800,
+    "afronden": null
+  },
+  {
+    "omschrijving": "Bun Eryng. Blue Lag Plast 5T",
+    "broncode": 2646470,
+    "variant_code": "YBU5P",
+    "broncode_inlezen": 2052800,
+    "afronden": null
+  },
+  {
+    "omschrijving": "Bun Eryng. Blue Lag Plast 5T",
+    "broncode": 2646471,
+    "variant_code": "YBU5P",
+    "broncode_inlezen": 2052800,
+    "afronden": null
+  },
+  {
+    "omschrijving": "Bun Eusto. Mix Kraft 3T",
+    "broncode": 2640879,
+    "variant_code": "YBU3K",
+    "broncode_inlezen": 832495,
+    "afronden": null
+  },
+  {
+    "omschrijving": "Bun Eusto. Mix Kraft 3T",
+    "broncode": 2642910,
+    "variant_code": "YBU3K",
+    "broncode_inlezen": 832495,
+    "afronden": null
+  },
+  {
+    "omschrijving": "Bun Eusto. Mix Kraft 5T",
+    "broncode": 2640880,
+    "variant_code": "YBU5K",
+    "broncode_inlezen": 832495,
+    "afronden": null
+  },
+  {
+    "omschrijving": "Bun Eusto. Mix Kraft 5T",
+    "broncode": 2642911,
+    "variant_code": "YBU5K",
+    "broncode_inlezen": 832495,
+    "afronden": null
+  },
+  {
+    "omschrijving": "Bun Eusto. Mix Plast 3T",
+    "broncode": 2646548,
+    "variant_code": "YBU3P",
+    "broncode_inlezen": 832495,
+    "afronden": null
+  },
+  {
+    "omschrijving": "Bun Eusto. Mix Plast 3T",
+    "broncode": 2646547,
+    "variant_code": "YBU3P",
+    "broncode_inlezen": 832495,
+    "afronden": null
+  },
+  {
+    "omschrijving": "Bun Eusto. Mix Plast 5T",
+    "broncode": 2646549,
+    "variant_code": "YBU5P",
+    "broncode_inlezen": 832495,
+    "afronden": null
+  },
+  {
+    "omschrijving": "Bun Eusto. Mix Plast 5T",
+    "broncode": 2646550,
+    "variant_code": "YBU5P",
+    "broncode_inlezen": 832495,
+    "afronden": null
+  },
+  {
+    "omschrijving": "Bun Eusto. Mx Kraft 3T SO",
+    "broncode": 1933037,
+    "variant_code": "YBU3K",
+    "broncode_inlezen": 832495,
+    "afronden": null
+  },
+  {
+    "omschrijving": "Bun Freesia. Mix 14 Kraft 5T",
+    "broncode": 272162,
+    "variant_code": "YBU5K",
+    "broncode_inlezen": 2690987,
+    "afronden": null
+  },
+  {
+    "omschrijving": "Bun Freesia. Mix 15 Kraft 4T",
+    "broncode": 1933002,
+    "variant_code": "YBU4K",
+    "broncode_inlezen": 2690987,
+    "afronden": null
+  },
+  {
+    "omschrijving": "Bun Freesia. Mix 15 Kraft 5T",
+    "broncode": 1277001,
+    "variant_code": "YBU5K",
+    "broncode_inlezen": 2690987,
+    "afronden": null
+  },
+  {
+    "omschrijving": "Bun Freesia. Mix Kraft 10T",
+    "broncode": 2577031,
+    "variant_code": "YB10K",
+    "broncode_inlezen": 2690987,
+    "afronden": null
+  },
+  {
+    "omschrijving": "Bun Freesia. Mix Kraft 5T",
+    "broncode": 2640838,
+    "variant_code": "YBU5K",
+    "broncode_inlezen": 2690987,
+    "afronden": null
+  },
+  {
+    "omschrijving": "Bun Freesia. Mix Kraft 5T",
+    "broncode": 2642777,
+    "variant_code": "YBU5K",
+    "broncode_inlezen": 2690987,
+    "afronden": null
+  },
+  {
+    "omschrijving": "Bun Freesia. Mix Plast 5T",
+    "broncode": 2646475,
+    "variant_code": "YBU5P",
+    "broncode_inlezen": 2690987,
+    "afronden": null
+  },
+  {
+    "omschrijving": "Bun Freesia. Mix Plast 5T",
+    "broncode": 2696305,
+    "variant_code": "YBU5P",
+    "broncode_inlezen": 2690987,
+    "afronden": null
+  },
+  {
+    "omschrijving": "Bun Freesia. Mix Plast 5T",
+    "broncode": 2646476,
+    "variant_code": "YBU5P",
+    "broncode_inlezen": 2690987,
+    "afronden": null
+  },
+  {
+    "omschrijving": "Bun Freesia. Mix Plastic 10T",
+    "broncode": 2705422,
+    "variant_code": "YB10P",
+    "broncode_inlezen": 2690987,
+    "afronden": null
+  },
+  {
+    "omschrijving": "Bun Freesia. Red Plast 5T",
+    "broncode": 2694834,
+    "variant_code": "YBU5P",
+    "broncode_inlezen": 824608,
+    "afronden": 50
+  },
+  {
+    "omschrijving": "Bun Freesia. Wit 15 Kraft 4T",
+    "broncode": 1933004,
+    "variant_code": "YBU4K",
+    "broncode_inlezen": 251880,
+    "afronden": null
+  },
+  {
+    "omschrijving": "Bun Freesia. Wit 25 Kraft 3T",
+    "broncode": 1933016,
+    "variant_code": "YBU3K",
+    "broncode_inlezen": 251880,
+    "afronden": null
+  },
+  {
+    "omschrijving": "Bun Freesia. Wit Kraft 5T",
+    "broncode": 2663670,
+    "variant_code": "YBU5K",
+    "broncode_inlezen": 251880,
+    "afronden": null
+  },
+  {
+    "omschrijving": "Bun Gemi. Cerise Kraft 5T",
+    "broncode": 2640840,
+    "variant_code": "YBU5K",
+    "broncode_inlezen": 1229479,
+    "afronden": 20
+  },
+  {
+    "omschrijving": "Bun Gemi. Cerise Kraft 5T",
+    "broncode": 2642778,
+    "variant_code": "YBU5K",
+    "broncode_inlezen": 1229479,
+    "afronden": 20
+  },
+  {
+    "omschrijving": "Bun Gemi. Cerise Plast 5T",
+    "broncode": 2646477,
+    "variant_code": "YBU5P",
+    "broncode_inlezen": 1229479,
+    "afronden": 20
+  },
+  {
+    "omschrijving": "Bun Gemi. Cerise Plast 5T",
+    "broncode": 2646478,
+    "variant_code": "YBU5P",
+    "broncode_inlezen": 1229479,
+    "afronden": 20
+  },
+  {
+    "omschrijving": "Bun Gemi. Geel Kraft 5T",
+    "broncode": 2640844,
+    "variant_code": "YBU5K",
+    "broncode_inlezen": 1252835,
+    "afronden": 20
+  },
+  {
+    "omschrijving": "Bun Gemi. Geel Kraft 5T",
+    "broncode": 2642782,
+    "variant_code": "YBU5K",
+    "broncode_inlezen": 1252835,
+    "afronden": 20
+  },
+  {
+    "omschrijving": "Bun Gemi. Geel Kraft 5T",
+    "broncode": 2646486,
+    "variant_code": "YBU5K",
+    "broncode_inlezen": 1252835,
+    "afronden": 20
+  },
+  {
+    "omschrijving": "Bun Gemi. Geel Plast 5T",
+    "broncode": 2646487,
+    "variant_code": "YBU5P",
+    "broncode_inlezen": 1252835,
+    "afronden": 20
+  },
+  {
+    "omschrijving": "Bun Gemi. Mix Kraft 5T",
+    "broncode": 2577034,
+    "variant_code": "YBU5K",
+    "broncode_inlezen": 1014924,
+    "afronden": 20
+  },
+  {
+    "omschrijving": "Bun Gemi. Mono Mix Kraft 5T",
+    "broncode": 2455290,
+    "variant_code": "YBU5K",
+    "broncode_inlezen": 1014924,
+    "afronden": 20
+  },
+  {
+    "omschrijving": "Bun Gemi. New Mix Kraft 5T",
+    "broncode": 2475938,
+    "variant_code": "YBU5K",
+    "broncode_inlezen": 1014924,
+    "afronden": 20
+  },
+  {
+    "omschrijving": "Bun Gemi. Oranje 5T Plast",
+    "broncode": 2646480,
+    "variant_code": "YBU5P",
+    "broncode_inlezen": 1229478,
+    "afronden": 20
+  },
+  {
+    "omschrijving": "Bun Gemi. Oranje Kraft 5T",
+    "broncode": 2640841,
+    "variant_code": "YBU5K",
+    "broncode_inlezen": 1229478,
+    "afronden": 20
+  },
+  {
+    "omschrijving": "Bun Gemi. Oranje Kraft 5T",
+    "broncode": 2642779,
+    "variant_code": "YBU5K",
+    "broncode_inlezen": 1229478,
+    "afronden": 20
+  },
+  {
+    "omschrijving": "Bun Gemi. Oranje Kraft 5T SO",
+    "broncode": 1933018,
+    "variant_code": "YBU5K",
+    "broncode_inlezen": 1229478,
+    "afronden": 20
+  },
+  {
+    "omschrijving": "Bun Gemi. Oranje Plast 5T",
+    "broncode": 2646479,
+    "variant_code": "YBU5P",
+    "broncode_inlezen": 1229478,
+    "afronden": 20
+  },
+  {
+    "omschrijving": "Bun Gemi. Oudend Ce Plast 5T",
+    "broncode": 2696312,
+    "variant_code": "YBU5P",
+    "broncode_inlezen": 2703309,
+    "afronden": 20
+  },
+  {
+    "omschrijving": "Bun Gemi. Oudend Or Plast 5T",
+    "broncode": 2696314,
+    "variant_code": "YBU5P",
+    "broncode_inlezen": 2703310,
+    "afronden": 20
+  },
+  {
+    "omschrijving": "Bun Gemi. Oudend Pi Plast 5T",
+    "broncode": 2696315,
+    "variant_code": "YBU5P",
+    "broncode_inlezen": 2703313,
+    "afronden": 20
+  },
+  {
+    "omschrijving": "Bun Gemi. Oudend Re Plast 5T",
+    "broncode": 2696316,
+    "variant_code": "YBU5P",
+    "broncode_inlezen": 2703314,
+    "afronden": 20
+  },
+  {
+    "omschrijving": "Bun Gemi. Oudend Wh Plast 5T",
+    "broncode": 2696311,
+    "variant_code": "YBU5P",
+    "broncode_inlezen": 2703315,
+    "afronden": 20
+  },
+  {
+    "omschrijving": "Bun Gemi. Oudend Ye Plast 5T",
+    "broncode": 2696313,
+    "variant_code": "YBU5P",
+    "broncode_inlezen": 2703311,
+    "afronden": 20
+  },
+  {
+    "omschrijving": "Bun Gemi. Pink KrafT 5T SO",
+    "broncode": 1933019,
+    "variant_code": "YBU5K",
+    "broncode_inlezen": 1161424,
+    "afronden": 20
+  },
+  {
+    "omschrijving": "Bun Gemi. Red Kraft 5T",
+    "broncode": 2640845,
+    "variant_code": "YBU5K",
+    "broncode_inlezen": 1161420,
+    "afronden": 20
+  },
+  {
+    "omschrijving": "Bun Gemi. Red Kraft 5T",
+    "broncode": 2642783,
+    "variant_code": "YBU5K",
+    "broncode_inlezen": 1161420,
+    "afronden": 20
+  },
+  {
+    "omschrijving": "Bun Gemi. Red Kraft 5T SO",
+    "broncode": 1933020,
+    "variant_code": "YBU5K",
+    "broncode_inlezen": 1161420,
+    "afronden": 20
+  },
+  {
+    "omschrijving": "Bun Gemi. Red Plast 5T",
+    "broncode": 2646488,
+    "variant_code": "YBU5P",
+    "broncode_inlezen": 1161420,
+    "afronden": 20
+  },
+  {
+    "omschrijving": "Bun Gemi. Red Plast 5T",
+    "broncode": 2646489,
+    "variant_code": "YBU5P",
+    "broncode_inlezen": 1161420,
+    "afronden": 20
+  },
+  {
+    "omschrijving": "Bun Gemi. Rose 5 Plast 5T",
+    "broncode": 2646483,
+    "variant_code": "YBU5P",
+    "broncode_inlezen": 1161424,
+    "afronden": 20
+  },
+  {
+    "omschrijving": "Bun Gemi. Rose Kraft 5T",
+    "broncode": 2640842,
+    "variant_code": "YBU5K",
+    "broncode_inlezen": 1161424,
+    "afronden": 20
+  },
+  {
+    "omschrijving": "Bun Gemi. Rose Kraft 5T",
+    "broncode": 2642780,
+    "variant_code": "YBU5K",
+    "broncode_inlezen": 1161424,
+    "afronden": 20
+  },
+  {
+    "omschrijving": "Bun Gemi. Rose Plast 5T",
+    "broncode": 2646482,
+    "variant_code": "YBU5P",
+    "broncode_inlezen": 1161424,
+    "afronden": 20
+  },
+  {
+    "omschrijving": "Bun Gemi. Sp/Pa/Po Mix Kraft",
+    "broncode": 2461792,
+    "variant_code": "1BU KR",
+    "broncode_inlezen": 1014924,
+    "afronden": 20
+  },
+  {
+    "omschrijving": "Bun Gemi. Wit Kraft 5T",
+    "broncode": 2640843,
+    "variant_code": "YBU5K",
+    "broncode_inlezen": 1161425,
+    "afronden": 20
+  },
+  {
+    "omschrijving": "Bun Gemi. Wit Kraft 5T",
+    "broncode": 2642781,
+    "variant_code": "YBU5K",
+    "broncode_inlezen": 1161425,
+    "afronden": 20
+  },
+  {
+    "omschrijving": "Bun Gemi. Wit Kraft 5T SO",
+    "broncode": 1933017,
+    "variant_code": "YBU5K",
+    "broncode_inlezen": 1161425,
+    "afronden": 20
+  },
+  {
+    "omschrijving": "Bun Gemi. Wit Plast 5T",
+    "broncode": 2646484,
+    "variant_code": "YBU5P",
+    "broncode_inlezen": 1161425,
+    "afronden": 20
+  },
+  {
+    "omschrijving": "Bun Gemi. Wit Plast 5T",
+    "broncode": 2646485,
+    "variant_code": "YBU5P",
+    "broncode_inlezen": 1161425,
+    "afronden": 20
+  },
+  {
+    "omschrijving": "Bun Gemi. Mix Plastic 5T",
+    "broncode": 2705272,
+    "variant_code": "YBU5P",
+    "broncode_inlezen": 2710626,
+    "afronden": 20
+  },
+  {
+    "omschrijving": "Bun Gemi. Zalm Kraft 5T",
+    "broncode": 2663668,
+    "variant_code": "YBU5K",
+    "broncode_inlezen": 1548946,
+    "afronden": 20
+  },
+  {
+    "omschrijving": "Bun Gyps. Big Fl 20 Kraft 4T",
+    "broncode": 1933021,
+    "variant_code": "YBU4K",
+    "broncode_inlezen": 2505537,
+    "afronden": 25
+  },
+  {
+    "omschrijving": "Bun Gyps. Big Fl 20 Kraft 4T",
+    "broncode": 2216931,
+    "variant_code": "YBU4K",
+    "broncode_inlezen": 2505537,
+    "afronden": 25
+  },
+  {
+    "omschrijving": "Bun Gyps. Big Fl 20 Plast 4T",
+    "broncode": 2696304,
+    "variant_code": "YBU4P",
+    "broncode_inlezen": 2505537,
+    "afronden": 25
+  },
+  {
+    "omschrijving": "Bun Gyps. Disc Ken Kraft 3T",
+    "broncode": 2640846,
+    "variant_code": "YBU3K",
+    "broncode_inlezen": 1961300,
+    "afronden": 25
+  },
+  {
+    "omschrijving": "Bun Gyps. Disc Ken Kraft 3T",
+    "broncode": 2642784,
+    "variant_code": "YBU3K",
+    "broncode_inlezen": 1961300,
+    "afronden": 25
+  },
+  {
+    "omschrijving": "Bun Gyps. Disc Ken Plast 3T",
+    "broncode": 2646490,
+    "variant_code": "YBU3P",
+    "broncode_inlezen": 1961300,
+    "afronden": 25
+  },
+  {
+    "omschrijving": "Bun Gyps. Disc Ken Plast 3T",
+    "broncode": 2646492,
+    "variant_code": "YBU3P",
+    "broncode_inlezen": 1961300,
+    "afronden": 25
+  },
+  {
+    "omschrijving": "Bun Gyps. Disc Ken Plast 5T",
+    "broncode": 2646493,
+    "variant_code": "YBU5P",
+    "broncode_inlezen": 1961300,
+    "afronden": 25
+  },
+  {
+    "omschrijving": "Bun Gyps. Disc Ken Plast 5T",
+    "broncode": 2646494,
+    "variant_code": "YBU5P",
+    "broncode_inlezen": 1961300,
+    "afronden": 25
+  },
+  {
+    "omschrijving": "Bun Gyps. Disc ken Kraft 5T",
+    "broncode": 2640847,
+    "variant_code": "YBU5K",
+    "broncode_inlezen": 1961300,
+    "afronden": 25
+  },
+  {
+    "omschrijving": "Bun Gyps. Disc ken Kraft 5T",
+    "broncode": 2642785,
+    "variant_code": "YBU5K",
+    "broncode_inlezen": 1961300,
+    "afronden": 25
+  },
+  {
+    "omschrijving": "Bun Gyps. Xlen 35 Kraft 1 SO",
+    "broncode": 1861321,
+    "variant_code": "1BU KR",
+    "broncode_inlezen": 2688463,
+    "afronden": 25
+  },
+  {
+    "omschrijving": "Bun Hyp. Grn Kraft 3T",
+    "broncode": 2640851,
+    "variant_code": "YBU3K",
+    "broncode_inlezen": 259394,
+    "afronden": 25
+  },
+  {
+    "omschrijving": "Bun Hyp. Grn Kraft 3T",
+    "broncode": 2642789,
+    "variant_code": "YBU3K",
+    "broncode_inlezen": 259394,
+    "afronden": 25
+  },
+  {
+    "omschrijving": "Bun Hyp. Grn Kraft 4T SO",
+    "broncode": 390434,
+    "variant_code": "YBU4K",
+    "broncode_inlezen": 259394,
+    "afronden": 25
+  },
+  {
+    "omschrijving": "Bun Hyp. Grn Kraft 5T",
+    "broncode": 2640852,
+    "variant_code": "YBU5K",
+    "broncode_inlezen": 259394,
+    "afronden": 25
+  },
+  {
+    "omschrijving": "Bun Hyp. Grn Kraft 5T",
+    "broncode": 2642790,
+    "variant_code": "YBU5K",
+    "broncode_inlezen": 259394,
+    "afronden": 25
+  },
+  {
+    "omschrijving": "Bun Hyp. Grn Plast 3T",
+    "broncode": 2646499,
+    "variant_code": "YBU3P",
+    "broncode_inlezen": 259394,
+    "afronden": 25
+  },
+  {
+    "omschrijving": "Bun Hyp. Grn Plast 3T",
+    "broncode": 2646500,
+    "variant_code": "YBU3P",
+    "broncode_inlezen": 259394,
+    "afronden": 25
+  },
+  {
+    "omschrijving": "Bun Hyp. Grn Plast 5T",
+    "broncode": 2646501,
+    "variant_code": "YBU5P",
+    "broncode_inlezen": 259394,
+    "afronden": 25
+  },
+  {
+    "omschrijving": "Bun Hyp. Grn Plast 5T",
+    "broncode": 2646502,
+    "variant_code": "YBU5P",
+    "broncode_inlezen": 259394,
+    "afronden": 25
+  },
+  {
+    "omschrijving": "Bun Hyp. Red Kraft 3T",
+    "broncode": 2640848,
+    "variant_code": "YBU3K",
+    "broncode_inlezen": 322242,
+    "afronden": 25
+  },
+  {
+    "omschrijving": "Bun Hyp. Red Kraft 3T",
+    "broncode": 2642786,
+    "variant_code": "YBU3K",
+    "broncode_inlezen": 322242,
+    "afronden": 25
+  },
+  {
+    "omschrijving": "Bun Hyp. Red Kraft 4T SO",
+    "broncode": 390433,
+    "variant_code": "YBU4K",
+    "broncode_inlezen": 322242,
+    "afronden": 25
+  },
+  {
+    "omschrijving": "Bun Hyp. Red Kraft 5T",
+    "broncode": 2640850,
+    "variant_code": "YBU5K",
+    "broncode_inlezen": 322242,
+    "afronden": 25
+  },
+  {
+    "omschrijving": "Bun Hyp. Red Kraft 5T",
+    "broncode": 2642788,
+    "variant_code": "YBU5K",
+    "broncode_inlezen": 322242,
+    "afronden": 25
+  },
+  {
+    "omschrijving": "Bun Hyp. Red Plast 3T",
+    "broncode": 2646495,
+    "variant_code": "YBU3P",
+    "broncode_inlezen": 322242,
+    "afronden": 25
+  },
+  {
+    "omschrijving": "Bun Hyp. Red Plast 3T",
+    "broncode": 2646496,
+    "variant_code": "YBU3P",
+    "broncode_inlezen": 322242,
+    "afronden": 25
+  },
+  {
+    "omschrijving": "Bun Hyp. Red Plast 5T",
+    "broncode": 2646497,
+    "variant_code": "YBU5P",
+    "broncode_inlezen": 322242,
+    "afronden": 25
+  },
+  {
+    "omschrijving": "Bun Hyp. Red Plast 5T",
+    "broncode": 2646498,
+    "variant_code": "YBU5P",
+    "broncode_inlezen": 322242,
+    "afronden": 25
+  },
+  {
+    "omschrijving": "Bun Ilex Red Kraft 3T nw",
+    "broncode": 1210185,
+    "variant_code": "YBU3P",
+    "broncode_inlezen": 2132593,
+    "afronden": null
+  },
+  {
+    "omschrijving": "Bun Ilex Red Plast 3T fd",
+    "broncode": 1210184,
+    "variant_code": "YBU3P",
+    "broncode_inlezen": 2132593,
+    "afronden": null
+  },
+  {
+    "omschrijving": "Bun Iris. Blue Kraft 5T",
+    "broncode": 2640853,
+    "variant_code": "YBU5K",
+    "broncode_inlezen": 136132,
+    "afronden": 50
+  },
+  {
+    "omschrijving": "Bun Iris. Blue Kraft 5T",
+    "broncode": 2642791,
+    "variant_code": "YBU5K",
+    "broncode_inlezen": 136132,
+    "afronden": 50
+  },
+  {
+    "omschrijving": "Bun Iris. Blue Kraft 5T SO",
+    "broncode": 1933030,
+    "variant_code": "YBU5K",
+    "broncode_inlezen": 136132,
+    "afronden": 50
+  },
+  {
+    "omschrijving": "Bun Iris. Blue Plast 5T",
+    "broncode": 2646505,
+    "variant_code": "YBU5P",
+    "broncode_inlezen": 136132,
+    "afronden": 50
+  },
+  {
+    "omschrijving": "Bun Iris. Blue Plast 5T",
+    "broncode": 2646506,
+    "variant_code": "YBU5P",
+    "broncode_inlezen": 136132,
+    "afronden": 50
+  },
+  {
+    "omschrijving": "Bun Li La Mix Kraft 3T",
+    "broncode": 2640856,
+    "variant_code": "YBU3K",
+    "broncode_inlezen": 782685,
+    "afronden": null
+  },
+  {
+    "omschrijving": "Bun Li La Mix Kraft 3T",
+    "broncode": 2642792,
+    "variant_code": "YBU3K",
+    "broncode_inlezen": 782685,
+    "afronden": null
+  },
+  {
+    "omschrijving": "Bun Li La Mix Plast 3T",
+    "broncode": 2646507,
+    "variant_code": "YBU3P",
+    "broncode_inlezen": 782685,
+    "afronden": null
+  },
+  {
+    "omschrijving": "Bun Li La Mix Plast 3T",
+    "broncode": 2646508,
+    "variant_code": "YBU3P",
+    "broncode_inlezen": 782685,
+    "afronden": null
+  },
+  {
+    "omschrijving": "Bun Li La White Kraft 3T",
+    "broncode": 2663666,
+    "variant_code": "YBU3K",
+    "broncode_inlezen": 454799,
+    "afronden": null
+  },
+  {
+    "omschrijving": "Bun Li. LA New Mix Kraft 3T",
+    "broncode": 2468198,
+    "variant_code": "YBU3K",
+    "broncode_inlezen": 782685,
+    "afronden": null
+  },
+  {
+    "omschrijving": "Bun Li. La Mix Kraft 3T",
+    "broncode": 2467767,
+    "variant_code": "YBU3K",
+    "broncode_inlezen": 782685,
+    "afronden": null
+  },
+  {
+    "omschrijving": "Bun Li. La Orange Plastic 3T",
+    "broncode": 2696297,
+    "variant_code": "YBU3P",
+    "broncode_inlezen": 1932607,
+    "afronden": null
+  },
+  {
+    "omschrijving": "Bun Li. La Oranje Kraft 2T",
+    "broncode": 1933032,
+    "variant_code": "1BU KR",
+    "broncode_inlezen": 1932607,
+    "afronden": null
+  },
+  {
+    "omschrijving": "Bun Li. La Oranje Kraft 3T",
+    "broncode": 317935,
+    "variant_code": "YBU3K",
+    "broncode_inlezen": 1932607,
+    "afronden": null
+  },
+  {
+    "omschrijving": "Bun Li. La Pink Plastic 3T",
+    "broncode": 2696298,
+    "variant_code": "YBU3P",
+    "broncode_inlezen": 64708,
+    "afronden": null
+  },
+  {
+    "omschrijving": "Bun Li. La Pink Kraft 2T",
+    "broncode": 1933033,
+    "variant_code": "1BU KR",
+    "broncode_inlezen": 64708,
+    "afronden": null
+  },
+  {
+    "omschrijving": "Bun Li. La Pink Kraft 3T",
+    "broncode": 274763,
+    "variant_code": "YBU3K",
+    "broncode_inlezen": 64708,
+    "afronden": null
+  },
+  {
+    "omschrijving": "Bun Li. La Wit Kraft 2T",
+    "broncode": 1933034,
+    "variant_code": "1BU KR",
+    "broncode_inlezen": 454799,
+    "afronden": null
+  },
+  {
+    "omschrijving": "Bun Li. Legend Kraft 3T",
+    "broncode": 273124,
+    "variant_code": "YBU3K",
+    "broncode_inlezen": 782685,
+    "afronden": null
+  },
+  {
+    "omschrijving": "Bun Li. Mix LA Kraft 3T Gent",
+    "broncode": 2499455,
+    "variant_code": "YBU3K",
+    "broncode_inlezen": 782685,
+    "afronden": null
+  },
+  {
+    "omschrijving": "Bun Li. Mix LA Kraft 3T Gent",
+    "broncode": 2499454,
+    "variant_code": "YBU3K",
+    "broncode_inlezen": 782685,
+    "afronden": null
+  },
+  {
+    "omschrijving": "Bun Li. Mix Or Kraft 3T Klav",
+    "broncode": 2499464,
+    "variant_code": "YBU3K",
+    "broncode_inlezen": 535557,
+    "afronden": null
+  },
+  {
+    "omschrijving": "Bun Li. Or Mix Kraft 3T Klav",
+    "broncode": 2499462,
+    "variant_code": "YBU3K",
+    "broncode_inlezen": 535557,
+    "afronden": null
+  },
+  {
+    "omschrijving": "Bun Li. Or Pink Kraft 3T",
+    "broncode": 317231,
+    "variant_code": "YBU3K",
+    "broncode_inlezen": 349803,
+    "afronden": null
+  },
+  {
+    "omschrijving": "Bun Li. Or Pink Kraft 3T",
+    "broncode": 317230,
+    "variant_code": "YBU3K",
+    "broncode_inlezen": 349803,
+    "afronden": null
+  },
+  {
+    "omschrijving": "Bun Li. Or Pink Kraft 3T SO",
+    "broncode": 1933035,
+    "variant_code": "YBU3K",
+    "broncode_inlezen": 349803,
+    "afronden": null
+  },
+  {
+    "omschrijving": "Bun Li. Or Pink Plastic 3T",
+    "broncode": 2696300,
+    "variant_code": "YBU3P",
+    "broncode_inlezen": 349803,
+    "afronden": null
+  },
+  {
+    "omschrijving": "Bun Li. Or White Plastic 3T",
+    "broncode": 2696299,
+    "variant_code": "YBU3P",
+    "broncode_inlezen": 262100,
+    "afronden": null
+  },
+  {
+    "omschrijving": "Bun Li. Or Wit Kraft 3T",
+    "broncode": 2475481,
+    "variant_code": "YBU3K",
+    "broncode_inlezen": 262100,
+    "afronden": null
+  },
+  {
+    "omschrijving": "Bun Li. Or Wit Kraft 3T",
+    "broncode": 317228,
+    "variant_code": "YBU3K",
+    "broncode_inlezen": 262100,
+    "afronden": null
+  },
+  {
+    "omschrijving": "Bun Li. Or Wit Kraft 3T NW",
+    "broncode": 338372,
+    "variant_code": "YBU3K",
+    "broncode_inlezen": 262100,
+    "afronden": null
+  },
+  {
+    "omschrijving": "Bun Li. Or Wit Kraft 3T SO",
+    "broncode": 1933036,
+    "variant_code": "YBU3K",
+    "broncode_inlezen": 2288786,
+    "afronden": null
+  },
+  {
+    "omschrijving": "Bun Limon. Osh Pink Kraft 3T",
+    "broncode": 2640871,
+    "variant_code": "YBU3K",
+    "broncode_inlezen": 1421504,
+    "afronden": 25
+  },
+  {
+    "omschrijving": "Bun Limon. Osh Pink Kraft 3T",
+    "broncode": 2642902,
+    "variant_code": "YBU3K",
+    "broncode_inlezen": 1421504,
+    "afronden": 25
+  },
+  {
+    "omschrijving": "Bun Limon. Osh Pink Kraft 5T",
+    "broncode": 2640872,
+    "variant_code": "YBU5K",
+    "broncode_inlezen": 1421504,
+    "afronden": 25
+  },
+  {
+    "omschrijving": "Bun Limon. Osh Pink Kraft 5T",
+    "broncode": 2642903,
+    "variant_code": "YBU5K",
+    "broncode_inlezen": 1421504,
+    "afronden": 25
+  },
+  {
+    "omschrijving": "Bun Limon. Osh Pink Plast 3T",
+    "broncode": 2646509,
+    "variant_code": "YBU3P",
+    "broncode_inlezen": 1421504,
+    "afronden": 25
+  },
+  {
+    "omschrijving": "Bun Limon. Osh Pink Plast 3T",
+    "broncode": 2646510,
+    "variant_code": "YBU3P",
+    "broncode_inlezen": 1421504,
+    "afronden": 25
+  },
+  {
+    "omschrijving": "Bun Limon. Osh Pink Plast 5T",
+    "broncode": 2646511,
+    "variant_code": "YBU5P",
+    "broncode_inlezen": 1421504,
+    "afronden": 25
+  },
+  {
+    "omschrijving": "Bun Limon. Osh Pink Plast 5T",
+    "broncode": 2646512,
+    "variant_code": "YBU5P",
+    "broncode_inlezen": 1421504,
+    "afronden": 25
+  },
+  {
+    "omschrijving": "Bun Limon. Saf DBlu Kraft 3T",
+    "broncode": 2640873,
+    "variant_code": "YBU3K",
+    "broncode_inlezen": 1433819,
+    "afronden": 25
+  },
+  {
+    "omschrijving": "Bun Limon. Saf DBlu Kraft 3T",
+    "broncode": 2642904,
+    "variant_code": "YBU3K",
+    "broncode_inlezen": 1433819,
+    "afronden": 25
+  },
+  {
+    "omschrijving": "Bun Limon. Saf DBlu Kraft 5T",
+    "broncode": 2640874,
+    "variant_code": "YBU5K",
+    "broncode_inlezen": 1433819,
+    "afronden": 25
+  },
+  {
+    "omschrijving": "Bun Limon. Saf DBlu Kraft 5T",
+    "broncode": 2642905,
+    "variant_code": "YBU5K",
+    "broncode_inlezen": 1433819,
+    "afronden": 25
+  },
+  {
+    "omschrijving": "Bun Limon. Saf DBlu Plast 3T",
+    "broncode": 2646513,
+    "variant_code": "YBU3P",
+    "broncode_inlezen": 1433819,
+    "afronden": 25
+  },
+  {
+    "omschrijving": "Bun Limon. Saf DBlu Plast 3T",
+    "broncode": 2646514,
+    "variant_code": "YBU3P",
+    "broncode_inlezen": 1433819,
+    "afronden": 25
+  },
+  {
+    "omschrijving": "Bun Limon. Saf DBlu Plast 5T",
+    "broncode": 2646515,
+    "variant_code": "YBU5P",
+    "broncode_inlezen": 1433819,
+    "afronden": 25
+  },
+  {
+    "omschrijving": "Bun Limon. Saf DBlu Plast 5T",
+    "broncode": 2646516,
+    "variant_code": "YBU5P",
+    "broncode_inlezen": 1433819,
+    "afronden": 25
+  },
+  {
+    "omschrijving": "Bun Limon. Saf Lave Kraft 3T",
+    "broncode": 2640875,
+    "variant_code": "YBU3K",
+    "broncode_inlezen": 2062183,
+    "afronden": 25
+  },
+  {
+    "omschrijving": "Bun Limon. Saf Lave Kraft 3T",
+    "broncode": 2642906,
+    "variant_code": "YBU3K",
+    "broncode_inlezen": 2062183,
+    "afronden": 25
+  },
+  {
+    "omschrijving": "Bun Limon. Saf Lave Kraft 5T",
+    "broncode": 2640876,
+    "variant_code": "YBU5K",
+    "broncode_inlezen": 2062183,
+    "afronden": 25
+  },
+  {
+    "omschrijving": "Bun Limon. Saf Lave Kraft 5T",
+    "broncode": 2642907,
+    "variant_code": "YBU5K",
+    "broncode_inlezen": 2062183,
+    "afronden": 25
+  },
+  {
+    "omschrijving": "Bun Limon. Saf Lave Plast 3T",
+    "broncode": 2646539,
+    "variant_code": "YBU3P",
+    "broncode_inlezen": 2062183,
+    "afronden": 25
+  },
+  {
+    "omschrijving": "Bun Limon. Saf Lave Plast 3T",
+    "broncode": 2646540,
+    "variant_code": "YBU3P",
+    "broncode_inlezen": 2062183,
+    "afronden": 25
+  },
+  {
+    "omschrijving": "Bun Limon. Saf Lave Plast 5T",
+    "broncode": 2646541,
+    "variant_code": "YBU5P",
+    "broncode_inlezen": 2062183,
+    "afronden": 25
+  },
+  {
+    "omschrijving": "Bun Limon. Saf Lave Plast 5T",
+    "broncode": 2646542,
+    "variant_code": "YBU5P",
+    "broncode_inlezen": 2062183,
+    "afronden": 25
+  },
+  {
+    "omschrijving": "Bun Limon. Sca DiRe Kraft 3T",
+    "broncode": 2640877,
+    "variant_code": "YBU3K",
+    "broncode_inlezen": 1547433,
+    "afronden": 25
+  },
+  {
+    "omschrijving": "Bun Limon. Sca DiRe Kraft 3T",
+    "broncode": 2642908,
+    "variant_code": "YBU3K",
+    "broncode_inlezen": 1547433,
+    "afronden": 25
+  },
+  {
+    "omschrijving": "Bun Limon. Sca DiRe Kraft 5T",
+    "broncode": 2640878,
+    "variant_code": "YBU5K",
+    "broncode_inlezen": 1547433,
+    "afronden": 25
+  },
+  {
+    "omschrijving": "Bun Limon. Sca DiRe Kraft 5T",
+    "broncode": 2642909,
+    "variant_code": "YBU5K",
+    "broncode_inlezen": 1547433,
+    "afronden": 25
+  },
+  {
+    "omschrijving": "Bun Limon. Sca DiRe Plast 3T",
+    "broncode": 2646543,
+    "variant_code": "YBU3P",
+    "broncode_inlezen": 1547433,
+    "afronden": 25
+  },
+  {
+    "omschrijving": "Bun Limon. Sca DiRe Plast 3T",
+    "broncode": 2646544,
+    "variant_code": "YBU3P",
+    "broncode_inlezen": 1547433,
+    "afronden": 25
+  },
+  {
+    "omschrijving": "Bun Limon. Sca DiRe Plast 5T",
+    "broncode": 2646545,
+    "variant_code": "YBU5P",
+    "broncode_inlezen": 1547433,
+    "afronden": 25
+  },
+  {
+    "omschrijving": "Bun Limon. Sca DiRe Plast 5T",
+    "broncode": 2646546,
+    "variant_code": "YBU5P",
+    "broncode_inlezen": 1547433,
+    "afronden": 25
+  },
+  {
+    "omschrijving": "Bun Matth. Mix Kraft 3T",
+    "broncode": 2467766,
+    "variant_code": "YBU3K",
+    "broncode_inlezen": 2298348,
+    "afronden": 50
+  },
+  {
+    "omschrijving": "Bun Paenia. Mix Kraft 10T MP",
+    "broncode": 2334629,
+    "variant_code": "YB10K",
+    "broncode_inlezen": 2690993,
+    "afronden": 50
+  },
+  {
+    "omschrijving": "Bun Paenia. Mix Kraft 10T MP",
+    "broncode": 2475929,
+    "variant_code": "YB10K",
+    "broncode_inlezen": 2690993,
+    "afronden": 50
+  },
+  {
+    "omschrijving": "Bun Paenia. Mix Kraft 4T MP",
+    "broncode": 2334621,
+    "variant_code": "YBU4K",
+    "broncode_inlezen": 2690993,
+    "afronden": 50
+  },
+  {
+    "omschrijving": "Bun Paenia. Mix Kraft 4T MP",
+    "broncode": 2475931,
+    "variant_code": "YBU4K",
+    "broncode_inlezen": 2690993,
+    "afronden": 50
+  },
+  {
+    "omschrijving": "Bun Paenia. Mix Kraft 5T MP",
+    "broncode": 2475930,
+    "variant_code": "YBU5K",
+    "broncode_inlezen": 2690993,
+    "afronden": 50
+  },
+  {
+    "omschrijving": "Bun Phlox. Mix Kraft 5T FD",
+    "broncode": 1389124,
+    "variant_code": "YBU5K",
+    "broncode_inlezen": 1348004,
+    "afronden": null
+  },
+  {
+    "omschrijving": "Bun Phlox. Roze Kraft 3t",
+    "broncode": 2663679,
+    "variant_code": "YBU3K",
+    "broncode_inlezen": 2624528,
+    "afronden": null
+  },
+  {
+    "omschrijving": "Bun Phlox. Wit Kraft 3T",
+    "broncode": 2663678,
+    "variant_code": "YBU3K",
+    "broncode_inlezen": 2626418,
+    "afronden": null
+  },
+  {
+    "omschrijving": "Bun R.tr Mix Kraft 3T",
+    "broncode": 2641249,
+    "variant_code": "YBU3K",
+    "broncode_inlezen": 2299118,
+    "afronden": null
+  },
+  {
+    "omschrijving": "Bun R.tr Mix Kraft 3T",
+    "broncode": 2642800,
+    "variant_code": "YBU3K",
+    "broncode_inlezen": 2299118,
+    "afronden": null
+  },
+  {
+    "omschrijving": "Bun R.tr Mix Kraft 5T",
+    "broncode": 2641250,
+    "variant_code": "YBU5K",
+    "broncode_inlezen": 2299118,
+    "afronden": null
+  },
+  {
+    "omschrijving": "Bun R.tr Mix Kraft 5T",
+    "broncode": 2642801,
+    "variant_code": "YBU5K",
+    "broncode_inlezen": 2299118,
+    "afronden": null
+  },
+  {
+    "omschrijving": "Bun R.tr Mix Plast 3T",
+    "broncode": 2646551,
+    "variant_code": "YBU3P",
+    "broncode_inlezen": 2299118,
+    "afronden": null
+  },
+  {
+    "omschrijving": "Bun R.tr Mix Plast 3T",
+    "broncode": 2646552,
+    "variant_code": "YBU3P",
+    "broncode_inlezen": 2299118,
+    "afronden": null
+  },
+  {
+    "omschrijving": "Bun R.tr Mix Plast 5T",
+    "broncode": 2646553,
+    "variant_code": "YBU5P",
+    "broncode_inlezen": 2299118,
+    "afronden": null
+  },
+  {
+    "omschrijving": "Bun R.tr Mix Plast 5T",
+    "broncode": 2646554,
+    "variant_code": "YBU5P",
+    "broncode_inlezen": 2299118,
+    "afronden": null
+  },
+  {
+    "omschrijving": "Bun R.tr Oran Leil Krat 3T",
+    "broncode": 2663689,
+    "variant_code": "YBU3K",
+    "broncode_inlezen": 2512492,
+    "afronden": null
+  },
+  {
+    "omschrijving": "Bun R.tr Rood Kraft 3T",
+    "broncode": 2663690,
+    "variant_code": "YBU3K",
+    "broncode_inlezen": 243016,
+    "afronden": null
+  },
+  {
+    "omschrijving": "Bun R.tr Roze Odil Kraft 3T",
+    "broncode": 2663688,
+    "variant_code": "YBU3K",
+    "broncode_inlezen": 2691699,
+    "afronden": null
+  },
+  {
+    "omschrijving": "Bun R.tr Wit Snow Kraft 3T",
+    "broncode": 2663684,
+    "variant_code": "YBU3K",
+    "broncode_inlezen": 2691700,
+    "afronden": null
+  },
+  {
+    "omschrijving": "Bun Rose. Ext Large Kraft 5T",
+    "broncode": 2640882,
+    "variant_code": "YBU5K",
+    "broncode_inlezen": 2640882,
+    "afronden": null
+  },
+  {
+    "omschrijving": "Bun Rose. Ext Large Kraft 5T",
+    "broncode": 2642793,
+    "variant_code": "YBU5K",
+    "broncode_inlezen": 2642793,
+    "afronden": null
+  },
+  {
+    "omschrijving": "Bun Rose. Ext Large Kraft 5T",
+    "broncode": 2641240,
+    "variant_code": "YBU5K",
+    "broncode_inlezen": 2641240,
+    "afronden": null
+  },
+  {
+    "omschrijving": "Bun Rose. Ext Large Kraft 5T",
+    "broncode": 2642794,
+    "variant_code": "YBU5K",
+    "broncode_inlezen": 2642794,
+    "afronden": null
+  },
+  {
+    "omschrijving": "Bun Rose. Int Ext Kraft 5T",
+    "broncode": 2641243,
+    "variant_code": "YBU5K",
+    "broncode_inlezen": 2641243,
+    "afronden": null
+  },
+  {
+    "omschrijving": "Bun Rose. Int Ext Kraft 5T",
+    "broncode": 2642797,
+    "variant_code": "YBU5K",
+    "broncode_inlezen": 2642797,
+    "afronden": null
+  },
+  {
+    "omschrijving": "Bun Rose. Int Kraft 5T NA",
+    "broncode": 323561,
+    "variant_code": "YBU5K",
+    "broncode_inlezen": 323561,
+    "afronden": null
+  },
+  {
+    "omschrijving": "Bun Rose. Int Large Kraft 5T",
+    "broncode": 2641247,
+    "variant_code": "YBU5K",
+    "broncode_inlezen": 2641247,
+    "afronden": null
+  },
+  {
+    "omschrijving": "Bun Rose. Int Large Kraft 5T",
+    "broncode": 2642798,
+    "variant_code": "YBU5K",
+    "broncode_inlezen": 2642798,
+    "afronden": null
+  },
+  {
+    "omschrijving": "Bun Rose. Int No Ge Kraft 5T",
+    "broncode": 2641248,
+    "variant_code": "YBU5K",
+    "broncode_inlezen": 2641248,
+    "afronden": null
+  },
+  {
+    "omschrijving": "Bun Rose. Int No Ge Kraft 5T",
+    "broncode": 2642799,
+    "variant_code": "YBU5K",
+    "broncode_inlezen": 2642799,
+    "afronden": null
+  },
+  {
+    "omschrijving": "Bun Rose. L/IT AtPi.kraft 5T",
+    "broncode": 2663602,
+    "variant_code": "YBU5K",
+    "broncode_inlezen": 2663602,
+    "afronden": null
+  },
+  {
+    "omschrijving": "Bun Rose. L/IT Athe.kraft 5T",
+    "broncode": 2663600,
+    "variant_code": "YBU5K",
+    "broncode_inlezen": 2663600,
+    "afronden": null
+  },
+  {
+    "omschrijving": "Bun Rose. L/IT Conf.kraft 5T",
+    "broncode": 2663603,
+    "variant_code": "YBU5K",
+    "broncode_inlezen": 2663603,
+    "afronden": null
+  },
+  {
+    "omschrijving": "Bun Rose. L/IT Moow.kraft 5T",
+    "broncode": 2663604,
+    "variant_code": "YBU5K",
+    "broncode_inlezen": 2663604,
+    "afronden": null
+  },
+  {
+    "omschrijving": "Bun Rose. L/IT ReTo.kraft 5T",
+    "broncode": 2663606,
+    "variant_code": "YBU5K",
+    "broncode_inlezen": 945203,
+    "afronden": null
+  },
+  {
+    "omschrijving": "Bun Rose. L/IT RoJe.kraft 5T",
+    "broncode": 2663605,
+    "variant_code": "YBU5K",
+    "broncode_inlezen": 398333,
+    "afronden": null
+  },
+  {
+    "omschrijving": "Bun Rose. L/IT Saum.kraft 5T",
+    "broncode": 2663607,
+    "variant_code": "YBU5K",
+    "broncode_inlezen": 2663607,
+    "afronden": null
+  },
+  {
+    "omschrijving": "Bun Rose. Mix Kraft 5T CA",
+    "broncode": 1806543,
+    "variant_code": "YBU5K",
+    "broncode_inlezen": 241832,
+    "afronden": null
+  },
+  {
+    "omschrijving": "Bun Rose. Mix Kraft 5T Slarg",
+    "broncode": 2354740,
+    "variant_code": "YBU5K",
+    "broncode_inlezen": 241832,
+    "afronden": null
+  },
+  {
+    "omschrijving": "Bun Rose. Spray Mx Kraft 3T",
+    "broncode": 318022,
+    "variant_code": "YBU3K",
+    "broncode_inlezen": 2694668,
+    "afronden": null
+  },
+  {
+    "omschrijving": "Bun Rose. Spray Mx Kraft 3T",
+    "broncode": 390422,
+    "variant_code": "YBU3K",
+    "broncode_inlezen": 2694668,
+    "afronden": null
+  },
+  {
+    "omschrijving": "Bun Rose. Spray Mx Kraft 4T",
+    "broncode": 806842,
+    "variant_code": "YBU4K",
+    "broncode_inlezen": 2694668,
+    "afronden": null
+  },
+  {
+    "omschrijving": "Bun Rose. Spray Mx Kraft 5T",
+    "broncode": 332453,
+    "variant_code": "YBU5K",
+    "broncode_inlezen": 2694668,
+    "afronden": null
+  },
+  {
+    "omschrijving": "Bun Rose. Spray Mx Kraft 5T",
+    "broncode": 341129,
+    "variant_code": "YBU5K",
+    "broncode_inlezen": 2694668,
+    "afronden": null
+  },
+  {
+    "omschrijving": "Bun Rose. Spray Mx Plast 3T",
+    "broncode": 2696301,
+    "variant_code": "YBU3P",
+    "broncode_inlezen": 2694668,
+    "afronden": null
+  },
+  {
+    "omschrijving": "Bun Rose. Spray Mx Plast 5t",
+    "broncode": 326267,
+    "variant_code": "YBU5P",
+    "broncode_inlezen": 2694668,
+    "afronden": null
+  },
+  {
+    "omschrijving": "Bun Rose. Spray Mx kraft 5T",
+    "broncode": 375106,
+    "variant_code": "YBU5K",
+    "broncode_inlezen": 2694668,
+    "afronden": null
+  },
+  {
+    "omschrijving": "Bun Rose. Sup Mix Kraft 5T",
+    "broncode": 2641241,
+    "variant_code": "YBU5K",
+    "broncode_inlezen": 2641241,
+    "afronden": null
+  },
+  {
+    "omschrijving": "Bun Rose. Sup Mix Kraft 5T",
+    "broncode": 2642795,
+    "variant_code": "YBU5K",
+    "broncode_inlezen": 2642795,
+    "afronden": null
+  },
+  {
+    "omschrijving": "Bun Rose. Sup Mix Kraft 5T",
+    "broncode": 2641242,
+    "variant_code": "YBU5K",
+    "broncode_inlezen": 2641242,
+    "afronden": null
+  },
+  {
+    "omschrijving": "Bun Rose. Sup Mix Kraft 5T",
+    "broncode": 2642796,
+    "variant_code": "YBU5K",
+    "broncode_inlezen": 2642796,
+    "afronden": null
+  },
+  {
+    "omschrijving": "Bun Soli. Gold Glo Kraft 5T",
+    "broncode": 1933039,
+    "variant_code": "YBU5K",
+    "broncode_inlezen": 1786748,
+    "afronden": 25
+  },
+  {
+    "omschrijving": "Bun Soli. Kraft Geel 3T",
+    "broncode": 2663638,
+    "variant_code": "VIJVER",
+    "broncode_inlezen": 1786748,
+    "afronden": 25
+  },
+  {
+    "omschrijving": "Bun Soli. Kraft Geel 3T",
+    "broncode": 2663640,
+    "variant_code": "YBU3K",
+    "broncode_inlezen": 1786748,
+    "afronden": 25
+  },
+  {
+    "omschrijving": "Bun Soli. Plastic 3T",
+    "broncode": 2693525,
+    "variant_code": "YBU3P",
+    "broncode_inlezen": 1786748,
+    "afronden": 25
+  },
+  {
+    "omschrijving": "Bun Soli. Tara Plast 5T SO",
+    "broncode": 1277016,
+    "variant_code": "YBU5P",
+    "broncode_inlezen": 1786748,
+    "afronden": 25
+  },
+  {
+    "omschrijving": "Bun Statice. Blue Kraft 3T",
+    "broncode": 2650351,
+    "variant_code": "YBU3K",
+    "broncode_inlezen": 281376,
+    "afronden": 25
+  },
+  {
+    "omschrijving": "Bun Statice. Blue Kraft 3T",
+    "broncode": 2650352,
+    "variant_code": "YBU3K",
+    "broncode_inlezen": 281376,
+    "afronden": 25
+  },
+  {
+    "omschrijving": "Bun Statice. Blue Kraft 3T SO",
+    "broncode": 423409,
+    "variant_code": "YBU3K",
+    "broncode_inlezen": 281376,
+    "afronden": 25
+  },
+  {
+    "omschrijving": "Bun Statice. Blue Kraft 3T SO",
+    "broncode": 1277017,
+    "variant_code": "YBU3K",
+    "broncode_inlezen": 281376,
+    "afronden": 25
+  },
+  {
+    "omschrijving": "Bun Statice. Blue Kraft 5T",
+    "broncode": 2650355,
+    "variant_code": "YBU5K",
+    "broncode_inlezen": 281376,
+    "afronden": 25
+  },
+  {
+    "omschrijving": "Bun Statice. Blue Kraft 5T",
+    "broncode": 2650356,
+    "variant_code": "YBU5K",
+    "broncode_inlezen": 281376,
+    "afronden": 25
+  },
+  {
+    "omschrijving": "Bun Statice. Blue Plast 3T",
+    "broncode": 2650353,
+    "variant_code": "YBU3P",
+    "broncode_inlezen": 281376,
+    "afronden": 25
+  },
+  {
+    "omschrijving": "Bun Statice. Blue Plast 3T",
+    "broncode": 2650354,
+    "variant_code": "YBU3P",
+    "broncode_inlezen": 281376,
+    "afronden": 25
+  },
+  {
+    "omschrijving": "Bun Statice. Blue Plast 5T",
+    "broncode": 2650357,
+    "variant_code": "YBU5P",
+    "broncode_inlezen": 281376,
+    "afronden": 25
+  },
+  {
+    "omschrijving": "Bun Statice. Blue Plast 5T",
+    "broncode": 2650358,
+    "variant_code": "YBU5P",
+    "broncode_inlezen": 281376,
+    "afronden": 25
+  },
+  {
+    "omschrijving": "Bun Statice. Blue Plast 3T",
+    "broncode": 2696310,
+    "variant_code": "YBU3P",
+    "broncode_inlezen": 281376,
+    "afronden": 25
+  },
+  {
+    "omschrijving": "Bun Statice. Mix Kraft 5T",
+    "broncode": 1806508,
+    "variant_code": "YBU5K",
+    "broncode_inlezen": 1208503,
+    "afronden": 25
+  },
+  {
+    "omschrijving": "Bun Statice. Mix Kraft 5T",
+    "broncode": 2467785,
+    "variant_code": "YBU5K",
+    "broncode_inlezen": 1208503,
+    "afronden": 25
+  },
+  {
+    "omschrijving": "Bun Tana. Geel Kraft 3T",
+    "broncode": 2663681,
+    "variant_code": "YBU3K",
+    "broncode_inlezen": 2163959,
+    "afronden": 25
+  },
+  {
+    "omschrijving": "Bun Tana. Wit Kraft 3T",
+    "broncode": 2691630,
+    "variant_code": "YBU3K",
+    "broncode_inlezen": 1940259,
+    "afronden": 25
+  },
+  {
+    "omschrijving": "Bun Tulp. Geel Plast 10T",
+    "broncode": 378628,
+    "variant_code": "YB10P",
+    "broncode_inlezen": 2256408,
+    "afronden": 50
+  },
+  {
+    "omschrijving": "Bun Tulp. Mix 24gr Kraft 5T CF",
+    "broncode": 2669691,
+    "variant_code": "YBU5K",
+    "broncode_inlezen": 1967896,
+    "afronden": 50
+  },
+  {
+    "omschrijving": "Bun Tulp. Mix 26gr Kraft 10T",
+    "broncode": 2649419,
+    "variant_code": "YB10K",
+    "broncode_inlezen": 2691004,
+    "afronden": 50
+  },
+  {
+    "omschrijving": "Bun Tulp. Mix 26gr Kraft 10T",
+    "broncode": 2649418,
+    "variant_code": "YB10K",
+    "broncode_inlezen": 2691004,
+    "afronden": 50
+  },
+  {
+    "omschrijving": "Bun Tulp. Mix 26gr Kraft 5T",
+    "broncode": 2649421,
+    "variant_code": "YBU5K",
+    "broncode_inlezen": 2691004,
+    "afronden": 50
+  },
+  {
+    "omschrijving": "Bun Tulp. Mix 26gr Kraft 5T",
+    "broncode": 2649420,
+    "variant_code": "YBU5K",
+    "broncode_inlezen": 2691004,
+    "afronden": 50
+  },
+  {
+    "omschrijving": "Bun Tulp. Mix 26gr Plast 10T",
+    "broncode": 2649414,
+    "variant_code": "YB10P",
+    "broncode_inlezen": 2691004,
+    "afronden": 50
+  },
+  {
+    "omschrijving": "Bun Tulp. Mix 26gr Plast 10T",
+    "broncode": 2649413,
+    "variant_code": "YB10P",
+    "broncode_inlezen": 2691004,
+    "afronden": 50
+  },
+  {
+    "omschrijving": "Bun Tulp. Mix 26gr Plast 5T",
+    "broncode": 2649415,
+    "variant_code": "YBU5P",
+    "broncode_inlezen": 2691004,
+    "afronden": 50
+  },
+  {
+    "omschrijving": "Bun Tulp. Mix 26gr Plast 5T",
+    "broncode": 2670325,
+    "variant_code": "YBU5P",
+    "broncode_inlezen": 2691004,
+    "afronden": 50
+  },
+  {
+    "omschrijving": "Bun Tulp. Mix 26gr Plast 5T",
+    "broncode": 2649416,
+    "variant_code": "YBU5P",
+    "broncode_inlezen": 2691004,
+    "afronden": 50
+  },
+  {
+    "omschrijving": "Bun Tulp. Mix 28gr Kraft 5T",
+    "broncode": 2559971,
+    "variant_code": "YBU5K",
+    "broncode_inlezen": 2680023,
+    "afronden": 50
+  },
+  {
+    "omschrijving": "Bun Tulp. Mix 28gr Kraft 5T",
+    "broncode": 2420291,
+    "variant_code": "YBU5K",
+    "broncode_inlezen": 2680023,
+    "afronden": 50
+  },
+  {
+    "omschrijving": "Bun Tulp. Mix 28gr Kraft 5T",
+    "broncode": 2562924,
+    "variant_code": "YBU5K",
+    "broncode_inlezen": 2680023,
+    "afronden": 50
+  },
+  {
+    "omschrijving": "Bun Tulp. Mix 28gr Plastic x10 15",
+    "broncode": 2667484,
+    "variant_code": "YB10P",
+    "broncode_inlezen": 2680023,
+    "afronden": 50
+  },
+  {
+    "omschrijving": "Bun Tulp. Mix 28gr Plastic x10 min 180",
+    "broncode": 2557829,
+    "variant_code": "YB10P",
+    "broncode_inlezen": 2680023,
+    "afronden": 50
+  },
+  {
+    "omschrijving": "Bun Tulp. Mix 28gr Plastic x10 min 30",
+    "broncode": 2420296,
+    "variant_code": "YB10P",
+    "broncode_inlezen": 2680023,
+    "afronden": 50
+  },
+  {
+    "omschrijving": "Bun Tulp. Mix 28gr Plastic x10 min 60",
+    "broncode": 2667485,
+    "variant_code": "YB10P",
+    "broncode_inlezen": 2680023,
+    "afronden": 50
+  },
+  {
+    "omschrijving": "Bun Tulp. Mix Kraft 10T",
+    "broncode": 351580,
+    "variant_code": "YB10K",
+    "broncode_inlezen": 2228395,
+    "afronden": 50
+  },
+  {
+    "omschrijving": "Bun Tulp. Pink Plast 10T",
+    "broncode": 276088,
+    "variant_code": "YB10P",
+    "broncode_inlezen": 2256413,
+    "afronden": 50
+  },
+  {
+    "omschrijving": "Bun Tulp. Pink Plast 10T RB",
+    "broncode": 794015,
+    "variant_code": "YB10P",
+    "broncode_inlezen": 2256413,
+    "afronden": 50
+  },
+  {
+    "omschrijving": "Bun Tulp. Purple Plast 10T",
+    "broncode": 276096,
+    "variant_code": "YB10P",
+    "broncode_inlezen": 2256410,
+    "afronden": 50
+  },
+  {
+    "omschrijving": "Bun Tulp. Re/Ge Plast 10T",
+    "broncode": 276094,
+    "variant_code": "YB10P",
+    "broncode_inlezen": 2256407,
+    "afronden": 50
+  },
+  {
+    "omschrijving": "Bun Tulp. Red Plast 10T",
+    "broncode": 276089,
+    "variant_code": "YB10P",
+    "broncode_inlezen": 276587,
+    "afronden": 50
+  },
+  {
+    "omschrijving": "Bun Tulp. Wit Plast 10T",
+    "broncode": 276092,
+    "variant_code": "YB10P",
+    "broncode_inlezen": 276582,
+    "afronden": 50
+  },
+  {
+    "omschrijving": "Bun Tulp. x5 min 30 bottes mix 28 gr Plast",
+    "broncode": 2667488,
+    "variant_code": "YBU5P",
+    "broncode_inlezen": 2680023,
+    "afronden": 50
+  },
+  {
+    "omschrijving": "Bun Tulp. x5 min 60 bottes mix 28 gr Plast",
+    "broncode": 2442921,
+    "variant_code": "YBU5P",
+    "broncode_inlezen": 2680023,
+    "afronden": 50
+  },
+  {
+    "omschrijving": "Bun Veronica New Mx Kraft 5T",
+    "broncode": 2468186,
+    "variant_code": "YBU5K",
+    "broncode_inlezen": 136328,
+    "afronden": 25
+  },
+  {
+    "omschrijving": "Bun Waxflower Wit Plast 5T",
+    "broncode": 2470890,
+    "variant_code": "YBU5P",
+    "broncode_inlezen": 906601,
+    "afronden": 25
+  },
+  {
+    "omschrijving": "Bunches Mixed Plast",
+    "broncode": 272582,
+    "variant_code": "1BU PL",
+    "broncode_inlezen": null,
+    "afronden": null
+  },
+  {
+    "omschrijving": "xxxxx xxxxx",
+    "broncode": 2688630,
+    "variant_code": "1BU PL",
+    "broncode_inlezen": null,
+    "afronden": null
+  },
+  {
+    "omschrijving": "Bun Paenia. Sarah B & Mix 5T Plastic",
+    "broncode": 2729629,
+    "variant_code": "YBU5K",
+    "broncode_inlezen": null,
+    "afronden": null
+  },
+  {
+    "omschrijving": "Bun Paenia. Sarah B Plastic 3T",
+    "broncode": 2730242,
+    "variant_code": "YBU3P",
+    "broncode_inlezen": 2734324,
+    "afronden": 10
+  }
+]

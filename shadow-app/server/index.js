@@ -13,6 +13,7 @@ import {
   markFustActionDeletedInDatabase,
   saveFustActionToDatabase,
 } from "./db.js";
+import { createBunchesService } from "./bunches.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const appRoot = path.resolve(__dirname, "..");
@@ -46,6 +47,9 @@ const halLocationsCacheDir = path.join(cacheDir, "hal-locations");
 const expeditionStickerStatePath = path.join(cacheDir, "expedition-stickers.json");
 const expeditionStickerFilesDir = path.join(cacheDir, "expedition-stickers");
 const dagFoutjesStatePath = path.join(cacheDir, "dag-foutjes.json");
+const bunchesStatePath = path.join(cacheDir, "bunches-state.json");
+const bunchesAppHtmlPath = path.join(appRoot, "public", "bunches.html");
+const bunchesSeedDir = path.join(appRoot, "server", "bunches-seed");
 const usersSeedPathCandidates = [
   process.env.SHADOW_USERS_SEED_PATH,
   process.platform === "win32" ? null : "/etc/secrets/shadow-users.json",
@@ -76,6 +80,7 @@ const allPermissions = [
   "cmr:view",
   "hal_locations:view",
   "expedition_stickers:view",
+  "bunches:view",
   "fouten_overview:view",
   "cmr:manage",
   "clock:view",
@@ -94,6 +99,7 @@ const PERMISSIONS = {
   CMR_VIEW: "cmr:view",
   HAL_LOCATIONS_VIEW: "hal_locations:view",
   EXPEDITION_STICKERS_VIEW: "expedition_stickers:view",
+  BUNCHES_VIEW: "bunches:view",
   FOUTEN_OVERVIEW_VIEW: "fouten_overview:view",
   CMR_MANAGE: "cmr:manage",
   CLOCK_VIEW: "clock:view",
@@ -203,6 +209,11 @@ const defaultExpeditionStickerState = {
 const defaultDagFoutjesState = {
   shared: {},
 };
+
+const bunchesService = createBunchesService({
+  statePath: bunchesStatePath,
+  seedDir: bunchesSeedDir,
+});
 
 const cmrPrintDataDirCandidates = [
   path.join(cacheDir, "cmrprint-data"),
@@ -5405,6 +5416,215 @@ async function handleApi(req, res, url) {
       "cache-control": "no-store",
     });
     res.end(withBridge);
+    return;
+  }
+
+  if (url.pathname === "/api/bunches/app" && req.method === "GET") {
+    if (!requirePermission(res, requestUser, PERMISSIONS.BUNCHES_VIEW)) {
+      return;
+    }
+    const html = await fs.readFile(bunchesAppHtmlPath, "utf8");
+    res.writeHead(200, {
+      "content-type": "text/html; charset=utf-8",
+      "cache-control": "no-store",
+    });
+    res.end(html);
+    return;
+  }
+
+  if (url.pathname === "/api/bunches/state" && req.method === "GET") {
+    if (!requirePermission(res, requestUser, PERMISSIONS.BUNCHES_VIEW)) {
+      return;
+    }
+    sendJson(res, 200, await bunchesService.getAppState());
+    return;
+  }
+
+  if (url.pathname === "/api/bunches/process" && req.method === "POST") {
+    if (!requirePermission(res, requestUser, PERMISSIONS.BUNCHES_VIEW)) {
+      return;
+    }
+    const body = await readRequestJson(req, 10 * 1024 * 1024);
+    try {
+      const run = await bunchesService.processImport({
+        pasteText: body.paste_text || "",
+        vertrekDatum: body.vertrek_datum || "",
+        label: body.label || "",
+        user: requestUser?.username || "unknown",
+      });
+      sendJson(res, 200, { run });
+    } catch (error) {
+      sendJson(res, 400, { error: error instanceof Error ? error.message : String(error) });
+    }
+    return;
+  }
+
+  if (url.pathname.match(/^\/api\/bunches\/runs\/\d+\/date$/) && req.method === "PATCH") {
+    if (!requirePermission(res, requestUser, PERMISSIONS.BUNCHES_VIEW)) {
+      return;
+    }
+    const runId = Number(url.pathname.split("/")[4]);
+    const body = await readRequestJson(req);
+    try {
+      sendJson(res, 200, { run: await bunchesService.updateRunDate(runId, body.vertrek_datum || "") });
+    } catch (error) {
+      sendJson(res, 400, { error: error instanceof Error ? error.message : String(error) });
+    }
+    return;
+  }
+
+  if (url.pathname.match(/^\/api\/bunches\/runs\/\d+\/label$/) && req.method === "PATCH") {
+    if (!requirePermission(res, requestUser, PERMISSIONS.BUNCHES_VIEW)) {
+      return;
+    }
+    const runId = Number(url.pathname.split("/")[4]);
+    const body = await readRequestJson(req);
+    try {
+      sendJson(res, 200, { run: await bunchesService.updateRunLabel(runId, body.label || "") });
+    } catch (error) {
+      sendJson(res, 400, { error: error instanceof Error ? error.message : String(error) });
+    }
+    return;
+  }
+
+  if (url.pathname.match(/^\/api\/bunches\/runs\/\d+$/) && req.method === "DELETE") {
+    if (!requirePermission(res, requestUser, PERMISSIONS.BUNCHES_VIEW)) {
+      return;
+    }
+    const runId = Number(url.pathname.split("/")[4]);
+    try {
+      await bunchesService.deleteRun(runId);
+      sendJson(res, 200, { ok: true });
+    } catch (error) {
+      sendJson(res, 400, { error: error instanceof Error ? error.message : String(error) });
+    }
+    return;
+  }
+
+  if (url.pathname === "/api/bunches/articles" && req.method === "POST") {
+    if (!requirePermission(res, requestUser, PERMISSIONS.BUNCHES_VIEW)) {
+      return;
+    }
+    const body = await readRequestJson(req);
+    try {
+      sendJson(res, 200, { article: await bunchesService.upsertArticle(body) });
+    } catch (error) {
+      sendJson(res, 400, { error: error instanceof Error ? error.message : String(error) });
+    }
+    return;
+  }
+
+  if (url.pathname === "/api/bunches/articles/bulk-zonder-tak" && req.method === "POST") {
+    if (!requirePermission(res, requestUser, PERMISSIONS.BUNCHES_VIEW)) {
+      return;
+    }
+    const body = await readRequestJson(req);
+    const broncodes = String(body.broncodes || "")
+      .split(/[\s,;]+/)
+      .map((value) => Number(value))
+      .filter((value) => Number.isFinite(value));
+    try {
+      sendJson(res, 200, await bunchesService.bulkSetZonderTak(broncodes, Boolean(body.value)));
+    } catch (error) {
+      sendJson(res, 400, { error: error instanceof Error ? error.message : String(error) });
+    }
+    return;
+  }
+
+  if (url.pathname.match(/^\/api\/bunches\/articles\/\d+$/) && req.method === "DELETE") {
+    if (!requirePermission(res, requestUser, PERMISSIONS.BUNCHES_VIEW)) {
+      return;
+    }
+    const broncode = Number(url.pathname.split("/")[4]);
+    try {
+      await bunchesService.deactivateArticle(broncode);
+      sendJson(res, 200, { ok: true });
+    } catch (error) {
+      sendJson(res, 400, { error: error instanceof Error ? error.message : String(error) });
+    }
+    return;
+  }
+
+  if (url.pathname === "/api/bunches/ape" && req.method === "POST") {
+    if (!requirePermission(res, requestUser, PERMISSIONS.BUNCHES_VIEW)) {
+      return;
+    }
+    const body = await readRequestJson(req);
+    try {
+      sendJson(res, 200, { entry: await bunchesService.upsertApe(body) });
+    } catch (error) {
+      sendJson(res, 400, { error: error instanceof Error ? error.message : String(error) });
+    }
+    return;
+  }
+
+  if (url.pathname === "/api/bunches/ape" && req.method === "DELETE") {
+    if (!requirePermission(res, requestUser, PERMISSIONS.BUNCHES_VIEW)) {
+      return;
+    }
+    const body = await readRequestJson(req);
+    try {
+      await bunchesService.deleteApe(String(body.omschrijving || ""));
+      sendJson(res, 200, { ok: true });
+    } catch (error) {
+      sendJson(res, 400, { error: error instanceof Error ? error.message : String(error) });
+    }
+    return;
+  }
+
+  if (url.pathname.match(/^\/api\/bunches\/download\/\d+\/inlezen\.csv$/) && req.method === "GET") {
+    if (!requirePermission(res, requestUser, PERMISSIONS.BUNCHES_VIEW)) {
+      return;
+    }
+    const runId = Number(url.pathname.split("/")[4]);
+    try {
+      const file = await bunchesService.downloadFile(runId, "inlezen");
+      res.writeHead(200, {
+        "content-type": file.contentType,
+        "content-disposition": `attachment; filename="${file.filename}"`,
+      });
+      res.end(file.body);
+    } catch (error) {
+      sendText(res, 404, error instanceof Error ? error.message : String(error));
+    }
+    return;
+  }
+
+  if (url.pathname.match(/^\/api\/bunches\/download\/\d+\/yybu\/[^/]+\.csv$/) && req.method === "GET") {
+    if (!requirePermission(res, requestUser, PERMISSIONS.BUNCHES_VIEW)) {
+      return;
+    }
+    const parts = url.pathname.split("/");
+    const runId = Number(parts[4]);
+    const sheet = decodeURIComponent(parts[6].replace(/\.csv$/i, ""));
+    try {
+      const file = await bunchesService.downloadFile(runId, "yybu", sheet);
+      res.writeHead(200, {
+        "content-type": file.contentType,
+        "content-disposition": `attachment; filename="${file.filename}"`,
+      });
+      res.end(file.body);
+    } catch (error) {
+      sendText(res, 404, error instanceof Error ? error.message : String(error));
+    }
+    return;
+  }
+
+  if (url.pathname.match(/^\/api\/bunches\/printlijst\/\d+\/(plast|kraft)(?:\/[^/]+)?$/i) && req.method === "GET") {
+    if (!requirePermission(res, requestUser, PERMISSIONS.BUNCHES_VIEW)) {
+      return;
+    }
+    const parts = url.pathname.split("/");
+    const runId = Number(parts[4]);
+    const hoes = parts[5];
+    const tak = parts[6] ? decodeURIComponent(parts[6]) : "";
+    try {
+      const html = await bunchesService.renderPrintlijst(runId, hoes, tak);
+      res.writeHead(200, { "content-type": "text/html; charset=utf-8" });
+      res.end(html);
+    } catch (error) {
+      sendText(res, 404, error instanceof Error ? error.message : String(error));
+    }
     return;
   }
 
