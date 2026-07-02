@@ -2144,6 +2144,21 @@ const UKDOCS_CUSTOMER_REQUIRED_DOCUMENT_FIELDS = [
   ["required_generated_invoices", "Require generated invoice workbooks"],
 ];
 
+const UKDOCS_CUSTOMER_MENU_DOCUMENT_FIELDS = [
+  ["menu_show_ukdocsinspection_inspection_list", "Phyto inspection - Inspection list"],
+  ["menu_show_ukdocsinspection_locations_file", "Phyto inspection - Locations file"],
+  ["menu_show_ukdocsinspection_phyto", "Phyto inspection - Phytosanitary document"],
+  ["menu_show_ukdocsinspection_export_extra", "Phyto inspection - Second export file"],
+  ["menu_show_ukdocsinspection_generated_invoices", "Phyto inspection - Invoices generate"],
+  ["menu_show_ukdocsinspection_generated_export", "Phyto inspection - Export file generated"],
+  ["menu_show_ukdocsprint_phyto", "UKdocs Print - Phytosanitary document"],
+  ["menu_show_ukdocsprint_export_extra", "UKdocs Print - Second export file"],
+  ["menu_show_ukdocsprint_generated_invoices", "UKdocs Print - Invoices generate"],
+  ["menu_show_ukdocsprint_generated_export", "UKdocs Print - Export file generated"],
+  ["menu_show_ukdocsprint_inspection_list", "UKdocs Print - Inspection list"],
+  ["menu_show_ukdocsprint_locations_file", "UKdocs Print - Locations file"],
+];
+
 const UKDOCS_EXPORT_DEFAULT_FIELDS = [
   ["destination_country", "Country of destination"],
   ["regulation", "Regulation"],
@@ -2201,6 +2216,18 @@ function emptyUkdocsCustomer() {
     required_export_extra: false,
     required_generated_export: true,
     required_generated_invoices: true,
+    menu_show_ukdocsinspection_inspection_list: true,
+    menu_show_ukdocsinspection_locations_file: true,
+    menu_show_ukdocsinspection_phyto: false,
+    menu_show_ukdocsinspection_export_extra: false,
+    menu_show_ukdocsinspection_generated_invoices: false,
+    menu_show_ukdocsinspection_generated_export: false,
+    menu_show_ukdocsprint_phyto: true,
+    menu_show_ukdocsprint_export_extra: true,
+    menu_show_ukdocsprint_generated_invoices: true,
+    menu_show_ukdocsprint_generated_export: false,
+    menu_show_ukdocsprint_inspection_list: false,
+    menu_show_ukdocsprint_locations_file: false,
     export_defaults: Object.fromEntries(UKDOCS_EXPORT_DEFAULT_FIELDS.map(([key]) => [key, ""])),
   };
 }
@@ -2360,6 +2387,27 @@ function ukdocsInspectionDocumentKeys(collection) {
     return ["phyto", "inspection_list", "export_extra"];
   }
   return ["phyto", "export_extra"];
+}
+
+function ukdocsMenuDocumentVisibility(customer, menuKey) {
+  if (menuKey === "ukdocsinspection") {
+    return {
+      phyto: customer?.menu_show_ukdocsinspection_phyto === true,
+      export_extra: customer?.menu_show_ukdocsinspection_export_extra === true,
+      inspection_list: customer?.menu_show_ukdocsinspection_inspection_list !== false,
+      locations_file: customer?.menu_show_ukdocsinspection_locations_file !== false,
+      generated_invoice: customer?.menu_show_ukdocsinspection_generated_invoices === true,
+      generated_export: customer?.menu_show_ukdocsinspection_generated_export === true,
+    };
+  }
+  return {
+    phyto: customer?.menu_show_ukdocsprint_phyto !== false,
+    export_extra: customer?.menu_show_ukdocsprint_export_extra !== false,
+    inspection_list: customer?.menu_show_ukdocsprint_inspection_list === true,
+    locations_file: customer?.menu_show_ukdocsprint_locations_file === true,
+    generated_invoice: customer?.menu_show_ukdocsprint_generated_invoices !== false,
+    generated_export: customer?.menu_show_ukdocsprint_generated_export === true,
+  };
 }
 
 function ukdocsPrintCollectionProgress(collection, customers) {
@@ -3283,6 +3331,19 @@ function UkdocsPage({ currentUser }) {
               </label>
             ))}
           </div>
+          <div className="section-header"><h3>Menu document visibility</h3></div>
+          <div className="checkbox-grid">
+            {UKDOCS_CUSTOMER_MENU_DOCUMENT_FIELDS.map(([key, label]) => (
+              <label key={key} className="checkbox-field">
+                <input
+                  type="checkbox"
+                  checked={customerDraft[key] === true}
+                  onChange={(event) => setCustomerDraft({ ...customerDraft, [key]: event.target.checked })}
+                />
+                <span>{label}</span>
+              </label>
+            ))}
+          </div>
           <div className="table-wrap"><table className="data-table"><thead><tr><th>Name</th><th>Hub match</th><th>Remark match</th><th>Delivery terms</th><th>Ready mail template</th><th>UK port</th><th>Currency</th><th>VAT</th><th>Actions</th></tr></thead><tbody>{customers.map((customer) => <tr key={customer.id}><td>{customer.customer_name}</td><td>{customer.match_hub_code || "-"}</td><td>{customer.match_remark || "-"}</td><td>{customer.default_delivery_terms || customer.export_defaults?.delivery_terms || "-"}</td><td>{customer.ready_email_subject || customer.ready_email_body ? "Custom" : "Default"}</td><td>{customer.default_uk_arrival_port || "-"}</td><td>{customer.default_currency || customer.export_defaults?.currency || "-"}</td><td>{customer.vat_number || "-"}</td><td className="row-actions"><button type="button" onClick={() => startEditCustomer(customer)}>Edit</button></td></tr>)}{!customers.length && <tr><td colSpan="9">No UKdocs customers saved yet.</td></tr>}</tbody></table></div>
         </div>
       )}
@@ -3372,7 +3433,7 @@ function ukdocsPrintStatusDefinition(status) {
   }
 }
 
-function ukdocsCollectionDownloadEntries(collection) {
+function ukdocsCollectionDownloadEntries(collection, customer = null, menuKey = "all") {
   if (!collection?.id) {
     return [];
   }
@@ -3385,6 +3446,16 @@ function ukdocsCollectionDownloadEntries(collection) {
   const exportExtra = collection.documents?.export_extra || null;
   const inspectionList = collection.documents?.inspection_list || null;
   const locationsFile = collection.documents?.locations_file || null;
+  const visibility = menuKey === "all"
+    ? {
+      phyto: true,
+      export_extra: true,
+      inspection_list: true,
+      locations_file: true,
+      generated_invoice: true,
+      generated_export: true,
+    }
+    : ukdocsMenuDocumentVisibility(customer, menuKey);
 
   function pushEntry(prefix, file, href, fallbackLabel) {
     if (!file && !href) {
@@ -3407,6 +3478,10 @@ function ukdocsCollectionDownloadEntries(collection) {
   }
 
   generatedFiles.forEach((generatedFile, index) => {
+    const generatedKind = generatedFile.document_kind === "invoice" ? "generated_invoice" : (generatedFile.document_kind === "export" ? "generated_export" : "");
+    if (generatedKind && visibility[generatedKind] !== true) {
+      return;
+    }
     pushEntry(
       "generated",
       generatedFile,
@@ -3415,6 +3490,7 @@ function ukdocsCollectionDownloadEntries(collection) {
     );
   });
 
+  if (visibility.phyto === true) {
   phytoFiles.forEach((phytoFile, index) => {
     pushEntry(
       "phyto",
@@ -3423,8 +3499,9 @@ function ukdocsCollectionDownloadEntries(collection) {
       `Phyto ${index + 1}`,
     );
   });
+  }
 
-  if (exportExtra?.storage_name) {
+  if (visibility.export_extra === true && exportExtra?.storage_name) {
     pushEntry(
       "export-extra",
       exportExtra,
@@ -3433,7 +3510,7 @@ function ukdocsCollectionDownloadEntries(collection) {
     );
   }
 
-  if (inspectionList?.storage_name) {
+  if (visibility.inspection_list === true && inspectionList?.storage_name) {
     pushEntry(
       "inspection-list",
       inspectionList,
@@ -3442,7 +3519,7 @@ function ukdocsCollectionDownloadEntries(collection) {
     );
   }
 
-  if (locationsFile?.storage_name) {
+  if (visibility.locations_file === true && locationsFile?.storage_name) {
     pushEntry(
       "locations-file",
       locationsFile,
@@ -3851,7 +3928,7 @@ function UkdocsPrintPage({ currentUser }) {
               const progress = ukdocsPrintCollectionProgress(collection, customers);
               const status = ukdocsPrintStatusDefinition(progress.status);
               const isActive = detailDrawerOpen && selectedCollection?.id === collection.id;
-              const downloadEntries = ukdocsCollectionDownloadEntries(collection);
+              const downloadEntries = ukdocsCollectionDownloadEntries(collection, progress.customer, "ukdocsprint");
               const inspectionMode = ukdocsPrintInspectionMode(collection);
               const isStockControl = inspectionMode === "stock_control";
               return (
@@ -4046,6 +4123,7 @@ function UkdocsInspectionPage({ currentUser }) {
   const selectedCollection = filteredCollections.find((item) => item.id === selectedCollectionId || item.shipment_id === selectedCollectionId) || null;
   const selectedCollectionProgress = selectedCollection ? ukdocsPrintCollectionProgress(selectedCollection, customers) : null;
   const selectedPhytoFiles = selectedCollection?.documents?.phyto_files || [];
+  const selectedAllDownloadEntries = selectedCollection ? ukdocsCollectionDownloadEntries(selectedCollection, selectedCollectionProgress?.customer, "all") : [];
 
   useEffect(() => {
     setNotesDraft(selectedCollection?.notes || "");
@@ -4169,7 +4247,7 @@ function UkdocsInspectionPage({ currentUser }) {
               const progress = ukdocsPrintCollectionProgress(collection, customers);
               const status = ukdocsPrintStatusDefinition(progress.status);
               const isActive = detailDrawerOpen && selectedCollection?.id === collection.id;
-              const downloadEntries = ukdocsCollectionDownloadEntries(collection);
+              const downloadEntries = ukdocsCollectionDownloadEntries(collection, progress.customer, "ukdocsinspection");
               const inspectionMode = ukdocsPrintInspectionMode(collection);
               const title = inspectionMode === "stock_control" ? "Voorraad / stock control" : "Nakeuring";
               return (
@@ -4270,6 +4348,22 @@ function UkdocsInspectionPage({ currentUser }) {
                   );
                 })}
               </div>
+
+              {!!selectedAllDownloadEntries.length && (
+                <div className="ukdocs-download-box">
+                  <div className="row-actions spread-actions">
+                    <strong>All linked files</strong>
+                    <button type="button" onClick={() => downloadCollectionEntries(selectedAllDownloadEntries)}>Download all linked</button>
+                  </div>
+                  <div className="ukdocs-download-list">
+                    {selectedAllDownloadEntries.map((entry) => (
+                      <a key={entry.key} href={entry.href} className="ukdocs-download-link">
+                        {entry.label}
+                      </a>
+                    ))}
+                  </div>
+                </div>
+              )}
 
               <label className="wide">
                 <span>Inspection notes</span>
