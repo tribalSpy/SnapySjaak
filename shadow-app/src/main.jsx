@@ -626,6 +626,35 @@ function ExpeditionStickerPage() {
 
   const hasSavedSources = Boolean(savedState?.planning_file || savedState?.split_file);
 
+  async function clearSavedSource(kind) {
+    setSavingSources(true);
+    setError("");
+    setMessage("");
+    try {
+      const payload = await apiJson(`/api/expedition-stickers/source/${kind}`, {
+        method: "DELETE",
+      });
+      setSavedState((current) => ({
+        ...(current || {}),
+        ...payload,
+      }));
+      if (kind === "planning") {
+        setPlanningFile(null);
+      } else if (kind === "split") {
+        setSplitFile(null);
+      }
+      setGeneratedFiles([]);
+      setHalSessionId("");
+      setHalSummary(null);
+      setMessage(`${kind === "planning" ? "Planning" : "Split"} file removed.`);
+    } catch (deleteError) {
+      setError(deleteError.message);
+      setMessage("");
+    } finally {
+      setSavingSources(false);
+    }
+  }
+
   async function saveSources() {
     if (!planningFile && !splitFile) {
       setError("Choose a planning file or split file first");
@@ -660,6 +689,9 @@ function ExpeditionStickerPage() {
       }));
       setPlanningFile(null);
       setSplitFile(null);
+      setGeneratedFiles([]);
+      setHalSessionId("");
+      setHalSummary(null);
       setMessage("Source files saved.");
     } catch (saveError) {
       setError(saveError.message);
@@ -756,6 +788,9 @@ function ExpeditionStickerPage() {
       }));
       setPlanningFile(null);
       setSplitFile(null);
+      setGeneratedFiles([]);
+      setHalSessionId("");
+      setHalSummary(null);
       setMessage("Source files saved.");
     } catch (saveError) {
       setError(saveError.message);
@@ -809,19 +844,25 @@ function ExpeditionStickerPage() {
                 <th>Rows</th>
                 <th>Saved by</th>
                 <th>Saved at</th>
+                <th>Action</th>
               </tr>
             </thead>
             <tbody>
               {[
-                ["Planning", savedState?.planning_file, savedState?.planning_summary],
-                ["Split", savedState?.split_file, savedState?.split_summary],
-              ].map(([label, file, summary]) => (
+                ["Planning", "planning", savedState?.planning_file, savedState?.planning_summary],
+                ["Split", "split", savedState?.split_file, savedState?.split_summary],
+              ].map(([label, kind, file, summary]) => (
                 <tr key={label}>
                   <td>{label}</td>
                   <td>{file?.original_name || "-"}</td>
                   <td>{summary?.row_count || 0}</td>
                   <td>{file?.saved_by || "-"}</td>
                   <td>{file?.saved_at ? formatTimestamp(file.saved_at) : "-"}</td>
+                  <td>
+                    <button type="button" onClick={() => clearSavedSource(kind)} disabled={!file || savingSources}>
+                      Remove
+                    </button>
+                  </td>
                 </tr>
               ))}
             </tbody>

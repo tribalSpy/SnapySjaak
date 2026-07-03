@@ -1528,6 +1528,26 @@ async function saveExpeditionStickerUpload(kind, filePayload, requestUser) {
   };
 }
 
+async function deleteExpeditionStickerUpload(kind) {
+  const normalizedKind = kind === "split" ? "split" : kind === "planning" ? "planning" : "";
+  if (!normalizedKind) {
+    throw new Error("Unknown expedition sticker source");
+  }
+
+  const currentState = await readExpeditionStickerState();
+  const file = currentState[`${normalizedKind}_file`];
+  if (file?.storage_name) {
+    await fs.rm(path.join(expeditionStickerFilesDir, file.storage_name), { force: true }).catch(() => {});
+  }
+
+  const nextState = {
+    ...currentState,
+    [`${normalizedKind}_file`]: null,
+  };
+  await writeExpeditionStickerState(nextState);
+  return nextState;
+}
+
 function normalizeFustAction(action) {
   return {
     id: String(action?.id || ""),
@@ -5244,6 +5264,35 @@ async function handleApi(req, res, url) {
       const responsePayload = {
         planning_file: nextState.planning_file,
         split_file: nextState.split_file,
+      };
+
+      if (nextState.planning_file) {
+        responsePayload.planning_summary = await inspectExpeditionStickerSource("planning", expeditionStickerFilePath(nextState.planning_file));
+      }
+      if (nextState.split_file) {
+        responsePayload.split_summary = await inspectExpeditionStickerSource("split", expeditionStickerFilePath(nextState.split_file));
+      }
+
+      sendJson(res, 200, responsePayload);
+    } catch (error) {
+      sendJson(res, 400, { error: error instanceof Error ? error.message : String(error) });
+    }
+    return;
+  }
+
+  if (url.pathname.match(/^\/api\/expedition-stickers\/source\/(planning|split)$/) && req.method === "DELETE") {
+    if (!requirePermission(res, requestUser, PERMISSIONS.EXPEDITION_STICKERS_VIEW)) {
+      return;
+    }
+
+    try {
+      const kind = url.pathname.split("/").pop();
+      const nextState = await deleteExpeditionStickerUpload(kind);
+      const responsePayload = {
+        planning_file: nextState.planning_file,
+        split_file: nextState.split_file,
+        planning_summary: null,
+        split_summary: null,
       };
 
       if (nextState.planning_file) {
