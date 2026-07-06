@@ -14,6 +14,7 @@ const PERMISSIONS = {
   FUST_IN: "fust:in",
   FUST_OUT: "fust:out",
   FUST_OVERVIEW: "fust:overview",
+  FUST_MANAGE: "fust:manage",
   CMR_VIEW: "cmr:view",
   HAL_LOCATIONS_VIEW: "hal_locations:view",
   EXPEDITION_STICKERS_VIEW: "expedition_stickers:view",
@@ -109,7 +110,7 @@ function pageHeading(page) {
     case "fust":
       return {
         title: "Fust Management",
-        caption: "Capture IN and OUT movements, then review balances and recent actions.",
+        caption: "Capture IN and OUT movements, import outside actions, and review balances with control and beheer.",
       };
     case "clock":
       return {
@@ -5360,18 +5361,27 @@ function PermissionChecklist({ title, permissions, onChange }) {
 }
 
 function fustTileLabel(tab) {
-  if (tab === "last-actions") {
-    return "Last actions";
-  }
-  return tab.toUpperCase();
+  return {
+    in: "IN",
+    out: "OUT",
+    overview: "Overview",
+    "last-actions": "Last actions",
+    control: "Fust Controle",
+    manage: "Fust Beheer",
+    import: "Fust Import",
+  }[tab] || tab.toUpperCase();
 }
 
 function FustPage({ currentUser, menuVersion }) {
+  const canManageFust = hasPermission(currentUser, PERMISSIONS.FUST_MANAGE);
   const visibleTabs = [
     hasPermission(currentUser, PERMISSIONS.FUST_IN) ? "in" : null,
     hasPermission(currentUser, PERMISSIONS.FUST_OUT) ? "out" : null,
     hasPermission(currentUser, PERMISSIONS.FUST_OVERVIEW) ? "overview" : null,
     hasPermission(currentUser, PERMISSIONS.FUST_OVERVIEW) ? "last-actions" : null,
+    hasPermission(currentUser, PERMISSIONS.FUST_OVERVIEW) ? "control" : null,
+    canManageFust ? "manage" : null,
+    canManageFust ? "import" : null,
   ].filter(Boolean);
   const [activeTab, setActiveTab] = useState("");
   const { loading: metaLoading, data: metaData, error: metaError } = useFustMeta(Boolean(currentUser));
@@ -5388,7 +5398,7 @@ function FustPage({ currentUser, menuVersion }) {
   }, [activeTab, visibleTabs]);
 
   if (!visibleTabs.length) {
-    return <div className="notice">This account can open Fust but does not yet have an IN, OUT, or Overview action assigned.</div>;
+    return <div className="notice">This account can open Fust but does not yet have an IN, OUT, Overview, or Beheer action assigned.</div>;
   }
 
   return (
@@ -5452,6 +5462,26 @@ function FustPage({ currentUser, menuVersion }) {
           actions={actionsData?.actions || []}
           onRefresh={refresh}
         />
+      )}
+
+      {activeTab === "control" && (
+        <FustControle
+          loading={actionsLoading}
+          actions={actionsData?.actions || []}
+          onRefresh={refresh}
+        />
+      )}
+
+      {activeTab === "manage" && (
+        <FustBeheer
+          loading={actionsLoading}
+          actions={actionsData?.actions || []}
+          onRefresh={refresh}
+        />
+      )}
+
+      {activeTab === "import" && (
+        <FustImportPanel onSaved={refresh} />
       )}
     </section>
   );
@@ -6207,16 +6237,41 @@ function FustOverview({ loading, actions, overview, sourceDebug, onRefresh }) {
   );
 }
 
-function FustLastActions({ loading, actions, onRefresh }) {
+function yesterdayIso() {
+  const now = new Date();
+  const yesterday = new Date(now.getFullYear(), now.getMonth(), now.getDate() - 1);
+  return `${yesterday.getFullYear()}-${String(yesterday.getMonth() + 1).padStart(2, "0")}-${String(yesterday.getDate()).padStart(2, "0")}`;
+}
+
+function isFustActionConfirmed(action) {
+  return Boolean(String(action?.confirmed_at || "").trim());
+}
+
+function FustActionTable({
+  loading,
+  actions,
+  onRefresh,
+  title,
+  readOnly = false,
+  allowConfirm = false,
+  allowManage = false,
+  defaultDate = "",
+  unconfirmedOnly = false,
+  emptyMessage = "No actions were found.",
+}) {
   const [busyActionId, setBusyActionId] = useState("");
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
   const [editingActionId, setEditingActionId] = useState("");
   const [editForm, setEditForm] = useState(null);
   const [typeFilter, setTypeFilter] = useState("");
-  const [dateFilter, setDateFilter] = useState("");
+  const [dateFilter, setDateFilter] = useState(defaultDate);
   const [countryFilter, setCountryFilter] = useState("");
   const [customerFilter, setCustomerFilter] = useState("");
+
+  useEffect(() => {
+    setDateFilter(defaultDate);
+  }, [defaultDate]);
 
   function startEdit(action) {
     setEditingActionId(action.id);
@@ -6299,30 +6354,35 @@ function FustLastActions({ loading, actions, onRefresh }) {
     }
   }
 
-  const typeOptions = [...new Set(actions.map((action) => action.type).filter(Boolean))]
-    .sort((left, right) => left.localeCompare(right));
-  const countryOptions = [...new Set(actions.map((action) => action.country).filter(Boolean))]
-    .sort((left, right) => left.localeCompare(right));
-  const customerOptions = [...new Set(actions.map((action) => action.customer_name).filter(Boolean))]
-    .sort((left, right) => left.localeCompare(right));
-  const visibleActions = actions.filter((action) => {
-    if (typeFilter && action.type !== typeFilter) {
-      return false;
+  async function toggleConfirm(actionId, confirmed) {
+    setBusyActionId(`${actionId}:${confirmed ? "unconfirm" : "confirm"}`);
+    setMessage("");
+    setError("");
+    try {
+      await apiJson(`/api/fust/actions/${encodeURIComponent(actionId)}/${confirmed ? "unconfirm" : "confirm"}`, {
+        method: "POST",
+      });
+      setMessage(confirmed ? "Confirmation removed." : "Action confirmed.");
+      onRefresh();
+    } catch (confirmError) {
+      setError(confirmError.message);
+    } finally {
+      setBusyActionId("");
     }
-    if (dateFilter && String(action.action_date || "") !== dateFilter) {
-      return false;
-    }
-    if (countryFilter && action.country !== countryFilter) {
-      return false;
-    }
-    if (customerFilter && action.customer_name !== customerFilter) {
-      return false;
-    }
-    return true;
-  });
+  }
+
+  const typeOptions = [...new Set(actions.map((action) => action.type).filter(Boolean))].sort((left, right) => left.localeCompare(right));
+  const countryOptions = [...new Set(actions.map((action) => action.country).filter(Boolean))].sort((left, right) => left.localeCompare(right));
+  const customerOptions = [...new Set(actions.map((action) => action.customer_name).filter(Boolean))].sort((left, right) => left.localeCompare(right));
+  const visibleActions = actions
+    .filter((action) => !unconfirmedOnly || !isFustActionConfirmed(action))
+    .filter((action) => !typeFilter || action.type === typeFilter)
+    .filter((action) => !dateFilter || String(action.action_date || "") === dateFilter)
+    .filter((action) => !countryFilter || action.country === countryFilter)
+    .filter((action) => !customerFilter || action.customer_name === customerFilter);
 
   if (loading) {
-    return <div className="notice">Loading last actions...</div>;
+    return <div className="notice">Loading Fust actions...</div>;
   }
 
   return (
@@ -6332,7 +6392,7 @@ function FustLastActions({ loading, actions, onRefresh }) {
 
       <div className="data-table-card">
         <div className="section-header">
-          <h2>Last actions</h2>
+          <h2>{title}</h2>
         </div>
         <div className="overview-filters">
           <label>
@@ -6382,43 +6442,23 @@ function FustLastActions({ loading, actions, onRefresh }) {
                 <th>Fustfactuur</th>
                 <th>Sheet</th>
                 <th>Email</th>
+                <th>Confirmed</th>
+                <th>Import</th>
                 <th>Actions</th>
               </tr>
             </thead>
             <tbody>
               {visibleActions.map((action) => {
                 const isEditing = editingActionId === action.id && editForm;
-                const canModify = true;
+                const confirmed = isFustActionConfirmed(action);
+                const canModify = !readOnly && (allowManage || !confirmed);
                 return (
                   <tr key={action.id}>
-                    <td>
-                      {isEditing ? (
-                        <select value={editForm.type} onChange={(event) => setEditForm({ ...editForm, type: event.target.value })}>
-                          <option value="IN">IN</option>
-                          <option value="OUT">OUT</option>
-                        </select>
-                      ) : action.type}
-                    </td>
-                    <td>
-                      {isEditing ? (
-                        <input type="date" value={editForm.action_date} onChange={(event) => setEditForm({ ...editForm, action_date: event.target.value })} />
-                      ) : action.action_date}
-                    </td>
-                    <td>
-                      {isEditing ? (
-                        <input value={editForm.country} onChange={(event) => setEditForm({ ...editForm, country: event.target.value })} />
-                      ) : action.country}
-                    </td>
-                    <td>
-                      {isEditing ? (
-                        <input value={editForm.customer_name} onChange={(event) => setEditForm({ ...editForm, customer_name: event.target.value })} />
-                      ) : action.customer_name}
-                    </td>
-                    <td>
-                      {isEditing ? (
-                        <input value={editForm.connect_name} onChange={(event) => setEditForm({ ...editForm, connect_name: event.target.value })} />
-                      ) : action.connect_name}
-                    </td>
+                    <td>{isEditing ? <select value={editForm.type} onChange={(event) => setEditForm({ ...editForm, type: event.target.value })}><option value="IN">IN</option><option value="OUT">OUT</option></select> : action.type}</td>
+                    <td>{isEditing ? <input type="date" value={editForm.action_date} onChange={(event) => setEditForm({ ...editForm, action_date: event.target.value })} /> : action.action_date}</td>
+                    <td>{isEditing ? <input value={editForm.country} onChange={(event) => setEditForm({ ...editForm, country: event.target.value })} /> : action.country}</td>
+                    <td>{isEditing ? <input value={editForm.customer_name} onChange={(event) => setEditForm({ ...editForm, customer_name: event.target.value })} /> : action.customer_name}</td>
+                    <td>{isEditing ? <input value={editForm.connect_name} onChange={(event) => setEditForm({ ...editForm, connect_name: event.target.value })} /> : action.connect_name}</td>
                     {["dc", "dcs", "dco", "cctag", "pal", "vk"].map((metric) => (
                       <td key={metric}>
                         {isEditing ? (
@@ -6429,76 +6469,37 @@ function FustLastActions({ loading, actions, onRefresh }) {
                             value={editForm.metrics[metric]}
                             onChange={(event) => setEditForm({
                               ...editForm,
-                              metrics: {
-                                ...editForm.metrics,
-                                [metric]: Number(event.target.value || 0),
-                              },
+                              metrics: { ...editForm.metrics, [metric]: Number(event.target.value || 0) },
                             })}
                           />
                         ) : (action.metrics?.[metric] || 0)}
                       </td>
                     ))}
                     <td><DocumentStatus action={action} /></td>
-                    <td>
-                      {isEditing ? (
-                        <input value={editForm.remark} onChange={(event) => setEditForm({ ...editForm, remark: event.target.value })} />
-                      ) : (action.remark || "-")}
-                    </td>
-                    <td>
-                      {isEditing ? (
-                        <input value={editForm.fustbon_reference} onChange={(event) => setEditForm({ ...editForm, fustbon_reference: event.target.value })} />
-                      ) : (action.fustbon_reference || "-")}
-                    </td>
-                    <td>
-                      {isEditing ? (
-                        <input value={editForm.fustfactuur_reference} onChange={(event) => setEditForm({ ...editForm, fustfactuur_reference: event.target.value })} />
-                      ) : (action.fustfactuur_reference || "-")}
-                    </td>
+                    <td>{isEditing ? <input value={editForm.remark} onChange={(event) => setEditForm({ ...editForm, remark: event.target.value })} /> : (action.remark || "-")}</td>
+                    <td>{isEditing ? <input value={editForm.fustbon_reference} onChange={(event) => setEditForm({ ...editForm, fustbon_reference: event.target.value })} /> : (action.fustbon_reference || "-")}</td>
+                    <td>{isEditing ? <input value={editForm.fustfactuur_reference} onChange={(event) => setEditForm({ ...editForm, fustfactuur_reference: event.target.value })} /> : (action.fustfactuur_reference || "-")}</td>
                     <td>{action.sheet_sync?.ok ? "ok" : action.sheet_sync?.error || "-"}</td>
                     <td>{action.email_sync?.ok ? "ok" : action.email_sync?.error || "-"}</td>
+                    <td>{confirmed ? `${formatTimestamp(action.confirmed_at)}${action.confirmed_by ? ` by ${action.confirmed_by}` : ""}` : "-"}</td>
+                    <td>{action.import_source?.file_name ? `${action.import_source.file_name}${action.import_source.row_number ? ` row ${action.import_source.row_number}` : ""}` : "-"}</td>
                     <td>
                       <div className="retry-actions">
                         {isEditing ? (
                           <>
-                            <button
-                              type="button"
-                              disabled={busyActionId === `${action.id}:save`}
-                              onClick={() => saveEdit(action.id)}
-                            >
-                              Save
-                            </button>
+                            <button type="button" disabled={busyActionId === `${action.id}:save`} onClick={() => saveEdit(action.id)}>Save</button>
                             <button type="button" onClick={cancelEdit}>Cancel</button>
                           </>
-                        ) : canModify && (
-                          <button type="button" onClick={() => startEdit(action)}>Edit</button>
+                        ) : (
+                          <>
+                            {canModify && <button type="button" onClick={() => startEdit(action)}>Edit</button>}
+                            {allowConfirm && !confirmed && <button type="button" disabled={busyActionId === `${action.id}:confirm`} onClick={() => toggleConfirm(action.id, false)}>Confirm</button>}
+                            {allowManage && confirmed && <button type="button" disabled={busyActionId === `${action.id}:unconfirm`} onClick={() => toggleConfirm(action.id, true)}>Unconfirm</button>}
+                          </>
                         )}
-                        {!action.sheet_sync?.ok && (
-                          <button
-                            type="button"
-                            disabled={busyActionId === `${action.id}:retry-sheet`}
-                            onClick={() => retryAction(action.id, "retry-sheet")}
-                          >
-                            Retry sheet
-                          </button>
-                        )}
-                        {!action.email_sync?.ok && (
-                          <button
-                            type="button"
-                            disabled={busyActionId === `${action.id}:retry-email`}
-                            onClick={() => retryAction(action.id, "retry-email")}
-                          >
-                            Retry email
-                          </button>
-                        )}
-                        {canModify && !isEditing && (
-                          <button
-                            type="button"
-                            disabled={busyActionId === `${action.id}:delete`}
-                            onClick={() => deleteLocalAction(action.id)}
-                          >
-                            Delete
-                          </button>
-                        )}
+                        {!readOnly && !action.sheet_sync?.ok && <button type="button" disabled={busyActionId === `${action.id}:retry-sheet`} onClick={() => retryAction(action.id, "retry-sheet")}>Retry sheet</button>}
+                        {!readOnly && !action.email_sync?.ok && <button type="button" disabled={busyActionId === `${action.id}:retry-email`} onClick={() => retryAction(action.id, "retry-email")}>Retry email</button>}
+                        {canModify && !isEditing && <button type="button" disabled={busyActionId === `${action.id}:delete`} onClick={() => deleteLocalAction(action.id)}>Delete</button>}
                       </div>
                     </td>
                   </tr>
@@ -6506,12 +6507,168 @@ function FustLastActions({ loading, actions, onRefresh }) {
               })}
               {!visibleActions.length && (
                 <tr>
-                  <td colSpan="18">No actions were found.</td>
+                  <td colSpan="20">{emptyMessage}</td>
                 </tr>
               )}
             </tbody>
           </table>
         </div>
+      </div>
+    </div>
+  );
+}
+
+function FustLastActions({ loading, actions, onRefresh }) {
+  return <FustActionTable loading={loading} actions={actions} onRefresh={onRefresh} title="Last actions" readOnly emptyMessage="No actions were found." />;
+}
+
+function FustControle({ loading, actions, onRefresh }) {
+  return (
+    <FustActionTable
+      loading={loading}
+      actions={actions}
+      onRefresh={onRefresh}
+      title="Fust Controle"
+      defaultDate={yesterdayIso()}
+      unconfirmedOnly
+      allowConfirm
+      emptyMessage="No unconfirmed actions were found for this filter."
+    />
+  );
+}
+
+function FustBeheer({ loading, actions, onRefresh }) {
+  return (
+    <FustActionTable
+      loading={loading}
+      actions={actions}
+      onRefresh={onRefresh}
+      title="Fust Beheer"
+      allowManage
+      emptyMessage="No actions were found in Fust Beheer."
+    />
+  );
+}
+
+function FustImportPanel({ onSaved }) {
+  const [file, setFile] = useState(null);
+  const [busy, setBusy] = useState(false);
+  const [message, setMessage] = useState("");
+  const [error, setError] = useState("");
+  const [preview, setPreview] = useState(null);
+
+  async function analyzeImport() {
+    if (!file) {
+      setError("Choose an import file first.");
+      return;
+    }
+    setBusy(true);
+    setMessage("");
+    setError("");
+    try {
+      const payload = await apiJson("/api/fust/import/preview", {
+        method: "POST",
+        body: JSON.stringify({
+          file: {
+            name: file.name,
+            type: file.type || "application/octet-stream",
+            content_base64: await fileToBase64(file),
+          },
+        }),
+      });
+      setPreview(payload);
+      setMessage(`Preview ready: ${payload.summary?.total_rows || 0} rows found.`);
+    } catch (previewError) {
+      setError(previewError.message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function applyImport() {
+    if (!file) {
+      setError("Choose an import file first.");
+      return;
+    }
+    setBusy(true);
+    setMessage("");
+    setError("");
+    try {
+      const payload = await apiJson("/api/fust/import/apply", {
+        method: "POST",
+        body: JSON.stringify({
+          file: {
+            name: file.name,
+            type: file.type || "application/octet-stream",
+            content_base64: await fileToBase64(file),
+          },
+        }),
+      });
+      setPreview({ rows: payload.rows, summary: payload.summary, file_name: payload.summary?.file_name || file.name, sheet_name: payload.summary?.sheet_name || "Overzicht" });
+      setMessage(`Import done. Created ${payload.summary?.created || 0}, updated ${payload.summary?.updated || 0}, locked ${payload.summary?.locked || 0}, missing connect ${payload.summary?.missing_connect || 0}, failed ${payload.summary?.failed || 0}.`);
+      onSaved();
+    } catch (importError) {
+      setError(importError.message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="overview-stack">
+      {message && <div className="notice">{message}</div>}
+      {error && <div className="notice danger">{error}</div>}
+      <div className="data-table-card">
+        <div className="section-header">
+          <h2>Fust Import</h2>
+        </div>
+        <div className="form-grid">
+          <label className="wide">
+            <span>Overzicht file</span>
+            <input type="file" accept=".xlsx,.xls,.csv" onChange={(event) => setFile(event.target.files?.[0] || null)} />
+          </label>
+        </div>
+        <div className="row-actions hal-actions-row">
+          <button type="button" onClick={analyzeImport} disabled={busy || !file}>{busy ? "Analyzing..." : "Preview import"}</button>
+          <button type="button" className="primary" onClick={applyImport} disabled={busy || !file}>{busy ? "Importing..." : "Import actions"}</button>
+        </div>
+        {preview && (
+          <>
+            <div className="notice">
+              {preview.file_name || file?.name || "file"} | {preview.sheet_name || "Overzicht"} | total {preview.summary?.total_rows || 0}, new {preview.summary?.new_rows ?? preview.summary?.created ?? 0}, update {preview.summary?.update_rows ?? preview.summary?.updated ?? 0}, locked {preview.summary?.locked_rows ?? preview.summary?.locked ?? 0}, missing connect {preview.summary?.missing_connect_rows ?? preview.summary?.missing_connect ?? 0}
+            </div>
+            <div className="table-wrap">
+              <table className="data-table action-table">
+                <thead>
+                  <tr>
+                    <th>Date</th>
+                    <th>Customer</th>
+                    <th>Connect</th>
+                    <th>DC</th>
+                    <th>DCS</th>
+                    <th>DCO</th>
+                    <th>Status</th>
+                    <th>Note</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {(preview.rows || []).map((row, index) => (
+                    <tr key={`${row.action_date}-${row.customer_name}-${index}`}>
+                      <td>{row.action_date}</td>
+                      <td>{row.customer_name}</td>
+                      <td>{row.connect_name || "-"}</td>
+                      <td>{row.metrics?.dc || 0}</td>
+                      <td>{row.metrics?.dcs || 0}</td>
+                      <td>{row.metrics?.dco || 0}</td>
+                      <td>{row.status}</td>
+                      <td>{row.note || "-"}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </>
+        )}
       </div>
     </div>
   );

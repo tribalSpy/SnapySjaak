@@ -33,6 +33,7 @@ const driveBridgePath = path.join(appRoot, "server", "drive_bridge.py");
 const syncWorkerPath = path.join(appRoot, "server", "sync_worker.js");
 const halLocationsWorkerPath = path.join(appRoot, "server", "hal_locations_worker.py");
 const expeditionStickerWorkerPath = path.join(appRoot, "server", "expedition_sticker_worker.py");
+const fustImportWorkerPath = path.join(appRoot, "server", "fust_import_worker.py");
 const ukdocsWorkerPath = path.join(appRoot, "server", "ukdocs_worker.py");
 const dagFoutjesHtmlPathCandidates = [
   path.join(repoRoot, "foutjeskoelcel", "bledy-chlodnia (1).html"),
@@ -77,6 +78,7 @@ const allPermissions = [
   "fust:in",
   "fust:out",
   "fust:overview",
+  "fust:manage",
   "cmr:view",
   "hal_locations:view",
   "expedition_stickers:view",
@@ -96,6 +98,7 @@ const PERMISSIONS = {
   FUST_IN: "fust:in",
   FUST_OUT: "fust:out",
   FUST_OVERVIEW: "fust:overview",
+  FUST_MANAGE: "fust:manage",
   CMR_VIEW: "cmr:view",
   HAL_LOCATIONS_VIEW: "hal_locations:view",
   EXPEDITION_STICKERS_VIEW: "expedition_stickers:view",
@@ -891,6 +894,33 @@ function normalizeCmrInfo(value) {
   };
 }
 
+function normalizeFustImportSource(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return null;
+  }
+  const importKey = String(value?.import_key || "").trim();
+  const fileName = String(value?.file_name || "").trim();
+  const sheetName = String(value?.sheet_name || "").trim();
+  const rowNumber = Number(value?.row_number || 0);
+  const sourceDate = String(value?.source_date || "").trim();
+  const importedAt = String(value?.imported_at || "").trim();
+  const importedBy = String(value?.imported_by || "").trim();
+  const importKind = String(value?.import_kind || "").trim();
+  if (!importKey && !fileName && !sheetName && !rowNumber && !sourceDate && !importedAt && !importedBy && !importKind) {
+    return null;
+  }
+  return {
+    import_key: importKey,
+    file_name: fileName,
+    sheet_name: sheetName,
+    row_number: rowNumber,
+    source_date: sourceDate,
+    imported_at: importedAt,
+    imported_by: importedBy,
+    import_kind: importKind,
+  };
+}
+
 function normalizeCmrManageUsernames(values) {
   if (!Array.isArray(values)) {
     return [];
@@ -1548,6 +1578,17 @@ async function deleteExpeditionStickerUpload(kind) {
   return nextState;
 }
 
+function emptyFustMetrics() {
+  return {
+    dc: 0,
+    cctag: 0,
+    dcs: 0,
+    dco: 0,
+    pal: 0,
+    vk: 0,
+  };
+}
+
 function normalizeFustAction(action) {
   return {
     id: String(action?.id || ""),
@@ -1572,6 +1613,9 @@ function normalizeFustAction(action) {
     },
     created_by: String(action?.created_by || ""),
     created_at: String(action?.created_at || ""),
+    confirmed_at: String(action?.confirmed_at || ""),
+    confirmed_by: String(action?.confirmed_by || ""),
+    import_source: normalizeFustImportSource(action?.import_source),
     deleted: action?.deleted === true,
     deleted_at: String(action?.deleted_at || ""),
     deleted_by: String(action?.deleted_by || ""),
@@ -2731,6 +2775,146 @@ async function collectCurrentFustActions(settings) {
   };
 }
 
+async function applyFustImportRows(filePayload, requestUser) {
+  const prepared = await prepareFustImportRows(filePayload, requestUser);
+  const localActions = await readFustActions();
+  const summary = {
+    file_name: prepared.file_name,
+    sheet_name: prepared.sheet_name,
+    total_rows: prepared.rows.length,
+    created: 0,
+    updated: 0,
+    locked: 0,
+    missing_connect: 0,
+    failed: 0,
+  };
+  const results = [];
+
+  for (const row of prepared.rows) {
+    if (row.status === "missing_connect") {
+      summary.missing_connect += 1;
+      results.push({ ...row, imported: false });
+      continue;
+    }
+
+    try {
+      const existingMatch = row.matched_action_id
+        ? await ensureLocalFustAction(row.matched_action_id, prepared.settings)
+        : { actions: localActions, actionIndex: -1, action: null };
+      const existingAction = existingMatch?.action || null;
+
+      if (existingAction && isFustActionConfirmed(existingAction) && !hasUserPermission(requestUser, PERMISSIONS.FUST_MANAGE)) {
+        summary.locked += 1;
+        results.push({ ...row, imported: false, status: "locked", note: `Confirmed by ${existingAction.confirmed_by || "unknown"}` });
+        continue;
+      }
+
+      const baseAction = existingAction || {};
+      const nextAction = normalizeFustAction({
+        ...baseAction,
+        id: existingAction?.id || createImportedActionId(row.import_key),
+        type: "OUT",
+        action_date: row.action_date,
+        week: weekNumberForDate(row.action_date),
+        day_name: weekdayNameForDate(row.action_date),
+        country: row.country,
+        customer_name: row.customer_name,
+        customer_code: row.customer_code,
+        connect_name: row.connect_name,
+        remark: baseAction.remark || "",
+        fustbon_reference: baseAction.fustbon_reference || "",
+        fustfactuur_reference: baseAction.fustfactuur_reference || "",
+        metrics: {
+          ...(baseAction.metrics || emptyFustMetrics()),
+          dc: Number(row.metrics?.dc || 0),
+          cctag: Number(row.metrics?.cctag || 0),
+          dcs: Number(row.metrics?.dcs || 0),
+          dco: Number(row.metrics?.dco || 0),
+          pal: Number(row.metrics?.pal || 0),
+          vk: Number(row.metrics?.vk || 0),
+        },
+        created_by: existingAction?.created_by || requestUser.username,
+        created_at: existingAction?.created_at || new Date().toISOString(),
+        confirmed_at: existingAction?.confirmed_at || "",
+        confirmed_by: existingAction?.confirmed_by || "",
+        import_source: {
+          import_key: row.import_key,
+          file_name: prepared.file_name,
+          sheet_name: prepared.sheet_name,
+          row_number: row.source_row_number,
+          source_date: row.action_date,
+          imported_at: new Date().toISOString(),
+          imported_by: requestUser.username,
+          import_kind: "overzicht_out",
+        },
+        deleted: false,
+        deleted_at: "",
+        deleted_by: "",
+        sheet_sync: { ok: false, target_sheets: [], error: "Pending import sync" },
+        email_sync: existingAction?.email_sync?.ok
+          ? existingAction.email_sync
+          : { ok: true, recipients: [], error: "Imported without email notification" },
+        cmr: existingAction?.cmr || normalizeCmrInfo(null),
+        fustbon: existingAction?.fustbon || normalizeCmrInfo(null),
+      });
+
+      const localIndex = localActions.findIndex((item) => String(item.id || "").trim() === nextAction.id);
+      if (localIndex >= 0) {
+        localActions[localIndex] = nextAction;
+      } else {
+        localActions.push(nextAction);
+      }
+      await writeFustActions(localActions);
+      await mirrorFustActionToDatabase(nextAction);
+
+      try {
+        nextAction.sheet_sync = await syncFustActionToSheets(nextAction, prepared.settings, { previousAction: existingAction });
+      } catch (sheetError) {
+        nextAction.sheet_sync = {
+          ok: false,
+          target_sheets: [],
+          error: sheetError instanceof Error ? sheetError.message : String(sheetError),
+        };
+      }
+
+      const savedIndex = localActions.findIndex((item) => String(item.id || "").trim() === nextAction.id);
+      if (savedIndex >= 0) {
+        localActions[savedIndex] = nextAction;
+      } else {
+        localActions.push(nextAction);
+      }
+      await writeFustActions(localActions);
+      await mirrorFustActionToDatabase(nextAction);
+
+      if (existingAction) {
+        summary.updated += 1;
+      } else {
+        summary.created += 1;
+      }
+      results.push({
+        ...row,
+        imported: true,
+        status: existingAction ? "updated" : "created",
+        action_id: nextAction.id,
+        sheet_sync: nextAction.sheet_sync,
+      });
+    } catch (error) {
+      summary.failed += 1;
+      results.push({
+        ...row,
+        imported: false,
+        status: "failed",
+        note: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+
+  return {
+    summary,
+    rows: results,
+  };
+}
+
 async function backfillFustDatabase() {
   if (!isDatabaseEnabled()) {
     throw new Error("Database is not configured");
@@ -2830,8 +3014,7 @@ function weekdayNameForDate(dateString) {
 }
 
 function requirePermission(res, requestUser, permission) {
-  const permissions = normalizePermissions(requestUser?.role, requestUser?.permissions);
-  if (!permissions.includes(permission)) {
+  if (!hasUserPermission(requestUser, permission)) {
     sendJson(res, 403, { error: "You do not have access to this action" });
     return false;
   }
@@ -2845,6 +3028,10 @@ function requireAnyPermission(res, requestUser, allowedPermissions) {
     return false;
   }
   return true;
+}
+
+function hasUserPermission(requestUser, permission) {
+  return normalizePermissions(requestUser?.role, requestUser?.permissions).includes(permission);
 }
 
 function normalizeHeader(value) {
@@ -2910,6 +3097,130 @@ function buildFustMetaFromSheetRows(rows) {
     records,
     headers,
     raw_row_count: rows.length,
+  };
+}
+
+function isFustActionConfirmed(action) {
+  return Boolean(String(action?.confirmed_at || "").trim());
+}
+
+function buildFustImportKey(actionLike) {
+  return [
+    String(actionLike?.type || "OUT").trim().toUpperCase(),
+    String(actionLike?.action_date || "").trim(),
+    String(actionLike?.country || "").trim().toUpperCase(),
+    String(actionLike?.customer_name || "").trim().toLowerCase(),
+    String(actionLike?.connect_name || actionLike?.customer_code || "").trim().toLowerCase(),
+  ].join("|");
+}
+
+function createImportedActionId(importKey) {
+  const digest = crypto.createHash("sha1").update(String(importKey || "")).digest("hex").slice(0, 16);
+  return `fust-import-${digest}`;
+}
+
+function matchFustMetaRecord(records, country, customerName) {
+  return (records || []).find((record) => (
+    String(record.country || "").trim().toUpperCase() === String(country || "").trim().toUpperCase()
+    && String(record.customer_name || "").trim().toLowerCase() === String(customerName || "").trim().toLowerCase()
+  )) || null;
+}
+
+function findMatchingFustImportAction(actions, candidate) {
+  const targetImportKey = buildFustImportKey(candidate);
+  const targetBusinessKey = buildActionBusinessKey(candidate);
+  return (actions || []).find((action) => {
+    if (String(action?.import_source?.import_key || "").trim() && String(action.import_source.import_key).trim() === targetImportKey) {
+      return true;
+    }
+    return buildActionBusinessKey(action) === targetBusinessKey;
+  }) || null;
+}
+
+async function parseFustImportWorkbook(filePayload) {
+  const originalName = path.basename(String(filePayload?.name || "").trim());
+  const contentBase64 = String(filePayload?.content_base64 || "").trim();
+  if (!originalName || !contentBase64) {
+    throw new Error("Choose an import file first");
+  }
+
+  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "fust-import-"));
+  const extension = path.extname(originalName).toLowerCase() || ".xlsx";
+  const inputPath = path.join(tempDir, `source${extension}`);
+  try {
+    await fs.writeFile(inputPath, Buffer.from(contentBase64, "base64"));
+    const output = await runFustImportWorker(["parse", "--input", inputPath]);
+    const payload = JSON.parse(output.toString("utf8"));
+    return {
+      file_name: originalName,
+      sheet_name: String(payload?.sheet_name || "Overzicht"),
+      records: Array.isArray(payload?.records) ? payload.records : [],
+    };
+  } finally {
+    await fs.rm(tempDir, { recursive: true, force: true }).catch(() => {});
+  }
+}
+
+async function prepareFustImportRows(filePayload, requestUser) {
+  const settings = await readFustSettings();
+  const canManageConfirmed = hasUserPermission(requestUser, PERMISSIONS.FUST_MANAGE);
+  const [parsed, current, dataRows] = await Promise.all([
+    parseFustImportWorkbook(filePayload),
+    collectCurrentFustActions(settings),
+    loadFustSheetRows(settings),
+  ]);
+  const meta = buildFustMetaFromSheetRows(dataRows);
+  const preparedRows = parsed.records.map((record) => {
+    const matchedMeta = matchFustMetaRecord(meta.records, record.country, record.customer_name);
+    const connectName = matchedMeta?.connect_name || "";
+    const customerCode = matchedMeta?.customer_code || connectName;
+    const importKey = buildFustImportKey({
+      type: "OUT",
+      action_date: record.action_date,
+      country: record.country,
+      customer_name: record.customer_name,
+      connect_name: connectName,
+      customer_code: customerCode,
+    });
+    const matchedAction = connectName
+      ? findMatchingFustImportAction(current.activeActions, {
+        type: "OUT",
+        action_date: record.action_date,
+        country: record.country,
+        customer_name: record.customer_name,
+        connect_name: connectName,
+        customer_code: customerCode,
+        import_source: { import_key: importKey },
+      })
+      : null;
+    const confirmed = isFustActionConfirmed(matchedAction);
+    const status = !connectName
+      ? "missing_connect"
+      : matchedAction
+        ? (confirmed && !canManageConfirmed ? "locked" : "update")
+        : "new";
+    return {
+      ...record,
+      type: "OUT",
+      connect_name: connectName,
+      customer_code: customerCode,
+      import_key: importKey,
+      matched_action_id: matchedAction?.id || "",
+      matched_confirmed: confirmed,
+      status,
+      note: !connectName
+        ? "No connect match found in Fust data sheet"
+        : matchedAction
+          ? (confirmed && !canManageConfirmed ? `Confirmed by ${matchedAction.confirmed_by || "unknown"}` : "Will update existing action")
+          : "Will create new action",
+    };
+  });
+
+  return {
+    settings,
+    file_name: parsed.file_name,
+    sheet_name: parsed.sheet_name,
+    rows: preparedRows,
   };
 }
 
@@ -3078,6 +3389,16 @@ function buildActionSignature(action) {
     action.metrics?.dco || 0,
     action.metrics?.pal || 0,
     action.metrics?.vk || 0,
+  ].join("|");
+}
+
+function buildActionBusinessKey(action) {
+  return [
+    String(action?.type || "").trim().toUpperCase(),
+    String(action?.action_date || "").trim(),
+    String(action?.country || "").trim().toUpperCase(),
+    String(action?.customer_name || "").trim().toLowerCase(),
+    String(action?.connect_name || action?.customer_code || "").trim().toLowerCase(),
   ].join("|");
 }
 
@@ -4067,6 +4388,32 @@ function runExpeditionStickerWorker(args) {
       }
 
       reject(new Error(summarizeBridgeError(Buffer.concat(stderr).toString("utf8")) || `Expedition Sticker worker exited with ${code}`));
+    });
+
+    child.stdin.end();
+  });
+}
+
+function runFustImportWorker(args) {
+  return new Promise((resolve, reject) => {
+    const child = spawn(resolvePythonCommand(), [fustImportWorkerPath, ...args], {
+      cwd: repoRoot,
+      windowsHide: true,
+    });
+
+    const stdout = [];
+    const stderr = [];
+    child.stdout.on("data", (chunk) => stdout.push(chunk));
+    child.stderr.on("data", (chunk) => stderr.push(chunk));
+    child.on("error", reject);
+    child.on("close", (code) => {
+      const output = Buffer.concat(stdout);
+      if (code === 0) {
+        resolve(output);
+        return;
+      }
+
+      reject(new Error(summarizeBridgeError(Buffer.concat(stderr).toString("utf8")) || `Fust import worker exited with ${code}`));
     });
 
     child.stdin.end();
@@ -7053,6 +7400,10 @@ async function handleApi(req, res, url) {
     if (!requirePermission(res, requestUser, requiredPermission)) {
       return;
     }
+    if (isFustActionConfirmed(action) && !hasUserPermission(requestUser, PERMISSIONS.FUST_MANAGE)) {
+      sendJson(res, 403, { error: "Confirmed actions can only be changed in Fust Beheer" });
+      return;
+    }
 
     if (documentConfig.mode === "skip") {
       action[documentConfig.field] = normalizeCmrInfo({
@@ -7121,6 +7472,10 @@ async function handleApi(req, res, url) {
       if (!requirePermission(res, requestUser, requiredPermission)) {
         return;
       }
+      if (isFustActionConfirmed(action) && !hasUserPermission(requestUser, PERMISSIONS.FUST_MANAGE)) {
+        sendJson(res, 403, { error: "Confirmed actions can only be changed in Fust Beheer" });
+        return;
+      }
 
       try {
         action.sheet_sync = await syncFustActionToSheets(action, settings);
@@ -7142,6 +7497,10 @@ async function handleApi(req, res, url) {
     if (retryKind === "retry-email") {
       const requiredPermission = action.type === "OUT" ? PERMISSIONS.FUST_OUT : PERMISSIONS.FUST_IN;
       if (!requirePermission(res, requestUser, requiredPermission)) {
+        return;
+      }
+      if (isFustActionConfirmed(action) && !hasUserPermission(requestUser, PERMISSIONS.FUST_MANAGE)) {
+        sendJson(res, 403, { error: "Confirmed actions can only be changed in Fust Beheer" });
         return;
       }
 
@@ -7182,6 +7541,10 @@ async function handleApi(req, res, url) {
     const type = String(existingAction.type || "").trim().toUpperCase() === "OUT" ? "OUT" : "IN";
     const requiredPermission = type === "OUT" ? PERMISSIONS.FUST_OUT : PERMISSIONS.FUST_IN;
     if (!requirePermission(res, requestUser, requiredPermission)) {
+      return;
+    }
+    if (isFustActionConfirmed(existingAction) && !hasUserPermission(requestUser, PERMISSIONS.FUST_MANAGE)) {
+      sendJson(res, 403, { error: "Confirmed actions can only be changed in Fust Beheer" });
       return;
     }
 
@@ -7276,6 +7639,10 @@ async function handleApi(req, res, url) {
 
     const requiredPermission = action.type === "OUT" ? PERMISSIONS.FUST_OUT : PERMISSIONS.FUST_IN;
     if (!requirePermission(res, requestUser, requiredPermission)) {
+      return;
+    }
+    if (isFustActionConfirmed(action) && !hasUserPermission(requestUser, PERMISSIONS.FUST_MANAGE)) {
+      sendJson(res, 403, { error: "Confirmed actions can only be changed in Fust Beheer" });
       return;
     }
 
@@ -7398,6 +7765,80 @@ async function handleApi(req, res, url) {
 
     sendJson(res, 201, { action });
     return;
+  }
+
+  if (url.pathname === "/api/fust/import/preview" && req.method === "POST") {
+    if (!requirePermission(res, requestUser, PERMISSIONS.FUST_MANAGE)) {
+      return;
+    }
+    try {
+      const body = await readRequestJson(req, 25 * 1024 * 1024);
+      const prepared = await prepareFustImportRows(body?.file || {}, requestUser);
+      sendJson(res, 200, {
+        file_name: prepared.file_name,
+        sheet_name: prepared.sheet_name,
+        rows: prepared.rows,
+        summary: {
+          total_rows: prepared.rows.length,
+          new_rows: prepared.rows.filter((row) => row.status === "new").length,
+          update_rows: prepared.rows.filter((row) => row.status === "update").length,
+          locked_rows: prepared.rows.filter((row) => row.status === "locked").length,
+          missing_connect_rows: prepared.rows.filter((row) => row.status === "missing_connect").length,
+        },
+      });
+    } catch (error) {
+      sendJson(res, 400, { error: error instanceof Error ? error.message : String(error) });
+    }
+    return;
+  }
+
+  if (url.pathname === "/api/fust/import/apply" && req.method === "POST") {
+    if (!requirePermission(res, requestUser, PERMISSIONS.FUST_MANAGE)) {
+      return;
+    }
+    try {
+      const body = await readRequestJson(req, 25 * 1024 * 1024);
+      const payload = await applyFustImportRows(body?.file || {}, requestUser);
+      sendJson(res, 200, payload);
+    } catch (error) {
+      sendJson(res, 400, { error: error instanceof Error ? error.message : String(error) });
+    }
+    return;
+  }
+
+  if (url.pathname.startsWith("/api/fust/actions/") && req.method === "POST") {
+    const parts = url.pathname.split("/").filter(Boolean);
+    const actionId = decodeURIComponent(parts[3] || "");
+    const retryKind = parts[4] || "";
+    if (retryKind === "confirm" || retryKind === "unconfirm") {
+      const settings = await readFustSettings();
+      const localMatch = await ensureLocalFustAction(actionId, settings);
+      const actions = localMatch.actions;
+      const actionIndex = localMatch.actionIndex;
+      if (actionIndex < 0 || !localMatch.action) {
+        sendJson(res, 404, { error: "Fust action not found" });
+        return;
+      }
+      const action = localMatch.action;
+      if (retryKind === "confirm") {
+        if (!requireAnyPermission(res, requestUser, [PERMISSIONS.FUST_OVERVIEW, PERMISSIONS.FUST_MANAGE])) {
+          return;
+        }
+        action.confirmed_at = new Date().toISOString();
+        action.confirmed_by = requestUser.username;
+      } else {
+        if (!requirePermission(res, requestUser, PERMISSIONS.FUST_MANAGE)) {
+          return;
+        }
+        action.confirmed_at = "";
+        action.confirmed_by = "";
+      }
+      actions[actionIndex] = normalizeFustAction(action);
+      await writeFustActions(actions);
+      await mirrorFustActionToDatabase(actions[actionIndex]);
+      sendJson(res, 200, { action: actions[actionIndex] });
+      return;
+    }
   }
 
   if (url.pathname === "/api/users") {
