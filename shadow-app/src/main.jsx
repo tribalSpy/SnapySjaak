@@ -6438,6 +6438,36 @@ function FustActionTable({
     }
   }
 
+  async function confirmAllVisible() {
+    const actionIds = visibleActions
+      .filter((action) => !isFustActionConfirmed(action))
+      .map((action) => action.id)
+      .filter(Boolean);
+    if (!actionIds.length) {
+      setMessage("No unconfirmed actions are shown.");
+      return;
+    }
+    if (!window.confirm(`Confirm ${actionIds.length} shown action(s)?`)) {
+      return;
+    }
+    setBusyActionId("confirm-all");
+    setMessage("");
+    setError("");
+    try {
+      const payload = await apiJson("/api/fust/actions/confirm-batch", {
+        method: "POST",
+        body: JSON.stringify({ action_ids: actionIds }),
+      });
+      const summary = payload?.summary || {};
+      setMessage(`Confirmed ${summary.confirmed || 0}. Already confirmed ${summary.already_confirmed || 0}. Missing ${summary.missing || 0}.`);
+      onRefresh();
+    } catch (batchError) {
+      setError(batchError.message);
+    } finally {
+      setBusyActionId("");
+    }
+  }
+
   const typeOptions = [...new Set(actions.map((action) => action.type).filter(Boolean))].sort((left, right) => left.localeCompare(right));
   const countryOptions = [...new Set(actions.map((action) => action.country).filter(Boolean))].sort((left, right) => left.localeCompare(right));
   const customerOptions = [...new Set(actions.map((action) => action.customer_name).filter(Boolean))].sort((left, right) => left.localeCompare(right));
@@ -6490,6 +6520,9 @@ function FustActionTable({
               setDateFilter("");
             }}>All unconfirmed</button>
             <button type="button" className={!onlyUnconfirmed ? "primary" : ""} onClick={() => setOnlyUnconfirmed(false)}>Show all filtered</button>
+            <button type="button" onClick={confirmAllVisible} disabled={busyActionId === "confirm-all" || !visibleActions.some((action) => !isFustActionConfirmed(action))}>
+              {busyActionId === "confirm-all" ? "Confirming..." : "Confirm all shown"}
+            </button>
             <button type="button" onClick={onRefresh}>Refresh control</button>
           </div>
           {!!unconfirmedByDate.length && (

@@ -7697,6 +7697,27 @@ async function handleApi(req, res, url) {
 
     const action = localMatch.action;
 
+    if (retryKind === "confirm" || retryKind === "unconfirm") {
+      if (retryKind === "confirm") {
+        if (!requireAnyPermission(res, requestUser, [PERMISSIONS.FUST_OVERVIEW, PERMISSIONS.FUST_MANAGE])) {
+          return;
+        }
+        action.confirmed_at = new Date().toISOString();
+        action.confirmed_by = requestUser.username;
+      } else {
+        if (!requirePermission(res, requestUser, PERMISSIONS.FUST_MANAGE)) {
+          return;
+        }
+        action.confirmed_at = "";
+        action.confirmed_by = "";
+      }
+      actions[actionIndex] = normalizeFustAction(action);
+      await writeFustActions(actions);
+      await mirrorFustActionToDatabase(actions[actionIndex]);
+      sendJson(res, 200, { action: actions[actionIndex] });
+      return;
+    }
+
     if (retryKind === "retry-sheet") {
       const requiredPermission = action.type === "OUT" ? PERMISSIONS.FUST_OUT : PERMISSIONS.FUST_IN;
       if (!requirePermission(res, requestUser, requiredPermission)) {
@@ -7752,6 +7773,50 @@ async function handleApi(req, res, url) {
     }
 
     sendJson(res, 404, { error: "Unknown retry action" });
+    return;
+  }
+
+  if (url.pathname === "/api/fust/actions/confirm-batch" && req.method === "POST") {
+    if (!requireAnyPermission(res, requestUser, [PERMISSIONS.FUST_OVERVIEW, PERMISSIONS.FUST_MANAGE])) {
+      return;
+    }
+    const settings = await readFustSettings();
+    const body = await readRequestJson(req);
+    const actionIds = Array.isArray(body?.action_ids)
+      ? body.action_ids.map((value) => String(value || "").trim()).filter(Boolean)
+      : [];
+    if (!actionIds.length) {
+      sendJson(res, 400, { error: "No actions selected for confirmation" });
+      return;
+    }
+
+    const results = {
+      requested: actionIds.length,
+      confirmed: 0,
+      already_confirmed: 0,
+      missing: 0,
+    };
+
+    for (const actionId of actionIds) {
+      const localMatch = await ensureLocalFustAction(actionId, settings);
+      if (localMatch.actionIndex < 0 || !localMatch.action) {
+        results.missing += 1;
+        continue;
+      }
+      const action = localMatch.action;
+      if (isFustActionConfirmed(action)) {
+        results.already_confirmed += 1;
+        continue;
+      }
+      action.confirmed_at = new Date().toISOString();
+      action.confirmed_by = requestUser.username;
+      localMatch.actions[localMatch.actionIndex] = normalizeFustAction(action);
+      await writeFustActions(localMatch.actions);
+      await mirrorFustActionToDatabase(localMatch.actions[localMatch.actionIndex]);
+      results.confirmed += 1;
+    }
+
+    sendJson(res, 200, { ok: true, summary: results });
     return;
   }
 
@@ -8034,41 +8099,6 @@ async function handleApi(req, res, url) {
       sendJson(res, 400, { error: error instanceof Error ? error.message : String(error) });
     }
     return;
-  }
-
-  if (url.pathname.startsWith("/api/fust/actions/") && req.method === "POST") {
-    const parts = url.pathname.split("/").filter(Boolean);
-    const actionId = decodeURIComponent(parts[3] || "");
-    const retryKind = parts[4] || "";
-    if (retryKind === "confirm" || retryKind === "unconfirm") {
-      const settings = await readFustSettings();
-      const localMatch = await ensureLocalFustAction(actionId, settings);
-      const actions = localMatch.actions;
-      const actionIndex = localMatch.actionIndex;
-      if (actionIndex < 0 || !localMatch.action) {
-        sendJson(res, 404, { error: "Fust action not found" });
-        return;
-      }
-      const action = localMatch.action;
-      if (retryKind === "confirm") {
-        if (!requireAnyPermission(res, requestUser, [PERMISSIONS.FUST_OVERVIEW, PERMISSIONS.FUST_MANAGE])) {
-          return;
-        }
-        action.confirmed_at = new Date().toISOString();
-        action.confirmed_by = requestUser.username;
-      } else {
-        if (!requirePermission(res, requestUser, PERMISSIONS.FUST_MANAGE)) {
-          return;
-        }
-        action.confirmed_at = "";
-        action.confirmed_by = "";
-      }
-      actions[actionIndex] = normalizeFustAction(action);
-      await writeFustActions(actions);
-      await mirrorFustActionToDatabase(actions[actionIndex]);
-      sendJson(res, 200, { action: actions[actionIndex] });
-      return;
-    }
   }
 
   if (url.pathname === "/api/users") {
