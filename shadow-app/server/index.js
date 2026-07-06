@@ -4256,6 +4256,24 @@ function removeUkdocsPrintDocumentByName(collection, kind, originalName) {
   return normalizeUkdocsPrintCollection(collection);
 }
 
+function removeUkdocsPrintDocumentFromOtherCollections(collections, date, targetCollectionId, kind, originalName) {
+  const syncDate = String(date || "").slice(0, 10);
+  const target = String(originalName || "").trim().toLowerCase();
+  if (!syncDate || !target) {
+    return Array.isArray(collections) ? collections : [];
+  }
+
+  return (Array.isArray(collections) ? collections : []).map((collection) => {
+    if (String(collection?.shipment_date || "").slice(0, 10) !== syncDate) {
+      return collection;
+    }
+    if (collection?.id === targetCollectionId) {
+      return collection;
+    }
+    return removeUkdocsPrintDocumentByName(collection, kind, originalName);
+  });
+}
+
 function detectUkdocsPrintDocumentKind(text) {
   const normalized = String(text || "").toLowerCase();
   if (/(phyto|phytosan|kcb|certificate|certificaat|e-certnl|nvwa\.nl|no-reply@nvwa\.nl)/.test(normalized)) {
@@ -4381,7 +4399,10 @@ async function syncUkdocsPrintFromGmail(settings, requestUser, query, date) {
       }
       const currentMatch = state.print_collections.find((item) => item.id === bestMatch.id || item.shipment_id === bestMatch.shipment_id) || bestMatch;
       const existingOwner = findUkdocsPrintDocumentOwner(state.print_collections, syncDate, kind, attachmentName);
+      state.print_collections = removeUkdocsPrintDocumentFromOtherCollections(state.print_collections, syncDate, currentMatch.id, kind, attachmentName);
       if (existingOwner?.collection?.id === currentMatch.id) {
+        const refreshedCurrent = state.print_collections.find((item) => item.id === currentMatch.id) || currentMatch;
+        state.print_collections = upsertUkdocsPrintCollection(state.print_collections, refreshedCurrent);
         results.push({ status: "skipped", file_name: attachmentName, shipment_reference: currentMatch.shipment_reference, reason: `${kind} already exists` });
         continue;
       }
@@ -4390,10 +4411,6 @@ async function syncUkdocsPrintFromGmail(settings, requestUser, query, date) {
         continue;
       }
       let savedDocument = existingOwner?.document || null;
-      if (existingOwner && existingOwner.collection.id !== currentMatch.id) {
-        const cleanedOwner = removeUkdocsPrintDocumentByName(existingOwner.collection, kind, attachmentName);
-        state.print_collections = upsertUkdocsPrintCollection(state.print_collections, cleanedOwner);
-      }
       if (!savedDocument) {
         const buffer = await gmailAttachmentBuffer(accessToken, detail.id, attachment.attachment_id);
         savedDocument = await saveUkdocsPrintBuffer(currentMatch.id, kind, attachmentName, attachment.mime_type, buffer, requestUser.username);
