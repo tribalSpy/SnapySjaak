@@ -532,11 +532,12 @@
         </div>
       `).join("");
       const yybuSheets = Object.keys(result.yybu_files || {}).sort();
+      const dateLabel = escapeHtml(run.vertrek_datum || "-");
       const printLinks = [];
       [["plast", "Plastic"], ["kraft", "Kraft"]].forEach(([key, label]) => {
-        printLinks.push(`<a href="/api/bunches/printlijst/${run.id}/${key}" target="_blank">${label}</a>`);
+        printLinks.push(`<a href="#" onclick="openPrintList(${run.id}, '${key}'); return false;">${label} ${dateLabel}</a>`);
         ((result.availableTaks || {})[label === "Plastic" ? "Plast" : "Kraft"] || []).forEach((tak) => {
-          printLinks.push(`<a href="/api/bunches/printlijst/${run.id}/${key}/${encodeURIComponent(tak)}" target="_blank">${label} ${escapeHtml(tak)}</a>`);
+          printLinks.push(`<a href="#" onclick="openPrintList(${run.id}, '${key}', '${encodeURIComponent(tak)}'); return false;">${label} ${escapeHtml(tak)} ${dateLabel}</a>`);
         });
       });
       target.className = "stack";
@@ -570,8 +571,8 @@
           <div>
             <h3>Downloads</h3>
             <div class="downloads">
-              <a href="/api/bunches/download/${run.id}/inlezen.csv">Inlezen.csv</a>
-              ${yybuSheets.map((sheet) => `<a href="/api/bunches/download/${run.id}/yybu/${encodeURIComponent(sheet)}.csv">${escapeHtml(sheet)}.csv</a>`).join("")}
+              <a href="/api/bunches/download/${run.id}/inlezen.csv">Inlezen ${dateLabel}.csv</a>
+              ${yybuSheets.map((sheet) => `<a href="/api/bunches/download/${run.id}/yybu/${encodeURIComponent(sheet)}.csv">${escapeHtml(sheet)} ${dateLabel}.csv</a>`).join("")}
             </div>
           </div>
           <div>
@@ -580,6 +581,22 @@
           </div>
         </div>
       `;
+    }
+
+    function openPrintList(runId, hoes, tak = "") {
+      const htmlPath = tak
+        ? `/api/bunches/printlijst/${runId}/${hoes}/${tak}`
+        : `/api/bunches/printlijst/${runId}/${hoes}`;
+      const pdfPath = tak
+        ? `/api/bunches/printlijst-pdf/${runId}/${hoes}/${tak}.pdf`
+        : `/api/bunches/printlijst-pdf/${runId}/${hoes}/all.pdf`;
+      window.open(htmlPath, "_blank", "noopener,noreferrer");
+      const link = document.createElement("a");
+      link.href = pdfPath;
+      link.style.display = "none";
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
     }
 
     function renderArticles() {

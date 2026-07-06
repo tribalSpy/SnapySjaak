@@ -291,6 +291,11 @@ function formatDateNL(isoDate) {
   return match ? `${match[3]}-${match[2]}-${match[1]}` : String(isoDate || "");
 }
 
+function formatDateForFilename(isoDate) {
+  const match = String(isoDate || "").match(/^(\d{4})-(\d{2})-(\d{2})/);
+  return match ? `${match[1]}-${match[2]}-${match[3]}` : String(isoDate || "").replace(/[^0-9A-Za-z-]+/g, "-");
+}
+
 function formatAmount(value) {
   if (value == null) {
     return "";
@@ -306,6 +311,24 @@ function escapeHtml(value) {
     '"': "&quot;",
     "'": "&#39;",
   }[character]));
+}
+
+function safeFilenamePart(value, fallback = "file") {
+  const cleaned = String(value || "")
+    .trim()
+    .replace(/[\\/:*?"<>|]+/g, "-")
+    .replace(/\s+/g, " ")
+    .replace(/-+/g, "-")
+    .trim();
+  return cleaned || fallback;
+}
+
+function bunchesRunDate(run) {
+  return run?.result?.vertrekDatum || run?.vertrek_datum || "";
+}
+
+function bunchesFilePrefix(run) {
+  return safeFilenamePart(formatDateForFilename(bunchesRunDate(run)), "no-date");
 }
 
 function generateInlezenCsv(inlezen) {
@@ -394,6 +417,89 @@ function generatePrintlijstHtml(title, items, dateString) {
   </table>
 </body>
 </html>`;
+}
+
+function pdfEscape(value) {
+  return String(value ?? "")
+    .replace(/\\/g, "\\\\")
+    .replace(/\(/g, "\\(")
+    .replace(/\)/g, "\\)");
+}
+
+function buildSimplePdf(title, items, dateString) {
+  const displayDate = formatDateNL(dateString) || dateString || "";
+  const lines = [
+    title,
+    `${displayDate} - ${items.length} regels`,
+    "",
+    "OK  Naam                             Tak  Lengte  Aantal  APE  Totaal",
+    "--------------------------------------------------------------------",
+    ...items.map((item) => {
+      const columns = [
+        "[ ]",
+        String(item.naam || "").slice(0, 30).padEnd(30, " "),
+        String(item.tak || "").slice(0, 4).padEnd(4, " "),
+        String(item.lengte ?? "").padStart(6, " "),
+        String(item.aantal_eenheden != null ? formatAmount(item.aantal_eenheden) : "?").padStart(6, " "),
+        String(item.ape || "?").padStart(4, " "),
+        String(item.totaal_bossen ?? "").padStart(6, " "),
+      ];
+      return columns.join(" ");
+    }),
+  ];
+
+  const pageLineLimit = 46;
+  const pageChunks = [];
+  for (let index = 0; index < lines.length; index += pageLineLimit) {
+    pageChunks.push(lines.slice(index, index + pageLineLimit));
+  }
+
+  const objects = [];
+  const addObject = (content) => {
+    objects.push(content);
+    return objects.length;
+  };
+
+  const fontId = addObject("<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>");
+  const pageIds = [];
+
+  for (const pageLines of pageChunks) {
+    const contentLines = ["BT", "/F1 11 Tf", "50 800 Td", "14 TL"];
+    pageLines.forEach((line, index) => {
+      if (index === 0) {
+        contentLines.push(`(${pdfEscape(line)}) Tj`);
+      } else {
+        contentLines.push(`0 -14 Td (${pdfEscape(line)}) Tj`);
+      }
+    });
+    contentLines.push("ET");
+    const contentStream = contentLines.join("\n");
+    const contentId = addObject(`<< /Length ${Buffer.byteLength(contentStream, "utf8")} >>\nstream\n${contentStream}\nendstream`);
+    const pageId = addObject(`<< /Type /Page /Parent PAGES_ID /MediaBox [0 0 595 842] /Resources << /Font << /F1 ${fontId} 0 R >> >> /Contents ${contentId} 0 R >>`);
+    pageIds.push(pageId);
+  }
+
+  const pagesId = addObject(`<< /Type /Pages /Count ${pageIds.length} /Kids [${pageIds.map((id) => `${id} 0 R`).join(" ")}] >>`);
+  const catalogId = addObject(`<< /Type /Catalog /Pages ${pagesId} 0 R >>`);
+
+  pageIds.forEach((pageId) => {
+    objects[pageId - 1] = objects[pageId - 1].replace("PAGES_ID", `${pagesId} 0 R`);
+  });
+
+  let pdf = "%PDF-1.4\n";
+  const offsets = [0];
+  for (let index = 0; index < objects.length; index += 1) {
+    offsets.push(Buffer.byteLength(pdf, "utf8"));
+    pdf += `${index + 1} 0 obj\n${objects[index]}\nendobj\n`;
+  }
+  const xrefOffset = Buffer.byteLength(pdf, "utf8");
+  pdf += `xref\n0 ${objects.length + 1}\n`;
+  pdf += "0000000000 65535 f \n";
+  for (let index = 1; index < offsets.length; index += 1) {
+    pdf += `${String(offsets[index]).padStart(10, "0")} 00000 n \n`;
+  }
+  pdf += `trailer\n<< /Size ${objects.length + 1} /Root ${catalogId} 0 R >>\nstartxref\n${xrefOffset}\n%%EOF`;
+  return Buffer.from(pdf, "utf8");
 }
 
 function processData(rows, state) {
@@ -832,10 +938,11 @@ export function createBunchesService({ statePath, seedDir }) {
     if (!run) {
       throw new Error("Run not found");
     }
+    const prefix = bunchesFilePrefix(run);
     if (kind === "inlezen") {
       return {
         contentType: "text/csv; charset=utf-8",
-        filename: "Inlezen.csv",
+        filename: `${prefix} Inlezen.csv`,
         body: generateInlezenCsv(run.result.inlezen || []),
       };
     }
@@ -846,14 +953,14 @@ export function createBunchesService({ statePath, seedDir }) {
       }
       return {
         contentType: "text/csv; charset=utf-8",
-        filename: `${sheet}.csv`,
+        filename: `${prefix} ${safeFilenamePart(sheet, "YYBU")}.csv`,
         body: generateUniFile(sheet, sheetLines, run.result.vertrekDatum || run.vertrek_datum),
       };
     }
     throw new Error("Unknown download");
   }
 
-  async function renderPrintlijst(runId, hoes, tak) {
+  async function getPrintlijstData(runId, hoes, tak) {
     const run = await findRun(runId);
     if (!run) {
       throw new Error("Run not found");
@@ -871,7 +978,26 @@ export function createBunchesService({ statePath, seedDir }) {
     const title = tak
       ? `Printlijst ${isPlast ? "Plastic" : "Kraft"} ${tak}`
       : `Printlijst ${isPlast ? "Plastic" : "Kraft"}`;
-    return generatePrintlijstHtml(title, items, run.result.vertrekDatum || run.vertrek_datum);
+    return {
+      title,
+      items,
+      dateString: run.result.vertrekDatum || run.vertrek_datum,
+      filename: `${bunchesFilePrefix(run)} ${safeFilenamePart(title, "Printlijst")}.pdf`,
+    };
+  }
+
+  async function renderPrintlijst(runId, hoes, tak) {
+    const data = await getPrintlijstData(runId, hoes, tak);
+    return generatePrintlijstHtml(data.title, data.items, data.dateString);
+  }
+
+  async function renderPrintlijstPdf(runId, hoes, tak) {
+    const data = await getPrintlijstData(runId, hoes, tak);
+    return {
+      contentType: "application/pdf",
+      filename: data.filename,
+      body: buildSimplePdf(data.title, data.items, data.dateString),
+    };
   }
 
   return {
@@ -887,5 +1013,6 @@ export function createBunchesService({ statePath, seedDir }) {
     deleteApe,
     downloadFile,
     renderPrintlijst,
+    renderPrintlijstPdf,
   };
 }

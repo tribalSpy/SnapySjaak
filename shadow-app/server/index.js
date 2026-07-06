@@ -6474,6 +6474,29 @@ async function handleApi(req, res, url) {
     return;
   }
 
+  if (url.pathname.match(/^\/api\/bunches\/printlijst-pdf\/\d+\/(plast|kraft)\/[^/]+\.pdf$/i) && req.method === "GET") {
+    if (!requirePermission(res, requestUser, PERMISSIONS.BUNCHES_VIEW)) {
+      return;
+    }
+    const parts = url.pathname.split("/");
+    const runId = Number(parts[4]);
+    const hoes = parts[5];
+    const takToken = parts[6] ? decodeURIComponent(parts[6].replace(/\.pdf$/i, "")) : "";
+    const tak = takToken.toLowerCase() === "all" ? "" : takToken;
+    try {
+      const file = await bunchesService.renderPrintlijstPdf(runId, hoes, tak);
+      res.writeHead(200, {
+        "content-type": file.contentType,
+        "content-disposition": `attachment; filename="${file.filename}"`,
+        "cache-control": "no-store",
+      });
+      res.end(file.body);
+    } catch (error) {
+      sendText(res, 404, error instanceof Error ? error.message : String(error));
+    }
+    return;
+  }
+
   if (url.pathname === "/api/dag-foutjes/overview" && req.method === "GET") {
     if (!requirePermission(res, requestUser, PERMISSIONS.FOUTEN_OVERVIEW_VIEW)) {
       return;
