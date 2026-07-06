@@ -3654,6 +3654,10 @@ function UkdocsPrintPage({ currentUser }) {
     () => [...new Set(collections.map((item) => String(item.shipment_date || "").slice(0, 10)).filter(Boolean))].sort(),
     [collections],
   );
+  const hasCollectionsLoadedForSheetDate = useMemo(
+    () => collections.some((item) => item.collection_type !== "stock_control" && String(item.shipment_date || "").slice(0, 10) === sheetSyncDate),
+    [collections, sheetSyncDate],
+  );
   const shipmentCollections = useMemo(
     () => collections.filter((item) => item.collection_type !== "stock_control"),
     [collections],
@@ -3859,13 +3863,16 @@ function UkdocsPrintPage({ currentUser }) {
   }
 
   async function syncSheetSendings() {
+    if (hasCollectionsLoadedForSheetDate && !window.confirm("Shipments loaded already, this will overwrite them. Continue?")) {
+      return;
+    }
     setSheetBusy(true);
     setError("");
     setMessage("");
     try {
       const payload = await apiJson("/api/ukdocs-print/sheet-sync", {
         method: "POST",
-        body: JSON.stringify({ date: sheetSyncDate }),
+        body: JSON.stringify({ date: sheetSyncDate, overwrite_existing: hasCollectionsLoadedForSheetDate }),
       });
       setState((current) => ({ ...current, print_collections: payload.print_collections || current?.print_collections || [] }));
       setMessage(`Loaded ${payload.imported_count || 0} sendings from ${payload.sheet_name || "spreadsheet"} for ${payload.date}.`);
@@ -3876,17 +3883,17 @@ function UkdocsPrintPage({ currentUser }) {
     }
   }
 
-  async function refreshReferenceConnectOnly() {
+  async function updateSheetSendingsInfo() {
     setSheetBusy(true);
     setError("");
     setMessage("");
     try {
       const payload = await apiJson("/api/ukdocs-print/sheet-sync", {
         method: "POST",
-        body: JSON.stringify({ date: sheetSyncDate, reference_connect_only: true }),
+        body: JSON.stringify({ date: sheetSyncDate, update_only: true }),
       });
       setState((current) => ({ ...current, print_collections: payload.print_collections || current?.print_collections || [] }));
-      setMessage(`Reference connect refreshed for ${payload.updated_count || 0} shipments on ${payload.date}. Saved files and manual shipment data stayed untouched.`);
+      setMessage(`Updated info for ${payload.updated_count || 0} shipments on ${payload.date}. Saved files, notes, and linked data stayed untouched.`);
     } catch (sheetError) {
       setError(sheetError.message);
     } finally {
@@ -3931,7 +3938,7 @@ function UkdocsPrintPage({ currentUser }) {
         </div>
         <div className="row-actions spread-actions">
           <button type="button" className="primary" onClick={syncSheetSendings} disabled={sheetBusy}>{sheetBusy ? "Loading..." : "Load sendings from spreadsheet"}</button>
-          <button type="button" onClick={refreshReferenceConnectOnly} disabled={sheetBusy}>{sheetBusy ? "Refreshing..." : "Refresh reference connect only"}</button>
+          <button type="button" onClick={updateSheetSendingsInfo} disabled={sheetBusy}>{sheetBusy ? "Updating..." : "Update info"}</button>
         </div>
         <div className="notice">This imports the sending list for the selected day from the PD spreadsheet. Then UKdocs shipments can link to one of these sendings, and Gmail can match the phytosanitary PDF by reference connect.</div>
       </div>
