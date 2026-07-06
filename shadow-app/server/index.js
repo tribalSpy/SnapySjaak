@@ -123,6 +123,7 @@ const defaultFustSettings = {
   out_sheet_name: "Uitgaand",
   dashboard_sheet_name: "Dashboard",
   email_recipients: [],
+  support_email_recipients: [],
   smtp_host: "",
   smtp_port: 587,
   smtp_username: "",
@@ -958,6 +959,7 @@ function normalizeFustSettings(settings) {
     out_sheet_name: String(settings?.out_sheet_name || defaultFustSettings.out_sheet_name).trim() || defaultFustSettings.out_sheet_name,
     dashboard_sheet_name: String(settings?.dashboard_sheet_name || defaultFustSettings.dashboard_sheet_name).trim() || defaultFustSettings.dashboard_sheet_name,
     email_recipients: normalizeEmailRecipients(settings?.email_recipients),
+    support_email_recipients: normalizeEmailRecipients(settings?.support_email_recipients),
     smtp_host: String(settings?.smtp_host || "").trim(),
     smtp_port: Number.isFinite(smtpPort) && smtpPort > 0 ? smtpPort : defaultFustSettings.smtp_port,
     smtp_username: String(settings?.smtp_username || "").trim(),
@@ -993,6 +995,69 @@ async function readFustSettings() {
 
 async function writeFustSettings(settings) {
   await writeJsonFile(fustSettingsPath, normalizeFustSettings(settings));
+}
+
+async function sendSupportAttentionEmail(settings, details = {}) {
+  const recipients = normalizeEmailRecipients(settings?.support_email_recipients);
+  if (!recipients.length) {
+    return { ok: false, reason: "No ICT support recipients configured" };
+  }
+  if (!settings?.smtp_host || !settings?.smtp_username || !settings?.smtp_password || !settings?.smtp_from) {
+    return { ok: false, reason: "SMTP is not fully configured" };
+  }
+
+  const subject = [
+    "Support needed",
+    String(details.service || "Connection"),
+    String(details.action || "").trim(),
+  ].filter(Boolean).join(" | ");
+
+  const body = [
+    "A SnappySjaak service needs attention.",
+    "",
+    `Service: ${String(details.service || "-")}`,
+    `Action attempted: ${String(details.action || "-")}`,
+    `User: ${String(details.username || "-")}`,
+    `Time: ${new Date().toISOString()}`,
+    `Connected account / target: ${String(details.connected_account || "-")}`,
+    `What failed: ${String(details.error || "-")}`,
+    "",
+    `What must be connected: ${String(details.reconnect_target || "-")}`,
+    `Workaround: ${String(details.workaround || "Open a private browser window, sign in with the required account, and reconnect the service.")}`,
+    "",
+    `Request path: ${String(details.path || "-")}`,
+  ].join("\n");
+
+  try {
+    await runPythonBridge(
+      ["email-send"],
+      JSON.stringify({
+        recipients,
+        subject,
+        body,
+        attachments: [],
+        smtp: {
+          host: settings.smtp_host,
+          port: settings.smtp_port,
+          username: settings.smtp_username,
+          password: settings.smtp_password,
+          from: settings.smtp_from,
+          starttls: settings.smtp_starttls,
+        },
+      }),
+    );
+    return { ok: true };
+  } catch (error) {
+    return { ok: false, reason: error instanceof Error ? error.message : String(error) };
+  }
+}
+
+function buildReconnectGuidance(serviceLabel, connectedAccount, fallbackTarget) {
+  const exactTarget = String(connectedAccount || fallbackTarget || "").trim();
+  if (exactTarget) {
+    return `Reconnect ${serviceLabel} with ${exactTarget}. If that Google account is not visible in this browser, open a private / incognito window and sign in with ${exactTarget}.`;
+  }
+  return `Reconnect ${serviceLabel}. If the correct Google account is not visible in this browser, open a private / incognito window and sign in with the required account first.`;
 }
 
 function normalizeUkdocsText(value) {
@@ -7531,8 +7596,26 @@ async function handleApi(req, res, url) {
     }
     const body = await readRequestJson(req);
     const settings = await readFustSettings();
-    const payload = await syncUkdocsPrintFromGmail(settings, requestUser, body?.query, body?.date || localDateIso());
-    sendJson(res, 200, payload);
+    try {
+      const payload = await syncUkdocsPrintFromGmail(settings, requestUser, body?.query, body?.date || localDateIso());
+      sendJson(res, 200, payload);
+    } catch (error) {
+      const serviceLabel = "UKdocs Gmail";
+      const reconnectTarget = settings.gmail_connected_email || "the Gmail account used for UKdocs Print";
+      await sendSupportAttentionEmail(settings, {
+        service: serviceLabel,
+        action: "Sync Gmail attachments",
+        username: requestUser.username,
+        connected_account: settings.gmail_connected_email || "",
+        reconnect_target: reconnectTarget,
+        workaround: buildReconnectGuidance(serviceLabel, settings.gmail_connected_email, reconnectTarget),
+        error: error instanceof Error ? error.message : String(error),
+        path: url.pathname,
+      });
+      sendJson(res, 400, {
+        error: `${error instanceof Error ? error.message : String(error)} ${buildReconnectGuidance(serviceLabel, settings.gmail_connected_email, reconnectTarget)}`,
+      });
+    }
     return;
   }
 
@@ -7542,12 +7625,35 @@ async function handleApi(req, res, url) {
     }
     const body = await readRequestJson(req);
     const settings = await readFustSettings();
-    const payload = await syncUkdocsPrintCollectionsFromSheet(settings, body?.date || localDateIso(), {
-      reference_connect_only: body?.reference_connect_only === true,
-      update_only: body?.update_only === true,
-      overwrite_existing: body?.overwrite_existing === true,
-    });
-    sendJson(res, 200, payload);
+    try {
+      const payload = await syncUkdocsPrintCollectionsFromSheet(settings, body?.date || localDateIso(), {
+        reference_connect_only: body?.reference_connect_only === true,
+        update_only: body?.update_only === true,
+        overwrite_existing: body?.overwrite_existing === true,
+      });
+      sendJson(res, 200, payload);
+    } catch (error) {
+      let serviceAccount = "";
+      try {
+        serviceAccount = String((await loadServiceAccountInfo())?.client_email || "");
+      } catch {
+      }
+      const serviceLabel = "UKdocs spreadsheet";
+      const reconnectTarget = serviceAccount || "the Google Sheets service account";
+      await sendSupportAttentionEmail(settings, {
+        service: serviceLabel,
+        action: body?.update_only === true ? "Update shipment info from spreadsheet" : "Load sendings from spreadsheet",
+        username: requestUser.username,
+        connected_account: serviceAccount,
+        reconnect_target: reconnectTarget,
+        workaround: `Check that the spreadsheet is shared with ${reconnectTarget} and that the service account credentials are still valid.`,
+        error: error instanceof Error ? error.message : String(error),
+        path: url.pathname,
+      });
+      sendJson(res, 400, {
+        error: `${error instanceof Error ? error.message : String(error)} Check that the spreadsheet is shared with ${reconnectTarget} and that the service account credentials are still valid.`,
+      });
+    }
     return;
   }
 
@@ -7897,9 +8003,21 @@ async function handleApi(req, res, url) {
         uploaded_by: requestUser.username,
       });
     } catch (documentError) {
+      const serviceLabel = "Google Drive";
+      const reconnectTarget = settings.cmr_google_connected_email || "the Google Drive upload account";
+      await sendSupportAttentionEmail(settings, {
+        service: serviceLabel,
+        action: `Upload ${documentConfig.label}`,
+        username: requestUser.username,
+        connected_account: settings.cmr_google_connected_email || "",
+        reconnect_target: reconnectTarget,
+        workaround: buildReconnectGuidance(serviceLabel, settings.cmr_google_connected_email, reconnectTarget),
+        error: documentError instanceof Error ? documentError.message : String(documentError),
+        path: url.pathname,
+      });
       action[documentConfig.field] = normalizeCmrInfo({
         status: "failed",
-        error: documentError instanceof Error ? documentError.message : String(documentError),
+        error: `${documentError instanceof Error ? documentError.message : String(documentError)} ${buildReconnectGuidance(serviceLabel, settings.cmr_google_connected_email, reconnectTarget)}`,
         uploaded_at: new Date().toISOString(),
         uploaded_by: requestUser.username,
       });

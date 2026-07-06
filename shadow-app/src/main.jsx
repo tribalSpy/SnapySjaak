@@ -3950,6 +3950,11 @@ function UkdocsPrintPage({ currentUser }) {
           <label><span>Export date</span><input type="date" value={sheetSyncDate} onChange={(event) => setSheetSyncDate(event.target.value)} /></label>
           <label className="wide"><span>Extra Gmail filter</span><input value={gmailQuery} onChange={(event) => setGmailQuery(event.target.value)} placeholder="has:attachment" /></label>
         </div>
+        {gmailSettings.gmail_connected_email ? (
+          <div className="notice">Reconnect UKdocs Gmail with this exact account: {gmailSettings.gmail_connected_email}</div>
+        ) : (
+          <div className="notice danger">UKdocs Gmail is not connected. Reconnect with the Gmail account that should receive the UKdocs documents.</div>
+        )}
         <div className="checkbox-grid">
           <label className="checkbox-field">
             <input type="checkbox" checked={autoSyncEnabled} onChange={(event) => setAutoSyncEnabled(event.target.checked)} />
@@ -3957,7 +3962,7 @@ function UkdocsPrintPage({ currentUser }) {
           </label>
         </div>
         <div className="row-actions spread-actions">
-          {canManageSettings && <button type="button" onClick={connectGmail} disabled={gmailBusy}>{gmailBusy ? "Connecting..." : "Connect Gmail"}</button>}
+          {canManageSettings && <button type="button" onClick={connectGmail} disabled={gmailBusy}>{gmailBusy ? "Connecting..." : gmailSettings.gmail_connected_email ? `Reconnect Gmail for ${gmailSettings.gmail_connected_email}` : "Connect Gmail"}</button>}
           <button type="button" className="primary" onClick={syncGmail} disabled={gmailBusy}>{gmailBusy ? "Syncing..." : "Sync Gmail attachments"}</button>
         </div>
       <div className="notice">The sync only checks emails for the selected export date, not the whole mailbox. It matches reference connect first, then invoice numbers, then truck or trailer registration. NVWA / e-CertNL emails are treated as phytosanitary documents automatically. Files only fill empty slots automatically, so manual uploads stay safe.</div>
@@ -7659,6 +7664,35 @@ function SettingsPage({ currentUser }) {
   const [connectionBusy, setConnectionBusy] = useState(false);
   const [googleBusy, setGoogleBusy] = useState(false);
 
+  function hydrateSettingsForm(settings) {
+    return {
+      ...settings,
+      email_recipients: (settings?.email_recipients || []).join("\n"),
+      support_email_recipients: (settings?.support_email_recipients || []).join("\n"),
+      cmr_country_folders_text: cmrFolderLines(settings?.cmr_country_folders),
+      cmr_manage_usernames_text: (settings?.cmr_manage_usernames || []).join("\n"),
+    };
+  }
+
+  function buildSettingsPayload(source) {
+    return {
+      ...source,
+      email_recipients: String(source.email_recipients || "")
+        .split(/[\n,;]/)
+        .map((value) => value.trim())
+        .filter(Boolean),
+      support_email_recipients: String(source.support_email_recipients || "")
+        .split(/[\n,;]/)
+        .map((value) => value.trim())
+        .filter(Boolean),
+      cmr_country_folders: parseCmrFolderLines(source.cmr_country_folders_text),
+      cmr_manage_usernames: String(source.cmr_manage_usernames_text || "")
+        .split(/[\n,;]/)
+        .map((value) => value.trim().toLowerCase())
+        .filter(Boolean),
+    };
+  }
+
   async function loadBackups() {
     const payload = await apiJson("/api/fust/backups");
     setBackups(payload.backups || []);
@@ -7686,11 +7720,7 @@ function SettingsPage({ currentUser }) {
 
   useEffect(() => {
     apiJson("/api/fust/settings")
-      .then((payload) => setForm({
-        ...payload.settings,
-        cmr_country_folders_text: cmrFolderLines(payload.settings.cmr_country_folders),
-        cmr_manage_usernames_text: (payload.settings.cmr_manage_usernames || []).join("\n"),
-      }))
+      .then((payload) => setForm(hydrateSettingsForm(payload.settings)))
       .catch((settingsError) => setError(settingsError.message));
 
     loadBackups().catch((backupError) => setError(backupError.message));
@@ -7705,25 +7735,9 @@ function SettingsPage({ currentUser }) {
     try {
       const payload = await apiJson("/api/fust/settings", {
         method: "PATCH",
-        body: JSON.stringify({
-          ...form,
-          email_recipients: String(form.email_recipients || "")
-            .split(/[\n,;]/)
-            .map((value) => value.trim())
-            .filter(Boolean),
-          cmr_country_folders: parseCmrFolderLines(form.cmr_country_folders_text),
-          cmr_manage_usernames: String(form.cmr_manage_usernames_text || "")
-            .split(/[\n,;]/)
-            .map((value) => value.trim().toLowerCase())
-            .filter(Boolean),
-        }),
+        body: JSON.stringify(buildSettingsPayload(form)),
       });
-      setForm({
-        ...payload.settings,
-        email_recipients: payload.settings.email_recipients.join("\n"),
-        cmr_country_folders_text: cmrFolderLines(payload.settings.cmr_country_folders),
-        cmr_manage_usernames_text: (payload.settings.cmr_manage_usernames || []).join("\n"),
-      });
+      setForm(hydrateSettingsForm(payload.settings));
       setMessage("Fust settings saved.");
       await loadConnectionTest();
     } catch (saveError) {
@@ -7812,25 +7826,9 @@ function SettingsPage({ currentUser }) {
     try {
       const saved = await apiJson("/api/fust/settings", {
         method: "PATCH",
-        body: JSON.stringify({
-          ...form,
-          email_recipients: String(form.email_recipients || "")
-            .split(/[\n,;]/)
-            .map((value) => value.trim())
-            .filter(Boolean),
-          cmr_country_folders: parseCmrFolderLines(form.cmr_country_folders_text),
-          cmr_manage_usernames: String(form.cmr_manage_usernames_text || "")
-            .split(/[\n,;]/)
-            .map((value) => value.trim().toLowerCase())
-            .filter(Boolean),
-        }),
+        body: JSON.stringify(buildSettingsPayload(form)),
       });
-      setForm({
-        ...saved.settings,
-        email_recipients: saved.settings.email_recipients.join("\n"),
-        cmr_country_folders_text: cmrFolderLines(saved.settings.cmr_country_folders),
-        cmr_manage_usernames_text: (saved.settings.cmr_manage_usernames || []).join("\n"),
-      });
+      setForm(hydrateSettingsForm(saved.settings));
       const payload = await apiJson("/api/fust/google/auth-url");
       window.location.href = payload.auth_url;
     } catch (googleError) {
@@ -7842,6 +7840,11 @@ function SettingsPage({ currentUser }) {
   if (!form) {
     return <div className="notice">Loading settings...</div>;
   }
+
+  const connectedGmailAccount = String(form.gmail_connected_email || "").trim();
+  const connectedDriveAccount = String(form.cmr_google_connected_email || "").trim();
+  const spreadsheetServiceAccount = String(connectionTest?.account?.client_email || "").trim();
+  const spreadsheetHealthy = connectionTest?.read_ok === true;
 
   return (
     <section className="settings-page">
@@ -7970,6 +7973,11 @@ function SettingsPage({ currentUser }) {
                     <input value={form.gmail_connected_email || ""} readOnly placeholder="Connect from UKdocs Print page" />
                   </label>
                 </div>
+                {connectedGmailAccount ? (
+                  <div className="notice">Reconnect UKdocs Gmail with this exact account: {connectedGmailAccount}</div>
+                ) : (
+                  <div className="notice danger">UKdocs Gmail is not connected. Reconnect with the Gmail account that should receive the UKdocs attachments.</div>
+                )}
                 <p className="sidebar-note">The live UKdocs Print page can still reconnect Gmail and run a manual sync whenever needed.</p>
               </div>
             </div>
@@ -8040,9 +8048,14 @@ function SettingsPage({ currentUser }) {
           <div className="wide oauth-connect-row">
             <span>Google Drive upload account: {form.cmr_google_connected_email || "not connected"}</span>
             <button type="button" onClick={connectGoogleDrive} disabled={googleBusy}>
-              {googleBusy ? "Connecting..." : "Connect Google Drive"}
+              {googleBusy ? "Connecting..." : connectedDriveAccount ? `Reconnect Google Drive for ${connectedDriveAccount}` : "Connect Google Drive"}
             </button>
           </div>
+          {connectedDriveAccount ? (
+            <div className="wide notice">Reconnect Google Drive with this exact account: {connectedDriveAccount}</div>
+          ) : (
+            <div className="wide notice danger">Google Drive upload is not connected. Reconnect with the Google account that owns the upload folders.</div>
+          )}
           <div id="settings-mail" className="wide data-table-card">
             <div className="section-header"><h2>Mail settings</h2></div>
             <p className="sidebar-note">Recipients and SMTP account used when papers are ready to send.</p>
@@ -8054,6 +8067,15 @@ function SettingsPage({ currentUser }) {
               onChange={(event) => setForm({ ...form, email_recipients: event.target.value })}
               rows={6}
               placeholder={"name@example.com\nother@example.com"}
+            />
+          </label>
+          <label className="wide">
+            <span>ICT support recipients</span>
+            <textarea
+              value={form.support_email_recipients || ""}
+              onChange={(event) => setForm({ ...form, support_email_recipients: event.target.value })}
+              rows={4}
+              placeholder={"support@example.com\nict@example.com"}
             />
           </label>
           <label>
@@ -8121,6 +8143,7 @@ function SettingsPage({ currentUser }) {
           "Fust actions save locally first, then try Sheets and email.",
           "If one sync step fails, the saved action still stays in Render storage.",
           "Target email recipients are where notifications go.",
+          "ICT support recipients get alerts when Gmail, Google Drive, or Sheets need reconnecting.",
           "SMTP sender settings are how the app sends the email.",
         ]}
       />
@@ -8142,6 +8165,11 @@ function SettingsPage({ currentUser }) {
             <p className="sidebar-note">
               Runtime client email: {connectionTest.account?.client_email || "unknown"}
             </p>
+            {!spreadsheetHealthy && (
+              <div className="notice danger">
+                Spreadsheet connection needs attention. Share the spreadsheet with {spreadsheetServiceAccount || "the configured Google service account"} and check that the credentials are still valid.
+              </div>
+            )}
             <p className="sidebar-note">
               Project: {connectionTest.account?.project_id || "unknown"}
             </p>
