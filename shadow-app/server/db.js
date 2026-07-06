@@ -47,12 +47,12 @@ export async function saveFustActionToDatabase(action) {
       INSERT INTO fust_actions (
         id, type, action_date, week, day_name, country, customer_name, customer_code, connect_name,
         remark, fustbon_reference, fustfactuur_reference, dc, cctag, dcs, dco, pal, vk,
-        deleted, created_by, created_at, confirmed_at, confirmed_by, import_source, updated_at
+        deleted, created_by, created_at, confirmed_at, confirmed_by, import_source, confirmation_reminder, updated_at
       )
       VALUES (
         $1, $2, $3, $4, $5, $6, $7, $8, $9,
         $10, $11, $12, $13, $14, $15, $16, $17, $18,
-        $19, $20, COALESCE($21, now()), $22, $23, $24::jsonb, now()
+        $19, $20, COALESCE($21, now()), $22, $23, $24::jsonb, $25::jsonb, now()
       )
       ON CONFLICT (id) DO UPDATE SET
         type = EXCLUDED.type,
@@ -78,6 +78,7 @@ export async function saveFustActionToDatabase(action) {
         confirmed_at = EXCLUDED.confirmed_at,
         confirmed_by = EXCLUDED.confirmed_by,
         import_source = EXCLUDED.import_source,
+        confirmation_reminder = EXCLUDED.confirmation_reminder,
         updated_at = now()
     `,
     [
@@ -105,6 +106,7 @@ export async function saveFustActionToDatabase(action) {
       action.confirmed_at || null,
       action.confirmed_by || "",
       JSON.stringify(action.import_source || {}),
+      JSON.stringify(action.confirmation_reminder || {}),
     ],
   );
 
@@ -219,6 +221,7 @@ const databaseMigrations = [
       confirmed_at timestamptz,
       confirmed_by text,
       import_source jsonb NOT NULL DEFAULT '{}'::jsonb,
+      confirmation_reminder jsonb NOT NULL DEFAULT '{}'::jsonb,
       updated_at timestamptz NOT NULL DEFAULT now()
     )
   `,
@@ -233,6 +236,10 @@ const databaseMigrations = [
   `
     ALTER TABLE IF EXISTS fust_actions
     ADD COLUMN IF NOT EXISTS import_source jsonb NOT NULL DEFAULT '{}'::jsonb
+  `,
+  `
+    ALTER TABLE IF EXISTS fust_actions
+    ADD COLUMN IF NOT EXISTS confirmation_reminder jsonb NOT NULL DEFAULT '{}'::jsonb
   `,
   `
     CREATE TABLE IF NOT EXISTS fust_action_documents (

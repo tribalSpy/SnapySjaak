@@ -894,6 +894,27 @@ function normalizeCmrInfo(value) {
   };
 }
 
+function normalizeFustConfirmationReminder(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return {
+      last_sent_at: "",
+      last_sent_for_date: "",
+      last_attempt_at: "",
+      last_attempt_for_date: "",
+      sent_count: 0,
+      last_error: "",
+    };
+  }
+  return {
+    last_sent_at: String(value?.last_sent_at || "").trim(),
+    last_sent_for_date: String(value?.last_sent_for_date || "").trim(),
+    last_attempt_at: String(value?.last_attempt_at || "").trim(),
+    last_attempt_for_date: String(value?.last_attempt_for_date || "").trim(),
+    sent_count: Number(value?.sent_count || 0) || 0,
+    last_error: String(value?.last_error || "").trim(),
+  };
+}
+
 function normalizeFustImportSource(value) {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
     return null;
@@ -1625,6 +1646,7 @@ function normalizeFustAction(action) {
     deleted_by: String(action?.deleted_by || ""),
     sheet_sync: action?.sheet_sync || { ok: false, target_sheets: [], error: "Not attempted" },
     email_sync: action?.email_sync || { ok: false, recipients: [], error: "Not attempted" },
+    confirmation_reminder: normalizeFustConfirmationReminder(action?.confirmation_reminder),
     cmr: normalizeCmrInfo(action?.cmr),
     fustbon: normalizeCmrInfo(action?.fustbon),
   };
@@ -2786,9 +2808,29 @@ async function applyFustImportRows(filePayload, requestUser, selectedImportKeys 
       ? selectedImportKeys.map((value) => String(value || "").trim()).filter(Boolean)
       : [],
   );
-  const selectedRows = allowedImportKeys.size
-    ? prepared.rows.filter((row) => allowedImportKeys.has(String(row.import_key || "").trim()))
-    : prepared.rows;
+  if (!allowedImportKeys.size) {
+    return {
+      summary: {
+        file_name: prepared.file_name,
+        sheet_name: prepared.sheet_name,
+        total_rows: prepared.rows.length,
+        selected_rows: 0,
+        created: 0,
+        updated: 0,
+        locked: 0,
+        missing_connect: 0,
+        skipped: prepared.rows.length,
+        failed: 0,
+      },
+      rows: prepared.rows.map((row) => ({
+        ...row,
+        imported: false,
+        status: row.status,
+        note: row.note || "Not selected for import",
+      })),
+    };
+  }
+  const selectedRows = prepared.rows.filter((row) => allowedImportKeys.has(String(row.import_key || "").trim()));
   const localActions = await readFustActions();
   const summary = {
     file_name: prepared.file_name,
@@ -4848,6 +4890,55 @@ function buildEmailMessage(action) {
   ].join("\n");
 }
 
+function addDaysToIsoDate(dateString, days) {
+  const parsed = new Date(`${String(dateString || "").slice(0, 10)}T00:00:00`);
+  if (Number.isNaN(parsed.getTime())) {
+    return "";
+  }
+  parsed.setDate(parsed.getDate() + Number(days || 0));
+  return `${parsed.getFullYear()}-${String(parsed.getMonth() + 1).padStart(2, "0")}-${String(parsed.getDate()).padStart(2, "0")}`;
+}
+
+function isFustConfirmationReminderOverdue(action, todayIso = localDateIso()) {
+  if (isFustActionConfirmed(action)) {
+    return false;
+  }
+  const actionDate = String(action?.action_date || "").slice(0, 10);
+  if (!actionDate) {
+    return false;
+  }
+  const confirmByDate = addDaysToIsoDate(actionDate, 1);
+  if (!confirmByDate) {
+    return false;
+  }
+  return String(todayIso || "") > confirmByDate;
+}
+
+function buildFustConfirmationReminderEmail(actions) {
+  const sortedActions = [...(Array.isArray(actions) ? actions : [])].sort((left, right) => {
+    const leftDate = String(left.action_date || "");
+    const rightDate = String(right.action_date || "");
+    return leftDate.localeCompare(rightDate) || String(left.customer_name || "").localeCompare(String(right.customer_name || ""));
+  });
+  return [
+    "Fust confirmation reminder",
+    "",
+    "These actions are still not confirmed after the next day and need attention:",
+    "",
+    ...sortedActions.map((action) => {
+      const confirmByDate = addDaysToIsoDate(action.action_date, 1) || "-";
+      return [
+        `${action.type} | ${action.action_date} | ${action.country} | ${action.customer_name}`,
+        `Connect: ${action.connect_name || "-"}`,
+        `Confirm by: ${confirmByDate}`,
+        `DC: ${Number(action.metrics?.dc || 0)} | DCS: ${Number(action.metrics?.dcs || 0)} | DCO: ${Number(action.metrics?.dco || 0)} | CCTag: ${Number(action.metrics?.cctag || 0)} | PAL: ${Number(action.metrics?.pal || 0)} | VK: ${Number(action.metrics?.vk || 0)}`,
+        action.remark ? `Remark: ${action.remark}` : "",
+        "",
+      ].filter(Boolean).join("\n");
+    }),
+  ].flat().join("\n");
+}
+
 async function sendFustActionEmail(action, settings) {
   const recipients = normalizeEmailRecipients(settings.email_recipients);
   if (!recipients.length) {
@@ -4877,6 +4968,124 @@ async function sendFustActionEmail(action, settings) {
     error: "",
     sent_at: new Date().toISOString(),
   };
+}
+
+async function sendFustConfirmationReminderEmail(actions, settings) {
+  const recipients = normalizeEmailRecipients(settings.email_recipients);
+  if (!recipients.length) {
+    return { ok: false, recipients: [], error: "No email recipients configured" };
+  }
+  const subject = `Fust confirmation reminder | ${actions.length} overdue action${actions.length === 1 ? "" : "s"}`;
+  await runPythonBridge(
+    ["email-send"],
+    JSON.stringify({
+      recipients,
+      subject,
+      body: buildFustConfirmationReminderEmail(actions),
+      smtp: {
+        host: settings.smtp_host,
+        port: settings.smtp_port,
+        username: settings.smtp_username,
+        password: settings.smtp_password,
+        from: settings.smtp_from,
+        starttls: settings.smtp_starttls,
+      },
+    }),
+  );
+  return {
+    ok: true,
+    recipients,
+    error: "",
+    sent_at: new Date().toISOString(),
+  };
+}
+
+async function maybeSendFustConfirmationReminders(actions, settings) {
+  const today = localDateIso();
+  const unconfirmedActions = (Array.isArray(actions) ? actions : []).filter((action) => !isFustActionConfirmed(action));
+  const yesterdayDate = addDaysToIsoDate(today, -1);
+  const yesterdayUnconfirmedActions = unconfirmedActions.filter((action) => String(action.action_date || "") === yesterdayDate);
+  const overdueActions = unconfirmedActions.filter((action) => isFustConfirmationReminderOverdue(action, today));
+  const reminderCandidates = overdueActions.filter((action) => String(action?.confirmation_reminder?.last_attempt_for_date || "") !== today);
+
+  const summary = {
+    checked_at: new Date().toISOString(),
+    yesterday_date: yesterdayDate,
+    yesterday_unconfirmed_count: yesterdayUnconfirmedActions.length,
+    unconfirmed_count: unconfirmedActions.length,
+    overdue_unconfirmed_count: overdueActions.length,
+    reminder_candidate_count: reminderCandidates.length,
+    reminder_sent: false,
+    reminder_sent_at: "",
+    reminder_error: "",
+  };
+
+  if (!reminderCandidates.length) {
+    return summary;
+  }
+
+  const localActions = await readFustActions();
+  const localById = new Map(localActions.map((action, index) => [String(action.id || "").trim(), { action, index }]).filter(([id]) => id));
+  const updatedIndexes = new Set();
+
+  function ensureReminderTarget(sourceAction) {
+    const actionId = String(sourceAction?.id || "").trim();
+    if (localById.has(actionId)) {
+      return localById.get(actionId);
+    }
+    const seededAction = normalizeFustAction({
+      ...sourceAction,
+      created_by: sourceAction?.created_by === "spreadsheet" ? "sheet-import" : (sourceAction?.created_by || "sheet-import"),
+      created_at: sourceAction?.created_at || new Date().toISOString(),
+    });
+    localActions.push(seededAction);
+    const entry = { action: seededAction, index: localActions.length - 1 };
+    localById.set(actionId, entry);
+    return entry;
+  }
+
+  try {
+    const emailResult = await sendFustConfirmationReminderEmail(reminderCandidates, settings);
+    summary.reminder_sent = emailResult.ok === true;
+    summary.reminder_sent_at = emailResult.sent_at || "";
+
+    for (const action of reminderCandidates) {
+      const target = ensureReminderTarget(action);
+      target.action.confirmation_reminder = normalizeFustConfirmationReminder({
+        ...(target.action.confirmation_reminder || {}),
+        last_attempt_at: emailResult.sent_at || new Date().toISOString(),
+        last_attempt_for_date: today,
+        last_sent_at: emailResult.sent_at || new Date().toISOString(),
+        last_sent_for_date: today,
+        sent_count: Number(target.action?.confirmation_reminder?.sent_count || 0) + 1,
+        last_error: "",
+      });
+      localActions[target.index] = normalizeFustAction(target.action);
+      updatedIndexes.add(target.index);
+    }
+  } catch (error) {
+    summary.reminder_error = error instanceof Error ? error.message : String(error || "Unknown reminder error");
+    for (const action of reminderCandidates) {
+      const target = ensureReminderTarget(action);
+      target.action.confirmation_reminder = normalizeFustConfirmationReminder({
+        ...(target.action.confirmation_reminder || {}),
+        last_attempt_at: new Date().toISOString(),
+        last_attempt_for_date: today,
+        last_error: summary.reminder_error,
+      });
+      localActions[target.index] = normalizeFustAction(target.action);
+      updatedIndexes.add(target.index);
+    }
+  }
+
+  if (updatedIndexes.size) {
+    await writeFustActions(localActions);
+    for (const index of updatedIndexes) {
+      await mirrorFustActionToDatabase(localActions[index]);
+    }
+  }
+
+  return summary;
 }
 
 async function ukdocsPrintCollectionAttachments(collection) {
@@ -7365,6 +7574,7 @@ async function handleApi(req, res, url) {
       .filter((action) => !country || action.country === country)
       .filter((action) => !customer || action.customer_name.toLowerCase().includes(customer))
       .filter((action) => !type || action.type === type);
+    const reminderStatus = await maybeSendFustConfirmationReminders(actions, settings);
 
     sendJson(res, 200, {
       actions: filteredActions.sort((left, right) => {
@@ -7373,6 +7583,7 @@ async function handleApi(req, res, url) {
         return rightDate.localeCompare(leftDate);
       }),
       overview: buildOverview(filteredActions),
+      controle_summary: reminderStatus,
       source_debug: {
         ...sourceDebug,
         local: {

@@ -5482,6 +5482,7 @@ function FustPage({ currentUser, menuVersion }) {
         <FustControle
           loading={actionsLoading}
           actions={actionsData?.actions || []}
+          controleSummary={actionsData?.controle_summary || null}
           onRefresh={refresh}
         />
       )}
@@ -6298,6 +6299,15 @@ function isFustActionConfirmed(action) {
   return Boolean(String(action?.confirmed_at || "").trim());
 }
 
+function addDaysToIso(value, days) {
+  const parsed = new Date(`${String(value || "").slice(0, 10)}T00:00:00`);
+  if (Number.isNaN(parsed.getTime())) {
+    return "";
+  }
+  parsed.setDate(parsed.getDate() + Number(days || 0));
+  return `${parsed.getFullYear()}-${String(parsed.getMonth() + 1).padStart(2, "0")}-${String(parsed.getDate()).padStart(2, "0")}`;
+}
+
 function FustActionTable({
   loading,
   actions,
@@ -6308,6 +6318,7 @@ function FustActionTable({
   allowManage = false,
   defaultDate = "",
   unconfirmedOnly = false,
+  controleSummary = null,
   emptyMessage = "No actions were found.",
 }) {
   const [busyActionId, setBusyActionId] = useState("");
@@ -6317,12 +6328,17 @@ function FustActionTable({
   const [editForm, setEditForm] = useState(null);
   const [typeFilter, setTypeFilter] = useState("");
   const [dateFilter, setDateFilter] = useState(defaultDate);
+  const [onlyUnconfirmed, setOnlyUnconfirmed] = useState(unconfirmedOnly);
   const [countryFilter, setCountryFilter] = useState("");
   const [customerFilter, setCustomerFilter] = useState("");
 
   useEffect(() => {
     setDateFilter(defaultDate);
   }, [defaultDate]);
+
+  useEffect(() => {
+    setOnlyUnconfirmed(unconfirmedOnly);
+  }, [unconfirmedOnly]);
 
   function startEdit(action) {
     setEditingActionId(action.id);
@@ -6425,8 +6441,21 @@ function FustActionTable({
   const typeOptions = [...new Set(actions.map((action) => action.type).filter(Boolean))].sort((left, right) => left.localeCompare(right));
   const countryOptions = [...new Set(actions.map((action) => action.country).filter(Boolean))].sort((left, right) => left.localeCompare(right));
   const customerOptions = [...new Set(actions.map((action) => action.customer_name).filter(Boolean))].sort((left, right) => left.localeCompare(right));
+  const unconfirmedActions = actions.filter((action) => !isFustActionConfirmed(action));
+  const yesterdayDate = yesterdayIso();
+  const yesterdayUnconfirmedActions = unconfirmedActions.filter((action) => String(action.action_date || "") === yesterdayDate);
+  const overdueUnconfirmedActions = unconfirmedActions.filter((action) => {
+    const dueDate = addDaysToIso(action.action_date, 1);
+    return dueDate && localDateIso() > dueDate;
+  });
+  const unconfirmedByDate = [...new Set(unconfirmedActions.map((action) => String(action.action_date || "")).filter(Boolean))]
+    .sort((left, right) => right.localeCompare(left))
+    .map((date) => ({
+      date,
+      count: unconfirmedActions.filter((action) => String(action.action_date || "") === date).length,
+    }));
   const visibleActions = actions
-    .filter((action) => !unconfirmedOnly || !isFustActionConfirmed(action))
+    .filter((action) => !onlyUnconfirmed || !isFustActionConfirmed(action))
     .filter((action) => !typeFilter || action.type === typeFilter)
     .filter((action) => !dateFilter || String(action.action_date || "") === dateFilter)
     .filter((action) => !countryFilter || action.country === countryFilter)
@@ -6440,6 +6469,51 @@ function FustActionTable({
     <div className="overview-stack">
       {message && <div className="notice">{message}</div>}
       {error && <div className="notice danger">{error}</div>}
+
+      {allowConfirm && (
+        <>
+          <div className={`notice${(controleSummary?.overdue_unconfirmed_count || overdueUnconfirmedActions.length) ? " danger" : ""}`}>
+            {`Yesterday unconfirmed: ${controleSummary?.yesterday_unconfirmed_count ?? yesterdayUnconfirmedActions.length} | All unconfirmed: ${controleSummary?.unconfirmed_count ?? unconfirmedActions.length} | Overdue: ${controleSummary?.overdue_unconfirmed_count ?? overdueUnconfirmedActions.length}`}
+            {controleSummary?.reminder_sent_at ? ` | Reminder sent ${formatTimestamp(controleSummary.reminder_sent_at)}` : ""}
+            {controleSummary?.reminder_error ? ` | Reminder error: ${controleSummary.reminder_error}` : ""}
+          </div>
+          <div className="row-actions hal-actions-row">
+            <button type="button" className={onlyUnconfirmed && dateFilter === yesterdayDate ? "primary" : ""} onClick={() => {
+              setOnlyUnconfirmed(true);
+              setDateFilter(yesterdayDate);
+              setCountryFilter("");
+              setCustomerFilter("");
+              setTypeFilter("");
+            }}>Yesterday unconfirmed</button>
+            <button type="button" className={onlyUnconfirmed && !dateFilter ? "primary" : ""} onClick={() => {
+              setOnlyUnconfirmed(true);
+              setDateFilter("");
+            }}>All unconfirmed</button>
+            <button type="button" className={!onlyUnconfirmed ? "primary" : ""} onClick={() => setOnlyUnconfirmed(false)}>Show all filtered</button>
+            <button type="button" onClick={onRefresh}>Refresh control</button>
+          </div>
+          {!!unconfirmedByDate.length && (
+            <div className="notice">
+              Unconfirmed days:
+              {" "}
+              {unconfirmedByDate.map((item) => (
+                <button
+                  key={item.date}
+                  type="button"
+                  className="ghost-chip"
+                  onClick={() => {
+                    setOnlyUnconfirmed(true);
+                    setDateFilter(item.date);
+                  }}
+                  style={{ marginLeft: 8 }}
+                >
+                  {item.date} ({item.count})
+                </button>
+              ))}
+            </div>
+          )}
+        </>
+      )}
 
       <div className="data-table-card">
         <div className="section-header">
@@ -6456,6 +6530,13 @@ function FustActionTable({
           <label>
             <span>Date</span>
             <input type="date" value={dateFilter} onChange={(event) => setDateFilter(event.target.value)} />
+          </label>
+          <label>
+            <span>Unconfirmed only</span>
+            <select value={onlyUnconfirmed ? "yes" : "no"} onChange={(event) => setOnlyUnconfirmed(event.target.value === "yes")}>
+              <option value="yes">Yes</option>
+              <option value="no">No</option>
+            </select>
           </label>
           <label>
             <span>Country</span>
@@ -6573,7 +6654,7 @@ function FustLastActions({ loading, actions, onRefresh }) {
   return <FustActionTable loading={loading} actions={actions} onRefresh={onRefresh} title="Last actions" readOnly emptyMessage="No actions were found." />;
 }
 
-function FustControle({ loading, actions, onRefresh }) {
+function FustControle({ loading, actions, onRefresh, controleSummary }) {
   return (
     <FustActionTable
       loading={loading}
@@ -6583,6 +6664,7 @@ function FustControle({ loading, actions, onRefresh }) {
       defaultDate={yesterdayIso()}
       unconfirmedOnly
       allowConfirm
+      controleSummary={controleSummary}
       emptyMessage="No unconfirmed actions were found for this filter."
     />
   );
