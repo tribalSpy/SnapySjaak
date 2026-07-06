@@ -1307,6 +1307,42 @@ function ukdocsPrintCollectionCustomer(collection, customers) {
     || null;
 }
 
+function ukdocsCollectionNeedsPhyto(collection, customer = null) {
+  const inspectionMode = ukdocsPrintInspectionMode(collection);
+  const pdTypeCompact = String(collection?.pd_type || "").trim().toLowerCase().replace(/\s+/g, "");
+  if (inspectionMode === "stock_control") {
+    return false;
+  }
+  if (customer?.required_phyto === false) {
+    return false;
+  }
+  if (pdTypeCompact.includes("nophytoneeded")) {
+    return false;
+  }
+  return true;
+}
+
+function ukdocsMenuDocumentVisibility(customer, menuKey) {
+  if (menuKey === "ukdocsinspection") {
+    return {
+      phyto: customer?.menu_show_ukdocsinspection_phyto === true,
+      export_extra: customer?.menu_show_ukdocsinspection_export_extra === true,
+      inspection_list: customer?.menu_show_ukdocsinspection_inspection_list !== false,
+      locations_file: customer?.menu_show_ukdocsinspection_locations_file !== false,
+      generated_invoice: customer?.menu_show_ukdocsinspection_generated_invoices === true,
+      generated_export: customer?.menu_show_ukdocsinspection_generated_export === true,
+    };
+  }
+  return {
+    phyto: customer?.menu_show_ukdocsprint_phyto !== false,
+    export_extra: customer?.menu_show_ukdocsprint_export_extra !== false,
+    inspection_list: customer?.menu_show_ukdocsprint_inspection_list === true,
+    locations_file: customer?.menu_show_ukdocsprint_locations_file === true,
+    generated_invoice: customer?.menu_show_ukdocsprint_generated_invoices !== false,
+    generated_export: customer?.menu_show_ukdocsprint_generated_export === true,
+  };
+}
+
 function deriveUkdocsPrintCollectionStatus(collection) {
   const inspectionMode = ukdocsPrintInspectionMode(collection);
   if (inspectionMode === "stock_control") {
@@ -1423,7 +1459,7 @@ function getUkdocsPrintCollectionRequirements(collection, customers) {
     const generatedInvoiceCount = generatedFiles.filter((file) => file.document_kind === "invoice").length;
     const invoiceExpected = ukdocsPrintSplitTokens(collection?.invoice_numbers).length;
     const missing = [];
-    if ((customer?.required_phyto !== false) && phytoExpected > 0 && phytoCount < phytoExpected) {
+    if (ukdocsCollectionNeedsPhyto(collection, customer) && phytoExpected > 0 && phytoCount < phytoExpected) {
       missing.push(`Phyto ${phytoCount}/${phytoExpected}`);
     }
     if (customer?.required_export_extra === true && !collection?.documents?.export_extra?.storage_name) {
@@ -1458,7 +1494,7 @@ function getUkdocsPrintCollectionRequirements(collection, customers) {
   const generatedInvoiceCount = generatedFiles.filter((file) => file.document_kind === "invoice").length;
   const invoiceExpected = ukdocsPrintSplitTokens(collection?.invoice_numbers).length;
   const missing = [];
-  if ((customer?.required_phyto !== false) && phytoExpected > 0 && phytoCount < phytoExpected) {
+  if (ukdocsCollectionNeedsPhyto(collection, customer) && phytoExpected > 0 && phytoCount < phytoExpected) {
     missing.push(`Phyto ${phytoCount}/${phytoExpected}`);
   }
   if (customer?.required_export_extra === true && !collection?.documents?.export_extra?.storage_name) {
@@ -5237,14 +5273,39 @@ async function maybeSendFustConfirmationReminders(actions, settings) {
   return summary;
 }
 
-async function ukdocsPrintCollectionAttachments(collection) {
+async function ukdocsPrintCollectionAttachments(collection, customer = null, menuKey = "ukdocsprint") {
   const attachments = [];
-  const documents = [
-    ...(collection?.documents?.phyto_files || []),
-    ...(collection?.documents?.export_extra ? [collection.documents.export_extra] : []),
-    ...(collection?.documents?.generated_files || []),
-  ];
-  for (const document of documents) {
+  const visibility = ukdocsMenuDocumentVisibility(customer, menuKey);
+  const generatedFiles = Array.isArray(collection?.documents?.generated_files) ? collection.documents.generated_files : [];
+  const documents = [];
+
+  if (visibility.phyto === true && ukdocsCollectionNeedsPhyto(collection, customer)) {
+    documents.push(...(collection?.documents?.phyto_files || []).map((document) => ({ document, kind: "phyto" })));
+  }
+  if (visibility.export_extra === true && collection?.documents?.export_extra) {
+    documents.push({ document: collection.documents.export_extra, kind: "export_extra" });
+  }
+  if (visibility.inspection_list === true && collection?.documents?.inspection_list) {
+    documents.push({ document: collection.documents.inspection_list, kind: "inspection_list" });
+  }
+  if (visibility.locations_file === true && collection?.documents?.locations_file) {
+    documents.push({ document: collection.documents.locations_file, kind: "locations_file" });
+  }
+  for (const generatedFile of generatedFiles) {
+    if (generatedFile?.document_kind === "invoice" && visibility.generated_invoice !== true) {
+      continue;
+    }
+    if (generatedFile?.document_kind === "export" && visibility.generated_export !== true) {
+      continue;
+    }
+    if (!generatedFile?.document_kind && visibility.generated_invoice !== true && visibility.generated_export !== true) {
+      continue;
+    }
+    documents.push({ document: generatedFile, kind: "generated" });
+  }
+
+  for (const item of documents) {
+    const document = item.document;
     const resolvedPath = path.resolve(ukdocsPrintDocumentPath(document));
     if (!resolvedPath.startsWith(path.resolve(ukdocsPrintFilesDir)) || !existsSync(resolvedPath)) {
       continue;
@@ -5321,7 +5382,7 @@ async function sendUkdocsPrintReadyEmail(collection, customers, settings) {
   if (!requirements.complete) {
     return { ok: false, recipients, error: `Still missing: ${requirements.missing.join(", ")}` };
   }
-  const attachments = await ukdocsPrintCollectionAttachments(collection);
+  const attachments = await ukdocsPrintCollectionAttachments(collection, requirements.customer, "ukdocsprint");
   const context = buildUkdocsPrintReadyTemplateContext(collection, requirements);
   const subject = String(requirements.customer?.ready_email_subject || "").trim()
     ? applyUkdocsReadyTemplate(requirements.customer.ready_email_subject, context).trim()
