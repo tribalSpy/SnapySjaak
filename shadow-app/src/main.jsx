@@ -2402,13 +2402,17 @@ function ukdocsPrintSplitTokens(value) {
 
 function ukdocsPrintInspectionMode(collection) {
   const pdType = String(collection?.pd_type || "").trim().toLowerCase();
-  if (pdType.includes("nakeuring")) {
+  const pdTypeCompact = pdType.replace(/\s+/g, "");
+  if (pdTypeCompact.includes("nakeuring")) {
     return "reinspection";
   }
-  if (pdType.includes("voorraad")) {
+  if (pdTypeCompact.includes("voorraadkeuring")) {
+    return "";
+  }
+  if (pdTypeCompact === "voorraad") {
     return "stock_control";
   }
-  if (collection?.collection_type === "stock_control") {
+  if (!pdTypeCompact && collection?.collection_type === "stock_control") {
     return "stock_control";
   }
   return "";
@@ -6556,6 +6560,17 @@ function FustImportPanel({ onSaved }) {
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
   const [preview, setPreview] = useState(null);
+  const [selectedImportKeys, setSelectedImportKeys] = useState([]);
+
+  function selectableRows(rows) {
+    return (rows || []).filter((row) => row.status !== "missing_connect" && row.status !== "locked");
+  }
+
+  function syncPreviewSelection(payload) {
+    const rows = payload?.rows || [];
+    setPreview(payload);
+    setSelectedImportKeys(selectableRows(rows).map((row) => row.import_key).filter(Boolean));
+  }
 
   async function analyzeImport() {
     if (!file) {
@@ -6576,7 +6591,7 @@ function FustImportPanel({ onSaved }) {
           },
         }),
       });
-      setPreview(payload);
+      syncPreviewSelection(payload);
       setMessage(`Preview ready: ${payload.summary?.total_rows || 0} rows found.`);
     } catch (previewError) {
       setError(previewError.message);
@@ -6602,16 +6617,32 @@ function FustImportPanel({ onSaved }) {
             type: file.type || "application/octet-stream",
             content_base64: await fileToBase64(file),
           },
+          selected_import_keys: selectedImportKeys,
         }),
       });
-      setPreview({ rows: payload.rows, summary: payload.summary, file_name: payload.summary?.file_name || file.name, sheet_name: payload.summary?.sheet_name || "Overzicht" });
-      setMessage(`Import done. Created ${payload.summary?.created || 0}, updated ${payload.summary?.updated || 0}, locked ${payload.summary?.locked || 0}, missing connect ${payload.summary?.missing_connect || 0}, failed ${payload.summary?.failed || 0}.`);
+      syncPreviewSelection({ rows: payload.rows, summary: payload.summary, file_name: payload.summary?.file_name || file.name, sheet_name: payload.summary?.sheet_name || "Overzicht" });
+      setMessage(`Import done. Selected ${payload.summary?.selected_rows || 0}, created ${payload.summary?.created || 0}, updated ${payload.summary?.updated || 0}, skipped ${payload.summary?.skipped || 0}, locked ${payload.summary?.locked || 0}, missing connect ${payload.summary?.missing_connect || 0}, failed ${payload.summary?.failed || 0}.`);
       onSaved();
     } catch (importError) {
       setError(importError.message);
     } finally {
       setBusy(false);
     }
+  }
+
+  const allSelectableRows = selectableRows(preview?.rows || []);
+  const allSelected = allSelectableRows.length > 0 && allSelectableRows.every((row) => selectedImportKeys.includes(row.import_key));
+
+  function toggleImportKey(importKey, checked) {
+    setSelectedImportKeys((current) => (
+      checked
+        ? [...new Set([...current, importKey])]
+        : current.filter((value) => value !== importKey)
+    ));
+  }
+
+  function toggleAll(checked) {
+    setSelectedImportKeys(checked ? allSelectableRows.map((row) => row.import_key).filter(Boolean) : []);
   }
 
   return (
@@ -6635,12 +6666,19 @@ function FustImportPanel({ onSaved }) {
         {preview && (
           <>
             <div className="notice">
-              {preview.file_name || file?.name || "file"} | {preview.sheet_name || "Overzicht"} | total {preview.summary?.total_rows || 0}, new {preview.summary?.new_rows ?? preview.summary?.created ?? 0}, update {preview.summary?.update_rows ?? preview.summary?.updated ?? 0}, locked {preview.summary?.locked_rows ?? preview.summary?.locked ?? 0}, missing connect {preview.summary?.missing_connect_rows ?? preview.summary?.missing_connect ?? 0}
+              {preview.file_name || file?.name || "file"} | {preview.sheet_name || "Overzicht"} | total {preview.summary?.total_rows || 0}, selected {selectedImportKeys.length}, new {preview.summary?.new_rows ?? preview.summary?.created ?? 0}, update {preview.summary?.update_rows ?? preview.summary?.updated ?? 0}, locked {preview.summary?.locked_rows ?? preview.summary?.locked ?? 0}, missing connect {preview.summary?.missing_connect_rows ?? preview.summary?.missing_connect ?? 0}
+            </div>
+            <div className="row-actions hal-actions-row">
+              <label className="checkbox-row">
+                <input type="checkbox" checked={allSelected} onChange={(event) => toggleAll(event.target.checked)} />
+                <span>Select all importable rows</span>
+              </label>
             </div>
             <div className="table-wrap">
               <table className="data-table action-table">
                 <thead>
                   <tr>
+                    <th>Use</th>
                     <th>Date</th>
                     <th>Customer</th>
                     <th>Connect</th>
@@ -6654,6 +6692,17 @@ function FustImportPanel({ onSaved }) {
                 <tbody>
                   {(preview.rows || []).map((row, index) => (
                     <tr key={`${row.action_date}-${row.customer_name}-${index}`}>
+                      <td>
+                        {row.status === "missing_connect" || row.status === "locked" ? (
+                          "-"
+                        ) : (
+                          <input
+                            type="checkbox"
+                            checked={selectedImportKeys.includes(row.import_key)}
+                            onChange={(event) => toggleImportKey(row.import_key, event.target.checked)}
+                          />
+                        )}
+                      </td>
                       <td>{row.action_date}</td>
                       <td>{row.customer_name}</td>
                       <td>{row.connect_name || "-"}</td>

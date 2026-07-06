@@ -1264,13 +1264,17 @@ function normalizeUkdocsPrintDocumentList(documents) {
 
 function ukdocsPrintInspectionMode(collection) {
   const pdType = String(collection?.pd_type || "").trim().toLowerCase();
-  if (pdType.includes("nakeuring")) {
+  const pdTypeCompact = pdType.replace(/\s+/g, "");
+  if (pdTypeCompact.includes("nakeuring")) {
     return "reinspection";
   }
-  if (pdType.includes("voorraad")) {
+  if (pdTypeCompact.includes("voorraadkeuring")) {
+    return "";
+  }
+  if (pdTypeCompact === "voorraad") {
     return "stock_control";
   }
-  if (collection?.collection_type === "stock_control") {
+  if (!pdTypeCompact && collection?.collection_type === "stock_control") {
     return "stock_control";
   }
   return "";
@@ -2775,22 +2779,37 @@ async function collectCurrentFustActions(settings) {
   };
 }
 
-async function applyFustImportRows(filePayload, requestUser) {
+async function applyFustImportRows(filePayload, requestUser, selectedImportKeys = []) {
   const prepared = await prepareFustImportRows(filePayload, requestUser);
+  const allowedImportKeys = new Set(
+    Array.isArray(selectedImportKeys)
+      ? selectedImportKeys.map((value) => String(value || "").trim()).filter(Boolean)
+      : [],
+  );
+  const selectedRows = allowedImportKeys.size
+    ? prepared.rows.filter((row) => allowedImportKeys.has(String(row.import_key || "").trim()))
+    : prepared.rows;
   const localActions = await readFustActions();
   const summary = {
     file_name: prepared.file_name,
     sheet_name: prepared.sheet_name,
     total_rows: prepared.rows.length,
+    selected_rows: selectedRows.length,
     created: 0,
     updated: 0,
     locked: 0,
     missing_connect: 0,
+    skipped: 0,
     failed: 0,
   };
   const results = [];
 
   for (const row of prepared.rows) {
+    if (allowedImportKeys.size && !allowedImportKeys.has(String(row.import_key || "").trim())) {
+      summary.skipped += 1;
+      results.push({ ...row, imported: false, status: "skipped", note: "Not selected for import" });
+      continue;
+    }
     if (row.status === "missing_connect") {
       summary.missing_connect += 1;
       results.push({ ...row, imported: false });
@@ -7798,7 +7817,7 @@ async function handleApi(req, res, url) {
     }
     try {
       const body = await readRequestJson(req, 25 * 1024 * 1024);
-      const payload = await applyFustImportRows(body?.file || {}, requestUser);
+      const payload = await applyFustImportRows(body?.file || {}, requestUser, body?.selected_import_keys || []);
       sendJson(res, 200, payload);
     } catch (error) {
       sendJson(res, 400, { error: error instanceof Error ? error.message : String(error) });
