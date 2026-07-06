@@ -3592,6 +3592,16 @@ async function downloadCollectionEntries(entries) {
   });
 }
 
+function openCollectionEntries(entries) {
+  if (!Array.isArray(entries) || !entries.length) {
+    return;
+  }
+
+  entries.forEach((entry) => {
+    window.open(entry.href, "_blank", "noopener,noreferrer");
+  });
+}
+
 function UkdocsPrintPage({ currentUser }) {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -4312,12 +4322,12 @@ function UkdocsInspectionPage({ currentUser }) {
                   {!!downloadEntries.length && (
                     <div className="ukdocs-download-box">
                       <div className="row-actions spread-actions">
-                        <strong>Downloads</strong>
-                        <button type="button" onClick={() => downloadCollectionEntries(downloadEntries)}>Download all</button>
+                        <strong>Files</strong>
+                        <button type="button" onClick={() => openCollectionEntries(downloadEntries)}>Open all</button>
                       </div>
                       <div className="ukdocs-download-list">
                         {downloadEntries.map((entry) => (
-                          <a key={entry.key} href={entry.href} className="ukdocs-download-link">
+                          <a key={entry.key} href={entry.href} className="ukdocs-download-link" target="_blank" rel="noreferrer">
                             {entry.label}
                           </a>
                         ))}
@@ -4375,7 +4385,7 @@ function UkdocsInspectionPage({ currentUser }) {
                             <div className="row-actions spread-actions">
                               {selectedPhytoFiles.map((phytoFile, index) => (
                                 <span key={`${phytoFile.storage_name}-${index}`} className="row-actions spread-actions">
-                                  <a href={`/api/ukdocs-print/collections/${encodeURIComponent(selectedCollection.id)}/documents/phyto/${index}`}>
+                                  <a href={`/api/ukdocs-print/collections/${encodeURIComponent(selectedCollection.id)}/documents/phyto/${index}`} target="_blank" rel="noreferrer">
                                     {phytoFile.original_name || `Phyto ${index + 1}`}
                                   </a>
                                   <button type="button" onClick={() => deleteCollectionDocument("phyto", index)} disabled={saving}>Delete</button>
@@ -4387,7 +4397,7 @@ function UkdocsInspectionPage({ currentUser }) {
                       ) : (
                         <>
                           <small>{document?.original_name ? `${document.original_name} saved ${formatTimestamp(document.saved_at)}` : "No file saved yet."}</small>
-                          {document?.storage_name && <div className="row-actions"><a href={`/api/ukdocs-print/collections/${encodeURIComponent(selectedCollection.id)}/documents/${documentDefinition.key}`}>Download</a><button type="button" onClick={() => deleteCollectionDocument(documentDefinition.key)} disabled={saving}>Delete</button></div>}
+                          {document?.storage_name && <div className="row-actions"><a href={`/api/ukdocs-print/collections/${encodeURIComponent(selectedCollection.id)}/documents/${documentDefinition.key}`} target="_blank" rel="noreferrer">Open</a><button type="button" onClick={() => deleteCollectionDocument(documentDefinition.key)} disabled={saving}>Delete</button></div>}
                         </>
                       )}
                     </div>
@@ -4399,11 +4409,11 @@ function UkdocsInspectionPage({ currentUser }) {
                 <div className="ukdocs-download-box">
                   <div className="row-actions spread-actions">
                     <strong>All linked files</strong>
-                    <button type="button" onClick={() => downloadCollectionEntries(selectedAllDownloadEntries)}>Download all linked</button>
+                    <button type="button" onClick={() => openCollectionEntries(selectedAllDownloadEntries)}>Open all linked</button>
                   </div>
                   <div className="ukdocs-download-list">
                     {selectedAllDownloadEntries.map((entry) => (
-                      <a key={entry.key} href={entry.href} className="ukdocs-download-link">
+                      <a key={entry.key} href={entry.href} className="ukdocs-download-link" target="_blank" rel="noreferrer">
                         {entry.label}
                       </a>
                     ))}
@@ -5766,6 +5776,8 @@ function FustActionForm({ type, metaData, loading, onSaved }) {
 
 function FustOverview({ loading, actions, overview, sourceDebug, onRefresh }) {
   const [selectedWeek, setSelectedWeek] = useState("");
+  const [selectedFromWeek, setSelectedFromWeek] = useState("");
+  const [selectedToWeek, setSelectedToWeek] = useState("");
   const [selectedFromDate, setSelectedFromDate] = useState("");
   const [selectedToDate, setSelectedToDate] = useState("");
   const [selectedCountry, setSelectedCountry] = useState("");
@@ -5871,6 +5883,13 @@ function FustOverview({ loading, actions, overview, sourceDebug, onRefresh }) {
       return false;
     }
     if (selectedToDate && actionDate && actionDate > selectedToDate) {
+      return false;
+    }
+    const actionWeek = Number(action.week || 0);
+    if (selectedFromWeek && actionWeek && actionWeek < Number(selectedFromWeek)) {
+      return false;
+    }
+    if (selectedToWeek && actionWeek && actionWeek > Number(selectedToWeek)) {
       return false;
     }
     return true;
@@ -6000,6 +6019,34 @@ function FustOverview({ loading, actions, overview, sourceDebug, onRefresh }) {
             >
               <option value="">All weeks</option>
               {weekOptions.map((week) => <option key={week} value={week}>{week}</option>)}
+            </select>
+          </label>
+          <label>
+            <span>From week</span>
+            <select
+              value={selectedFromWeek}
+              onChange={(event) => {
+                setSelectedFromWeek(event.target.value);
+                setExpandedCountryWeek(false);
+                setShowTransactionRecords(false);
+              }}
+            >
+              <option value="">All weeks</option>
+              {weekOptions.map((week) => <option key={`from-${week}`} value={week}>{week}</option>)}
+            </select>
+          </label>
+          <label>
+            <span>To week</span>
+            <select
+              value={selectedToWeek}
+              onChange={(event) => {
+                setSelectedToWeek(event.target.value);
+                setExpandedCountryWeek(false);
+                setShowTransactionRecords(false);
+              }}
+            >
+              <option value="">All weeks</option>
+              {weekOptions.map((week) => <option key={`to-${week}`} value={week}>{week}</option>)}
             </select>
           </label>
           <label>
@@ -6567,9 +6614,8 @@ function FustImportPanel({ onSaved }) {
   }
 
   function syncPreviewSelection(payload) {
-    const rows = payload?.rows || [];
     setPreview(payload);
-    setSelectedImportKeys(selectableRows(rows).map((row) => row.import_key).filter(Boolean));
+    setSelectedImportKeys([]);
   }
 
   async function analyzeImport() {
@@ -6603,6 +6649,14 @@ function FustImportPanel({ onSaved }) {
   async function applyImport() {
     if (!file) {
       setError("Choose an import file first.");
+      return;
+    }
+    if (!preview) {
+      setError("Preview the import first.");
+      return;
+    }
+    if (!selectedImportKeys.length) {
+      setError("Select at least one row to import.");
       return;
     }
     setBusy(true);
@@ -6656,12 +6710,22 @@ function FustImportPanel({ onSaved }) {
         <div className="form-grid">
           <label className="wide">
             <span>Overzicht file</span>
-            <input type="file" accept=".xlsx,.xls,.csv" onChange={(event) => setFile(event.target.files?.[0] || null)} />
+            <input
+              type="file"
+              accept=".xlsx,.xls,.csv"
+              onChange={(event) => {
+                setFile(event.target.files?.[0] || null);
+                setPreview(null);
+                setSelectedImportKeys([]);
+                setMessage("");
+                setError("");
+              }}
+            />
           </label>
         </div>
         <div className="row-actions hal-actions-row">
           <button type="button" onClick={analyzeImport} disabled={busy || !file}>{busy ? "Analyzing..." : "Preview import"}</button>
-          <button type="button" className="primary" onClick={applyImport} disabled={busy || !file}>{busy ? "Importing..." : "Import actions"}</button>
+          <button type="button" className="primary" onClick={applyImport} disabled={busy || !file || !preview || !selectedImportKeys.length}>{busy ? "Importing..." : "Import actions"}</button>
         </div>
         {preview && (
           <>
