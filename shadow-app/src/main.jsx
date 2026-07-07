@@ -6610,6 +6610,14 @@ function isFustActionConfirmed(action) {
   return Boolean(String(action?.confirmed_at || "").trim());
 }
 
+function isImportedFustAction(action) {
+  return Boolean(
+    String(action?.import_source?.import_key || "").trim()
+    || String(action?.import_source?.imported_at || "").trim()
+    || String(action?.import_source?.file_name || "").trim(),
+  );
+}
+
 function addDaysToIso(value, days) {
   const parsed = new Date(`${String(value || "").slice(0, 10)}T00:00:00`);
   if (Number.isNaN(parsed.getTime())) {
@@ -6617,6 +6625,15 @@ function addDaysToIso(value, days) {
   }
   parsed.setDate(parsed.getDate() + Number(days || 0));
   return `${parsed.getFullYear()}-${String(parsed.getMonth() + 1).padStart(2, "0")}-${String(parsed.getDate()).padStart(2, "0")}`;
+}
+
+function fustActionControlDate(action) {
+  const actionDate = String(action?.action_date || "").slice(0, 10);
+  const importedDate = String(action?.import_source?.imported_at || "").slice(0, 10);
+  if (importedDate && (!actionDate || importedDate > actionDate)) {
+    return importedDate;
+  }
+  return actionDate;
 }
 
 function FustActionTable({
@@ -6782,23 +6799,24 @@ function FustActionTable({
   const typeOptions = [...new Set(actions.map((action) => action.type).filter(Boolean))].sort((left, right) => left.localeCompare(right));
   const countryOptions = [...new Set(actions.map((action) => action.country).filter(Boolean))].sort((left, right) => left.localeCompare(right));
   const customerOptions = [...new Set(actions.map((action) => action.customer_name).filter(Boolean))].sort((left, right) => left.localeCompare(right));
-  const unconfirmedActions = actions.filter((action) => !isFustActionConfirmed(action));
+  const controlActions = allowConfirm ? actions.filter((action) => !isImportedFustAction(action)) : actions;
+  const unconfirmedActions = controlActions.filter((action) => !isFustActionConfirmed(action));
   const yesterdayDate = yesterdayIso();
-  const yesterdayUnconfirmedActions = unconfirmedActions.filter((action) => String(action.action_date || "") === yesterdayDate);
+  const yesterdayUnconfirmedActions = unconfirmedActions.filter((action) => fustActionControlDate(action) === yesterdayDate);
   const overdueUnconfirmedActions = unconfirmedActions.filter((action) => {
-    const dueDate = addDaysToIso(action.action_date, 1);
-    return dueDate && localDateIso() > dueDate;
+    const dueDate = addDaysToIso(fustActionControlDate(action), 1);
+    return dueDate && localDateIso() >= dueDate;
   });
-  const unconfirmedByDate = [...new Set(unconfirmedActions.map((action) => String(action.action_date || "")).filter(Boolean))]
+  const unconfirmedByDate = [...new Set(unconfirmedActions.map((action) => fustActionControlDate(action)).filter(Boolean))]
     .sort((left, right) => right.localeCompare(left))
     .map((date) => ({
       date,
-      count: unconfirmedActions.filter((action) => String(action.action_date || "") === date).length,
+      count: unconfirmedActions.filter((action) => fustActionControlDate(action) === date).length,
     }));
-  const visibleActions = actions
+  const visibleActions = controlActions
     .filter((action) => !onlyUnconfirmed || !isFustActionConfirmed(action))
     .filter((action) => !typeFilter || action.type === typeFilter)
-    .filter((action) => !dateFilter || String(action.action_date || "") === dateFilter)
+    .filter((action) => !dateFilter || (allowConfirm ? fustActionControlDate(action) : String(action.action_date || "")) === dateFilter)
     .filter((action) => !countryFilter || action.country === countryFilter)
     .filter((action) => !customerFilter || action.customer_name === customerFilter);
 

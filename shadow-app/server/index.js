@@ -3273,6 +3273,14 @@ function isFustActionConfirmed(action) {
   return Boolean(String(action?.confirmed_at || "").trim());
 }
 
+function isImportedFustAction(action) {
+  return Boolean(
+    String(action?.import_source?.import_key || "").trim()
+    || String(action?.import_source?.imported_at || "").trim()
+    || String(action?.import_source?.file_name || "").trim(),
+  );
+}
+
 function buildFustImportKey(actionLike) {
   return [
     String(actionLike?.type || "OUT").trim().toUpperCase(),
@@ -5156,37 +5164,48 @@ function addDaysToIsoDate(dateString, days) {
   return `${parsed.getFullYear()}-${String(parsed.getMonth() + 1).padStart(2, "0")}-${String(parsed.getDate()).padStart(2, "0")}`;
 }
 
+function fustActionControlDate(action) {
+  const actionDate = String(action?.action_date || "").slice(0, 10);
+  const importedDate = String(action?.import_source?.imported_at || "").slice(0, 10);
+  if (importedDate && (!actionDate || importedDate > actionDate)) {
+    return importedDate;
+  }
+  return actionDate;
+}
+
+function fustActionConfirmationDueDate(action) {
+  return addDaysToIsoDate(fustActionControlDate(action), 1);
+}
+
 function isFustConfirmationReminderOverdue(action, todayIso = localDateIso()) {
   if (isFustActionConfirmed(action)) {
     return false;
   }
-  const actionDate = String(action?.action_date || "").slice(0, 10);
-  if (!actionDate) {
-    return false;
-  }
-  const confirmByDate = addDaysToIsoDate(actionDate, 1);
+  const confirmByDate = fustActionConfirmationDueDate(action);
   if (!confirmByDate) {
     return false;
   }
-  return String(todayIso || "") > confirmByDate;
+  return String(todayIso || "") >= confirmByDate;
 }
 
 function buildFustConfirmationReminderEmail(actions) {
   const sortedActions = [...(Array.isArray(actions) ? actions : [])].sort((left, right) => {
-    const leftDate = String(left.action_date || "");
-    const rightDate = String(right.action_date || "");
+    const leftDate = String(fustActionControlDate(left) || "");
+    const rightDate = String(fustActionControlDate(right) || "");
     return leftDate.localeCompare(rightDate) || String(left.customer_name || "").localeCompare(String(right.customer_name || ""));
   });
   return [
     "Fust confirmation reminder",
     "",
-    "These actions are still not confirmed after the next day and need attention:",
+    "These actions are still not confirmed and need attention:",
     "",
     ...sortedActions.map((action) => {
-      const confirmByDate = addDaysToIsoDate(action.action_date, 1) || "-";
+      const confirmByDate = fustActionConfirmationDueDate(action) || "-";
+      const controlDate = fustActionControlDate(action) || action.action_date || "-";
       return [
         `${action.type} | ${action.action_date} | ${action.country} | ${action.customer_name}`,
         `Connect: ${action.connect_name || "-"}`,
+        `Control date: ${controlDate}`,
         `Confirm by: ${confirmByDate}`,
         `DC: ${Number(action.metrics?.dc || 0)} | DCS: ${Number(action.metrics?.dcs || 0)} | DCO: ${Number(action.metrics?.dco || 0)} | CCTag: ${Number(action.metrics?.cctag || 0)} | PAL: ${Number(action.metrics?.pal || 0)} | VK: ${Number(action.metrics?.vk || 0)}`,
         action.remark ? `Remark: ${action.remark}` : "",
@@ -5257,11 +5276,76 @@ async function sendFustConfirmationReminderEmail(actions, settings) {
   };
 }
 
+async function loadCurrentFustActionsSnapshot(settingsOverride = null) {
+  const settings = settingsOverride || await readFustSettings();
+  const localActions = await readFustActions();
+  let inSheetActions = [];
+  let outSheetActions = [];
+  const sourceDebug = {
+    local: {
+      action_count: localActions.length,
+    },
+    in_sheet: {
+      sheet_name: settings.in_sheet_name,
+      row_count: 0,
+      action_count: 0,
+      error: "",
+    },
+    out_sheet: {
+      sheet_name: settings.out_sheet_name,
+      row_count: 0,
+      action_count: 0,
+      error: "",
+    },
+  };
+
+  try {
+    const retourRows = await loadSheetRows(settings.spreadsheet_id, settings.in_sheet_name);
+    sourceDebug.in_sheet.row_count = retourRows.length;
+    inSheetActions = parseRegistrySheetRows(retourRows, "IN");
+    sourceDebug.in_sheet.action_count = inSheetActions.length;
+  } catch (error) {
+    inSheetActions = [];
+    sourceDebug.in_sheet.error = error instanceof Error ? error.message : String(error || "Unknown error");
+  }
+
+  try {
+    const uitgaandRows = await loadSheetRows(settings.spreadsheet_id, settings.out_sheet_name);
+    sourceDebug.out_sheet.row_count = uitgaandRows.length;
+    outSheetActions = parseRegistrySheetRows(uitgaandRows, "OUT");
+    sourceDebug.out_sheet.action_count = outSheetActions.length;
+  } catch (error) {
+    outSheetActions = [];
+    sourceDebug.out_sheet.error = error instanceof Error ? error.message : String(error || "Unknown error");
+  }
+
+  const deletedActionIds = new Set(
+    localActions
+      .filter((action) => action.deleted)
+      .map((action) => String(action.id || "").trim())
+      .filter(Boolean),
+  );
+  const dedupedActions = new Map();
+  for (const action of [...inSheetActions, ...outSheetActions, ...localActions]) {
+    const actionId = String(action?.id || "").trim();
+    if (actionId && deletedActionIds.has(actionId)) {
+      continue;
+    }
+    if (action.deleted) {
+      continue;
+    }
+    dedupedActions.set(buildActionMergeKey(action), action);
+  }
+
+  const actions = [...dedupedActions.values()];
+  return { settings, localActions, actions, sourceDebug };
+}
+
 async function maybeSendFustConfirmationReminders(actions, settings) {
   const today = localDateIso();
-  const unconfirmedActions = (Array.isArray(actions) ? actions : []).filter((action) => !isFustActionConfirmed(action));
+  const unconfirmedActions = (Array.isArray(actions) ? actions : []).filter((action) => !isFustActionConfirmed(action) && !isImportedFustAction(action));
   const yesterdayDate = addDaysToIsoDate(today, -1);
-  const yesterdayUnconfirmedActions = unconfirmedActions.filter((action) => String(action.action_date || "") === yesterdayDate);
+  const yesterdayUnconfirmedActions = unconfirmedActions.filter((action) => fustActionControlDate(action) === yesterdayDate);
   const overdueActions = unconfirmedActions.filter((action) => isFustConfirmationReminderOverdue(action, today));
   const reminderCandidates = overdueActions.filter((action) => String(action?.confirmation_reminder?.last_attempt_for_date || "") !== today);
 
@@ -7857,66 +7941,7 @@ async function handleApi(req, res, url) {
       return;
     }
 
-    const settings = await readFustSettings();
-    const localActions = await readFustActions();
-    let inSheetActions = [];
-    let outSheetActions = [];
-    const sourceDebug = {
-      local: {
-        action_count: localActions.length,
-      },
-      in_sheet: {
-        sheet_name: settings.in_sheet_name,
-        row_count: 0,
-        action_count: 0,
-        error: "",
-      },
-      out_sheet: {
-        sheet_name: settings.out_sheet_name,
-        row_count: 0,
-        action_count: 0,
-        error: "",
-      },
-    };
-    try {
-      const retourRows = await loadSheetRows(settings.spreadsheet_id, settings.in_sheet_name);
-      sourceDebug.in_sheet.row_count = retourRows.length;
-      inSheetActions = parseRegistrySheetRows(retourRows, "IN");
-      sourceDebug.in_sheet.action_count = inSheetActions.length;
-    } catch (error) {
-      inSheetActions = [];
-      sourceDebug.in_sheet.error = error instanceof Error ? error.message : String(error || "Unknown error");
-    }
-
-    try {
-      const uitgaandRows = await loadSheetRows(settings.spreadsheet_id, settings.out_sheet_name);
-      sourceDebug.out_sheet.row_count = uitgaandRows.length;
-      outSheetActions = parseRegistrySheetRows(uitgaandRows, "OUT");
-      sourceDebug.out_sheet.action_count = outSheetActions.length;
-    } catch (error) {
-      outSheetActions = [];
-      sourceDebug.out_sheet.error = error instanceof Error ? error.message : String(error || "Unknown error");
-    }
-
-    const deletedActionIds = new Set(
-      localActions
-        .filter((action) => action.deleted)
-        .map((action) => String(action.id || "").trim())
-        .filter(Boolean),
-    );
-    const dedupedActions = new Map();
-    for (const action of [...inSheetActions, ...outSheetActions, ...localActions]) {
-      const actionId = String(action?.id || "").trim();
-      if (actionId && deletedActionIds.has(actionId)) {
-        continue;
-      }
-      if (action.deleted) {
-        continue;
-      }
-      dedupedActions.set(buildActionMergeKey(action), action);
-    }
-
-    const actions = [...dedupedActions.values()];
+    const { settings, localActions, actions, sourceDebug } = await loadCurrentFustActionsSnapshot();
     const country = String(url.searchParams.get("country") || "").trim();
     const customer = String(url.searchParams.get("customer_name") || "").trim().toLowerCase();
     const type = String(url.searchParams.get("type") || "").trim().toUpperCase();
@@ -8733,6 +8758,20 @@ async function startServer() {
   syncPendingDagFoutjesDaysToSheet().catch(() => {});
   setInterval(() => {
     syncPendingDagFoutjesDaysToSheet().catch(() => {});
+  }, 15 * 60 * 1000);
+
+  const runFustReminderCheck = async () => {
+    try {
+      const { settings, actions } = await loadCurrentFustActionsSnapshot();
+      await maybeSendFustConfirmationReminders(actions, settings);
+    } catch (error) {
+      console.error("Fust confirmation reminder check failed:", error instanceof Error ? error.message : String(error));
+    }
+  };
+
+  runFustReminderCheck().catch(() => {});
+  setInterval(() => {
+    runFustReminderCheck().catch(() => {});
   }, 15 * 60 * 1000);
 
   server.listen(port, host, () => {
