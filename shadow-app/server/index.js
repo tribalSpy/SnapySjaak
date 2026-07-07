@@ -1447,16 +1447,18 @@ function deriveUkdocsPrintCollectionStatus(collection) {
 }
 
 function normalizeUkdocsPrintCollection(collection) {
+  const shipmentReference = normalizeUkdocsText(collection?.shipment_reference);
+  const invoiceNumbers = String(collection?.invoice_numbers || "").trim() || shipmentReference;
   const normalized = {
     id: normalizeUkdocsText(collection?.id) || crypto.randomUUID(),
     source: normalizeUkdocsText(collection?.source) || "manual",
     shipment_id: normalizeUkdocsText(collection?.shipment_id),
-    shipment_reference: normalizeUkdocsText(collection?.shipment_reference),
+    shipment_reference: shipmentReference,
     shipment_date: normalizeUkdocsText(collection?.shipment_date),
     customer_id: normalizeUkdocsText(collection?.customer_id),
     customer_name: normalizeUkdocsText(collection?.customer_name),
     collection_type: normalizeUkdocsText(collection?.collection_type) || (isHonselersdijkStockControl(collection) ? "stock_control" : "export"),
-    invoice_numbers: String(collection?.invoice_numbers || "").trim(),
+    invoice_numbers: invoiceNumbers,
     truck_number: normalizeUkdocsText(collection?.truck_number),
     trailer_number: normalizeUkdocsText(collection?.trailer_number),
     reference_connect: normalizeUkdocsText(collection?.reference_connect),
@@ -4059,7 +4061,7 @@ async function saveUkdocsPrintUpload(collectionId, kind, filePayload, requestUse
 
   const extension = safeExtension(originalName, mimeType);
   const fileBuffer = Buffer.from(contentBase64, "base64");
-  const storageName = `${sanitizeDriveName(collectionId)}-${kind}-${Date.now()}${extension}`;
+  const storageName = `${sanitizeDriveName(collectionId)}-${kind}-${Date.now()}-${crypto.randomUUID()}${extension}`;
   await fs.mkdir(ukdocsPrintFilesDir, { recursive: true });
   await fs.writeFile(path.join(ukdocsPrintFilesDir, storageName), fileBuffer);
   return {
@@ -4077,7 +4079,7 @@ async function saveUkdocsPrintBuffer(collectionId, kind, originalName, mimeType,
     throw new Error("Unknown UKdocs Print document type");
   }
   const extension = safeExtension(originalName, mimeType);
-  const storageName = `${sanitizeDriveName(collectionId)}-${kind}-${Date.now()}${extension}`;
+  const storageName = `${sanitizeDriveName(collectionId)}-${kind}-${Date.now()}-${crypto.randomUUID()}${extension}`;
   await fs.mkdir(ukdocsPrintFilesDir, { recursive: true });
   await fs.writeFile(path.join(ukdocsPrintFilesDir, storageName), fileBuffer);
   return {

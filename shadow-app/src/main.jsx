@@ -2548,6 +2548,10 @@ function ukdocsPrintSplitTokens(value) {
     .filter(Boolean);
 }
 
+function ukdocsCollectionInvoiceText(collection) {
+  return String(collection?.invoice_numbers || "").trim() || String(collection?.shipment_reference || "").trim();
+}
+
 function ukdocsPrintInspectionMode(collection) {
   const pdType = String(collection?.pd_type || "").trim().toLowerCase();
   const pdTypeCompact = pdType.replace(/\s+/g, "");
@@ -2629,7 +2633,7 @@ function ukdocsPrintCollectionProgress(collection, customers) {
     const generatedFiles = collection?.documents?.generated_files || [];
     const generatedExportReady = generatedFiles.some((file) => file.document_kind === "export");
     const generatedInvoiceCount = generatedFiles.filter((file) => file.document_kind === "invoice").length;
-    const invoiceExpected = ukdocsPrintSplitTokens(collection?.invoice_numbers).length;
+    const invoiceExpected = ukdocsPrintSplitTokens(ukdocsCollectionInvoiceText(collection)).length;
 
     if (customer?.required_phyto !== false && phytoExpected > 0 && phytoCount < phytoExpected) {
       missing.push(`Phyto ${phytoCount}/${phytoExpected}`);
@@ -2664,7 +2668,7 @@ function ukdocsPrintCollectionProgress(collection, customers) {
   const generatedFiles = collection?.documents?.generated_files || [];
   const generatedExportReady = generatedFiles.some((file) => file.document_kind === "export");
   const generatedInvoiceCount = generatedFiles.filter((file) => file.document_kind === "invoice").length;
-  const invoiceExpected = ukdocsPrintSplitTokens(collection?.invoice_numbers).length;
+  const invoiceExpected = ukdocsPrintSplitTokens(ukdocsCollectionInvoiceText(collection)).length;
 
   if (customer?.required_phyto !== false && phytoExpected > 0 && phytoCount < phytoExpected) {
     missing.push(`Phyto ${phytoCount}/${phytoExpected}`);
@@ -2695,7 +2699,7 @@ function ukdocsGeneratedShipmentReady(collection) {
   const generatedFiles = collection?.documents?.generated_files || [];
   const generatedExportReady = generatedFiles.some((file) => file.document_kind === "export");
   const generatedInvoiceCount = generatedFiles.filter((file) => file.document_kind === "invoice").length;
-  const invoiceExpected = ukdocsPrintSplitTokens(collection?.invoice_numbers).length;
+  const invoiceExpected = ukdocsPrintSplitTokens(ukdocsCollectionInvoiceText(collection)).length;
   return generatedExportReady && invoiceExpected > 0 && generatedInvoiceCount >= invoiceExpected;
 }
 
@@ -4146,7 +4150,7 @@ function UkdocsPrintPage({ currentUser }) {
                   <small>{collection.shipment_date || "-"}</small>
                   <small>{collection.city_name ? `City: ${collection.city_name}` : "City not linked yet"}</small>
                   <small>{collection.reference_connect ? `Connect: ${collection.reference_connect}` : "No connect ref yet"}</small>
-                  <small>{collection.invoice_numbers ? `Invoices: ${collection.invoice_numbers}` : "No invoices linked yet"}</small>
+                  <small>{ukdocsCollectionInvoiceText(collection) ? `Invoices: ${ukdocsCollectionInvoiceText(collection)}` : "No invoices linked yet"}</small>
                   <small>{collection.truck_number || collection.trailer_number ? `Truck: ${collection.truck_number || collection.trailer_number}` : "No truck linked yet"}</small>
                   <div className={`ukdocs-status-badge ${status.tone}`}>{progress.missing.length ? `${status.label} - ${progress.missing.join(", ")}` : status.label}</div>
                   {!!collection.delivery_email?.sent_at && <small>Sent {formatTimestamp(collection.delivery_email.sent_at)}</small>}
@@ -4199,7 +4203,7 @@ function UkdocsPrintPage({ currentUser }) {
                 <label><span>City</span><input value={selectedCollection.city_name || ""} readOnly /></label>
                 <label><span>Border crossing</span><input value={selectedCollection.border_crossing || ""} readOnly /></label>
                 <label><span>Hub code</span><input value={selectedCollection.hub_code || ""} readOnly /></label>
-                <label><span>Invoice numbers</span><input value={selectedCollection.invoice_numbers || ""} readOnly /></label>
+                <label><span>Invoice numbers</span><input value={ukdocsCollectionInvoiceText(selectedCollection)} readOnly /></label>
                 <label><span>Truck registration</span><input value={selectedCollection.truck_number || ""} readOnly /></label>
                 <label><span>Trailer registration</span><input value={selectedCollection.trailer_number || ""} readOnly /></label>
                 <label><span>PD form</span><input value={selectedCollection.pd_form || ""} readOnly /></label>
@@ -4465,7 +4469,7 @@ function UkdocsInspectionPage({ currentUser }) {
                   <small>{collection.shipment_date || "-"}</small>
                   <small>{collection.city_name ? `City: ${collection.city_name}` : "City not linked yet"}</small>
                   <small>{collection.reference_connect ? `Connect: ${collection.reference_connect}` : "No connect ref yet"}</small>
-                  <small>{collection.invoice_numbers ? `Invoices: ${collection.invoice_numbers}` : "No invoices linked yet"}</small>
+                  <small>{ukdocsCollectionInvoiceText(collection) ? `Invoices: ${ukdocsCollectionInvoiceText(collection)}` : "No invoices linked yet"}</small>
                   <small>{collection.truck_number || collection.trailer_number ? `Truck: ${collection.truck_number || collection.trailer_number}` : "No truck linked yet"}</small>
                   <div className={`ukdocs-status-badge ${status.tone}`}>{progress.missing.length ? `${status.label} • ${progress.missing.join(", ")}` : status.label}</div>
                   <div className="row-actions spread-actions">
@@ -4512,7 +4516,7 @@ function UkdocsInspectionPage({ currentUser }) {
                 <label><span>Shipment date</span><input value={selectedCollection.shipment_date || ""} readOnly /></label>
                 <label><span>City</span><input value={selectedCollection.city_name || ""} readOnly /></label>
                 <label><span>Hub code</span><input value={selectedCollection.hub_code || ""} readOnly /></label>
-                <label><span>Invoice numbers</span><input value={selectedCollection.invoice_numbers || ""} readOnly /></label>
+                <label><span>Invoice numbers</span><input value={ukdocsCollectionInvoiceText(selectedCollection)} readOnly /></label>
                 <label><span>Truck registration</span><input value={selectedCollection.truck_number || ""} readOnly /></label>
                 <label><span>Trailer registration</span><input value={selectedCollection.trailer_number || ""} readOnly /></label>
                 <label><span>PD form</span><input value={selectedCollection.pd_form || ""} readOnly /></label>
