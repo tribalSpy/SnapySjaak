@@ -4453,7 +4453,6 @@ function buildUkdocsCsiAuditPayload(collection, extractedDocuments, requestUser)
   const generatedFiles = collection?.documents?.generated_files || [];
   const generatedInvoices = generatedFiles.filter((file) => file.document_kind === "invoice").map((file) => file.original_name || file.storage_name);
   const generatedExport = generatedFiles.find((file) => file.document_kind === "export");
-  const phytoFiles = (collection?.documents?.phyto_files || []).map((file) => file.original_name || file.storage_name);
   const tempPhytoFiles = (collection?.documents?.temp_phyto_files || []).map((file) => file.original_name || file.storage_name);
   const ipaffsFile = collection?.documents?.ipaffs_file?.original_name || "";
   const prompt = {
@@ -4461,9 +4460,11 @@ function buildUkdocsCsiAuditPayload(collection, extractedDocuments, requestUser)
     instructions: [
       "Review the provided zending documents and return strict JSON only.",
       "Do not invent values. If a file cannot be read or a value is missing, mark it as warn and explain it.",
+      "Use only these CSI sources: generated invoice files, generated export file, temporary phyto PDF files, and the IPAFFS file.",
+      "Do not use standard phyto collection files or second export files for this CSI audit.",
       "Compare invoice/export/IPAFFS values where text is available.",
       "Check whether currencies appear consistent across generated export and invoice files.",
-      "List manual checks still needed for PDF-only files such as phyto certificates.",
+      "List manual checks still needed for temporary phyto PDF files or any file that could not be read safely.",
     ],
     output_schema: {
       overall_status: "pass|warn|fail",
@@ -4490,7 +4491,6 @@ function buildUkdocsCsiAuditPayload(collection, extractedDocuments, requestUser)
     attached_files: {
       generated_invoices: generatedInvoices,
       generated_export: generatedExport?.original_name || "",
-      phyto_files: phytoFiles,
       temp_phyto_files: tempPhytoFiles,
       ipaffs_file: ipaffsFile,
     },
@@ -4545,7 +4545,6 @@ async function queueUkdocsCsiAudit(collection, requestUser) {
 
   const extractedDocuments = await extractUkdocsCsiFileSnapshots([
     ...(collection?.documents?.generated_files || []).map((document) => ({ kind: document.document_kind === "export" ? "generated_export" : "generated_invoice", document })),
-    ...(collection?.documents?.phyto_files || []).map((document) => ({ kind: "phyto", document })),
     ...(collection?.documents?.temp_phyto_files || []).map((document) => ({ kind: "temp_phyto", document })),
     collection?.documents?.ipaffs_file ? [{ kind: "ipaffs_file", document: collection.documents.ipaffs_file }] : [],
   ]);
