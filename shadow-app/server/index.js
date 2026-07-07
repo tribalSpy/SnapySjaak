@@ -41,6 +41,7 @@ const halLocationsWorkerPath = path.join(appRoot, "server", "hal_locations_worke
 const expeditionStickerWorkerPath = path.join(appRoot, "server", "expedition_sticker_worker.py");
 const fustImportWorkerPath = path.join(appRoot, "server", "fust_import_worker.py");
 const ukdocsWorkerPath = path.join(appRoot, "server", "ukdocs_worker.py");
+const ukdocsCsiWorkerPath = path.join(appRoot, "server", "ukdocs_csi_worker.py");
 const dagFoutjesHtmlPathCandidates = [
   path.join(repoRoot, "foutjeskoelcel", "bledy-chlodnia (1).html"),
   path.join(process.cwd(), "foutjeskoelcel", "bledy-chlodnia (1).html"),
@@ -98,6 +99,7 @@ const allPermissions = [
   "settings:manage",
   "ukdocs:view",
   "ukdocs_inspection:view",
+  "ukdocs_csi:view",
 ];
 const PERMISSIONS = {
   PHOTOS_VIEW: "photos:view",
@@ -118,6 +120,7 @@ const PERMISSIONS = {
   SETTINGS_MANAGE: "settings:manage",
   UKDOCS_VIEW: "ukdocs:view",
   UKDOCS_INSPECTION_VIEW: "ukdocs_inspection:view",
+  UKDOCS_CSI_VIEW: "ukdocs_csi:view",
 };
 const roleDefaultPermissions = {
   admin: allPermissions,
@@ -211,6 +214,8 @@ const defaultUkdocsState = {
   audit_reports: [],
   print_collections: [],
 };
+
+const UKDOCS_CSI_DOCUMENT_KINDS = new Set(["temp_phyto", "ipaffs_file"]);
 
 const defaultExpeditionStickerState = {
   planning_file: null,
@@ -1178,6 +1183,41 @@ function normalizeUkdocsCustomer(customer) {
   };
 }
 
+function normalizeUkdocsCsiReport(report) {
+  if (!report || typeof report !== "object") {
+    return {
+      status: "",
+      job_id: "",
+      queued_at: "",
+      started_at: "",
+      completed_at: "",
+      error: "",
+      summary: "",
+      overall_status: "",
+      checks: [],
+      products: [],
+      manual_checks: [],
+      notes: [],
+      llm_content: "",
+    };
+  }
+  return {
+    status: normalizeUkdocsText(report.status),
+    job_id: normalizeUkdocsText(report.job_id),
+    queued_at: normalizeUkdocsText(report.queued_at),
+    started_at: normalizeUkdocsText(report.started_at),
+    completed_at: normalizeUkdocsText(report.completed_at),
+    error: String(report.error || "").trim(),
+    summary: String(report.summary || "").trim(),
+    overall_status: normalizeUkdocsText(report.overall_status),
+    checks: Array.isArray(report.checks) ? report.checks : [],
+    products: Array.isArray(report.products) ? report.products : [],
+    manual_checks: Array.isArray(report.manual_checks) ? report.manual_checks.map((item) => String(item || "").trim()).filter(Boolean) : [],
+    notes: Array.isArray(report.notes) ? report.notes.map((item) => String(item || "").trim()).filter(Boolean) : [],
+    llm_content: String(report.llm_content || "").trim(),
+  };
+}
+
 function normalizeUkdocsExportDefaults(settings) {
   return {
     destination_country: normalizeUkdocsText(settings?.destination_country) || defaultUkdocsState.export_defaults.destination_country,
@@ -1516,7 +1556,10 @@ function normalizeUkdocsPrintCollection(collection) {
       generated_files: normalizeUkdocsPrintDocumentList(collection?.documents?.generated_files),
       inspection_list: normalizeUkdocsPrintDocument(collection?.documents?.inspection_list),
       locations_file: normalizeUkdocsPrintDocument(collection?.documents?.locations_file),
+      temp_phyto: normalizeUkdocsPrintDocument(collection?.documents?.temp_phyto),
+      ipaffs_file: normalizeUkdocsPrintDocument(collection?.documents?.ipaffs_file),
     },
+    csi_report: normalizeUkdocsCsiReport(collection?.csi_report),
   };
   normalized.status = deriveUkdocsPrintCollectionStatus(normalized);
   return normalized;
@@ -3985,6 +4028,34 @@ function runUkdocsWorker(args, input = "") {
   });
 }
 
+function runUkdocsCsiWorker(args, input = "") {
+  return new Promise((resolve, reject) => {
+    const child = spawn(resolvePythonCommand(), [ukdocsCsiWorkerPath, ...args], {
+      cwd: repoRoot,
+      windowsHide: true,
+    });
+
+    const stdout = [];
+    const stderr = [];
+    child.stdout.on("data", (chunk) => stdout.push(chunk));
+    child.stderr.on("data", (chunk) => stderr.push(chunk));
+    child.on("error", reject);
+    child.on("close", (code) => {
+      const output = Buffer.concat(stdout);
+      if (code === 0) {
+        resolve(output);
+        return;
+      }
+      reject(new Error(Buffer.concat(stderr).toString("utf8") || `UKDocs CSI worker exited with ${code}`));
+    });
+
+    if (input) {
+      child.stdin.write(input);
+    }
+    child.stdin.end();
+  });
+}
+
 function mergeUkdocsStatePatch(currentState, patch) {
   return normalizeUkdocsState({
     ...currentState,
@@ -4082,7 +4153,7 @@ async function saveUkdocsPrintUpload(collectionId, kind, filePayload, requestUse
   const originalName = path.basename(String(filePayload?.file_name || filePayload?.name || "").trim());
   const contentBase64 = String(filePayload?.content_base64 || "").trim();
   const mimeType = String(filePayload?.mime_type || guessMimeType(originalName)).trim() || "application/octet-stream";
-  if (!["phyto", "export_extra", "inspection_list", "locations_file"].includes(kind)) {
+  if (!["phyto", "export_extra", "inspection_list", "locations_file", "temp_phyto", "ipaffs_file"].includes(kind)) {
     throw new Error("Unknown UKdocs Print document type");
   }
   if (!originalName || !contentBase64) {
@@ -4105,7 +4176,7 @@ async function saveUkdocsPrintUpload(collectionId, kind, filePayload, requestUse
 }
 
 async function saveUkdocsPrintBuffer(collectionId, kind, originalName, mimeType, fileBuffer, savedBy) {
-  if (!["phyto", "export_extra", "generated", "inspection_list", "locations_file"].includes(kind)) {
+  if (!["phyto", "export_extra", "generated", "inspection_list", "locations_file", "temp_phyto", "ipaffs_file"].includes(kind)) {
     throw new Error("Unknown UKdocs Print document type");
   }
   const extension = safeExtension(originalName, mimeType);
@@ -4267,6 +4338,12 @@ async function deleteUkdocsPrintCollectionFiles(collection) {
   if (collection?.documents?.locations_file) {
     documents.push(collection.documents.locations_file);
   }
+  if (collection?.documents?.temp_phyto) {
+    documents.push(collection.documents.temp_phyto);
+  }
+  if (collection?.documents?.ipaffs_file) {
+    documents.push(collection.documents.ipaffs_file);
+  }
   await Promise.all(documents.map(async (document) => {
     const resolvedPath = path.resolve(ukdocsPrintDocumentPath(document));
     if (!resolvedPath.startsWith(path.resolve(ukdocsPrintFilesDir))) {
@@ -4297,6 +4374,196 @@ async function deleteSingleUkdocsPrintDocumentFile(document) {
       throw error;
     }
   }
+}
+
+function ukdocsPrintCollectionById(collections, collectionId) {
+  return (collections || []).find((item) => item.id === collectionId || item.shipment_id === collectionId) || null;
+}
+
+function extractJsonObjectFromText(value) {
+  const text = String(value || "").trim();
+  if (!text) {
+    return null;
+  }
+  try {
+    return JSON.parse(text);
+  } catch {
+    const fenced = text.match(/```(?:json)?\s*([\s\S]+?)\s*```/i);
+    if (fenced?.[1]) {
+      try {
+        return JSON.parse(fenced[1]);
+      } catch {
+        return null;
+      }
+    }
+    const firstBrace = text.indexOf("{");
+    const lastBrace = text.lastIndexOf("}");
+    if (firstBrace >= 0 && lastBrace > firstBrace) {
+      try {
+        return JSON.parse(text.slice(firstBrace, lastBrace + 1));
+      } catch {
+        return null;
+      }
+    }
+    return null;
+  }
+}
+
+async function extractUkdocsCsiFileSnapshots(files) {
+  const safeFiles = files
+    .filter((file) => file?.document?.storage_name)
+    .map((file) => {
+      const resolvedPath = path.resolve(ukdocsPrintDocumentPath(file.document));
+      if (!resolvedPath.startsWith(path.resolve(ukdocsPrintFilesDir)) || !existsSync(resolvedPath)) {
+        return null;
+      }
+      return {
+        kind: String(file.kind || "").trim(),
+        name: String(file.document.original_name || file.document.storage_name || "").trim(),
+        mime_type: String(file.document.mime_type || "").trim(),
+        path: resolvedPath,
+      };
+    })
+    .filter(Boolean);
+
+  if (!safeFiles.length) {
+    return [];
+  }
+
+  const output = await runUkdocsCsiWorker(["extract"], JSON.stringify({ files: safeFiles }));
+  const payload = JSON.parse(output.toString("utf8"));
+  return Array.isArray(payload?.documents) ? payload.documents : [];
+}
+
+function buildUkdocsCsiAuditPayload(collection, extractedDocuments, requestUser) {
+  const generatedFiles = collection?.documents?.generated_files || [];
+  const generatedInvoices = generatedFiles.filter((file) => file.document_kind === "invoice").map((file) => file.original_name || file.storage_name);
+  const generatedExport = generatedFiles.find((file) => file.document_kind === "export");
+  const phytoFiles = (collection?.documents?.phyto_files || []).map((file) => file.original_name || file.storage_name);
+  const tempPhytoFile = collection?.documents?.temp_phyto?.original_name || "";
+  const ipaffsFile = collection?.documents?.ipaffs_file?.original_name || "";
+  const prompt = {
+    task: "UKDocs CSI document control",
+    instructions: [
+      "Review the provided zending documents and return strict JSON only.",
+      "Do not invent values. If a file cannot be read or a value is missing, mark it as warn and explain it.",
+      "Compare invoice/export/IPAFFS values where text is available.",
+      "Check whether currencies appear consistent across generated export and invoice files.",
+      "List manual checks still needed for PDF-only files such as phyto certificates.",
+    ],
+    output_schema: {
+      overall_status: "pass|warn|fail",
+      summary: "short human summary",
+      checks: [{ code: "string", status: "pass|warn|fail", message: "string" }],
+      products: [{ product: "string", invoice_quantity: "string", export_quantity: "string", ipaffs_quantity: "string", status: "pass|warn|fail", message: "string" }],
+      manual_checks: ["string"],
+      notes: ["string"],
+    },
+    zending: {
+      id: collection?.id || "",
+      shipment_reference: collection?.shipment_reference || "",
+      shipment_date: collection?.shipment_date || "",
+      customer_name: collection?.customer_name || "",
+      city_name: collection?.city_name || "",
+      invoice_numbers: collection?.invoice_numbers || "",
+      reference_connect: collection?.reference_connect || "",
+      truck_number: collection?.truck_number || "",
+      trailer_number: collection?.trailer_number || "",
+      pd_type: collection?.pd_type || "",
+      pd_form: collection?.pd_form || "",
+      re_export: collection?.re_export || "",
+    },
+    attached_files: {
+      generated_invoices: generatedInvoices,
+      generated_export: generatedExport?.original_name || "",
+      phyto_files: phytoFiles,
+      temp_phyto: tempPhytoFile,
+      ipaffs_file: ipaffsFile,
+    },
+    extracted_documents: extractedDocuments,
+    requested_by: requestUser?.username || "",
+  };
+
+  return {
+    model: "",
+    messages: [
+      {
+        role: "system",
+        content: "You are a careful UK export document controller. Return JSON only and never add markdown.",
+      },
+      {
+        role: "user",
+        content: JSON.stringify(prompt),
+      },
+    ],
+    options: {
+      temperature: 0,
+    },
+  };
+}
+
+async function updateUkdocsCsiReport(collectionId, patch) {
+  const state = await readUkdocsState();
+  const existingCollection = ukdocsPrintCollectionById(state.print_collections, collectionId);
+  if (!existingCollection) {
+    return null;
+  }
+  const updatedCollection = normalizeUkdocsPrintCollection({
+    ...existingCollection,
+    updated_at: new Date().toISOString(),
+    csi_report: {
+      ...(existingCollection.csi_report || {}),
+      ...(patch || {}),
+    },
+  });
+  state.print_collections = upsertUkdocsPrintCollection(state.print_collections, updatedCollection);
+  await writeUkdocsState(state);
+  return updatedCollection;
+}
+
+async function queueUkdocsCsiAudit(collection, requestUser) {
+  if (!isDatabaseEnabled()) {
+    throw new Error("Database is not enabled");
+  }
+  if (!llmPollerEnabled()) {
+    throw new Error("LLM poller is not configured");
+  }
+
+  const extractedDocuments = await extractUkdocsCsiFileSnapshots([
+    ...(collection?.documents?.generated_files || []).map((document) => ({ kind: document.document_kind === "export" ? "generated_export" : "generated_invoice", document })),
+    ...(collection?.documents?.phyto_files || []).map((document) => ({ kind: "phyto", document })),
+    collection?.documents?.temp_phyto ? [{ kind: "temp_phyto", document: collection.documents.temp_phyto }] : [],
+    collection?.documents?.ipaffs_file ? [{ kind: "ipaffs_file", document: collection.documents.ipaffs_file }] : [],
+  ]);
+
+  const job = await createLlmJob({
+    job_type: "ukdocs_csi_audit",
+    created_by: requestUser.username,
+    collection_id: collection.id,
+    shipment_id: collection.shipment_id,
+    document_kind: "ukdocs_csi_audit",
+    priority: 50,
+    max_attempts: 1,
+    payload_json: buildUkdocsCsiAuditPayload(collection, extractedDocuments, requestUser),
+  });
+
+  await updateUkdocsCsiReport(collection.id, {
+    status: "queued",
+    job_id: job.id,
+    queued_at: new Date().toISOString(),
+    started_at: "",
+    completed_at: "",
+    error: "",
+    summary: "CSI audit queued.",
+    overall_status: "",
+    checks: [],
+    products: [],
+    manual_checks: [],
+    notes: [],
+    llm_content: "",
+  });
+
+  return job;
 }
 
 function ukdocsPrintCollectionMatchScore(collection, haystackRaw) {
@@ -6269,6 +6536,23 @@ async function handleApi(req, res, url) {
       sendJson(res, 404, { error: "LLM job not found for this agent" });
       return;
     }
+    if (job.job_type === "ukdocs_csi_audit" && job.collection_id) {
+      const llmContent = String(job?.result_json?.ollama_response?.message?.content || job?.result_json?.response || "").trim();
+      const parsed = extractJsonObjectFromText(llmContent) || {};
+      await updateUkdocsCsiReport(job.collection_id, {
+        status: "done",
+        started_at: job.claimed_at || "",
+        completed_at: job.finished_at || new Date().toISOString(),
+        error: "",
+        summary: String(parsed.summary || "").trim() || "CSI audit completed.",
+        overall_status: normalizeUkdocsText(parsed.overall_status) || "warn",
+        checks: Array.isArray(parsed.checks) ? parsed.checks : [],
+        products: Array.isArray(parsed.products) ? parsed.products : [],
+        manual_checks: Array.isArray(parsed.manual_checks) ? parsed.manual_checks : [],
+        notes: Array.isArray(parsed.notes) ? parsed.notes : [],
+        llm_content: llmContent,
+      });
+    }
     await upsertLlmAgentHeartbeat({
       agent_name: agentName,
       pc_name: body.pc_name,
@@ -6307,6 +6591,15 @@ async function handleApi(req, res, url) {
     if (!job) {
       sendJson(res, 404, { error: "LLM job not found for this agent" });
       return;
+    }
+    if (job.job_type === "ukdocs_csi_audit" && job.collection_id) {
+      await updateUkdocsCsiReport(job.collection_id, {
+        status: "failed",
+        started_at: job.claimed_at || "",
+        completed_at: job.finished_at || new Date().toISOString(),
+        error: String(body.error_text || job.error_text || "CSI audit failed").trim(),
+        summary: "CSI audit failed.",
+      });
     }
     await upsertLlmAgentHeartbeat({
       agent_name: agentName,
@@ -7391,7 +7684,7 @@ async function handleApi(req, res, url) {
   }
 
   if (url.pathname === "/api/ukdocs/state") {
-    if (!requireAnyPermission(res, requestUser, [PERMISSIONS.UKDOCS_VIEW, PERMISSIONS.UKDOCS_INSPECTION_VIEW])) {
+    if (!requireAnyPermission(res, requestUser, [PERMISSIONS.UKDOCS_VIEW, PERMISSIONS.UKDOCS_INSPECTION_VIEW, PERMISSIONS.UKDOCS_CSI_VIEW])) {
       return;
     }
 
@@ -7578,7 +7871,7 @@ async function handleApi(req, res, url) {
   }
 
   if (url.pathname.startsWith("/api/ukdocs-print/collections/") && req.method === "PATCH") {
-    if (!requireAnyPermission(res, requestUser, [PERMISSIONS.UKDOCS_VIEW, PERMISSIONS.UKDOCS_INSPECTION_VIEW])) {
+    if (!requireAnyPermission(res, requestUser, [PERMISSIONS.UKDOCS_VIEW, PERMISSIONS.UKDOCS_INSPECTION_VIEW, PERMISSIONS.UKDOCS_CSI_VIEW])) {
       return;
     }
     const collectionId = decodeURIComponent(url.pathname.slice("/api/ukdocs-print/collections/".length));
@@ -7629,7 +7922,7 @@ async function handleApi(req, res, url) {
   }
 
   if (url.pathname.startsWith("/api/ukdocs-print/collections/") && req.method === "DELETE") {
-    if (!requireAnyPermission(res, requestUser, [PERMISSIONS.UKDOCS_VIEW, PERMISSIONS.UKDOCS_INSPECTION_VIEW])) {
+    if (!requireAnyPermission(res, requestUser, [PERMISSIONS.UKDOCS_VIEW, PERMISSIONS.UKDOCS_INSPECTION_VIEW, PERMISSIONS.UKDOCS_CSI_VIEW])) {
       return;
     }
     const collectionId = decodeURIComponent(url.pathname.slice("/api/ukdocs-print/collections/".length));
@@ -7647,7 +7940,7 @@ async function handleApi(req, res, url) {
   }
 
   if (url.pathname.startsWith("/api/ukdocs-print/collections/") && url.pathname.endsWith("/upload") && req.method === "POST") {
-    if (!requireAnyPermission(res, requestUser, [PERMISSIONS.UKDOCS_VIEW, PERMISSIONS.UKDOCS_INSPECTION_VIEW])) {
+    if (!requireAnyPermission(res, requestUser, [PERMISSIONS.UKDOCS_VIEW, PERMISSIONS.UKDOCS_INSPECTION_VIEW, PERMISSIONS.UKDOCS_CSI_VIEW])) {
       return;
     }
     const basePath = url.pathname.slice("/api/ukdocs-print/collections/".length, -"/upload".length);
@@ -7669,7 +7962,7 @@ async function handleApi(req, res, url) {
       sendJson(res, 200, { collection: existingCollection, print_collections: normalizeUkdocsState(state).print_collections, skipped: true, reason: "export_extra already exists" });
       return;
     }
-    if (["inspection_list", "locations_file"].includes(kind) && existingCollection.documents?.[kind]?.storage_name) {
+    if (["inspection_list", "locations_file", "temp_phyto", "ipaffs_file"].includes(kind) && existingCollection.documents?.[kind]?.storage_name) {
       sendJson(res, 200, { collection: existingCollection, print_collections: normalizeUkdocsState(state).print_collections, skipped: true, reason: `${kind} already exists` });
       return;
     }
@@ -7691,7 +7984,7 @@ async function handleApi(req, res, url) {
   }
 
   if (url.pathname.startsWith("/api/ukdocs-print/collections/") && url.pathname.includes("/documents/") && req.method === "GET") {
-    if (!requireAnyPermission(res, requestUser, [PERMISSIONS.UKDOCS_VIEW, PERMISSIONS.UKDOCS_INSPECTION_VIEW])) {
+    if (!requireAnyPermission(res, requestUser, [PERMISSIONS.UKDOCS_VIEW, PERMISSIONS.UKDOCS_INSPECTION_VIEW, PERMISSIONS.UKDOCS_CSI_VIEW])) {
       return;
     }
     const suffix = url.pathname.slice("/api/ukdocs-print/collections/".length);
@@ -7726,7 +8019,7 @@ async function handleApi(req, res, url) {
   }
 
   if (url.pathname.startsWith("/api/ukdocs-print/collections/") && url.pathname.includes("/documents/") && req.method === "DELETE") {
-    if (!requireAnyPermission(res, requestUser, [PERMISSIONS.UKDOCS_VIEW, PERMISSIONS.UKDOCS_INSPECTION_VIEW])) {
+    if (!requireAnyPermission(res, requestUser, [PERMISSIONS.UKDOCS_VIEW, PERMISSIONS.UKDOCS_INSPECTION_VIEW, PERMISSIONS.UKDOCS_CSI_VIEW])) {
       return;
     }
     const suffix = url.pathname.slice("/api/ukdocs-print/collections/".length);
@@ -7763,7 +8056,7 @@ async function handleApi(req, res, url) {
       }
       generatedFiles.splice(documentIndex, 1);
       updatedDocuments = { ...updatedDocuments, generated_files: generatedFiles };
-    } else if (["export_extra", "inspection_list", "locations_file"].includes(kind)) {
+    } else if (["export_extra", "inspection_list", "locations_file", "temp_phyto", "ipaffs_file"].includes(kind)) {
       removedDocument = existingCollection.documents?.[kind] || null;
       if (!removedDocument) {
         sendJson(res, 404, { error: "UKdocs Print document not found" });
@@ -7784,6 +8077,39 @@ async function handleApi(req, res, url) {
     state.print_collections = upsertUkdocsPrintCollection(state.print_collections, updatedCollection);
     await writeUkdocsState(state);
     sendJson(res, 200, { collection: updatedCollection, print_collections: normalizeUkdocsState(state).print_collections });
+    return;
+  }
+
+  if (url.pathname.startsWith("/api/ukdocs-print/collections/") && url.pathname.endsWith("/csi/run") && req.method === "POST") {
+    if (!requirePermission(res, requestUser, PERMISSIONS.UKDOCS_CSI_VIEW)) {
+      return;
+    }
+    const collectionId = decodeURIComponent(url.pathname.slice("/api/ukdocs-print/collections/".length, -"/csi/run".length));
+    const state = await readUkdocsState();
+    const existingCollection = ukdocsPrintCollectionById(state.print_collections, collectionId);
+    if (!existingCollection) {
+      sendJson(res, 404, { error: "UKDocs zending not found" });
+      return;
+    }
+    const generatedFiles = existingCollection.documents?.generated_files || [];
+    const hasGeneratedExport = generatedFiles.some((file) => file.document_kind === "export");
+    const hasGeneratedInvoices = generatedFiles.some((file) => file.document_kind === "invoice");
+    if (!hasGeneratedExport || !hasGeneratedInvoices) {
+      sendJson(res, 400, { error: "Generate the export and invoice files before running CSI" });
+      return;
+    }
+    if (!existingCollection.documents?.ipaffs_file?.storage_name) {
+      sendJson(res, 400, { error: "Upload the IPAFFS file before running CSI" });
+      return;
+    }
+    const job = await queueUkdocsCsiAudit(existingCollection, requestUser);
+    const nextState = await readUkdocsState();
+    sendJson(res, 200, {
+      ok: true,
+      job,
+      collection: ukdocsPrintCollectionById(nextState.print_collections, existingCollection.id),
+      print_collections: normalizeUkdocsState(nextState).print_collections,
+    });
     return;
   }
 

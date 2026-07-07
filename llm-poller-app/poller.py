@@ -109,7 +109,7 @@ def ollama_chat(config: dict, payload: dict):
 def run_job(config: dict, job: dict):
     job_type = str(job.get("job_type") or "").strip()
     payload = job.get("payload_json") or {}
-    if job_type == "ollama_chat":
+    if job_type in {"ollama_chat", "ukdocs_csi_audit"}:
         ollama_response = ollama_chat(config, payload)
         return {
             "job_type": job_type,
