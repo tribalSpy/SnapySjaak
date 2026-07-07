@@ -2555,6 +2555,20 @@ function ukdocsPrintSplitTokens(value) {
     .filter(Boolean);
 }
 
+function countUkdocsGeneratedInvoiceGroups(files) {
+  const seen = new Set();
+  for (const file of Array.isArray(files) ? files : []) {
+    if (file?.document_kind !== "invoice") {
+      continue;
+    }
+    const key = String(file?.category || file?.original_name || file?.storage_name || "").replace(/\.[^.]+$/i, "").trim().toLowerCase();
+    if (key) {
+      seen.add(key);
+    }
+  }
+  return seen.size;
+}
+
 function ukdocsCollectionInvoiceText(collection) {
   return String(collection?.invoice_numbers || "").trim() || String(collection?.shipment_reference || "").trim();
 }
@@ -2639,7 +2653,7 @@ function ukdocsPrintCollectionProgress(collection, customers) {
     const phytoExpected = ukdocsPrintSplitTokens(collection?.reference_connect).length;
     const generatedFiles = collection?.documents?.generated_files || [];
     const generatedExportReady = generatedFiles.some((file) => file.document_kind === "export");
-    const generatedInvoiceCount = generatedFiles.filter((file) => file.document_kind === "invoice").length;
+    const generatedInvoiceCount = countUkdocsGeneratedInvoiceGroups(generatedFiles);
     const invoiceExpected = ukdocsPrintSplitTokens(ukdocsCollectionInvoiceText(collection)).length;
 
     if (customer?.required_phyto !== false && phytoExpected > 0 && phytoCount < phytoExpected) {
@@ -2674,7 +2688,7 @@ function ukdocsPrintCollectionProgress(collection, customers) {
   const phytoExpected = ukdocsPrintSplitTokens(collection?.reference_connect).length;
   const generatedFiles = collection?.documents?.generated_files || [];
   const generatedExportReady = generatedFiles.some((file) => file.document_kind === "export");
-  const generatedInvoiceCount = generatedFiles.filter((file) => file.document_kind === "invoice").length;
+  const generatedInvoiceCount = countUkdocsGeneratedInvoiceGroups(generatedFiles);
   const invoiceExpected = ukdocsPrintSplitTokens(ukdocsCollectionInvoiceText(collection)).length;
 
   if (customer?.required_phyto !== false && phytoExpected > 0 && phytoCount < phytoExpected) {
@@ -3853,6 +3867,7 @@ function UkdocsPrintPage({ currentUser }) {
   );
   const selectedCollection = filteredCollections.find((item) => item.id === selectedCollectionId || item.shipment_id === selectedCollectionId) || null;
   const selectedPhytoFiles = selectedCollection?.documents?.phyto_files || [];
+  const selectedTempPhytoFiles = selectedCollection?.documents?.temp_phyto_files || [];
   const selectedGeneratedFiles = selectedCollection?.documents?.generated_files || [];
   const selectedCollectionProgress = selectedCollection ? ukdocsPrintCollectionProgress(selectedCollection, customers) : null;
 
@@ -3908,28 +3923,52 @@ function UkdocsPrintPage({ currentUser }) {
     return () => window.clearInterval(intervalId);
   }, [autoSyncEnabled, gmailSettings.gmail_connected_email, gmailQuery]);
 
-  async function uploadCollectionFile(kind, file) {
-    if (!selectedCollection || !file) {
+  async function uploadCollectionFile(kind, fileOrFiles) {
+    if (!selectedCollection || !fileOrFiles) {
+      return;
+    }
+    const files = Array.isArray(fileOrFiles)
+      ? fileOrFiles
+      : fileOrFiles instanceof FileList
+        ? Array.from(fileOrFiles)
+        : [fileOrFiles];
+    if (!files.length) {
       return;
     }
     setSaving(true);
     setMessage("");
     setError("");
     try {
-      const contentBase64 = await fileToBase64(file);
-      const payload = await apiJson(`/api/ukdocs-print/collections/${encodeURIComponent(selectedCollection.id)}/upload`, {
-        method: "POST",
-        body: JSON.stringify({
-          kind,
-          file: {
-            file_name: file.name,
-            mime_type: file.type || "application/octet-stream",
-            content_base64: contentBase64,
-          },
-        }),
-      });
-      setState((current) => ({ ...current, print_collections: payload.print_collections || current?.print_collections || [] }));
-      setMessage(kind === "phyto" ? "Phytosanitary document added." : `${UKDOCS_PRINT_DOCUMENTS.find((item) => item.key === kind)?.label || "File"} saved.`);
+      let nextCollections = null;
+      let uploadedCount = 0;
+      for (const file of files) {
+        const contentBase64 = await fileToBase64(file);
+        const payload = await apiJson(`/api/ukdocs-print/collections/${encodeURIComponent(selectedCollection.id)}/upload`, {
+          method: "POST",
+          body: JSON.stringify({
+            kind,
+            file: {
+              file_name: file.name,
+              mime_type: file.type || "application/octet-stream",
+              content_base64: contentBase64,
+            },
+          }),
+        });
+        nextCollections = payload.print_collections || nextCollections;
+        if (!payload.skipped) {
+          uploadedCount += 1;
+        }
+      }
+      if (nextCollections) {
+        setState((current) => ({ ...current, print_collections: nextCollections || current?.print_collections || [] }));
+      }
+      if (kind === "phyto") {
+        setMessage(uploadedCount ? `${uploadedCount} phytosanitary document(s) added.` : "All selected phytosanitary documents were already saved.");
+      } else if (kind === "temp_phyto") {
+        setMessage(uploadedCount ? `${uploadedCount} temporary phyto PDF file(s) added.` : "All selected temporary phyto PDF files were already saved.");
+      } else {
+        setMessage(`${UKDOCS_PRINT_DOCUMENTS.find((item) => item.key === kind)?.label || "File"} saved.`);
+      }
     } catch (uploadError) {
       setError(uploadError.message);
     } finally {
@@ -4256,11 +4295,13 @@ function UkdocsPrintPage({ currentUser }) {
                 }).map((documentDefinition) => {
                   const document = documentDefinition.key === "phyto"
                     ? null
+                    : documentDefinition.key === "temp_phyto"
+                      ? null
                     : selectedCollection.documents?.[documentDefinition.key] || null;
                   return (
                     <div key={documentDefinition.key} className="ukdocs-upload-card">
                       <strong>{documentDefinition.label}</strong>
-                      <input type="file" accept={documentDefinition.accept} onChange={(event) => uploadCollectionFile(documentDefinition.key, event.target.files?.[0] || null)} disabled={saving} />
+                      <input type="file" accept={documentDefinition.accept} multiple={documentDefinition.key === "temp_phyto"} onChange={(event) => uploadCollectionFile(documentDefinition.key, documentDefinition.key === "temp_phyto" ? event.target.files : (event.target.files?.[0] || null))} disabled={saving} />
                       {documentDefinition.key === "phyto" ? (
                         <>
                           <small>{selectedPhytoFiles.length ? `${selectedPhytoFiles.length} phytosanitary document(s) saved.` : "No file saved yet."}</small>
@@ -4272,6 +4313,22 @@ function UkdocsPrintPage({ currentUser }) {
                                     {phytoFile.original_name || `Phyto ${index + 1}`}
                                   </a>
                                   <button type="button" onClick={() => deleteCollectionDocument("phyto", index)} disabled={saving}>Delete</button>
+                                </span>
+                              ))}
+                            </div>
+                          )}
+                        </>
+                      ) : documentDefinition.key === "temp_phyto" ? (
+                        <>
+                          <small>{selectedTempPhytoFiles.length ? `${selectedTempPhytoFiles.length} temporary phyto PDF file(s) saved.` : "No file saved yet."}</small>
+                          {!!selectedTempPhytoFiles.length && (
+                            <div className="row-actions spread-actions">
+                              {selectedTempPhytoFiles.map((tempPhytoFile, index) => (
+                                <span key={`${tempPhytoFile.storage_name}-${index}`} className="row-actions spread-actions">
+                                  <a href={`/api/ukdocs-print/collections/${encodeURIComponent(selectedCollection.id)}/documents/temp_phyto/${index}`}>
+                                    {tempPhytoFile.original_name || `Temporary phyto ${index + 1}`}
+                                  </a>
+                                  <button type="button" onClick={() => deleteCollectionDocument("temp_phyto", index)} disabled={saving}>Delete</button>
                                 </span>
                               ))}
                             </div>
@@ -4674,7 +4731,7 @@ function UkdocsCSIPage({ currentUser }) {
   const selectedGeneratedFiles = selectedCollection?.documents?.generated_files || [];
   const selectedPhytoFiles = selectedCollection?.documents?.phyto_files || [];
   const selectedCsiReport = selectedCollection?.csi_report || {};
-  const selectedTempPhyto = selectedCollection?.documents?.temp_phyto || null;
+  const selectedTempPhytoFiles = selectedCollection?.documents?.temp_phyto_files || [];
   const selectedIpaffsFile = selectedCollection?.documents?.ipaffs_file || null;
 
   useEffect(() => {
@@ -4822,10 +4879,14 @@ function UkdocsCSIPage({ currentUser }) {
               <div className="ukdocs-upload-grid">
                 <div className="ukdocs-upload-card">
                   <strong>Temporary phyto PDF</strong>
-                  <small>{selectedTempPhyto?.original_name ? `${selectedTempPhyto.original_name} saved ${formatTimestamp(selectedTempPhyto.saved_at)}` : "No file saved yet in Zending."}</small>
-                  {selectedTempPhyto?.storage_name && (
-                    <div className="row-actions">
-                      <a href={`/api/ukdocs-print/collections/${encodeURIComponent(selectedCollection.id)}/documents/temp_phyto`} target="_blank" rel="noreferrer">Open</a>
+                  <small>{selectedTempPhytoFiles.length ? `${selectedTempPhytoFiles.length} temporary phyto PDF file(s) saved in Zending.` : "No file saved yet in Zending."}</small>
+                  {!!selectedTempPhytoFiles.length && (
+                    <div className="ukdocs-download-list">
+                      {selectedTempPhytoFiles.map((file, index) => (
+                        <a key={`${file.storage_name}-${index}`} href={`/api/ukdocs-print/collections/${encodeURIComponent(selectedCollection.id)}/documents/temp_phyto/${index}`} target="_blank" rel="noreferrer" className="ukdocs-download-link">
+                          {file.original_name || `Temporary phyto ${index + 1}`}
+                        </a>
+                      ))}
                     </div>
                   )}
                 </div>

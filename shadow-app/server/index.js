@@ -1556,7 +1556,7 @@ function normalizeUkdocsPrintCollection(collection) {
       generated_files: normalizeUkdocsPrintDocumentList(collection?.documents?.generated_files),
       inspection_list: normalizeUkdocsPrintDocument(collection?.documents?.inspection_list),
       locations_file: normalizeUkdocsPrintDocument(collection?.documents?.locations_file),
-      temp_phyto: normalizeUkdocsPrintDocument(collection?.documents?.temp_phyto),
+      temp_phyto_files: normalizeUkdocsPrintDocumentList(collection?.documents?.temp_phyto_files || (collection?.documents?.temp_phyto ? [collection.documents.temp_phyto] : [])),
       ipaffs_file: normalizeUkdocsPrintDocument(collection?.documents?.ipaffs_file),
     },
     csi_report: normalizeUkdocsCsiReport(collection?.csi_report),
@@ -1596,7 +1596,7 @@ function getUkdocsPrintCollectionRequirements(collection, customers) {
     const phytoExpected = ukdocsPrintSplitTokens(collection?.reference_connect).length;
     const generatedFiles = collection?.documents?.generated_files || [];
     const generatedExportReady = generatedFiles.some((file) => file.document_kind === "export");
-    const generatedInvoiceCount = generatedFiles.filter((file) => file.document_kind === "invoice").length;
+    const generatedInvoiceCount = countUkdocsGeneratedInvoiceGroups(generatedFiles);
     const invoiceExpected = ukdocsPrintSplitTokens(collection?.invoice_numbers).length;
     const missing = [];
     if (ukdocsCollectionNeedsPhyto(collection, customer) && phytoExpected > 0 && phytoCount < phytoExpected) {
@@ -1631,7 +1631,7 @@ function getUkdocsPrintCollectionRequirements(collection, customers) {
   const phytoExpected = ukdocsPrintSplitTokens(collection?.reference_connect).length;
   const generatedFiles = collection?.documents?.generated_files || [];
   const generatedExportReady = generatedFiles.some((file) => file.document_kind === "export");
-  const generatedInvoiceCount = generatedFiles.filter((file) => file.document_kind === "invoice").length;
+  const generatedInvoiceCount = countUkdocsGeneratedInvoiceGroups(generatedFiles);
   const invoiceExpected = ukdocsPrintSplitTokens(collection?.invoice_numbers).length;
   const missing = [];
   if (ukdocsCollectionNeedsPhyto(collection, customer) && phytoExpected > 0 && phytoCount < phytoExpected) {
@@ -4257,6 +4257,20 @@ function ukdocsPrintInvoiceTokens(value) {
     .filter((item) => item.length >= 4);
 }
 
+function countUkdocsGeneratedInvoiceGroups(files) {
+  const seen = new Set();
+  for (const file of Array.isArray(files) ? files : []) {
+    if (file?.document_kind !== "invoice") {
+      continue;
+    }
+    const key = normalizeUkdocsText(file?.category) || String(file?.original_name || file?.storage_name || "").replace(/\.[^.]+$/i, "").trim().toLowerCase();
+    if (key) {
+      seen.add(key);
+    }
+  }
+  return seen.size;
+}
+
 function ukdocsPrintReferenceTokens(value) {
   return String(value || "")
     .split(/[\/,\s;]+/)
@@ -4338,8 +4352,8 @@ async function deleteUkdocsPrintCollectionFiles(collection) {
   if (collection?.documents?.locations_file) {
     documents.push(collection.documents.locations_file);
   }
-  if (collection?.documents?.temp_phyto) {
-    documents.push(collection.documents.temp_phyto);
+  if (Array.isArray(collection?.documents?.temp_phyto_files)) {
+    documents.push(...collection.documents.temp_phyto_files);
   }
   if (collection?.documents?.ipaffs_file) {
     documents.push(collection.documents.ipaffs_file);
@@ -4440,7 +4454,7 @@ function buildUkdocsCsiAuditPayload(collection, extractedDocuments, requestUser)
   const generatedInvoices = generatedFiles.filter((file) => file.document_kind === "invoice").map((file) => file.original_name || file.storage_name);
   const generatedExport = generatedFiles.find((file) => file.document_kind === "export");
   const phytoFiles = (collection?.documents?.phyto_files || []).map((file) => file.original_name || file.storage_name);
-  const tempPhytoFile = collection?.documents?.temp_phyto?.original_name || "";
+  const tempPhytoFiles = (collection?.documents?.temp_phyto_files || []).map((file) => file.original_name || file.storage_name);
   const ipaffsFile = collection?.documents?.ipaffs_file?.original_name || "";
   const prompt = {
     task: "UKDocs CSI document control",
@@ -4477,7 +4491,7 @@ function buildUkdocsCsiAuditPayload(collection, extractedDocuments, requestUser)
       generated_invoices: generatedInvoices,
       generated_export: generatedExport?.original_name || "",
       phyto_files: phytoFiles,
-      temp_phyto: tempPhytoFile,
+      temp_phyto_files: tempPhytoFiles,
       ipaffs_file: ipaffsFile,
     },
     extracted_documents: extractedDocuments,
@@ -4532,7 +4546,7 @@ async function queueUkdocsCsiAudit(collection, requestUser) {
   const extractedDocuments = await extractUkdocsCsiFileSnapshots([
     ...(collection?.documents?.generated_files || []).map((document) => ({ kind: document.document_kind === "export" ? "generated_export" : "generated_invoice", document })),
     ...(collection?.documents?.phyto_files || []).map((document) => ({ kind: "phyto", document })),
-    collection?.documents?.temp_phyto ? [{ kind: "temp_phyto", document: collection.documents.temp_phyto }] : [],
+    ...(collection?.documents?.temp_phyto_files || []).map((document) => ({ kind: "temp_phyto", document })),
     collection?.documents?.ipaffs_file ? [{ kind: "ipaffs_file", document: collection.documents.ipaffs_file }] : [],
   ]);
 
@@ -7962,7 +7976,11 @@ async function handleApi(req, res, url) {
       sendJson(res, 200, { collection: existingCollection, print_collections: normalizeUkdocsState(state).print_collections, skipped: true, reason: "export_extra already exists" });
       return;
     }
-    if (["inspection_list", "locations_file", "temp_phyto", "ipaffs_file"].includes(kind) && existingCollection.documents?.[kind]?.storage_name) {
+    if (kind === "temp_phyto" && hasUkdocsPrintDocumentWithName(existingCollection.documents?.temp_phyto_files, originalName)) {
+      sendJson(res, 200, { collection: existingCollection, print_collections: normalizeUkdocsState(state).print_collections, skipped: true, reason: "temp_phyto already exists" });
+      return;
+    }
+    if (["inspection_list", "locations_file", "ipaffs_file"].includes(kind) && existingCollection.documents?.[kind]?.storage_name) {
       sendJson(res, 200, { collection: existingCollection, print_collections: normalizeUkdocsState(state).print_collections, skipped: true, reason: `${kind} already exists` });
       return;
     }
@@ -7974,6 +7992,8 @@ async function handleApi(req, res, url) {
         ...(existingCollection.documents || {}),
         ...(kind === "phyto"
           ? { phyto_files: [...(existingCollection.documents?.phyto_files || []), savedDocument] }
+          : kind === "temp_phyto"
+            ? { temp_phyto_files: [...(existingCollection.documents?.temp_phyto_files || []), savedDocument] }
           : { [kind]: savedDocument }),
       },
     });
@@ -7997,6 +8017,8 @@ async function handleApi(req, res, url) {
     const collection = state.print_collections.find((item) => item.id === collectionId || item.shipment_id === collectionId);
     const document = kind === "phyto"
       ? (collection?.documents?.phyto_files || [])[documentIndex]
+      : kind === "temp_phyto"
+        ? (collection?.documents?.temp_phyto_files || [])[documentIndex]
       : kind === "generated"
         ? (collection?.documents?.generated_files || [])[documentIndex]
         : collection?.documents?.[kind];
@@ -8047,6 +8069,15 @@ async function handleApi(req, res, url) {
       }
       phytoFiles.splice(documentIndex, 1);
       updatedDocuments = { ...updatedDocuments, phyto_files: phytoFiles };
+    } else if (kind === "temp_phyto") {
+      const tempPhytoFiles = [...(existingCollection.documents?.temp_phyto_files || [])];
+      removedDocument = tempPhytoFiles[documentIndex] || null;
+      if (!removedDocument) {
+        sendJson(res, 404, { error: "UKdocs Print document not found" });
+        return;
+      }
+      tempPhytoFiles.splice(documentIndex, 1);
+      updatedDocuments = { ...updatedDocuments, temp_phyto_files: tempPhytoFiles };
     } else if (kind === "generated") {
       const generatedFiles = [...(existingCollection.documents?.generated_files || [])];
       removedDocument = generatedFiles[documentIndex] || null;
@@ -8056,7 +8087,7 @@ async function handleApi(req, res, url) {
       }
       generatedFiles.splice(documentIndex, 1);
       updatedDocuments = { ...updatedDocuments, generated_files: generatedFiles };
-    } else if (["export_extra", "inspection_list", "locations_file", "temp_phyto", "ipaffs_file"].includes(kind)) {
+    } else if (["export_extra", "inspection_list", "locations_file", "ipaffs_file"].includes(kind)) {
       removedDocument = existingCollection.documents?.[kind] || null;
       if (!removedDocument) {
         sendJson(res, 404, { error: "UKdocs Print document not found" });

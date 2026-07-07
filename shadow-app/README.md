@@ -1,6 +1,22 @@
 # SnappySjaak Shadow App
 
-React + Node version of the dashboard. It sits next to the Streamlit app and reads the same cache files.
+Main React + Node operations app used on Render.
+
+It now carries the active multi-module workflow for:
+
+- Photos
+- Fust
+- CMR Print
+- Hal Locations
+- Expedition Sticker
+- Bunches
+- Fout Registratie
+- Fouten Overzicht
+- UKDocs Exportdocs
+- Phyto Inspection
+- Inklokken
+- Users
+- Settings
 
 ## Run
 
@@ -31,13 +47,22 @@ http://127.0.0.1:4174
 
 ## Notes
 
-- The Streamlit app is unchanged.
+- The older Streamlit app still exists in the repo, but the Shadow app is the active user-facing system.
+- Durable app-owned records are moving into PostgreSQL.
+- Google Sheets, Gmail, and Google Drive are still part of several live operational workflows.
+- Render persistent disk is still used for generated files, uploads, shared cache, and snapshots.
 - Hal Locations now lives inside the Shadow app sidebar and uses the same sticker logic as the old StickerPrinter app.
 - Hal Locations can load directly from a configured Google Sheet tab such as `ERP_PASTE`, with file upload kept as a fallback.
+- Expedition Sticker reuses shared planning and split files and combines them with live `ERP_PASTE`.
+- Bunches keeps saved runs, downloadable outputs, and browser-print picking lists inside the Shadow app.
+- UKDocs Exportdocs is the main zending collection workflow.
+- Phyto Inspection is the separate inspection-paper workflow that reads from the same UKDocs collection data.
+- Viewer and admin users should both see shared UKDocs connection status.
+- The app includes a heartbeat overlay so users see a refresh warning when the service is restarting or temporarily disconnected.
 - Local archive images are served by the Node backend.
 - Rebuild and refresh date start the existing `sync_index.py` script.
 - Opening the app starts a throttled background refresh for today, or for the selected date.
-- Google Drive image downloading still lives in the Python app. The shadow app is mainly for comparing the interface and local archive workflow.
+- Google Drive image downloading still relies on the Python-side helpers in some photo workflows.
 - The first browser visit creates the first admin account. Users are stored in `SNAPPYSJAAK_CACHE_DIR/shadow-users.json` or `.cache/shadow-users.json` by default, with hashed passwords.
 - Admins can manage users from the sidebar Users page.
 

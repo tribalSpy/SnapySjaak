@@ -16,9 +16,11 @@ This repository now contains the Shadow web app used on Render, plus older helpe
 - `CMR Print`
 - `Hal Locations`
 - `Expedition Sticker`
+- `Bunches`
 - `Fout Registratie`
 - `Fouten Overzicht`
-- `UKdocs Print`
+- `UKDocs Exportdocs`
+- `Phyto Inspection`
 - `Inklokken`
 - `Users`
 - `Settings`
@@ -46,6 +48,8 @@ Important files:
 shadow-app/src/main.jsx
 shadow-app/src/styles.css
 shadow-app/server/index.js
+shadow-app/server/bunches.js
+shadow-app/public/bunches.html
 render.yaml
 Dockerfile
 ```
@@ -54,4 +58,8 @@ Dockerfile
 
 - Some older folders still exist in the repo for source history or helper tooling.
 - The Shadow app is the main user-facing system.
+- The app now uses PostgreSQL for durable app-owned records, while Google Sheets and Gmail still stay part of the operational workflow where needed.
+- Render persistent disk is still used for generated files, uploads, snapshots, and cache-style shared state.
+- `UKDocs Exportdocs` is the shipment collection page, while `Phyto Inspection` is the separate inspection-paper workflow.
+- `Bunches` print lists now use the browser print-preview flow so users can print or save as PDF from the cleaner HTML layout.
 - For setup, workflows, and module behavior, use the app book in `docs/app-book.md`.

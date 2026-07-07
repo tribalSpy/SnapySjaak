@@ -19,6 +19,15 @@ except ImportError:
     load_workbook = None
     Alignment = Border = Side = None
 
+try:
+    from reportlab.lib.pagesizes import A4
+    from reportlab.pdfbase.pdfmetrics import stringWidth
+    from reportlab.pdfgen import canvas
+except ImportError:
+    A4 = None
+    stringWidth = None
+    canvas = None
+
 NS_MAIN = "http://schemas.openxmlformats.org/spreadsheetml/2006/main"
 NS_REL = "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
 NS_PKG_REL = "http://schemas.openxmlformats.org/package/2006/relationships"
@@ -1358,6 +1367,195 @@ def build_invoice_workbook(analysis, category_code):
     return build_invoice_workbook_raw(analysis, category_code)
 
 
+def fit_font_size(text, max_width, default_size, min_size=7, font_name="Helvetica"):
+    if stringWidth is None:
+        return default_size
+    value = clean_text(text)
+    if not value:
+        return default_size
+    size = default_size
+    while size > min_size and stringWidth(value, font_name, size) > max_width:
+        size -= 0.5
+    return size
+
+
+def draw_invoice_pdf_row(pdf, y, values, widths, alignments=None, font_name="Helvetica", font_size=9):
+    x = 36
+    aligns = alignments or ["left"] * len(values)
+    for index, raw_value in enumerate(values):
+        value = clean_text(raw_value)
+        width = widths[index]
+        align = aligns[index] if index < len(aligns) else "left"
+        if align == "right":
+            text_width = stringWidth(value, font_name, font_size) if stringWidth else 0
+            pdf.drawString(x + max(width - text_width - 4, 2), y, value)
+        else:
+            pdf.drawString(x + 2, y, value)
+        x += width
+
+
+def build_invoice_pdf(analysis, category_code):
+    if canvas is None or A4 is None:
+        raise RuntimeError("reportlab is required to generate invoice PDF files")
+
+    category = next(item for item in analysis["categories"] if item["code"] == category_code)
+    customer = analysis["customer"]
+    shipment = analysis["shipment"]
+    company = analysis["company"]
+    buffer = io.BytesIO()
+    pdf = canvas.Canvas(buffer, pagesize=A4)
+    page_width, page_height = A4
+    margin_x = 36
+    top_y = page_height - 42
+    line_height = 14
+
+    shipment_date = clean_text(shipment.get("shipment_date_excel"))
+    if shipment_date:
+        try:
+            shipment_date = datetime.strptime(shipment_date, "%Y-%m-%d").strftime("%d-%m-%Y")
+        except ValueError:
+            pass
+
+    customer_lines = build_invoice_customer_lines(customer)[:6]
+    company_lines = [clean_text(company.get("company_name", ""))]
+    company_lines.extend([line for line in str(company.get("address", "") or "").splitlines() if clean_text(line)])
+    company_lines.extend([
+        f'tel {company.get("phone", "")}'.strip(),
+        f'email : {company.get("email", "")}'.strip(),
+        f'web : {company.get("website", "")}'.strip(),
+    ])
+    company_lines = [line for line in company_lines if clean_text(line)]
+
+    def draw_header():
+        pdf.setFont("Helvetica-Bold", 16)
+        pdf.drawString(margin_x, top_y, "Invoice")
+        pdf.setFont("Helvetica", 10)
+        pdf.drawString(margin_x, top_y - 20, f'Category: {category["label"]}')
+        pdf.drawString(margin_x, top_y - 34, f'Invoice number: {category["invoice_number"] or category["code"]}')
+        pdf.drawString(margin_x, top_y - 48, f'Date: {shipment_date}')
+        pdf.drawString(margin_x, top_y - 62, f'Trailer: {shipment["trailer_number"]}')
+        pdf.drawString(margin_x, top_y - 76, f'Delivery terms: {shipment["delivery_terms"]}')
+
+        right_x = page_width / 2 + 12
+        pdf.setFont("Helvetica-Bold", 11)
+        pdf.drawString(right_x, top_y, "Customer")
+        pdf.setFont("Helvetica", 10)
+        current_y = top_y - 16
+        for line in customer_lines:
+            pdf.drawString(right_x, current_y, line)
+            current_y -= 13
+
+        pdf.setFont("Helvetica-Bold", 11)
+        pdf.drawString(margin_x, top_y - 108, clean_text(company.get("company_name", "")))
+        pdf.setFont("Helvetica", 9)
+        current_y = top_y - 122
+        for line in company_lines[1:6]:
+            pdf.drawString(margin_x, current_y, line)
+            current_y -= 12
+
+    def draw_table_header(y):
+        widths = [86, 170, 50, 42, 50, 50, 44, 52]
+        labels = ["Commodity", "Description", "Origin", "Qty", "Gross", "Net", "Pack", "Value"]
+        pdf.setFont("Helvetica-Bold", 9)
+        draw_invoice_pdf_row(pdf, y, labels, widths, ["left", "left", "left", "right", "right", "right", "right", "right"], "Helvetica-Bold", 9)
+        pdf.line(margin_x, y - 3, margin_x + sum(widths), y - 3)
+        return widths
+
+    draw_header()
+    current_y = top_y - 170
+    widths = draw_table_header(current_y)
+    current_y -= line_height
+
+    pdf.setFont("Helvetica", 9)
+    for line in category["invoice_rows"]:
+        if current_y < 80:
+            pdf.showPage()
+            draw_header()
+            current_y = top_y - 170
+            widths = draw_table_header(current_y)
+            current_y -= line_height
+            pdf.setFont("Helvetica", 9)
+        draw_invoice_pdf_row(
+            pdf,
+            current_y,
+            [
+                line["commodity_code"],
+                line["description"],
+                line["origin"],
+                json_decimal(line["quantity"]),
+                json_decimal(line["gross_kg"]),
+                json_decimal(line["net_kg"]),
+                json_decimal(line["packages"]),
+                json_decimal(line["customs_value"]),
+            ],
+            widths,
+            ["left", "left", "left", "right", "right", "right", "right", "right"],
+            "Helvetica",
+            9,
+        )
+        current_y -= line_height
+
+    current_y -= 8
+    pdf.line(margin_x, current_y, margin_x + sum(widths), current_y)
+    current_y -= 14
+    pdf.setFont("Helvetica-Bold", 10)
+    draw_invoice_pdf_row(
+        pdf,
+        current_y,
+        ["", "TOTALS", "", "", json_decimal(category["totals"]["gross_kg"]), json_decimal(category["totals"]["net_kg"]), json_decimal(category["totals"]["packages"]), json_decimal(category["totals"]["customs_value"])],
+        widths,
+        ["left", "left", "left", "right", "right", "right", "right", "right"],
+        "Helvetica-Bold",
+        10,
+    )
+
+    current_y -= 30
+    if current_y < 120:
+        pdf.showPage()
+        current_y = top_y
+    pdf.setFont("Helvetica-Bold", 10)
+    pdf.drawString(margin_x, current_y, "HS summary")
+    current_y -= 16
+    widths_hs = [90, 238, 52, 52, 44, 62]
+    pdf.setFont("Helvetica-Bold", 9)
+    draw_invoice_pdf_row(pdf, current_y, ["HS", "Description", "Qty", "Gross", "Pack", "Value"], widths_hs, ["left", "left", "right", "right", "right", "right"], "Helvetica-Bold", 9)
+    pdf.line(margin_x, current_y - 3, margin_x + sum(widths_hs), current_y - 3)
+    current_y -= line_height
+    pdf.setFont("Helvetica", 9)
+    for line in category["hs_summary_rows"]:
+        if current_y < 60:
+            pdf.showPage()
+            current_y = top_y
+            pdf.setFont("Helvetica-Bold", 10)
+            pdf.drawString(margin_x, current_y, "HS summary")
+            current_y -= 16
+            pdf.setFont("Helvetica-Bold", 9)
+            draw_invoice_pdf_row(pdf, current_y, ["HS", "Description", "Qty", "Gross", "Pack", "Value"], widths_hs, ["left", "left", "right", "right", "right", "right"], "Helvetica-Bold", 9)
+            pdf.line(margin_x, current_y - 3, margin_x + sum(widths_hs), current_y - 3)
+            current_y -= line_height
+            pdf.setFont("Helvetica", 9)
+        draw_invoice_pdf_row(
+            pdf,
+            current_y,
+            [
+                normalize_invoice_hs_code(line["hs_code"]),
+                line["description"],
+                json_decimal(line["quantity"]),
+                json_decimal(line["gross_kg"]),
+                json_decimal(line["packages"]),
+                json_decimal(line["customs_value"]),
+            ],
+            widths_hs,
+            ["left", "left", "right", "right", "right", "right"],
+            "Helvetica",
+            9,
+        )
+        current_y -= line_height
+
+    pdf.save()
+    return buffer.getvalue()
+
+
 def build_audit_workbook(analysis):
     rows = [
         ["Shipment reference", analysis["shipment"]["reference_line"]],
@@ -1532,6 +1730,7 @@ def generate_files(analysis):
         if not category["row_count"]:
             continue
         files.append({"name": f'invoice {category["invoice_number"] or category["code"]} {CATEGORY_DEFINITIONS[category["code"]]["slug"]} {customer_name}.xlsx', "content_base64": base64.b64encode(build_invoice_workbook(analysis, category["code"])).decode("ascii"), "mime_type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", "kind": "invoice", "category": category["code"]})
+        files.append({"name": f'invoice {category["invoice_number"] or category["code"]} {CATEGORY_DEFINITIONS[category["code"]]["slug"]} {customer_name}.pdf', "content_base64": base64.b64encode(build_invoice_pdf(analysis, category["code"])).decode("ascii"), "mime_type": "application/pdf", "kind": "invoice", "category": category["code"]})
     files.append({"name": f'audit {export_reference}.xlsx', "content_base64": base64.b64encode(build_audit_workbook(analysis)).decode("ascii"), "mime_type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", "kind": "audit"})
     return files
 

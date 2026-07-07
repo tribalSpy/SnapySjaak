@@ -15,6 +15,14 @@ try:
 except ImportError:
     xlrd = None
 
+try:
+    from pypdf import PdfReader
+except ImportError:
+    try:
+        from PyPDF2 import PdfReader
+    except ImportError:
+        PdfReader = None
+
 
 def clean_text(value):
     return str(value or "").replace("\x00", "").strip()
@@ -86,6 +94,32 @@ def extract_xls(path: Path):
     }
 
 
+def extract_pdf(path: Path):
+    if PdfReader is None:
+        return {
+            "content_type": "pdf",
+            "text": "",
+            "line_count": 0,
+            "note": "PDF text extractor not installed, keep for manual review",
+        }
+    reader = PdfReader(str(path))
+    lines = []
+    for page_index, page in enumerate(reader.pages, start=1):
+        page_text = clean_text(page.extract_text() or "")
+        if not page_text:
+            continue
+        lines.append(f"[Page] {page_index}")
+        for line in page_text.splitlines():
+            cleaned = clean_text(line)
+            if cleaned:
+                lines.append(cleaned)
+    return {
+        "content_type": "pdf",
+        "text": "\n".join(limit_lines(lines)),
+        "line_count": len(lines),
+    }
+
+
 def extract_file(entry):
     path = Path(entry.get("path") or "")
     suffix = path.suffix.lower()
@@ -112,13 +146,7 @@ def extract_file(entry):
         if suffix == ".xls":
             return {**base, **extract_xls(path)}
         if suffix == ".pdf":
-            return {
-                **base,
-                "content_type": "pdf",
-                "text": "",
-                "line_count": 0,
-                "note": "PDF kept for manual review in CSI first version",
-            }
+            return {**base, **extract_pdf(path)}
         return {
             **base,
             "content_type": suffix.lstrip(".") or "binary",

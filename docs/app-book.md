@@ -11,9 +11,11 @@ The app combines several daily operations into one web system:
 - CMR printing
 - hal location tools
 - expedition sticker generation
+- bunches import and picking lists
 - mistake registration
 - mistake reporting
 - UK export document workflows
+- phyto / inspection paper handling
 - employee clocking
 - user permissions
 - settings and external connections
@@ -99,12 +101,14 @@ Current main menus include:
 3. `CMR Print`
 4. `Hal Locations`
 5. `Expedition Sticker`
-6. `Fout Registratie`
-7. `Fouten Overzicht`
-8. `UKdocs Print`
-9. `Inklokken`
-10. `Users`
-11. `Settings`
+6. `Bunches`
+7. `Fout Registratie`
+8. `Fouten Overzicht`
+9. `UKDocs Exportdocs`
+10. `Phyto Inspection`
+11. `Inklokken`
+12. `Users`
+13. `Settings`
 
 ## 4. Module Overview
 
@@ -193,7 +197,26 @@ Important note:
 
 - the sticker workflow depends on clean source files and valid customer/location matching
 
-## 4.6 Fout Registratie
+## 4.6 Bunches
+
+Purpose:
+
+- import bunches export data
+- generate `Inlezen` and `YYBU*` files
+- produce printable picking lists for plastic and kraft flows
+
+Main behavior:
+
+- import runs are stored and reusable
+- article and APE master data live inside the app workflow
+- saved runs keep departure date and labels
+- print lists can be opened in browser print preview and then printed or saved as PDF
+
+Important note:
+
+- the preferred print output is the browser print-preview layout, not the older direct PDF layout
+
+## 4.7 Fout Registratie
 
 Purpose:
 
@@ -211,7 +234,7 @@ Important note:
 
 - the shared overview/reporting side should keep type reporting in English for consistency
 
-## 4.7 Fouten Overzicht
+## 4.8 Fouten Overzicht
 
 Purpose:
 
@@ -220,8 +243,10 @@ Purpose:
 Main behavior:
 
 - shows person ranking
+- shows detailed mistake rows including remark text
 - shows mistake counts by type
 - supports day, week, and month analysis
+- allows export of overview tables to Excel-compatible files
 - intended as a separate permission-controlled reporting page
 
 Use cases:
@@ -231,7 +256,7 @@ Use cases:
 - compare days, weeks, and months
 - look for patterns by period or season
 
-## 4.8 UKdocs Print
+## 4.9 UKDocs Exportdocs
 
 Purpose:
 
@@ -239,17 +264,36 @@ Purpose:
 
 Main behavior:
 
-- shipments are date-driven
-- saved collections remain stored but daily views show only the selected day
+- zendingen are date-driven
+- saved zendingen remain stored but daily views show only the selected day
 - Gmail sync picks up matching files for the selected export date
 - generated UKdocs files stay linked to the correct shipment
 - users can download all shipment files from one place
+- zending detail opens from a right-side detail panel
+- viewer and admin users should see the same shared Gmail/spreadsheet status
 
 Important note:
 
 - this module combines spreadsheet source data, generated Excel files, Gmail attachments, uploaded PDFs, and operational send-ready actions
 
-## 4.9 Inklokken
+## 4.10 Phyto Inspection
+
+Purpose:
+
+- handle inspection-only papers separately from the main export collection view
+
+Main behavior:
+
+- shows only inspection-needed zendingen for the day
+- supports voorraad and nakeuring paper flows
+- inspection-only downloads can be different from the main UKDocs Exportdocs downloads
+- this menu is separated so permissions can allow or block it independently
+
+Important note:
+
+- this page is connected to the same underlying UKDocs collection data, but presents only the inspection workflow
+
+## 4.11 Inklokken
 
 Purpose:
 
@@ -262,7 +306,7 @@ Main behavior:
 - records are written to the configured backup tab
 - work duration can be derived from IN and OUT pairs
 
-## 4.10 Users
+## 4.12 Users
 
 Purpose:
 
@@ -276,9 +320,10 @@ Main behavior:
 Examples:
 
 - `Fout Registratie` and `Fouten Overzicht` can be split
+- `UKDocs Exportdocs` and `Phyto Inspection` can be split
 - operational users can get only the tools they need
 
-## 4.11 Settings
+## 4.13 Settings
 
 Purpose:
 
@@ -290,6 +335,7 @@ Main behavior:
 - stores UKdocs/Gmail settings
 - stores CMR/Drive settings
 - stores SMTP mail settings
+- stores ICT/support mail recipients for connection-attention alerts
 - exposes connection tests
 - includes Fust database backfill and backup tools
 
@@ -313,6 +359,7 @@ Used for:
 - mistake sheet sync
 - hal locations / `ERP_PASTE`
 - UKdocs source spreadsheet
+- expedition sticker live `ERP_PASTE`
 - some operational source-of-truth flows
 
 ## 5.3 Google Drive
@@ -334,6 +381,15 @@ Used in UKdocs workflows to:
 ## 5.5 SMTP Email
 
 Used to send ready-paper notifications where configured.
+
+## 5.6 Render Persistent Disk
+
+Used for:
+
+- generated files
+- uploaded documents
+- cache and shared state
+- local snapshots and recovery helpers
 
 ## 6. Daily Operational Workflows
 
@@ -357,17 +413,37 @@ Typical flow:
 4. preview CMR
 5. print single or batch documents
 
-## 6.3 UKdocs Print
+## 6.3 UKDocs Exportdocs
 
 Typical flow:
 
 1. load sendings for the selected date
-2. open a shipment
+2. open a zending
 3. collect generated files, uploaded files, and Gmail-picked files
 4. verify progress
 5. send ready notification
 
-## 6.4 Fout Registratie
+## 6.4 Phyto Inspection
+
+Typical flow:
+
+1. open today’s inspection list
+2. select the inspection zending
+3. upload or open only the papers needed for that inspection flow
+4. verify inspection-specific downloads
+5. keep the main export collection and inspection paper workflow aligned
+
+## 6.5 Bunches
+
+Typical flow:
+
+1. import bunches data
+2. review warnings and matched rows
+3. download `Inlezen` and `YYBU` outputs
+4. open a print list
+5. print or save to PDF from browser print preview
+
+## 6.6 Fout Registratie
 
 Typical flow:
 
@@ -399,8 +475,9 @@ The most sensitive parts of the app are:
 1. Fust consistency between app state, spreadsheet rows, and database rows
 2. CMR template persistence and imported customer data
 3. UKdocs file matching and duplicate prevention
-4. Gmail and Drive token expiry
-5. shared state that used to live only on disk/cache
+4. Gmail, Drive, and Sheets token expiry or reconnect needs
+5. shared state that still depends on persistent disk
+6. keeping print/export layouts stable across generated files and browser-print workflows
 
 ## 9. Recommended Direction
 
@@ -410,7 +487,8 @@ Recommended long-term direction:
 2. keep Google Sheets only where the business truly needs spreadsheet access
 3. keep generated files on persistent storage, but keep references in the database
 4. keep module permissions separate and explicit
-5. document each workflow as it stabilizes
+5. expose reconnect guidance clearly when Gmail, Drive, or Sheets needs attention
+6. document each workflow as it stabilizes
 
 ## 10. Important Files
 
@@ -420,6 +498,8 @@ Core app files:
 shadow-app/src/main.jsx
 shadow-app/src/styles.css
 shadow-app/server/index.js
+shadow-app/server/bunches.js
+shadow-app/public/bunches.html
 shadow-app/public/dag-foutjes.html
 ```
 
