@@ -4568,9 +4568,9 @@ function UkdocsInspectionPage({ currentUser }) {
                         <strong>Files</strong>
                         <button type="button" onClick={() => openCollectionEntries(downloadEntries)}>Open all</button>
                       </div>
-                      <div className="ukdocs-download-list">
+                      <div className="ukdocs-download-list ukdocs-download-tile-list">
                         {downloadEntries.map((entry) => (
-                          <a key={entry.key} href={entry.href} className="ukdocs-download-link" target="_blank" rel="noreferrer">
+                          <a key={entry.key} href={entry.href} className="ukdocs-download-link ukdocs-download-tile" target="_blank" rel="noreferrer">
                             {entry.label}
                           </a>
                         ))}
@@ -4654,9 +4654,9 @@ function UkdocsInspectionPage({ currentUser }) {
                     <strong>All linked files</strong>
                     <button type="button" onClick={() => openCollectionEntries(selectedAllDownloadEntries)}>Open all linked</button>
                   </div>
-                  <div className="ukdocs-download-list">
+                  <div className="ukdocs-download-list ukdocs-download-tile-list">
                     {selectedAllDownloadEntries.map((entry) => (
-                      <a key={entry.key} href={entry.href} className="ukdocs-download-link" target="_blank" rel="noreferrer">
+                      <a key={entry.key} href={entry.href} className="ukdocs-download-link ukdocs-download-tile" target="_blank" rel="noreferrer">
                         {entry.label}
                       </a>
                     ))}
