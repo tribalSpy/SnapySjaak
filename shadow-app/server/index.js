@@ -4462,7 +4462,12 @@ function buildUkdocsCsiAuditPayload(collection, extractedDocuments, requestUser)
       "Do not invent values. If a file cannot be read or a value is missing, mark it as warn and explain it.",
       "Use only these CSI sources: generated invoice files, generated export file, temporary phyto PDF files, and the IPAFFS file.",
       "Do not use standard phyto collection files or second export files for this CSI audit.",
+      "Prefer parsed_data from extracted_documents over raw text whenever parsed_data exists.",
+      "Compare invoice/export/IPAFFS values from parsed_data first, and only fall back to raw text when no parsed_data is available.",
       "Compare invoice/export/IPAFFS values where text is available.",
+      "For temporary phyto PDF files, use parsed_data fields such as document_state, pcnu_number, destination_country, origin_country, total_quantity, product_lines, and problems whenever available.",
+      "If a temporary phyto PDF parsed_data shows document_state as not_activated, mark that as fail, not only warn.",
+      "If attached temp phyto PDF page images are available, use them to visually confirm PCNU, destination, origin, and obvious blocked/not-activated states.",
       "Check whether currencies appear consistent across generated export and invoice files.",
       "List manual checks still needed for temporary phyto PDF files or any file that could not be read safely.",
     ],
@@ -4549,6 +4554,22 @@ async function queueUkdocsCsiAudit(collection, requestUser) {
     collection?.documents?.ipaffs_file ? [{ kind: "ipaffs_file", document: collection.documents.ipaffs_file }] : [],
   ]);
 
+  const tempPhytoVisionDocuments = await Promise.all(
+    (collection?.documents?.temp_phyto_files || []).map(async (document) => {
+      const resolvedPath = path.resolve(ukdocsPrintDocumentPath(document));
+      if (!resolvedPath.startsWith(path.resolve(ukdocsPrintFilesDir)) || !existsSync(resolvedPath)) {
+        return null;
+      }
+      const contentBase64 = await fs.readFile(resolvedPath, "base64");
+      return {
+        name: String(document.original_name || document.storage_name || "temp-phyto.pdf").trim(),
+        mime_type: String(document.mime_type || "application/pdf").trim(),
+        content_base64: contentBase64,
+        max_pages: 2,
+      };
+    }),
+  );
+
   const job = await createLlmJob({
     job_type: "ukdocs_csi_audit",
     created_by: requestUser.username,
@@ -4557,7 +4578,10 @@ async function queueUkdocsCsiAudit(collection, requestUser) {
     document_kind: "ukdocs_csi_audit",
     priority: 50,
     max_attempts: 1,
-    payload_json: buildUkdocsCsiAuditPayload(collection, extractedDocuments, requestUser),
+    payload_json: {
+      ...buildUkdocsCsiAuditPayload(collection, extractedDocuments, requestUser),
+      vision_documents: tempPhytoVisionDocuments.filter(Boolean),
+    },
   });
 
   await updateUkdocsCsiReport(collection.id, {

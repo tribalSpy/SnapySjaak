@@ -7,6 +7,11 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
+try:
+    import fitz  # PyMuPDF
+except ImportError:
+    fitz = None
+
 
 APP_DIR = Path(__file__).resolve().parent
 CONFIG_PATH = APP_DIR / "config.json"
@@ -74,9 +79,10 @@ def ollama_chat(config: dict, payload: dict):
     model_name = str(payload.get("model") or config["model_name"]).strip()
     if not model_name:
         raise RuntimeError("No model configured for ollama_chat job")
+    messages = prepare_ollama_messages(payload.get("messages", []), payload)
     request_body = {
         "model": model_name,
-        "messages": payload.get("messages", []),
+        "messages": messages,
         "stream": False,
     }
     if payload.get("format"):
@@ -104,6 +110,87 @@ def ollama_chat(config: dict, payload: dict):
         raise RuntimeError(f"Ollama HTTP {error.code}: {body}") from error
     except urllib.error.URLError as error:
         raise RuntimeError(f"Ollama network error: {error}") from error
+
+
+def render_pdf_to_png_base64_list(content_base64: str, max_pages: int = 2):
+    if fitz is None:
+        raise RuntimeError("PyMuPDF is required for PDF vision extraction")
+    import base64
+
+    pdf_bytes = base64.b64decode(content_base64)
+    document = fitz.open(stream=pdf_bytes, filetype="pdf")
+    images = []
+    page_limit = max(1, int(max_pages or 1))
+    for page_index in range(min(len(document), page_limit)):
+        page = document.load_page(page_index)
+        pixmap = page.get_pixmap(matrix=fitz.Matrix(2, 2), alpha=False)
+        images.append(base64.b64encode(pixmap.tobytes("png")).decode("ascii"))
+    return images
+
+
+def prepare_vision_images(payload: dict):
+    vision_documents = payload.get("vision_documents")
+    if not isinstance(vision_documents, list) or not vision_documents:
+        return [], []
+
+    prepared_images = []
+    notes = []
+    for index, document in enumerate(vision_documents, start=1):
+        mime_type = str(document.get("mime_type") or "").strip().lower()
+        name = str(document.get("name") or f"document-{index}").strip()
+        content_base64 = str(document.get("content_base64") or "").strip()
+        if not content_base64:
+            notes.append(f"{name}: missing file content")
+            continue
+        if mime_type == "application/pdf":
+            max_pages = int(document.get("max_pages") or 2)
+            try:
+                pdf_images = render_pdf_to_png_base64_list(content_base64, max_pages=max_pages)
+                for image_base64 in pdf_images:
+                    prepared_images.append(image_base64)
+                notes.append(f"{name}: rendered {len(pdf_images)} PDF page image(s)")
+            except Exception as error:
+                notes.append(f"{name}: PDF vision render failed ({error})")
+            continue
+        if mime_type.startswith("image/"):
+            prepared_images.append(content_base64)
+            notes.append(f"{name}: attached directly as image")
+            continue
+        notes.append(f"{name}: unsupported vision mime type {mime_type or 'unknown'}")
+    return prepared_images, notes
+
+
+def prepare_ollama_messages(messages, payload: dict):
+    safe_messages = list(messages) if isinstance(messages, list) else []
+    vision_images, vision_notes = prepare_vision_images(payload)
+    if not vision_images and not vision_notes:
+        return safe_messages
+
+    if safe_messages and isinstance(safe_messages[-1], dict) and str(safe_messages[-1].get("role") or "").strip() == "user":
+        updated_last = dict(safe_messages[-1])
+        existing_content = str(updated_last.get("content") or "").strip()
+        note_text = ""
+        if vision_notes:
+            note_text = "\n\nVision attachment notes:\n- " + "\n- ".join(vision_notes)
+        updated_last["content"] = f"{existing_content}{note_text}".strip()
+        if vision_images:
+            existing_images = updated_last.get("images")
+            if isinstance(existing_images, list):
+                updated_last["images"] = existing_images + vision_images
+            else:
+                updated_last["images"] = vision_images
+        safe_messages[-1] = updated_last
+        return safe_messages
+
+    content = "Use the attached images for the temporary phyto PDF review."
+    if vision_notes:
+        content += "\n\nVision attachment notes:\n- " + "\n- ".join(vision_notes)
+    safe_messages.append({
+        "role": "user",
+        "content": content,
+        **({"images": vision_images} if vision_images else {}),
+    })
+    return safe_messages
 
 
 def run_job(config: dict, job: dict):

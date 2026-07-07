@@ -4,11 +4,18 @@ Standalone poller app for a Windows PC that has a local Ollama model running on 
 
 This app does not need a browser session. It talks directly to Shadow App on Render with an API key, claims queued LLM jobs, runs them on the local Ollama instance, and posts the results back.
 
+For UKDocs CSI temp-phyto PDF vision checks, install `PyMuPDF` on the poller PC too:
+
+```powershell
+pip install pymupdf
+```
+
 ## What this first version does
 
 - Sends heartbeat updates to Shadow
 - Polls for queued jobs
 - Runs `ollama_chat` jobs against local Ollama
+- Can render temp-phyto PDF pages into images for Ollama vision models when `PyMuPDF` is installed
 - Sends success or failure back to Shadow
 
 ## Files
