@@ -1,0 +1,13 @@
+{
+  "server_url": "https://your-render-app.onrender.com",
+  "api_key": "replace-me",
+  "agent_name": "office-ollama-1",
+  "pc_name": "Office-PC",
+  "model_name": "gwen32b-vision",
+  "version": "1.0.0",
+  "poll_interval_seconds": 10,
+  "ollama_url": "http://127.0.0.1:11434",
+  "capabilities": [
+    "ollama_chat"
+  ]
+}

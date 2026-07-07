@@ -1,4 +1,5 @@
 import pg from "pg";
+import crypto from "node:crypto";
 
 const { Pool } = pg;
 
@@ -194,6 +195,331 @@ export async function getFustDatabaseStats() {
   };
 }
 
+function jsonValue(value, fallback = {}) {
+  if (value && typeof value === "object") {
+    return value;
+  }
+  if (typeof value === "string") {
+    try {
+      return JSON.parse(value);
+    } catch {
+      return fallback;
+    }
+  }
+  return fallback;
+}
+
+function hashLlmAgentKey(apiKey) {
+  return crypto.createHash("sha256").update(String(apiKey || "")).digest("hex");
+}
+
+function mapLlmAgentRow(row) {
+  return {
+    agent_name: String(row?.agent_name || "").trim(),
+    pc_name: String(row?.pc_name || "").trim(),
+    model_name: String(row?.model_name || "").trim(),
+    version: String(row?.version || "").trim(),
+    status: String(row?.status || "").trim() || "offline",
+    capabilities: jsonValue(row?.capabilities, []),
+    meta: jsonValue(row?.meta, {}),
+    last_seen_at: row?.last_seen_at ? new Date(row.last_seen_at).toISOString() : "",
+    last_job_claimed_at: row?.last_job_claimed_at ? new Date(row.last_job_claimed_at).toISOString() : "",
+    created_at: row?.created_at ? new Date(row.created_at).toISOString() : "",
+    updated_at: row?.updated_at ? new Date(row.updated_at).toISOString() : "",
+  };
+}
+
+function mapLlmJobRow(row) {
+  return {
+    id: String(row?.id || "").trim(),
+    job_type: String(row?.job_type || "").trim(),
+    status: String(row?.status || "").trim() || "pending",
+    created_by: String(row?.created_by || "").trim(),
+    shipment_id: String(row?.shipment_id || "").trim(),
+    collection_id: String(row?.collection_id || "").trim(),
+    document_kind: String(row?.document_kind || "").trim(),
+    priority: Number(row?.priority || 0),
+    attempt_count: Number(row?.attempt_count || 0),
+    max_attempts: Number(row?.max_attempts || 3),
+    agent_name: String(row?.agent_name || "").trim(),
+    payload_json: jsonValue(row?.payload_json, {}),
+    result_json: jsonValue(row?.result_json, {}),
+    error_text: String(row?.error_text || "").trim(),
+    created_at: row?.created_at ? new Date(row.created_at).toISOString() : "",
+    claimed_at: row?.claimed_at ? new Date(row.claimed_at).toISOString() : "",
+    finished_at: row?.finished_at ? new Date(row.finished_at).toISOString() : "",
+    updated_at: row?.updated_at ? new Date(row.updated_at).toISOString() : "",
+  };
+}
+
+export async function upsertLlmAgentHeartbeat(agent, apiKey) {
+  if (!pool || !String(agent?.agent_name || "").trim() || !String(apiKey || "").trim()) {
+    return null;
+  }
+  const result = await pool.query(
+    `
+      INSERT INTO llm_agents (
+        agent_name, api_key_hash, pc_name, model_name, version, status, capabilities, meta,
+        last_seen_at, updated_at
+      )
+      VALUES (
+        $1, $2, $3, $4, $5, $6, $7::jsonb, $8::jsonb,
+        now(), now()
+      )
+      ON CONFLICT (agent_name) DO UPDATE SET
+        api_key_hash = EXCLUDED.api_key_hash,
+        pc_name = EXCLUDED.pc_name,
+        model_name = EXCLUDED.model_name,
+        version = EXCLUDED.version,
+        status = EXCLUDED.status,
+        capabilities = EXCLUDED.capabilities,
+        meta = EXCLUDED.meta,
+        last_seen_at = now(),
+        updated_at = now()
+      RETURNING *
+    `,
+    [
+      String(agent.agent_name || "").trim(),
+      hashLlmAgentKey(apiKey),
+      String(agent.pc_name || "").trim(),
+      String(agent.model_name || "").trim(),
+      String(agent.version || "").trim(),
+      String(agent.status || "online").trim() || "online",
+      JSON.stringify(Array.isArray(agent.capabilities) ? agent.capabilities : []),
+      JSON.stringify(agent.meta && typeof agent.meta === "object" ? agent.meta : {}),
+    ],
+  );
+  return mapLlmAgentRow(result.rows?.[0] || {});
+}
+
+export async function claimNextLlmJob(agentName, apiKey, options = {}) {
+  if (!pool || !String(agentName || "").trim() || !String(apiKey || "").trim()) {
+    return null;
+  }
+  const expectedHash = hashLlmAgentKey(apiKey);
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    const agentResult = await client.query(
+      `
+        SELECT *
+        FROM llm_agents
+        WHERE agent_name = $1 AND api_key_hash = $2
+        FOR UPDATE
+      `,
+      [String(agentName || "").trim(), expectedHash],
+    );
+    const agentRow = agentResult.rows?.[0];
+    if (!agentRow) {
+      await client.query("ROLLBACK");
+      return null;
+    }
+
+    const jobResult = await client.query(
+      `
+        SELECT *
+        FROM llm_jobs
+        WHERE status = 'pending'
+          AND attempt_count < max_attempts
+        ORDER BY priority DESC, created_at ASC
+        LIMIT 1
+        FOR UPDATE SKIP LOCKED
+      `,
+    );
+    const jobRow = jobResult.rows?.[0];
+    if (!jobRow) {
+      await client.query(
+        `
+          UPDATE llm_agents
+          SET status = $2, last_seen_at = now(), updated_at = now()
+          WHERE agent_name = $1
+        `,
+        [String(agentName || "").trim(), String(options.agent_status || "idle").trim() || "idle"],
+      );
+      await client.query("COMMIT");
+      return { agent: mapLlmAgentRow(agentRow), job: null };
+    }
+
+    const updatedJobResult = await client.query(
+      `
+        UPDATE llm_jobs
+        SET
+          status = 'claimed',
+          agent_name = $2,
+          claimed_at = now(),
+          updated_at = now(),
+          attempt_count = attempt_count + 1,
+          error_text = ''
+        WHERE id = $1
+        RETURNING *
+      `,
+      [String(jobRow.id || "").trim(), String(agentName || "").trim()],
+    );
+    const updatedAgentResult = await client.query(
+      `
+        UPDATE llm_agents
+        SET status = 'busy', last_seen_at = now(), last_job_claimed_at = now(), updated_at = now()
+        WHERE agent_name = $1
+        RETURNING *
+      `,
+      [String(agentName || "").trim()],
+    );
+    await client.query("COMMIT");
+    return {
+      agent: mapLlmAgentRow(updatedAgentResult.rows?.[0] || agentRow),
+      job: mapLlmJobRow(updatedJobResult.rows?.[0] || {}),
+    };
+  } catch (error) {
+    await client.query("ROLLBACK");
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
+export async function createLlmJob(job) {
+  if (!pool) {
+    throw new Error("Database is not initialized");
+  }
+  const jobId = String(job?.id || crypto.randomUUID()).trim();
+  const result = await pool.query(
+    `
+      INSERT INTO llm_jobs (
+        id, job_type, status, created_by, shipment_id, collection_id, document_kind,
+        priority, attempt_count, max_attempts, agent_name, payload_json, result_json,
+        error_text, created_at, updated_at
+      )
+      VALUES (
+        $1, $2, 'pending', $3, $4, $5, $6,
+        $7, 0, $8, '', $9::jsonb, '{}'::jsonb,
+        '', now(), now()
+      )
+      RETURNING *
+    `,
+    [
+      jobId,
+      String(job?.job_type || "").trim(),
+      String(job?.created_by || "").trim(),
+      String(job?.shipment_id || "").trim(),
+      String(job?.collection_id || "").trim(),
+      String(job?.document_kind || "").trim(),
+      Number(job?.priority || 0),
+      Math.max(1, Number(job?.max_attempts || 3)),
+      JSON.stringify(job?.payload_json && typeof job.payload_json === "object" ? job.payload_json : {}),
+    ],
+  );
+  return mapLlmJobRow(result.rows?.[0] || {});
+}
+
+export async function completeLlmJob(jobId, agentName, resultJson) {
+  if (!pool) {
+    throw new Error("Database is not initialized");
+  }
+  const result = await pool.query(
+    `
+      UPDATE llm_jobs
+      SET
+        status = 'done',
+        result_json = $3::jsonb,
+        finished_at = now(),
+        updated_at = now(),
+        error_text = ''
+      WHERE id = $1
+        AND agent_name = $2
+      RETURNING *
+    `,
+    [
+      String(jobId || "").trim(),
+      String(agentName || "").trim(),
+      JSON.stringify(resultJson && typeof resultJson === "object" ? resultJson : {}),
+    ],
+  );
+  return result.rows?.[0] ? mapLlmJobRow(result.rows[0]) : null;
+}
+
+export async function failLlmJob(jobId, agentName, errorText, allowRetry = false) {
+  if (!pool) {
+    throw new Error("Database is not initialized");
+  }
+  const result = await pool.query(
+    `
+      UPDATE llm_jobs
+      SET
+        status = CASE
+          WHEN $4 = true AND attempt_count < max_attempts THEN 'pending'
+          ELSE 'failed'
+        END,
+        agent_name = CASE
+          WHEN $4 = true AND attempt_count < max_attempts THEN ''
+          ELSE agent_name
+        END,
+        claimed_at = CASE
+          WHEN $4 = true AND attempt_count < max_attempts THEN null
+          ELSE claimed_at
+        END,
+        finished_at = CASE
+          WHEN $4 = true AND attempt_count < max_attempts THEN null
+          ELSE now()
+        END,
+        updated_at = now(),
+        error_text = $3
+      WHERE id = $1
+        AND agent_name = $2
+      RETURNING *
+    `,
+    [
+      String(jobId || "").trim(),
+      String(agentName || "").trim(),
+      String(errorText || "").trim(),
+      allowRetry === true,
+    ],
+  );
+  return result.rows?.[0] ? mapLlmJobRow(result.rows[0]) : null;
+}
+
+export async function getLlmQueueSnapshot() {
+  if (!pool) {
+    return {
+      agents: [],
+      jobs: [],
+      summary: {
+        total_jobs: 0,
+        pending_jobs: 0,
+        claimed_jobs: 0,
+        failed_jobs: 0,
+        done_jobs: 0,
+        online_agents: 0,
+      },
+    };
+  }
+  const [agentsResult, jobsResult, summaryResult] = await Promise.all([
+    pool.query("SELECT * FROM llm_agents ORDER BY agent_name ASC"),
+    pool.query("SELECT * FROM llm_jobs ORDER BY created_at DESC LIMIT 50"),
+    pool.query(`
+      SELECT
+        COUNT(*)::int AS total_jobs,
+        COUNT(*) FILTER (WHERE status = 'pending')::int AS pending_jobs,
+        COUNT(*) FILTER (WHERE status = 'claimed')::int AS claimed_jobs,
+        COUNT(*) FILTER (WHERE status = 'failed')::int AS failed_jobs,
+        COUNT(*) FILTER (WHERE status = 'done')::int AS done_jobs,
+        (SELECT COUNT(*)::int FROM llm_agents WHERE status IN ('online', 'idle', 'busy')) AS online_agents
+      FROM llm_jobs
+    `),
+  ]);
+  return {
+    agents: (agentsResult.rows || []).map(mapLlmAgentRow),
+    jobs: (jobsResult.rows || []).map(mapLlmJobRow),
+    summary: {
+      total_jobs: Number(summaryResult.rows?.[0]?.total_jobs || 0),
+      pending_jobs: Number(summaryResult.rows?.[0]?.pending_jobs || 0),
+      claimed_jobs: Number(summaryResult.rows?.[0]?.claimed_jobs || 0),
+      failed_jobs: Number(summaryResult.rows?.[0]?.failed_jobs || 0),
+      done_jobs: Number(summaryResult.rows?.[0]?.done_jobs || 0),
+      online_agents: Number(summaryResult.rows?.[0]?.online_agents || 0),
+    },
+  };
+}
+
 const databaseMigrations = [
   `
     CREATE TABLE IF NOT EXISTS fust_actions (
@@ -285,6 +611,44 @@ const databaseMigrations = [
         FOREIGN KEY (action_id) REFERENCES fust_actions(id) ON DELETE CASCADE;
       END IF;
     END $$;
+  `,
+  `
+    CREATE TABLE IF NOT EXISTS llm_agents (
+      agent_name text PRIMARY KEY,
+      api_key_hash text NOT NULL,
+      pc_name text,
+      model_name text,
+      version text,
+      status text NOT NULL DEFAULT 'offline',
+      capabilities jsonb NOT NULL DEFAULT '[]'::jsonb,
+      meta jsonb NOT NULL DEFAULT '{}'::jsonb,
+      last_seen_at timestamptz,
+      last_job_claimed_at timestamptz,
+      created_at timestamptz NOT NULL DEFAULT now(),
+      updated_at timestamptz NOT NULL DEFAULT now()
+    )
+  `,
+  `
+    CREATE TABLE IF NOT EXISTS llm_jobs (
+      id text PRIMARY KEY,
+      job_type text NOT NULL,
+      status text NOT NULL DEFAULT 'pending',
+      created_by text,
+      shipment_id text,
+      collection_id text,
+      document_kind text,
+      priority integer NOT NULL DEFAULT 0,
+      attempt_count integer NOT NULL DEFAULT 0,
+      max_attempts integer NOT NULL DEFAULT 3,
+      agent_name text NOT NULL DEFAULT '',
+      payload_json jsonb NOT NULL DEFAULT '{}'::jsonb,
+      result_json jsonb NOT NULL DEFAULT '{}'::jsonb,
+      error_text text NOT NULL DEFAULT '',
+      created_at timestamptz NOT NULL DEFAULT now(),
+      claimed_at timestamptz,
+      finished_at timestamptz,
+      updated_at timestamptz NOT NULL DEFAULT now()
+    )
   `,
 ];
 

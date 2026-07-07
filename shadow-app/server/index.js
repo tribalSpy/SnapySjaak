@@ -6,12 +6,18 @@ import crypto from "node:crypto";
 import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import {
+  claimNextLlmJob,
+  completeLlmJob,
+  createLlmJob,
   getFustDatabaseStats,
   getDatabaseStatus,
+  getLlmQueueSnapshot,
+  failLlmJob,
   initializeDatabase,
   isDatabaseEnabled,
   markFustActionDeletedInDatabase,
   saveFustActionToDatabase,
+  upsertLlmAgentHeartbeat,
 } from "./db.js";
 import { createBunchesService } from "./bunches.js";
 
@@ -60,6 +66,7 @@ const staticRoot = existsSync(path.join(appRoot, "dist"))
   : path.join(appRoot, "public");
 const autoSyncOnVisit = process.env.AUTO_SYNC_ON_VISIT !== "0";
 const autoSyncThrottleMs = Number(process.env.AUTO_SYNC_THROTTLE_MINUTES || 5) * 60 * 1000;
+const llmPollerApiKey = String(process.env.SHADOW_LLM_POLLER_API_KEY || "").trim();
 const autoSyncStartedAt = new Map();
 const recentPreloadDays = Math.max(0, Number(process.env.SHADOW_PRELOAD_RECENT_DAYS || 3));
 const recentPreloadMaxImagesRaw = Number(process.env.SHADOW_PRELOAD_MAX_IMAGES || 120);
@@ -306,6 +313,29 @@ async function readRequestJson(req, maxBytes = 1024 * 1024) {
     return {};
   }
   return JSON.parse(rawBody);
+}
+
+function readAgentApiKey(req) {
+  const directHeader = String(req.headers["x-shadow-agent-key"] || "").trim();
+  if (directHeader) {
+    return directHeader;
+  }
+  const authorization = String(req.headers.authorization || "").trim();
+  if (authorization.toLowerCase().startsWith("bearer ")) {
+    return authorization.slice(7).trim();
+  }
+  return "";
+}
+
+function llmPollerEnabled() {
+  return Boolean(llmPollerApiKey);
+}
+
+function sendPollerUnauthorized(res) {
+  sendJson(res, 401, {
+    error: "Invalid or missing poller API key",
+    poller_enabled: llmPollerEnabled(),
+  });
 }
 
 function decodeXmlEntities(value) {
@@ -6139,6 +6169,158 @@ async function handleApi(req, res, url) {
     return;
   }
 
+  if (url.pathname === "/api/llm/agent/heartbeat" && req.method === "POST") {
+    if (!isDatabaseEnabled()) {
+      sendJson(res, 503, { error: "Database is not enabled" });
+      return;
+    }
+    if (!llmPollerEnabled()) {
+      sendJson(res, 503, { error: "SHADOW_LLM_POLLER_API_KEY is not configured" });
+      return;
+    }
+    const apiKey = readAgentApiKey(req);
+    if (!apiKey || apiKey !== llmPollerApiKey) {
+      sendPollerUnauthorized(res);
+      return;
+    }
+    const body = await readRequestJson(req);
+    const agentName = String(body.agent_name || "").trim();
+    if (!agentName) {
+      sendJson(res, 400, { error: "agent_name is required" });
+      return;
+    }
+    const agent = await upsertLlmAgentHeartbeat({
+      agent_name: agentName,
+      pc_name: body.pc_name,
+      model_name: body.model_name,
+      version: body.version,
+      status: body.status || "online",
+      capabilities: Array.isArray(body.capabilities) ? body.capabilities : [],
+      meta: body.meta && typeof body.meta === "object" ? body.meta : {},
+    }, apiKey);
+    sendJson(res, 200, { ok: true, agent, server_time: new Date().toISOString() });
+    return;
+  }
+
+  if (url.pathname === "/api/llm/agent/poll" && req.method === "POST") {
+    if (!isDatabaseEnabled()) {
+      sendJson(res, 503, { error: "Database is not enabled" });
+      return;
+    }
+    if (!llmPollerEnabled()) {
+      sendJson(res, 503, { error: "SHADOW_LLM_POLLER_API_KEY is not configured" });
+      return;
+    }
+    const apiKey = readAgentApiKey(req);
+    if (!apiKey || apiKey !== llmPollerApiKey) {
+      sendPollerUnauthorized(res);
+      return;
+    }
+    const body = await readRequestJson(req);
+    const agentName = String(body.agent_name || "").trim();
+    if (!agentName) {
+      sendJson(res, 400, { error: "agent_name is required" });
+      return;
+    }
+    await upsertLlmAgentHeartbeat({
+      agent_name: agentName,
+      pc_name: body.pc_name,
+      model_name: body.model_name,
+      version: body.version,
+      status: body.status || "online",
+      capabilities: Array.isArray(body.capabilities) ? body.capabilities : [],
+      meta: body.meta && typeof body.meta === "object" ? body.meta : {},
+    }, apiKey);
+    const result = await claimNextLlmJob(agentName, apiKey, {
+      agent_status: body.agent_status || "idle",
+    });
+    sendJson(res, 200, {
+      ok: true,
+      server_time: new Date().toISOString(),
+      agent: result?.agent || null,
+      job: result?.job || null,
+    });
+    return;
+  }
+
+  if (url.pathname.startsWith("/api/llm/jobs/") && url.pathname.endsWith("/result") && req.method === "POST") {
+    if (!isDatabaseEnabled()) {
+      sendJson(res, 503, { error: "Database is not enabled" });
+      return;
+    }
+    if (!llmPollerEnabled()) {
+      sendJson(res, 503, { error: "SHADOW_LLM_POLLER_API_KEY is not configured" });
+      return;
+    }
+    const apiKey = readAgentApiKey(req);
+    if (!apiKey || apiKey !== llmPollerApiKey) {
+      sendPollerUnauthorized(res);
+      return;
+    }
+    const jobId = decodeURIComponent(url.pathname.slice("/api/llm/jobs/".length, -"/result".length));
+    const body = await readRequestJson(req);
+    const agentName = String(body.agent_name || "").trim();
+    if (!jobId || !agentName) {
+      sendJson(res, 400, { error: "job id and agent_name are required" });
+      return;
+    }
+    const job = await completeLlmJob(jobId, agentName, body.result_json && typeof body.result_json === "object" ? body.result_json : {});
+    if (!job) {
+      sendJson(res, 404, { error: "LLM job not found for this agent" });
+      return;
+    }
+    await upsertLlmAgentHeartbeat({
+      agent_name: agentName,
+      pc_name: body.pc_name,
+      model_name: body.model_name,
+      version: body.version,
+      status: body.status || "idle",
+      capabilities: Array.isArray(body.capabilities) ? body.capabilities : [],
+      meta: body.meta && typeof body.meta === "object" ? body.meta : {},
+    }, apiKey);
+    sendJson(res, 200, { ok: true, job });
+    return;
+  }
+
+  if (url.pathname.startsWith("/api/llm/jobs/") && url.pathname.endsWith("/fail") && req.method === "POST") {
+    if (!isDatabaseEnabled()) {
+      sendJson(res, 503, { error: "Database is not enabled" });
+      return;
+    }
+    if (!llmPollerEnabled()) {
+      sendJson(res, 503, { error: "SHADOW_LLM_POLLER_API_KEY is not configured" });
+      return;
+    }
+    const apiKey = readAgentApiKey(req);
+    if (!apiKey || apiKey !== llmPollerApiKey) {
+      sendPollerUnauthorized(res);
+      return;
+    }
+    const jobId = decodeURIComponent(url.pathname.slice("/api/llm/jobs/".length, -"/fail".length));
+    const body = await readRequestJson(req);
+    const agentName = String(body.agent_name || "").trim();
+    if (!jobId || !agentName) {
+      sendJson(res, 400, { error: "job id and agent_name are required" });
+      return;
+    }
+    const job = await failLlmJob(jobId, agentName, body.error_text || "Job failed", body.allow_retry === true);
+    if (!job) {
+      sendJson(res, 404, { error: "LLM job not found for this agent" });
+      return;
+    }
+    await upsertLlmAgentHeartbeat({
+      agent_name: agentName,
+      pc_name: body.pc_name,
+      model_name: body.model_name,
+      version: body.version,
+      status: body.status || "idle",
+      capabilities: Array.isArray(body.capabilities) ? body.capabilities : [],
+      meta: body.meta && typeof body.meta === "object" ? body.meta : {},
+    }, apiKey);
+    sendJson(res, 200, { ok: true, job });
+    return;
+  }
+
   const requestUser = await getRequestUser(req);
   if (!requestUser) {
     sendUnauthorized(res);
@@ -6179,6 +6361,48 @@ async function handleApi(req, res, url) {
     } catch (error) {
       sendJson(res, 400, { error: error instanceof Error ? error.message : String(error) });
     }
+    return;
+  }
+
+  if (url.pathname === "/api/llm/status" && req.method === "GET") {
+    if (!requirePermission(res, requestUser, PERMISSIONS.SETTINGS_MANAGE)) {
+      return;
+    }
+    const snapshot = await getLlmQueueSnapshot();
+    sendJson(res, 200, {
+      ok: true,
+      poller_enabled: llmPollerEnabled(),
+      agent_key_configured: llmPollerEnabled(),
+      snapshot,
+    });
+    return;
+  }
+
+  if (url.pathname === "/api/llm/jobs" && req.method === "POST") {
+    if (!requirePermission(res, requestUser, PERMISSIONS.SETTINGS_MANAGE)) {
+      return;
+    }
+    if (!isDatabaseEnabled()) {
+      sendJson(res, 503, { error: "Database is not enabled" });
+      return;
+    }
+    const body = await readRequestJson(req);
+    const jobType = String(body.job_type || "").trim();
+    if (!jobType) {
+      sendJson(res, 400, { error: "job_type is required" });
+      return;
+    }
+    const job = await createLlmJob({
+      job_type: jobType,
+      created_by: requestUser.username,
+      shipment_id: body.shipment_id,
+      collection_id: body.collection_id,
+      document_kind: body.document_kind,
+      priority: body.priority,
+      max_attempts: body.max_attempts,
+      payload_json: body.payload_json && typeof body.payload_json === "object" ? body.payload_json : {},
+    });
+    sendJson(res, 201, { ok: true, job });
     return;
   }
 

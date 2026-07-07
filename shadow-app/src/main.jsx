@@ -7984,6 +7984,8 @@ function SettingsPage({ currentUser }) {
   const [connectionTest, setConnectionTest] = useState(null);
   const [connectionBusy, setConnectionBusy] = useState(false);
   const [googleBusy, setGoogleBusy] = useState(false);
+  const [llmStatus, setLlmStatus] = useState(null);
+  const [llmBusy, setLlmBusy] = useState(false);
 
   function hydrateSettingsForm(settings) {
     return {
@@ -8039,6 +8041,35 @@ function SettingsPage({ currentUser }) {
     }
   }
 
+  async function loadLlmStatus() {
+    setLlmBusy(true);
+    try {
+      const payload = await apiJson("/api/llm/status");
+      setLlmStatus(payload);
+    } catch (llmError) {
+      setLlmStatus({
+        ok: false,
+        error: llmError.message,
+        poller_enabled: false,
+        agent_key_configured: false,
+        snapshot: {
+          agents: [],
+          jobs: [],
+          summary: {
+            total_jobs: 0,
+            pending_jobs: 0,
+            claimed_jobs: 0,
+            failed_jobs: 0,
+            done_jobs: 0,
+            online_agents: 0,
+          },
+        },
+      });
+    } finally {
+      setLlmBusy(false);
+    }
+  }
+
   useEffect(() => {
     apiJson("/api/fust/settings")
       .then((payload) => setForm(hydrateSettingsForm(payload.settings)))
@@ -8046,6 +8077,7 @@ function SettingsPage({ currentUser }) {
 
     loadBackups().catch((backupError) => setError(backupError.message));
     loadConnectionTest().catch(() => {});
+    loadLlmStatus().catch(() => {});
   }, []);
 
   async function submit(event) {
@@ -8155,6 +8187,36 @@ function SettingsPage({ currentUser }) {
     } catch (googleError) {
       setError(googleError.message);
       setGoogleBusy(false);
+    }
+  }
+
+  async function createLlmTestJob() {
+    setLlmBusy(true);
+    setError("");
+    setMessage("");
+    try {
+      await apiJson("/api/llm/jobs", {
+        method: "POST",
+        body: JSON.stringify({
+          job_type: "ollama_chat",
+          priority: 10,
+          payload_json: {
+            model: "",
+            messages: [
+              {
+                role: "user",
+                content: "Reply with only: poller ok",
+              },
+            ],
+          },
+        }),
+      });
+      setMessage("LLM test job queued. The poller should pick it up from the new PC.");
+      await loadLlmStatus();
+    } catch (llmError) {
+      setError(llmError.message);
+    } finally {
+      setLlmBusy(false);
     }
   }
 
@@ -8468,6 +8530,95 @@ function SettingsPage({ currentUser }) {
           "SMTP sender settings are how the app sends the email.",
         ]}
       />
+
+      <div className="data-table-card">
+        <div className="section-header">
+          <h2>LLM poller status</h2>
+          <div className="row-actions">
+            <button type="button" onClick={loadLlmStatus} disabled={llmBusy}>
+              {llmBusy ? "Refreshing..." : "Refresh"}
+            </button>
+            <button type="button" className="primary" onClick={createLlmTestJob} disabled={llmBusy || !connectionTest?.database?.ready}>
+              {llmBusy ? "Queuing..." : "Queue test job"}
+            </button>
+          </div>
+        </div>
+        {!llmStatus && <div className="notice">Loading poller status...</div>}
+        {!!llmStatus && (
+          <>
+            {!llmStatus.poller_enabled && (
+              <div className="notice danger">
+                SHADOW_LLM_POLLER_API_KEY is not configured on Render yet.
+              </div>
+            )}
+            {llmStatus.error && <div className="notice danger">{llmStatus.error}</div>}
+            <p className="sidebar-note">
+              Queue: {llmStatus.snapshot?.summary?.pending_jobs || 0} pending, {llmStatus.snapshot?.summary?.claimed_jobs || 0} claimed, {llmStatus.snapshot?.summary?.done_jobs || 0} done, {llmStatus.snapshot?.summary?.failed_jobs || 0} failed
+            </p>
+            <p className="sidebar-note">
+              Agents online: {llmStatus.snapshot?.summary?.online_agents || 0}
+            </p>
+            {!llmStatus.snapshot?.agents?.length ? (
+              <div className="notice">No poller agent has connected yet.</div>
+            ) : (
+              <div className="table-wrap">
+                <table className="data-table">
+                  <thead>
+                    <tr>
+                      <th>Agent</th>
+                      <th>PC</th>
+                      <th>Model</th>
+                      <th>Status</th>
+                      <th>Last seen</th>
+                      <th>Last job</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {(llmStatus.snapshot?.agents || []).map((agent) => (
+                      <tr key={agent.agent_name}>
+                        <td>{agent.agent_name}</td>
+                        <td>{agent.pc_name || "-"}</td>
+                        <td>{agent.model_name || "-"}</td>
+                        <td>{agent.status || "-"}</td>
+                        <td>{formatTimestamp(agent.last_seen_at)}</td>
+                        <td>{formatTimestamp(agent.last_job_claimed_at)}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+            {!!llmStatus.snapshot?.jobs?.length && (
+              <div className="table-wrap" style={{ marginTop: 16 }}>
+                <table className="data-table">
+                  <thead>
+                    <tr>
+                      <th>Created</th>
+                      <th>Job type</th>
+                      <th>Status</th>
+                      <th>Agent</th>
+                      <th>Attempts</th>
+                      <th>Error</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {(llmStatus.snapshot?.jobs || []).map((job) => (
+                      <tr key={job.id}>
+                        <td>{formatTimestamp(job.created_at)}</td>
+                        <td>{job.job_type}</td>
+                        <td>{job.status}</td>
+                        <td>{job.agent_name || "-"}</td>
+                        <td>{job.attempt_count}/{job.max_attempts}</td>
+                        <td>{job.error_text || "-"}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </>
+        )}
+      </div>
 
       <div className="data-table-card">
         <div className="section-header">
