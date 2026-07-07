@@ -3771,14 +3771,11 @@ function UkdocsPrintPage({ currentUser }) {
 
   useEffect(() => {
     let cancelled = false;
-    Promise.all([
-      apiJson("/api/ukdocs/state"),
-      apiJson("/api/fust/settings").catch(() => ({ settings: { gmail_connected_email: "" } })),
-    ])
-      .then(([ukdocsPayload, settingsPayload]) => {
+    apiJson("/api/ukdocs/state")
+      .then((ukdocsPayload) => {
         if (!cancelled) {
           setState(ukdocsPayload.state);
-          setGmailSettings(settingsPayload.settings || { gmail_connected_email: "" });
+          setGmailSettings(ukdocsPayload.settings || { gmail_connected_email: "", ukdocs_print_spreadsheet_id: "" });
         }
       })
       .catch((loadError) => {

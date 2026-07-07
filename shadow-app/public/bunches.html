@@ -585,18 +585,9 @@
 
     function openPrintList(runId, hoes, tak = "") {
       const htmlPath = tak
-        ? `/api/bunches/printlijst/${runId}/${hoes}/${tak}`
-        : `/api/bunches/printlijst/${runId}/${hoes}`;
-      const pdfPath = tak
-        ? `/api/bunches/printlijst-pdf/${runId}/${hoes}/${tak}.pdf`
-        : `/api/bunches/printlijst-pdf/${runId}/${hoes}/all.pdf`;
+        ? `/api/bunches/printlijst/${runId}/${hoes}/${tak}?autoprint=1`
+        : `/api/bunches/printlijst/${runId}/${hoes}?autoprint=1`;
       window.open(htmlPath, "_blank", "noopener,noreferrer");
-      const link = document.createElement("a");
-      link.href = pdfPath;
-      link.style.display = "none";
-      document.body.appendChild(link);
-      link.click();
-      link.remove();
     }
 
     function renderArticles() {

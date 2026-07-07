@@ -365,8 +365,9 @@ function generateUniFile(sheetName, lines, dateString) {
   return `${rows.join("\n")}\n`;
 }
 
-function generatePrintlijstHtml(title, items, dateString) {
+function generatePrintlijstHtml(title, items, dateString, options = {}) {
   const displayDate = formatDateNL(dateString) || dateString || "";
+  const autoPrint = options?.autoPrint === true;
   const rows = items.map((item) => `
     <tr>
       <td class="check"><input type="checkbox"></td>
@@ -415,6 +416,14 @@ function generatePrintlijstHtml(title, items, dateString) {
     </thead>
     <tbody>${rows}</tbody>
   </table>
+  ${autoPrint ? `<script>
+    window.addEventListener("load", () => {
+      setTimeout(() => {
+        window.focus();
+        window.print();
+      }, 150);
+    }, { once: true });
+  </script>` : ""}
 </body>
 </html>`;
 }
@@ -986,9 +995,9 @@ export function createBunchesService({ statePath, seedDir }) {
     };
   }
 
-  async function renderPrintlijst(runId, hoes, tak) {
+  async function renderPrintlijst(runId, hoes, tak, options = {}) {
     const data = await getPrintlijstData(runId, hoes, tak);
-    return generatePrintlijstHtml(data.title, data.items, data.dateString);
+    return generatePrintlijstHtml(data.title, data.items, data.dateString, options);
   }
 
   async function renderPrintlijstPdf(runId, hoes, tak) {

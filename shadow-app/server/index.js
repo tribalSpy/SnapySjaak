@@ -1605,6 +1605,13 @@ function normalizeUkdocsState(state) {
   };
 }
 
+function ukdocsViewerSettingsSummary(settings) {
+  return {
+    gmail_connected_email: String(settings?.gmail_connected_email || "").trim(),
+    ukdocs_print_spreadsheet_id: String(settings?.ukdocs_print_spreadsheet_id || "").trim(),
+  };
+}
+
 async function readUkdocsState() {
   const payload = await readJsonFile(ukdocsStatePath, defaultUkdocsState);
   return normalizeUkdocsState(payload);
@@ -6530,7 +6537,8 @@ async function handleApi(req, res, url) {
     const hoes = parts[5];
     const tak = parts[6] ? decodeURIComponent(parts[6]) : "";
     try {
-      const html = await bunchesService.renderPrintlijst(runId, hoes, tak);
+      const autoPrint = url.searchParams.get("autoprint") === "1";
+      const html = await bunchesService.renderPrintlijst(runId, hoes, tak, { autoPrint });
       res.writeHead(200, { "content-type": "text/html; charset=utf-8" });
       res.end(html);
     } catch (error) {
@@ -7079,7 +7087,8 @@ async function handleApi(req, res, url) {
 
     if (req.method === "GET") {
       const state = await readUkdocsState();
-      sendJson(res, 200, { state });
+      const settings = await readFustSettings();
+      sendJson(res, 200, { state, settings: ukdocsViewerSettingsSummary(settings) });
       return;
     }
 
