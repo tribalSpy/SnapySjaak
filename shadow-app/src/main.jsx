@@ -28,6 +28,7 @@ const PERMISSIONS = {
   SETTINGS_MANAGE: "settings:manage",
   UKDOCS_VIEW: "ukdocs:view",
   UKDOCS_INSPECTION_VIEW: "ukdocs_inspection:view",
+  UKDOCS_CSI_VIEW: "ukdocs_csi:view",
 };
 const ALL_PERMISSIONS = Object.values(PERMISSIONS);
 const DEFAULT_PERMISSIONS_BY_ROLE = {
@@ -45,6 +46,7 @@ const PAGE_DEFINITIONS = [
   { key: "foutenoverzicht", label: "Fouten Overzicht", permission: PERMISSIONS.FOUTEN_OVERVIEW_VIEW },
   { key: "ukdocsprint", label: "UKDocs Exportdocs", permission: PERMISSIONS.UKDOCS_VIEW },
   { key: "ukdocsinspection", label: "Phyto Inspection", permission: PERMISSIONS.UKDOCS_INSPECTION_VIEW },
+  { key: "ukdocscsi", label: "UKDocs CSI", permission: PERMISSIONS.UKDOCS_CSI_VIEW },
   { key: "clock", label: "Inklokken", permission: PERMISSIONS.CLOCK_VIEW },
   { key: "users", label: "Users", permission: PERMISSIONS.USERS_MANAGE },
   { key: "settings", label: "Settings", permission: PERMISSIONS.SETTINGS_MANAGE },
@@ -170,6 +172,11 @@ function pageHeading(page) {
     case "ukdocsinspection":
       return {
         title: "Phyto Inspection",
+        caption: "",
+      };
+    case "ukdocscsi":
+      return {
+        title: "UKDocs CSI",
         caption: "",
       };
     default:
@@ -3618,6 +3625,8 @@ const UKDOCS_PRINT_DOCUMENTS = [
   { key: "export_extra", label: "Second export file", accept: ".pdf,.xlsx,.xls" },
   { key: "inspection_list", label: "Inspection list", accept: ".pdf,.xlsx,.xls" },
   { key: "locations_file", label: "Locations file", accept: ".pdf,.xlsx,.xls" },
+  { key: "temp_phyto", label: "Temporary phyto PDF", accept: ".pdf" },
+  { key: "ipaffs_file", label: "IPAFFS file", accept: ".csv,.xlsx,.xls" },
 ];
 
 function ukdocsPrintStatusDefinition(status) {
@@ -3629,6 +3638,27 @@ function ukdocsPrintStatusDefinition(status) {
     default:
       return { label: "Waiting for files", tone: "muted" };
   }
+}
+
+function ukdocsCsiStatusDefinition(report) {
+  const status = String(report?.status || "").trim();
+  const overallStatus = String(report?.overall_status || "").trim();
+  if (status === "queued") {
+    return { label: "CSI queued", tone: "info" };
+  }
+  if (status === "failed") {
+    return { label: "CSI failed", tone: "danger" };
+  }
+  if (status === "done") {
+    if (overallStatus === "pass") {
+      return { label: "CSI pass", tone: "success" };
+    }
+    if (overallStatus === "fail") {
+      return { label: "CSI fail", tone: "danger" };
+    }
+    return { label: "CSI warning", tone: "info" };
+  }
+  return { label: "CSI not started", tone: "muted" };
 }
 
 function ukdocsCollectionDownloadEntries(collection, customer = null, menuKey = "all") {
@@ -4216,7 +4246,14 @@ function UkdocsPrintPage({ currentUser }) {
               {!!selectedCollection?.delivery_email?.error && !selectedCollection?.delivery_email?.ok && <div className="notice danger">{selectedCollection.delivery_email.error}</div>}
 
               <div className="ukdocs-upload-grid">
-                {UKDOCS_PRINT_DOCUMENTS.filter((documentDefinition) => ukdocsInspectionDocumentKeys(selectedCollection).includes(documentDefinition.key)).map((documentDefinition) => {
+                {UKDOCS_PRINT_DOCUMENTS.filter((documentDefinition) => {
+                  const visibleKeys = new Set(ukdocsInspectionDocumentKeys(selectedCollection));
+                  if (ukdocsPrintInspectionMode(selectedCollection) !== "stock_control") {
+                    visibleKeys.add("temp_phyto");
+                    visibleKeys.add("ipaffs_file");
+                  }
+                  return visibleKeys.has(documentDefinition.key);
+                }).map((documentDefinition) => {
                   const document = documentDefinition.key === "phyto"
                     ? null
                     : selectedCollection.documents?.[documentDefinition.key] || null;
@@ -4583,6 +4620,281 @@ function UkdocsInspectionPage({ currentUser }) {
                 <textarea rows={5} value={notesDraft} onChange={(event) => setNotesDraft(event.target.value)} placeholder="Optional notes about inspection handling" />
               </label>
               <div className="row-actions spread-actions"><button type="button" className="primary" onClick={saveNotes} disabled={saving}>{saving ? "Saving..." : "Save notes"}</button></div>
+            </>
+          )}
+        </div>
+      </div>
+    </section>
+  );
+}
+
+function UkdocsCSIPage({ currentUser }) {
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [state, setState] = useState(null);
+  const [message, setMessage] = useState("");
+  const [error, setError] = useState("");
+  const [selectedCollectionDate, setSelectedCollectionDate] = useState(() => localDateIso());
+  const [selectedCollectionId, setSelectedCollectionId] = useState("");
+  const [detailDrawerOpen, setDetailDrawerOpen] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    apiJson("/api/ukdocs/state")
+      .then((payload) => {
+        if (!cancelled) {
+          setState(payload.state);
+        }
+      })
+      .catch((loadError) => {
+        if (!cancelled) {
+          setError(loadError.message);
+        }
+      })
+      .finally(() => {
+        if (!cancelled) {
+          setLoading(false);
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [currentUser]);
+
+  const collections = state?.print_collections || [];
+  const shipmentCollections = useMemo(
+    () => collections.filter((item) => item.collection_type !== "stock_control"),
+    [collections],
+  );
+  const filteredCollections = useMemo(
+    () => shipmentCollections.filter((item) => String(item.shipment_date || "").slice(0, 10) === selectedCollectionDate),
+    [shipmentCollections, selectedCollectionDate],
+  );
+  const selectedCollection = filteredCollections.find((item) => item.id === selectedCollectionId || item.shipment_id === selectedCollectionId) || null;
+  const selectedGeneratedFiles = selectedCollection?.documents?.generated_files || [];
+  const selectedPhytoFiles = selectedCollection?.documents?.phyto_files || [];
+  const selectedCsiReport = selectedCollection?.csi_report || {};
+  const selectedTempPhyto = selectedCollection?.documents?.temp_phyto || null;
+  const selectedIpaffsFile = selectedCollection?.documents?.ipaffs_file || null;
+
+  useEffect(() => {
+    if (!filteredCollections.length) {
+      setSelectedCollectionId("");
+      setDetailDrawerOpen(false);
+      return;
+    }
+    if (selectedCollectionId && !filteredCollections.some((item) => item.id === selectedCollectionId || item.shipment_id === selectedCollectionId)) {
+      setSelectedCollectionId("");
+      setDetailDrawerOpen(false);
+    }
+  }, [filteredCollections, selectedCollectionId]);
+
+  function openCollectionDetail(collectionId) {
+    setSelectedCollectionId(collectionId);
+    setDetailDrawerOpen(true);
+  }
+
+  function closeCollectionDetail() {
+    setDetailDrawerOpen(false);
+  }
+
+  async function refreshState() {
+    setLoading(true);
+    setError("");
+    try {
+      const payload = await apiJson("/api/ukdocs/state");
+      setState(payload.state);
+    } catch (refreshError) {
+      setError(refreshError.message);
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function runCsiAudit(collectionId) {
+    setSaving(true);
+    setMessage("");
+    setError("");
+    try {
+      const payload = await apiJson(`/api/ukdocs-print/collections/${encodeURIComponent(collectionId)}/csi/run`, {
+        method: "POST",
+      });
+      setState((current) => ({ ...current, print_collections: payload.print_collections || current?.print_collections || [] }));
+      setMessage("CSI audit queued.");
+      setDetailDrawerOpen(true);
+    } catch (runError) {
+      setError(runError.message);
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <section className="overview-stack">
+      {message && <div className="notice success">{message}</div>}
+      {error && <div className="notice danger">{error}</div>}
+      {loading && <div className="notice">Loading CSI zendingen...</div>}
+
+      <div className="ukdocs-collection-layout">
+        <div className="data-table-card ukdocs-stack">
+          <div className="section-header">
+            <h2>CSI zendingen</h2>
+            <div className="row-actions spread-actions">
+              <button type="button" onClick={refreshState} disabled={loading || saving}>Refresh</button>
+            </div>
+          </div>
+          <div className="form-grid">
+            <label className="wide">
+              <span>Zending date</span>
+              <input type="date" value={selectedCollectionDate} onChange={(event) => setSelectedCollectionDate(event.target.value)} />
+            </label>
+          </div>
+          <div className="ukdocs-cards-grid">
+            {filteredCollections.map((collection) => {
+              const isActive = selectedCollection?.id === collection.id;
+              const csiStatus = ukdocsCsiStatusDefinition(collection.csi_report);
+              return (
+                <div key={collection.id} className={`ukdocs-collection-card${isActive ? " active" : ""}`}>
+                  <strong>{collection.customer_name || collection.city_name || "Zending"}</strong>
+                  <small>{collection.shipment_date || "-"}</small>
+                  <small>City: {collection.city_name || "-"}</small>
+                  <small>Connect: {collection.reference_connect || "No connect ref yet"}</small>
+                  <small>Invoices: {ukdocsCollectionInvoiceText(collection) || "No invoices linked yet"}</small>
+                  <div className={`ukdocs-status-badge ${csiStatus.tone}`}>{csiStatus.label}</div>
+                  {!!collection.csi_report?.summary && <small>{collection.csi_report.summary}</small>}
+                  <div className="row-actions spread-actions">
+                    <button type="button" className="primary" onClick={() => openCollectionDetail(collection.id)}>{isActive ? "Opened" : "Open"}</button>
+                    <button type="button" onClick={() => runCsiAudit(collection.id)} disabled={saving}>Run CSI</button>
+                  </div>
+                </div>
+              );
+            })}
+            {!filteredCollections.length && !loading && <div className="notice">No zendingen saved for {selectedCollectionDate}.</div>}
+          </div>
+        </div>
+
+        {detailDrawerOpen && <button type="button" className="ukdocs-drawer-backdrop" onClick={closeCollectionDetail} aria-label="Close CSI detail" />}
+        <div className={`data-table-card ukdocs-stack ukdocs-drawer-panel${detailDrawerOpen ? " open" : ""}`}>
+          <div className="section-header">
+            <h2>CSI detail</h2>
+            {selectedCollection && <div className="row-actions"><button type="button" onClick={closeCollectionDetail}>Close</button></div>}
+          </div>
+
+          {!selectedCollection && <div className="notice">Open a zending to review the CSI audit.</div>}
+
+          {selectedCollection && (
+            <>
+              <div className="form-grid">
+                <label><span>Shipment reference</span><input value={selectedCollection.shipment_reference || ""} readOnly /></label>
+                <label><span>Reference connect</span><input value={selectedCollection.reference_connect || ""} readOnly /></label>
+                <label><span>Shipment date</span><input value={selectedCollection.shipment_date || ""} readOnly /></label>
+                <label><span>Customer</span><input value={selectedCollection.customer_name || ""} readOnly /></label>
+                <label><span>City</span><input value={selectedCollection.city_name || ""} readOnly /></label>
+                <label><span>Invoice numbers</span><input value={ukdocsCollectionInvoiceText(selectedCollection)} readOnly /></label>
+                <label><span>PD type</span><input value={selectedCollection.pd_type || ""} readOnly /></label>
+                <label><span>PD code</span><input value={selectedCollection.pd_code || ""} readOnly /></label>
+              </div>
+
+              <div className="ukdocs-download-box">
+                <div className="row-actions spread-actions"><strong>Generated files</strong></div>
+                <div className="ukdocs-download-list">
+                  {selectedGeneratedFiles.map((file, index) => (
+                    <a key={`${file.storage_name}-${index}`} href={`/api/ukdocs-print/collections/${encodeURIComponent(selectedCollection.id)}/documents/generated/${index}`} target="_blank" rel="noreferrer" className="ukdocs-download-link">
+                      {file.original_name || `Generated ${index + 1}`}
+                    </a>
+                  ))}
+                  {!selectedGeneratedFiles.length && <small>No generated files saved yet.</small>}
+                </div>
+              </div>
+
+              <div className="ukdocs-download-box">
+                <div className="row-actions spread-actions"><strong>Phyto files</strong></div>
+                <div className="ukdocs-download-list">
+                  {selectedPhytoFiles.map((file, index) => (
+                    <a key={`${file.storage_name}-${index}`} href={`/api/ukdocs-print/collections/${encodeURIComponent(selectedCollection.id)}/documents/phyto/${index}`} target="_blank" rel="noreferrer" className="ukdocs-download-link">
+                      {file.original_name || `Phyto ${index + 1}`}
+                    </a>
+                  ))}
+                  {!selectedPhytoFiles.length && <small>No phyto files saved yet.</small>}
+                </div>
+              </div>
+
+              <div className="ukdocs-upload-grid">
+                <div className="ukdocs-upload-card">
+                  <strong>Temporary phyto PDF</strong>
+                  <small>{selectedTempPhyto?.original_name ? `${selectedTempPhyto.original_name} saved ${formatTimestamp(selectedTempPhyto.saved_at)}` : "No file saved yet in Zending."}</small>
+                  {selectedTempPhyto?.storage_name && (
+                    <div className="row-actions">
+                      <a href={`/api/ukdocs-print/collections/${encodeURIComponent(selectedCollection.id)}/documents/temp_phyto`} target="_blank" rel="noreferrer">Open</a>
+                    </div>
+                  )}
+                </div>
+                <div className="ukdocs-upload-card">
+                  <strong>IPAFFS file</strong>
+                  <small>{selectedIpaffsFile?.original_name ? `${selectedIpaffsFile.original_name} saved ${formatTimestamp(selectedIpaffsFile.saved_at)}` : "No file saved yet in Zending."}</small>
+                  {selectedIpaffsFile?.storage_name && (
+                    <div className="row-actions">
+                      <a href={`/api/ukdocs-print/collections/${encodeURIComponent(selectedCollection.id)}/documents/ipaffs_file`} target="_blank" rel="noreferrer">Open</a>
+                    </div>
+                  )}
+                </div>
+              </div>
+
+              <div className="row-actions spread-actions">
+                <button type="button" className="primary" onClick={() => runCsiAudit(selectedCollection.id)} disabled={saving}>Run CSI audit</button>
+              </div>
+
+              <div className="ukdocs-download-box">
+                <div className="row-actions spread-actions">
+                  <strong>CSI result</strong>
+                  <div className={`ukdocs-status-badge ${ukdocsCsiStatusDefinition(selectedCsiReport).tone}`}>{ukdocsCsiStatusDefinition(selectedCsiReport).label}</div>
+                </div>
+                <small>{selectedCsiReport.summary || "No CSI result yet."}</small>
+                {!!selectedCsiReport.error && <div className="notice danger">{selectedCsiReport.error}</div>}
+                {!!selectedCsiReport.checks?.length && (
+                  <div className="table-wrap">
+                    <table className="data-table">
+                      <thead><tr><th>Check</th><th>Status</th><th>Message</th></tr></thead>
+                      <tbody>
+                        {selectedCsiReport.checks.map((check, index) => (
+                          <tr key={`${check.code || "check"}-${index}`}>
+                            <td>{check.code || "-"}</td>
+                            <td>{check.status || "-"}</td>
+                            <td>{check.message || "-"}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+                {!!selectedCsiReport.products?.length && (
+                  <div className="table-wrap">
+                    <table className="data-table">
+                      <thead><tr><th>Product</th><th>Invoice qty</th><th>Export qty</th><th>IPAFFS qty</th><th>Status</th><th>Message</th></tr></thead>
+                      <tbody>
+                        {selectedCsiReport.products.map((row, index) => (
+                          <tr key={`${row.product || "product"}-${index}`}>
+                            <td>{row.product || "-"}</td>
+                            <td>{row.invoice_quantity || "-"}</td>
+                            <td>{row.export_quantity || "-"}</td>
+                            <td>{row.ipaffs_quantity || "-"}</td>
+                            <td>{row.status || "-"}</td>
+                            <td>{row.message || "-"}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+                {!!selectedCsiReport.manual_checks?.length && (
+                  <>
+                    <strong>Manual checks</strong>
+                    <ul>
+                      {selectedCsiReport.manual_checks.map((item, index) => <li key={`${item}-${index}`}>{item}</li>)}
+                    </ul>
+                  </>
+                )}
+              </div>
             </>
           )}
         </div>
@@ -5298,6 +5610,7 @@ function App() {
         {page === "foutenoverzicht" && <FoutenOverviewPage currentUser={auth.user} />}
         {page === "ukdocsprint" && <UkdocsPrintPage currentUser={auth.user} />}
         {page === "ukdocsinspection" && <UkdocsInspectionPage currentUser={auth.user} />}
+        {page === "ukdocscsi" && <UkdocsCSIPage currentUser={auth.user} />}
         {page === "settings" && <SettingsPage currentUser={auth.user} />}
         {page === "ukdocs" && <UkdocsPage currentUser={auth.user} />}
         {page === "dashboard" && canViewPhotos && (
