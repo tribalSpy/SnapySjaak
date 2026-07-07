@@ -43,7 +43,7 @@ const PAGE_DEFINITIONS = [
   { key: "bunches", label: "Bunches", permission: PERMISSIONS.BUNCHES_VIEW },
   { key: "dagfoutjes", label: "Fout Registratie", permission: PERMISSIONS.DAG_FOUTJES_VIEW },
   { key: "foutenoverzicht", label: "Fouten Overzicht", permission: PERMISSIONS.FOUTEN_OVERVIEW_VIEW },
-  { key: "ukdocsprint", label: "UKdocs Print", permission: PERMISSIONS.UKDOCS_VIEW },
+  { key: "ukdocsprint", label: "UKDocs Exportdocs", permission: PERMISSIONS.UKDOCS_VIEW },
   { key: "ukdocsinspection", label: "Phyto Inspection", permission: PERMISSIONS.UKDOCS_INSPECTION_VIEW },
   { key: "clock", label: "Inklokken", permission: PERMISSIONS.CLOCK_VIEW },
   { key: "users", label: "Users", permission: PERMISSIONS.USERS_MANAGE },
@@ -164,8 +164,8 @@ function pageHeading(page) {
       };
     case "ukdocsprint":
       return {
-        title: "UKdocs Print",
-        caption: "Collect the extra export files per finished UK shipment and keep everything together by invoice and truck registration.",
+        title: "UKDocs Exportdocs",
+        caption: "",
       };
     case "ukdocsinspection":
       return {
@@ -191,6 +191,13 @@ function imageUrl(image, run, retryKey = "") {
     params.set("retry", String(retryKey));
   }
   return `/api/image?${params.toString()}`;
+}
+
+function emitConnectionState(detail) {
+  if (typeof window === "undefined") {
+    return;
+  }
+  window.dispatchEvent(new CustomEvent("shadow-connection-state", { detail }));
 }
 
 function PhotoImage({ image, run, alt, loading = "eager" }) {
@@ -226,18 +233,159 @@ function PhotoImage({ image, run, alt, loading = "eager" }) {
 }
 
 async function apiJson(path, options = {}) {
-  const response = await fetch(path, {
-    ...options,
-    headers: {
-      ...(options.body ? { "content-type": "application/json" } : {}),
-      ...(options.headers || {}),
-    },
-  });
+  let response;
+  try {
+    response = await fetch(path, {
+      ...options,
+      headers: {
+        ...(options.body ? { "content-type": "application/json" } : {}),
+        ...(options.headers || {}),
+      },
+    });
+  } catch (error) {
+    emitConnectionState({
+      connected: false,
+      message: "Connection lost. The app may be updating or restarting.",
+      source: "api",
+    });
+    throw error;
+  }
   const payload = await response.json().catch(() => ({}));
+  if (response.ok) {
+    emitConnectionState({ connected: true, source: "api" });
+  } else if ([502, 503, 504].includes(response.status)) {
+    emitConnectionState({
+      connected: false,
+      message: "Connection lost. The app may be updating or restarting.",
+      source: "api",
+    });
+  }
   if (!response.ok) {
     throw new Error(payload.error || `Request failed with ${response.status}`);
   }
   return payload;
+}
+
+function useHeartbeatMonitor(enabled) {
+  const [state, setState] = useState({
+    connected: true,
+    message: "",
+    failures: 0,
+    lastOkAt: "",
+  });
+
+  useEffect(() => {
+    if (!enabled) {
+      return undefined;
+    }
+
+    let stopped = false;
+    let failureCount = 0;
+
+    function markConnected() {
+      failureCount = 0;
+      if (!stopped) {
+        setState({
+          connected: true,
+          message: "",
+          failures: 0,
+          lastOkAt: new Date().toISOString(),
+        });
+      }
+    }
+
+    function markDisconnected(message) {
+      failureCount += 1;
+      if (!stopped) {
+        setState((current) => ({
+          connected: failureCount < 2 ? current.connected : false,
+          message: failureCount < 2 ? current.message : (message || "Connection lost. The app may be updating or restarting."),
+          failures: failureCount,
+          lastOkAt: current.lastOkAt,
+        }));
+      }
+    }
+
+    async function checkHeartbeat() {
+      try {
+        const response = await fetch(`/api/status?_ts=${Date.now()}`, { cache: "no-store" });
+        if (!response.ok) {
+          throw new Error(`Heartbeat failed with ${response.status}`);
+        }
+        markConnected();
+      } catch {
+        markDisconnected("Connection lost. The app may be updating or restarting.");
+      }
+    }
+
+    function handleOnline() {
+      checkHeartbeat();
+    }
+
+    function handleOffline() {
+      failureCount = Math.max(failureCount, 2);
+      if (!stopped) {
+        setState((current) => ({
+          connected: false,
+          message: "Connection lost. This device is offline.",
+          failures: failureCount,
+          lastOkAt: current.lastOkAt,
+        }));
+      }
+    }
+
+    function handleConnectionEvent(event) {
+      const detail = event?.detail || {};
+      if (detail.connected) {
+        markConnected();
+        return;
+      }
+      failureCount = Math.max(failureCount + 1, 2);
+      if (!stopped) {
+        setState((current) => ({
+          connected: false,
+          message: detail.message || "Connection lost. The app may be updating or restarting.",
+          failures: failureCount,
+          lastOkAt: current.lastOkAt,
+        }));
+      }
+    }
+
+    if (typeof navigator !== "undefined" && navigator.onLine === false) {
+      handleOffline();
+    } else {
+      checkHeartbeat();
+    }
+
+    const interval = window.setInterval(checkHeartbeat, 10000);
+    window.addEventListener("online", handleOnline);
+    window.addEventListener("offline", handleOffline);
+    window.addEventListener("shadow-connection-state", handleConnectionEvent);
+
+    return () => {
+      stopped = true;
+      window.clearInterval(interval);
+      window.removeEventListener("online", handleOnline);
+      window.removeEventListener("offline", handleOffline);
+      window.removeEventListener("shadow-connection-state", handleConnectionEvent);
+    };
+  }, [enabled]);
+
+  return state;
+}
+
+function ConnectionLostOverlay({ message, onRefresh }) {
+  return (
+    <div className="connection-overlay" role="dialog" aria-modal="true" aria-live="assertive">
+      <div className="connection-overlay-card">
+        <h2>Connection lost</h2>
+        <p>{message || "The app may be updating or restarting. Refresh the screen and try again."}</p>
+        <div className="row-actions">
+          <button type="button" className="primary" onClick={onRefresh}>Refresh screen</button>
+        </div>
+      </div>
+    </div>
+  );
 }
 
 function emptyFustMetrics() {
@@ -3795,7 +3943,7 @@ function UkdocsPrintPage({ currentUser }) {
         body: JSON.stringify({ notes: notesDraft }),
       });
       setState((current) => ({ ...current, print_collections: payload.print_collections || current?.print_collections || [] }));
-      setMessage("Collection notes saved.");
+      setMessage("Zending notes saved.");
     } catch (saveError) {
       setError(saveError.message);
     } finally {
@@ -3821,7 +3969,7 @@ function UkdocsPrintPage({ currentUser }) {
   }
 
   async function deleteCollection(collectionId) {
-    if (!window.confirm("Delete this UKdocs Print collection and its saved files?")) {
+    if (!window.confirm("Delete this zending and its saved files?")) {
       return;
     }
     setSaving(true);
@@ -3921,14 +4069,13 @@ function UkdocsPrintPage({ currentUser }) {
   }
 
   if (loading) {
-    return <div className="notice">Loading UKdocs Print workspace...</div>;
+    return <div className="notice">Loading UKDocs Exportdocs workspace...</div>;
   }
 
   return (
     <section className="overview-stack ukdocs-page">
       {message && <div className="notice">{message}</div>}
       {error && <div className="notice danger">{error}</div>}
-      <div className="notice">Use the spreadsheet to load the day sendings first. Then link UKdocs generated files to one of those sendings, and let Gmail attach the phytosanitary and second export documents onto the same record. Shipments with the same city, hub code, and remark are grouped together, so one shipment can hold multiple phyto references and files.</div>
 
       <div className="data-table-card ukdocs-stack">
         <div className="section-header"><h2>Today Sendings Spreadsheet</h2></div>
@@ -3940,7 +4087,6 @@ function UkdocsPrintPage({ currentUser }) {
           <button type="button" className="primary" onClick={syncSheetSendings} disabled={sheetBusy}>{sheetBusy ? "Loading..." : "Load sendings from spreadsheet"}</button>
           <button type="button" onClick={updateSheetSendingsInfo} disabled={sheetBusy}>{sheetBusy ? "Updating..." : "Update info"}</button>
         </div>
-        <div className="notice">This imports the sending list for the selected day from the PD spreadsheet. Then UKdocs shipments can link to one of these sendings, and Gmail can match the phytosanitary PDF by reference connect.</div>
       </div>
 
       <div className="data-table-card ukdocs-stack">
@@ -3965,7 +4111,6 @@ function UkdocsPrintPage({ currentUser }) {
           {canManageSettings && <button type="button" onClick={connectGmail} disabled={gmailBusy}>{gmailBusy ? "Connecting..." : gmailSettings.gmail_connected_email ? `Reconnect Gmail for ${gmailSettings.gmail_connected_email}` : "Connect Gmail"}</button>}
           <button type="button" className="primary" onClick={syncGmail} disabled={gmailBusy}>{gmailBusy ? "Syncing..." : "Sync Gmail attachments"}</button>
         </div>
-      <div className="notice">The sync only checks emails for the selected export date, not the whole mailbox. It matches reference connect first, then invoice numbers, then truck or trailer registration. NVWA / e-CertNL emails are treated as phytosanitary documents automatically. Files only fill empty slots automatically, so manual uploads stay safe.</div>
         {!!gmailSyncResults.length && (
           <div className="table-wrap">
             <table className="data-table">
@@ -3980,17 +4125,16 @@ function UkdocsPrintPage({ currentUser }) {
 
       <div className="ukdocs-print-layout">
         <div className="data-table-card ukdocs-stack">
-          <div className="section-header"><h2>Collections</h2></div>
+          <div className="section-header"><h2>Zending</h2></div>
           <div className="form-grid">
-            <label><span>Collection date</span><input type="date" value={selectedCollectionDate} onChange={(event) => setSelectedCollectionDate(event.target.value)} /></label>
-            <label><span>Saved collection dates</span><input value={availableCollectionDates.length ? `${availableCollectionDates.length} day(s) saved` : "No saved dates yet"} readOnly /></label>
+            <label><span>Zending date</span><input type="date" value={selectedCollectionDate} onChange={(event) => setSelectedCollectionDate(event.target.value)} /></label>
+            <label><span>Saved zending dates</span><input value={availableCollectionDates.length ? `${availableCollectionDates.length} day(s) saved` : "No saved dates yet"} readOnly /></label>
           </div>
           <div className="row-actions spread-actions">
             <button type="button" onClick={() => stepCollectionDate(-1)}>Previous day</button>
             <button type="button" className="primary" onClick={() => setSelectedCollectionDate(localDateIso())}>Today</button>
             <button type="button" onClick={() => stepCollectionDate(1)}>Next day</button>
           </div>
-          <div className="notice">Showing collections for {selectedCollectionDate}. Saved shipments stay stored, but this view only shows the selected day.</div>
           <div className="ukdocs-upload-grid">
             {filteredCollections.map((collection) => {
               const progress = ukdocsPrintCollectionProgress(collection, customers);
@@ -4007,10 +4151,10 @@ function UkdocsPrintPage({ currentUser }) {
                   <small>{collection.reference_connect ? `Connect: ${collection.reference_connect}` : "No connect ref yet"}</small>
                   <small>{collection.invoice_numbers ? `Invoices: ${collection.invoice_numbers}` : "No invoices linked yet"}</small>
                   <small>{collection.truck_number || collection.trailer_number ? `Truck: ${collection.truck_number || collection.trailer_number}` : "No truck linked yet"}</small>
-                  <div className={`ukdocs-status-badge ${status.tone}`}>{progress.missing.length ? `${status.label} • ${progress.missing.join(", ")}` : status.label}</div>
+                  <div className={`ukdocs-status-badge ${status.tone}`}>{progress.missing.length ? `${status.label} - ${progress.missing.join(", ")}` : status.label}</div>
                   {!!collection.delivery_email?.sent_at && <small>Sent {formatTimestamp(collection.delivery_email.sent_at)}</small>}
                   <div className="row-actions spread-actions">
-                    <button type="button" className="primary" onClick={() => openCollectionDetail(collection.id)}>{isActive ? "Opened" : "Info"}</button>
+                    <button type="button" className="primary" onClick={() => openCollectionDetail(collection.id)}>{isActive ? "Opened" : "Open"}</button>
                     {!isStockControl && !progress.missing.length && <button type="button" onClick={() => sendReady(collection.id)} disabled={saving}>Send papers</button>}
                     <button type="button" onClick={() => deleteCollection(collection.id)}>Delete</button>
                   </div>
@@ -4034,19 +4178,19 @@ function UkdocsPrintPage({ currentUser }) {
                 </div>
               );
             })}
-            {!shipmentCollections.length && <div className="notice">No spreadsheet sendings or UKdocs-linked collections are loaded yet.</div>}
-            {!!shipmentCollections.length && !filteredCollections.length && <div className="notice">No collections saved for {selectedCollectionDate} yet.</div>}
+            {!shipmentCollections.length && <div className="notice">No zendingen are loaded yet.</div>}
+            {!!shipmentCollections.length && !filteredCollections.length && <div className="notice">No zendingen saved for {selectedCollectionDate} yet.</div>}
           </div>
         </div>
 
         {detailDrawerOpen && <button type="button" className="ukdocs-drawer-backdrop" onClick={closeCollectionDetail} aria-label="Close shipment detail" />}
-        <div className={`data-table-card ukdocs-stack ukdocs-drawer-panel${detailDrawerOpen ? " open" : ""}`}>
+        <div className={`data-table-card ukdocs-stack ukdocs-drawer-panel ukdocs-sidebar-panel${detailDrawerOpen ? " open" : ""}`}>
           <div className="section-header">
-            <h2>Collection detail</h2>
+            <h2>Zending detail</h2>
             {selectedCollection && selectedCollectionProgress && <div className="row-actions"><div className={`ukdocs-status-badge ${ukdocsPrintStatusDefinition(selectedCollectionProgress.status).tone}`}>{ukdocsPrintStatusDefinition(selectedCollectionProgress.status).label}</div>{ukdocsPrintInspectionMode(selectedCollection) !== "stock_control" && !selectedCollectionProgress.missing.length && <button type="button" className="primary" onClick={() => sendReady(selectedCollection.id)} disabled={saving}>{saving ? "Sending..." : "Send papers ready"}</button>}<button type="button" onClick={closeCollectionDetail}>Close</button><button type="button" onClick={() => deleteCollection(selectedCollection.id)}>Delete</button></div>}
           </div>
 
-          {!selectedCollection && <div className="notice">Tap Info on a shipment tile first.</div>}
+          {!selectedCollection && <div className="notice">Open a zending to see the details.</div>}
 
           {selectedCollection && (
             <>
@@ -4124,7 +4268,7 @@ function UkdocsPrintPage({ currentUser }) {
               </div>}
 
               <label className="wide">
-                <span>Collection notes</span>
+                <span>Zending notes</span>
                 <textarea rows={4} value={notesDraft} onChange={(event) => setNotesDraft(event.target.value)} placeholder="Optional notes about received emails or missing documents" />
               </label>
               <div className="row-actions spread-actions"><button type="button" className="primary" onClick={saveNotes} disabled={saving}>{saving ? "Saving..." : "Save notes"}</button></div>
@@ -4591,6 +4735,40 @@ function FoutenOverviewPage() {
   const daySummary = useMemo(() => foutenOverviewPeriodSummary(filteredEntries, "date"), [filteredEntries]);
   const weekSummary = useMemo(() => foutenOverviewPeriodSummary(filteredEntries, "iso_week"), [filteredEntries]);
   const monthSummary = useMemo(() => foutenOverviewPeriodSummary(filteredEntries, "month"), [filteredEntries]);
+  const detailRows = useMemo(() => (
+    filteredEntries
+      .slice()
+      .sort((left, right) => {
+        const leftStamp = Number(left.timestamp || 0);
+        const rightStamp = Number(right.timestamp || 0);
+        if (leftStamp !== rightStamp) {
+          return rightStamp - leftStamp;
+        }
+        return String(right.dateKey || right.date || "").localeCompare(String(left.dateKey || left.date || ""));
+      })
+  ), [filteredEntries]);
+
+  function downloadOverviewTable(filename, headers, rows) {
+    const tsv = [
+      headers.join("\t"),
+      ...rows.map((row) => row.map((value) => String(value ?? "").replaceAll("\t", " ")).join("\t")),
+    ].join("\n");
+    const blob = new Blob([tsv], { type: "text/tab-separated-values;charset=utf-8;" });
+    const url = window.URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = filename;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    window.URL.revokeObjectURL(url);
+  }
+
+  const exportTag = [
+    fromDate || "all-from",
+    toDate || "all-to",
+    personFilter.trim() || "all-people",
+  ].join("-").replace(/[^a-zA-Z0-9_-]+/g, "_");
 
   return (
     <section className="overview-stack">
@@ -4621,7 +4799,24 @@ function FoutenOverviewPage() {
       {!loading && !error && !!filteredEntries.length && (
         <>
           <div className="data-table-card">
-            <h2>People ranking</h2>
+            <div className="section-header">
+              <h2>People ranking</h2>
+              <button
+                type="button"
+                onClick={() => downloadOverviewTable(
+                  `fouten-overzicht-people-${exportTag}.xlsx`,
+                  ["Person", "Total mistakes", "Types"],
+                  peopleSummary.map((row) => [
+                    row.person_name,
+                    row.total,
+                    Object.entries(row.types).sort((a, b) => b[1] - a[1]).map(([label, count]) => `${label}: ${count}`).join(", "),
+                  ]),
+                )}
+                disabled={!peopleSummary.length}
+              >
+                Export .xlsx
+              </button>
+            </div>
             <div className="table-wrap">
               <table className="data-table">
                 <thead>
@@ -4645,7 +4840,67 @@ function FoutenOverviewPage() {
           </div>
 
           <div className="data-table-card">
-            <h2>Mistake types</h2>
+            <div className="section-header">
+              <h2>Mistake details</h2>
+              <button
+                type="button"
+                onClick={() => downloadOverviewTable(
+                  `fouten-overzicht-details-${exportTag}.xlsx`,
+                  ["Date", "Time", "Person", "Type", "Remark"],
+                  detailRows.map((entry) => [
+                    entry.date || entry.dateKey || "-",
+                    entry.time || "-",
+                    entry.person_name || entry.personName || "-",
+                    entry.type_label || entry.typeLabel || entry.type || "-",
+                    entry.comment || "-",
+                  ]),
+                )}
+                disabled={!detailRows.length}
+              >
+                Export .xlsx
+              </button>
+            </div>
+            <div className="table-wrap">
+              <table className="data-table">
+                <thead>
+                  <tr>
+                    <th>Date</th>
+                    <th>Time</th>
+                    <th>Person</th>
+                    <th>Type</th>
+                    <th>Remark</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {detailRows.map((entry) => (
+                      <tr key={entry.id}>
+                        <td>{entry.date || entry.dateKey || "-"}</td>
+                        <td>{entry.time || "-"}</td>
+                        <td>{entry.person_name || entry.personName || "-"}</td>
+                        <td>{entry.type_label || entry.typeLabel || entry.type || "-"}</td>
+                        <td>{entry.comment || "-"}</td>
+                      </tr>
+                    ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+
+          <div className="data-table-card">
+            <div className="section-header">
+              <h2>Mistake types</h2>
+              <button
+                type="button"
+                onClick={() => downloadOverviewTable(
+                  `fouten-overzicht-types-${exportTag}.xlsx`,
+                  ["Type", "Total"],
+                  typeSummary.map((row) => [row.label, row.count]),
+                )}
+                disabled={!typeSummary.length}
+              >
+                Export .xlsx
+              </button>
+            </div>
             <div className="table-wrap">
               <table className="data-table">
                 <thead>
@@ -4667,7 +4922,20 @@ function FoutenOverviewPage() {
           </div>
 
           <div className="data-table-card">
-            <h2>Per day</h2>
+            <div className="section-header">
+              <h2>Per day</h2>
+              <button
+                type="button"
+                onClick={() => downloadOverviewTable(
+                  `fouten-overzicht-days-${exportTag}.xlsx`,
+                  ["Day", "Total mistakes", "People", "Top type"],
+                  daySummary.map((row) => [row.period, row.total, row.people_count, row.top_type]),
+                )}
+                disabled={!daySummary.length}
+              >
+                Export .xlsx
+              </button>
+            </div>
             <div className="table-wrap">
               <table className="data-table">
                 <thead>
@@ -4693,7 +4961,20 @@ function FoutenOverviewPage() {
           </div>
 
           <div className="data-table-card">
-            <h2>Per week</h2>
+            <div className="section-header">
+              <h2>Per week</h2>
+              <button
+                type="button"
+                onClick={() => downloadOverviewTable(
+                  `fouten-overzicht-weeks-${exportTag}.xlsx`,
+                  ["Week", "Total mistakes", "People", "Top type"],
+                  weekSummary.map((row) => [row.period, row.total, row.people_count, row.top_type]),
+                )}
+                disabled={!weekSummary.length}
+              >
+                Export .xlsx
+              </button>
+            </div>
             <div className="table-wrap">
               <table className="data-table">
                 <thead>
@@ -4719,7 +5000,20 @@ function FoutenOverviewPage() {
           </div>
 
           <div className="data-table-card">
-            <h2>Per month</h2>
+            <div className="section-header">
+              <h2>Per month</h2>
+              <button
+                type="button"
+                onClick={() => downloadOverviewTable(
+                  `fouten-overzicht-months-${exportTag}.xlsx`,
+                  ["Month", "Total mistakes", "People", "Top type"],
+                  monthSummary.map((row) => [row.period, row.total, row.people_count, row.top_type]),
+                )}
+                disabled={!monthSummary.length}
+              >
+                Export .xlsx
+              </button>
+            </div>
             <div className="table-wrap">
               <table className="data-table">
                 <thead>
@@ -4765,6 +5059,7 @@ function App() {
   const [expandedCustomers, setExpandedCustomers] = useState(() => new Set());
   const [lightbox, setLightbox] = useState(null);
   const [syncVersion, setSyncVersion] = useState(0);
+  const heartbeat = useHeartbeatMonitor(true);
   const requestedDate = dateWasManuallySelected ? selectedDate : "";
   const canViewPhotos = hasPermission(auth.user, PERMISSIONS.PHOTOS_VIEW);
   const visiblePages = availablePagesForUser(auth.user);
@@ -4867,13 +5162,16 @@ function App() {
   if (publicClockMode) {
     const heading = pageHeading("clock");
     return (
-      <main className="workspace public-clock-workspace">
-        <header className="page-header">
-          <h1>{heading.title}</h1>
-          {heading.caption ? <p>{heading.caption}</p> : null}
-        </header>
-        <ClockPage currentUser={null} publicMode />
-      </main>
+      <>
+        {!heartbeat.connected && <ConnectionLostOverlay message={heartbeat.message} onRefresh={() => window.location.reload()} />}
+        <main className="workspace public-clock-workspace">
+          <header className="page-header">
+            <h1>{heading.title}</h1>
+            {heading.caption ? <p>{heading.caption}</p> : null}
+          </header>
+          <ClockPage currentUser={null} publicMode />
+        </main>
+      </>
     );
   }
 
@@ -4883,23 +5181,26 @@ function App() {
 
   if (!auth.user) {
     return (
-      <AuthShell title="Sjaak vd Vijver App">
-        {auth.setupRequired ? (
-          <SetupForm onSetup={(user) => {
-            setAuth({ loading: false, user, setupRequired: false });
-            setPage(defaultPageForUser(user));
-            setSidebarOpen(true);
-          }}
-          />
-        ) : (
-          <LoginForm onLogin={(user) => {
-            setAuth({ loading: false, user, setupRequired: false });
-            setPage(defaultPageForUser(user));
-            setSidebarOpen(true);
-          }}
-          />
-        )}
-      </AuthShell>
+      <>
+        {!heartbeat.connected && <ConnectionLostOverlay message={heartbeat.message} onRefresh={() => window.location.reload()} />}
+        <AuthShell title="Sjaak vd Vijver App">
+          {auth.setupRequired ? (
+            <SetupForm onSetup={(user) => {
+              setAuth({ loading: false, user, setupRequired: false });
+              setPage(defaultPageForUser(user));
+              setSidebarOpen(true);
+            }}
+            />
+          ) : (
+            <LoginForm onLogin={(user) => {
+              setAuth({ loading: false, user, setupRequired: false });
+              setPage(defaultPageForUser(user));
+              setSidebarOpen(true);
+            }}
+            />
+          )}
+        </AuthShell>
+      </>
     );
   }
 
@@ -4907,6 +5208,7 @@ function App() {
 
   return (
     <>
+      {!heartbeat.connected && <ConnectionLostOverlay message={heartbeat.message} onRefresh={() => window.location.reload()} />}
       <button
         type="button"
         className="sidebar-toggle"
