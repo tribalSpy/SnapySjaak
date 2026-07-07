@@ -893,12 +893,13 @@ function sanitizeStoredUser(user) {
 }
 
 function normalizeEmailRecipients(recipients) {
-  if (!Array.isArray(recipients)) {
-    return [];
-  }
+  const values = Array.isArray(recipients)
+    ? recipients
+    : String(recipients || "")
+      .split(/[\n,;]+/);
 
   return [...new Set(
-    recipients
+    values
       .map((value) => String(value || "").trim().toLowerCase())
       .filter((value) => value.includes("@")),
   )];
@@ -1174,6 +1175,9 @@ function normalizeUkdocsCustomer(customer) {
     default_currency: normalizeUkdocsText(customer?.default_currency),
     ready_email_subject: String(customer?.ready_email_subject || "").trim(),
     ready_email_body: String(customer?.ready_email_body || "").trim(),
+    csi_email_recipients: normalizeEmailRecipients(customer?.csi_email_recipients),
+    csi_email_subject: String(customer?.csi_email_subject || "").trim(),
+    csi_email_body: String(customer?.csi_email_body || "").trim(),
     default_invoice_language_text: String(customer?.default_invoice_language_text || "").trim(),
     default_document_references: String(customer?.default_document_references || "").trim(),
     show_invoice_vat_number: customer?.show_invoice_vat_number !== false,
@@ -1549,6 +1553,12 @@ function normalizeUkdocsPrintCollection(collection) {
       recipients: Array.isArray(collection?.delivery_email?.recipients) ? collection.delivery_email.recipients.map((item) => String(item || "").trim()).filter(Boolean) : [],
       sent_at: normalizeUkdocsText(collection?.delivery_email?.sent_at),
       error: String(collection?.delivery_email?.error || "").trim(),
+    },
+    csi_email: {
+      ok: collection?.csi_email?.ok === true,
+      recipients: Array.isArray(collection?.csi_email?.recipients) ? collection.csi_email.recipients.map((item) => String(item || "").trim()).filter(Boolean) : [],
+      sent_at: normalizeUkdocsText(collection?.csi_email?.sent_at),
+      error: String(collection?.csi_email?.error || "").trim(),
     },
     documents: {
       phyto_files: normalizeUkdocsPrintDocumentList(collection?.documents?.phyto_files || (collection?.documents?.phyto ? [collection.documents.phyto] : [])),
@@ -4278,6 +4288,180 @@ function ukdocsPrintReferenceTokens(value) {
     .filter((item) => item.length >= 3);
 }
 
+function ukdocsPrintCollectionGroupKey(collection) {
+  const shipmentDate = normalizeUkdocsText(collection?.shipment_date);
+  if (!shipmentDate) {
+    return "";
+  }
+  const collectionType = normalizeUkdocsText(collection?.collection_type) || (isHonselersdijkStockControl(collection) ? "stock_control" : "export");
+  return [
+    shipmentDate,
+    normalizeUkdocsPrintToken(collection?.city_name),
+    normalizeUkdocsPrintToken(collection?.hub_code),
+    normalizeUkdocsPrintToken(collection?.remark),
+    normalizeUkdocsPrintToken(collectionType),
+  ].join("|");
+}
+
+function mergeUkdocsPrintDocumentLists(primary, secondary) {
+  const merged = [];
+  const seen = new Set();
+  for (const item of [...(Array.isArray(primary) ? primary : []), ...(Array.isArray(secondary) ? secondary : [])]) {
+    if (!item) {
+      continue;
+    }
+    const key = `${String(item.storage_name || "").trim()}|${String(item.original_name || "").trim()}`;
+    if (seen.has(key)) {
+      continue;
+    }
+    seen.add(key);
+    merged.push(item);
+  }
+  return merged;
+}
+
+function mergeUkdocsPrintCollectionPair(keeper, duplicate) {
+  const uniqueJoin = (values, separator = "/") => [...new Set(values.map((item) => String(item || "").trim()).filter(Boolean))].join(separator);
+  const chooseObject = (left, right) => (left?.storage_name ? left : (right?.storage_name ? right : null));
+  return normalizeUkdocsPrintCollection({
+    ...duplicate,
+    ...keeper,
+    id: keeper.id,
+    shipment_id: keeper.shipment_id || duplicate.shipment_id || "",
+    source: keeper.source || duplicate.source || "sheet",
+    shipment_reference: uniqueJoin([keeper.shipment_reference, duplicate.shipment_reference]),
+    customer_id: keeper.customer_id || duplicate.customer_id || "",
+    customer_name: keeper.customer_name || duplicate.customer_name || "",
+    collection_type: keeper.collection_type || duplicate.collection_type || "export",
+    invoice_numbers: uniqueJoin([keeper.invoice_numbers, duplicate.invoice_numbers]),
+    truck_number: uniqueJoin([keeper.truck_number, duplicate.truck_number]),
+    trailer_number: uniqueJoin([keeper.trailer_number, duplicate.trailer_number]),
+    reference_connect: uniqueJoin([keeper.reference_connect, duplicate.reference_connect]),
+    city_name: keeper.city_name || duplicate.city_name || "",
+    border_crossing: keeper.border_crossing || duplicate.border_crossing || "",
+    hub_code: keeper.hub_code || duplicate.hub_code || "",
+    remark: keeper.remark || duplicate.remark || "",
+    pd_form: uniqueJoin([keeper.pd_form, duplicate.pd_form], "\n"),
+    re_export: uniqueJoin([keeper.re_export, duplicate.re_export], "\n"),
+    pd_type: uniqueJoin([keeper.pd_type, duplicate.pd_type], "\n"),
+    pd_code: uniqueJoin([keeper.pd_code, duplicate.pd_code], "\n"),
+    sheet_row_number: Math.min(
+      Number(keeper.sheet_row_number || 0) || Number.MAX_SAFE_INTEGER,
+      Number(duplicate.sheet_row_number || 0) || Number.MAX_SAFE_INTEGER,
+    ) === Number.MAX_SAFE_INTEGER ? 0 : Math.min(
+      Number(keeper.sheet_row_number || 0) || Number.MAX_SAFE_INTEGER,
+      Number(duplicate.sheet_row_number || 0) || Number.MAX_SAFE_INTEGER,
+    ),
+    generated_at: keeper.generated_at || duplicate.generated_at || "",
+    updated_at: new Date().toISOString(),
+    notes: keeper.notes || duplicate.notes || "",
+    delivery_email: keeper.delivery_email?.ok ? keeper.delivery_email : (duplicate.delivery_email || keeper.delivery_email || {}),
+    csi_email: keeper.csi_email?.ok ? keeper.csi_email : (duplicate.csi_email || keeper.csi_email || {}),
+    csi_report: keeper.csi_report?.status ? keeper.csi_report : (duplicate.csi_report || keeper.csi_report || {}),
+    documents: {
+      phyto_files: mergeUkdocsPrintDocumentLists(keeper?.documents?.phyto_files, duplicate?.documents?.phyto_files),
+      export_extra: chooseObject(keeper?.documents?.export_extra, duplicate?.documents?.export_extra),
+      generated_files: mergeUkdocsPrintDocumentLists(keeper?.documents?.generated_files, duplicate?.documents?.generated_files),
+      inspection_list: chooseObject(keeper?.documents?.inspection_list, duplicate?.documents?.inspection_list),
+      locations_file: chooseObject(keeper?.documents?.locations_file, duplicate?.documents?.locations_file),
+      temp_phyto_files: mergeUkdocsPrintDocumentLists(keeper?.documents?.temp_phyto_files, duplicate?.documents?.temp_phyto_files),
+      ipaffs_file: chooseObject(keeper?.documents?.ipaffs_file, duplicate?.documents?.ipaffs_file),
+    },
+  });
+}
+
+function ukdocsPrintCollectionMergeScore(collection) {
+  const documents = collection?.documents || {};
+  return (
+    (collection?.shipment_id ? 50 : 0)
+    + ((documents.generated_files || []).length * 10)
+    + ((documents.phyto_files || []).length * 5)
+    + ((documents.temp_phyto_files || []).length * 5)
+    + (documents.export_extra?.storage_name ? 4 : 0)
+    + (documents.inspection_list?.storage_name ? 4 : 0)
+    + (documents.locations_file?.storage_name ? 4 : 0)
+    + (documents.ipaffs_file?.storage_name ? 4 : 0)
+    + (collection?.delivery_email?.ok ? 8 : 0)
+    + (collection?.csi_email?.ok ? 8 : 0)
+    + (collection?.csi_report?.status === "done" ? 8 : 0)
+    + (ukdocsPrintReferenceTokens(collection?.reference_connect).length * 3)
+    + (ukdocsPrintInvoiceTokens(collection?.invoice_numbers).length * 2)
+    + (normalizeUkdocsPrintToken(collection?.truck_number) ? 2 : 0)
+    + (normalizeUkdocsPrintToken(collection?.trailer_number) ? 2 : 0)
+    + (normalizeUkdocsPrintToken(collection?.customer_name) ? 1 : 0)
+  );
+}
+
+function dedupeUkdocsPrintCollectionsForDate(state, syncDate) {
+  const collections = Array.isArray(state?.print_collections) ? state.print_collections : [];
+  const shipments = Array.isArray(state?.shipments) ? state.shipments : [];
+  const groups = new Map();
+  for (const collection of collections) {
+    if (String(collection?.shipment_date || "").slice(0, 10) !== syncDate) {
+      continue;
+    }
+    if (collection?.collection_type === "stock_control") {
+      continue;
+    }
+    const key = ukdocsPrintCollectionGroupKey(collection);
+    if (!key) {
+      continue;
+    }
+    const bucket = groups.get(key) || [];
+    bucket.push(collection);
+    groups.set(key, bucket);
+  }
+
+  if (![...groups.values()].some((bucket) => bucket.length > 1)) {
+    return state;
+  }
+
+  const idRemap = new Map();
+  const replacementById = new Map();
+
+  for (const bucket of groups.values()) {
+    if (bucket.length < 2) {
+      continue;
+    }
+    const sorted = [...bucket].sort((left, right) => {
+      const scoreDiff = ukdocsPrintCollectionMergeScore(right) - ukdocsPrintCollectionMergeScore(left);
+      if (scoreDiff !== 0) {
+        return scoreDiff;
+      }
+      return String(left.id || "").localeCompare(String(right.id || ""));
+    });
+    let keeper = sorted[0];
+    for (const duplicate of sorted.slice(1)) {
+      keeper = mergeUkdocsPrintCollectionPair(keeper, duplicate);
+      idRemap.set(duplicate.id, keeper.id);
+      replacementById.set(duplicate.id, keeper);
+    }
+    replacementById.set(keeper.id, keeper);
+  }
+
+  if (!idRemap.size) {
+    return state;
+  }
+
+  state.print_collections = collections
+    .filter((item) => !idRemap.has(item.id))
+    .map((item) => replacementById.get(item.id) || item);
+
+  state.shipments = shipments.map((shipment) => {
+    const remappedCollectionId = idRemap.get(shipment?.print_collection_id);
+    if (!remappedCollectionId) {
+      return shipment;
+    }
+    return normalizeUkdocsShipment({
+      ...shipment,
+      print_collection_id: remappedCollectionId,
+      updated_at: new Date().toISOString(),
+    });
+  });
+
+  return state;
+}
+
 function findMatchingUkdocsPrintCollection(collections, candidate, options = {}) {
   const allowInvoiceFallback = options.allowInvoiceFallback !== false;
   const shipmentId = normalizeUkdocsText(candidate?.shipment_id);
@@ -4287,6 +4471,7 @@ function findMatchingUkdocsPrintCollection(collections, candidate, options = {})
   const invoiceTokens = ukdocsPrintInvoiceTokens(candidate?.invoice_numbers);
   const truckNumber = normalizeUkdocsPrintToken(candidate?.truck_number);
   const trailerNumber = normalizeUkdocsPrintToken(candidate?.trailer_number);
+  const candidateGroupKey = ukdocsPrintCollectionGroupKey(candidate);
 
   return (Array.isArray(collections) ? collections : []).find((item) => {
     if (collectionId && item.id === collectionId) {
@@ -4301,6 +4486,11 @@ function findMatchingUkdocsPrintCollection(collections, candidate, options = {})
 
     const itemReferenceTokens = ukdocsPrintReferenceTokens(item.reference_connect);
     if (referenceTokens.length && itemReferenceTokens.some((token) => referenceTokens.includes(token))) {
+      return true;
+    }
+
+    const itemGroupKey = ukdocsPrintCollectionGroupKey(item);
+    if (candidateGroupKey && itemGroupKey && candidateGroupKey === itemGroupKey) {
       return true;
     }
 
@@ -4331,7 +4521,7 @@ function findMatchingUkdocsPrintCollection(collections, candidate, options = {})
       return true;
     }
 
-    return !referenceConnect && !itemReferenceConnect;
+    return !referenceTokens.length && !itemReferenceTokens.length;
   }) || null;
 }
 
@@ -4543,6 +4733,25 @@ async function updateUkdocsCsiReport(collectionId, patch) {
   return updatedCollection;
 }
 
+async function updateUkdocsCsiEmailResult(collectionId, csiEmailPatch) {
+  const state = await readUkdocsState();
+  const existingCollection = ukdocsPrintCollectionById(state.print_collections, collectionId);
+  if (!existingCollection) {
+    return null;
+  }
+  const updatedCollection = normalizeUkdocsPrintCollection({
+    ...existingCollection,
+    updated_at: new Date().toISOString(),
+    csi_email: {
+      ...(existingCollection.csi_email || {}),
+      ...(csiEmailPatch || {}),
+    },
+  });
+  state.print_collections = upsertUkdocsPrintCollection(state.print_collections, updatedCollection);
+  await writeUkdocsState(state);
+  return updatedCollection;
+}
+
 async function queueUkdocsCsiAudit(collection, requestUser) {
   if (!isDatabaseEnabled()) {
     throw new Error("Database is not enabled");
@@ -4601,6 +4810,12 @@ async function queueUkdocsCsiAudit(collection, requestUser) {
     manual_checks: [],
     notes: [],
     llm_content: "",
+  });
+  await updateUkdocsCsiEmailResult(collection.id, {
+    ok: false,
+    recipients: [],
+    sent_at: "",
+    error: "",
   });
 
   return job;
@@ -4992,6 +5207,7 @@ async function syncUkdocsPrintCollectionsFromSheet(settings, date, options = {})
     state.print_collections = upsertUkdocsPrintCollection(state.print_collections, nextCollection);
     updatedCount += 1;
   }
+  dedupeUkdocsPrintCollectionsForDate(state, syncDate);
   await writeUkdocsState(state);
   return {
     spreadsheet_id: spreadsheetId,
@@ -5818,6 +6034,7 @@ async function ukdocsPrintCollectionAttachments(collection, customer = null, men
 function buildUkdocsPrintReadyTemplateContext(collection, requirements) {
   return {
     customer_name: requirements.customer?.customer_name || collection.customer_name || collection.city_name || "-",
+    shipment_reference: collection.shipment_reference || "-",
     shipment_date: collection.shipment_date || "-",
     city: collection.city_name || "-",
     hub_code: collection.hub_code || "-",
@@ -5832,6 +6049,12 @@ function buildUkdocsPrintReadyTemplateContext(collection, requirements) {
     pd_code: collection.pd_code || "-",
     notes: collection.notes || "",
   };
+}
+
+function isPdfUkdocsDocument(document) {
+  const fileName = String(document?.original_name || document?.storage_name || "").trim().toLowerCase();
+  const mimeType = String(document?.mime_type || "").trim().toLowerCase();
+  return fileName.endsWith(".pdf") || mimeType === "application/pdf";
 }
 
 function applyUkdocsReadyTemplate(template, context) {
@@ -5888,6 +6111,133 @@ async function sendUkdocsPrintReadyEmail(collection, customers, settings) {
       recipients,
       subject,
       body: buildUkdocsPrintReadyEmail(collection, requirements),
+      attachments,
+      smtp: {
+        host: settings.smtp_host,
+        port: settings.smtp_port,
+        username: settings.smtp_username,
+        password: settings.smtp_password,
+        from: settings.smtp_from,
+        starttls: settings.smtp_starttls,
+      },
+    }),
+  );
+  return {
+    ok: true,
+    recipients,
+    error: "",
+    sent_at: new Date().toISOString(),
+  };
+}
+
+async function ukdocsCsiCollectionAttachments(collection) {
+  const attachments = [];
+  const documents = [];
+  const generatedFiles = Array.isArray(collection?.documents?.generated_files) ? collection.documents.generated_files : [];
+
+  documents.push(
+    ...generatedFiles
+      .filter((file) => file?.document_kind === "invoice" && isPdfUkdocsDocument(file))
+      .map((document) => ({ document, kind: "generated_invoice_pdf" })),
+  );
+
+  const generatedExport = generatedFiles.find((file) => file?.document_kind === "export");
+  if (generatedExport) {
+    documents.push({ document: generatedExport, kind: "generated_export" });
+  }
+
+  documents.push(
+    ...(collection?.documents?.temp_phyto_files || []).map((document) => ({ document, kind: "temp_phyto" })),
+  );
+
+  if (collection?.documents?.ipaffs_file) {
+    documents.push({ document: collection.documents.ipaffs_file, kind: "ipaffs_file" });
+  }
+
+  for (const item of documents) {
+    const document = item.document;
+    const resolvedPath = path.resolve(ukdocsPrintDocumentPath(document));
+    if (!resolvedPath.startsWith(path.resolve(ukdocsPrintFilesDir)) || !existsSync(resolvedPath)) {
+      continue;
+    }
+    const contentBase64 = await fs.readFile(resolvedPath, "base64");
+    attachments.push({
+      file_name: path.basename(document.original_name || resolvedPath),
+      mime_type: document.mime_type || guessMimeType(document.original_name || resolvedPath),
+      content_base64: contentBase64,
+    });
+  }
+
+  return attachments;
+}
+
+function buildUkdocsCsiTemplateContext(collection, customer = null) {
+  return buildUkdocsPrintReadyTemplateContext(collection, {
+    customer,
+  });
+}
+
+function buildUkdocsCsiSuccessEmail(collection, customer = null) {
+  const context = buildUkdocsCsiTemplateContext(collection, customer);
+  if (String(customer?.csi_email_body || "").trim()) {
+    return applyUkdocsReadyTemplate(customer.csi_email_body, context).trim();
+  }
+  return [
+    "CSI audit completed successfully.",
+    "",
+    `Customer: ${context.customer_name}`,
+    `Shipment reference: ${context.shipment_reference}`,
+    `Shipment date: ${context.shipment_date}`,
+    `City: ${context.city}`,
+    `Reference connect: ${context.reference_connect}`,
+    `Invoices: ${context.invoice_numbers}`,
+    `Truck: ${context.truck_number}`,
+    `Trailer: ${context.trailer_number}`,
+    "",
+    "Attached files:",
+    "- Temporary phyto PDF files",
+    "- Generated invoice PDF files",
+    "- Generated export file",
+    "- IPAFFS file",
+  ].join("\n");
+}
+
+async function sendUkdocsCsiSuccessEmail(collection, customers, settings) {
+  const customer = ukdocsPrintCollectionCustomer(collection, customers);
+  const recipients = normalizeEmailRecipients(customer?.csi_email_recipients);
+  if (!recipients.length) {
+    return { ok: false, recipients: [], error: "No CSI email recipients configured for this customer" };
+  }
+  if (!settings?.smtp_host || !settings?.smtp_username || !settings?.smtp_password || !settings?.smtp_from) {
+    return { ok: false, recipients, error: "SMTP is not fully configured" };
+  }
+  const attachments = await ukdocsCsiCollectionAttachments(collection);
+  if (!attachments.length) {
+    return { ok: false, recipients, error: "No CSI attachments found to send" };
+  }
+  const generatedInvoicePdfCount = (collection?.documents?.generated_files || []).filter((file) => file?.document_kind === "invoice" && isPdfUkdocsDocument(file)).length;
+  if (!generatedInvoicePdfCount) {
+    return { ok: false, recipients, error: "No generated invoice PDF files found for CSI email" };
+  }
+  if (!(collection?.documents?.generated_files || []).some((file) => file?.document_kind === "export")) {
+    return { ok: false, recipients, error: "No generated export file found for CSI email" };
+  }
+  if (!(collection?.documents?.temp_phyto_files || []).length) {
+    return { ok: false, recipients, error: "No temporary phyto PDF files found for CSI email" };
+  }
+  if (!collection?.documents?.ipaffs_file?.storage_name) {
+    return { ok: false, recipients, error: "No IPAFFS file found for CSI email" };
+  }
+  const context = buildUkdocsCsiTemplateContext(collection, customer);
+  const subject = String(customer?.csi_email_subject || "").trim()
+    ? applyUkdocsReadyTemplate(customer.csi_email_subject, context).trim()
+    : `CSI OK | ${context.customer_name} | ${context.shipment_date}`;
+  await runPythonBridge(
+    ["email-send"],
+    JSON.stringify({
+      recipients,
+      subject,
+      body: buildUkdocsCsiSuccessEmail(collection, customer),
       attachments,
       smtp: {
         host: settings.smtp_host,
@@ -6579,19 +6929,45 @@ async function handleApi(req, res, url) {
     if (job.job_type === "ukdocs_csi_audit" && job.collection_id) {
       const llmContent = String(job?.result_json?.ollama_response?.message?.content || job?.result_json?.response || "").trim();
       const parsed = extractJsonObjectFromText(llmContent) || {};
+      const overallStatus = normalizeUkdocsText(parsed.overall_status) || "warn";
       await updateUkdocsCsiReport(job.collection_id, {
         status: "done",
         started_at: job.claimed_at || "",
         completed_at: job.finished_at || new Date().toISOString(),
         error: "",
         summary: String(parsed.summary || "").trim() || "CSI audit completed.",
-        overall_status: normalizeUkdocsText(parsed.overall_status) || "warn",
+        overall_status: overallStatus,
         checks: Array.isArray(parsed.checks) ? parsed.checks : [],
         products: Array.isArray(parsed.products) ? parsed.products : [],
         manual_checks: Array.isArray(parsed.manual_checks) ? parsed.manual_checks : [],
         notes: Array.isArray(parsed.notes) ? parsed.notes : [],
         llm_content: llmContent,
       });
+      if (overallStatus === "pass") {
+        try {
+          const state = await readUkdocsState();
+          const settings = await readFustSettings();
+          const currentCollection = ukdocsPrintCollectionById(state.print_collections, job.collection_id);
+          if (currentCollection) {
+            const csiEmail = await sendUkdocsCsiSuccessEmail(currentCollection, state.customers, settings);
+            await updateUkdocsCsiEmailResult(job.collection_id, csiEmail);
+          }
+        } catch (csiEmailError) {
+          await updateUkdocsCsiEmailResult(job.collection_id, {
+            ok: false,
+            recipients: [],
+            sent_at: "",
+            error: csiEmailError instanceof Error ? csiEmailError.message : String(csiEmailError),
+          });
+        }
+      } else {
+        await updateUkdocsCsiEmailResult(job.collection_id, {
+          ok: false,
+          recipients: [],
+          sent_at: "",
+          error: "",
+        });
+      }
     }
     await upsertLlmAgentHeartbeat({
       agent_name: agentName,

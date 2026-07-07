@@ -2324,6 +2324,9 @@ const UKDOCS_CUSTOMER_FIELDS = [
   ["default_currency", "Default currency"],
   ["ready_email_subject", "Ready email subject template", "textarea"],
   ["ready_email_body", "Ready email body template", "textarea"],
+  ["csi_email_recipients", "CSI email recipients", "textarea"],
+  ["csi_email_subject", "CSI email subject template", "textarea"],
+  ["csi_email_body", "CSI email body template", "textarea"],
   ["default_invoice_language_text", "Default invoice language / text", "textarea"],
   ["default_document_references", "Default document references", "textarea"],
 ];
@@ -2404,6 +2407,9 @@ function emptyUkdocsCustomer() {
     default_currency: "",
     ready_email_subject: "",
     ready_email_body: "",
+    csi_email_recipients: "",
+    csi_email_subject: "",
+    csi_email_body: "",
     default_invoice_language_text: "",
     default_document_references: "",
     show_invoice_vat_number: true,
@@ -3222,7 +3228,10 @@ function UkdocsPage({ currentUser }) {
   }
 
   function startEditCustomer(customer) {
-    setCustomerDraft({ ...customer });
+    setCustomerDraft({
+      ...customer,
+      csi_email_recipients: Array.isArray(customer?.csi_email_recipients) ? customer.csi_email_recipients.join("\n") : (customer?.csi_email_recipients || ""),
+    });
     setActiveMenu("customers");
   }
 
@@ -3506,11 +3515,11 @@ function UkdocsPage({ currentUser }) {
             {UKDOCS_CUSTOMER_FIELDS.map(([key, label, kind]) => (
               <label key={key} className={kind === "textarea" ? "wide" : ""}>
                 <span>{label}</span>
-                {kind === "textarea" ? <textarea rows={3} value={customerDraft[key] || ""} onChange={(event) => setCustomerDraft({ ...customerDraft, [key]: event.target.value })} /> : <input value={customerDraft[key] || ""} onChange={(event) => setCustomerDraft({ ...customerDraft, [key]: event.target.value })} />}
+                {kind === "textarea" ? <textarea rows={3} value={Array.isArray(customerDraft[key]) ? customerDraft[key].join("\n") : (customerDraft[key] || "")} onChange={(event) => setCustomerDraft({ ...customerDraft, [key]: event.target.value })} /> : <input value={customerDraft[key] || ""} onChange={(event) => setCustomerDraft({ ...customerDraft, [key]: event.target.value })} />}
               </label>
             ))}
           </div>
-          <div className="notice">Ready email templates can use placeholders like `{"{customer_name}"}`, `{"{shipment_date}"}`, `{"{city}"}`, `{"{reference_connect}"}`, `{"{invoice_numbers}"}`, `{"{truck_number}"}`, `{"{trailer_number}"}`, `{"{border_crossing}"}`, `{"{pd_form}"}`, `{"{re_export}"}`, `{"{pd_type}"}`, `{"{pd_code}"}`, and `{"{notes}"}`.</div>
+          <div className="notice">Ready and CSI email templates can use placeholders like `{"{customer_name}"}`, `{"{shipment_reference}"}`, `{"{shipment_date}"}`, `{"{city}"}`, `{"{reference_connect}"}`, `{"{invoice_numbers}"}`, `{"{truck_number}"}`, `{"{trailer_number}"}`, `{"{border_crossing}"}`, `{"{pd_form}"}`, `{"{re_export}"}`, `{"{pd_type}"}`, `{"{pd_code}"}`, and `{"{notes}"}`.</div>
           <div className="section-header"><h3>Invoice line visibility</h3></div>
           <div className="form-grid">
             {UKDOCS_CUSTOMER_INVOICE_VISIBILITY_FIELDS.map(([key, label]) => (
@@ -4081,37 +4090,21 @@ function UkdocsPrintPage({ currentUser }) {
   }
 
   async function syncSheetSendings() {
-    if (hasCollectionsLoadedForSheetDate && !window.confirm("Shipments loaded already, this will overwrite them. Continue?")) {
-      return;
-    }
     setSheetBusy(true);
     setError("");
     setMessage("");
     try {
+      const updatingLoadedDay = hasCollectionsLoadedForSheetDate;
       const payload = await apiJson("/api/ukdocs-print/sheet-sync", {
         method: "POST",
-        body: JSON.stringify({ date: sheetSyncDate, overwrite_existing: hasCollectionsLoadedForSheetDate }),
+        body: JSON.stringify({ date: sheetSyncDate, update_only: updatingLoadedDay }),
       });
       setState((current) => ({ ...current, print_collections: payload.print_collections || current?.print_collections || [] }));
-      setMessage(`Loaded ${payload.imported_count || 0} sendings from ${payload.sheet_name || "spreadsheet"} for ${payload.date}.`);
-    } catch (sheetError) {
-      setError(sheetError.message);
-    } finally {
-      setSheetBusy(false);
-    }
-  }
-
-  async function updateSheetSendingsInfo() {
-    setSheetBusy(true);
-    setError("");
-    setMessage("");
-    try {
-      const payload = await apiJson("/api/ukdocs-print/sheet-sync", {
-        method: "POST",
-        body: JSON.stringify({ date: sheetSyncDate, update_only: true }),
-      });
-      setState((current) => ({ ...current, print_collections: payload.print_collections || current?.print_collections || [] }));
-      setMessage(`Updated info for ${payload.updated_count || 0} shipments on ${payload.date}. Saved files, notes, and linked data stayed untouched.`);
+      setMessage(
+        updatingLoadedDay
+          ? `Updated ${payload.updated_count || 0} zendingen for ${payload.date}. Existing saved files, notes, and links stayed connected, and duplicate zendingen were merged.`
+          : `Started ${payload.imported_count || 0} zendingen from ${payload.sheet_name || "spreadsheet"} for ${payload.date}.`,
+      );
     } catch (sheetError) {
       setError(sheetError.message);
     } finally {
@@ -4154,8 +4147,7 @@ function UkdocsPrintPage({ currentUser }) {
           <label><span>Spreadsheet settings</span><input value={gmailSettings.ukdocs_print_spreadsheet_id ? "Managed in Settings" : "Not set in Settings"} readOnly /></label>
         </div>
         <div className="row-actions spread-actions">
-          <button type="button" className="primary" onClick={syncSheetSendings} disabled={sheetBusy}>{sheetBusy ? "Loading..." : "Load sendings from spreadsheet"}</button>
-          <button type="button" onClick={updateSheetSendingsInfo} disabled={sheetBusy}>{sheetBusy ? "Updating..." : "Update info"}</button>
+          <button type="button" className="primary" onClick={syncSheetSendings} disabled={sheetBusy}>{sheetBusy ? (hasCollectionsLoadedForSheetDate ? "Updating..." : "Starting...") : (hasCollectionsLoadedForSheetDate ? "Update" : "Start")}</button>
         </div>
       </div>
 
@@ -4731,6 +4723,7 @@ function UkdocsCSIPage({ currentUser }) {
   const selectedGeneratedFiles = selectedCollection?.documents?.generated_files || [];
   const selectedPhytoFiles = selectedCollection?.documents?.phyto_files || [];
   const selectedCsiReport = selectedCollection?.csi_report || {};
+  const selectedCsiEmail = selectedCollection?.csi_email || {};
   const selectedTempPhytoFiles = selectedCollection?.documents?.temp_phyto_files || [];
   const selectedIpaffsFile = selectedCollection?.documents?.ipaffs_file || null;
 
@@ -4911,6 +4904,8 @@ function UkdocsCSIPage({ currentUser }) {
                   <div className={`ukdocs-status-badge ${ukdocsCsiStatusDefinition(selectedCsiReport).tone}`}>{ukdocsCsiStatusDefinition(selectedCsiReport).label}</div>
                 </div>
                 <small>{selectedCsiReport.summary || "No CSI result yet."}</small>
+                {!!selectedCsiEmail.sent_at && <div className="notice success">CSI email sent: {formatTimestamp(selectedCsiEmail.sent_at)} to {(selectedCsiEmail.recipients || []).join(", ") || "-"}</div>}
+                {!!selectedCsiEmail.error && <div className="notice danger">{selectedCsiEmail.error}</div>}
                 {!!selectedCsiReport.error && <div className="notice danger">{selectedCsiReport.error}</div>}
                 {!!selectedCsiReport.checks?.length && (
                   <div className="table-wrap">
