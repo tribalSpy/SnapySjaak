@@ -4804,7 +4804,7 @@ function UkdocsCSIPage({ currentUser }) {
               const isActive = selectedCollection?.id === collection.id;
               const csiStatus = ukdocsCsiStatusDefinition(collection.csi_report);
               return (
-                <div key={collection.id} className={`ukdocs-collection-card${isActive ? " active" : ""}`}>
+                <div key={collection.id} className={`ukdocs-upload-card ukdocs-collection-tile${isActive ? " active" : ""}`}>
                   <strong>{collection.customer_name || collection.city_name || "Zending"}</strong>
                   <small>{collection.shipment_date || "-"}</small>
                   <small>City: {collection.city_name || "-"}</small>
@@ -4923,6 +4923,15 @@ function UkdocsCSIPage({ currentUser }) {
                     </table>
                   </div>
                 )}
+                {selectedCsiReport.status === "done"
+                  && !selectedCsiReport.error
+                  && !selectedCsiReport.checks?.length
+                  && !selectedCsiReport.products?.length
+                  && !selectedCsiReport.manual_checks?.length && (
+                    <div className="notice danger">
+                      CSI finished, but no structured result rows were saved. Open the audit again after a new run, or check the raw LLM response/log if this keeps happening.
+                    </div>
+                  )}
                 {!!selectedCsiReport.products?.length && (
                   <div className="table-wrap">
                     <table className="data-table">
