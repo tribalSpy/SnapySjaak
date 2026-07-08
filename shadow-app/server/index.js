@@ -4976,61 +4976,409 @@ function summarizeUkdocsCsiExtractedDocuments(extractedDocuments) {
   });
 }
 
-function buildUkdocsCsiAuditPayload(collection, extractedDocuments, requestUser) {
-  const generatedFiles = collection?.documents?.generated_files || [];
-  const generatedInvoices = generatedFiles.filter((file) => file.document_kind === "invoice").map((file) => file.original_name || file.storage_name);
-  const generatedExport = generatedFiles.find((file) => file.document_kind === "export");
+function normalizeUkdocsCsiToken(value) {
+  return String(value || "")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, " ")
+    .trim();
+}
+
+function normalizeUkdocsCsiOrigin(value) {
+  return String(value || "").trim().toUpperCase();
+}
+
+function mapUkdocsCsiProductName(description, commodityCode = "") {
+  const text = normalizeUkdocsCsiToken(description);
+  const code = String(commodityCode || "").replace(/\D+/g, "");
+  if (text.includes("chrysanthem") || code.startsWith("060314") || code.startsWith("603140")) {
+    return "Flowers chrysanthemums";
+  }
+  if (text.includes("dianthus") || text.includes("carnation") || code.startsWith("060312") || code.startsWith("603120")) {
+    return "Flowers carnation";
+  }
+  if (text.includes("rosa") || text.includes("rose") || code.startsWith("060311") || code.startsWith("603110")) {
+    return "Flowers roses";
+  }
+  if (text.includes("lil") || text.includes("lilium") || code.startsWith("060315") || code.startsWith("603150")) {
+    return "Flowers lilies";
+  }
+  if (text.includes("orchid") || text.includes("dendrob") || code.startsWith("060313") || code.startsWith("603130")) {
+    return "Flowers orchids";
+  }
+  if (text.includes("green") || code.startsWith("0604209") || code.startsWith("604209")) {
+    return "Flowers green";
+  }
+  if (
+    text.includes("gypsoph") || text.includes("solidago") || text.includes("other fresh")
+    || code.startsWith("0603197") || code.startsWith("603197") || code.startsWith("0603199") || code.startsWith("603199")
+  ) {
+    return "Flowers (other fresh)";
+  }
+  return String(description || "").trim() || "Unknown product";
+}
+
+function addUkdocsCsiQuantity(map, key, quantity) {
+  if (!key) {
+    return;
+  }
+  const numeric = Number(quantity);
+  if (!Number.isFinite(numeric)) {
+    return;
+  }
+  map.set(key, (map.get(key) || 0) + numeric);
+}
+
+function getUkdocsCsiCurrenciesFromText(text) {
+  const matches = String(text || "").toUpperCase().match(/\b(?:GBP|EUR|USD)\b/g) || [];
+  return Array.from(new Set(matches));
+}
+
+function csiStatusRank(status) {
+  const normalized = String(status || "").trim().toLowerCase();
+  if (normalized === "fail") {
+    return 3;
+  }
+  if (normalized === "warn") {
+    return 2;
+  }
+  if (normalized === "pass") {
+    return 1;
+  }
+  return 0;
+}
+
+function mergeUkdocsCsiStatus(...statuses) {
+  let best = "";
+  let rank = 0;
+  for (const status of statuses) {
+    const nextRank = csiStatusRank(status);
+    if (nextRank > rank) {
+      rank = nextRank;
+      best = String(status || "").trim().toLowerCase();
+    }
+  }
+  return best || "pass";
+}
+
+function uniqueUkdocsCsiStrings(values) {
+  return Array.from(new Set((Array.isArray(values) ? values : []).map((value) => String(value || "").trim()).filter(Boolean)));
+}
+
+function finalizeUkdocsCsiOverallStatus(checks, products) {
+  let overall = "pass";
+  for (const item of [...(Array.isArray(checks) ? checks : []), ...(Array.isArray(products) ? products : [])]) {
+    overall = mergeUkdocsCsiStatus(overall, item?.status || "");
+  }
+  return overall || "warn";
+}
+
+function buildUkdocsCsiDeterministicReport(collection, extractedDocuments) {
+  const documents = Array.isArray(extractedDocuments) ? extractedDocuments : [];
+  const invoiceDocs = documents.filter((document) => document?.kind === "generated_invoice");
+  const exportDoc = documents.find((document) => document?.kind === "generated_export") || null;
+  const ipaffsDoc = documents.find((document) => document?.kind === "ipaffs_file") || null;
+  const tempPhytoDocs = documents.filter((document) => document?.kind === "temp_phyto");
+
+  const invoiceTotals = new Map();
+  const exportTotals = new Map();
+  const ipaffsTotals = new Map();
+  const tempPhytoTotals = new Map();
+  const products = [];
+  const checks = [];
+  const notes = [];
+  const manualChecks = [];
+
+  for (const document of invoiceDocs) {
+    const rows = Array.isArray(document?.parsed_data?.rows) ? document.parsed_data.rows : [];
+    for (const row of rows) {
+      addUkdocsCsiQuantity(
+        invoiceTotals,
+        mapUkdocsCsiProductName(row?.product, row?.commodity_code),
+        row?.quantity,
+      );
+    }
+  }
+
+  const exportRows = Array.isArray(exportDoc?.parsed_data?.rows) ? exportDoc.parsed_data.rows : [];
+  for (const row of exportRows) {
+    addUkdocsCsiQuantity(
+      exportTotals,
+      mapUkdocsCsiProductName(row?.product, row?.commodity_code),
+      row?.quantity,
+    );
+  }
+
+  const ipaffsRows = Array.isArray(ipaffsDoc?.parsed_data?.rows) ? ipaffsDoc.parsed_data.rows : [];
+  for (const row of ipaffsRows) {
+    addUkdocsCsiQuantity(
+      ipaffsTotals,
+      mapUkdocsCsiProductName(row?.product || row?.genus, row?.commodity_code),
+      row?.quantity,
+    );
+  }
+
+  const tempPhytoContexts = tempPhytoDocs.map((document) => {
+    const parsed = document?.parsed_data && typeof document.parsed_data === "object" ? document.parsed_data : {};
+    const lineProducts = [];
+    for (const line of Array.isArray(parsed?.product_lines) ? parsed.product_lines : []) {
+      const mappedProduct = mapUkdocsCsiProductName(line?.product || "", "");
+      addUkdocsCsiQuantity(tempPhytoTotals, mappedProduct, line?.quantity);
+      lineProducts.push({
+        product: mappedProduct,
+        raw_product: String(line?.product || "").trim(),
+        quantity: Number.isFinite(Number(line?.quantity)) ? Number(line.quantity) : null,
+      });
+    }
+    const problems = Array.isArray(parsed?.problems) ? parsed.problems : [];
+    if (parsed?.document_state === "not_activated") {
+      checks.push({
+        code: "TEMP_PHYTO_STATE",
+        status: "fail",
+        message: `${document.name || "Temporary phyto PDF"} appears not activated.`,
+      });
+    }
+    if (!parsed?.pcnu_number) {
+      manualChecks.push(`Check PCNU manually in ${document.name || "temporary phyto PDF"} because no PCNU number was parsed.`);
+    }
+    if (problems.length) {
+      manualChecks.push(`Review ${document.name || "temporary phyto PDF"}: ${problems.join(", ")}.`);
+    }
+    return {
+      name: String(document?.name || "").trim(),
+      parsed_pcnu_number: String(parsed?.pcnu_number || "").trim(),
+      parsed_document_state: String(parsed?.document_state || "").trim() || "unknown",
+      parsed_total_quantity: Number.isFinite(Number(parsed?.total_quantity)) ? Number(parsed.total_quantity) : null,
+      expected_products: lineProducts.map((item) => ({
+        product: item.product,
+        expected_quantity: exportTotals.get(item.product) ?? invoiceTotals.get(item.product) ?? null,
+        parsed_quantity: item.quantity,
+      })),
+      parsed_problems: problems,
+    };
+  });
+
+  const allProducts = new Set([
+    ...invoiceTotals.keys(),
+    ...exportTotals.keys(),
+    ...ipaffsTotals.keys(),
+    ...tempPhytoTotals.keys(),
+  ]);
+
+  let invoiceExportMismatchCount = 0;
+  let ipaffsMismatchCount = 0;
+  let tempPhytoMismatchCount = 0;
+
+  for (const product of Array.from(allProducts).sort()) {
+    const invoiceQty = invoiceTotals.has(product) ? invoiceTotals.get(product) : null;
+    const exportQty = exportTotals.has(product) ? exportTotals.get(product) : null;
+    const ipaffsQty = ipaffsTotals.has(product) ? ipaffsTotals.get(product) : null;
+    const phytoQty = tempPhytoTotals.has(product) ? tempPhytoTotals.get(product) : null;
+    const messages = [];
+    let status = "pass";
+
+    if (invoiceQty !== null || exportQty !== null) {
+      if (invoiceQty === null || exportQty === null) {
+        status = mergeUkdocsCsiStatus(status, "warn");
+        invoiceExportMismatchCount += 1;
+        messages.push("Missing in invoice or export file.");
+      } else if (invoiceQty !== exportQty) {
+        status = mergeUkdocsCsiStatus(status, "warn");
+        invoiceExportMismatchCount += 1;
+        messages.push(`Invoice/export differ by ${Math.abs(invoiceQty - exportQty)}.`);
+      } else {
+        messages.push("Invoice/export match.");
+      }
+    }
+
+    if (ipaffsDoc) {
+      if (ipaffsQty === null) {
+        status = mergeUkdocsCsiStatus(status, "warn");
+        ipaffsMismatchCount += 1;
+        messages.push("Missing in IPAFFS.");
+      } else {
+        const expectedQty = exportQty ?? invoiceQty;
+        if (expectedQty === null) {
+          status = mergeUkdocsCsiStatus(status, "warn");
+          ipaffsMismatchCount += 1;
+          messages.push("IPAFFS has quantity but invoice/export is missing.");
+        } else if (expectedQty !== ipaffsQty) {
+          status = mergeUkdocsCsiStatus(status, "warn");
+          ipaffsMismatchCount += 1;
+          messages.push(`IPAFFS differs by ${Math.abs(expectedQty - ipaffsQty)}.`);
+        } else {
+          messages.push("IPAFFS matches.");
+        }
+      }
+    }
+
+    if (phytoQty !== null) {
+      const expectedQty = exportQty ?? invoiceQty;
+      if (expectedQty === null) {
+        status = mergeUkdocsCsiStatus(status, "warn");
+        tempPhytoMismatchCount += 1;
+        messages.push(`Temp phyto quantity ${phytoQty} has no matching invoice/export line.`);
+      } else if (expectedQty !== phytoQty) {
+        status = mergeUkdocsCsiStatus(status, "warn");
+        tempPhytoMismatchCount += 1;
+        messages.push(`Temp phyto quantity ${phytoQty} differs from expected ${expectedQty}.`);
+      } else {
+        messages.push(`Temp phyto quantity ${phytoQty} matches.`);
+      }
+    }
+
+    products.push({
+      product,
+      invoice_quantity: invoiceQty === null ? "" : String(invoiceQty),
+      export_quantity: exportQty === null ? "" : String(exportQty),
+      ipaffs_quantity: ipaffsQty === null ? "" : String(ipaffsQty),
+      status,
+      message: messages.join(" "),
+    });
+  }
+
+  checks.push({
+    code: "INV_EXP_RECONCILIATION",
+    status: invoiceExportMismatchCount ? "warn" : "pass",
+    message: invoiceExportMismatchCount
+      ? `${invoiceExportMismatchCount} invoice/export product totals need review.`
+      : "Combined invoice quantities match generated export quantities.",
+  });
+
+  checks.push({
+    code: "IPAFFS_VERIFICATION",
+    status: !ipaffsDoc
+      ? "warn"
+      : ipaffsMismatchCount
+        ? "warn"
+        : "pass",
+    message: !ipaffsDoc
+      ? "IPAFFS file is missing."
+      : ipaffsMismatchCount
+        ? `${ipaffsMismatchCount} IPAFFS product totals need review.`
+        : "IPAFFS totals match invoice/export totals.",
+  });
+
+  checks.push({
+    code: "TEMP_PHYTO_FILES",
+    status: tempPhytoDocs.length ? "pass" : "warn",
+    message: tempPhytoDocs.length
+      ? `${tempPhytoDocs.length} temporary phyto PDF file(s) attached.`
+      : "No temporary phyto PDF files attached.",
+  });
+
+  if (tempPhytoDocs.length) {
+    const hasActiveProblems = tempPhytoContexts.some((item) => item.parsed_document_state === "not_activated");
+    const missingPcnuCount = tempPhytoContexts.filter((item) => !item.parsed_pcnu_number).length;
+    checks.push({
+      code: "TEMP_PHYTO_PARSE",
+      status: hasActiveProblems
+        ? "fail"
+        : missingPcnuCount
+          ? "warn"
+          : tempPhytoMismatchCount
+            ? "warn"
+            : "pass",
+      message: hasActiveProblems
+        ? "At least one temporary phyto PDF is not activated."
+        : missingPcnuCount
+          ? `${missingPcnuCount} temporary phyto PDF(s) are missing a parsed PCNU number.`
+          : tempPhytoMismatchCount
+            ? `${tempPhytoMismatchCount} temp phyto quantity comparison(s) need review.`
+            : "Temporary phyto quantities and PCNU parsing look consistent.",
+    });
+  }
+
+  const exportCurrencies = getUkdocsCsiCurrenciesFromText(exportDoc?.text || "");
+  const invoiceCurrencies = Array.from(new Set(invoiceDocs.flatMap((document) => getUkdocsCsiCurrenciesFromText(document?.text || ""))));
+  const combinedCurrencies = Array.from(new Set([...exportCurrencies, ...invoiceCurrencies]));
+  checks.push({
+    code: "CURRENCY_CHECK",
+    status: combinedCurrencies.length > 1 ? "warn" : "pass",
+    message: combinedCurrencies.length > 1
+      ? `Multiple currencies found in extracted text: ${combinedCurrencies.join(", ")}.`
+      : combinedCurrencies.length === 1
+        ? `Currency appears consistent as ${combinedCurrencies[0]}.`
+        : "No explicit currency code found in extracted text; keep a quick visual check.",
+  });
+  if (!combinedCurrencies.length) {
+    manualChecks.push("Confirm the invoice/export currency manually because no explicit currency code was extracted.");
+  }
+
+  const overallStatus = finalizeUkdocsCsiOverallStatus(checks, products);
+  const summaryParts = [
+    invoiceExportMismatchCount
+      ? `${invoiceExportMismatchCount} invoice/export mismatch(es)`
+      : "invoice/export quantities match",
+    ipaffsDoc
+      ? (ipaffsMismatchCount ? `${ipaffsMismatchCount} IPAFFS mismatch(es)` : "IPAFFS matches")
+      : "IPAFFS missing",
+    tempPhytoDocs.length
+      ? (tempPhytoMismatchCount ? `${tempPhytoMismatchCount} temp phyto mismatch(es)` : "temp phyto quantities checked")
+      : "no temp phyto PDFs",
+  ];
+
+  return {
+    report: {
+      overall_status: overallStatus,
+      summary: summaryParts.join(", ") + ".",
+      checks,
+      products,
+      manual_checks: uniqueUkdocsCsiStrings(manualChecks),
+      notes: uniqueUkdocsCsiStrings(notes),
+    },
+    visual_context: {
+      temp_phyto_documents: tempPhytoContexts,
+    },
+  };
+}
+
+function buildUkdocsCsiAuditPayload(collection, deterministicBundle, requestUser) {
   const tempPhytoFiles = (collection?.documents?.temp_phyto_files || []).map((file) => file.original_name || file.storage_name);
-  const ipaffsFile = collection?.documents?.ipaffs_file?.original_name || "";
-  const csiDocuments = summarizeUkdocsCsiExtractedDocuments(extractedDocuments);
   const prompt = {
-    task: "UKDocs CSI document control",
+    task: "UKDocs CSI temporary phyto visual verification",
     instructions: [
-      "Review the provided zending documents and return strict JSON only.",
-      "Do not invent values. If a file cannot be read or a value is missing, mark it as warn and explain it.",
-      "Use only these CSI sources: generated invoice files, generated export file, temporary phyto PDF files, and the IPAFFS file.",
-      "Do not use standard phyto collection files or second export files for this CSI audit.",
-      "Prefer parsed_data from extracted_documents over raw text whenever parsed_data exists.",
-      "Compare invoice/export/IPAFFS values from parsed_data first, and only fall back to raw text when no parsed_data is available.",
-      "Compare invoice/export/IPAFFS values where text is available.",
-      "For temporary phyto PDF files, use parsed_data fields such as document_state, pcnu_number, destination_country, origin_country, total_quantity, product_lines, and problems whenever available.",
-      "If a temporary phyto PDF parsed_data shows document_state as not_activated, mark that as fail, not only warn.",
-      "If attached temp phyto PDF page images are available, use them to visually confirm PCNU and obvious blocked/not-activated states.",
-      "Do not spend audit effort on destination or origin checks from the temp phyto PDF image unless they are already present in parsed_data.",
-      "When a temp phyto PDF is active and a PCNU is available, check the phyto product quantities against the generated invoice/export/IPAFFS data for the phyto-covered products only.",
-      "Use temp phyto product_lines and total_quantity to confirm the amount on the phyto. Report a fail or warn when the phyto amount does not match the expected phyto-covered amount.",
-      "Check whether currencies appear consistent across generated export and invoice files.",
-      "List manual checks still needed for temporary phyto PDF files or any file that could not be read safely.",
+      "Return strict JSON only.",
+      "Use only the temporary phyto PDF page images for this task.",
+      "Do not analyze generated invoices, generated export files, IPAFFS totals, consignee address, destination text, or origin text here.",
+      "Ignore long legal, annex, and compliance text unless it clearly shows the document is blocked or not activated.",
+      "Check only these visual items: visible PCNU number, blocked or not activated state, and visible product or total quantity when it is readable.",
+      "Compare visible phyto quantities only against the expected values already provided in expected_temp_phyto_checks.",
+      "Do not recalculate invoice, export, or IPAFFS totals. Those checks were already done in code.",
+      "If a value is not clearly visible, do not guess. Mark warn and add a manual check.",
+      "If the document looks active and the PCNU number is readable, say so directly.",
+      "If a temporary phyto page shows one or more product lines with quantities, compare those visible quantities to the expected grouped quantities.",
+      "Never output explanation text before or after the JSON.",
     ],
     output_schema: {
       overall_status: "pass|warn|fail",
       summary: "short human summary",
       checks: [{ code: "string", status: "pass|warn|fail", message: "string" }],
-      products: [{ product: "string", invoice_quantity: "string", export_quantity: "string", ipaffs_quantity: "string", status: "pass|warn|fail", message: "string" }],
       manual_checks: ["string"],
       notes: ["string"],
     },
     zending: {
-      id: collection?.id || "",
       shipment_reference: collection?.shipment_reference || "",
       shipment_date: collection?.shipment_date || "",
       customer_name: collection?.customer_name || "",
-      city_name: collection?.city_name || "",
-      invoice_numbers: collection?.invoice_numbers || "",
-      reference_connect: collection?.reference_connect || "",
-      truck_number: collection?.truck_number || "",
-      trailer_number: collection?.trailer_number || "",
       pd_type: collection?.pd_type || "",
-      pd_form: collection?.pd_form || "",
-      re_export: collection?.re_export || "",
     },
-    attached_files: {
-      generated_invoices: generatedInvoices,
-      generated_export: generatedExport?.original_name || "",
-      temp_phyto_files: tempPhytoFiles,
-      ipaffs_file: ipaffsFile,
+    temp_phyto_files: tempPhytoFiles,
+    expected_temp_phyto_checks: deterministicBundle?.visual_context?.temp_phyto_documents || [],
+    return_example: {
+      overall_status: "warn",
+      summary: "PCNU numbers visible. One temporary phyto needs manual quantity review.",
+      checks: [
+        { code: "PHYTO_PCNU_VISIBLE", status: "pass", message: "PCNU 123456789 is visible in temp phyto A." },
+        { code: "PHYTO_STATE", status: "pass", message: "No blocked or not activated text is visible." },
+        { code: "PHYTO_VISIBLE_QTY", status: "warn", message: "Visible quantity for Flowers carnations is unclear in temp phyto B; review manually." },
+      ],
+      manual_checks: [
+        "Review temp phyto B visible quantity manually.",
+      ],
+      notes: [
+        "Only temporary phyto PDF pages were checked visually.",
+      ],
     },
-    extracted_documents: csiDocuments,
     requested_by: requestUser?.username || "",
   };
 
@@ -5039,7 +5387,7 @@ function buildUkdocsCsiAuditPayload(collection, extractedDocuments, requestUser)
     messages: [
       {
         role: "system",
-        content: "You are a careful UK export document controller. Return JSON only and never add markdown.",
+        content: "You visually verify temporary phytosanitary PDF pages. Return JSON only and never add markdown.",
       },
       {
         role: "user",
@@ -5047,9 +5395,10 @@ function buildUkdocsCsiAuditPayload(collection, extractedDocuments, requestUser)
       },
     ],
     format: "json",
+    think: false,
     options: {
       temperature: 0,
-      num_predict: 4096,
+      num_predict: 700,
     },
   };
 }
@@ -5105,6 +5454,7 @@ async function queueUkdocsCsiAudit(collection, requestUser) {
     ...(collection?.documents?.temp_phyto_files || []).map((document) => ({ kind: "temp_phyto", document })),
     collection?.documents?.ipaffs_file ? [{ kind: "ipaffs_file", document: collection.documents.ipaffs_file }] : [],
   ]);
+  const deterministicBundle = buildUkdocsCsiDeterministicReport(collection, extractedDocuments);
 
   const tempPhytoVisionDocuments = await Promise.all(
     (collection?.documents?.temp_phyto_files || []).map(async (document) => {
@@ -5131,7 +5481,9 @@ async function queueUkdocsCsiAudit(collection, requestUser) {
     priority: 50,
     max_attempts: 1,
     payload_json: {
-      ...buildUkdocsCsiAuditPayload(collection, extractedDocuments, requestUser),
+      ...buildUkdocsCsiAuditPayload(collection, deterministicBundle, requestUser),
+      deterministic_report: deterministicBundle.report,
+      deterministic_visual_context: deterministicBundle.visual_context,
       vision_documents: tempPhytoVisionDocuments.filter(Boolean),
     },
   });
@@ -5143,13 +5495,16 @@ async function queueUkdocsCsiAudit(collection, requestUser) {
     started_at: "",
     completed_at: "",
     error: "",
-    summary: "CSI audit queued.",
-    overall_status: "",
-    checks: [],
-    products: [],
-    manual_checks: [],
-    notes: [],
+    summary: deterministicBundle.report.summary || "CSI audit queued.",
+    overall_status: deterministicBundle.report.overall_status || "",
+    checks: deterministicBundle.report.checks || [],
+    products: deterministicBundle.report.products || [],
+    manual_checks: deterministicBundle.report.manual_checks || [],
+    notes: deterministicBundle.report.notes || [],
     llm_content: "",
+    llm_parse_source: "",
+    llm_parse_error: "",
+    llm_raw_result_json: "",
   });
   await updateUkdocsCsiEmailResult(collection.id, {
     ok: false,
@@ -7274,6 +7629,14 @@ async function handleApi(req, res, url) {
       await saveUkdocsGeneratedInvoicePdfResult(job);
     }
     if (job.job_type === "ukdocs_csi_audit" && job.collection_id) {
+      const deterministicSource = normalizeUkdocsCsiParsedResult(job?.payload_json?.deterministic_report) || {
+        overall_status: "warn",
+        summary: "",
+        checks: [],
+        products: [],
+        manual_checks: [],
+        notes: [],
+      };
       const contentText = String(job?.result_json?.ollama_response?.message?.content || job?.result_json?.response || "").trim();
       const thinkingText = String(job?.result_json?.ollama_response?.message?.thinking || "").trim();
       const doneReason = String(job?.result_json?.ollama_response?.done_reason || "").trim();
@@ -7299,7 +7662,7 @@ async function handleApi(req, res, url) {
       if (!parsed) {
         parsed = {
           overall_status: "warn",
-          summary: llmContent || "CSI audit completed.",
+          summary: "",
           checks: [],
           products: [],
           manual_checks: [],
@@ -7314,31 +7677,49 @@ async function handleApi(req, res, url) {
           : thinkingText
             ? `Model returned no final JSON content. It only returned thinking text${doneReason ? ` and stopped with done_reason: ${doneReason}` : ""}. prompt_eval_count=${job?.result_json?.ollama_response?.prompt_eval_count ?? "?"}, eval_count=${job?.result_json?.ollama_response?.eval_count ?? "?"}, thinking_chars=${thinkingText.length}.`
             : `No structured CSI rows parsed. Source used: ${parseSource || "none"}.`;
-      const overallStatus = normalizeUkdocsText(parsed.overall_status) || "warn";
-      const finalSummary = hasStructuredRows
-        ? (String(parsed.summary || "").trim() || "CSI audit completed.")
-        : (parseError || String(parsed.summary || "").trim() || "CSI audit completed.");
-      const finalChecks = hasStructuredRows
+      const llmChecks = hasStructuredRows
         ? (Array.isArray(parsed.checks) ? parsed.checks : [])
-        : [
+        : parseError
+          ? [
             {
               code: "LLM_OUTPUT",
-              status: "fail",
+              status: "warn",
               message: parseError || "CSI model returned no structured rows.",
             },
-            ...(Array.isArray(parsed.checks) ? parsed.checks : []),
-          ];
+          ]
+          : [];
+      const finalChecks = [
+        ...(Array.isArray(deterministicSource.checks) ? deterministicSource.checks : []),
+        ...llmChecks,
+      ];
+      const finalProducts = Array.isArray(deterministicSource.products) ? deterministicSource.products : [];
+      const finalManualChecks = uniqueUkdocsCsiStrings([
+        ...(Array.isArray(deterministicSource.manual_checks) ? deterministicSource.manual_checks : []),
+        ...(Array.isArray(parsed.manual_checks) ? parsed.manual_checks : []),
+      ]);
+      const finalNotes = uniqueUkdocsCsiStrings([
+        ...(Array.isArray(deterministicSource.notes) ? deterministicSource.notes : []),
+        ...(Array.isArray(parsed.notes) ? parsed.notes : []),
+      ]);
+      const overallStatus = finalizeUkdocsCsiOverallStatus(finalChecks, finalProducts);
+      const deterministicSummary = String(deterministicSource.summary || "").trim();
+      const visualSummary = String(parsed.summary || "").trim();
+      const finalSummary = uniqueUkdocsCsiStrings([
+        deterministicSummary,
+        hasStructuredRows && visualSummary ? `Visual phyto check: ${visualSummary}` : "",
+        !hasStructuredRows && parseError ? `Visual phyto check incomplete: ${parseError}` : "",
+      ]).join(" ");
       await updateUkdocsCsiReport(job.collection_id, {
         status: "done",
         started_at: job.claimed_at || "",
         completed_at: job.finished_at || new Date().toISOString(),
         error: "",
-        summary: finalSummary,
+        summary: finalSummary || deterministicSummary || "CSI audit completed.",
         overall_status: overallStatus,
         checks: finalChecks,
-        products: Array.isArray(parsed.products) ? parsed.products : [],
-        manual_checks: Array.isArray(parsed.manual_checks) ? parsed.manual_checks : [],
-        notes: Array.isArray(parsed.notes) ? parsed.notes : [],
+        products: finalProducts,
+        manual_checks: finalManualChecks,
+        notes: finalNotes,
         llm_content: llmContent,
         llm_parse_source: parseSource,
         llm_parse_error: parseError,

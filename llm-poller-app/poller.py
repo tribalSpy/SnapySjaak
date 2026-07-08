@@ -96,6 +96,8 @@ def ollama_chat(config: dict, payload: dict):
     }
     if payload.get("format"):
         request_body["format"] = payload["format"]
+    if isinstance(payload.get("think"), bool):
+        request_body["think"] = payload["think"]
     if isinstance(payload.get("options"), dict):
         request_body["options"] = payload["options"]
     if payload.get("keep_alive"):
