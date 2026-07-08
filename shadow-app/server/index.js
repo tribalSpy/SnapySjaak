@@ -67,6 +67,7 @@ const staticRoot = existsSync(path.join(appRoot, "dist"))
   : path.join(appRoot, "public");
 const autoSyncOnVisit = process.env.AUTO_SYNC_ON_VISIT !== "0";
 const autoSyncThrottleMs = Number(process.env.AUTO_SYNC_THROTTLE_MINUTES || 5) * 60 * 1000;
+const syncStatusStaleMinutes = Math.max(1, Number(process.env.SHADOW_SYNC_STALE_MINUTES || 30));
 const llmPollerApiKey = String(process.env.SHADOW_LLM_POLLER_API_KEY || "").trim();
 const autoSyncStartedAt = new Map();
 const recentPreloadDays = Math.max(0, Number(process.env.SHADOW_PRELOAD_RECENT_DAYS || 3));
@@ -4040,8 +4041,37 @@ function localDateIso() {
   return `${year}-${month}-${day}`;
 }
 
+function normalizeSyncStatus(status) {
+  const payload = status && typeof status === "object" ? { ...status } : {};
+  if (payload.state !== "running") {
+    return payload;
+  }
+
+  const rawTimestamp = String(payload.updated_at || payload.started_at || "").trim();
+  const parsedTimestamp = rawTimestamp ? Date.parse(rawTimestamp) : Number.NaN;
+  if (!Number.isFinite(parsedTimestamp)) {
+    return payload;
+  }
+
+  const ageMs = Date.now() - parsedTimestamp;
+  if (ageMs < syncStatusStaleMinutes * 60 * 1000) {
+    return payload;
+  }
+
+  return {
+    ...payload,
+    state: "failed",
+    stale: true,
+    error: String(payload.error || `Sync status became stale after ${syncStatusStaleMinutes} minutes`),
+    updated_at: new Date().toISOString(),
+  };
+}
+
 async function isSyncRunning() {
-  const status = await readJsonFile(syncStatusPath, {});
+  const status = normalizeSyncStatus(await readJsonFile(syncStatusPath, {}));
+  if (status?.stale) {
+    await writeJsonFile(syncStatusPath, status);
+  }
   return status?.state === "running";
 }
 
@@ -5805,6 +5835,10 @@ function addDaysToIsoDate(dateString, days) {
 }
 
 function fustActionControlDate(action) {
+  const createdDate = String(action?.created_at || "").slice(0, 10);
+  if (createdDate) {
+    return createdDate;
+  }
   const actionDate = String(action?.action_date || "").slice(0, 10);
   const importedDate = String(action?.import_source?.imported_at || "").slice(0, 10);
   if (importedDate && (!actionDate || importedDate > actionDate)) {
@@ -9690,7 +9724,11 @@ async function handleApi(req, res, url) {
   }
 
   if (url.pathname === "/api/status") {
-    sendJson(res, 200, await readJsonFile(syncStatusPath, {}));
+    const status = normalizeSyncStatus(await readJsonFile(syncStatusPath, {}));
+    if (status?.stale) {
+      await writeJsonFile(syncStatusPath, status);
+    }
+    sendJson(res, 200, status);
     return;
   }
 
