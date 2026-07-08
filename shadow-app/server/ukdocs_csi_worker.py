@@ -332,24 +332,48 @@ def parse_temp_phyto_pdf_text(text):
     if total_match:
         parsed["total_quantity"] = parse_int_like(total_match.group(1))
 
-    for raw_line in lines:
-        line = clean_text(raw_line)
+    index = 0
+    product_chunks = []
+    while index < len(lines):
+        line = clean_text(lines[index])
         if not re.match(r"^\d{3,4}\b", line):
+            index += 1
             continue
-        quantity_match = re.search(r"([\d.,]+)\s+Pieces\b", line, flags=re.IGNORECASE)
-        packages_match = re.search(r"\b(\d+)\s+Box\b", line, flags=re.IGNORECASE)
-        if not quantity_match:
-            continue
-        quantity = parse_int_like(quantity_match.group(1))
+        chunk = [line]
+        lookahead = index + 1
+        while lookahead < len(lines) and len(chunk) < 5:
+            candidate = clean_text(lines[lookahead])
+            if not candidate:
+                lookahead += 1
+                continue
+            if re.match(r"^\d{3,4}\b", candidate):
+                break
+            if "text end" in normalize_key(candidate):
+                break
+            chunk.append(candidate)
+            lookahead += 1
+        product_chunks.append(" ".join(chunk))
+        index = lookahead
+
+    for chunk_text in product_chunks:
+        quantity_match = re.search(r"([\d.,]+)\s+Pieces\b", chunk_text, flags=re.IGNORECASE)
+        packages_match = re.search(r"\b(\d+)\s+Box\b", chunk_text, flags=re.IGNORECASE)
+        quantity = parse_int_like(quantity_match.group(1)) if quantity_match else None
         packages = parse_int_like(packages_match.group(1)) if packages_match else None
-        product_text = re.sub(r"^\d{3,4}\s*", "", line)
+        product_text = re.sub(r"^\d{3,4}\s*", "", chunk_text)
         product_text = re.sub(r"\s+\d+\s+Box\b.*$", "", product_text, flags=re.IGNORECASE)
         product_text = re.sub(r"\s+[\d.,]+\s+Pieces\b.*$", "", product_text, flags=re.IGNORECASE)
+        cleaned_product = clean_text(product_text)
+        if not cleaned_product:
+            continue
         parsed["product_lines"].append({
-            "product": clean_text(product_text),
+            "product": cleaned_product,
             "packages": packages,
             "quantity": quantity,
         })
+
+    if len(parsed["product_lines"]) == 1 and parsed["product_lines"][0].get("quantity") is None and parsed["total_quantity"] is not None:
+        parsed["product_lines"][0]["quantity"] = parsed["total_quantity"]
 
     if not parsed["product_lines"] and parsed["document_state"] == "ok":
         parsed["problems"].append("No product lines extracted from temporary phyto PDF")

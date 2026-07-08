@@ -4849,13 +4849,16 @@ function normalizeUkdocsCsiParsedResult(source) {
   }
   const checks = Array.isArray(source.checks) ? source.checks : [];
   const products = Array.isArray(source.products) ? source.products : [];
+  const visibleDocuments = Array.isArray(source.visible_documents)
+    ? source.visible_documents
+    : (Array.isArray(source.visibleDocuments) ? source.visibleDocuments : []);
   const manualChecks = Array.isArray(source.manual_checks)
     ? source.manual_checks
     : (Array.isArray(source.manualChecks) ? source.manualChecks : []);
   const notes = Array.isArray(source.notes) ? source.notes : [];
   const summary = String(source.summary || "").trim();
   const overallStatus = normalizeUkdocsText(source.overall_status || source.overallStatus);
-  if (!summary && !checks.length && !products.length && !manualChecks.length && !notes.length && !overallStatus) {
+  if (!summary && !checks.length && !products.length && !visibleDocuments.length && !manualChecks.length && !notes.length && !overallStatus) {
     return null;
   }
   return {
@@ -4863,6 +4866,7 @@ function normalizeUkdocsCsiParsedResult(source) {
     summary: summary || "CSI audit completed.",
     checks,
     products,
+    visible_documents: visibleDocuments,
     manual_checks: manualChecks,
     notes,
   };
@@ -5424,6 +5428,14 @@ function buildUkdocsCsiAuditPayload(collection, deterministicBundle, requestUser
       overall_status: "pass|warn|fail",
       summary: "short human summary",
       checks: [{ code: "string", status: "pass|warn|fail", message: "string" }],
+      visible_documents: [{
+        document_label: "temp phyto A|temp phyto B",
+        product: "normalized or visible product name",
+        quantity: 0,
+        pcnu_number: "visible PCNU if readable",
+        state: "ok|not_activated|unclear",
+        note: "short note",
+      }],
       manual_checks: ["string"],
       notes: ["string"],
     },
@@ -5442,6 +5454,10 @@ function buildUkdocsCsiAuditPayload(collection, deterministicBundle, requestUser
         { code: "PHYTO_PCNU_VISIBLE", status: "pass", message: "PCNU 123456789 is visible in temp phyto A." },
         { code: "PHYTO_STATE", status: "pass", message: "No blocked or not activated text is visible." },
         { code: "PHYTO_VISIBLE_QTY", status: "warn", message: "Visible quantity for Flowers carnations is unclear in temp phyto B; review manually." },
+      ],
+      visible_documents: [
+        { document_label: "temp phyto A", product: "Flowers carnations", quantity: 350, pcnu_number: "123456789", state: "ok", note: "Visible quantity read from the page." },
+        { document_label: "temp phyto B", product: "Flowers chrysanthemums", quantity: 7170, pcnu_number: "987654321", state: "ok", note: "Visible total read from the page." },
       ],
       manual_checks: [
         "Review temp phyto B visible quantity manually.",
@@ -7785,7 +7801,48 @@ async function handleApi(req, res, url) {
         ...deterministicChecks,
         ...llmChecks,
       ];
-      const finalProducts = Array.isArray(deterministicSource.products) ? deterministicSource.products : [];
+      const visualTempPhytoTotals = new Map();
+      for (const item of Array.isArray(parsed.visible_documents) ? parsed.visible_documents : []) {
+        const mappedProduct = mapUkdocsCsiProductName(item?.product || "", "");
+        const quantity = Number(item?.quantity);
+        if (!mappedProduct || !Number.isFinite(quantity)) {
+          continue;
+        }
+        addUkdocsCsiQuantity(visualTempPhytoTotals, mappedProduct, quantity);
+      }
+      const deterministicProducts = Array.isArray(deterministicSource.products) ? deterministicSource.products : [];
+      const finalProducts = deterministicProducts.map((item) => {
+        const productName = String(item?.product || "").trim();
+        const visualQty = productName && visualTempPhytoTotals.has(productName)
+          ? visualTempPhytoTotals.get(productName)
+          : null;
+        const currentQty = String(item?.temp_phyto_quantity || "").trim();
+        if (!currentQty && visualQty !== null) {
+          const existingMessage = String(item?.message || "").trim();
+          return {
+            ...item,
+            temp_phyto_quantity: String(visualQty),
+            message: existingMessage
+              ? `${existingMessage} Visual temp phyto quantity ${visualQty}.`
+              : `Visual temp phyto quantity ${visualQty}.`,
+          };
+        }
+        return item;
+      });
+      for (const [productName, visualQty] of visualTempPhytoTotals.entries()) {
+        if (finalProducts.some((item) => String(item?.product || "").trim() === productName)) {
+          continue;
+        }
+        finalProducts.push({
+          product: productName,
+          invoice_quantity: "",
+          export_quantity: "",
+          ipaffs_quantity: "",
+          temp_phyto_quantity: String(visualQty),
+          status: "warn",
+          message: `Only visual temp phyto quantity ${visualQty} was available.`,
+        });
+      }
       const finalManualChecks = uniqueUkdocsCsiStrings([
         ...(Array.isArray(deterministicSource.manual_checks) ? deterministicSource.manual_checks : []),
         ...(Array.isArray(parsed.manual_checks) ? parsed.manual_checks : []),
