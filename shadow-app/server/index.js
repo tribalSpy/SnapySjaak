@@ -9142,7 +9142,7 @@ async function handleApi(req, res, url) {
     return;
   }
 
-  if (url.pathname.startsWith("/api/ukdocs-print/collections/") && req.method === "DELETE") {
+  if (url.pathname.startsWith("/api/ukdocs-print/collections/") && !url.pathname.includes("/documents/") && req.method === "DELETE") {
     if (!requireAnyPermission(res, requestUser, [PERMISSIONS.UKDOCS_VIEW, PERMISSIONS.UKDOCS_INSPECTION_VIEW, PERMISSIONS.UKDOCS_CSI_VIEW])) {
       return;
     }
