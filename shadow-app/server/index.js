@@ -1399,6 +1399,13 @@ function normalizeUkdocsPrintDocument(document) {
     saved_by: normalizeUkdocsText(document.saved_by),
     document_kind: normalizeUkdocsText(document.document_kind),
     category: normalizeUkdocsText(document.category),
+    content_type: normalizeUkdocsText(document.content_type),
+    line_count: Number(document.line_count || 0),
+    delimiter: normalizeUkdocsText(document.delimiter),
+    parse_error: String(document.parse_error || "").trim(),
+    parsed_data: document.parsed_data && typeof document.parsed_data === "object"
+      ? JSON.parse(JSON.stringify(document.parsed_data))
+      : null,
   } : null;
 }
 
@@ -4928,6 +4935,64 @@ async function extractUkdocsCsiFileSnapshots(files) {
   ];
 }
 
+async function enrichUkdocsCsiStoredDocument(document, kind) {
+  const normalizedDocument = normalizeUkdocsPrintDocument(document);
+  if (!normalizedDocument?.storage_name || !kind) {
+    return normalizedDocument;
+  }
+  const extracted = await extractUkdocsCsiFileSnapshots([{ kind, document: normalizedDocument }]);
+  const snapshot = (Array.isArray(extracted) ? extracted : []).find((item) => String(item?.kind || "").trim() === String(kind).trim()) || null;
+  if (!snapshot) {
+    return normalizedDocument;
+  }
+  return normalizeUkdocsPrintDocument({
+    ...normalizedDocument,
+    content_type: snapshot.content_type || normalizedDocument.content_type || "",
+    line_count: Number.isFinite(Number(snapshot.line_count)) ? Number(snapshot.line_count) : 0,
+    delimiter: String(snapshot.delimiter || snapshot?.parsed_data?.delimiter || "").trim(),
+    parse_error: String(snapshot.error || "").trim(),
+    parsed_data: snapshot.parsed_data && typeof snapshot.parsed_data === "object" ? snapshot.parsed_data : null,
+  });
+}
+
+async function hydrateUkdocsCsiCollectionInputs(collection) {
+  const normalizedCollection = normalizeUkdocsPrintCollection(collection);
+  if (!normalizedCollection) {
+    return { collection: normalizedCollection, changed: false };
+  }
+  let changed = false;
+  const nextDocuments = { ...(normalizedCollection.documents || {}) };
+
+  if (nextDocuments.ipaffs_file?.storage_name && !nextDocuments.ipaffs_file?.parsed_data) {
+    nextDocuments.ipaffs_file = await enrichUkdocsCsiStoredDocument(nextDocuments.ipaffs_file, "ipaffs_file");
+    changed = true;
+  }
+
+  const tempPhytoFiles = [];
+  for (const document of nextDocuments.temp_phyto_files || []) {
+    if (document?.storage_name && !document?.parsed_data) {
+      tempPhytoFiles.push(await enrichUkdocsCsiStoredDocument(document, "temp_phyto"));
+      changed = true;
+    } else {
+      tempPhytoFiles.push(document);
+    }
+  }
+  nextDocuments.temp_phyto_files = tempPhytoFiles;
+
+  if (!changed) {
+    return { collection: normalizedCollection, changed: false };
+  }
+
+  return {
+    collection: normalizeUkdocsPrintCollection({
+      ...normalizedCollection,
+      updated_at: new Date().toISOString(),
+      documents: nextDocuments,
+    }),
+    changed: true,
+  };
+}
+
 function shortenUkdocsCsiText(value, maxLength = 1200) {
   const text = String(value || "").trim();
   if (!text) {
@@ -5116,8 +5181,50 @@ function buildUkdocsCsiDeterministicReport(collection, extractedDocuments) {
   const documents = Array.isArray(extractedDocuments) ? extractedDocuments : [];
   const invoiceDocs = documents.filter((document) => document?.kind === "generated_invoice");
   const exportDoc = documents.find((document) => document?.kind === "generated_export") || null;
-  const ipaffsDoc = documents.find((document) => document?.kind === "ipaffs_file") || null;
-  const tempPhytoDocs = documents.filter((document) => document?.kind === "temp_phyto");
+  const storedIpaffsDoc = collection?.documents?.ipaffs_file?.parsed_data
+    ? {
+      kind: "ipaffs_file",
+      name: String(collection.documents.ipaffs_file.original_name || collection.documents.ipaffs_file.storage_name || "").trim(),
+      content_type: String(collection.documents.ipaffs_file.content_type || collection.documents.ipaffs_file.mime_type || "").trim(),
+      line_count: Number(collection.documents.ipaffs_file.line_count || 0),
+      delimiter: String(collection.documents.ipaffs_file.delimiter || collection.documents.ipaffs_file?.parsed_data?.delimiter || "").trim(),
+      parsed_data: collection.documents.ipaffs_file.parsed_data,
+      error: String(collection.documents.ipaffs_file.parse_error || "").trim(),
+    }
+    : null;
+  const ipaffsDoc = documents.find((document) => document?.kind === "ipaffs_file") || storedIpaffsDoc || null;
+  const tempPhytoDocs = (() => {
+    const extractedTempDocs = documents.filter((document) => document?.kind === "temp_phyto");
+    if (extractedTempDocs.length) {
+      return extractedTempDocs.map((document, index) => {
+        const fallback = (collection?.documents?.temp_phyto_files || [])[index];
+        if (!fallback?.parsed_data) {
+          return document;
+        }
+        const extractedHasLines = Array.isArray(document?.parsed_data?.product_lines) && document.parsed_data.product_lines.length > 0;
+        const extractedHasPcnu = String(document?.parsed_data?.pcnu_number || "").trim();
+        if (extractedHasLines && extractedHasPcnu) {
+          return document;
+        }
+        return {
+          ...document,
+          line_count: Number(document?.line_count || fallback.line_count || 0),
+          parsed_data: fallback.parsed_data,
+          error: String(document?.error || fallback.parse_error || "").trim(),
+        };
+      });
+    }
+    return (collection?.documents?.temp_phyto_files || [])
+      .filter((document) => document?.parsed_data)
+      .map((document) => ({
+        kind: "temp_phyto",
+        name: String(document.original_name || document.storage_name || "").trim(),
+        content_type: String(document.content_type || document.mime_type || "").trim(),
+        line_count: Number(document.line_count || 0),
+        parsed_data: document.parsed_data,
+        error: String(document.parse_error || "").trim(),
+      }));
+  })();
   const hasIpaffsAttached = Boolean(collection?.documents?.ipaffs_file?.storage_name);
 
   const invoiceTotals = new Map();
@@ -9323,7 +9430,10 @@ async function handleApi(req, res, url) {
       sendJson(res, 200, { collection: existingCollection, print_collections: normalizeUkdocsState(state).print_collections, skipped: true, reason: `${kind} already exists` });
       return;
     }
-    const savedDocument = await saveUkdocsPrintUpload(existingCollection.id, kind, body?.file || {}, requestUser);
+    const savedDocumentRaw = await saveUkdocsPrintUpload(existingCollection.id, kind, body?.file || {}, requestUser);
+    const savedDocument = ["temp_phyto", "ipaffs_file"].includes(kind)
+      ? await enrichUkdocsCsiStoredDocument(savedDocumentRaw, kind)
+      : savedDocumentRaw;
     const updatedCollection = normalizeUkdocsPrintCollection({
       ...existingCollection,
       updated_at: new Date().toISOString(),
@@ -9472,7 +9582,13 @@ async function handleApi(req, res, url) {
       sendJson(res, 400, { error: "Upload the IPAFFS file before running CSI" });
       return;
     }
-    const job = await queueUkdocsCsiAudit(existingCollection, requestUser);
+    const hydrated = await hydrateUkdocsCsiCollectionInputs(existingCollection);
+    let collectionForRun = hydrated.collection || existingCollection;
+    if (hydrated.changed && collectionForRun) {
+      state.print_collections = upsertUkdocsPrintCollection(state.print_collections, collectionForRun);
+      await writeUkdocsState(state);
+    }
+    const job = await queueUkdocsCsiAudit(collectionForRun, requestUser);
     const nextState = await readUkdocsState();
     sendJson(res, 200, {
       ok: true,
