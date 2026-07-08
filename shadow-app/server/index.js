@@ -4869,29 +4869,59 @@ function normalizeUkdocsCsiParsedResult(source) {
 }
 
 async function extractUkdocsCsiFileSnapshots(files) {
-  const safeFiles = files
-    .filter((file) => file?.document?.storage_name)
-    .map((file) => {
-      const resolvedPath = path.resolve(ukdocsPrintDocumentPath(file.document));
-      if (!resolvedPath.startsWith(path.resolve(ukdocsPrintFilesDir)) || !existsSync(resolvedPath)) {
-        return null;
-      }
-      return {
-        kind: String(file.kind || "").trim(),
-        name: String(file.document.original_name || file.document.storage_name || "").trim(),
-        mime_type: String(file.document.mime_type || "").trim(),
-        path: resolvedPath,
-      };
-    })
-    .filter(Boolean);
+  const safeFiles = [];
+  const skippedFiles = [];
+
+  for (const file of Array.isArray(files) ? files : []) {
+    if (!file?.document?.storage_name) {
+      continue;
+    }
+    const resolvedPath = path.resolve(ukdocsPrintDocumentPath(file.document));
+    const kind = String(file.kind || "").trim();
+    const name = String(file.document.original_name || file.document.storage_name || "").trim();
+    const mimeType = String(file.document.mime_type || "").trim();
+    if (!resolvedPath.startsWith(path.resolve(ukdocsPrintFilesDir))) {
+      skippedFiles.push({
+        kind,
+        name,
+        mime_type: mimeType,
+        content_type: "missing",
+        text: "",
+        line_count: 0,
+        error: "Resolved CSI document path is outside the UKDocs storage folder.",
+      });
+      continue;
+    }
+    if (!existsSync(resolvedPath)) {
+      skippedFiles.push({
+        kind,
+        name,
+        mime_type: mimeType,
+        content_type: "missing",
+        text: "",
+        line_count: 0,
+        error: "CSI document file is missing on disk.",
+      });
+      continue;
+    }
+    safeFiles.push({
+      kind,
+      name,
+      mime_type: mimeType,
+      path: resolvedPath,
+    });
+  }
 
   if (!safeFiles.length) {
-    return [];
+    return skippedFiles;
   }
 
   const output = await runUkdocsCsiWorker(["extract"], JSON.stringify({ files: safeFiles }));
   const payload = JSON.parse(output.toString("utf8"));
-  return Array.isArray(payload?.documents) ? payload.documents : [];
+  return [
+    ...(Array.isArray(payload?.documents) ? payload.documents : []),
+    ...skippedFiles,
+  ];
 }
 
 function shortenUkdocsCsiText(value, maxLength = 1200) {
@@ -4917,6 +4947,7 @@ function summarizeUkdocsCsiExtractedDocuments(extractedDocuments) {
       line_count: Number.isFinite(Number(document?.line_count)) ? Number(document.line_count) : 0,
       parsed_data: parsedData,
       problems: Array.isArray(document?.problems) ? document.problems : [],
+      error: String(document?.error || "").trim(),
     };
 
     const kind = summary.kind;
@@ -5093,6 +5124,18 @@ function buildUkdocsCsiDeterministicReport(collection, extractedDocuments) {
   const checks = [];
   const notes = [];
   const manualChecks = [];
+  const extractedKinds = documents.map((document) => String(document?.kind || "").trim()).filter(Boolean);
+  const extractedIpaffsDebug = ipaffsDoc
+    ? {
+      name: String(ipaffsDoc?.name || "").trim(),
+      content_type: String(ipaffsDoc?.content_type || "").trim(),
+      line_count: Number.isFinite(Number(ipaffsDoc?.line_count)) ? Number(ipaffsDoc.line_count) : 0,
+      has_parsed_data: Boolean(ipaffsDoc?.parsed_data && typeof ipaffsDoc.parsed_data === "object"),
+      row_count: Array.isArray(ipaffsDoc?.parsed_data?.rows) ? ipaffsDoc.parsed_data.rows.length : 0,
+      delimiter: String(ipaffsDoc?.parsed_data?.delimiter || ipaffsDoc?.delimiter || "").trim(),
+      error: String(ipaffsDoc?.error || "").trim(),
+    }
+    : null;
 
   for (const document of invoiceDocs) {
     const rows = Array.isArray(document?.parsed_data?.rows) ? document.parsed_data.rows : [];
@@ -5256,6 +5299,8 @@ function buildUkdocsCsiDeterministicReport(collection, extractedDocuments) {
       ? "warn"
       : !ipaffsDoc
         ? "warn"
+        : extractedIpaffsDebug?.error
+          ? "warn"
         : !ipaffsRows.length
           ? "warn"
           : ipaffsMismatchCount
@@ -5264,9 +5309,11 @@ function buildUkdocsCsiDeterministicReport(collection, extractedDocuments) {
     message: !hasIpaffsAttached
       ? "IPAFFS file is missing."
       : !ipaffsDoc
-        ? `IPAFFS file is attached on the zending (${collection?.documents?.ipaffs_file?.original_name || "unknown file"}), but CSI extraction did not load it.`
+        ? `IPAFFS file is attached on the zending (${collection?.documents?.ipaffs_file?.original_name || "unknown file"}), but CSI extraction returned these document kinds only: ${extractedKinds.join(", ") || "none"}.`
+        : extractedIpaffsDebug?.error
+          ? `IPAFFS file is attached on the zending (${ipaffsDoc?.name || collection?.documents?.ipaffs_file?.original_name || "unknown file"}), but CSI could not extract it. ${extractedIpaffsDebug.error}`
         : !ipaffsRows.length
-          ? `IPAFFS file was loaded (${ipaffsDoc?.name || "unknown file"}), but no product rows were parsed.${ipaffsDoc?.parsed_data?.delimiter ? ` Delimiter: ${ipaffsDoc.parsed_data.delimiter}.` : ""}`
+          ? `IPAFFS file was loaded (${ipaffsDoc?.name || "unknown file"}), but no product rows were parsed.${extractedIpaffsDebug?.delimiter ? ` Delimiter: ${extractedIpaffsDebug.delimiter}.` : ""}${extractedIpaffsDebug?.error ? ` Error: ${extractedIpaffsDebug.error}.` : ""}`
           : ipaffsMismatchCount
             ? `${ipaffsMismatchCount} IPAFFS product totals need review.`
             : "IPAFFS totals match invoice/export totals.",
@@ -5295,7 +5342,7 @@ function buildUkdocsCsiDeterministicReport(collection, extractedDocuments) {
       message: hasActiveProblems
         ? "At least one temporary phyto PDF is not activated."
         : missingPcnuCount
-          ? `${missingPcnuCount} temporary phyto PDF(s) are missing a parsed PCNU number.`
+          ? `${missingPcnuCount} temporary phyto PDF(s) are missing a parsed PCNU number from PDF text extraction.`
           : tempPhytoMismatchCount
             ? `${tempPhytoMismatchCount} temp phyto quantity comparison(s) need review.`
             : "Temporary phyto quantities and PCNU parsing look consistent.",
@@ -5342,7 +5389,12 @@ function buildUkdocsCsiDeterministicReport(collection, extractedDocuments) {
       checks,
       products,
       manual_checks: uniqueUkdocsCsiStrings(manualChecks),
-      notes: uniqueUkdocsCsiStrings(notes),
+      notes: uniqueUkdocsCsiStrings([
+        ...notes,
+        extractedIpaffsDebug
+          ? `IPAFFS extractor debug: name=${extractedIpaffsDebug.name || "-"}, content_type=${extractedIpaffsDebug.content_type || "-"}, lines=${extractedIpaffsDebug.line_count}, rows=${extractedIpaffsDebug.row_count}, delimiter=${extractedIpaffsDebug.delimiter || "-"}${extractedIpaffsDebug.error ? `, error=${extractedIpaffsDebug.error}` : ""}.`
+          : (hasIpaffsAttached ? `IPAFFS extractor debug: attached file ${collection?.documents?.ipaffs_file?.original_name || "unknown file"} was not returned by CSI extraction.` : ""),
+      ]),
     },
     visual_context: {
       temp_phyto_documents: tempPhytoContexts,
@@ -7709,8 +7761,27 @@ async function handleApi(req, res, url) {
             },
           ]
           : [];
+      const tempPhytoExpectedCount = Array.isArray(job?.payload_json?.deterministic_visual_context?.temp_phyto_documents)
+        ? job.payload_json.deterministic_visual_context.temp_phyto_documents.length
+        : 0;
+      const visiblePcnuPassCount = llmChecks.filter((item) => item?.code === "PHYTO_PCNU_VISIBLE" && item?.status === "pass").length;
+      const visualPcnuCoveredAllTempPhytos = tempPhytoExpectedCount > 0 && visiblePcnuPassCount >= tempPhytoExpectedCount;
+      const deterministicChecks = (Array.isArray(deterministicSource.checks) ? deterministicSource.checks : []).map((item) => {
+        if (
+          item?.code === "TEMP_PHYTO_PARSE"
+          && visualPcnuCoveredAllTempPhytos
+          && String(item?.message || "").includes("missing a parsed PCNU number from PDF text extraction")
+        ) {
+          return {
+            ...item,
+            status: "pass",
+            message: "PDF text extraction missed one or more PCNU numbers, but visual CSI confirmed all visible PCNU numbers.",
+          };
+        }
+        return item;
+      });
       const finalChecks = [
-        ...(Array.isArray(deterministicSource.checks) ? deterministicSource.checks : []),
+        ...deterministicChecks,
         ...llmChecks,
       ];
       const finalProducts = Array.isArray(deterministicSource.products) ? deterministicSource.products : [];
@@ -7721,6 +7792,9 @@ async function handleApi(req, res, url) {
       const finalNotes = uniqueUkdocsCsiStrings([
         ...(Array.isArray(deterministicSource.notes) ? deterministicSource.notes : []),
         ...(Array.isArray(parsed.notes) ? parsed.notes : []),
+        visualPcnuCoveredAllTempPhytos
+          ? "Visual CSI confirmed the visible PCNU number on every temporary phyto PDF, even where PDF text extraction missed it."
+          : "",
       ]);
       const overallStatus = finalizeUkdocsCsiOverallStatus(finalChecks, finalProducts);
       const deterministicSummary = String(deterministicSource.summary || "").trim();
