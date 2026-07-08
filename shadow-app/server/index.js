@@ -4377,6 +4377,103 @@ async function saveUkdocsGeneratedFiles(collection, files, requestUser) {
   return savedFiles;
 }
 
+async function queueUkdocsInvoicePdfJobs(collection, requestUser) {
+  if (!isDatabaseEnabled() || !llmPollerEnabled()) {
+    return [];
+  }
+  const jobs = [];
+  for (const document of Array.isArray(collection?.documents?.generated_files) ? collection.documents.generated_files : []) {
+    const mimeType = String(document?.mime_type || "").trim().toLowerCase();
+    if (document?.document_kind !== "invoice" || mimeType !== "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet") {
+      continue;
+    }
+    const resolvedPath = path.resolve(ukdocsPrintDocumentPath(document));
+    if (!resolvedPath.startsWith(path.resolve(ukdocsPrintFilesDir)) || !existsSync(resolvedPath)) {
+      continue;
+    }
+    const workbookBase64 = await fs.readFile(resolvedPath, "base64");
+    const pdfName = `${String(document.original_name || "invoice.xlsx").replace(/\.[^.]+$/i, "")}.pdf`;
+    const job = await createLlmJob({
+      job_type: "excel_to_pdf",
+      created_by: requestUser?.username || "ukdocs-generate",
+      collection_id: collection.id,
+      shipment_id: collection.shipment_id,
+      document_kind: "invoice_pdf",
+      priority: 40,
+      max_attempts: 1,
+      payload_json: {
+        workbook_content_base64: workbookBase64,
+        workbook_name: String(document.original_name || "invoice.xlsx").trim(),
+        pdf_name: pdfName,
+        source_storage_name: String(document.storage_name || "").trim(),
+        category: normalizeUkdocsText(document.category),
+      },
+    });
+    jobs.push(job);
+  }
+  return jobs;
+}
+
+async function saveUkdocsGeneratedInvoicePdfResult(job) {
+  const state = await readUkdocsState();
+  const existingCollection = ukdocsPrintCollectionById(state.print_collections, job.collection_id);
+  if (!existingCollection) {
+    return null;
+  }
+
+  const exportResult = job?.result_json?.excel_pdf_result || {};
+  const sourceStorageName = String(exportResult.source_storage_name || "").trim();
+  const category = normalizeUkdocsText(exportResult.category);
+  const contentBase64 = String(exportResult.content_base64 || "").trim();
+  if (!sourceStorageName || !contentBase64) {
+    return null;
+  }
+
+  const currentGeneratedFiles = Array.isArray(existingCollection.documents?.generated_files)
+    ? [...existingCollection.documents.generated_files]
+    : [];
+  const sourceStillExists = currentGeneratedFiles.some((file) => String(file?.storage_name || "").trim() === sourceStorageName);
+  if (!sourceStillExists) {
+    return normalizeUkdocsPrintCollection(existingCollection);
+  }
+
+  const filesToRemove = currentGeneratedFiles.filter((file) => (
+    file?.document_kind === "invoice"
+    && isPdfUkdocsDocument(file)
+    && normalizeUkdocsText(file?.category) === category
+  ));
+  for (const document of filesToRemove) {
+    await deleteSingleUkdocsPrintDocumentFile(document);
+  }
+  const keptFiles = currentGeneratedFiles.filter((file) => !filesToRemove.includes(file));
+  const savedFile = await saveUkdocsPrintBuffer(
+    existingCollection.id,
+    "generated",
+    String(exportResult.file_name || `${category || "invoice"}.pdf`).trim(),
+    String(exportResult.mime_type || "application/pdf").trim(),
+    Buffer.from(contentBase64, "base64"),
+    "excel-pdf-poller",
+  );
+  const updatedCollection = normalizeUkdocsPrintCollection({
+    ...existingCollection,
+    updated_at: new Date().toISOString(),
+    documents: {
+      ...(existingCollection.documents || {}),
+      generated_files: [
+        ...keptFiles,
+        {
+          ...savedFile,
+          document_kind: "invoice",
+          category,
+        },
+      ],
+    },
+  });
+  state.print_collections = upsertUkdocsPrintCollection(state.print_collections, updatedCollection);
+  await writeUkdocsState(state);
+  return updatedCollection;
+}
+
 function normalizeUkdocsPrintToken(value) {
   return String(value || "").toUpperCase().replace(/[^A-Z0-9]/g, "");
 }
@@ -7090,6 +7187,9 @@ async function handleApi(req, res, url) {
       sendJson(res, 404, { error: "LLM job not found for this agent" });
       return;
     }
+    if (job.job_type === "excel_to_pdf" && job.collection_id) {
+      await saveUkdocsGeneratedInvoicePdfResult(job);
+    }
     if (job.job_type === "ukdocs_csi_audit" && job.collection_id) {
       const contentText = String(job?.result_json?.ollama_response?.message?.content || job?.result_json?.response || "").trim();
       const thinkingText = String(job?.result_json?.ollama_response?.message?.thinking || "").trim();
@@ -8411,10 +8511,12 @@ async function handleApi(req, res, url) {
     });
     state.audit_reports = [auditReport, ...state.audit_reports];
     await writeUkdocsState(state);
+    const pdfJobs = await queueUkdocsInvoicePdfJobs(printCollection, requestUser);
 
     sendJson(res, 200, {
       analysis,
       files: (generatedPayload.files || []).filter((file) => file.kind !== "audit"),
+      pdf_jobs: pdfJobs,
       shipment,
       shipments: normalizeUkdocsState(state).shipments,
       audit_reports: normalizeUkdocsState(state).audit_reports,

@@ -10,12 +10,19 @@ For UKDocs CSI temp-phyto PDF vision checks, install `PyMuPDF` on the poller PC 
 pip install pymupdf
 ```
 
+For Excel invoice to PDF export on the poller PC, install `pywin32` too:
+
+```powershell
+pip install pywin32
+```
+
 ## What this first version does
 
 - Sends heartbeat updates to Shadow
 - Polls for queued jobs
 - Runs `ollama_chat` jobs against local Ollama
 - Can render temp-phyto PDF pages into images for Ollama vision models when `PyMuPDF` is installed
+- Can convert generated UKDocs invoice `.xlsx` files into exact PDF output through installed Microsoft Excel on Windows
 - Sends success or failure back to Shadow
 
 ## Files

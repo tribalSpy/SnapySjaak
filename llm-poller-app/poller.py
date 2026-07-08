@@ -1,7 +1,9 @@
+import base64
 import json
 import os
 import socket
 import sys
+import tempfile
 import time
 import urllib.error
 import urllib.request
@@ -11,6 +13,13 @@ try:
     import fitz  # PyMuPDF
 except ImportError:
     fitz = None
+
+try:
+    import pythoncom
+    import win32com.client
+except ImportError:
+    pythoncom = None
+    win32com = None
 
 
 APP_DIR = Path(__file__).resolve().parent
@@ -112,6 +121,75 @@ def ollama_chat(config: dict, payload: dict):
         raise RuntimeError(f"Ollama network error: {error}") from error
 
 
+def excel_to_pdf(payload: dict):
+    if sys.platform != "win32":
+        raise RuntimeError("Excel PDF export requires Windows")
+    if win32com is None:
+        raise RuntimeError("pywin32 is required for Excel PDF export")
+
+    workbook_base64 = str(payload.get("workbook_content_base64") or "").strip()
+    workbook_name = str(payload.get("workbook_name") or "invoice.xlsx").strip() or "invoice.xlsx"
+    pdf_name = str(payload.get("pdf_name") or "").strip() or f'{Path(workbook_name).stem}.pdf'
+    if not workbook_base64:
+        raise RuntimeError("No workbook_content_base64 provided for Excel PDF export")
+
+    temp_dir = Path(tempfile.mkdtemp(prefix="shadow-excel-pdf-"))
+    workbook_path = temp_dir / Path(workbook_name).name
+    pdf_path = temp_dir / Path(pdf_name).name
+    workbook_path.write_bytes(base64.b64decode(workbook_base64))
+
+    if pythoncom is not None:
+        pythoncom.CoInitialize()
+    excel = None
+    workbook = None
+    try:
+        excel = win32com.client.DispatchEx("Excel.Application")
+        excel.Visible = False
+        excel.DisplayAlerts = False
+        workbook = excel.Workbooks.Open(str(workbook_path.resolve()))
+        workbook.ExportAsFixedFormat(0, str(pdf_path.resolve()))
+        workbook.Close(False)
+        workbook = None
+        excel.Quit()
+        excel = None
+        pdf_bytes = pdf_path.read_bytes()
+        return {
+            "file_name": pdf_path.name,
+            "mime_type": "application/pdf",
+            "content_base64": base64.b64encode(pdf_bytes).decode("ascii"),
+            "source_storage_name": str(payload.get("source_storage_name") or "").strip(),
+            "source_original_name": workbook_name,
+            "category": str(payload.get("category") or "").strip(),
+            "document_kind": "invoice",
+        }
+    finally:
+        if workbook is not None:
+            try:
+                workbook.Close(False)
+            except Exception:
+                pass
+        if excel is not None:
+            try:
+                excel.Quit()
+            except Exception:
+                pass
+        if pythoncom is not None:
+            try:
+                pythoncom.CoUninitialize()
+            except Exception:
+                pass
+        for candidate in [pdf_path, workbook_path]:
+            try:
+                if candidate.exists():
+                    candidate.unlink()
+            except Exception:
+                pass
+        try:
+            temp_dir.rmdir()
+        except Exception:
+            pass
+
+
 def render_pdf_to_png_base64_list(content_base64: str, max_pages: int = 2):
     if fitz is None:
         raise RuntimeError("PyMuPDF is required for PDF vision extraction")
@@ -202,6 +280,12 @@ def run_job(config: dict, job: dict):
             "job_type": job_type,
             "model": payload.get("model") or config["model_name"],
             "ollama_response": ollama_response,
+        }
+    if job_type == "excel_to_pdf":
+        export_result = excel_to_pdf(payload)
+        return {
+            "job_type": job_type,
+            "excel_pdf_result": export_result,
         }
     raise RuntimeError(f"Unsupported job type: {job_type}")
 

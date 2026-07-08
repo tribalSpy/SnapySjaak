@@ -1730,7 +1730,6 @@ def generate_files(analysis):
         if not category["row_count"]:
             continue
         files.append({"name": f'invoice {category["invoice_number"] or category["code"]} {CATEGORY_DEFINITIONS[category["code"]]["slug"]} {customer_name}.xlsx', "content_base64": base64.b64encode(build_invoice_workbook(analysis, category["code"])).decode("ascii"), "mime_type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", "kind": "invoice", "category": category["code"]})
-        files.append({"name": f'invoice {category["invoice_number"] or category["code"]} {CATEGORY_DEFINITIONS[category["code"]]["slug"]} {customer_name}.pdf', "content_base64": base64.b64encode(build_invoice_pdf(analysis, category["code"])).decode("ascii"), "mime_type": "application/pdf", "kind": "invoice", "category": category["code"]})
     files.append({"name": f'audit {export_reference}.xlsx', "content_base64": base64.b64encode(build_audit_workbook(analysis)).decode("ascii"), "mime_type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", "kind": "audit"})
     return files
 
