@@ -4894,12 +4894,95 @@ async function extractUkdocsCsiFileSnapshots(files) {
   return Array.isArray(payload?.documents) ? payload.documents : [];
 }
 
+function shortenUkdocsCsiText(value, maxLength = 1200) {
+  const text = String(value || "").trim();
+  if (!text) {
+    return "";
+  }
+  if (text.length <= maxLength) {
+    return text;
+  }
+  return `${text.slice(0, maxLength)}\n... truncated ${text.length - maxLength} more characters`;
+}
+
+function summarizeUkdocsCsiExtractedDocuments(extractedDocuments) {
+  return (Array.isArray(extractedDocuments) ? extractedDocuments : []).map((document) => {
+    const parsedData = document?.parsed_data && typeof document.parsed_data === "object"
+      ? document.parsed_data
+      : null;
+    const summary = {
+      kind: String(document?.kind || "").trim(),
+      name: String(document?.name || "").trim(),
+      content_type: String(document?.content_type || "").trim(),
+      line_count: Number.isFinite(Number(document?.line_count)) ? Number(document.line_count) : 0,
+      parsed_data: parsedData,
+      problems: Array.isArray(document?.problems) ? document.problems : [],
+    };
+
+    const kind = summary.kind;
+    if (!parsedData) {
+      summary.text_excerpt = shortenUkdocsCsiText(document?.text || "", 1800);
+      return summary;
+    }
+
+    if (kind === "generated_invoice") {
+      const invoiceRows = Array.isArray(parsedData?.rows) ? parsedData.rows.slice(0, 80) : [];
+      const productOriginTotals = Array.isArray(parsedData?.product_origin_totals) ? parsedData.product_origin_totals.slice(0, 80) : [];
+      summary.parsed_data = {
+        meta: parsedData?.meta && typeof parsedData.meta === "object" ? parsedData.meta : {},
+        rows: invoiceRows,
+        product_origin_totals: productOriginTotals,
+      };
+      return summary;
+    }
+
+    if (kind === "generated_export") {
+      const exportRows = Array.isArray(parsedData?.rows) ? parsedData.rows.slice(0, 120) : [];
+      const productOriginTotals = Array.isArray(parsedData?.product_origin_totals) ? parsedData.product_origin_totals.slice(0, 120) : [];
+      summary.parsed_data = {
+        rows: exportRows,
+        product_origin_totals: productOriginTotals,
+      };
+      return summary;
+    }
+
+    if (kind === "ipaffs_file") {
+      const ipaffsRows = Array.isArray(parsedData?.rows) ? parsedData.rows.slice(0, 120) : [];
+      const productTotals = Array.isArray(parsedData?.product_totals) ? parsedData.product_totals.slice(0, 120) : [];
+      summary.parsed_data = {
+        rows: ipaffsRows,
+        product_totals: productTotals,
+      };
+      return summary;
+    }
+
+    if (kind === "temp_phyto") {
+      const productLines = Array.isArray(parsedData?.product_lines) ? parsedData.product_lines.slice(0, 60) : [];
+      summary.parsed_data = {
+        document_state: parsedData?.document_state || "",
+        pcnu_number: parsedData?.pcnu_number || "",
+        destination_country: parsedData?.destination_country || "",
+        origin_country: parsedData?.origin_country || "",
+        consignee: parsedData?.consignee || "",
+        total_quantity: parsedData?.total_quantity ?? null,
+        product_lines: productLines,
+        problems: Array.isArray(parsedData?.problems) ? parsedData.problems : [],
+      };
+      return summary;
+    }
+
+    summary.text_excerpt = shortenUkdocsCsiText(document?.text || "", 1000);
+    return summary;
+  });
+}
+
 function buildUkdocsCsiAuditPayload(collection, extractedDocuments, requestUser) {
   const generatedFiles = collection?.documents?.generated_files || [];
   const generatedInvoices = generatedFiles.filter((file) => file.document_kind === "invoice").map((file) => file.original_name || file.storage_name);
   const generatedExport = generatedFiles.find((file) => file.document_kind === "export");
   const tempPhytoFiles = (collection?.documents?.temp_phyto_files || []).map((file) => file.original_name || file.storage_name);
   const ipaffsFile = collection?.documents?.ipaffs_file?.original_name || "";
+  const csiDocuments = summarizeUkdocsCsiExtractedDocuments(extractedDocuments);
   const prompt = {
     task: "UKDocs CSI document control",
     instructions: [
@@ -4947,7 +5030,7 @@ function buildUkdocsCsiAuditPayload(collection, extractedDocuments, requestUser)
       temp_phyto_files: tempPhytoFiles,
       ipaffs_file: ipaffsFile,
     },
-    extracted_documents: extractedDocuments,
+    extracted_documents: csiDocuments,
     requested_by: requestUser?.username || "",
   };
 
@@ -7229,17 +7312,30 @@ async function handleApi(req, res, url) {
         : contentText
           ? `No structured CSI rows parsed. Source used: ${parseSource || "none"}.`
           : thinkingText
-            ? `Model returned no final JSON content. It only returned thinking text${doneReason ? ` and stopped with done_reason: ${doneReason}` : ""}.`
+            ? `Model returned no final JSON content. It only returned thinking text${doneReason ? ` and stopped with done_reason: ${doneReason}` : ""}. prompt_eval_count=${job?.result_json?.ollama_response?.prompt_eval_count ?? "?"}, eval_count=${job?.result_json?.ollama_response?.eval_count ?? "?"}, thinking_chars=${thinkingText.length}.`
             : `No structured CSI rows parsed. Source used: ${parseSource || "none"}.`;
       const overallStatus = normalizeUkdocsText(parsed.overall_status) || "warn";
+      const finalSummary = hasStructuredRows
+        ? (String(parsed.summary || "").trim() || "CSI audit completed.")
+        : (parseError || String(parsed.summary || "").trim() || "CSI audit completed.");
+      const finalChecks = hasStructuredRows
+        ? (Array.isArray(parsed.checks) ? parsed.checks : [])
+        : [
+            {
+              code: "LLM_OUTPUT",
+              status: "fail",
+              message: parseError || "CSI model returned no structured rows.",
+            },
+            ...(Array.isArray(parsed.checks) ? parsed.checks : []),
+          ];
       await updateUkdocsCsiReport(job.collection_id, {
         status: "done",
         started_at: job.claimed_at || "",
         completed_at: job.finished_at || new Date().toISOString(),
         error: "",
-        summary: String(parsed.summary || "").trim() || "CSI audit completed.",
+        summary: finalSummary,
         overall_status: overallStatus,
-        checks: Array.isArray(parsed.checks) ? parsed.checks : [],
+        checks: finalChecks,
         products: Array.isArray(parsed.products) ? parsed.products : [],
         manual_checks: Array.isArray(parsed.manual_checks) ? parsed.manual_checks : [],
         notes: Array.isArray(parsed.notes) ? parsed.notes : [],
