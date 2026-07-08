@@ -5078,6 +5078,7 @@ function buildUkdocsCsiDeterministicReport(collection, extractedDocuments) {
   const exportDoc = documents.find((document) => document?.kind === "generated_export") || null;
   const ipaffsDoc = documents.find((document) => document?.kind === "ipaffs_file") || null;
   const tempPhytoDocs = documents.filter((document) => document?.kind === "temp_phyto");
+  const hasIpaffsAttached = Boolean(collection?.documents?.ipaffs_file?.storage_name);
 
   const invoiceTotals = new Map();
   const exportTotals = new Map();
@@ -5246,16 +5247,24 @@ function buildUkdocsCsiDeterministicReport(collection, extractedDocuments) {
 
   checks.push({
     code: "IPAFFS_VERIFICATION",
-    status: !ipaffsDoc
+    status: !hasIpaffsAttached
       ? "warn"
-      : ipaffsMismatchCount
+      : !ipaffsDoc
         ? "warn"
-        : "pass",
-    message: !ipaffsDoc
+        : !ipaffsRows.length
+          ? "warn"
+          : ipaffsMismatchCount
+            ? "warn"
+            : "pass",
+    message: !hasIpaffsAttached
       ? "IPAFFS file is missing."
-      : ipaffsMismatchCount
-        ? `${ipaffsMismatchCount} IPAFFS product totals need review.`
-        : "IPAFFS totals match invoice/export totals.",
+      : !ipaffsDoc
+        ? "IPAFFS file is attached, but CSI extraction did not load it."
+        : !ipaffsRows.length
+          ? "IPAFFS file is attached, but no product rows were parsed."
+          : ipaffsMismatchCount
+            ? `${ipaffsMismatchCount} IPAFFS product totals need review.`
+            : "IPAFFS totals match invoice/export totals.",
   });
 
   checks.push({
@@ -5309,9 +5318,13 @@ function buildUkdocsCsiDeterministicReport(collection, extractedDocuments) {
     invoiceExportMismatchCount
       ? `${invoiceExportMismatchCount} invoice/export mismatch(es)`
       : "invoice/export quantities match",
-    ipaffsDoc
-      ? (ipaffsMismatchCount ? `${ipaffsMismatchCount} IPAFFS mismatch(es)` : "IPAFFS matches")
-      : "IPAFFS missing",
+    !hasIpaffsAttached
+      ? "IPAFFS missing"
+      : !ipaffsDoc
+        ? "IPAFFS extraction missing"
+        : !ipaffsRows.length
+          ? "IPAFFS rows not parsed"
+          : (ipaffsMismatchCount ? `${ipaffsMismatchCount} IPAFFS mismatch(es)` : "IPAFFS matches"),
     tempPhytoDocs.length
       ? (tempPhytoMismatchCount ? `${tempPhytoMismatchCount} temp phyto mismatch(es)` : "temp phyto quantities checked")
       : "no temp phyto PDFs",

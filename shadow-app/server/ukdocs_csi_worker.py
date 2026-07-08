@@ -58,6 +58,26 @@ def parse_int_like(value):
     return int(round(number))
 
 
+def row_find_index(values, expected):
+    target = normalize_key(expected)
+    for index, value in enumerate(values):
+        if normalize_key(value) == target:
+            return index
+    return None
+
+
+def row_find_label_value(values, expected):
+    target = normalize_key(expected)
+    for index, value in enumerate(values):
+        if normalize_key(value) != target:
+            continue
+        for next_index in range(index + 1, len(values)):
+            candidate = clean_text(values[next_index])
+            if candidate:
+                return candidate
+    return ""
+
+
 def map_ipaffs_product(genus, commodity_code):
     genus_key = normalize_key(genus)
     if "chrysanthem" in genus_key:
@@ -118,18 +138,29 @@ def parse_export_sheet(workbook):
     worksheet = workbook.worksheets[0]
     rows = []
     summary = {}
-    in_goods = False
+    column_indexes = None
     for row in worksheet.iter_rows(values_only=True):
         values = [clean_text(cell) for cell in row]
-        if not in_goods and len(values) > 3 and values[0] == "Goods description" and values[3] == "Quantity":
-            in_goods = True
+        if column_indexes is None:
+            description_index = row_find_index(values, "Goods description")
+            commodity_index = row_find_index(values, "Commodity code")
+            quantity_index = row_find_index(values, "Quantity")
+            origin_index = row_find_index(values, "oorsprong")
+            if description_index is not None and commodity_index is not None and quantity_index is not None:
+                column_indexes = {
+                    "description": description_index,
+                    "commodity_code": commodity_index,
+                    "quantity": quantity_index,
+                    "origin": origin_index,
+                }
             continue
-        if not in_goods:
+        if column_indexes is None:
             continue
-        description = values[0] if len(values) > 0 else ""
-        commodity_code = values[1] if len(values) > 1 else ""
-        quantity = parse_int_like(values[3] if len(values) > 3 else "")
-        origin = values[7] if len(values) > 7 else ""
+        description = values[column_indexes["description"]] if column_indexes["description"] < len(values) else ""
+        commodity_code = values[column_indexes["commodity_code"]] if column_indexes["commodity_code"] < len(values) else ""
+        quantity = parse_int_like(values[column_indexes["quantity"]] if column_indexes["quantity"] < len(values) else "")
+        origin_index = column_indexes.get("origin")
+        origin = values[origin_index] if origin_index is not None and origin_index < len(values) else ""
         if not description or not commodity_code or quantity is None:
             continue
         parsed_row = {
@@ -158,27 +189,34 @@ def parse_invoice_sheet(workbook):
         "delivery_terms": "",
         "currency": "",
     }
-    in_rows = False
+    column_indexes = None
     for row in worksheet.iter_rows(values_only=True):
         values = [clean_text(cell) for cell in row]
-        label = values[1] if len(values) > 1 else ""
-        if label == "Date :":
-            meta["date"] = values[2] if len(values) > 2 else ""
-        elif label == "Invoice nr :":
-            meta["invoice_number"] = values[2] if len(values) > 2 else ""
-        elif label == "Licence Truck :":
-            meta["truck"] = values[2] if len(values) > 2 else ""
-        elif label == "Delivery Terms :":
-            meta["delivery_terms"] = values[2] if len(values) > 2 else ""
-        if not in_rows and label == "classificationType TARIC":
-            in_rows = True
+        meta["date"] = meta["date"] or row_find_label_value(values, "Date :")
+        meta["invoice_number"] = meta["invoice_number"] or row_find_label_value(values, "Invoice nr :")
+        meta["truck"] = meta["truck"] or row_find_label_value(values, "Licence Truck :")
+        meta["delivery_terms"] = meta["delivery_terms"] or row_find_label_value(values, "Delivery Terms :")
+        meta["currency"] = meta["currency"] or row_find_label_value(values, "Currency of invoice")
+
+        if column_indexes is None:
+            commodity_index = row_find_index(values, "classificationType TARIC")
+            description_index = row_find_index(values, "Goods description")
+            origin_index = row_find_index(values, "Origin")
+            quantity_index = row_find_index(values, "Quantity")
+            if commodity_index is not None and description_index is not None and origin_index is not None and quantity_index is not None:
+                column_indexes = {
+                    "commodity_code": commodity_index,
+                    "description": description_index,
+                    "origin": origin_index,
+                    "quantity": quantity_index,
+                }
             continue
-        if not in_rows:
+        if column_indexes is None:
             continue
-        commodity_code = values[1] if len(values) > 1 else ""
-        description = values[2] if len(values) > 2 else ""
-        origin = values[3] if len(values) > 3 else ""
-        quantity = parse_int_like(values[4] if len(values) > 4 else "")
+        commodity_code = values[column_indexes["commodity_code"]] if column_indexes["commodity_code"] < len(values) else ""
+        description = values[column_indexes["description"]] if column_indexes["description"] < len(values) else ""
+        origin = values[column_indexes["origin"]] if column_indexes["origin"] < len(values) else ""
+        quantity = parse_int_like(values[column_indexes["quantity"]] if column_indexes["quantity"] < len(values) else "")
         if not description or not commodity_code or quantity is None:
             continue
         parsed_row = {
@@ -307,7 +345,7 @@ def extract_csv(path: Path):
     return payload
 
 
-def extract_xlsx(path: Path):
+def extract_xlsx(path: Path, kind=""):
     if load_workbook is None:
         raise RuntimeError("openpyxl is required to read .xlsx files")
     workbook = load_workbook(filename=path, data_only=True, read_only=True)
@@ -327,7 +365,8 @@ def extract_xlsx(path: Path):
         "line_count": len(lines),
     }
     lower_name = path.name.lower()
-    if "invoice " in lower_name:
+    normalized_kind = clean_text(kind)
+    if normalized_kind == "generated_invoice" or ("invoice " in lower_name):
         payload["parsed_data"] = parse_invoice_sheet(workbook)
     else:
         payload["parsed_data"] = parse_export_sheet(workbook)
@@ -356,7 +395,7 @@ def extract_xls(path: Path):
     }
 
 
-def extract_pdf(path: Path):
+def extract_pdf(path: Path, kind=""):
     if PdfReader is None:
         return {
             "content_type": "pdf",
@@ -380,8 +419,7 @@ def extract_pdf(path: Path):
         "text": "\n".join(limit_lines(lines)),
         "line_count": len(lines),
     }
-    lower_name = path.name.lower()
-    if lower_name.endswith(".pdf"):
+    if clean_text(kind) == "temp_phyto":
         payload["parsed_data"] = parse_temp_phyto_pdf_text("\n".join(lines))
     return payload
 
@@ -389,9 +427,10 @@ def extract_pdf(path: Path):
 def extract_file(entry):
     path = Path(entry.get("path") or "")
     suffix = path.suffix.lower()
+    kind = clean_text(entry.get("kind"))
     if not path.exists():
         return {
-            "kind": clean_text(entry.get("kind")),
+            "kind": kind,
             "name": clean_text(entry.get("name")) or path.name,
             "mime_type": clean_text(entry.get("mime_type")),
             "content_type": "missing",
@@ -400,7 +439,7 @@ def extract_file(entry):
         }
 
     base = {
-        "kind": clean_text(entry.get("kind")),
+        "kind": kind,
         "name": clean_text(entry.get("name")) or path.name,
         "mime_type": clean_text(entry.get("mime_type")),
     }
@@ -408,11 +447,11 @@ def extract_file(entry):
         if suffix == ".csv":
             return {**base, **extract_csv(path)}
         if suffix == ".xlsx":
-            return {**base, **extract_xlsx(path)}
+            return {**base, **extract_xlsx(path, kind)}
         if suffix == ".xls":
             return {**base, **extract_xls(path)}
         if suffix == ".pdf":
-            return {**base, **extract_pdf(path)}
+            return {**base, **extract_pdf(path, kind)}
         return {
             **base,
             "content_type": suffix.lstrip(".") or "binary",
