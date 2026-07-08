@@ -3996,11 +3996,49 @@ function UkdocsPrintPage({ currentUser }) {
     setMessage("");
     setError("");
     try {
+      const targetCollectionId = selectedCollection.id;
       const documentPath = index === null ? kind : `${kind}/${index}`;
       const payload = await apiJson(`/api/ukdocs-print/collections/${encodeURIComponent(selectedCollection.id)}/documents/${documentPath}`, {
         method: "DELETE",
       });
-      setState((current) => ({ ...current, print_collections: payload.print_collections || current?.print_collections || [] }));
+      setState((current) => {
+        const currentCollections = current?.print_collections || [];
+        if (Array.isArray(payload.print_collections) && payload.print_collections.length) {
+          return { ...current, print_collections: payload.print_collections };
+        }
+        if (payload.collection?.id) {
+          return {
+            ...current,
+            print_collections: currentCollections.map((collection) => (
+              collection.id === payload.collection.id || collection.shipment_id === payload.collection.shipment_id
+                ? payload.collection
+                : collection
+            )),
+          };
+        }
+        return {
+          ...current,
+          print_collections: currentCollections.map((collection) => {
+            if (collection.id !== targetCollectionId && collection.shipment_id !== targetCollectionId) {
+              return collection;
+            }
+            const nextDocuments = { ...(collection.documents || {}) };
+            if (kind === "phyto") {
+              nextDocuments.phyto_files = (nextDocuments.phyto_files || []).filter((_, itemIndex) => itemIndex !== index);
+            } else if (kind === "temp_phyto") {
+              nextDocuments.temp_phyto_files = (nextDocuments.temp_phyto_files || []).filter((_, itemIndex) => itemIndex !== index);
+            } else if (kind === "generated") {
+              nextDocuments.generated_files = (nextDocuments.generated_files || []).filter((_, itemIndex) => itemIndex !== index);
+            } else {
+              nextDocuments[kind] = null;
+            }
+            return {
+              ...collection,
+              documents: nextDocuments,
+            };
+          }),
+        };
+      });
       setMessage("Uploaded file deleted.");
     } catch (deleteError) {
       setError(deleteError.message);
@@ -4898,6 +4936,7 @@ function UkdocsCSIPage({ currentUser }) {
                   {selectedIpaffsFile?.storage_name && (
                     <div className="row-actions">
                       <a href={`/api/ukdocs-print/collections/${encodeURIComponent(selectedCollection.id)}/documents/ipaffs_file`} target="_blank" rel="noreferrer">Open</a>
+                      <button type="button" onClick={() => deleteCollectionDocument("ipaffs_file")} disabled={saving}>Delete</button>
                     </div>
                   )}
                 </div>
