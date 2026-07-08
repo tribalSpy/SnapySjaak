@@ -5341,6 +5341,7 @@ function buildUkdocsCsiDeterministicReport(collection, extractedDocuments) {
     const exportQty = exportTotals.has(product) ? exportTotals.get(product) : null;
     const ipaffsQty = ipaffsTotals.has(product) ? ipaffsTotals.get(product) : null;
     const phytoQty = tempPhytoTotals.has(product) ? tempPhytoTotals.get(product) : null;
+    const expectedQty = exportQty ?? invoiceQty;
     const messages = [];
     let status = "pass";
 
@@ -5359,38 +5360,47 @@ function buildUkdocsCsiDeterministicReport(collection, extractedDocuments) {
     }
 
     if (ipaffsDoc) {
-      if (ipaffsQty === null) {
-        status = mergeUkdocsCsiStatus(status, "warn");
-        ipaffsMismatchCount += 1;
-        messages.push("Missing in IPAFFS.");
-      } else {
-        const expectedQty = exportQty ?? invoiceQty;
+      if (ipaffsQty !== null) {
         if (expectedQty === null) {
           status = mergeUkdocsCsiStatus(status, "warn");
           ipaffsMismatchCount += 1;
           messages.push("IPAFFS has quantity but invoice/export is missing.");
-        } else if (expectedQty !== ipaffsQty) {
+        } else if (ipaffsQty > expectedQty) {
           status = mergeUkdocsCsiStatus(status, "warn");
           ipaffsMismatchCount += 1;
-          messages.push(`IPAFFS differs by ${Math.abs(expectedQty - ipaffsQty)}.`);
+          messages.push(`IPAFFS quantity ${ipaffsQty} is higher than invoice/export ${expectedQty}.`);
+        } else if (ipaffsQty === expectedQty) {
+          messages.push("IPAFFS matches invoice/export.");
         } else {
-          messages.push("IPAFFS matches.");
+          messages.push(`IPAFFS subset ${ipaffsQty} is within invoice/export ${expectedQty}.`);
         }
       }
     }
 
     if (phytoQty !== null) {
-      const expectedQty = exportQty ?? invoiceQty;
       if (expectedQty === null) {
         status = mergeUkdocsCsiStatus(status, "warn");
         tempPhytoMismatchCount += 1;
         messages.push(`Temp phyto quantity ${phytoQty} has no matching invoice/export line.`);
-      } else if (expectedQty !== phytoQty) {
+      } else if (phytoQty > expectedQty) {
         status = mergeUkdocsCsiStatus(status, "warn");
         tempPhytoMismatchCount += 1;
-        messages.push(`Temp phyto quantity ${phytoQty} differs from expected ${expectedQty}.`);
+        messages.push(`Temp phyto quantity ${phytoQty} is higher than invoice/export ${expectedQty}.`);
+      } else if (phytoQty === expectedQty) {
+        messages.push(`Temp phyto quantity ${phytoQty} matches invoice/export.`);
       } else {
-        messages.push(`Temp phyto quantity ${phytoQty} matches.`);
+        messages.push(`Temp phyto subset ${phytoQty} is within invoice/export ${expectedQty}.`);
+      }
+    }
+
+    if (ipaffsQty !== null && phytoQty !== null) {
+      if (ipaffsQty !== phytoQty) {
+        status = mergeUkdocsCsiStatus(status, "warn");
+        ipaffsMismatchCount += 1;
+        tempPhytoMismatchCount += 1;
+        messages.push(`IPAFFS ${ipaffsQty} and temp phyto ${phytoQty} differ by ${Math.abs(ipaffsQty - phytoQty)}.`);
+      } else {
+        messages.push(`IPAFFS and temp phyto match at ${ipaffsQty}.`);
       }
     }
 
@@ -5435,8 +5445,8 @@ function buildUkdocsCsiDeterministicReport(collection, extractedDocuments) {
         : !ipaffsRows.length
           ? `IPAFFS file was loaded (${ipaffsDoc?.name || "unknown file"}), but no product rows were parsed.${extractedIpaffsDebug?.delimiter ? ` Delimiter: ${extractedIpaffsDebug.delimiter}.` : ""}${extractedIpaffsDebug?.error ? ` Error: ${extractedIpaffsDebug.error}.` : ""}`
           : ipaffsMismatchCount
-            ? `${ipaffsMismatchCount} IPAFFS product totals need review.`
-            : "IPAFFS totals match invoice/export totals.",
+            ? `${ipaffsMismatchCount} IPAFFS or IPAFFS/temp phyto product totals need review.`
+            : "IPAFFS product totals stay within invoice/export and match temp phyto where both exist.",
   });
 
   checks.push({
@@ -5464,8 +5474,8 @@ function buildUkdocsCsiDeterministicReport(collection, extractedDocuments) {
         : missingPcnuCount
           ? `${missingPcnuCount} temporary phyto PDF(s) are missing a parsed PCNU number from PDF text extraction.`
           : tempPhytoMismatchCount
-            ? `${tempPhytoMismatchCount} temp phyto quantity comparison(s) need review.`
-            : "Temporary phyto quantities and PCNU parsing look consistent.",
+            ? `${tempPhytoMismatchCount} temp phyto or temp phyto/IPAFFS quantity comparison(s) need review.`
+            : "Temporary phyto quantities stay within invoice/export and match IPAFFS where both exist.",
     });
   }
 
