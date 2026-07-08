@@ -4517,6 +4517,14 @@ function dedupeUkdocsPrintCollectionsForDate(state, syncDate) {
   const collections = Array.isArray(state?.print_collections) ? state.print_collections : [];
   const shipments = Array.isArray(state?.shipments) ? state.shipments : [];
   const groups = new Map();
+  const addBucket = (key, collection) => {
+    if (!key) {
+      return;
+    }
+    const bucket = groups.get(key) || [];
+    bucket.push(collection);
+    groups.set(key, bucket);
+  };
   for (const collection of collections) {
     if (String(collection?.shipment_date || "").slice(0, 10) !== syncDate) {
       continue;
@@ -4524,13 +4532,11 @@ function dedupeUkdocsPrintCollectionsForDate(state, syncDate) {
     if (collection?.collection_type === "stock_control") {
       continue;
     }
-    const key = ukdocsPrintCollectionGroupKey(collection);
-    if (!key) {
-      continue;
+    const rowNumber = Number(collection?.sheet_row_number || 0);
+    if (rowNumber > 0) {
+      addBucket(`row|${syncDate}|${rowNumber}`, collection);
     }
-    const bucket = groups.get(key) || [];
-    bucket.push(collection);
-    groups.set(key, bucket);
+    addBucket(`group|${ukdocsPrintCollectionGroupKey(collection)}`, collection);
   }
 
   if (![...groups.values()].some((bucket) => bucket.length > 1)) {
@@ -4588,6 +4594,7 @@ function findMatchingUkdocsPrintCollection(collections, candidate, options = {})
   const shipmentId = normalizeUkdocsText(candidate?.shipment_id);
   const collectionId = normalizeUkdocsText(candidate?.id);
   const shipmentDate = normalizeUkdocsText(candidate?.shipment_date);
+  const sheetRowNumber = Number(candidate?.sheet_row_number || 0);
   const referenceTokens = ukdocsPrintReferenceTokens(candidate?.reference_connect);
   const invoiceTokens = ukdocsPrintInvoiceTokens(candidate?.invoice_numbers);
   const truckNumber = normalizeUkdocsPrintToken(candidate?.truck_number);
@@ -4603,6 +4610,11 @@ function findMatchingUkdocsPrintCollection(collections, candidate, options = {})
     }
     if (!shipmentDate || item.shipment_date !== shipmentDate) {
       return false;
+    }
+
+    const itemSheetRowNumber = Number(item?.sheet_row_number || 0);
+    if (sheetRowNumber > 0 && itemSheetRowNumber > 0 && sheetRowNumber === itemSheetRowNumber) {
+      return true;
     }
 
     const itemReferenceTokens = ukdocsPrintReferenceTokens(item.reference_connect);
