@@ -5686,8 +5686,6 @@ function App() {
                 <input
                   type="date"
                   value={activeDate}
-                  min={firstDate}
-                  max={lastDate}
                   onChange={(event) => {
                     setDateWasManuallySelected(true);
                     setSelectedDate(event.target.value);
@@ -5724,7 +5722,10 @@ function App() {
             )}
 
             {!loading && !error && data && data.groups.length === 0 && (
-              <div className="notice">No runs match the selected filters.</div>
+              <div className="notice">
+                No runs match the selected filters.
+                {activeDate ? ` If Google Drive has photos for ${activeDate}, run "Refresh selected date" or "Rebuild run index" from the menu.` : ""}
+              </div>
             )}
 
             <section className="customer-list">

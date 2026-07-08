@@ -1081,7 +1081,7 @@ pre {
   }
 }
 
-@media (max-width: 620px) {
+@media (max-width: 980px) {
   .sidebar-toggle {
     position: fixed;
     top: 12px;
