@@ -4907,6 +4907,8 @@ function UkdocsCSIPage({ currentUser }) {
                 {!!selectedCsiEmail.sent_at && <div className="notice success">CSI email sent: {formatTimestamp(selectedCsiEmail.sent_at)} to {(selectedCsiEmail.recipients || []).join(", ") || "-"}</div>}
                 {!!selectedCsiEmail.error && <div className="notice danger">{selectedCsiEmail.error}</div>}
                 {!!selectedCsiReport.error && <div className="notice danger">{selectedCsiReport.error}</div>}
+                {!!selectedCsiReport.llm_parse_error && <div className="notice danger">{selectedCsiReport.llm_parse_error}</div>}
+                {!!selectedCsiReport.llm_parse_source && <small>Parse source: {selectedCsiReport.llm_parse_source}</small>}
                 {!!selectedCsiReport.checks?.length && (
                   <div className="table-wrap">
                     <table className="data-table">
@@ -4958,6 +4960,18 @@ function UkdocsCSIPage({ currentUser }) {
                       {selectedCsiReport.manual_checks.map((item, index) => <li key={`${item}-${index}`}>{item}</li>)}
                     </ul>
                   </>
+                )}
+                {!!selectedCsiReport.llm_content && (
+                  <details>
+                    <summary>Raw LLM response</summary>
+                    <pre style={{ whiteSpace: "pre-wrap", overflowX: "auto" }}>{selectedCsiReport.llm_content}</pre>
+                  </details>
+                )}
+                {!!selectedCsiReport.llm_raw_result_json && (
+                  <details>
+                    <summary>Raw result JSON</summary>
+                    <pre style={{ whiteSpace: "pre-wrap", overflowX: "auto" }}>{selectedCsiReport.llm_raw_result_json}</pre>
+                  </details>
                 )}
               </div>
             </>
@@ -7011,6 +7025,10 @@ function addDaysToIso(value, days) {
 }
 
 function fustActionControlDate(action) {
+  const createdDate = String(action?.created_at || "").slice(0, 10);
+  if (createdDate) {
+    return createdDate;
+  }
   const actionDate = String(action?.action_date || "").slice(0, 10);
   const importedDate = String(action?.import_source?.imported_at || "").slice(0, 10);
   if (importedDate && (!actionDate || importedDate > actionDate)) {

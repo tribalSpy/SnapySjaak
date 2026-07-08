@@ -1204,6 +1204,9 @@ function normalizeUkdocsCsiReport(report) {
       manual_checks: [],
       notes: [],
       llm_content: "",
+      llm_parse_source: "",
+      llm_parse_error: "",
+      llm_raw_result_json: "",
     };
   }
   return {
@@ -1220,6 +1223,9 @@ function normalizeUkdocsCsiReport(report) {
     manual_checks: Array.isArray(report.manual_checks) ? report.manual_checks.map((item) => String(item || "").trim()).filter(Boolean) : [],
     notes: Array.isArray(report.notes) ? report.notes.map((item) => String(item || "").trim()).filter(Boolean) : [],
     llm_content: String(report.llm_content || "").trim(),
+    llm_parse_source: String(report.llm_parse_source || "").trim(),
+    llm_parse_error: String(report.llm_parse_error || "").trim(),
+    llm_raw_result_json: String(report.llm_raw_result_json || "").trim(),
   };
 }
 
@@ -7073,13 +7079,25 @@ async function handleApi(req, res, url) {
     }
     if (job.job_type === "ukdocs_csi_audit" && job.collection_id) {
       const llmContent = String(job?.result_json?.ollama_response?.message?.content || job?.result_json?.response || "").trim();
-      const parsed =
-        normalizeUkdocsCsiParsedResult(job?.result_json?.parsed_result)
-        || normalizeUkdocsCsiParsedResult(job?.result_json?.result)
-        || normalizeUkdocsCsiParsedResult(job?.result_json?.response_json)
-        || normalizeUkdocsCsiParsedResult(extractJsonObjectFromText(llmContent))
-        || normalizeUkdocsCsiParsedResult(job?.result_json)
-        || {
+      const parseCandidates = [
+        ["result_json.parsed_result", job?.result_json?.parsed_result],
+        ["result_json.result", job?.result_json?.result],
+        ["result_json.response_json", job?.result_json?.response_json],
+        ["ollama_response.message.content", extractJsonObjectFromText(llmContent)],
+        ["result_json.root", job?.result_json],
+      ];
+      let parseSource = "";
+      let parsed = null;
+      for (const [sourceName, sourceValue] of parseCandidates) {
+        const normalized = normalizeUkdocsCsiParsedResult(sourceValue);
+        if (normalized) {
+          parseSource = sourceName;
+          parsed = normalized;
+          break;
+        }
+      }
+      if (!parsed) {
+        parsed = {
           overall_status: "warn",
           summary: llmContent || "CSI audit completed.",
           checks: [],
@@ -7087,6 +7105,10 @@ async function handleApi(req, res, url) {
           manual_checks: [],
           notes: [],
         };
+      }
+      const parseError = parsed.checks.length || parsed.products.length || parsed.manual_checks.length
+        ? ""
+        : `No structured CSI rows parsed. Source used: ${parseSource || "none"}.`;
       const overallStatus = normalizeUkdocsText(parsed.overall_status) || "warn";
       await updateUkdocsCsiReport(job.collection_id, {
         status: "done",
@@ -7100,6 +7122,9 @@ async function handleApi(req, res, url) {
         manual_checks: Array.isArray(parsed.manual_checks) ? parsed.manual_checks : [],
         notes: Array.isArray(parsed.notes) ? parsed.notes : [],
         llm_content: llmContent,
+        llm_parse_source: parseSource,
+        llm_parse_error: parseError,
+        llm_raw_result_json: JSON.stringify(job?.result_json || {}, null, 2),
       });
       if (overallStatus === "pass") {
         try {
