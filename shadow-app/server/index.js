@@ -4728,6 +4728,31 @@ function extractJsonObjectFromText(value) {
   }
 }
 
+function normalizeUkdocsCsiParsedResult(source) {
+  if (!source || typeof source !== "object") {
+    return null;
+  }
+  const checks = Array.isArray(source.checks) ? source.checks : [];
+  const products = Array.isArray(source.products) ? source.products : [];
+  const manualChecks = Array.isArray(source.manual_checks)
+    ? source.manual_checks
+    : (Array.isArray(source.manualChecks) ? source.manualChecks : []);
+  const notes = Array.isArray(source.notes) ? source.notes : [];
+  const summary = String(source.summary || "").trim();
+  const overallStatus = normalizeUkdocsText(source.overall_status || source.overallStatus);
+  if (!summary && !checks.length && !products.length && !manualChecks.length && !notes.length && !overallStatus) {
+    return null;
+  }
+  return {
+    overall_status: overallStatus || "warn",
+    summary: summary || "CSI audit completed.",
+    checks,
+    products,
+    manual_checks: manualChecks,
+    notes,
+  };
+}
+
 async function extractUkdocsCsiFileSnapshots(files) {
   const safeFiles = files
     .filter((file) => file?.document?.storage_name)
@@ -4823,6 +4848,7 @@ function buildUkdocsCsiAuditPayload(collection, extractedDocuments, requestUser)
         content: JSON.stringify(prompt),
       },
     ],
+    format: "json",
     options: {
       temperature: 0,
     },
@@ -7047,7 +7073,20 @@ async function handleApi(req, res, url) {
     }
     if (job.job_type === "ukdocs_csi_audit" && job.collection_id) {
       const llmContent = String(job?.result_json?.ollama_response?.message?.content || job?.result_json?.response || "").trim();
-      const parsed = extractJsonObjectFromText(llmContent) || {};
+      const parsed =
+        normalizeUkdocsCsiParsedResult(job?.result_json?.parsed_result)
+        || normalizeUkdocsCsiParsedResult(job?.result_json?.result)
+        || normalizeUkdocsCsiParsedResult(job?.result_json?.response_json)
+        || normalizeUkdocsCsiParsedResult(extractJsonObjectFromText(llmContent))
+        || normalizeUkdocsCsiParsedResult(job?.result_json)
+        || {
+          overall_status: "warn",
+          summary: llmContent || "CSI audit completed.",
+          checks: [],
+          products: [],
+          manual_checks: [],
+          notes: [],
+        };
       const overallStatus = normalizeUkdocsText(parsed.overall_status) || "warn";
       await updateUkdocsCsiReport(job.collection_id, {
         status: "done",
