@@ -4863,12 +4863,13 @@ function buildUkdocsCsiAuditPayload(collection, extractedDocuments, requestUser)
       },
       {
         role: "user",
-        content: JSON.stringify(prompt),
+        content: `/no_think\n${JSON.stringify(prompt)}`,
       },
     ],
     format: "json",
     options: {
       temperature: 0,
+      num_predict: 4096,
     },
   };
 }
@@ -7090,12 +7091,16 @@ async function handleApi(req, res, url) {
       return;
     }
     if (job.job_type === "ukdocs_csi_audit" && job.collection_id) {
-      const llmContent = String(job?.result_json?.ollama_response?.message?.content || job?.result_json?.response || "").trim();
+      const contentText = String(job?.result_json?.ollama_response?.message?.content || job?.result_json?.response || "").trim();
+      const thinkingText = String(job?.result_json?.ollama_response?.message?.thinking || "").trim();
+      const doneReason = String(job?.result_json?.ollama_response?.done_reason || "").trim();
+      const llmContent = contentText || thinkingText;
       const parseCandidates = [
         ["result_json.parsed_result", job?.result_json?.parsed_result],
         ["result_json.result", job?.result_json?.result],
         ["result_json.response_json", job?.result_json?.response_json],
-        ["ollama_response.message.content", extractJsonObjectFromText(llmContent)],
+        ["ollama_response.message.content", extractJsonObjectFromText(contentText)],
+        ["ollama_response.message.thinking", extractJsonObjectFromText(thinkingText)],
         ["result_json.root", job?.result_json],
       ];
       let parseSource = "";
@@ -7118,9 +7123,14 @@ async function handleApi(req, res, url) {
           notes: [],
         };
       }
-      const parseError = parsed.checks.length || parsed.products.length || parsed.manual_checks.length
+      const hasStructuredRows = parsed.checks.length || parsed.products.length || parsed.manual_checks.length;
+      const parseError = hasStructuredRows
         ? ""
-        : `No structured CSI rows parsed. Source used: ${parseSource || "none"}.`;
+        : contentText
+          ? `No structured CSI rows parsed. Source used: ${parseSource || "none"}.`
+          : thinkingText
+            ? `Model returned no final JSON content. It only returned thinking text${doneReason ? ` and stopped with done_reason: ${doneReason}` : ""}.`
+            : `No structured CSI rows parsed. Source used: ${parseSource || "none"}.`;
       const overallStatus = normalizeUkdocsText(parsed.overall_status) || "warn";
       await updateUkdocsCsiReport(job.collection_id, {
         status: "done",
