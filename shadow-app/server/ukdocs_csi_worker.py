@@ -281,6 +281,32 @@ def find_line_value(lines, label, max_lookahead=4):
     return ""
 
 
+def parse_temp_phyto_product_lines_from_flat_text(text):
+    flattened = re.sub(r"\s+", " ", clean_text(text))
+    if not flattened:
+        return []
+
+    rows = []
+    pattern = re.compile(
+        r"(?P<code>\d{3,4})\s+"
+        r"(?P<product>.+?)\s+"
+        r"(?P<packages>\d+)\s+Box(?:es)?\s+"
+        r"(?P<quantity>[\d.,]+)\s+Pieces"
+        r"(?=(?:\s+\d{3,4}\s+)|\s*(?:-+\s*<\s*TEXT\s+END|TEXT\s+END|$))",
+        flags=re.IGNORECASE,
+    )
+    for match in pattern.finditer(flattened):
+        product = clean_text(match.group("product"))
+        if not product:
+            continue
+        rows.append({
+            "product": product,
+            "packages": parse_int_like(match.group("packages")),
+            "quantity": parse_int_like(match.group("quantity")),
+        })
+    return rows
+
+
 def parse_temp_phyto_pdf_text(text):
     lines = [clean_text(line) for line in text.splitlines() if clean_text(line)]
     if not lines:
@@ -371,6 +397,11 @@ def parse_temp_phyto_pdf_text(text):
             "packages": packages,
             "quantity": quantity,
         })
+
+    if len(parsed["product_lines"]) <= 1:
+        flat_rows = parse_temp_phyto_product_lines_from_flat_text(text)
+        if len(flat_rows) > len(parsed["product_lines"]):
+            parsed["product_lines"] = flat_rows
 
     if len(parsed["product_lines"]) == 1 and parsed["product_lines"][0].get("quantity") is None and parsed["total_quantity"] is not None:
         parsed["product_lines"][0]["quantity"] = parsed["total_quantity"]

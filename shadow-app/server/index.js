@@ -5122,6 +5122,14 @@ function mapUkdocsCsiProductName(description, commodityCode = "") {
   return String(description || "").trim() || "Unknown product";
 }
 
+function isUkdocsCsiAggregateProductName(productName) {
+  const normalized = normalizeUkdocsCsiToken(productName);
+  return normalized.includes("mixed cut flowers and branches")
+    || normalized.includes("cutflowers and branches")
+    || normalized === "total"
+    || normalized === "mixed";
+}
+
 function addUkdocsCsiQuantity(map, key, quantity) {
   if (!key) {
     return;
@@ -7912,7 +7920,7 @@ async function handleApi(req, res, url) {
       for (const item of Array.isArray(parsed.visible_documents) ? parsed.visible_documents : []) {
         const mappedProduct = mapUkdocsCsiProductName(item?.product || "", "");
         const quantity = Number(item?.quantity);
-        if (!mappedProduct || !Number.isFinite(quantity)) {
+        if (!mappedProduct || !Number.isFinite(quantity) || isUkdocsCsiAggregateProductName(mappedProduct)) {
           continue;
         }
         addUkdocsCsiQuantity(visualTempPhytoTotals, mappedProduct, quantity);
