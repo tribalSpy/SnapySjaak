@@ -4953,6 +4953,11 @@ function summarizeUkdocsCsiExtractedDocuments(extractedDocuments) {
         rows: ipaffsRows,
         product_totals: productTotals,
       };
+      summary.ipaffs_debug = {
+        delimiter: parsedData?.delimiter || document?.delimiter || "",
+        row_count: Array.isArray(parsedData?.rows) ? parsedData.rows.length : 0,
+        line_count: summary.line_count,
+      };
       return summary;
     }
 
@@ -5259,9 +5264,9 @@ function buildUkdocsCsiDeterministicReport(collection, extractedDocuments) {
     message: !hasIpaffsAttached
       ? "IPAFFS file is missing."
       : !ipaffsDoc
-        ? "IPAFFS file is attached, but CSI extraction did not load it."
+        ? `IPAFFS file is attached on the zending (${collection?.documents?.ipaffs_file?.original_name || "unknown file"}), but CSI extraction did not load it.`
         : !ipaffsRows.length
-          ? "IPAFFS file is attached, but no product rows were parsed."
+          ? `IPAFFS file was loaded (${ipaffsDoc?.name || "unknown file"}), but no product rows were parsed.${ipaffsDoc?.parsed_data?.delimiter ? ` Delimiter: ${ipaffsDoc.parsed_data.delimiter}.` : ""}`
           : ipaffsMismatchCount
             ? `${ipaffsMismatchCount} IPAFFS product totals need review.`
             : "IPAFFS totals match invoice/export totals.",
@@ -6151,6 +6156,9 @@ function safeExtension(filename, mimeType) {
   const extension = path.extname(String(filename || "")).toLowerCase();
   if (extension && extension.length <= 10) {
     return extension;
+  }
+  if (mimeType === "text/csv" || mimeType === "application/csv" || String(mimeType || "").toLowerCase().includes("csv")) {
+    return ".csv";
   }
   if (mimeType === "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet") {
     return ".xlsx";

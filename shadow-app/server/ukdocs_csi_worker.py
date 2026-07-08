@@ -107,7 +107,9 @@ def map_ipaffs_product(genus, commodity_code):
 def parse_ipaffs_rows(rows):
     parsed_rows = []
     summary = {}
-    for row in rows[1:]:
+    header = [normalize_key(cell) for cell in (rows[0] if rows else [])]
+    start_index = 1 if header and any("commodity" in cell or "genus" in cell for cell in header) else 0
+    for row in rows[start_index:]:
         if not any(clean_text(cell) for cell in row):
             continue
         commodity_code = clean_text(row[0] if len(row) > 0 else "")
@@ -132,6 +134,35 @@ def parse_ipaffs_rows(rows):
         "rows": parsed_rows,
         "product_totals": [{"product": product, "quantity": quantity} for product, quantity in summary.items()],
     }
+
+
+def parse_delimited_rows(text):
+    sample = text[:4096]
+    delimiters = ",;\t|"
+    dialect = None
+    try:
+        dialect = csv.Sniffer().sniff(sample, delimiters=delimiters)
+    except Exception:
+        dialect = None
+
+    if dialect is not None:
+        reader = csv.reader(StringIO(text), dialect)
+        rows = list(reader)
+        if rows:
+            return rows, dialect.delimiter
+
+    fallback_delimiter = ","
+    for candidate in [";", "\t", "|", ","]:
+        lines = [line for line in text.splitlines() if line.strip()]
+        if not lines:
+            continue
+        split_rows = [line.split(candidate) for line in lines]
+        max_columns = max((len(row) for row in split_rows), default=0)
+        if max_columns > 1:
+            return split_rows, candidate
+
+    reader = csv.reader(StringIO(text))
+    return list(reader), fallback_delimiter
 
 
 def parse_export_sheet(workbook):
@@ -327,9 +358,11 @@ def parse_temp_phyto_pdf_text(text):
 
 
 def extract_csv(path: Path):
-    text = path.read_text(encoding="utf-8", errors="replace")
-    reader = csv.reader(StringIO(text))
-    raw_rows = list(reader)
+    try:
+        text = path.read_text(encoding="utf-8-sig", errors="replace")
+    except Exception:
+        text = path.read_text(encoding="utf-8", errors="replace")
+    raw_rows, detected_delimiter = parse_delimited_rows(text)
     rows = []
     for row in raw_rows:
         cleaned = [clean_text(cell) for cell in row]
@@ -339,9 +372,13 @@ def extract_csv(path: Path):
         "content_type": "csv",
         "text": "\n".join(limit_lines(rows)),
         "line_count": len(rows),
+        "delimiter": detected_delimiter,
     }
     if raw_rows:
-        payload["parsed_data"] = parse_ipaffs_rows(raw_rows)
+        payload["parsed_data"] = {
+            **parse_ipaffs_rows(raw_rows),
+            "delimiter": detected_delimiter,
+        }
     return payload
 
 
