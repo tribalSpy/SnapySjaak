@@ -5280,6 +5280,7 @@ function buildUkdocsCsiDeterministicReport(collection, extractedDocuments) {
       invoice_quantity: invoiceQty === null ? "" : String(invoiceQty),
       export_quantity: exportQty === null ? "" : String(exportQty),
       ipaffs_quantity: ipaffsQty === null ? "" : String(ipaffsQty),
+      temp_phyto_quantity: phytoQty === null ? "" : String(phytoQty),
       status,
       message: messages.join(" "),
     });

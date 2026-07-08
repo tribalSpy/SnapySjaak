@@ -4981,7 +4981,7 @@ function UkdocsCSIPage({ currentUser }) {
                     <strong>Product quantity comparison</strong>
                     <div className="table-wrap">
                       <table className="data-table">
-                        <thead><tr><th>Product</th><th>Invoice qty</th><th>Export qty</th><th>IPAFFS qty</th><th>Status</th><th>Message</th></tr></thead>
+                        <thead><tr><th>Product</th><th>Invoice qty</th><th>Export qty</th><th>IPAFFS qty</th><th>Temp phyto qty</th><th>Status</th><th>Message</th></tr></thead>
                         <tbody>
                           {selectedCsiReport.products.map((row, index) => (
                             <tr key={`${row.product || "product"}-${index}`}>
@@ -4989,6 +4989,7 @@ function UkdocsCSIPage({ currentUser }) {
                               <td>{row.invoice_quantity || "-"}</td>
                               <td>{row.export_quantity || "-"}</td>
                               <td>{row.ipaffs_quantity || "-"}</td>
+                              <td>{row.temp_phyto_quantity || "-"}</td>
                               <td>{row.status || "-"}</td>
                               <td>{row.message || "-"}</td>
                             </tr>
