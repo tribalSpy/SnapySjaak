@@ -3388,6 +3388,42 @@ function matchFustMetaRecord(records, country, customerName) {
   )) || null;
 }
 
+function resolveFustImportMeta(metaRecords, record) {
+  const country = String(record?.country || "").trim().toUpperCase();
+  const carrier1Name = String(record?.carrier1_name || record?.customer_name || "").trim();
+  const carrier2Name = String(record?.carrier2_name || "").trim();
+  const carrier1Meta = carrier1Name ? matchFustMetaRecord(metaRecords, country, carrier1Name) : null;
+  const carrier2Meta = carrier2Name ? matchFustMetaRecord(metaRecords, country, carrier2Name) : null;
+
+  if (carrier2Meta) {
+    return {
+      customer_name: carrier2Meta.customer_name,
+      connect_name: carrier2Meta.connect_name || carrier2Meta.customer_code || "",
+      customer_code: carrier2Meta.customer_code || carrier2Meta.connect_name || "",
+      matched_by: "carrier2",
+      match_name: carrier2Name,
+    };
+  }
+
+  if (carrier1Meta) {
+    return {
+      customer_name: carrier1Meta.customer_name,
+      connect_name: carrier1Meta.connect_name || carrier1Meta.customer_code || "",
+      customer_code: carrier1Meta.customer_code || carrier1Meta.connect_name || "",
+      matched_by: "carrier1",
+      match_name: carrier1Name,
+    };
+  }
+
+  return {
+    customer_name: carrier1Name || String(record?.customer_name || "").trim(),
+    connect_name: "",
+    customer_code: "",
+    matched_by: "",
+    match_name: "",
+  };
+}
+
 function findMatchingFustImportAction(actions, candidate) {
   const targetImportKey = buildFustImportKey(candidate);
   const targetBusinessKey = buildActionBusinessKey(candidate);
@@ -3432,10 +3468,55 @@ async function prepareFustImportRows(filePayload, requestUser) {
     loadFustSheetRows(settings),
   ]);
   const meta = buildFustMetaFromSheetRows(dataRows);
-  const preparedRows = parsed.records.map((record) => {
-    const matchedMeta = matchFustMetaRecord(meta.records, record.country, record.customer_name);
-    const connectName = matchedMeta?.connect_name || "";
-    const customerCode = matchedMeta?.customer_code || connectName;
+  const resolvedRows = parsed.records.map((record) => {
+    const resolvedMeta = resolveFustImportMeta(meta.records, record);
+    return {
+      ...record,
+      type: "OUT",
+      customer_name: resolvedMeta.customer_name,
+      connect_name: resolvedMeta.connect_name,
+      customer_code: resolvedMeta.customer_code,
+      matched_by: resolvedMeta.matched_by,
+      matched_name: resolvedMeta.match_name,
+    };
+  });
+
+  const groupedRows = new Map();
+  for (const record of resolvedRows) {
+    const key = [
+      "OUT",
+      String(record.action_date || "").trim(),
+      String(record.country || "").trim().toUpperCase(),
+      String(record.customer_name || "").trim().toLowerCase(),
+      String(record.connect_name || record.customer_code || "").trim().toLowerCase(),
+    ].join("|");
+    if (!groupedRows.has(key)) {
+      groupedRows.set(key, {
+        ...record,
+        metrics: { ...record.metrics },
+        source_row_numbers: [record.source_row_number].filter(Boolean),
+      });
+      continue;
+    }
+    const existing = groupedRows.get(key);
+    existing.metrics = {
+      dc: Number(existing.metrics?.dc || 0) + Number(record.metrics?.dc || 0),
+      cctag: Number(existing.metrics?.cctag || 0) + Number(record.metrics?.cctag || 0),
+      dcs: Number(existing.metrics?.dcs || 0) + Number(record.metrics?.dcs || 0),
+      dco: Number(existing.metrics?.dco || 0) + Number(record.metrics?.dco || 0),
+      pal: Number(existing.metrics?.pal || 0) + Number(record.metrics?.pal || 0),
+      vk: Number(existing.metrics?.vk || 0) + Number(record.metrics?.vk || 0),
+    };
+    existing.source_row_numbers = [...new Set([...(existing.source_row_numbers || []), record.source_row_number].filter(Boolean))];
+    if (!existing.matched_by && record.matched_by) {
+      existing.matched_by = record.matched_by;
+      existing.matched_name = record.matched_name;
+    }
+  }
+
+  const preparedRows = [...groupedRows.values()].map((record) => {
+    const connectName = record.connect_name || "";
+    const customerCode = record.customer_code || connectName;
     const importKey = buildFustImportKey({
       type: "OUT",
       action_date: record.action_date,
@@ -3461,9 +3542,13 @@ async function prepareFustImportRows(filePayload, requestUser) {
       : matchedAction
         ? (confirmed && !canManageConfirmed ? "locked" : "update")
         : "new";
+    const fallbackNote = !connectName && record.carrier2_name
+      ? `No connect match for "${record.carrier2_name}". Fallback to "${record.carrier1_name || record.customer_name}" also missing in Fust data sheet`
+      : !connectName
+        ? "No connect match found in Fust data sheet"
+        : "";
     return {
       ...record,
-      type: "OUT",
       connect_name: connectName,
       customer_code: customerCode,
       import_key: importKey,
@@ -3471,7 +3556,7 @@ async function prepareFustImportRows(filePayload, requestUser) {
       matched_confirmed: confirmed,
       status,
       note: !connectName
-        ? "No connect match found in Fust data sheet"
+        ? fallbackNote
         : matchedAction
           ? (confirmed && !canManageConfirmed ? `Confirmed by ${matchedAction.confirmed_by || "unknown"}` : "Will update existing action")
           : "Will create new action",

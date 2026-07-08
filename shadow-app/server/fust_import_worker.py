@@ -102,6 +102,7 @@ def parse_export2_rows(sheet_name: str, rows: list[list[object]]):
     country_idx = header_index.get("country", 0)
     date_idx = header_index.get("date", 3)
     carrier1_idx = header_index.get("carrier1", 10)
+    carrier2_idx = header_index.get("carrier2", 11)
     dc_idx = header_index.get("fustdc", 18)
     dcs_idx = header_index.get("fustdcs", 19)
     dco_idx = header_index.get("fustdco", 20)
@@ -125,17 +126,19 @@ def parse_export2_rows(sheet_name: str, rows: list[list[object]]):
                 if match:
                     current_date = f"{match.group(3)}-{match.group(2)}-{match.group(1)}"
 
-        carrier_raw = clean_text(row[carrier1_idx] if len(row) > carrier1_idx else "")
-        if not carrier_raw or not current_date:
+        carrier1_raw = clean_text(row[carrier1_idx] if len(row) > carrier1_idx else "")
+        carrier2_raw = clean_text(row[carrier2_idx] if len(row) > carrier2_idx else "")
+        if not carrier1_raw or not current_date:
             continue
-        customer_name = CARRIER_NAME_MAP.get(carrier_raw.lower(), carrier_raw)
+        carrier1_name = CARRIER_NAME_MAP.get(carrier1_raw.lower(), carrier1_raw)
+        carrier2_name = CARRIER_NAME_MAP.get(carrier2_raw.lower(), carrier2_raw) if carrier2_raw else ""
         dc = to_number(row[dc_idx] if len(row) > dc_idx else 0)
         dcs = to_number(row[dcs_idx] if len(row) > dcs_idx else 0)
         dco = to_number(row[dco_idx] if len(row) > dco_idx else 0)
         if dc == 0 and dcs == 0 and dco == 0:
             continue
 
-        key = (current_date, current_country or "FR", customer_name)
+        key = (current_date, current_country or "FR", carrier1_name, carrier2_name)
         if key not in grouped:
             grouped[key] = {
                 "type": "OUT",
@@ -143,7 +146,9 @@ def parse_export2_rows(sheet_name: str, rows: list[list[object]]):
                 "source_date_label": current_date,
                 "source_row_number": row_index,
                 "country": current_country or "FR",
-                "customer_name": customer_name,
+                "customer_name": carrier1_name,
+                "carrier1_name": carrier1_name,
+                "carrier2_name": carrier2_name,
                 "metrics": {
                     "dc": 0,
                     "cctag": 0,
