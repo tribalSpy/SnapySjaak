@@ -4726,6 +4726,15 @@ function UkdocsCSIPage({ currentUser }) {
   const selectedCsiEmail = selectedCollection?.csi_email || {};
   const selectedTempPhytoFiles = selectedCollection?.documents?.temp_phyto_files || [];
   const selectedIpaffsFile = selectedCollection?.documents?.ipaffs_file || null;
+  const selectedCsiChecks = selectedCsiReport.checks || [];
+  const selectedCsiVisualChecks = useMemo(
+    () => selectedCsiChecks.filter((check) => String(check?.code || "").toUpperCase().startsWith("LLM_")),
+    [selectedCsiChecks],
+  );
+  const selectedCsiMathChecks = useMemo(
+    () => selectedCsiChecks.filter((check) => !String(check?.code || "").toUpperCase().startsWith("LLM_")),
+    [selectedCsiChecks],
+  );
 
   useEffect(() => {
     if (!filteredCollections.length) {
@@ -4909,50 +4918,75 @@ function UkdocsCSIPage({ currentUser }) {
                 {!!selectedCsiReport.error && <div className="notice danger">{selectedCsiReport.error}</div>}
                 {!!selectedCsiReport.llm_parse_error && <div className="notice danger">{selectedCsiReport.llm_parse_error}</div>}
                 {!!selectedCsiReport.llm_parse_source && <small>Parse source: {selectedCsiReport.llm_parse_source}</small>}
-                {!!selectedCsiReport.checks?.length && (
-                  <div className="table-wrap">
-                    <table className="data-table">
-                      <thead><tr><th>Check</th><th>Status</th><th>Message</th></tr></thead>
-                      <tbody>
-                        {selectedCsiReport.checks.map((check, index) => (
-                          <tr key={`${check.code || "check"}-${index}`}>
-                            <td>{check.code || "-"}</td>
-                            <td>{check.status || "-"}</td>
-                            <td>{check.message || "-"}</td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  </div>
+                {!!selectedCsiMathChecks.length && (
+                  <>
+                    <strong>Math and file checks</strong>
+                    <div className="table-wrap">
+                      <table className="data-table">
+                        <thead><tr><th>Check</th><th>Status</th><th>Message</th></tr></thead>
+                        <tbody>
+                          {selectedCsiMathChecks.map((check, index) => (
+                            <tr key={`${check.code || "math-check"}-${index}`}>
+                              <td>{check.code || "-"}</td>
+                              <td>{check.status || "-"}</td>
+                              <td>{check.message || "-"}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  </>
+                )}
+                {!!selectedCsiReport.products?.length && (
+                  <>
+                    <strong>Product quantity comparison</strong>
+                    <div className="table-wrap">
+                      <table className="data-table">
+                        <thead><tr><th>Product</th><th>Invoice qty</th><th>Export qty</th><th>IPAFFS qty</th><th>Status</th><th>Message</th></tr></thead>
+                        <tbody>
+                          {selectedCsiReport.products.map((row, index) => (
+                            <tr key={`${row.product || "product"}-${index}`}>
+                              <td>{row.product || "-"}</td>
+                              <td>{row.invoice_quantity || "-"}</td>
+                              <td>{row.export_quantity || "-"}</td>
+                              <td>{row.ipaffs_quantity || "-"}</td>
+                              <td>{row.status || "-"}</td>
+                              <td>{row.message || "-"}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  </>
+                )}
+                {!!selectedCsiVisualChecks.length && (
+                  <>
+                    <strong>Visual phyto checks</strong>
+                    <div className="table-wrap">
+                      <table className="data-table">
+                        <thead><tr><th>Check</th><th>Status</th><th>Message</th></tr></thead>
+                        <tbody>
+                          {selectedCsiVisualChecks.map((check, index) => (
+                            <tr key={`${check.code || "visual-check"}-${index}`}>
+                              <td>{check.code || "-"}</td>
+                              <td>{check.status || "-"}</td>
+                              <td>{check.message || "-"}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  </>
                 )}
                 {selectedCsiReport.status === "done"
                   && !selectedCsiReport.error
-                  && !selectedCsiReport.checks?.length
+                  && !selectedCsiChecks.length
                   && !selectedCsiReport.products?.length
                   && !selectedCsiReport.manual_checks?.length && (
                     <div className="notice danger">
                       CSI finished, but no structured result rows were saved. Open the audit again after a new run, or check the raw LLM response/log if this keeps happening.
                     </div>
                   )}
-                {!!selectedCsiReport.products?.length && (
-                  <div className="table-wrap">
-                    <table className="data-table">
-                      <thead><tr><th>Product</th><th>Invoice qty</th><th>Export qty</th><th>IPAFFS qty</th><th>Status</th><th>Message</th></tr></thead>
-                      <tbody>
-                        {selectedCsiReport.products.map((row, index) => (
-                          <tr key={`${row.product || "product"}-${index}`}>
-                            <td>{row.product || "-"}</td>
-                            <td>{row.invoice_quantity || "-"}</td>
-                            <td>{row.export_quantity || "-"}</td>
-                            <td>{row.ipaffs_quantity || "-"}</td>
-                            <td>{row.status || "-"}</td>
-                            <td>{row.message || "-"}</td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  </div>
-                )}
                 {!!selectedCsiReport.manual_checks?.length && (
                   <>
                     <strong>Manual checks</strong>
@@ -4961,6 +4995,18 @@ function UkdocsCSIPage({ currentUser }) {
                     </ul>
                   </>
                 )}
+                {!selectedCsiMathChecks.length
+                  && !selectedCsiVisualChecks.length
+                  && !selectedCsiReport.products?.length
+                  && !selectedCsiReport.manual_checks?.length
+                  && !!selectedCsiReport.notes?.length && (
+                    <>
+                      <strong>CSI notes</strong>
+                      <ul>
+                        {selectedCsiReport.notes.map((item, index) => <li key={`${item}-${index}`}>{item}</li>)}
+                      </ul>
+                    </>
+                  )}
                 {!!selectedCsiReport.llm_content && (
                   <details>
                     <summary>Raw LLM response</summary>
