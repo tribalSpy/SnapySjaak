@@ -7935,8 +7935,35 @@ async function handleApi(req, res, url) {
       const tempPhytoExpectedCount = Array.isArray(job?.payload_json?.deterministic_visual_context?.temp_phyto_documents)
         ? job.payload_json.deterministic_visual_context.temp_phyto_documents.length
         : 0;
-      const visiblePcnuPassCount = llmChecks.filter((item) => item?.code === "PHYTO_PCNU_VISIBLE" && item?.status === "pass").length;
-      const visualPcnuCoveredAllTempPhytos = tempPhytoExpectedCount > 0 && visiblePcnuPassCount >= tempPhytoExpectedCount;
+      const visiblePcnuPassChecks = llmChecks.filter((item) => item?.code === "PHYTO_PCNU_VISIBLE" && item?.status === "pass");
+      const visiblePcnuPassCount = visiblePcnuPassChecks.length;
+      const visiblePcnuDocumentLabels = new Set();
+      for (const item of Array.isArray(parsed.visible_documents) ? parsed.visible_documents : []) {
+        const pcnuValue = String(item?.pcnu_number || "").trim();
+        if (!pcnuValue) {
+          continue;
+        }
+        const rawLabel = String(item?.document_label || "").trim();
+        if (!rawLabel) {
+          continue;
+        }
+        for (const label of rawLabel.split("|")) {
+          const normalizedLabel = String(label || "").trim();
+          if (normalizedLabel) {
+            visiblePcnuDocumentLabels.add(normalizedLabel);
+          }
+        }
+      }
+      const combinedPcnuPassForAllDocs = visiblePcnuPassChecks.some((item) => {
+        const normalizedMessage = String(item?.message || "").trim().toLowerCase();
+        return normalizedMessage.includes("both temporary phyto documents")
+          || normalizedMessage.includes("all temporary phyto documents");
+      });
+      const visualPcnuCoveredAllTempPhytos = tempPhytoExpectedCount > 0 && (
+        visiblePcnuPassCount >= tempPhytoExpectedCount
+        || visiblePcnuDocumentLabels.size >= tempPhytoExpectedCount
+        || combinedPcnuPassForAllDocs
+      );
       const deterministicChecks = (Array.isArray(deterministicSource.checks) ? deterministicSource.checks : []).map((item) => {
         if (
           item?.code === "TEMP_PHYTO_PARSE"
