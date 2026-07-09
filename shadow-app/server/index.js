@@ -5142,8 +5142,22 @@ function addUkdocsCsiQuantity(map, key, quantity) {
 }
 
 function getUkdocsCsiCurrenciesFromText(text) {
-  const matches = String(text || "").toUpperCase().match(/\b(?:GBP|EUR|USD)\b/g) || [];
-  return Array.from(new Set(matches));
+  const source = String(text || "");
+  const detected = new Set();
+  const codeMatches = source.toUpperCase().match(/\b(?:GBP|EUR|USD)\b/g) || [];
+  for (const match of codeMatches) {
+    detected.add(match);
+  }
+  if (source.includes("€")) {
+    detected.add("EUR");
+  }
+  if (source.includes("£")) {
+    detected.add("GBP");
+  }
+  if (source.includes("$")) {
+    detected.add("USD");
+  }
+  return Array.from(detected);
 }
 
 function csiStatusRank(status) {
@@ -8032,7 +8046,13 @@ async function handleApi(req, res, url) {
       const finalManualChecks = uniqueUkdocsCsiStrings([
         ...(Array.isArray(deterministicSource.manual_checks) ? deterministicSource.manual_checks : []),
         ...(Array.isArray(parsed.manual_checks) ? parsed.manual_checks : []),
-      ]);
+      ]).filter((item) => {
+        const normalized = String(item || "").toLowerCase();
+        if (visualPcnuCoveredAllTempPhytos && normalized.includes("pcnu")) {
+          return false;
+        }
+        return true;
+      });
       const finalNotes = uniqueUkdocsCsiStrings([
         ...(Array.isArray(deterministicSource.notes) ? deterministicSource.notes : []),
         ...(Array.isArray(parsed.notes) ? parsed.notes : []),
