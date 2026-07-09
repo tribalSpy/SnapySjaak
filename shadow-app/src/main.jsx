@@ -3649,7 +3649,8 @@ const UKDOCS_PRINT_DOCUMENTS = [
   { key: "inspection_list", label: "Inspection list", accept: ".pdf,.xlsx,.xls" },
   { key: "locations_file", label: "Locations file", accept: ".pdf,.xlsx,.xls" },
   { key: "temp_phyto", label: "Temporary phyto PDF", accept: ".pdf" },
-  { key: "ipaffs_file", label: "IPAFFS file", accept: ".csv,.xlsx,.xls" },
+  { key: "ipaffs_file", label: "IPAFFS Flowers+ACC", accept: ".csv,.xlsx,.xls" },
+  { key: "ipaffs_plants_file", label: "IPAFFS Plants", accept: ".csv,.xlsx,.xls" },
 ];
 
 function ukdocsPrintStatusDefinition(status) {
@@ -4320,6 +4321,7 @@ function UkdocsPrintPage({ currentUser }) {
                   if (ukdocsPrintInspectionMode(selectedCollection) !== "stock_control") {
                     visibleKeys.add("temp_phyto");
                     visibleKeys.add("ipaffs_file");
+                    visibleKeys.add("ipaffs_plants_file");
                   }
                   return visibleKeys.has(documentDefinition.key);
                 }).map((documentDefinition) => {
@@ -4764,6 +4766,7 @@ function UkdocsCSIPage({ currentUser }) {
   const selectedCsiEmail = selectedCollection?.csi_email || {};
   const selectedTempPhytoFiles = selectedCollection?.documents?.temp_phyto_files || [];
   const selectedIpaffsFile = selectedCollection?.documents?.ipaffs_file || null;
+  const selectedIpaffsPlantsFile = selectedCollection?.documents?.ipaffs_plants_file || null;
   const selectedCsiChecks = selectedCsiReport.checks || [];
   const selectedCsiVisualChecks = useMemo(
     () => selectedCsiChecks.filter((check) => String(check?.code || "").toUpperCase().startsWith("LLM_")),
@@ -4943,12 +4946,22 @@ function UkdocsCSIPage({ currentUser }) {
                   )}
                 </div>
                 <div className="ukdocs-upload-card">
-                  <strong>IPAFFS file</strong>
+                  <strong>IPAFFS Flowers+ACC</strong>
                   <small>{selectedIpaffsFile?.original_name ? `${selectedIpaffsFile.original_name} saved ${formatTimestamp(selectedIpaffsFile.saved_at)}` : "No file saved yet in Zending."}</small>
                   {selectedIpaffsFile?.storage_name && (
                     <div className="row-actions">
                       <a href={`/api/ukdocs-print/collections/${encodeURIComponent(selectedCollection.id)}/documents/ipaffs_file`} target="_blank" rel="noreferrer">Open</a>
                       <button type="button" onClick={() => deleteCollectionDocument("ipaffs_file")} disabled={saving}>Delete</button>
+                    </div>
+                  )}
+                </div>
+                <div className="ukdocs-upload-card">
+                  <strong>IPAFFS Plants</strong>
+                  <small>{selectedIpaffsPlantsFile?.original_name ? `${selectedIpaffsPlantsFile.original_name} saved ${formatTimestamp(selectedIpaffsPlantsFile.saved_at)}` : "No file saved yet in Zending."}</small>
+                  {selectedIpaffsPlantsFile?.storage_name && (
+                    <div className="row-actions">
+                      <a href={`/api/ukdocs-print/collections/${encodeURIComponent(selectedCollection.id)}/documents/ipaffs_plants_file`} target="_blank" rel="noreferrer">Open</a>
+                      <button type="button" onClick={() => deleteCollectionDocument("ipaffs_plants_file")} disabled={saving}>Delete</button>
                     </div>
                   )}
                 </div>

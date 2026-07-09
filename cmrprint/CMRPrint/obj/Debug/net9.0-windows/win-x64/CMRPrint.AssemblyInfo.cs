@@ -13,7 +13,7 @@ using System.Reflection;
 [assembly: System.Reflection.AssemblyCompanyAttribute("CMRPrint")]
 [assembly: System.Reflection.AssemblyConfigurationAttribute("Debug")]
 [assembly: System.Reflection.AssemblyFileVersionAttribute("1.0.0.0")]
-[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+8e1dc420f4c1ef6c1fc33c9c5ceae43d3eab59a8")]
+[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+7c6016d0c8994bf2a6934331e01a2c4a7987220d")]
 [assembly: System.Reflection.AssemblyProductAttribute("CMRPrint")]
 [assembly: System.Reflection.AssemblyTitleAttribute("CMRPrint")]
 [assembly: System.Reflection.AssemblyVersionAttribute("1.0.0.0")]

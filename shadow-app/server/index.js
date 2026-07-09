@@ -1582,6 +1582,7 @@ function normalizeUkdocsPrintCollection(collection) {
       locations_file: normalizeUkdocsPrintDocument(collection?.documents?.locations_file),
       temp_phyto_files: normalizeUkdocsPrintDocumentList(collection?.documents?.temp_phyto_files || (collection?.documents?.temp_phyto ? [collection.documents.temp_phyto] : [])),
       ipaffs_file: normalizeUkdocsPrintDocument(collection?.documents?.ipaffs_file),
+      ipaffs_plants_file: normalizeUkdocsPrintDocument(collection?.documents?.ipaffs_plants_file),
     },
     csi_report: normalizeUkdocsCsiReport(collection?.csi_report),
   };
@@ -4291,7 +4292,7 @@ async function saveUkdocsPrintUpload(collectionId, kind, filePayload, requestUse
   const originalName = path.basename(String(filePayload?.file_name || filePayload?.name || "").trim());
   const contentBase64 = String(filePayload?.content_base64 || "").trim();
   const mimeType = String(filePayload?.mime_type || guessMimeType(originalName)).trim() || "application/octet-stream";
-  if (!["phyto", "export_extra", "inspection_list", "locations_file", "temp_phyto", "ipaffs_file"].includes(kind)) {
+  if (!["phyto", "export_extra", "inspection_list", "locations_file", "temp_phyto", "ipaffs_file", "ipaffs_plants_file"].includes(kind)) {
     throw new Error("Unknown UKdocs Print document type");
   }
   if (!originalName || !contentBase64) {
@@ -4314,7 +4315,7 @@ async function saveUkdocsPrintUpload(collectionId, kind, filePayload, requestUse
 }
 
 async function saveUkdocsPrintBuffer(collectionId, kind, originalName, mimeType, fileBuffer, savedBy) {
-  if (!["phyto", "export_extra", "generated", "inspection_list", "locations_file", "temp_phyto", "ipaffs_file"].includes(kind)) {
+  if (!["phyto", "export_extra", "generated", "inspection_list", "locations_file", "temp_phyto", "ipaffs_file", "ipaffs_plants_file"].includes(kind)) {
     throw new Error("Unknown UKdocs Print document type");
   }
   const extension = safeExtension(originalName, mimeType);
@@ -4591,6 +4592,7 @@ function mergeUkdocsPrintCollectionPair(keeper, duplicate) {
       locations_file: chooseObject(keeper?.documents?.locations_file, duplicate?.documents?.locations_file),
       temp_phyto_files: mergeUkdocsPrintDocumentLists(keeper?.documents?.temp_phyto_files, duplicate?.documents?.temp_phyto_files),
       ipaffs_file: chooseObject(keeper?.documents?.ipaffs_file, duplicate?.documents?.ipaffs_file),
+      ipaffs_plants_file: chooseObject(keeper?.documents?.ipaffs_plants_file, duplicate?.documents?.ipaffs_plants_file),
     },
   });
 }
@@ -4606,6 +4608,7 @@ function ukdocsPrintCollectionMergeScore(collection) {
     + (documents.inspection_list?.storage_name ? 4 : 0)
     + (documents.locations_file?.storage_name ? 4 : 0)
     + (documents.ipaffs_file?.storage_name ? 4 : 0)
+    + (documents.ipaffs_plants_file?.storage_name ? 4 : 0)
     + (collection?.delivery_email?.ok ? 8 : 0)
     + (collection?.csi_email?.ok ? 8 : 0)
     + (collection?.csi_report?.status === "done" ? 8 : 0)
@@ -4784,6 +4787,9 @@ async function deleteUkdocsPrintCollectionFiles(collection) {
   }
   if (collection?.documents?.ipaffs_file) {
     documents.push(collection.documents.ipaffs_file);
+  }
+  if (collection?.documents?.ipaffs_plants_file) {
+    documents.push(collection.documents.ipaffs_plants_file);
   }
   await Promise.all(documents.map(async (document) => {
     const resolvedPath = path.resolve(ukdocsPrintDocumentPath(document));
@@ -4967,6 +4973,10 @@ async function hydrateUkdocsCsiCollectionInputs(collection) {
     nextDocuments.ipaffs_file = await enrichUkdocsCsiStoredDocument(nextDocuments.ipaffs_file, "ipaffs_file");
     changed = true;
   }
+  if (nextDocuments.ipaffs_plants_file?.storage_name && !nextDocuments.ipaffs_plants_file?.parsed_data) {
+    nextDocuments.ipaffs_plants_file = await enrichUkdocsCsiStoredDocument(nextDocuments.ipaffs_plants_file, "ipaffs_plants_file");
+    changed = true;
+  }
 
   const tempPhytoFiles = [];
   for (const document of nextDocuments.temp_phyto_files || []) {
@@ -5046,7 +5056,7 @@ function summarizeUkdocsCsiExtractedDocuments(extractedDocuments) {
       return summary;
     }
 
-    if (kind === "ipaffs_file") {
+    if (kind === "ipaffs_file" || kind === "ipaffs_plants_file") {
       const ipaffsRows = Array.isArray(parsedData?.rows) ? parsedData.rows.slice(0, 120) : [];
       const productTotals = Array.isArray(parsedData?.product_totals) ? parsedData.product_totals.slice(0, 120) : [];
       summary.parsed_data = {
@@ -9552,12 +9562,12 @@ async function handleApi(req, res, url) {
       sendJson(res, 200, { collection: existingCollection, print_collections: normalizeUkdocsState(state).print_collections, skipped: true, reason: "temp_phyto already exists" });
       return;
     }
-    if (["inspection_list", "locations_file", "ipaffs_file"].includes(kind) && existingCollection.documents?.[kind]?.storage_name) {
+    if (["inspection_list", "locations_file", "ipaffs_file", "ipaffs_plants_file"].includes(kind) && existingCollection.documents?.[kind]?.storage_name) {
       sendJson(res, 200, { collection: existingCollection, print_collections: normalizeUkdocsState(state).print_collections, skipped: true, reason: `${kind} already exists` });
       return;
     }
     const savedDocumentRaw = await saveUkdocsPrintUpload(existingCollection.id, kind, body?.file || {}, requestUser);
-    const savedDocument = ["temp_phyto", "ipaffs_file"].includes(kind)
+    const savedDocument = ["temp_phyto", "ipaffs_file", "ipaffs_plants_file"].includes(kind)
       ? await enrichUkdocsCsiStoredDocument(savedDocumentRaw, kind)
       : savedDocumentRaw;
     const updatedCollection = normalizeUkdocsPrintCollection({
@@ -9662,7 +9672,7 @@ async function handleApi(req, res, url) {
       }
       generatedFiles.splice(documentIndex, 1);
       updatedDocuments = { ...updatedDocuments, generated_files: generatedFiles };
-    } else if (["export_extra", "inspection_list", "locations_file", "ipaffs_file"].includes(kind)) {
+    } else if (["export_extra", "inspection_list", "locations_file", "ipaffs_file", "ipaffs_plants_file"].includes(kind)) {
       removedDocument = existingCollection.documents?.[kind] || null;
       if (!removedDocument) {
         sendJson(res, 404, { error: "UKdocs Print document not found" });
