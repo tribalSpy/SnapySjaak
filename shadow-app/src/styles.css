@@ -789,24 +789,34 @@ textarea {
 .data-table {
   width: 100%;
   border-collapse: collapse;
+  border: 1px solid #ccd6e2;
+  background: #ffffff;
 }
 
 .data-table th,
 .data-table td {
-  border-top: 1px solid #e1e6ec;
+  border: 1px solid #d9e1ea;
   padding: 10px 8px;
   text-align: left;
-  vertical-align: top;
+  vertical-align: middle;
 }
 
 .data-table th {
   color: #5a6876;
   font-size: 0.86rem;
+  background: #f5f8fb;
 }
 
 .balance-table td,
 .balance-table th {
   white-space: nowrap;
+  text-align: center;
+}
+
+.balance-table th:nth-child(-n+3),
+.balance-table td:nth-child(-n+3),
+.balance-table .summary-row td:first-child {
+  text-align: left;
 }
 
 .clickable-row {
@@ -842,6 +852,20 @@ textarea {
 
 .action-table .metric-edit {
   min-width: 70px;
+}
+
+.action-table th,
+.action-table td {
+  text-align: center;
+}
+
+.action-table th:nth-child(-n+5),
+.action-table td:nth-child(-n+5),
+.action-table th:nth-child(12),
+.action-table td:nth-child(12),
+.action-table th:nth-child(13),
+.action-table td:nth-child(13) {
+  text-align: left;
 }
 
 .transaction-detail {

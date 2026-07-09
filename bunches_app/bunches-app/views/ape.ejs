@@ -1,0 +1,94 @@
+<% layout('_layout') -%>
+<h1>APE-beheer (BUN HVLH Lijst)</h1>
+<p style="color:#666;">Totaal: <%= total %> entries (toon max 300)</p>
+
+<div class="card">
+  <h3 style="margin-top:0;">Nieuw toevoegen (of bestaand overschrijven)</h3>
+  <form method="POST" action="<%= basePath %>/admin/ape">
+    <div class="row">
+      <input type="text" name="omschrijving" placeholder="Artikel Omschrijving (precies zoals in excel.bradley)" required style="width:400px">
+      <input type="number" name="ape" placeholder="APE (stuks/bos)" required style="width:120px">
+      <button type="submit">Toevoegen</button>
+    </div>
+  </form>
+</div>
+
+<div class="card">
+  <form method="GET" action="<%= basePath %>/admin/ape" style="margin-bottom: 12px;">
+    <input type="search" name="q" placeholder="Zoek op naam..." value="<%= query %>" style="width: 320px;">
+    <button type="submit">Zoek</button>
+    <% if (query) { %>
+      <a href="<%= basePath %>/admin/ape" class="btn secondary">Wis</a>
+    <% } %>
+  </form>
+
+  <p style="color:#666; font-size:12px;">APE waarde direct wijzigen en klik <strong>Opslaan</strong>. Omschrijving is de primary key.</p>
+
+  <div style="max-height: 600px; overflow: auto;">
+    <table>
+      <thead>
+        <tr><th>Omschrijving</th><th class="num" style="width: 100px;">APE</th><th style="width: 150px;">Actie</th></tr>
+      </thead>
+      <tbody>
+        <% for (const a of ape) { %>
+          <tr data-omschrijving="<%= a.omschrijving %>">
+            <td><%= a.omschrijving %></td>
+            <td><input type="number" name="ape" value="<%= a.ape %>" style="width: 100%; box-sizing: border-box;"></td>
+            <td>
+              <button type="button" onclick="saveApe(this)" style="padding:4px 10px; font-size:12px;">Opslaan</button>
+              <button type="button" onclick="deleteApe(this)" class="danger" style="padding:4px 10px; font-size:12px;">×</button>
+            </td>
+          </tr>
+        <% } %>
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<script>
+async function saveApe(btn) {
+  const tr = btn.closest('tr');
+  const omschrijving = tr.dataset.omschrijving;
+  const ape = tr.querySelector('input[name="ape"]').value;
+  const body = new URLSearchParams();
+  body.append('omschrijving', omschrijving);
+  body.append('ape', ape);
+  btn.disabled = true;
+  const orig = btn.textContent;
+  btn.textContent = '...';
+  try {
+    const r = await fetch('<%= basePath %>/admin/ape', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: body.toString(),
+    });
+    if (r.ok || r.redirected) {
+      btn.textContent = '✓';
+      btn.style.background = '#198754';
+      setTimeout(() => { btn.textContent = orig; btn.style.background = ''; btn.disabled = false; }, 900);
+    } else {
+      btn.textContent = 'Fout';
+      btn.style.background = '#dc3545';
+      btn.disabled = false;
+    }
+  } catch (e) {
+    btn.textContent = 'Fout';
+    btn.style.background = '#dc3545';
+    btn.disabled = false;
+  }
+}
+
+async function deleteApe(btn) {
+  const tr = btn.closest('tr');
+  const omschrijving = tr.dataset.omschrijving;
+  if (!confirm('Verwijder APE entry voor "' + omschrijving + '"?')) return;
+  const body = new URLSearchParams();
+  body.append('omschrijving', omschrijving);
+  const r = await fetch('<%= basePath %>/admin/ape/delete', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: body.toString(),
+  });
+  if (r.ok || r.redirected) tr.remove();
+}
+</script>

@@ -1,0 +1,21 @@
+{
+  "name": "bunches-app",
+  "version": "0.1.0",
+  "description": "Bunches sheet processor: paste excel.bradley data, generate Inlezen / Printlijst / YYBU* outputs",
+  "main": "index.js",
+  "type": "commonjs",
+  "scripts": {
+    "start": "node index.js",
+    "seed": "node lib/seed.js",
+    "dev": "node --watch index.js"
+  },
+  "dependencies": {
+    "better-sqlite3": "^11.3.0",
+    "ejs": "^3.1.10",
+    "express": "^4.21.0",
+    "pdfkit": "^0.15.0"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

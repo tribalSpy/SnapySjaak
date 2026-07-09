@@ -1,0 +1,149 @@
+<% layout('_layout') -%>
+<h1>Artikel-beheer (Sorteerblad inlezen)</h1>
+
+<% if (query) { %>
+  <p style="color:#666;">Filter: "<%= query %>" — toon max 200 van <%= total %></p>
+<% } else { %>
+  <p style="color:#666;">Totaal: <%= total %> artikelen (toon max 200)</p>
+<% } %>
+
+<% if (typeof bulkMsg !== 'undefined' && bulkMsg) { %>
+  <div class="success"><strong>Bulk-actie:</strong> <%= bulkMsg %></div>
+<% } %>
+
+<details style="margin-bottom: 16px;">
+  <summary style="cursor: pointer; padding: 8px 12px; background: #fff8dc; border-radius: 6px; font-weight: 500;">
+    🔧 Bulk: zonder tak-berekening aan/uit voor meerdere broncodes
+  </summary>
+  <div class="card" style="margin-top: 8px;">
+    <form method="POST" action="<%= basePath %>/admin/articles/bulk-zonder-tak">
+      <label for="broncodes" style="display:block; margin-bottom:4px; font-weight:500; font-size:13px;">
+        Broncodes (één per regel, of gescheiden door spatie/komma):
+      </label>
+      <textarea name="broncodes" id="broncodes" style="width:100%; min-height:120px; font-family: monospace; font-size:12px;" placeholder="2640882&#10;2642793&#10;..."></textarea>
+      <div class="row" style="margin-top: 8px;">
+        <button type="submit" name="action" value="on">Zonder tak: AAN</button>
+        <button type="submit" name="action" value="off" class="secondary">Zonder tak: UIT</button>
+        <span style="color:#666; font-size:12px;">Werkt op bestaande artikelen. Niet-gevonden broncodes worden gemeld.</span>
+      </div>
+    </form>
+  </div>
+</details>
+
+<div class="card">
+  <h3 style="margin-top:0;">Nieuw artikel toevoegen (of bestaand overschrijven)</h3>
+  <form method="POST" action="<%= basePath %>/admin/articles">
+    <div class="row" style="margin-bottom: 8px; align-items: center;">
+      <input type="number" name="broncode" placeholder="Broncode" required style="width:110px">
+      <input type="text" name="omschrijving" placeholder="Artikel Omschrijving" required style="width:260px">
+      <input type="text" name="variant_code" placeholder="Variant (YBU3K)" required style="width:110px">
+      <input type="number" name="broncode_inlezen" placeholder="Broncode inlezen" style="width:130px">
+      <input type="number" name="afronden" placeholder="Afronden" style="width:100px">
+      <label style="display: flex; align-items: center; gap: 4px; font-size: 13px; color: #333;">
+        <input type="checkbox" name="zonder_tak" value="1"> Zonder tak-berekening
+      </label>
+      <button type="submit">Toevoegen</button>
+    </div>
+    <p style="color:#666; font-size: 12px; margin: 4px 0 0;">
+      <strong>Zonder tak-berekening</strong>: voor artikelen waar stems = som (bunches), NIET som × tak. Voorbeeld: "Bun Rose. Sup Mix Kraft 5T" (88 bunches blijft 88 stems, niet 88×5).
+    </p>
+  </form>
+</div>
+
+<div class="card">
+  <form method="GET" action="<%= basePath %>/admin/articles" style="margin-bottom: 12px;">
+    <input type="search" name="q" placeholder="Zoek op broncode, naam of variant..." value="<%= query %>" style="width: 320px;">
+    <button type="submit">Zoek</button>
+    <% if (query) { %>
+      <a href="<%= basePath %>/admin/articles" class="btn secondary">Wis</a>
+    <% } %>
+  </form>
+
+  <p style="color:#666; font-size:12px;">Wijzig direct in de rij en klik <strong>Opslaan</strong>. Broncode is de primary key en kan niet worden gewijzigd.</p>
+
+  <div style="max-height: 600px; overflow: auto;">
+    <table>
+      <thead>
+        <tr>
+          <th class="num" style="width: 90px;">Broncode</th>
+          <th>Omschrijving</th>
+          <th style="width: 100px;">Variant</th>
+          <th class="num" style="width: 120px;">Br.inlezen</th>
+          <th class="num" style="width: 90px;">Afronden</th>
+          <th class="check" style="width: 70px; text-align:center;">Zonder<br>tak</th>
+          <th style="width: 130px;">Actie</th>
+        </tr>
+      </thead>
+      <tbody>
+        <% for (const a of articles) { %>
+          <tr data-broncode="<%= a.broncode %>" <% if (a.zonder_tak) { %>style="background: #fff8dc;"<% } %>>
+            <td class="num"><%= a.broncode %></td>
+            <td><input type="text" name="omschrijving" value="<%= a.omschrijving %>" style="width: 100%; box-sizing: border-box;"></td>
+            <td><input type="text" name="variant_code" value="<%= a.variant_code %>" style="width: 100%; box-sizing: border-box;"></td>
+            <td><input type="number" name="broncode_inlezen" value="<%= a.broncode_inlezen || '' %>" style="width: 100%; box-sizing: border-box;"></td>
+            <td><input type="number" name="afronden" value="<%= a.afronden || '' %>" style="width: 100%; box-sizing: border-box;"></td>
+            <td style="text-align:center;">
+              <input type="checkbox" name="zonder_tak" value="1" <% if (a.zonder_tak) { %>checked<% } %> style="width: 18px; height: 18px;">
+            </td>
+            <td>
+              <button type="button" onclick="saveArticle(this)" style="padding:4px 10px; font-size:12px;">Opslaan</button>
+              <button type="button" onclick="deleteArticle(this)" class="danger" style="padding:4px 10px; font-size:12px;">×</button>
+            </td>
+          </tr>
+        <% } %>
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<script>
+async function saveArticle(btn) {
+  const tr = btn.closest('tr');
+  const broncode = tr.dataset.broncode;
+  const body = new URLSearchParams();
+  body.append('broncode', broncode);
+  // Alle name-inputs behalve checkboxes (die worden apart afgehandeld)
+  tr.querySelectorAll('input[name]').forEach(i => {
+    if (i.type === 'checkbox') {
+      if (i.checked) body.append(i.name, '1');
+      // uitgevinkte checkboxes NIET meesturen — server default is 0
+    } else {
+      body.append(i.name, i.value);
+    }
+  });
+  btn.disabled = true;
+  const orig = btn.textContent;
+  btn.textContent = '...';
+  try {
+    const r = await fetch('<%= basePath %>/admin/articles', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: body.toString(),
+    });
+    if (r.ok || r.redirected) {
+      btn.textContent = '✓';
+      btn.style.background = '#198754';
+      // Highlight ook direct de rij als zonder_tak veranderd
+      const zt = tr.querySelector('input[name="zonder_tak"]');
+      tr.style.background = zt && zt.checked ? '#fff8dc' : '';
+      setTimeout(() => { btn.textContent = orig; btn.style.background = ''; btn.disabled = false; }, 900);
+    } else {
+      btn.textContent = 'Fout';
+      btn.style.background = '#dc3545';
+      btn.disabled = false;
+    }
+  } catch (e) {
+    btn.textContent = 'Fout';
+    btn.style.background = '#dc3545';
+    btn.disabled = false;
+  }
+}
+
+async function deleteArticle(btn) {
+  const tr = btn.closest('tr');
+  const broncode = tr.dataset.broncode;
+  if (!confirm('Deactiveer artikel ' + broncode + '?')) return;
+  const r = await fetch('<%= basePath %>/admin/articles/' + broncode + '/delete', { method: 'POST' });
+  if (r.ok || r.redirected) tr.remove();
+}
+</script>

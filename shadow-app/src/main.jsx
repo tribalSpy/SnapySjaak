@@ -6684,11 +6684,38 @@ function FustOverview({ loading, actions, overview, sourceDebug, onRefresh }) {
   }
 
   function downloadExcelFriendlyTable(filename, headers, rows) {
-    const tsv = [
-      headers.join("\t"),
-      ...rows.map((row) => row.map((value) => String(value ?? "").replaceAll("\t", " ")).join("\t")),
-    ].join("\n");
-    const blob = new Blob([tsv], { type: "text/tab-separated-values;charset=utf-8;" });
+    const safeHeaders = headers.map((value) => String(value ?? "")
+      .replaceAll("&", "&amp;")
+      .replaceAll("<", "&lt;")
+      .replaceAll(">", "&gt;"));
+    const safeRows = rows.map((row) => row.map((value) => String(value ?? "")
+      .replaceAll("&", "&amp;")
+      .replaceAll("<", "&lt;")
+      .replaceAll(">", "&gt;")
+      .replaceAll("\n", "<br/>")));
+    const html = `<!DOCTYPE html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <style>
+      table { border-collapse: collapse; width: 100%; font-family: Calibri, Arial, sans-serif; font-size: 12px; }
+      th, td { border: 1px solid #9fb3c8; padding: 6px 8px; text-align: center; vertical-align: middle; }
+      th { background: #eef3f8; font-weight: 700; }
+      th:nth-child(-n+3), td:nth-child(-n+3) { text-align: left; }
+    </style>
+  </head>
+  <body>
+    <table>
+      <thead>
+        <tr>${safeHeaders.map((value) => `<th>${value}</th>`).join("")}</tr>
+      </thead>
+      <tbody>
+        ${safeRows.map((row) => `<tr>${row.map((value) => `<td>${value}</td>`).join("")}</tr>`).join("")}
+      </tbody>
+    </table>
+  </body>
+</html>`;
+    const blob = new Blob([html], { type: "application/vnd.ms-excel;charset=utf-8;" });
     const url = window.URL.createObjectURL(blob);
     const link = document.createElement("a");
     link.href = url;
@@ -6938,7 +6965,7 @@ function FustOverview({ loading, actions, overview, sourceDebug, onRefresh }) {
           <button
             type="button"
             onClick={() => downloadExcelFriendlyTable(
-              `fust-overview-${selectedWeek || "all-weeks"}-${selectedCountry || "all-countries"}-${selectedCustomer || "active-table"}.tsv`,
+              `fust-overview-${selectedWeek || "all-weeks"}-${selectedCountry || "all-countries"}-${selectedCustomer || "active-table"}.xls`,
               ["Week", "Country", "Cust/transport", "DC out", "DC in", "DC balance", "CCTag out", "CCTag in", "CCTag balance", "DCS out", "DCS in", "DCS balance", "DCO out", "DCO in", "DCO balance", "VK out", "VK in", "VK balance", "pal out"],
               exportRows,
             )}

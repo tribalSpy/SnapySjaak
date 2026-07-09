@@ -1,0 +1,193 @@
+<% layout('_layout') -%>
+<h1>
+  Resultaat
+  <% if (result._runId) { %>
+    <span style="font-size: 14px; font-weight: 400; color: #666;">— Run #<%= result._runId %>
+    <% if (result._createdAt) { %>· <%= result._createdAt %><% } %>
+    <% if (result._label) { %>· "<%= result._label %>"<% } %>
+    </span>
+  <% } %>
+</h1>
+
+<div class="stat-grid" style="margin-bottom: 16px;">
+  <div class="stat"><div class="v"><%= result.summary.input_rows %></div><div class="l">Input rijen</div></div>
+  <div class="stat"><div class="v"><%= result.summary.total_som %></div><div class="l">Totaal Som</div></div>
+  <div class="stat"><div class="v"><%= result.summary.inlezen_count %></div><div class="l">Inlezen rijen</div></div>
+  <div class="stat"><div class="v"><%= result.summary.inlezen_total_stems %></div><div class="l">Totaal stems</div></div>
+  <div class="stat"><div class="v"><%= result.summary.printlijst_plast_count %></div><div class="l">Printlijst Plast</div></div>
+  <div class="stat"><div class="v"><%= result.summary.printlijst_kraft_count %></div><div class="l">Printlijst Kraft</div></div>
+  <div class="stat"><div class="v"><%= result.summary.yybu_sheet_count %></div><div class="l">YYBU files</div></div>
+</div>
+
+<% if (result.warnings && result.warnings.length) { %>
+  <% for (const w of result.warnings) { %>
+    <div class="warning">
+      <strong><%= w.message %></strong>
+      <% if (w.details && w.details.length) { %>
+        <details style="margin-top: 6px;">
+          <summary>Details (<%= w.details.length %>)</summary>
+          <ul style="margin: 8px 0; padding-left: 20px; font-size: 12px;">
+            <% for (const d of w.details.slice(0, 30)) { %>
+              <li><%= d %></li>
+            <% } %>
+            <% if (w.details.length > 30) { %><li>... en nog <%= w.details.length - 30 %></li><% } %>
+          </ul>
+        </details>
+      <% } %>
+    </div>
+  <% } %>
+<% } %>
+
+<div class="card">
+  <div class="row" style="align-items: flex-end;">
+    <form method="POST" action="<%= basePath %>/result/<%= token %>/date" class="row" style="align-items: flex-end;">
+      <div>
+        <label for="vertrek_datum" style="display:block; margin-bottom:4px; font-weight:500; font-size: 13px;">
+          Vertrek-datum
+        </label>
+        <input type="date" name="vertrek_datum" id="vertrek_datum" value="<%= result.vertrekDatum %>" required>
+      </div>
+      <button type="submit" class="secondary">Datum bijwerken</button>
+    </form>
+    <form method="POST" action="<%= basePath %>/result/<%= token %>/label" class="row" style="align-items: flex-end; margin-left: 16px;">
+      <div>
+        <label for="label" style="display:block; margin-bottom:4px; font-weight:500; font-size: 13px;">
+          Label (optioneel — om terug te vinden in geschiedenis)
+        </label>
+        <input type="text" name="label" id="label" value="<%= result._label || '' %>" placeholder="bv. 30-6 leverdag" style="width: 240px;">
+      </div>
+      <button type="submit" class="secondary">Label opslaan</button>
+    </form>
+  </div>
+</div>
+
+<div class="card">
+  <h2 style="margin-top:0;">Downloads voor systeem-import</h2>
+  <div class="row">
+    <a class="btn" href="<%= basePath %>/download/<%= token %>/inlezen.csv">📥 Inlezen.csv</a>
+  </div>
+  <% const yybuSheets = Object.keys(result.yybu_files).sort(); %>
+  <% if (yybuSheets.length) { %>
+    <div class="row" style="margin-top: 12px;">
+      <% for (const sheet of yybuSheets) { %>
+        <a class="btn secondary" href="<%= basePath %>/download/<%= token %>/yybu/<%= sheet %>.csv"><%= sheet %> (<%= result.yybu_files[sheet].length %>)</a>
+      <% } %>
+    </div>
+  <% } %>
+</div>
+
+<div class="card">
+  <h2 style="margin-top:0;">Printlijsten</h2>
+  <p style="color:#666; font-size:13px; margin: 0 0 12px;">
+    <strong>HTML</strong>: opent in nieuw tabblad met klikbare checkboxes, dan Ctrl+P voor print.
+    &nbsp;<strong>PDF</strong>: directe download.
+  </p>
+
+  <% if (result.printlijst_plast.length) { %>
+    <div style="margin-bottom: 14px;">
+      <strong style="display:block; margin-bottom: 6px;">Plastic (<%= result.printlijst_plast.length %>)</strong>
+      <div class="row" style="margin-bottom: 4px;">
+        <a class="btn" href="<%= basePath %>/printlijst/<%= token %>/plast" target="_blank">📋 HTML volledig</a>
+        <% for (const tak of result.availableTaks.Plast) { %>
+          <% const cnt = result.printlijst_plast.filter(i => i.tak === tak).length; %>
+          <a class="btn secondary" href="<%= basePath %>/printlijst/<%= token %>/plast/<%= tak %>" target="_blank">Plastic <%= tak %> (<%= cnt %>)</a>
+        <% } %>
+      </div>
+      <div class="row">
+        <a class="btn" href="<%= basePath %>/printlijst/<%= token %>/plast?format=pdf" style="background:#dc3545;">📄 PDF volledig</a>
+        <% for (const tak of result.availableTaks.Plast) { %>
+          <a class="btn secondary" href="<%= basePath %>/printlijst/<%= token %>/plast/<%= tak %>?format=pdf">PDF <%= tak %></a>
+        <% } %>
+      </div>
+    </div>
+  <% } %>
+
+  <% if (result.printlijst_kraft.length) { %>
+    <div>
+      <strong style="display:block; margin-bottom: 6px;">Kraft (<%= result.printlijst_kraft.length %>)</strong>
+      <div class="row" style="margin-bottom: 4px;">
+        <a class="btn" href="<%= basePath %>/printlijst/<%= token %>/kraft" target="_blank">📋 HTML volledig</a>
+        <% for (const tak of result.availableTaks.Kraft) { %>
+          <% const cnt = result.printlijst_kraft.filter(i => i.tak === tak).length; %>
+          <a class="btn secondary" href="<%= basePath %>/printlijst/<%= token %>/kraft/<%= tak %>" target="_blank">Kraft <%= tak %> (<%= cnt %>)</a>
+        <% } %>
+      </div>
+      <div class="row">
+        <a class="btn" href="<%= basePath %>/printlijst/<%= token %>/kraft?format=pdf" style="background:#dc3545;">📄 PDF volledig</a>
+        <% for (const tak of result.availableTaks.Kraft) { %>
+          <a class="btn secondary" href="<%= basePath %>/printlijst/<%= token %>/kraft/<%= tak %>?format=pdf">PDF <%= tak %></a>
+        <% } %>
+      </div>
+    </div>
+  <% } %>
+</div>
+
+<div class="card">
+  <h2 style="margin-top:0;">Inlezen preview (<%= result.inlezen.length %> rijen)</h2>
+  <div style="max-height: 400px; overflow: auto;">
+    <table>
+      <thead>
+        <tr><th>Variant</th><th class="num">Totaal stems</th><th class="num">Broncode inlezen</th></tr>
+      </thead>
+      <tbody>
+        <% for (const r of result.inlezen) { %>
+          <tr>
+            <td><%= r.variant %></td>
+            <td class="num"><%= r.total %></td>
+            <td class="num"><%= r.broncode_inlezen %></td>
+          </tr>
+        <% } %>
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<div class="card">
+  <h2 style="margin-top:0;">Printlijst Plast preview</h2>
+  <div style="max-height: 400px; overflow: auto;">
+    <table>
+      <thead>
+        <tr><th>Naam</th><th class="num">Tak</th><th class="num">Lengte</th><th class="num">Aantal</th><th class="num">APE</th><th class="num">Totaal bossen</th></tr>
+      </thead>
+      <tbody>
+        <% for (const r of result.printlijst_plast) { %>
+          <tr>
+            <td><%= r.naam %></td>
+            <td class="num"><%= r.tak || '' %></td>
+            <td class="num"><%= r.lengte || '' %></td>
+            <td class="num"><%= r.aantal_eenheden != null ? (r.aantal_eenheden % 1 === 0 ? r.aantal_eenheden : r.aantal_eenheden.toFixed(1)) : '?' %></td>
+            <td class="num"><%= r.ape || '?' %></td>
+            <td class="num"><%= r.totaal_bossen %></td>
+          </tr>
+        <% } %>
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<div class="card">
+  <h2 style="margin-top:0;">Printlijst Kraft preview</h2>
+  <div style="max-height: 400px; overflow: auto;">
+    <table>
+      <thead>
+        <tr><th>Naam</th><th class="num">Tak</th><th class="num">Lengte</th><th class="num">Aantal</th><th class="num">APE</th><th class="num">Totaal bossen</th></tr>
+      </thead>
+      <tbody>
+        <% for (const r of result.printlijst_kraft) { %>
+          <tr>
+            <td><%= r.naam %></td>
+            <td class="num"><%= r.tak || '' %></td>
+            <td class="num"><%= r.lengte || '' %></td>
+            <td class="num"><%= r.aantal_eenheden != null ? (r.aantal_eenheden % 1 === 0 ? r.aantal_eenheden : r.aantal_eenheden.toFixed(1)) : '?' %></td>
+            <td class="num"><%= r.ape || '?' %></td>
+            <td class="num"><%= r.totaal_bossen %></td>
+          </tr>
+        <% } %>
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<div style="margin-top: 24px;">
+  <a class="btn secondary" href="<%= basePath %>/">← Nieuwe import</a>
+</div>

@@ -1,0 +1,50 @@
+<% layout('_layout') -%>
+<h1>Import geschiedenis</h1>
+<p style="color:#666;">Alle runs worden persistent bewaard. Klik <strong>Open</strong> om bestanden opnieuw te downloaden of de datum aan te passen.</p>
+
+<div class="card">
+  <table>
+    <thead>
+      <tr>
+        <th class="num" style="width: 50px;">ID</th>
+        <th>Datum aangemaakt</th>
+        <th>Vertrek</th>
+        <th>Label</th>
+        <th>User</th>
+        <th class="num">Rijen</th>
+        <th class="num">Totaal Som</th>
+        <th>Status</th>
+        <th style="width: 180px;">Actie</th>
+      </tr>
+    </thead>
+    <tbody>
+      <% for (const r of runs) { %>
+        <tr>
+          <td class="num">#<%= r.id %></td>
+          <td><%= r.created_at %></td>
+          <td><%= r.vertrek_datum || '-' %></td>
+          <td><%= r.label || '' %></td>
+          <td><%= r.user || '-' %></td>
+          <td class="num"><%= r.row_count %></td>
+          <td class="num"><%= r.total_som %></td>
+          <td>
+            <% if (r.status === 'ok') { %>
+              <span class="ok">ok</span>
+            <% } else { %>
+              <span style="color:#f57c00;"><%= r.status %></span>
+            <% } %>
+          </td>
+          <td>
+            <a class="btn" href="<%= basePath %>/result/run-<%= r.id %>" style="padding:4px 10px; font-size:12px;">Open</a>
+            <form method="POST" action="<%= basePath %>/admin/runs/<%= r.id %>/delete" class="inline" onsubmit="return confirm('Verwijder run #<%= r.id %>?')">
+              <button type="submit" class="danger" style="padding:4px 10px; font-size:12px;">×</button>
+            </form>
+          </td>
+        </tr>
+      <% } %>
+    </tbody>
+  </table>
+  <% if (runs.length === 0) { %>
+    <p style="color:#666; text-align:center; padding: 20px;">Nog geen imports.</p>
+  <% } %>
+</div>

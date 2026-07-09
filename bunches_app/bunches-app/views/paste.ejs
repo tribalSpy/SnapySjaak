@@ -1,0 +1,101 @@
+<% layout('_layout') -%>
+<h1>Bunches data importeren</h1>
+
+<div class="stat-grid" style="margin-bottom: 16px;">
+  <div class="stat"><div class="v"><%= articleCount %></div><div class="l">Artikelen</div></div>
+  <div class="stat"><div class="v"><%= apeCount %></div><div class="l">APE entries</div></div>
+</div>
+
+<% if (typeof error !== 'undefined' && error) { %>
+  <div class="error"><strong>Fout:</strong> <%= error %></div>
+<% } %>
+
+<%
+  const today = new Date().toISOString().slice(0, 10);
+  const dateVal = (typeof defaultDate !== 'undefined' && defaultDate) ? defaultDate : today;
+%>
+
+<div class="card">
+  <form method="POST" action="<%= basePath %>/process">
+    <div class="row" style="margin-bottom: 16px; align-items: flex-end;">
+      <div>
+        <label for="vertrek_datum" style="display:block; margin-bottom:4px; font-weight:500; font-size: 13px;">
+          Vertrek-datum (voor printlijst + UNI_DATE)
+        </label>
+        <input type="date" name="vertrek_datum" id="vertrek_datum" value="<%= dateVal %>" required>
+      </div>
+    </div>
+
+    <label for="paste_text" style="display:block; margin-bottom:8px; font-weight:500;">
+      Data: plak, sleep bestand, of kies bestand
+    </label>
+
+    <div id="drop_zone" style="border: 2px dashed #d2d2d7; border-radius: 6px; padding: 12px; text-align: center; margin-bottom: 8px; background: #fafafa;">
+      <input type="file" id="file_input" accept=".csv,.txt,.tsv" style="display: none;">
+      <button type="button" onclick="document.getElementById('file_input').click();" class="secondary" style="margin-right: 8px;">📁 Kies bestand</button>
+      <span style="color:#666; font-size:13px;">of sleep hier een bestand naartoe</span>
+      <div id="file_info" style="margin-top: 4px; font-size: 12px; color: #0071e3;"></div>
+    </div>
+
+    <textarea name="paste_text" id="paste_text" placeholder="Ruwe systeem-export (met ==== separators) OF Excel-bradley data (tab-separated met header)&#10;&#10;Auto-detect verwerkt allebei."><%= typeof previous !== 'undefined' ? previous : '' %></textarea>
+    <div style="margin-top: 12px;" class="row">
+      <button type="submit">Verwerk</button>
+      <span style="color: #666; font-size: 13px;">
+        Formaat wordt automatisch gedetecteerd: ruwe systeem-CSV of Excel-bradley tab-separated.
+      </span>
+    </div>
+  </form>
+</div>
+
+<details style="margin-top: 16px;">
+  <summary>Ondersteunde formaten</summary>
+  <div style="font-size: 13px; color: #666;">
+    <p><strong>1. Ruwe systeem-export</strong>: het CSV bestand direct uit het systeem, met "====" separator lines en quoted velden. Alleen "Bun" rijen worden meegenomen; Aantal en Som worden gesplitst; Tak/Hoes worden uit de naam afgeleid.</p>
+    <p><strong>2. Excel.bradley (na macro)</strong>: tab-separated met kolommen: Klantcode | Naam | Lengte | Cr2 | Cr3 | Land | Aantal | Som | Vertrek | Bestel | Broncode | Tak | Hoes | Bun</p>
+  </div>
+</details>
+
+<script>
+(function() {
+  const dropZone = document.getElementById('drop_zone');
+  const fileInput = document.getElementById('file_input');
+  const textarea = document.getElementById('paste_text');
+  const fileInfo = document.getElementById('file_info');
+
+  function readFile(file) {
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      textarea.value = e.target.result;
+      fileInfo.textContent = '✓ ' + file.name + ' (' + Math.round(file.size / 1024) + ' KB) geladen';
+    };
+    reader.onerror = () => {
+      fileInfo.textContent = '✗ Fout bij lezen bestand';
+    };
+    reader.readAsText(file);
+  }
+
+  fileInput.addEventListener('change', (e) => readFile(e.target.files[0]));
+
+  ['dragenter', 'dragover'].forEach(evt => {
+    dropZone.addEventListener(evt, (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      dropZone.style.background = '#e8f4ff';
+      dropZone.style.borderColor = '#0071e3';
+    });
+  });
+  ['dragleave', 'drop'].forEach(evt => {
+    dropZone.addEventListener(evt, (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      dropZone.style.background = '#fafafa';
+      dropZone.style.borderColor = '#d2d2d7';
+    });
+  });
+  dropZone.addEventListener('drop', (e) => {
+    const file = e.dataTransfer.files[0];
+    readFile(file);
+  });
+})();
+</script>
