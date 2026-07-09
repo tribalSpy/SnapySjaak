@@ -5285,9 +5285,10 @@ function buildUkdocsCsiDeterministicReport(collection, extractedDocuments) {
     );
   }
 
-  const tempPhytoContexts = tempPhytoDocs.map((document) => {
+  const tempPhytoContexts = tempPhytoDocs.map((document, index) => {
     const parsed = document?.parsed_data && typeof document.parsed_data === "object" ? document.parsed_data : {};
     const lineProducts = [];
+    const documentLabel = `Temp phyto ${String.fromCharCode(65 + index)}`;
     for (const line of Array.isArray(parsed?.product_lines) ? parsed.product_lines : []) {
       const mappedProduct = mapUkdocsCsiProductName(line?.product || "", "");
       addUkdocsCsiQuantity(tempPhytoTotals, mappedProduct, line?.quantity);
@@ -5312,6 +5313,7 @@ function buildUkdocsCsiDeterministicReport(collection, extractedDocuments) {
       manualChecks.push(`Review ${document.name || "temporary phyto PDF"}: ${problems.join(", ")}.`);
     }
     return {
+      document_label: documentLabel,
       name: String(document?.name || "").trim(),
       parsed_pcnu_number: String(parsed?.pcnu_number || "").trim(),
       parsed_document_state: String(parsed?.document_state || "").trim() || "unknown",
@@ -5341,6 +5343,15 @@ function buildUkdocsCsiDeterministicReport(collection, extractedDocuments) {
     const exportQty = exportTotals.has(product) ? exportTotals.get(product) : null;
     const ipaffsQty = ipaffsTotals.has(product) ? ipaffsTotals.get(product) : null;
     const phytoQty = tempPhytoTotals.has(product) ? tempPhytoTotals.get(product) : null;
+    const phytoPerDocument = tempPhytoContexts
+      .map((context) => {
+        const match = (context.expected_products || []).find((item) => item.product === product);
+        return {
+          document_label: context.document_label || context.name || "Temp phyto",
+          quantity: match?.parsed_quantity ?? null,
+        };
+      })
+      .filter((item) => item.quantity !== null);
     const expectedQty = exportQty ?? invoiceQty;
     const messages = [];
     let status = "pass";
@@ -5410,6 +5421,10 @@ function buildUkdocsCsiDeterministicReport(collection, extractedDocuments) {
       export_quantity: exportQty === null ? "" : String(exportQty),
       ipaffs_quantity: ipaffsQty === null ? "" : String(ipaffsQty),
       temp_phyto_quantity: phytoQty === null ? "" : String(phytoQty),
+      temp_phyto_quantities: phytoPerDocument.map((item) => ({
+        document_label: item.document_label,
+        quantity: String(item.quantity),
+      })),
       status,
       message: messages.join(" "),
     });
@@ -7927,13 +7942,23 @@ async function handleApi(req, res, url) {
         ...llmChecks,
       ];
       const visualTempPhytoTotals = new Map();
+      const visualTempPhytoByLabel = new Map();
       for (const item of Array.isArray(parsed.visible_documents) ? parsed.visible_documents : []) {
+        const documentLabel = String(item?.document_label || "").trim();
         const mappedProduct = mapUkdocsCsiProductName(item?.product || "", "");
         const quantity = Number(item?.quantity);
-        if (!mappedProduct || !Number.isFinite(quantity) || isUkdocsCsiAggregateProductName(mappedProduct)) {
+        if (!mappedProduct || !Number.isFinite(quantity)) {
           continue;
         }
-        addUkdocsCsiQuantity(visualTempPhytoTotals, mappedProduct, quantity);
+        if (!isUkdocsCsiAggregateProductName(mappedProduct)) {
+          addUkdocsCsiQuantity(visualTempPhytoTotals, mappedProduct, quantity);
+        }
+        if (documentLabel) {
+          if (!visualTempPhytoByLabel.has(documentLabel)) {
+            visualTempPhytoByLabel.set(documentLabel, new Map());
+          }
+          visualTempPhytoByLabel.get(documentLabel).set(mappedProduct, quantity);
+        }
       }
       const deterministicProducts = Array.isArray(deterministicSource.products) ? deterministicSource.products : [];
       const finalProducts = deterministicProducts.map((item) => {
@@ -7942,21 +7967,56 @@ async function handleApi(req, res, url) {
           ? visualTempPhytoTotals.get(productName)
           : null;
         const currentQty = String(item?.temp_phyto_quantity || "").trim();
+        const currentPerDoc = Array.isArray(item?.temp_phyto_quantities) ? item.temp_phyto_quantities : [];
+        const mergedPerDoc = currentPerDoc.map((entry) => {
+          const label = String(entry?.document_label || "").trim();
+          const qty = String(entry?.quantity || "").trim();
+          if (qty || !label || !productName || !visualTempPhytoByLabel.has(label)) {
+            return entry;
+          }
+          const visualDocQty = visualTempPhytoByLabel.get(label).get(productName);
+          return visualDocQty === undefined
+            ? entry
+            : { ...entry, quantity: String(visualDocQty) };
+        });
+        for (const [label, productMap] of visualTempPhytoByLabel.entries()) {
+          if (!productName || !productMap.has(productName) || mergedPerDoc.some((entry) => String(entry?.document_label || "").trim() === label)) {
+            continue;
+          }
+          mergedPerDoc.push({
+            document_label: label,
+            quantity: String(productMap.get(productName)),
+          });
+        }
         if (!currentQty && visualQty !== null) {
           const existingMessage = String(item?.message || "").trim();
           return {
             ...item,
             temp_phyto_quantity: String(visualQty),
+            temp_phyto_quantities: mergedPerDoc,
             message: existingMessage
               ? `${existingMessage} Visual temp phyto quantity ${visualQty}.`
               : `Visual temp phyto quantity ${visualQty}.`,
           };
         }
-        return item;
+        return {
+          ...item,
+          temp_phyto_quantities: mergedPerDoc,
+        };
       });
       for (const [productName, visualQty] of visualTempPhytoTotals.entries()) {
         if (finalProducts.some((item) => String(item?.product || "").trim() === productName)) {
           continue;
+        }
+        const perDoc = [];
+        for (const [label, productMap] of visualTempPhytoByLabel.entries()) {
+          if (!productMap.has(productName)) {
+            continue;
+          }
+          perDoc.push({
+            document_label: label,
+            quantity: String(productMap.get(productName)),
+          });
         }
         finalProducts.push({
           product: productName,
@@ -7964,6 +8024,7 @@ async function handleApi(req, res, url) {
           export_quantity: "",
           ipaffs_quantity: "",
           temp_phyto_quantity: String(visualQty),
+          temp_phyto_quantities: perDoc,
           status: "warn",
           message: `Only visual temp phyto quantity ${visualQty} was available.`,
         });
