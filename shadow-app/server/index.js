@@ -5605,6 +5605,9 @@ function buildUkdocsCsiAuditPayload(collection, deterministicBundle, requestUser
       "If a value is not clearly visible, do not guess. Mark warn and add a manual check.",
       "If the document looks active and the PCNU number is readable, say so directly.",
       "If a temporary phyto page shows one or more product lines with quantities, compare those visible quantities to the expected grouped quantities.",
+      "Never combine multiple visible product lines into one quantity.",
+      "Never invent a quantity that is not printed on the page.",
+      "If only a page total is visible for a page that contains multiple product lines, do not treat that total as a single product quantity. Mark warn and add a manual check instead.",
       "Never output explanation text before or after the JSON.",
     ],
     output_schema: {
@@ -5636,14 +5639,13 @@ function buildUkdocsCsiAuditPayload(collection, deterministicBundle, requestUser
       checks: [
         { code: "PHYTO_PCNU_VISIBLE", status: "pass", message: "PCNU 123456789 is visible in temp phyto A." },
         { code: "PHYTO_STATE", status: "pass", message: "No blocked or not activated text is visible." },
-        { code: "PHYTO_VISIBLE_QTY", status: "warn", message: "Visible quantity for Flowers carnations is unclear in temp phyto B; review manually." },
+        { code: "PHYTO_VISIBLE_QTY", status: "warn", message: "Temp phyto B shows multiple product lines and only a page total is clearly visible; review manually." },
       ],
       visible_documents: [
         { document_label: "temp phyto A", product: "Flowers carnations", quantity: 350, pcnu_number: "123456789", state: "ok", note: "Visible quantity read from the page." },
-        { document_label: "temp phyto B", product: "Flowers chrysanthemums", quantity: 7170, pcnu_number: "987654321", state: "ok", note: "Visible total read from the page." },
       ],
       manual_checks: [
-        "Review temp phyto B visible quantity manually.",
+        "Review temp phyto B visible quantity manually because the page total covers multiple product lines.",
       ],
       notes: [
         "Only temporary phyto PDF pages were checked visually.",
@@ -8082,10 +8084,6 @@ async function handleApi(req, res, url) {
         }
         return item;
       });
-      const finalChecks = [
-        ...deterministicChecks,
-        ...llmChecks,
-      ];
       const visualContextByLabel = new Map(
         (Array.isArray(job?.payload_json?.deterministic_visual_context?.temp_phyto_documents)
           ? job.payload_json.deterministic_visual_context.temp_phyto_documents
@@ -8094,6 +8092,7 @@ async function handleApi(req, res, url) {
       );
       const visualTempPhytoTotals = new Map();
       const visualTempPhytoByLabel = new Map();
+      const ambiguousVisualQtyLabels = new Set();
       const visualQtyManualReviewMessages = [];
       for (const item of Array.isArray(parsed.visible_documents) ? parsed.visible_documents : []) {
         const documentLabel = String(item?.document_label || "").trim();
@@ -8117,6 +8116,7 @@ async function handleApi(req, res, url) {
           const mentionsTotal = noteText.includes("visible total") || noteText.includes("total");
           if (!exactLineMatch || mentionsTotal) {
             ambiguousMultiProductTotal = true;
+            ambiguousVisualQtyLabels.add(label);
             visualQtyManualReviewMessages.push(
               `${label}: visual quantity ${quantity} for ${mappedProduct} was not used automatically because the temp phyto page has multiple product lines${mentionsTotal ? " and the model described it as a total" : ""}.`,
             );
@@ -8136,6 +8136,26 @@ async function handleApi(req, res, url) {
           visualTempPhytoByLabel.get(documentLabel).set(mappedProduct, quantity);
         }
       }
+      const finalLlmChecks = llmChecks.map((item) => {
+        if (item?.code !== "PHYTO_VISIBLE_QTY" || item?.status !== "pass" || !ambiguousVisualQtyLabels.size) {
+          return item;
+        }
+        const message = String(item?.message || "");
+        const normalizedMessage = message.toLowerCase();
+        const matchedLabel = Array.from(ambiguousVisualQtyLabels).find((label) => normalizedMessage.includes(label.toLowerCase()));
+        if (!matchedLabel) {
+          return item;
+        }
+        return {
+          ...item,
+          status: "warn",
+          message: `${matchedLabel} visible quantity was treated as a document total or multi-line total, so it was kept for manual review instead of a product-level pass.`,
+        };
+      });
+      const finalChecks = [
+        ...deterministicChecks,
+        ...finalLlmChecks,
+      ];
       const deterministicProducts = Array.isArray(deterministicSource.products) ? deterministicSource.products : [];
       const finalProducts = deterministicProducts.map((item) => {
         const productName = String(item?.product || "").trim();
