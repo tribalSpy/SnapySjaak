@@ -5599,9 +5599,11 @@ function buildUkdocsCsiAuditPayload(collection, deterministicBundle, requestUser
       "Use only the temporary phyto PDF page images for this task.",
       "Do not analyze generated invoices, generated export files, IPAFFS totals, consignee address, destination text, or origin text here.",
       "Ignore long legal, annex, and compliance text unless it clearly shows the document is blocked or not activated.",
-      "Check these visual items: visible PCNU number, blocked or not activated state, and only if needed as a fallback, clearly visible individual product-line quantities on temp phyto pages.",
+      "Check these visual items: visible PCNU number, blocked or not activated state, and clearly visible individual product-line quantities on temp phyto pages.",
       "Do not check invoice totals, export totals, or IPAFFS totals visually in this task.",
-      "Product quantity matching is handled in code first. Only provide visible product-line quantities when a temp phyto page clearly shows an individual line quantity and parsed product lines are missing for that page.",
+      "Product quantity matching is handled in code first, but you must still list every clearly visible individual temp phyto product-line quantity in visible_documents.",
+      "When a temp phyto page shows two visible lines like chrysanthemum 17160 and solidago 25, return two separate visible_documents rows for that same document label.",
+      "If a document has visible individual line quantities, include them even when the page also shows a TOTAL.",
       "If a value is not clearly visible, do not guess. Mark warn and add a manual check.",
       "If the document looks active and the PCNU number is readable, say so directly.",
       "Never use a page total as a product quantity.",
@@ -5634,14 +5636,15 @@ function buildUkdocsCsiAuditPayload(collection, deterministicBundle, requestUser
     expected_temp_phyto_checks: deterministicBundle?.visual_context?.temp_phyto_documents || [],
     return_example: {
       overall_status: "warn",
-      summary: "PCNU numbers visible. One temporary phyto needs manual quantity review.",
+      summary: "PCNU numbers visible. Individual visible temp phyto product lines were listed where readable.",
       checks: [
         { code: "PHYTO_PCNU_VISIBLE", status: "pass", message: "PCNU 123456789 is visible in temp phyto A." },
         { code: "PHYTO_STATE", status: "pass", message: "No blocked or not activated text is visible." },
       ],
       visible_documents: [
-        { document_label: "temp phyto A", pcnu_number: "123456789", state: "ok", note: "PCNU is visible and the document appears active." },
-        { document_label: "temp phyto B", product: "Flowers carnations", quantity: 350, pcnu_number: "987654321", state: "ok", note: "Visible individual product-line quantity read from the page as fallback because parsed product lines were missing." },
+        { document_label: "temp phyto A", product: "Flowers chrysanthemums", quantity: 17160, pcnu_number: "123456789", state: "ok", note: "Visible individual product-line quantity read from the page." },
+        { document_label: "temp phyto A", product: "Flowers (other fresh)", quantity: 25, pcnu_number: "123456789", state: "ok", note: "Visible individual product-line quantity read from the page." },
+        { document_label: "temp phyto B", product: "Flowers carnations", quantity: 700, pcnu_number: "987654321", state: "ok", note: "Visible individual product-line quantity read from the page." },
       ],
       manual_checks: [],
       notes: [
