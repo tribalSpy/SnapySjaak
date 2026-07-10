@@ -1170,6 +1170,7 @@ function normalizeUkdocsCustomer(customer) {
     required_generated_export: customer?.required_generated_export !== false,
     required_generated_invoices: customer?.required_generated_invoices !== false,
     reinspection_uses_email_sync: customer?.reinspection_uses_email_sync === true,
+    menu_show_ukdocscsi: customer?.menu_show_ukdocscsi !== false,
     menu_show_ukdocsinspection_inspection_list: customer?.menu_show_ukdocsinspection_inspection_list !== false,
     menu_show_ukdocsinspection_locations_file: customer?.menu_show_ukdocsinspection_locations_file !== false,
     menu_show_ukdocsinspection_phyto: customer?.menu_show_ukdocsinspection_phyto === true,

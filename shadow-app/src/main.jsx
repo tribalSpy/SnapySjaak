@@ -2345,6 +2345,7 @@ const UKDOCS_CUSTOMER_REQUIRED_DOCUMENT_FIELDS = [
 ];
 
 const UKDOCS_CUSTOMER_MENU_DOCUMENT_FIELDS = [
+  ["menu_show_ukdocscsi", "UKDocs CSI - Show shipment in CSI menu"],
   ["menu_show_ukdocsinspection_inspection_list", "Phyto inspection - Inspection list"],
   ["menu_show_ukdocsinspection_locations_file", "Phyto inspection - Locations file"],
   ["menu_show_ukdocsinspection_phyto", "Phyto inspection - Phytosanitary document"],
@@ -2419,6 +2420,7 @@ function emptyUkdocsCustomer() {
     required_export_extra: false,
     required_generated_export: true,
     required_generated_invoices: true,
+    menu_show_ukdocscsi: true,
     menu_show_ukdocsinspection_inspection_list: true,
     menu_show_ukdocsinspection_locations_file: true,
     menu_show_ukdocsinspection_phyto: false,
@@ -4818,9 +4820,16 @@ function UkdocsCSIPage({ currentUser }) {
   }, [currentUser]);
 
   const collections = state?.print_collections || [];
+  const customers = state?.customers || [];
   const shipmentCollections = useMemo(
-    () => collections.filter((item) => item.collection_type !== "stock_control"),
-    [collections],
+    () => collections.filter((item) => {
+      if (item.collection_type === "stock_control") {
+        return false;
+      }
+      const customer = ukdocsPrintCollectionCustomer(item, customers);
+      return customer?.menu_show_ukdocscsi !== false;
+    }),
+    [collections, customers],
   );
   const filteredCollections = useMemo(
     () => shipmentCollections.filter((item) => String(item.shipment_date || "").slice(0, 10) === selectedCollectionDate),
