@@ -5599,11 +5599,14 @@ function buildUkdocsCsiAuditPayload(collection, deterministicBundle, requestUser
       "Use only the temporary phyto PDF page images for this task.",
       "Do not analyze generated invoices, generated export files, IPAFFS totals, consignee address, destination text, or origin text here.",
       "Ignore long legal, annex, and compliance text unless it clearly shows the document is blocked or not activated.",
-      "Check only these visual items: visible PCNU number and blocked or not activated state.",
-      "Do not check product quantities, page totals, invoice totals, export totals, or IPAFFS totals visually in this task.",
-      "Product quantity matching is already handled in code from parsed documents, so do not add quantity judgments here.",
+      "Check these visual items: visible PCNU number, blocked or not activated state, and only if needed as a fallback, clearly visible individual product-line quantities on temp phyto pages.",
+      "Do not check invoice totals, export totals, or IPAFFS totals visually in this task.",
+      "Product quantity matching is handled in code first. Only provide visible product-line quantities when a temp phyto page clearly shows an individual line quantity and parsed product lines are missing for that page.",
       "If a value is not clearly visible, do not guess. Mark warn and add a manual check.",
       "If the document looks active and the PCNU number is readable, say so directly.",
+      "Never use a page total as a product quantity.",
+      "Never combine multiple visible product lines into one quantity.",
+      "Never invent a quantity that is not printed on the page.",
       "Never output explanation text before or after the JSON.",
     ],
     output_schema: {
@@ -5612,6 +5615,8 @@ function buildUkdocsCsiAuditPayload(collection, deterministicBundle, requestUser
       checks: [{ code: "string", status: "pass|warn|fail", message: "string" }],
       visible_documents: [{
         document_label: "temp phyto A|temp phyto B",
+        product: "normalized or visible product name when a clear fallback line quantity is visible",
+        quantity: 0,
         pcnu_number: "visible PCNU if readable",
         state: "ok|not_activated|unclear",
         note: "short note",
@@ -5636,6 +5641,7 @@ function buildUkdocsCsiAuditPayload(collection, deterministicBundle, requestUser
       ],
       visible_documents: [
         { document_label: "temp phyto A", pcnu_number: "123456789", state: "ok", note: "PCNU is visible and the document appears active." },
+        { document_label: "temp phyto B", product: "Flowers carnations", quantity: 350, pcnu_number: "987654321", state: "ok", note: "Visible individual product-line quantity read from the page as fallback because parsed product lines were missing." },
       ],
       manual_checks: [],
       notes: [
@@ -8075,13 +8081,84 @@ async function handleApi(req, res, url) {
         }
         return item;
       });
+      const visualContextByLabel = new Map(
+        (Array.isArray(job?.payload_json?.deterministic_visual_context?.temp_phyto_documents)
+          ? job.payload_json.deterministic_visual_context.temp_phyto_documents
+          : [])
+          .map((item) => [String(item?.document_label || "").trim(), item]),
+      );
+      const visualTempPhytoTotals = new Map();
+      const visualTempPhytoByLabel = new Map();
+      for (const item of Array.isArray(parsed.visible_documents) ? parsed.visible_documents : []) {
+        const documentLabel = String(item?.document_label || "").trim();
+        const mappedProduct = mapUkdocsCsiProductName(item?.product || "", "");
+        const quantity = Number(item?.quantity);
+        const noteText = String(item?.note || "").trim().toLowerCase();
+        if (!documentLabel || !mappedProduct || !Number.isFinite(quantity)) {
+          continue;
+        }
+        const context = visualContextByLabel.get(documentLabel);
+        const parsedLineProducts = Array.isArray(context?.expected_products) ? context.expected_products : [];
+        const needsFallback = !parsedLineProducts.length;
+        const mentionsTotal = noteText.includes("visible total") || noteText.includes("page total") || noteText.includes("total");
+        if (!needsFallback || mentionsTotal || isUkdocsCsiAggregateProductName(mappedProduct)) {
+          continue;
+        }
+        addUkdocsCsiQuantity(visualTempPhytoTotals, mappedProduct, quantity);
+        if (!visualTempPhytoByLabel.has(documentLabel)) {
+          visualTempPhytoByLabel.set(documentLabel, new Map());
+        }
+        visualTempPhytoByLabel.get(documentLabel).set(mappedProduct, quantity);
+      }
       const finalLlmChecks = llmChecks.filter((item) => item?.code !== "PHYTO_VISIBLE_QTY");
       const finalChecks = [
         ...deterministicChecks,
         ...finalLlmChecks,
       ];
       const deterministicProducts = Array.isArray(deterministicSource.products) ? deterministicSource.products : [];
-      const finalProducts = deterministicProducts.map((item) => ({ ...item }));
+      const finalProducts = deterministicProducts.map((item) => {
+        const productName = String(item?.product || "").trim();
+        const visualQty = productName && visualTempPhytoTotals.has(productName)
+          ? visualTempPhytoTotals.get(productName)
+          : null;
+        const currentQty = String(item?.temp_phyto_quantity || "").trim();
+        const currentPerDoc = Array.isArray(item?.temp_phyto_quantities) ? item.temp_phyto_quantities : [];
+        const mergedPerDoc = currentPerDoc.map((entry) => {
+          const label = String(entry?.document_label || "").trim();
+          const qty = String(entry?.quantity || "").trim();
+          if (qty || !label || !productName || !visualTempPhytoByLabel.has(label)) {
+            return entry;
+          }
+          const visualDocQty = visualTempPhytoByLabel.get(label).get(productName);
+          return visualDocQty === undefined
+            ? entry
+            : { ...entry, quantity: String(visualDocQty) };
+        });
+        for (const [label, productMap] of visualTempPhytoByLabel.entries()) {
+          if (!productName || !productMap.has(productName) || mergedPerDoc.some((entry) => String(entry?.document_label || "").trim() === label)) {
+            continue;
+          }
+          mergedPerDoc.push({
+            document_label: label,
+            quantity: String(productMap.get(productName)),
+          });
+        }
+        if (!currentQty && visualQty !== null) {
+          const existingMessage = String(item?.message || "").trim();
+          return {
+            ...item,
+            temp_phyto_quantity: String(visualQty),
+            temp_phyto_quantities: mergedPerDoc,
+            message: existingMessage
+              ? `${existingMessage} Visual fallback temp phyto quantity ${visualQty}.`
+              : `Visual fallback temp phyto quantity ${visualQty}.`,
+          };
+        }
+        return {
+          ...item,
+          temp_phyto_quantities: mergedPerDoc,
+        };
+      });
       const finalManualChecks = uniqueUkdocsCsiStrings([
         ...(Array.isArray(deterministicSource.manual_checks) ? deterministicSource.manual_checks : []),
         ...(Array.isArray(parsed.manual_checks) ? parsed.manual_checks : []),
