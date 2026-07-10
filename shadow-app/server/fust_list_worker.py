@@ -50,6 +50,11 @@ def to_count(value):
         raise ValueError(f"Invalid quantity: {value}")
 
 
+def display_count(value):
+    count = to_count(value)
+    return count if count > 0 else None
+
+
 def load_payload(path: Path):
     payload = json.loads(path.read_text(encoding="utf-8"))
     customer_name = clean_text(payload.get("customer_name"))
@@ -78,8 +83,8 @@ def generate_workbook(template_path: Path, payload_path: Path, output_path: Path
     worksheet[CUSTOMER_CELL] = payload["customer_name"]
 
     for code, row_number in ROW_BY_CODE.items():
-        worksheet[f"{TOTAL_OK_COLUMN}{row_number}"] = 0
-        worksheet[f"{TOTAL_BROKEN_COLUMN}{row_number}"] = 0
+        worksheet[f"{TOTAL_OK_COLUMN}{row_number}"] = None
+        worksheet[f"{TOTAL_BROKEN_COLUMN}{row_number}"] = None
 
     custom_rows = []
     for row in payload["rows"]:
@@ -90,12 +95,12 @@ def generate_workbook(template_path: Path, payload_path: Path, output_path: Path
         if row_number is None:
             custom_rows.append({
                 "code": code,
-                "total_ok": to_count(row.get("total_ok")),
-                "total_broken": to_count(row.get("total_broken")),
+                "total_ok": display_count(row.get("total_ok")),
+                "total_broken": display_count(row.get("total_broken")),
             })
             continue
-        worksheet[f"{TOTAL_OK_COLUMN}{row_number}"] = to_count(row.get("total_ok"))
-        worksheet[f"{TOTAL_BROKEN_COLUMN}{row_number}"] = to_count(row.get("total_broken"))
+        worksheet[f"{TOTAL_OK_COLUMN}{row_number}"] = display_count(row.get("total_ok"))
+        worksheet[f"{TOTAL_BROKEN_COLUMN}{row_number}"] = display_count(row.get("total_broken"))
 
     for index, row in enumerate(custom_rows):
         row_number = CUSTOM_ROW_START + (index * CUSTOM_ROW_STEP)
