@@ -556,11 +556,12 @@ textarea {
   min-height: 40px;
 }
 
-.fust-list-dialog-card {
-  width: min(820px, 100%);
+.fust-list-dialog-form {
+  display: grid;
+  gap: 16px;
 }
 
-.fust-list-dialog-form {
+.fust-list-panel {
   display: grid;
   gap: 16px;
 }
@@ -573,7 +574,7 @@ textarea {
 .fust-list-grid-header,
 .fust-list-grid-row {
   display: grid;
-  grid-template-columns: 120px minmax(120px, 1fr) minmax(120px, 1fr);
+  grid-template-columns: 120px minmax(120px, 1fr) minmax(120px, 1fr) 120px;
   gap: 12px;
   align-items: center;
 }
@@ -592,6 +593,12 @@ textarea {
 
 .fust-list-grid-row span {
   font-weight: 700;
+}
+
+.fust-list-row-hint {
+  font-size: 0.9rem;
+  color: #6b7a88;
+  font-weight: 600;
 }
 
 
@@ -1147,7 +1154,7 @@ pre {
 
   .fust-list-grid-header,
   .fust-list-grid-row {
-    grid-template-columns: 90px 1fr 1fr;
+    grid-template-columns: 90px 1fr 1fr 100px;
   }
 
   .overview-filters,

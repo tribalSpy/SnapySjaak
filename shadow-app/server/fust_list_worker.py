@@ -26,6 +26,9 @@ DATE_CELL = "C12"
 CUSTOMER_CELL = "J12"
 TOTAL_OK_COLUMN = "N"
 TOTAL_BROKEN_COLUMN = "P"
+CODE_COLUMN = "B"
+CUSTOM_ROW_START = 64
+CUSTOM_ROW_STEP = 3
 
 
 def clean_text(value):
@@ -74,15 +77,27 @@ def generate_workbook(template_path: Path, payload_path: Path, output_path: Path
         worksheet[f"{TOTAL_OK_COLUMN}{row_number}"] = 0
         worksheet[f"{TOTAL_BROKEN_COLUMN}{row_number}"] = 0
 
+    custom_rows = []
     for row in payload["rows"]:
         code = clean_text(row.get("code")).upper()
         if not code:
             continue
         row_number = ROW_BY_CODE.get(code)
         if row_number is None:
-            raise ValueError(f"Unknown Fust Lijst code: {code}")
+            custom_rows.append({
+                "code": code,
+                "total_ok": to_count(row.get("total_ok")),
+                "total_broken": to_count(row.get("total_broken")),
+            })
+            continue
         worksheet[f"{TOTAL_OK_COLUMN}{row_number}"] = to_count(row.get("total_ok"))
         worksheet[f"{TOTAL_BROKEN_COLUMN}{row_number}"] = to_count(row.get("total_broken"))
+
+    for index, row in enumerate(custom_rows):
+        row_number = CUSTOM_ROW_START + (index * CUSTOM_ROW_STEP)
+        worksheet[f"{CODE_COLUMN}{row_number}"] = row["code"]
+        worksheet[f"{TOTAL_OK_COLUMN}{row_number}"] = row["total_ok"]
+        worksheet[f"{TOTAL_BROKEN_COLUMN}{row_number}"] = row["total_broken"]
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
     workbook.save(output_path)

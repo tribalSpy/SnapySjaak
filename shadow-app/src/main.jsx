@@ -6213,6 +6213,7 @@ function PermissionChecklist({ title, permissions, onChange }) {
 function fustTileLabel(tab) {
   return {
     in: "IN",
+    "fust-list": "FustLijst",
     out: "OUT",
     overview: "Overview",
     "last-actions": "Last actions",
@@ -6242,9 +6243,11 @@ const FUST_LIST_CODES = [
 
 function createEmptyFustListRows() {
   return FUST_LIST_CODES.map((code) => ({
+    id: code,
     code,
     total_ok: "",
     total_broken: "",
+    isCustom: false,
   }));
 }
 
@@ -6257,10 +6260,21 @@ function attachmentFilenameFromResponse(response, fallback) {
   return safeDownloadFilename(fallback);
 }
 
+function createCustomFustListRow() {
+  return {
+    id: `custom-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+    code: "",
+    total_ok: "",
+    total_broken: "",
+    isCustom: true,
+  };
+}
+
 function FustPage({ currentUser, menuVersion }) {
   const canManageFust = hasPermission(currentUser, PERMISSIONS.FUST_MANAGE);
   const visibleTabs = [
     hasPermission(currentUser, PERMISSIONS.FUST_IN) ? "in" : null,
+    hasPermission(currentUser, PERMISSIONS.FUST_IN) ? "fust-list" : null,
     hasPermission(currentUser, PERMISSIONS.FUST_OUT) ? "out" : null,
     hasPermission(currentUser, PERMISSIONS.FUST_OVERVIEW) ? "overview" : null,
     hasPermission(currentUser, PERMISSIONS.FUST_OVERVIEW) ? "last-actions" : null,
@@ -6319,6 +6333,7 @@ function FustPage({ currentUser, menuVersion }) {
           metaData={metaData}
           loading={metaLoading}
           onSaved={refresh}
+          onOpenFustList={() => setActiveTab("fust-list")}
         />
       )}
 
@@ -6328,6 +6343,13 @@ function FustPage({ currentUser, menuVersion }) {
           metaData={metaData}
           loading={metaLoading}
           onSaved={refresh}
+        />
+      )}
+
+      {activeTab === "fust-list" && (
+        <FustListPanel
+          metaData={metaData}
+          loading={metaLoading}
         />
       )}
 
@@ -6373,51 +6395,81 @@ function FustPage({ currentUser, menuVersion }) {
   );
 }
 
-function FustListDialog({ defaults, onClose }) {
+function FustListPanel({ metaData, loading, defaults = null }) {
+  const records = metaData?.records || [];
+  const countries = metaData?.countries || [];
   const [form, setForm] = useState(() => ({
-    action_date: defaults.action_date || new Date().toISOString().slice(0, 10),
-    customer_name: defaults.customer_name || "",
+    action_date: defaults?.action_date || new Date().toISOString().slice(0, 10),
+    country: defaults?.country || "",
+    customer_name: defaults?.customer_name || "",
     rows: createEmptyFustListRows(),
   }));
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
+  const customerOptions = records.filter((record) => record.country === form.country);
+  const customerNames = [...new Set(customerOptions.map((record) => record.customer_name))].sort((left, right) => left.localeCompare(right));
 
   useEffect(() => {
-    function handleKeydown(event) {
-      if (event.key === "Escape") {
-        event.preventDefault();
-        onClose();
-      }
+    if (countries.length && !form.country) {
+      setForm((current) => ({ ...current, country: countries[0] }));
     }
+  }, [countries, form.country]);
 
-    window.addEventListener("keydown", handleKeydown);
-    return () => window.removeEventListener("keydown", handleKeydown);
-  }, [onClose]);
+  useEffect(() => {
+    if (customerNames.length && !customerNames.includes(form.customer_name)) {
+      setForm((current) => ({
+        ...current,
+        customer_name: customerNames[0] || "",
+      }));
+    }
+  }, [customerNames, form.customer_name]);
 
-  function updateRow(code, field, value) {
+  function updateRow(rowId, field, value) {
     setForm((current) => ({
       ...current,
-      rows: current.rows.map((row) => (row.code === code ? { ...row, [field]: value } : row)),
+      rows: current.rows.map((row) => (row.id === rowId ? { ...row, [field]: value } : row)),
+    }));
+  }
+
+  function addCustomRow() {
+    setForm((current) => ({
+      ...current,
+      rows: [...current.rows, createCustomFustListRow()],
+    }));
+  }
+
+  function removeCustomRow(rowId) {
+    setForm((current) => ({
+      ...current,
+      rows: current.rows.filter((row) => row.id !== rowId),
     }));
   }
 
   async function submit(event) {
     event.preventDefault();
-    const rows = form.rows
+    const activeRows = form.rows
       .map((row) => ({
+        id: row.id,
         code: row.code,
         total_ok: Number(row.total_ok || 0),
         total_broken: Number(row.total_broken || 0),
+        isCustom: row.isCustom,
       }))
       .filter((row) => row.total_ok > 0 || row.total_broken > 0);
 
+    const invalidCustomRow = activeRows.find((row) => row.isCustom && !String(row.code || "").trim());
     if (!form.customer_name.trim()) {
       setError("Customer is required.");
       setMessage("");
       return;
     }
-    if (!rows.length) {
+    if (invalidCustomRow) {
+      setError("Every extra row needs a code before you generate the Fust Lijst.");
+      setMessage("");
+      return;
+    }
+    if (!activeRows.length) {
       setError("Fill at least one row before generating the Fust Lijst.");
       setMessage("");
       return;
@@ -6433,7 +6485,7 @@ function FustListDialog({ defaults, onClose }) {
         body: JSON.stringify({
           action_date: form.action_date,
           customer_name: form.customer_name,
-          rows,
+          rows: activeRows,
         }),
       });
       if (!response.ok) {
@@ -6460,14 +6512,13 @@ function FustListDialog({ defaults, onClose }) {
   }
 
   return (
-    <div className="connection-overlay" role="dialog" aria-modal="true" onClick={onClose}>
-      <div className="connection-overlay-card fust-list-dialog-card" onClick={(event) => event.stopPropagation()}>
+    <div className="fust-form-layout">
+      <article className="fust-form fust-list-panel">
         <div className="section-header">
           <div>
             <h2>Fust Lijst</h2>
-            <p>Generate a real Excel file from the Fust invoice template for the current IN flow.</p>
+            <p>Generate a real Excel file from the Fust invoice template. Built-in rows are ready, and you can add extra rows when needed.</p>
           </div>
-          <button type="button" onClick={onClose} aria-label="Close Fust Lijst">Close</button>
         </div>
 
         <form className="fust-list-dialog-form" onSubmit={submit}>
@@ -6481,12 +6532,30 @@ function FustListDialog({ defaults, onClose }) {
               />
             </label>
             <label>
+              <span>Country</span>
+              <select
+                value={form.country}
+                onChange={(event) => setForm((current) => ({
+                  ...current,
+                  country: event.target.value,
+                  customer_name: "",
+                }))}
+              >
+                <option value="">Choose country</option>
+                {countries.map((country) => <option key={country} value={country}>{country}</option>)}
+              </select>
+            </label>
+            <label className="wide">
               <span>Klant</span>
               <input
+                list="fust-list-customers"
                 value={form.customer_name}
                 onChange={(event) => setForm((current) => ({ ...current, customer_name: event.target.value }))}
                 placeholder="Klant naam"
               />
+              <datalist id="fust-list-customers">
+                {customerNames.map((name) => <option key={name} value={name} />)}
+              </datalist>
             </label>
           </div>
 
@@ -6495,44 +6564,62 @@ function FustListDialog({ defaults, onClose }) {
               <strong>Code</strong>
               <strong>Total Ok</strong>
               <strong>Total Broken</strong>
+              <strong>Action</strong>
             </div>
             {form.rows.map((row) => (
-              <div className="fust-list-grid-row" role="row" key={row.code}>
-                <span>{row.code}</span>
+              <div className="fust-list-grid-row" role="row" key={row.id}>
+                {row.isCustom ? (
+                  <input
+                    value={row.code}
+                    onChange={(event) => updateRow(row.id, "code", event.target.value)}
+                    placeholder="Extra code"
+                  />
+                ) : (
+                  <span>{row.code}</span>
+                )}
                 <input
                   type="number"
                   min="0"
                   inputMode="numeric"
                   value={row.total_ok}
-                  onChange={(event) => updateRow(row.code, "total_ok", event.target.value)}
+                  onChange={(event) => updateRow(row.id, "total_ok", event.target.value)}
                 />
                 <input
                   type="number"
                   min="0"
                   inputMode="numeric"
                   value={row.total_broken}
-                  onChange={(event) => updateRow(row.code, "total_broken", event.target.value)}
+                  onChange={(event) => updateRow(row.id, "total_broken", event.target.value)}
                 />
+                {row.isCustom ? (
+                  <button type="button" onClick={() => removeCustomRow(row.id)}>Remove</button>
+                ) : (
+                  <span className="fust-list-row-hint">Standard</span>
+                )}
               </div>
             ))}
           </div>
 
+          <div className="cmr-actions">
+            <button type="button" onClick={addCustomRow} disabled={busy}>Add extra field</button>
+          </div>
+
+          {loading && <div className="notice">Loading Data sheet options...</div>}
           {message && <div className="notice">{message}</div>}
           {error && <div className="notice danger">{error}</div>}
 
           <div className="cmr-actions">
-            <button type="button" onClick={onClose} disabled={busy}>Cancel</button>
             <button className="primary" type="submit" disabled={busy}>
               {busy ? "Generating..." : "Download Excel"}
             </button>
           </div>
         </form>
-      </div>
+      </article>
     </div>
   );
 }
 
-function FustActionForm({ type, metaData, loading, onSaved }) {
+function FustActionForm({ type, metaData, loading, onSaved, onOpenFustList = null }) {
   const [form, setForm] = useState({
     action_date: new Date().toISOString().slice(0, 10),
     country: "",
@@ -6550,7 +6637,6 @@ function FustActionForm({ type, metaData, loading, onSaved }) {
   const [documentFile, setDocumentFile] = useState(null);
   const [documentSkipped, setDocumentSkipped] = useState(false);
   const [documentInputKey, setDocumentInputKey] = useState(0);
-  const [fustListOpen, setFustListOpen] = useState(false);
   const records = metaData?.records || [];
   const countries = metaData?.countries || [];
   const customerOptions = records.filter((record) => record.country === form.country);
@@ -6800,7 +6886,7 @@ function FustActionForm({ type, metaData, loading, onSaved }) {
 
         <div className="cmr-actions">
           {type === "IN" && (
-            <button type="button" onClick={() => setFustListOpen(true)} disabled={saving || loading}>
+            <button type="button" onClick={() => onOpenFustList?.()} disabled={saving || loading}>
               Fust Lijst
             </button>
           )}
@@ -6809,15 +6895,6 @@ function FustActionForm({ type, metaData, loading, onSaved }) {
           </button>
         </div>
       </form>
-      {fustListOpen && (
-        <FustListDialog
-          defaults={{
-            action_date: form.action_date,
-            customer_name: form.customer_name,
-          }}
-          onClose={() => setFustListOpen(false)}
-        />
-      )}
     </div>
   );
 }
