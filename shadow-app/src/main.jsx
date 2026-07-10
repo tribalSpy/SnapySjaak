@@ -6222,6 +6222,41 @@ function fustTileLabel(tab) {
   }[tab] || tab.toUpperCase();
 }
 
+const FUST_LIST_CODES = [
+  "510",
+  "519",
+  "520",
+  "525",
+  "533",
+  "544",
+  "560",
+  "566",
+  "577",
+  "596",
+  "597",
+  "CC",
+  "CCO",
+  "CCS",
+  "VK",
+];
+
+function createEmptyFustListRows() {
+  return FUST_LIST_CODES.map((code) => ({
+    code,
+    total_ok: "",
+    total_broken: "",
+  }));
+}
+
+function attachmentFilenameFromResponse(response, fallback) {
+  const header = response.headers.get("content-disposition") || "";
+  const match = header.match(/filename="([^"]+)"/i);
+  if (match?.[1]) {
+    return safeDownloadFilename(match[1]);
+  }
+  return safeDownloadFilename(fallback);
+}
+
 function FustPage({ currentUser, menuVersion }) {
   const canManageFust = hasPermission(currentUser, PERMISSIONS.FUST_MANAGE);
   const visibleTabs = [
@@ -6338,6 +6373,165 @@ function FustPage({ currentUser, menuVersion }) {
   );
 }
 
+function FustListDialog({ defaults, onClose }) {
+  const [form, setForm] = useState(() => ({
+    action_date: defaults.action_date || new Date().toISOString().slice(0, 10),
+    customer_name: defaults.customer_name || "",
+    rows: createEmptyFustListRows(),
+  }));
+  const [busy, setBusy] = useState(false);
+  const [message, setMessage] = useState("");
+  const [error, setError] = useState("");
+
+  useEffect(() => {
+    function handleKeydown(event) {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        onClose();
+      }
+    }
+
+    window.addEventListener("keydown", handleKeydown);
+    return () => window.removeEventListener("keydown", handleKeydown);
+  }, [onClose]);
+
+  function updateRow(code, field, value) {
+    setForm((current) => ({
+      ...current,
+      rows: current.rows.map((row) => (row.code === code ? { ...row, [field]: value } : row)),
+    }));
+  }
+
+  async function submit(event) {
+    event.preventDefault();
+    const rows = form.rows
+      .map((row) => ({
+        code: row.code,
+        total_ok: Number(row.total_ok || 0),
+        total_broken: Number(row.total_broken || 0),
+      }))
+      .filter((row) => row.total_ok > 0 || row.total_broken > 0);
+
+    if (!form.customer_name.trim()) {
+      setError("Customer is required.");
+      setMessage("");
+      return;
+    }
+    if (!rows.length) {
+      setError("Fill at least one row before generating the Fust Lijst.");
+      setMessage("");
+      return;
+    }
+
+    setBusy(true);
+    setError("");
+    setMessage("Generating Fust Lijst...");
+    try {
+      const response = await fetch("/api/fust/fust-list", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          action_date: form.action_date,
+          customer_name: form.customer_name,
+          rows,
+        }),
+      });
+      if (!response.ok) {
+        const payload = await response.json().catch(() => ({}));
+        throw new Error(payload.error || `Request failed with ${response.status}`);
+      }
+
+      const blob = await response.blob();
+      const url = window.URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = attachmentFilenameFromResponse(response, `fust-lijst-${form.action_date}.xlsx`);
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      window.URL.revokeObjectURL(url);
+      setMessage("Fust Lijst downloaded.");
+    } catch (generateError) {
+      setError(generateError.message);
+      setMessage("");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="connection-overlay" role="dialog" aria-modal="true" onClick={onClose}>
+      <div className="connection-overlay-card fust-list-dialog-card" onClick={(event) => event.stopPropagation()}>
+        <div className="section-header">
+          <div>
+            <h2>Fust Lijst</h2>
+            <p>Generate a real Excel file from the Fust invoice template for the current IN flow.</p>
+          </div>
+          <button type="button" onClick={onClose} aria-label="Close Fust Lijst">Close</button>
+        </div>
+
+        <form className="fust-list-dialog-form" onSubmit={submit}>
+          <div className="form-grid">
+            <label>
+              <span>Date</span>
+              <input
+                type="date"
+                value={form.action_date}
+                onChange={(event) => setForm((current) => ({ ...current, action_date: event.target.value }))}
+              />
+            </label>
+            <label>
+              <span>Klant</span>
+              <input
+                value={form.customer_name}
+                onChange={(event) => setForm((current) => ({ ...current, customer_name: event.target.value }))}
+                placeholder="Klant naam"
+              />
+            </label>
+          </div>
+
+          <div className="fust-list-grid" role="table" aria-label="Fust lijst rows">
+            <div className="fust-list-grid-header" role="row">
+              <strong>Code</strong>
+              <strong>Total Ok</strong>
+              <strong>Total Broken</strong>
+            </div>
+            {form.rows.map((row) => (
+              <div className="fust-list-grid-row" role="row" key={row.code}>
+                <span>{row.code}</span>
+                <input
+                  type="number"
+                  min="0"
+                  inputMode="numeric"
+                  value={row.total_ok}
+                  onChange={(event) => updateRow(row.code, "total_ok", event.target.value)}
+                />
+                <input
+                  type="number"
+                  min="0"
+                  inputMode="numeric"
+                  value={row.total_broken}
+                  onChange={(event) => updateRow(row.code, "total_broken", event.target.value)}
+                />
+              </div>
+            ))}
+          </div>
+
+          {message && <div className="notice">{message}</div>}
+          {error && <div className="notice danger">{error}</div>}
+
+          <div className="cmr-actions">
+            <button type="button" onClick={onClose} disabled={busy}>Cancel</button>
+            <button className="primary" type="submit" disabled={busy}>
+              {busy ? "Generating..." : "Download Excel"}
+            </button>
+          </div>
+        </form>
+      </div>
+    </div>
+  );
+}
+
 function FustActionForm({ type, metaData, loading, onSaved }) {
   const [form, setForm] = useState({
     action_date: new Date().toISOString().slice(0, 10),
@@ -6356,6 +6550,7 @@ function FustActionForm({ type, metaData, loading, onSaved }) {
   const [documentFile, setDocumentFile] = useState(null);
   const [documentSkipped, setDocumentSkipped] = useState(false);
   const [documentInputKey, setDocumentInputKey] = useState(0);
+  const [fustListOpen, setFustListOpen] = useState(false);
   const records = metaData?.records || [];
   const countries = metaData?.countries || [];
   const customerOptions = records.filter((record) => record.country === form.country);
@@ -6603,10 +6798,26 @@ function FustActionForm({ type, metaData, loading, onSaved }) {
           </label>
         </div>
 
-        <button className="primary" type="submit" disabled={saving || loading}>
-          {saving ? `Saving ${type}...` : `Save ${type}`}
-        </button>
+        <div className="cmr-actions">
+          {type === "IN" && (
+            <button type="button" onClick={() => setFustListOpen(true)} disabled={saving || loading}>
+              Fust Lijst
+            </button>
+          )}
+          <button className="primary" type="submit" disabled={saving || loading}>
+            {saving ? `Saving ${type}...` : `Save ${type}`}
+          </button>
+        </div>
       </form>
+      {fustListOpen && (
+        <FustListDialog
+          defaults={{
+            action_date: form.action_date,
+            customer_name: form.customer_name,
+          }}
+          onClose={() => setFustListOpen(false)}
+        />
+      )}
     </div>
   );
 }

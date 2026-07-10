@@ -40,6 +40,7 @@ const syncWorkerPath = path.join(appRoot, "server", "sync_worker.js");
 const halLocationsWorkerPath = path.join(appRoot, "server", "hal_locations_worker.py");
 const expeditionStickerWorkerPath = path.join(appRoot, "server", "expedition_sticker_worker.py");
 const fustImportWorkerPath = path.join(appRoot, "server", "fust_import_worker.py");
+const fustListWorkerPath = path.join(appRoot, "server", "fust_list_worker.py");
 const ukdocsWorkerPath = path.join(appRoot, "server", "ukdocs_worker.py");
 const ukdocsCsiWorkerPath = path.join(appRoot, "server", "ukdocs_csi_worker.py");
 const dagFoutjesHtmlPathCandidates = [
@@ -65,6 +66,10 @@ const usersSeedPathCandidates = [
 const staticRoot = existsSync(path.join(appRoot, "dist"))
   ? path.join(appRoot, "dist")
   : path.join(appRoot, "public");
+const fustListTemplatePathCandidates = [
+  path.join(appRoot, "public", "test fust invoice.xlsx"),
+  path.join(staticRoot, "test fust invoice.xlsx"),
+];
 const autoSyncOnVisit = process.env.AUTO_SYNC_ON_VISIT !== "0";
 const autoSyncThrottleMs = Number(process.env.AUTO_SYNC_THROTTLE_MINUTES || 5) * 60 * 1000;
 const syncStatusStaleMinutes = Math.max(1, Number(process.env.SHADOW_SYNC_STALE_MINUTES || 30));
@@ -6247,6 +6252,74 @@ function runFustImportWorker(args) {
   });
 }
 
+function runFustListWorker(args) {
+  return new Promise((resolve, reject) => {
+    const child = spawn(resolvePythonCommand(), [fustListWorkerPath, ...args], {
+      cwd: repoRoot,
+      windowsHide: true,
+    });
+
+    const stdout = [];
+    const stderr = [];
+    child.stdout.on("data", (chunk) => stdout.push(chunk));
+    child.stderr.on("data", (chunk) => stderr.push(chunk));
+    child.on("error", reject);
+    child.on("close", (code) => {
+      const output = Buffer.concat(stdout);
+      if (code === 0) {
+        resolve(output);
+        return;
+      }
+
+      reject(new Error(summarizeBridgeError(Buffer.concat(stderr).toString("utf8")) || `Fust list worker exited with ${code}`));
+    });
+
+    child.stdin.end();
+  });
+}
+
+function findFustListTemplatePath() {
+  return fustListTemplatePathCandidates.find((candidate) => existsSync(candidate)) || "";
+}
+
+function normalizeFustListRow(row) {
+  const code = String(row?.code || "").trim().toUpperCase();
+  const totalOk = Math.max(0, Number.parseInt(String(row?.total_ok ?? 0), 10) || 0);
+  const totalBroken = Math.max(0, Number.parseInt(String(row?.total_broken ?? 0), 10) || 0);
+  return {
+    code,
+    total_ok: totalOk,
+    total_broken: totalBroken,
+  };
+}
+
+async function generateFustListWorkbook(payload) {
+  const templatePath = findFustListTemplatePath();
+  if (!templatePath) {
+    throw new Error("Fust Lijst template file is missing");
+  }
+
+  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "fust-list-"));
+  const payloadPath = path.join(tempDir, "payload.json");
+  const outputPath = path.join(tempDir, "fust-lijst.xlsx");
+
+  try {
+    await fs.writeFile(payloadPath, JSON.stringify(payload), "utf8");
+    await runFustListWorker([
+      "generate",
+      "--template",
+      templatePath,
+      "--payload",
+      payloadPath,
+      "--output",
+      outputPath,
+    ]);
+    return await fs.readFile(outputPath);
+  } finally {
+    await fs.rm(tempDir, { recursive: true, force: true }).catch(() => {});
+  }
+}
+
 async function cleanupExpiredHalLocationSessions() {
   const now = Date.now();
   for (const [sessionId, session] of halLocationSessions.entries()) {
@@ -10524,6 +10597,44 @@ async function handleApi(req, res, url) {
       deleted_action_id: actionId,
       sheet_sync: deleteSync,
     });
+    return;
+  }
+
+  if (url.pathname === "/api/fust/fust-list" && req.method === "POST") {
+    if (!requirePermission(res, requestUser, PERMISSIONS.FUST_IN)) {
+      return;
+    }
+
+    const body = await readRequestJson(req, 512 * 1024);
+    const actionDate = String(body.action_date || localDateIso()).trim();
+    const customerName = String(body.customer_name || "").trim();
+    const rows = Array.isArray(body.rows) ? body.rows.map(normalizeFustListRow).filter((row) => row.code) : [];
+    if (!customerName) {
+      sendJson(res, 400, { error: "Customer is required" });
+      return;
+    }
+    if (!rows.length) {
+      sendJson(res, 400, { error: "Add at least one Fust Lijst row" });
+      return;
+    }
+
+    try {
+      const workbook = await generateFustListWorkbook({
+        action_date: actionDate,
+        customer_name: customerName,
+        rows,
+        generated_by: requestUser.username,
+      });
+      const filename = contentDispositionFilename(`fust-lijst-${actionDate}-${customerName}.xlsx`);
+      res.writeHead(200, {
+        "content-type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        "content-disposition": `attachment; filename="${filename}"`,
+        "cache-control": "no-store",
+      });
+      res.end(workbook);
+    } catch (error) {
+      sendJson(res, 400, { error: error instanceof Error ? error.message : String(error) });
+    }
     return;
   }
 
