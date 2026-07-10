@@ -6270,6 +6270,10 @@ function createCustomFustListRow() {
   };
 }
 
+function buildFustExporterBlock(exporter) {
+  return String(exporter?.block || "").trim();
+}
+
 function FustPage({ currentUser, menuVersion }) {
   const canManageFust = hasPermission(currentUser, PERMISSIONS.FUST_MANAGE);
   const visibleTabs = [
@@ -6398,10 +6402,13 @@ function FustPage({ currentUser, menuVersion }) {
 function FustListPanel({ metaData, loading, defaults = null }) {
   const records = metaData?.records || [];
   const countries = metaData?.countries || [];
+  const exporters = metaData?.exporters || [];
+  const cmrCustomers = metaData?.cmr_customers || [];
   const [form, setForm] = useState(() => ({
     action_date: defaults?.action_date || new Date().toISOString().slice(0, 10),
     country: defaults?.country || "",
     customer_name: defaults?.customer_name || "",
+    exporter_name: "",
     rows: createEmptyFustListRows(),
   }));
   const [busy, setBusy] = useState(false);
@@ -6409,12 +6416,23 @@ function FustListPanel({ metaData, loading, defaults = null }) {
   const [error, setError] = useState("");
   const customerOptions = records.filter((record) => record.country === form.country);
   const customerNames = [...new Set(customerOptions.map((record) => record.customer_name))].sort((left, right) => left.localeCompare(right));
+  const selectedExporter = exporters.find((item) => item.name === form.exporter_name) || null;
+  const exporterBlock = buildFustExporterBlock(selectedExporter);
 
   useEffect(() => {
     if (countries.length && !form.country) {
       setForm((current) => ({ ...current, country: countries[0] }));
     }
   }, [countries, form.country]);
+
+  useEffect(() => {
+    if (exporters.length && !exporters.some((item) => item.name === form.exporter_name)) {
+      setForm((current) => ({
+        ...current,
+        exporter_name: exporters[0]?.name || "",
+      }));
+    }
+  }, [exporters, form.exporter_name]);
 
   useEffect(() => {
     if (customerNames.length && !customerNames.includes(form.customer_name)) {
@@ -6424,6 +6442,26 @@ function FustListPanel({ metaData, loading, defaults = null }) {
       }));
     }
   }, [customerNames, form.customer_name]);
+
+  useEffect(() => {
+    if (!form.customer_name) {
+      return;
+    }
+    const linkedCustomer = cmrCustomers.find((item) => item.name.toLowerCase() === form.customer_name.toLowerCase());
+    if (!linkedCustomer?.exporter_profile_name) {
+      return;
+    }
+    if (!exporters.some((item) => item.name === linkedCustomer.exporter_profile_name)) {
+      return;
+    }
+    if (form.exporter_name === linkedCustomer.exporter_profile_name) {
+      return;
+    }
+    setForm((current) => ({
+      ...current,
+      exporter_name: linkedCustomer.exporter_profile_name,
+    }));
+  }, [cmrCustomers, exporters, form.customer_name, form.exporter_name]);
 
   function updateRow(rowId, field, value) {
     setForm((current) => ({
@@ -6485,6 +6523,7 @@ function FustListPanel({ metaData, loading, defaults = null }) {
         body: JSON.stringify({
           action_date: form.action_date,
           customer_name: form.customer_name,
+          exporter: selectedExporter ? { name: selectedExporter.name, block: exporterBlock } : null,
           rows: activeRows,
         }),
       });
@@ -6556,6 +6595,20 @@ function FustListPanel({ metaData, loading, defaults = null }) {
               <datalist id="fust-list-customers">
                 {customerNames.map((name) => <option key={name} value={name} />)}
               </datalist>
+            </label>
+            <label className="wide">
+              <span>Exporter info</span>
+              <select
+                value={form.exporter_name}
+                onChange={(event) => setForm((current) => ({ ...current, exporter_name: event.target.value }))}
+              >
+                <option value="">No exporter block</option>
+                {exporters.map((exporter) => <option key={exporter.name} value={exporter.name}>{exporter.name}</option>)}
+              </select>
+            </label>
+            <label className="wide">
+              <span>Exporter preview</span>
+              <textarea rows={5} value={exporterBlock || ""} readOnly placeholder="No exporter info selected" />
             </label>
           </div>
 

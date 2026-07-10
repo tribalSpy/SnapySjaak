@@ -679,6 +679,19 @@ function normalizeCmrCustomer(item) {
   };
 }
 
+function exporterBlockFromCmrProfile(profile) {
+  const fieldAssignments = Array.isArray(profile?.field_assignments) ? profile.field_assignments : [];
+  const consignorValue = fieldAssignments.find((item) => item?.field_name === "ConsignorName")?.value || "";
+  const signatureValue = fieldAssignments.find((item) => item?.field_name === "SignaturePlace1")?.value || "";
+  const block = String(consignorValue || signatureValue || "").trim();
+  return {
+    name: String(profile?.name || "").trim(),
+    country: String(profile?.country || "").trim(),
+    place: String(profile?.place || "").trim(),
+    block,
+  };
+}
+
 async function saveCmrPrintAppData(payload) {
   const { appDataPath } = await ensureCmrPrintDataDir();
   const customers = (Array.isArray(payload?.customers) ? payload.customers : []).map(normalizeCmrCustomer).filter((item) => item.name);
@@ -6320,6 +6333,13 @@ async function generateFustListWorkbook(payload) {
   }
 }
 
+function normalizeFustExporterInfo(info) {
+  return {
+    name: String(info?.name || "").trim(),
+    block: String(info?.block || "").trim(),
+  };
+}
+
 async function cleanupExpiredHalLocationSessions() {
   const now = Date.now();
   for (const [sessionId, session] of halLocationSessions.entries()) {
@@ -10064,6 +10084,8 @@ async function handleApi(req, res, url) {
     let rawRowCount = 0;
     let source = "local";
     let error = "";
+    let exporters = [];
+    let cmrCustomers = [];
 
     try {
       const rows = await loadFustSheetRows(settings);
@@ -10076,10 +10098,24 @@ async function handleApi(req, res, url) {
       error = sheetError instanceof Error ? sheetError.message : String(sheetError);
     }
 
+    try {
+      const cmrData = await loadCmrPrintData();
+      exporters = (cmrData?.exporters || []).map(exporterBlockFromCmrProfile).filter((item) => item.name);
+      cmrCustomers = (cmrData?.customers || []).map((item) => ({
+        name: String(item?.name || "").trim(),
+        exporter_profile_name: String(item?.exporter_profile_name || "").trim(),
+      })).filter((item) => item.name);
+    } catch {
+      exporters = [];
+      cmrCustomers = [];
+    }
+
     const countries = [...new Set(records.map((record) => record.country))].sort((left, right) => left.localeCompare(right));
     sendJson(res, 200, {
       settings,
       countries,
+      exporters,
+      cmr_customers: cmrCustomers,
       records,
       headers,
       raw_row_count: rawRowCount,
@@ -10608,6 +10644,7 @@ async function handleApi(req, res, url) {
     const body = await readRequestJson(req, 512 * 1024);
     const actionDate = String(body.action_date || localDateIso()).trim();
     const customerName = String(body.customer_name || "").trim();
+    const exporterInfo = normalizeFustExporterInfo(body.exporter || {});
     const rows = Array.isArray(body.rows) ? body.rows.map(normalizeFustListRow).filter((row) => row.code) : [];
     if (!customerName) {
       sendJson(res, 400, { error: "Customer is required" });
@@ -10622,6 +10659,7 @@ async function handleApi(req, res, url) {
       const workbook = await generateFustListWorkbook({
         action_date: actionDate,
         customer_name: customerName,
+        exporter: exporterInfo,
         rows,
         generated_by: requestUser.username,
       });

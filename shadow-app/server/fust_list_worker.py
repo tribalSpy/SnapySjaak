@@ -3,7 +3,7 @@ import json
 from pathlib import Path
 
 from openpyxl import load_workbook
-from openpyxl.styles import Alignment, Border, Font, Side
+from openpyxl.styles import Alignment, Font
 
 
 ROW_BY_CODE = {
@@ -25,18 +25,13 @@ ROW_BY_CODE = {
 }
 DATE_CELL = "C12"
 CUSTOMER_CELL = "J12"
-TOTAL_OK_COLUMN = "N"
-TOTAL_BROKEN_COLUMN = "P"
 CODE_COLUMN = "B"
 CUSTOM_ROW_START = 64
 CUSTOM_ROW_STEP = 3
-EXPORTER_LABEL_CELL = "B103"
-EXPORTER_BLOCK_CELL = "B104"
-SIGNATURE_LABEL_CELL = "J103"
-SIGNATURE_BOX_START_ROW = 104
-SIGNATURE_BOX_END_ROW = 108
-SIGNATURE_BOX_START_COL = 10
-SIGNATURE_BOX_END_COL = 16
+TOTAL_OK_COLUMN = "E"
+TOTAL_BROKEN_COLUMN = "G"
+EXPORTER_BLOCK_CELL = "B65"
+SIGNATURE_BLOCK_CELL = "H65"
 
 
 def clean_text(value):
@@ -108,27 +103,14 @@ def generate_workbook(template_path: Path, payload_path: Path, output_path: Path
         worksheet[f"{TOTAL_OK_COLUMN}{row_number}"] = row["total_ok"]
         worksheet[f"{TOTAL_BROKEN_COLUMN}{row_number}"] = row["total_broken"]
 
-    exporter_name = clean_text((payload.get("exporter") or {}).get("name"))
     exporter_block = clean_text((payload.get("exporter") or {}).get("block"))
-    if exporter_name or exporter_block:
-        worksheet[EXPORTER_LABEL_CELL] = exporter_name or "Exporter"
-        worksheet[EXPORTER_LABEL_CELL].font = Font(bold=True)
-        worksheet[EXPORTER_BLOCK_CELL] = exporter_block or exporter_name
+    if exporter_block:
+        worksheet[EXPORTER_BLOCK_CELL] = exporter_block
         worksheet[EXPORTER_BLOCK_CELL].alignment = Alignment(wrap_text=True, vertical="top")
 
-    worksheet[SIGNATURE_LABEL_CELL] = "Delivery signature"
-    worksheet[SIGNATURE_LABEL_CELL].font = Font(bold=True)
-    thin_side = Side(style="thin", color="000000")
-    for row_number in range(SIGNATURE_BOX_START_ROW, SIGNATURE_BOX_END_ROW + 1):
-        for col_number in range(SIGNATURE_BOX_START_COL, SIGNATURE_BOX_END_COL + 1):
-            cell = worksheet.cell(row=row_number, column=col_number)
-            cell.border = Border(
-                left=thin_side if col_number == SIGNATURE_BOX_START_COL else Side(style=None),
-                right=thin_side if col_number == SIGNATURE_BOX_END_COL else Side(style=None),
-                top=thin_side if row_number == SIGNATURE_BOX_START_ROW else Side(style=None),
-                bottom=thin_side if row_number == SIGNATURE_BOX_END_ROW else Side(style=None),
-            )
-            cell.alignment = Alignment(vertical="center")
+    worksheet[SIGNATURE_BLOCK_CELL] = "Delivery signature"
+    worksheet[SIGNATURE_BLOCK_CELL].font = Font(bold=True)
+    worksheet[SIGNATURE_BLOCK_CELL].alignment = Alignment(vertical="top")
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
     workbook.save(output_path)
