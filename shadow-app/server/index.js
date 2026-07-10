@@ -9655,9 +9655,12 @@ async function handleApi(req, res, url) {
       sendJson(res, 200, { collection: existingCollection, print_collections: normalizeUkdocsState(state).print_collections, skipped: true, reason: "temp_phyto already exists" });
       return;
     }
-    if (["inspection_list", "locations_file", "ipaffs_file", "ipaffs_plants_file"].includes(kind) && existingCollection.documents?.[kind]?.storage_name) {
+    if (["ipaffs_file", "ipaffs_plants_file"].includes(kind) && existingCollection.documents?.[kind]?.storage_name) {
       sendJson(res, 200, { collection: existingCollection, print_collections: normalizeUkdocsState(state).print_collections, skipped: true, reason: `${kind} already exists` });
       return;
+    }
+    if (["inspection_list", "locations_file"].includes(kind) && existingCollection.documents?.[kind]?.storage_name) {
+      await deleteSingleUkdocsPrintDocumentFile(existingCollection.documents[kind]);
     }
     const savedDocumentRaw = await saveUkdocsPrintUpload(existingCollection.id, kind, body?.file || {}, requestUser);
     const savedDocument = ["temp_phyto", "ipaffs_file", "ipaffs_plants_file"].includes(kind)

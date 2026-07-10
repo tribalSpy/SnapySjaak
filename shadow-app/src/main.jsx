@@ -4518,6 +4518,64 @@ function UkdocsInspectionPage({ currentUser }) {
     }
   }
 
+  async function deleteCollectionDocument(kind, index = null) {
+    if (!selectedCollection) {
+      return;
+    }
+    if (!window.confirm("Delete this uploaded file?")) {
+      return;
+    }
+    setSaving(true);
+    setMessage("");
+    setError("");
+    try {
+      const targetCollectionId = selectedCollection.id;
+      const documentPath = index === null ? kind : `${kind}/${index}`;
+      const payload = await apiJson(`/api/ukdocs-print/collections/${encodeURIComponent(selectedCollection.id)}/documents/${documentPath}`, {
+        method: "DELETE",
+      });
+      setState((current) => {
+        const currentCollections = current?.print_collections || [];
+        if (Array.isArray(payload.print_collections) && payload.print_collections.length) {
+          return { ...current, print_collections: payload.print_collections };
+        }
+        if (payload.collection?.id) {
+          return {
+            ...current,
+            print_collections: currentCollections.map((collection) => (
+              collection.id === payload.collection.id || collection.shipment_id === payload.collection.shipment_id
+                ? payload.collection
+                : collection
+            )),
+          };
+        }
+        return {
+          ...current,
+          print_collections: currentCollections.map((collection) => {
+            if (collection.id !== targetCollectionId && collection.shipment_id !== targetCollectionId) {
+              return collection;
+            }
+            const nextDocuments = { ...(collection.documents || {}) };
+            if (kind === "phyto") {
+              nextDocuments.phyto_files = (nextDocuments.phyto_files || []).filter((_, itemIndex) => itemIndex !== index);
+            } else {
+              nextDocuments[kind] = null;
+            }
+            return {
+              ...collection,
+              documents: nextDocuments,
+            };
+          }),
+        };
+      });
+      setMessage("Uploaded file deleted.");
+    } catch (deleteError) {
+      setError(deleteError.message);
+    } finally {
+      setSaving(false);
+    }
+  }
+
   async function saveNotes() {
     if (!selectedCollection) {
       return;
@@ -4660,7 +4718,16 @@ function UkdocsInspectionPage({ currentUser }) {
                   return (
                     <div key={documentDefinition.key} className="ukdocs-upload-card">
                       <strong>{documentDefinition.label}</strong>
-                      <input type="file" accept={documentDefinition.accept} onChange={(event) => uploadCollectionFile(documentDefinition.key, event.target.files?.[0] || null)} disabled={saving} />
+                      <input
+                        type="file"
+                        accept={documentDefinition.accept}
+                        onChange={(event) => {
+                          const nextFile = event.target.files?.[0] || null;
+                          event.target.value = "";
+                          uploadCollectionFile(documentDefinition.key, nextFile);
+                        }}
+                        disabled={saving}
+                      />
                       {documentDefinition.key === "phyto" ? (
                         <>
                           <small>{selectedPhytoFiles.length ? `${selectedPhytoFiles.length} phytosanitary document(s) saved.` : "No file saved yet."}</small>
