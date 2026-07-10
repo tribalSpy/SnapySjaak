@@ -5599,15 +5599,11 @@ function buildUkdocsCsiAuditPayload(collection, deterministicBundle, requestUser
       "Use only the temporary phyto PDF page images for this task.",
       "Do not analyze generated invoices, generated export files, IPAFFS totals, consignee address, destination text, or origin text here.",
       "Ignore long legal, annex, and compliance text unless it clearly shows the document is blocked or not activated.",
-      "Check only these visual items: visible PCNU number, blocked or not activated state, and visible product or total quantity when it is readable.",
-      "Compare visible phyto quantities only against the expected values already provided in expected_temp_phyto_checks.",
-      "Do not recalculate invoice, export, or IPAFFS totals. Those checks were already done in code.",
+      "Check only these visual items: visible PCNU number and blocked or not activated state.",
+      "Do not check product quantities, page totals, invoice totals, export totals, or IPAFFS totals visually in this task.",
+      "Product quantity matching is already handled in code from parsed documents, so do not add quantity judgments here.",
       "If a value is not clearly visible, do not guess. Mark warn and add a manual check.",
       "If the document looks active and the PCNU number is readable, say so directly.",
-      "If a temporary phyto page shows one or more product lines with quantities, compare those visible quantities to the expected grouped quantities.",
-      "Never combine multiple visible product lines into one quantity.",
-      "Never invent a quantity that is not printed on the page.",
-      "If only a page total is visible for a page that contains multiple product lines, do not treat that total as a single product quantity. Mark warn and add a manual check instead.",
       "Never output explanation text before or after the JSON.",
     ],
     output_schema: {
@@ -5616,8 +5612,6 @@ function buildUkdocsCsiAuditPayload(collection, deterministicBundle, requestUser
       checks: [{ code: "string", status: "pass|warn|fail", message: "string" }],
       visible_documents: [{
         document_label: "temp phyto A|temp phyto B",
-        product: "normalized or visible product name",
-        quantity: 0,
         pcnu_number: "visible PCNU if readable",
         state: "ok|not_activated|unclear",
         note: "short note",
@@ -5639,14 +5633,11 @@ function buildUkdocsCsiAuditPayload(collection, deterministicBundle, requestUser
       checks: [
         { code: "PHYTO_PCNU_VISIBLE", status: "pass", message: "PCNU 123456789 is visible in temp phyto A." },
         { code: "PHYTO_STATE", status: "pass", message: "No blocked or not activated text is visible." },
-        { code: "PHYTO_VISIBLE_QTY", status: "warn", message: "Temp phyto B shows multiple product lines and only a page total is clearly visible; review manually." },
       ],
       visible_documents: [
-        { document_label: "temp phyto A", product: "Flowers carnations", quantity: 350, pcnu_number: "123456789", state: "ok", note: "Visible quantity read from the page." },
+        { document_label: "temp phyto A", pcnu_number: "123456789", state: "ok", note: "PCNU is visible and the document appears active." },
       ],
-      manual_checks: [
-        "Review temp phyto B visible quantity manually because the page total covers multiple product lines.",
-      ],
+      manual_checks: [],
       notes: [
         "Only temporary phyto PDF pages were checked visually.",
       ],
@@ -8084,151 +8075,16 @@ async function handleApi(req, res, url) {
         }
         return item;
       });
-      const visualContextByLabel = new Map(
-        (Array.isArray(job?.payload_json?.deterministic_visual_context?.temp_phyto_documents)
-          ? job.payload_json.deterministic_visual_context.temp_phyto_documents
-          : [])
-          .map((item) => [String(item?.document_label || "").trim(), item]),
-      );
-      const visualTempPhytoTotals = new Map();
-      const visualTempPhytoByLabel = new Map();
-      const ambiguousVisualQtyLabels = new Set();
-      const visualQtyManualReviewMessages = [];
-      for (const item of Array.isArray(parsed.visible_documents) ? parsed.visible_documents : []) {
-        const documentLabel = String(item?.document_label || "").trim();
-        const documentLabels = documentLabel.split("|").map((label) => String(label || "").trim()).filter(Boolean);
-        const mappedProduct = mapUkdocsCsiProductName(item?.product || "", "");
-        const quantity = Number(item?.quantity);
-        const noteText = String(item?.note || "").trim().toLowerCase();
-        if (!mappedProduct || !Number.isFinite(quantity)) {
-          continue;
-        }
-        let ambiguousMultiProductTotal = false;
-        for (const label of documentLabels) {
-          const context = visualContextByLabel.get(label);
-          const contextProducts = Array.isArray(context?.expected_products) ? context.expected_products : [];
-          const parsedLineProducts = contextProducts.filter((entry) => Number.isFinite(Number(entry?.parsed_quantity)));
-          if (parsedLineProducts.length <= 1) {
-            continue;
-          }
-          const matchedLine = parsedLineProducts.find((entry) => String(entry?.product || "").trim() === mappedProduct);
-          const exactLineMatch = matchedLine && Number(matchedLine.parsed_quantity) === quantity;
-          const mentionsTotal = noteText.includes("visible total") || noteText.includes("total");
-          if (!exactLineMatch || mentionsTotal) {
-            ambiguousMultiProductTotal = true;
-            ambiguousVisualQtyLabels.add(label);
-            visualQtyManualReviewMessages.push(
-              `${label}: visual quantity ${quantity} for ${mappedProduct} was not used automatically because the temp phyto page has multiple product lines${mentionsTotal ? " and the model described it as a total" : ""}.`,
-            );
-            break;
-          }
-        }
-        if (ambiguousMultiProductTotal) {
-          continue;
-        }
-        if (!isUkdocsCsiAggregateProductName(mappedProduct)) {
-          addUkdocsCsiQuantity(visualTempPhytoTotals, mappedProduct, quantity);
-        }
-        if (documentLabel) {
-          if (!visualTempPhytoByLabel.has(documentLabel)) {
-            visualTempPhytoByLabel.set(documentLabel, new Map());
-          }
-          visualTempPhytoByLabel.get(documentLabel).set(mappedProduct, quantity);
-        }
-      }
-      const finalLlmChecks = llmChecks.map((item) => {
-        if (item?.code !== "PHYTO_VISIBLE_QTY" || item?.status !== "pass" || !ambiguousVisualQtyLabels.size) {
-          return item;
-        }
-        const message = String(item?.message || "");
-        const normalizedMessage = message.toLowerCase();
-        const matchedLabel = Array.from(ambiguousVisualQtyLabels).find((label) => normalizedMessage.includes(label.toLowerCase()));
-        if (!matchedLabel) {
-          return item;
-        }
-        return {
-          ...item,
-          status: "warn",
-          message: `${matchedLabel} visible quantity was treated as a document total or multi-line total, so it was kept for manual review instead of a product-level pass.`,
-        };
-      });
+      const finalLlmChecks = llmChecks.filter((item) => item?.code !== "PHYTO_VISIBLE_QTY");
       const finalChecks = [
         ...deterministicChecks,
         ...finalLlmChecks,
       ];
       const deterministicProducts = Array.isArray(deterministicSource.products) ? deterministicSource.products : [];
-      const finalProducts = deterministicProducts.map((item) => {
-        const productName = String(item?.product || "").trim();
-        const visualQty = productName && visualTempPhytoTotals.has(productName)
-          ? visualTempPhytoTotals.get(productName)
-          : null;
-        const currentQty = String(item?.temp_phyto_quantity || "").trim();
-        const currentPerDoc = Array.isArray(item?.temp_phyto_quantities) ? item.temp_phyto_quantities : [];
-        const mergedPerDoc = currentPerDoc.map((entry) => {
-          const label = String(entry?.document_label || "").trim();
-          const qty = String(entry?.quantity || "").trim();
-          if (qty || !label || !productName || !visualTempPhytoByLabel.has(label)) {
-            return entry;
-          }
-          const visualDocQty = visualTempPhytoByLabel.get(label).get(productName);
-          return visualDocQty === undefined
-            ? entry
-            : { ...entry, quantity: String(visualDocQty) };
-        });
-        for (const [label, productMap] of visualTempPhytoByLabel.entries()) {
-          if (!productName || !productMap.has(productName) || mergedPerDoc.some((entry) => String(entry?.document_label || "").trim() === label)) {
-            continue;
-          }
-          mergedPerDoc.push({
-            document_label: label,
-            quantity: String(productMap.get(productName)),
-          });
-        }
-        if (!currentQty && visualQty !== null) {
-          const existingMessage = String(item?.message || "").trim();
-          return {
-            ...item,
-            temp_phyto_quantity: String(visualQty),
-            temp_phyto_quantities: mergedPerDoc,
-            message: existingMessage
-              ? `${existingMessage} Visual temp phyto quantity ${visualQty}.`
-              : `Visual temp phyto quantity ${visualQty}.`,
-          };
-        }
-        return {
-          ...item,
-          temp_phyto_quantities: mergedPerDoc,
-        };
-      });
-      for (const [productName, visualQty] of visualTempPhytoTotals.entries()) {
-        if (finalProducts.some((item) => String(item?.product || "").trim() === productName)) {
-          continue;
-        }
-        const perDoc = [];
-        for (const [label, productMap] of visualTempPhytoByLabel.entries()) {
-          if (!productMap.has(productName)) {
-            continue;
-          }
-          perDoc.push({
-            document_label: label,
-            quantity: String(productMap.get(productName)),
-          });
-        }
-        finalProducts.push({
-          product: productName,
-          invoice_quantity: "",
-          export_quantity: "",
-          ipaffs_quantity: "",
-          temp_phyto_quantity: String(visualQty),
-          temp_phyto_quantities: perDoc,
-          status: "warn",
-          message: `Only visual temp phyto quantity ${visualQty} was available.`,
-        });
-      }
+      const finalProducts = deterministicProducts.map((item) => ({ ...item }));
       const finalManualChecks = uniqueUkdocsCsiStrings([
         ...(Array.isArray(deterministicSource.manual_checks) ? deterministicSource.manual_checks : []),
         ...(Array.isArray(parsed.manual_checks) ? parsed.manual_checks : []),
-        ...visualQtyManualReviewMessages,
       ]).filter((item) => {
         const normalized = String(item || "").toLowerCase();
         if (visualPcnuCoveredAllTempPhytos && normalized.includes("pcnu")) {
@@ -8236,13 +8092,6 @@ async function handleApi(req, res, url) {
         }
         return true;
       });
-      if (visualQtyManualReviewMessages.length) {
-        finalChecks.push({
-          code: "PHYTO_VISIBLE_QTY_REVIEW",
-          status: "warn",
-          message: `${visualQtyManualReviewMessages.length} visual temp phyto quantity reading(s) were kept for manual review because they did not map cleanly to a single product line.`,
-        });
-      }
       const finalNotes = uniqueUkdocsCsiStrings([
         ...(Array.isArray(deterministicSource.notes) ? deterministicSource.notes : []),
         ...(Array.isArray(parsed.notes) ? parsed.notes : []),
