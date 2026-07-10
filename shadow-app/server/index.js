@@ -8086,13 +8086,44 @@ async function handleApi(req, res, url) {
         ...deterministicChecks,
         ...llmChecks,
       ];
+      const visualContextByLabel = new Map(
+        (Array.isArray(job?.payload_json?.deterministic_visual_context?.temp_phyto_documents)
+          ? job.payload_json.deterministic_visual_context.temp_phyto_documents
+          : [])
+          .map((item) => [String(item?.document_label || "").trim(), item]),
+      );
       const visualTempPhytoTotals = new Map();
       const visualTempPhytoByLabel = new Map();
+      const visualQtyManualReviewMessages = [];
       for (const item of Array.isArray(parsed.visible_documents) ? parsed.visible_documents : []) {
         const documentLabel = String(item?.document_label || "").trim();
+        const documentLabels = documentLabel.split("|").map((label) => String(label || "").trim()).filter(Boolean);
         const mappedProduct = mapUkdocsCsiProductName(item?.product || "", "");
         const quantity = Number(item?.quantity);
+        const noteText = String(item?.note || "").trim().toLowerCase();
         if (!mappedProduct || !Number.isFinite(quantity)) {
+          continue;
+        }
+        let ambiguousMultiProductTotal = false;
+        for (const label of documentLabels) {
+          const context = visualContextByLabel.get(label);
+          const contextProducts = Array.isArray(context?.expected_products) ? context.expected_products : [];
+          const parsedLineProducts = contextProducts.filter((entry) => Number.isFinite(Number(entry?.parsed_quantity)));
+          if (parsedLineProducts.length <= 1) {
+            continue;
+          }
+          const matchedLine = parsedLineProducts.find((entry) => String(entry?.product || "").trim() === mappedProduct);
+          const exactLineMatch = matchedLine && Number(matchedLine.parsed_quantity) === quantity;
+          const mentionsTotal = noteText.includes("visible total") || noteText.includes("total");
+          if (!exactLineMatch || mentionsTotal) {
+            ambiguousMultiProductTotal = true;
+            visualQtyManualReviewMessages.push(
+              `${label}: visual quantity ${quantity} for ${mappedProduct} was not used automatically because the temp phyto page has multiple product lines${mentionsTotal ? " and the model described it as a total" : ""}.`,
+            );
+            break;
+          }
+        }
+        if (ambiguousMultiProductTotal) {
           continue;
         }
         if (!isUkdocsCsiAggregateProductName(mappedProduct)) {
@@ -8177,6 +8208,7 @@ async function handleApi(req, res, url) {
       const finalManualChecks = uniqueUkdocsCsiStrings([
         ...(Array.isArray(deterministicSource.manual_checks) ? deterministicSource.manual_checks : []),
         ...(Array.isArray(parsed.manual_checks) ? parsed.manual_checks : []),
+        ...visualQtyManualReviewMessages,
       ]).filter((item) => {
         const normalized = String(item || "").toLowerCase();
         if (visualPcnuCoveredAllTempPhytos && normalized.includes("pcnu")) {
@@ -8184,6 +8216,13 @@ async function handleApi(req, res, url) {
         }
         return true;
       });
+      if (visualQtyManualReviewMessages.length) {
+        finalChecks.push({
+          code: "PHYTO_VISIBLE_QTY_REVIEW",
+          status: "warn",
+          message: `${visualQtyManualReviewMessages.length} visual temp phyto quantity reading(s) were kept for manual review because they did not map cleanly to a single product line.`,
+        });
+      }
       const finalNotes = uniqueUkdocsCsiStrings([
         ...(Array.isArray(deterministicSource.notes) ? deterministicSource.notes : []),
         ...(Array.isArray(parsed.notes) ? parsed.notes : []),
