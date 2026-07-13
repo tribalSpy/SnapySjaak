@@ -582,6 +582,7 @@ textarea {
 .fust-list-grid-header {
   padding: 0 0 4px;
   color: #4c6280;
+  font-size: 1rem;
 }
 
 .fust-list-grid-row {
@@ -593,11 +594,26 @@ textarea {
 
 .fust-list-grid-row span {
   font-weight: 700;
+  font-size: 1rem;
+  min-height: 52px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
 }
 
 .fust-list-row-hint {
   font-size: 0.9rem;
   color: #6b7a88;
+  font-weight: 600;
+}
+
+.fust-list-grid-row input {
+  min-height: 52px;
+  padding: 6px 10px;
+  font-size: 20px;
+  line-height: 1.1;
+  text-align: center;
   font-weight: 600;
 }
 
