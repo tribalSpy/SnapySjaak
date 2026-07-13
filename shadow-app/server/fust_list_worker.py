@@ -32,6 +32,18 @@ TOTAL_OK_COLUMN = "E"
 TOTAL_BROKEN_COLUMN = "G"
 EXPORTER_BLOCK_CELL = "B65"
 SIGNATURE_BLOCK_CELL = "H65"
+MAIN_FONT_SIZE = 16
+CELL_FONT_SIZE = 20
+
+
+def style_value_cell(cell):
+    cell.alignment = Alignment(horizontal="center", vertical="center")
+    cell.font = Font(size=CELL_FONT_SIZE)
+
+
+def style_label_cell(cell, bold=False):
+    cell.alignment = Alignment(horizontal="center", vertical="center")
+    cell.font = Font(size=MAIN_FONT_SIZE, bold=bold)
 
 
 def clean_text(value):
@@ -81,10 +93,15 @@ def generate_workbook(template_path: Path, payload_path: Path, output_path: Path
 
     worksheet[DATE_CELL] = payload["action_date"]
     worksheet[CUSTOMER_CELL] = payload["customer_name"]
+    style_value_cell(worksheet[DATE_CELL])
+    style_value_cell(worksheet[CUSTOMER_CELL])
 
     for code, row_number in ROW_BY_CODE.items():
         worksheet[f"{TOTAL_OK_COLUMN}{row_number}"] = None
         worksheet[f"{TOTAL_BROKEN_COLUMN}{row_number}"] = None
+        style_label_cell(worksheet[f"{CODE_COLUMN}{row_number}"], bold=True)
+        style_value_cell(worksheet[f"{TOTAL_OK_COLUMN}{row_number}"])
+        style_value_cell(worksheet[f"{TOTAL_BROKEN_COLUMN}{row_number}"])
 
     custom_rows = []
     for row in payload["rows"]:
@@ -107,14 +124,18 @@ def generate_workbook(template_path: Path, payload_path: Path, output_path: Path
         worksheet[f"{CODE_COLUMN}{row_number}"] = row["code"]
         worksheet[f"{TOTAL_OK_COLUMN}{row_number}"] = row["total_ok"]
         worksheet[f"{TOTAL_BROKEN_COLUMN}{row_number}"] = row["total_broken"]
+        style_value_cell(worksheet[f"{CODE_COLUMN}{row_number}"])
+        style_value_cell(worksheet[f"{TOTAL_OK_COLUMN}{row_number}"])
+        style_value_cell(worksheet[f"{TOTAL_BROKEN_COLUMN}{row_number}"])
 
     exporter_block = clean_text((payload.get("exporter") or {}).get("block"))
     if exporter_block:
         worksheet[EXPORTER_BLOCK_CELL] = exporter_block
         worksheet[EXPORTER_BLOCK_CELL].alignment = Alignment(wrap_text=True, vertical="top")
+        worksheet[EXPORTER_BLOCK_CELL].font = Font(size=MAIN_FONT_SIZE)
 
     worksheet[SIGNATURE_BLOCK_CELL] = "Delivery signature"
-    worksheet[SIGNATURE_BLOCK_CELL].font = Font(bold=True)
+    worksheet[SIGNATURE_BLOCK_CELL].font = Font(size=MAIN_FONT_SIZE, bold=True)
     worksheet[SIGNATURE_BLOCK_CELL].alignment = Alignment(vertical="top")
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
