@@ -90,20 +90,52 @@ def row_find_label_value(values, expected):
     return ""
 
 
+def normalize_known_csi_group(value):
+    text = normalize_key(value)
+    if not text:
+        return ""
+    if "cites ge non flowering" in text:
+        return "CITES ge. non-flowering p"
+    if "other non flowering plant" in text:
+        return "Other non-flowering plant"
+    if "cites flowering plants" in text or "flowering plants no cactu" in text:
+        return "Flowering plants(no cactu"
+    if text == "perennials" or "perennials" in text:
+        return "Perennials"
+    if text == "others" or text.endswith(" others"):
+        return "Others"
+    if "refined roses" in text:
+        return "refined roses"
+    if "flowers other fresh" in text:
+        return "Flowers (other fresh)"
+    if "flowers carnation" in text or "flowers carnations" in text:
+        return "Flowers carnation"
+    if "flowers chrysanthem" in text:
+        return "Flowers chrysanthemums"
+    if "flowers roses" in text:
+        return "Flowers roses"
+    if "flowers lilies" in text:
+        return "Flowers lilies"
+    if "flowers orchids" in text:
+        return "Flowers orchids"
+    if "flowers green" in text:
+        return "Flowers green"
+    return ""
+
+
 def map_ipaffs_product(genus, commodity_code):
     genus_key = normalize_key(genus)
+    known_group = normalize_known_csi_group(genus)
+    if known_group:
+        return known_group
     code = re.sub(r"\D+", "", clean_text(commodity_code))
     if code.startswith("060240") or code.startswith("60240"):
         return "refined roses"
-    if code.startswith("060290990") or code.startswith("60290990"):
-        return "Other non-flowering plant"
-    if code.startswith("060290991") or code.startswith("60290991"):
-        return "CITES ge. non-flowering p"
     if code.startswith("06029091") or code.startswith("6029091"):
         return "Flowering plants(no cactu"
-    if code.startswith("060290500") or code.startswith("60290500"):
+    if code.startswith("060290500") or code.startswith("60290500") or code.startswith("6029050"):
         return "Perennials"
-    if code.startswith("060319700") or code.startswith("60319700"):
+    if code.startswith("060319700") or code.startswith("60319700") or code.startswith("6031970"):
         return "Others"
     if code.startswith("603140") or code.startswith("060314"):
         return "Flowers chrysanthemums"
@@ -115,15 +147,19 @@ def map_ipaffs_product(genus, commodity_code):
         return "Flowers lilies"
     if code.startswith("604209"):
         return "Flowers green"
+    if "cupressus" in genus_key:
+        return "Perennials"
+    if "ficus" in genus_key:
+        return "Others"
     if "hibiscus" in genus_key:
         return "Flowering plants(no cactu"
-    if "chrysanthem" in genus_key:
+    if "chrysanthem" in genus_key and not (code.startswith("06029091") or code.startswith("6029091")):
         return "Flowers chrysanthemums"
-    if "dianthus" in genus_key:
+    if "dianthus" in genus_key and not (code.startswith("06029091") or code.startswith("6029091")):
         return "Flowers carnation"
     if "gypsoph" in genus_key:
         return "Flowers (other fresh)"
-    if "rosa" in genus_key:
+    if "rosa" in genus_key and not (code.startswith("060240") or code.startswith("60240")):
         return "Flowers roses"
     if "solidago" in genus_key:
         return "Flowers (other fresh)"
@@ -131,8 +167,10 @@ def map_ipaffs_product(genus, commodity_code):
         return "CITES ge. non-flowering p"
     if any(token in genus_key for token in ["salvia", "lavandula", "helleborus", "campanula"]):
         return "Perennials"
-    if any(token in genus_key for token in ["dypsis", "maranta", "calathea", "chlorophytum", "curio", "dracaena", "epipremnum", "fittonia", "nephrolepis", "schefflera", "spathiphyllum", "sansevieria", "sanseveria", "zamioculcas", "succulent", "cactus"]):
+    if any(token in genus_key for token in ["dypsis", "maranta", "calathea", "chlorophytum", "dracaena", "epipremnum", "fittonia", "nephrolepis", "schefflera", "spathiphyllum", "sansevieria", "sanseveria", "zamioculcas"]):
         return "Other non-flowering plant"
+    if any(token in genus_key for token in ["curio", "crassula", "echeveria", "succulent", "cactus"]):
+        return "CITES ge. non-flowering p"
     if any(token in genus_key for token in ["echeveria", "fuchsia", "gerbera", "guzmania", "kalanchoe", "phalaenopsis", "anthurium", "celosia", "cymbidium", "cyclamen", "crassula", "begonia", "helianthus", "hydrangea", "mandevilla", "lithodora", "platycodon", "hibiscus"]):
         return "Flowering plants(no cactu"
     if "rosa" in genus_key:
