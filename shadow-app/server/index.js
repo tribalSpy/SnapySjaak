@@ -5013,26 +5013,27 @@ async function enrichUkdocsCsiStoredDocument(document, kind) {
   });
 }
 
-async function hydrateUkdocsCsiCollectionInputs(collection) {
+async function hydrateUkdocsCsiCollectionInputs(collection, options = {}) {
   const normalizedCollection = normalizeUkdocsPrintCollection(collection);
   if (!normalizedCollection) {
     return { collection: normalizedCollection, changed: false };
   }
+  const forceRefresh = options?.force_refresh === true;
   let changed = false;
   const nextDocuments = { ...(normalizedCollection.documents || {}) };
 
-  if (nextDocuments.ipaffs_file?.storage_name && !nextDocuments.ipaffs_file?.parsed_data) {
+  if (nextDocuments.ipaffs_file?.storage_name && (forceRefresh || !nextDocuments.ipaffs_file?.parsed_data)) {
     nextDocuments.ipaffs_file = await enrichUkdocsCsiStoredDocument(nextDocuments.ipaffs_file, "ipaffs_file");
     changed = true;
   }
-  if (nextDocuments.ipaffs_plants_file?.storage_name && !nextDocuments.ipaffs_plants_file?.parsed_data) {
+  if (nextDocuments.ipaffs_plants_file?.storage_name && (forceRefresh || !nextDocuments.ipaffs_plants_file?.parsed_data)) {
     nextDocuments.ipaffs_plants_file = await enrichUkdocsCsiStoredDocument(nextDocuments.ipaffs_plants_file, "ipaffs_plants_file");
     changed = true;
   }
 
   const tempPhytoFiles = [];
   for (const document of nextDocuments.temp_phyto_files || []) {
-    if (document?.storage_name && !document?.parsed_data) {
+    if (document?.storage_name && (forceRefresh || !document?.parsed_data)) {
       tempPhytoFiles.push(await enrichUkdocsCsiStoredDocument(document, "temp_phyto"));
       changed = true;
     } else {
@@ -5040,7 +5041,7 @@ async function hydrateUkdocsCsiCollectionInputs(collection) {
     }
   }
   nextDocuments.temp_phyto_files = tempPhytoFiles;
-  if (nextDocuments.temp_phyto_plants_file?.storage_name && !nextDocuments.temp_phyto_plants_file?.parsed_data) {
+  if (nextDocuments.temp_phyto_plants_file?.storage_name && (forceRefresh || !nextDocuments.temp_phyto_plants_file?.parsed_data)) {
     nextDocuments.temp_phyto_plants_file = await enrichUkdocsCsiStoredDocument(nextDocuments.temp_phyto_plants_file, "temp_phyto_plants_file");
     changed = true;
   }
@@ -10399,7 +10400,7 @@ async function handleApi(req, res, url) {
       sendJson(res, 400, { error: "Upload the IPAFFS file before running CSI" });
       return;
     }
-    const hydrated = await hydrateUkdocsCsiCollectionInputs(existingCollection);
+    const hydrated = await hydrateUkdocsCsiCollectionInputs(existingCollection, { force_refresh: true });
     let collectionForRun = hydrated.collection || existingCollection;
     if (hydrated.changed && collectionForRun) {
       state.print_collections = upsertUkdocsPrintCollection(state.print_collections, collectionForRun);
