@@ -92,25 +92,13 @@ def row_find_label_value(values, expected):
 
 def map_ipaffs_product(genus, commodity_code):
     genus_key = normalize_key(genus)
-    if "hibiscus" in genus_key:
-        return "Flowering plants(no cactu"
-    if "chrysanthem" in genus_key:
-        return "Flowers chrysanthemums"
-    if "dianthus" in genus_key:
-        return "Flowers carnation"
-    if "gypsoph" in genus_key:
-        return "Flowers (other fresh)"
-    if "rosa" in genus_key:
-        return "Flowers roses"
-    if "solidago" in genus_key:
-        return "Flowers (other fresh)"
     code = re.sub(r"\D+", "", clean_text(commodity_code))
     if code.startswith("060240") or code.startswith("60240"):
         return "refined roses"
     if code.startswith("060290990") or code.startswith("60290990"):
-        return "CITES ge. non-flowering p"
-    if code.startswith("060290991") or code.startswith("60290991"):
         return "Other non-flowering plant"
+    if code.startswith("060290991") or code.startswith("60290991"):
+        return "CITES ge. non-flowering p"
     if code.startswith("06029091") or code.startswith("6029091"):
         return "Flowering plants(no cactu"
     if code.startswith("060290500") or code.startswith("60290500"):
@@ -127,6 +115,18 @@ def map_ipaffs_product(genus, commodity_code):
         return "Flowers lilies"
     if code.startswith("604209"):
         return "Flowers green"
+    if "hibiscus" in genus_key:
+        return "Flowering plants(no cactu"
+    if "chrysanthem" in genus_key:
+        return "Flowers chrysanthemums"
+    if "dianthus" in genus_key:
+        return "Flowers carnation"
+    if "gypsoph" in genus_key:
+        return "Flowers (other fresh)"
+    if "rosa" in genus_key:
+        return "Flowers roses"
+    if "solidago" in genus_key:
+        return "Flowers (other fresh)"
     if "bonsai" in genus_key or "sageretia" in genus_key or "aloe" in genus_key or "rhipsalis" in genus_key:
         return "CITES ge. non-flowering p"
     if any(token in genus_key for token in ["salvia", "lavandula", "helleborus", "campanula"]):

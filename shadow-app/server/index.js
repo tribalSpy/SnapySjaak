@@ -5250,10 +5250,10 @@ function mapUkdocsCsiProductName(description, commodityCode = "", options = {}) 
     return "refined roses";
   }
   if (code.startsWith("060290990") || code.startsWith("60290990")) {
-    return "CITES ge. non-flowering p";
+    return "Other non-flowering plant";
   }
   if (code.startsWith("060290991") || code.startsWith("60290991")) {
-    return "Other non-flowering plant";
+    return "CITES ge. non-flowering p";
   }
   if (code.startsWith("06029091") || code.startsWith("6029091")) {
     return "Flowering plants(no cactu";
