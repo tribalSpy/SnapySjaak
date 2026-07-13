@@ -5416,6 +5416,10 @@ function getUkdocsCsiTempPhytoSourceDocuments(collection) {
   return [...tempPhytoFiles, ...plantTempPhyto];
 }
 
+function normalizeUkdocsCsiDocumentName(value) {
+  return String(value || "").trim().toLowerCase();
+}
+
 function buildUkdocsCsiDeterministicReport(collection, extractedDocuments) {
   const documents = Array.isArray(extractedDocuments) ? extractedDocuments : [];
   const noPdNeeded = isUkdocsNoPdNeeded(collection);
@@ -5450,9 +5454,16 @@ function buildUkdocsCsiDeterministicReport(collection, extractedDocuments) {
   const rawTempPhytoDocs = (() => {
     const sourceDocuments = getUkdocsCsiTempPhytoSourceDocuments(collection);
     const extractedTempDocs = documents.filter((document) => document?.kind === "temp_phyto" || document?.kind === "temp_phyto_plants_file");
+    const sourceDocumentByKey = new Map(
+      sourceDocuments.map((item, index) => {
+        const key = `${String(item?.kind || "").trim()}::${normalizeUkdocsCsiDocumentName(item?.document?.original_name || item?.document?.storage_name)}`;
+        return [key || `source-index-${index}`, item];
+      }),
+    );
     if (extractedTempDocs.length) {
       return extractedTempDocs.map((document, index) => {
-        const sourceItem = sourceDocuments[index] || {};
+        const documentKey = `${String(document?.kind || "").trim()}::${normalizeUkdocsCsiDocumentName(document?.name)}`;
+        const sourceItem = sourceDocumentByKey.get(documentKey) || sourceDocuments[index] || {};
         const fallback = sourceItem.document || null;
         if (!fallback?.parsed_data) {
           return {

@@ -4881,6 +4881,30 @@ function UkdocsCSIPage({ currentUser }) {
   const selectedCsiSourceRows = Array.isArray(selectedCsiReport.source_rows) ? selectedCsiReport.source_rows : [];
   const selectedCsiPlantProducts = Array.isArray(selectedCsiReport.plant_products) ? selectedCsiReport.plant_products : [];
   const selectedCsiFlowerProducts = Array.isArray(selectedCsiReport.flower_products) ? selectedCsiReport.flower_products : [];
+  const selectedCsiPlantTempPhytoColumns = useMemo(() => {
+    const labels = [];
+    for (const row of selectedCsiPlantProducts) {
+      for (const item of Array.isArray(row?.temp_phyto_quantities) ? row.temp_phyto_quantities : []) {
+        const label = String(item?.document_label || "").trim();
+        if (label && !labels.includes(label)) {
+          labels.push(label);
+        }
+      }
+    }
+    return labels;
+  }, [selectedCsiPlantProducts]);
+  const selectedCsiFlowerTempPhytoColumns = useMemo(() => {
+    const labels = [];
+    for (const row of selectedCsiFlowerProducts) {
+      for (const item of Array.isArray(row?.temp_phyto_quantities) ? row.temp_phyto_quantities : []) {
+        const label = String(item?.document_label || "").trim();
+        if (label && !labels.includes(label)) {
+          labels.push(label);
+        }
+      }
+    }
+    return labels;
+  }, [selectedCsiFlowerProducts]);
   const selectedCsiPlantSourceRows = useMemo(() => {
     const plantGroups = new Set([
       "CITES ge. non-flowering p",
@@ -5288,8 +5312,8 @@ function UkdocsCSIPage({ currentUser }) {
                             <th>Invoice qty</th>
                             <th>Export qty</th>
                             <th>IPAFFS plants qty</th>
-                            {selectedCsiTempPhytoColumns.length > 1
-                              ? selectedCsiTempPhytoColumns.map((label) => <th key={`plant-${label}`}>{label} qty</th>)
+                            {selectedCsiPlantTempPhytoColumns.length > 1
+                              ? selectedCsiPlantTempPhytoColumns.map((label) => <th key={`plant-${label}`}>{label} qty</th>)
                               : <th>Temp phyto qty</th>}
                             <th>Status</th>
                             <th>Message</th>
@@ -5302,8 +5326,8 @@ function UkdocsCSIPage({ currentUser }) {
                               <td>{row.invoice_quantity || "-"}</td>
                               <td>{row.export_quantity || "-"}</td>
                               <td>{row.ipaffs_quantity || "-"}</td>
-                              {selectedCsiTempPhytoColumns.length > 1
-                                ? selectedCsiTempPhytoColumns.map((label) => {
+                              {selectedCsiPlantTempPhytoColumns.length > 1
+                                ? selectedCsiPlantTempPhytoColumns.map((label) => {
                                   const match = (Array.isArray(row?.temp_phyto_quantities) ? row.temp_phyto_quantities : []).find((item) => String(item?.document_label || "").trim() === label);
                                   return <td key={`plant-${label}`}>{match?.quantity || "-"}</td>;
                                 })
@@ -5328,8 +5352,8 @@ function UkdocsCSIPage({ currentUser }) {
                             <th>Invoice qty</th>
                             <th>Export qty</th>
                             <th>IPAFFS flowers qty</th>
-                            {selectedCsiTempPhytoColumns.length > 1
-                              ? selectedCsiTempPhytoColumns.map((label) => <th key={`flower-${label}`}>{label} qty</th>)
+                            {selectedCsiFlowerTempPhytoColumns.length > 1
+                              ? selectedCsiFlowerTempPhytoColumns.map((label) => <th key={`flower-${label}`}>{label} qty</th>)
                               : <th>Temp phyto qty</th>}
                             <th>Status</th>
                             <th>Message</th>
@@ -5342,8 +5366,8 @@ function UkdocsCSIPage({ currentUser }) {
                               <td>{row.invoice_quantity || "-"}</td>
                               <td>{row.export_quantity || "-"}</td>
                               <td>{row.ipaffs_quantity || "-"}</td>
-                              {selectedCsiTempPhytoColumns.length > 1
-                                ? selectedCsiTempPhytoColumns.map((label) => {
+                              {selectedCsiFlowerTempPhytoColumns.length > 1
+                                ? selectedCsiFlowerTempPhytoColumns.map((label) => {
                                   const match = (Array.isArray(row?.temp_phyto_quantities) ? row.temp_phyto_quantities : []).find((item) => String(item?.document_label || "").trim() === label);
                                   return <td key={`flower-${label}`}>{match?.quantity || "-"}</td>;
                                 })
