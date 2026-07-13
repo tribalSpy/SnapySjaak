@@ -5441,7 +5441,7 @@ function buildUkdocsCsiDeterministicReport(collection, extractedDocuments) {
       }
     }
 
-    if (ipaffsDoc) {
+    if (ipaffsDocs.length) {
       if (ipaffsQty !== null) {
         if (expectedQty === null) {
           status = mergeUkdocsCsiStatus(status, "warn");
@@ -5600,7 +5600,7 @@ function buildUkdocsCsiDeterministicReport(collection, extractedDocuments) {
       ? "no PD documents needed"
       : !hasIpaffsAttached
       ? "IPAFFS missing"
-      : !ipaffsDoc
+      : !ipaffsDocs.length
         ? "IPAFFS extraction missing"
         : !ipaffsRows.length
           ? "IPAFFS rows not parsed"
