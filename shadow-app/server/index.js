@@ -8019,7 +8019,10 @@ async function handleApi(req, res, url) {
           notes: [],
         };
       }
-      const hasStructuredRows = parsed.checks.length || parsed.products.length || parsed.manual_checks.length;
+      const hasStructuredRows = parsed.checks.length
+        || parsed.products.length
+        || parsed.manual_checks.length
+        || (Array.isArray(parsed.visible_documents) && parsed.visible_documents.length);
       const parseError = hasStructuredRows
         ? ""
         : contentText

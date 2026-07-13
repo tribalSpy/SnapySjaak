@@ -29,6 +29,10 @@ def clean_text(value):
     return str(value or "").replace("\x00", "").strip()
 
 
+def split_clean_lines(text):
+    return [clean_text(line) for line in str(text or "").splitlines() if clean_text(line)]
+
+
 def limit_lines(lines, max_lines=220):
     if len(lines) <= max_lines:
       return lines
@@ -307,8 +311,27 @@ def parse_temp_phyto_product_lines_from_flat_text(text):
     return rows
 
 
+def score_temp_phyto_parse(parsed):
+    if not isinstance(parsed, dict):
+        return -999
+    score = 0
+    product_lines = parsed.get("product_lines") or []
+    if parsed.get("pcnu_number"):
+        score += 25
+    score += len(product_lines) * 8
+    score += sum(2 for line in product_lines if line.get("quantity") is not None)
+    if parsed.get("total_quantity") is not None:
+        score += 4
+    if parsed.get("destination_country"):
+        score += 2
+    if parsed.get("origin_country"):
+        score += 2
+    score -= len(parsed.get("problems") or [])
+    return score
+
+
 def parse_temp_phyto_pdf_text(text):
-    lines = [clean_text(line) for line in text.splitlines() if clean_text(line)]
+    lines = split_clean_lines(text)
     if not lines:
         return {}
 
@@ -328,9 +351,9 @@ def parse_temp_phyto_pdf_text(text):
         parsed["document_state"] = "not_activated"
         parsed["problems"].append("Temporary phyto document appears not activated")
 
-    pcnu_match = re.search(r"PCNU\s+([A-Z0-9]+)", text, flags=re.IGNORECASE)
+    pcnu_match = re.search(r"PCNU\s+([A-Z0-9][A-Z0-9\s-]{5,})", text, flags=re.IGNORECASE)
     if pcnu_match:
-        parsed["pcnu_number"] = clean_text(pcnu_match.group(1))
+        parsed["pcnu_number"] = re.sub(r"[^A-Z0-9]+", "", clean_text(pcnu_match.group(1)).upper())
     else:
         parsed["problems"].append("PCNU number not found")
 
@@ -410,6 +433,18 @@ def parse_temp_phyto_pdf_text(text):
         parsed["problems"].append("No product lines extracted from temporary phyto PDF")
 
     return parsed
+
+
+def best_temp_phyto_parse(text_candidates):
+    best = {}
+    best_score = -999
+    for candidate in text_candidates:
+        parsed = parse_temp_phyto_pdf_text(candidate)
+        score = score_temp_phyto_parse(parsed)
+        if score > best_score:
+            best = parsed
+            best_score = score
+    return best
 
 
 def extract_csv(path: Path):
@@ -497,22 +532,42 @@ def extract_pdf(path: Path, kind=""):
         }
     reader = PdfReader(str(path))
     lines = []
+    temp_phyto_text_candidates = []
     for page_index, page in enumerate(reader.pages, start=1):
-        page_text = clean_text(page.extract_text() or "")
-        if not page_text:
+        page_variants = []
+        for extractor in (
+            lambda current_page: current_page.extract_text() or "",
+            lambda current_page: current_page.extract_text(extraction_mode="layout") or "",
+        ):
+            try:
+                variant_text = clean_text(extractor(page))
+            except TypeError:
+                variant_text = ""
+            except Exception:
+                variant_text = ""
+            if variant_text and variant_text not in page_variants:
+                page_variants.append(variant_text)
+        if not page_variants:
             continue
+        default_text = page_variants[0]
         lines.append(f"[Page] {page_index}")
-        for line in page_text.splitlines():
-            cleaned = clean_text(line)
-            if cleaned:
-                lines.append(cleaned)
+        lines.extend(split_clean_lines(default_text))
+        if clean_text(kind) == "temp_phyto":
+            for variant_text in page_variants:
+                temp_phyto_text_candidates.append(f"[Page] {page_index}\n{variant_text}")
     payload = {
         "content_type": "pdf",
         "text": "\n".join(limit_lines(lines)),
         "line_count": len(lines),
     }
     if clean_text(kind) == "temp_phyto":
-        payload["parsed_data"] = parse_temp_phyto_pdf_text("\n".join(lines))
+        combined_candidates = []
+        if temp_phyto_text_candidates:
+            combined_candidates.append("\n".join(temp_phyto_text_candidates))
+            combined_candidates.extend(temp_phyto_text_candidates)
+        if lines:
+            combined_candidates.append("\n".join(lines))
+        payload["parsed_data"] = best_temp_phyto_parse(combined_candidates)
     return payload
 
 
