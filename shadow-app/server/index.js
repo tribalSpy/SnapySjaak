@@ -5188,6 +5188,53 @@ function getUkdocsCsiProductDomain(productName) {
   return "";
 }
 
+function normalizeUkdocsCsiKnownGroup(value) {
+  const text = normalizeUkdocsCsiToken(value);
+  if (!text) {
+    return "";
+  }
+  if (text.includes("cites ge non flowering")) {
+    return "CITES ge. non-flowering p";
+  }
+  if (text.includes("other non flowering plant")) {
+    return "Other non-flowering plant";
+  }
+  if (text.includes("cites flowering plants") || text.includes("flowering plants no cactu")) {
+    return "Flowering plants(no cactu";
+  }
+  if (text.includes("perennials")) {
+    return "Perennials";
+  }
+  if (text === "others" || text.endsWith(" others")) {
+    return "Others";
+  }
+  if (text.includes("refined roses")) {
+    return "refined roses";
+  }
+  if (text.includes("flowers other fresh")) {
+    return "Flowers (other fresh)";
+  }
+  if (text.includes("flowers carnation") || text.includes("flowers carnations")) {
+    return "Flowers carnation";
+  }
+  if (text.includes("flowers chrysanthem")) {
+    return "Flowers chrysanthemums";
+  }
+  if (text.includes("flowers roses")) {
+    return "Flowers roses";
+  }
+  if (text.includes("flowers lilies")) {
+    return "Flowers lilies";
+  }
+  if (text.includes("flowers orchids")) {
+    return "Flowers orchids";
+  }
+  if (text.includes("flowers green")) {
+    return "Flowers green";
+  }
+  return "";
+}
+
 function inferUkdocsCsiPlantsPreference(document, fallbackValue = false) {
   if (document?.prefer_plants === true) {
     return true;
@@ -5245,24 +5292,39 @@ function mapUkdocsCsiProductName(description, commodityCode = "", options = {}) 
   const code = String(commodityCode || "").replace(/\D+/g, "");
   const preferPlants = options?.prefer_plants === true
     || normalizeUkdocsCsiToken(options?.document_name || "").includes("plants");
+  const knownGroup = normalizeUkdocsCsiKnownGroup(description);
 
   if (code.startsWith("060240") || code.startsWith("60240")) {
     return "refined roses";
   }
-  if (code.startsWith("060290990") || code.startsWith("60290990")) {
-    return "Other non-flowering plant";
-  }
-  if (code.startsWith("060290991") || code.startsWith("60290991")) {
-    return "CITES ge. non-flowering p";
-  }
   if (code.startsWith("06029091") || code.startsWith("6029091")) {
     return "Flowering plants(no cactu";
   }
-  if (code.startsWith("060290500") || code.startsWith("60290500")) {
+  if (code.startsWith("060290500") || code.startsWith("60290500") || code.startsWith("6029050")) {
     return "Perennials";
   }
-  if (code.startsWith("060319700") || code.startsWith("60319700")) {
+  if (code.startsWith("060319700") || code.startsWith("60319700") || code.startsWith("6031970")) {
     return "Others";
+  }
+  if (
+    knownGroup
+    && (
+      knownGroup === "refined roses"
+      || knownGroup === "Perennials"
+      || knownGroup === "Others"
+      || knownGroup === "Flowering plants(no cactu"
+    )
+  ) {
+    return knownGroup;
+  }
+  if (
+    knownGroup
+    && (
+      code.startsWith("060290990") || code.startsWith("60290990")
+      || code.startsWith("060290991") || code.startsWith("60290991")
+    )
+  ) {
+    return knownGroup;
   }
 
   if (preferPlants) {
@@ -5275,28 +5337,41 @@ function mapUkdocsCsiProductName(description, commodityCode = "", options = {}) 
     if (text.includes("hibiscus")) {
       return "Flowering plants(no cactu";
     }
+    if (text.includes("cupressus")) {
+      return "Perennials";
+    }
+    if (text.includes("ficus")) {
+      return "Others";
+    }
     if (text.includes("rosa") || (text.includes("rose") && !text.includes("hibiscus"))) {
       return "refined roses";
     }
     if (
       text.includes("dypsis") || text.includes("maranta") || text.includes("calathea")
-      || text.includes("chlorophytum") || text.includes("curio") || text.includes("dracaena")
+      || text.includes("chlorophytum") || text.includes("dracaena")
       || text.includes("epipremnum") || text.includes("fittonia") || text.includes("nephrolepis")
       || text.includes("schefflera") || text.includes("spathiphyllum") || text.includes("sansevieria")
-      || text.includes("sanseveria") || text.includes("zamioculcas") || text.includes("cactus")
-      || text.includes("succulent")
+      || text.includes("sanseveria") || text.includes("zamioculcas")
     ) {
       return "Other non-flowering plant";
+    }
+    if (
+      text.includes("curio") || text.includes("crassula") || text.includes("echeveria")
+      || text.includes("succulent") || text.includes("cactus")
+    ) {
+      return "CITES ge. non-flowering p";
     }
     if (
       text.includes("echeveria") || text.includes("fuchsia") || text.includes("gerbera")
       || text.includes("guzmania") || text.includes("kalanchoe") || text.includes("phalaenopsis")
       || text.includes("anthurium") || text.includes("celosia") || text.includes("cymbidium")
-      || text.includes("cyclamen") || text.includes("crassula") || text.includes("dianthus")
-      || text.includes("chrysanthem") || text.includes("begonia") || text.includes("helianthus")
+      || text.includes("cyclamen") || text.includes("begonia") || text.includes("helianthus")
       || text.includes("helleanthus") || text.includes("hydrangea") || text.includes("mandevilla")
       || text.includes("lithodora") || text.includes("platycodon")
     ) {
+      return "Flowering plants(no cactu";
+    }
+    if (text.includes("chrysanthem") || text.includes("dianthus")) {
       return "Flowering plants(no cactu";
     }
   }

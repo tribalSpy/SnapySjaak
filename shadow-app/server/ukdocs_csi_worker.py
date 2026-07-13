@@ -125,18 +125,22 @@ def normalize_known_csi_group(value):
 
 def map_ipaffs_product(genus, commodity_code):
     genus_key = normalize_key(genus)
-    known_group = normalize_known_csi_group(genus)
-    if known_group:
-        return known_group
     code = re.sub(r"\D+", "", clean_text(commodity_code))
     if code.startswith("060240") or code.startswith("60240"):
         return "refined roses"
-    if code.startswith("06029091") or code.startswith("6029091"):
-        return "Flowering plants(no cactu"
     if code.startswith("060290500") or code.startswith("60290500") or code.startswith("6029050"):
         return "Perennials"
     if code.startswith("060319700") or code.startswith("60319700") or code.startswith("6031970"):
         return "Others"
+    if code.startswith("06029091") or code.startswith("6029091"):
+        return "Flowering plants(no cactu"
+    known_group = normalize_known_csi_group(genus)
+    if known_group in {"refined roses", "Perennials", "Others", "Flowering plants(no cactu"}:
+        return known_group
+    if known_group in {"CITES ge. non-flowering p", "Other non-flowering plant"} and (
+        code.startswith("060290990") or code.startswith("60290990") or code.startswith("060290991") or code.startswith("60290991")
+    ):
+        return known_group
     if code.startswith("603140") or code.startswith("060314"):
         return "Flowers chrysanthemums"
     if code.startswith("603120") or code.startswith("060312"):
