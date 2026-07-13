@@ -5236,6 +5236,20 @@ function normalizeUkdocsCsiKnownGroup(value) {
   return "";
 }
 
+function hasAnyUkdocsCsiToken(text, tokens) {
+  return tokens.some((token) => text.includes(token));
+}
+
+function mapUkdocsCsiAmbiguousPlantGroup(text) {
+  if (hasAnyUkdocsCsiToken(text, ["aloe", "curio", "crassula", "echeveria", "succulent", "cactus", "rhipsalis", "sageretia", "bonsai"])) {
+    return "CITES ge. non-flowering p";
+  }
+  if (hasAnyUkdocsCsiToken(text, ["chlorophytum", "dracaena", "dypsis", "epipremnum", "fittonia", "maranta", "nephrolepis", "schefflera", "spathiphyllum", "zamioculcas", "sansevieria", "sanseveria"])) {
+    return "Other non-flowering plant";
+  }
+  return "";
+}
+
 function inferUkdocsCsiPlantsPreference(document, fallbackValue = false) {
   if (document?.prefer_plants === true) {
     return true;
@@ -5319,13 +5333,16 @@ function mapUkdocsCsiProductName(description, commodityCode = "", options = {}) 
     return knownGroup;
   }
   if (
-    knownGroup
-    && (
-      code.startsWith("060290990") || code.startsWith("60290990")
-      || code.startsWith("060290991") || code.startsWith("60290991")
-    )
+    code.startsWith("060290990") || code.startsWith("60290990")
+    || code.startsWith("060290991") || code.startsWith("60290991")
   ) {
-    return knownGroup;
+    const ambiguousGroup = mapUkdocsCsiAmbiguousPlantGroup(text);
+    if (ambiguousGroup) {
+      return ambiguousGroup;
+    }
+    if (knownGroup === "CITES ge. non-flowering p" || knownGroup === "Other non-flowering plant") {
+      return knownGroup;
+    }
   }
 
   if (preferPlants) {

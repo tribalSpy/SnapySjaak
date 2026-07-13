@@ -123,6 +123,18 @@ def normalize_known_csi_group(value):
     return ""
 
 
+def match_any_token(text, tokens):
+    return any(token in text for token in tokens)
+
+
+def map_ambiguous_plant_group(genus_key):
+    if match_any_token(genus_key, ["aloe", "curio", "crassula", "echeveria", "succulent", "cactus", "rhipsalis", "sageretia", "bonsai"]):
+        return "CITES ge. non-flowering p"
+    if match_any_token(genus_key, ["chlorophytum", "dracaena", "dypsis", "epipremnum", "fittonia", "maranta", "nephrolepis", "schefflera", "spathiphyllum", "zamioculcas", "sansevieria", "sanseveria"]):
+        return "Other non-flowering plant"
+    return ""
+
+
 def map_ipaffs_product(genus, commodity_code):
     genus_key = normalize_key(genus)
     code = re.sub(r"\D+", "", clean_text(commodity_code))
@@ -137,10 +149,12 @@ def map_ipaffs_product(genus, commodity_code):
     known_group = normalize_known_csi_group(genus)
     if known_group in {"refined roses", "Perennials", "Others", "Flowering plants(no cactu"}:
         return known_group
-    if known_group in {"CITES ge. non-flowering p", "Other non-flowering plant"} and (
-        code.startswith("060290990") or code.startswith("60290990") or code.startswith("060290991") or code.startswith("60290991")
-    ):
-        return known_group
+    if code.startswith("060290990") or code.startswith("60290990") or code.startswith("060290991") or code.startswith("60290991"):
+        ambiguous_group = map_ambiguous_plant_group(genus_key)
+        if ambiguous_group:
+            return ambiguous_group
+        if known_group in {"CITES ge. non-flowering p", "Other non-flowering plant"}:
+            return known_group
     if code.startswith("603140") or code.startswith("060314"):
         return "Flowers chrysanthemums"
     if code.startswith("603120") or code.startswith("060312"):
