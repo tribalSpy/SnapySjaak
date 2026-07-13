@@ -7087,6 +7087,9 @@ async function ukdocsPrintCollectionAttachments(collection, customer = null, men
     if (!generatedFile?.document_kind && visibility.generated_invoice !== true && visibility.generated_export !== true) {
       continue;
     }
+    if (generatedFile?.document_kind === "invoice" && !isPdfUkdocsDocument(generatedFile)) {
+      continue;
+    }
     documents.push({ document: generatedFile, kind: "generated" });
   }
 
