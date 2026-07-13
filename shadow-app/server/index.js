@@ -5122,9 +5122,55 @@ function normalizeUkdocsCsiOrigin(value) {
   return String(value || "").trim().toUpperCase();
 }
 
-function mapUkdocsCsiProductName(description, commodityCode = "") {
+function mapUkdocsCsiProductName(description, commodityCode = "", options = {}) {
   const text = normalizeUkdocsCsiToken(description);
   const code = String(commodityCode || "").replace(/\D+/g, "");
+  const preferPlants = options?.prefer_plants === true
+    || normalizeUkdocsCsiToken(options?.document_name || "").includes("plants");
+
+  if (code.startsWith("060240") || code.startsWith("60240")) {
+    return "refined roses";
+  }
+  if (code.startsWith("060290990") || code.startsWith("60290990")) {
+    return "CITES ge. non-flowering p";
+  }
+  if (code.startsWith("060290991") || code.startsWith("60290991")) {
+    return "Other non-flowering plant";
+  }
+  if (code.startsWith("06029091") || code.startsWith("6029091")) {
+    return "Flowering plants(no cactu";
+  }
+  if (code.startsWith("060290500") || code.startsWith("60290500")) {
+    return "Perennials";
+  }
+  if (code.startsWith("060319700") || code.startsWith("60319700")) {
+    return "Others";
+  }
+
+  if (preferPlants) {
+    if (text.includes("bonsai") || text.includes("sageretia")) {
+      return "CITES ge. non-flowering p";
+    }
+    if (text.includes("salvia") || text.includes("lavandula") || text.includes("helleborus") || text.includes("campanula")) {
+      return "Perennials";
+    }
+    if (text.includes("rosa") || text.includes("rose")) {
+      return "refined roses";
+    }
+    if (text.includes("dypsis") || text.includes("maranta") || text.includes("calathea") || text.includes("chlorophytum") || text.includes("curio")) {
+      return "Other non-flowering plant";
+    }
+    if (
+      text.includes("echeveria") || text.includes("fuchsia") || text.includes("gerbera")
+      || text.includes("guzmania") || text.includes("kalanchoe") || text.includes("phalaenopsis")
+      || text.includes("anthurium") || text.includes("celosia") || text.includes("cymbidium")
+      || text.includes("cyclamen") || text.includes("crassula") || text.includes("dianthus")
+      || text.includes("chrysanthem")
+    ) {
+      return "Flowering plants(no cactu";
+    }
+  }
+
   if (text.includes("chrysanthem") || code.startsWith("060314") || code.startsWith("603140")) {
     return "Flowers chrysanthemums";
   }
@@ -5147,7 +5193,7 @@ function mapUkdocsCsiProductName(description, commodityCode = "") {
     text.includes("gypsoph") || text.includes("solidago") || text.includes("other fresh")
     || code.startsWith("0603197") || code.startsWith("603197") || code.startsWith("0603199") || code.startsWith("603199")
   ) {
-    return "Flowers (other fresh)";
+    return preferPlants ? "Others" : "Flowers (other fresh)";
   }
   return String(description || "").trim() || "Unknown product";
 }
@@ -5361,7 +5407,9 @@ function buildUkdocsCsiDeterministicReport(collection, extractedDocuments) {
     const lineProducts = [];
     const documentLabel = `Temp phyto ${String.fromCharCode(65 + index)}`;
     for (const line of Array.isArray(parsed?.product_lines) ? parsed.product_lines : []) {
-      const mappedProduct = mapUkdocsCsiProductName(line?.product || "", "");
+      const mappedProduct = mapUkdocsCsiProductName(line?.product || "", "", {
+        document_name: document?.name || "",
+      });
       addUkdocsCsiQuantity(tempPhytoTotals, mappedProduct, line?.quantity);
       lineProducts.push({
         product: mappedProduct,
@@ -5947,13 +5995,15 @@ function buildUkdocsCsiReportFromJobResults(jobResults) {
   const visualTempPhytoByLabel = new Map();
   for (const item of combinedParsed.visible_documents) {
     const documentLabel = String(item?.document_label || "").trim();
-    const mappedProduct = mapUkdocsCsiProductName(item?.product || "", "");
     const quantity = Number(item?.quantity);
     const noteText = String(item?.note || "").trim().toLowerCase();
-    if (!documentLabel || !mappedProduct || !Number.isFinite(quantity)) {
+    if (!documentLabel || !Number.isFinite(quantity)) {
       continue;
     }
     const context = visualContextByLabel.get(documentLabel);
+    const mappedProduct = mapUkdocsCsiProductName(item?.product || "", "", {
+      document_name: context?.name || "",
+    });
     const parsedLineProducts = Array.isArray(context?.expected_products) ? context.expected_products : [];
     const needsFallback = !parsedLineProducts.length;
     const mentionsTotal = noteText.includes("visible total") || noteText.includes("page total") || noteText.includes("total");

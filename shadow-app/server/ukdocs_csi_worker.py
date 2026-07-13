@@ -95,6 +95,18 @@ def map_ipaffs_product(genus, commodity_code):
     if "solidago" in genus_key:
         return "Flowers (other fresh)"
     code = re.sub(r"\D+", "", clean_text(commodity_code))
+    if code.startswith("060240") or code.startswith("60240"):
+        return "refined roses"
+    if code.startswith("060290990") or code.startswith("60290990"):
+        return "CITES ge. non-flowering p"
+    if code.startswith("060290991") or code.startswith("60290991"):
+        return "Other non-flowering plant"
+    if code.startswith("06029091") or code.startswith("6029091"):
+        return "Flowering plants(no cactu"
+    if code.startswith("060290500") or code.startswith("60290500"):
+        return "Perennials"
+    if code.startswith("060319700") or code.startswith("60319700"):
+        return "Others"
     if code.startswith("603140") or code.startswith("060314"):
         return "Flowers chrysanthemums"
     if code.startswith("603120") or code.startswith("060312"):
@@ -105,6 +117,16 @@ def map_ipaffs_product(genus, commodity_code):
         return "Flowers lilies"
     if code.startswith("604209"):
         return "Flowers green"
+    if "bonsai" in genus_key or "sageretia" in genus_key:
+        return "CITES ge. non-flowering p"
+    if any(token in genus_key for token in ["salvia", "lavandula", "helleborus", "campanula"]):
+        return "Perennials"
+    if any(token in genus_key for token in ["dypsis", "maranta", "calathea", "chlorophytum", "curio"]):
+        return "Other non-flowering plant"
+    if any(token in genus_key for token in ["echeveria", "fuchsia", "gerbera", "guzmania", "kalanchoe", "phalaenopsis", "anthurium", "celosia", "cymbidium", "cyclamen", "crassula"]):
+        return "Flowering plants(no cactu"
+    if "rosa" in genus_key:
+        return "refined roses"
     return "Flowers (other fresh)"
 
 
