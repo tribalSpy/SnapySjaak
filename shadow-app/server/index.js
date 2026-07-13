@@ -1255,6 +1255,20 @@ function normalizeUkdocsCsiReport(report) {
   };
 }
 
+function createEmptyUkdocsCsiReport() {
+  return normalizeUkdocsCsiReport(null);
+}
+
+function shouldResetUkdocsCsiReportForDocumentKind(kind) {
+  return [
+    "generated",
+    "temp_phyto",
+    "temp_phyto_plants_file",
+    "ipaffs_file",
+    "ipaffs_plants_file",
+  ].includes(String(kind || "").trim());
+}
+
 function normalizeUkdocsExportDefaults(settings) {
   return {
     destination_country: normalizeUkdocsText(settings?.destination_country) || defaultUkdocsState.export_defaults.destination_country,
@@ -10163,6 +10177,9 @@ async function handleApi(req, res, url) {
             ? { temp_phyto_files: [...(existingCollection.documents?.temp_phyto_files || []), savedDocument] }
             : { [kind]: savedDocument }),
       },
+      csi_report: shouldResetUkdocsCsiReportForDocumentKind(kind)
+        ? createEmptyUkdocsCsiReport()
+        : existingCollection.csi_report,
     });
     state.print_collections = upsertUkdocsPrintCollection(state.print_collections, updatedCollection);
     await writeUkdocsState(state);
@@ -10271,6 +10288,9 @@ async function handleApi(req, res, url) {
       ...existingCollection,
       updated_at: new Date().toISOString(),
       documents: updatedDocuments,
+      csi_report: shouldResetUkdocsCsiReportForDocumentKind(kind)
+        ? createEmptyUkdocsCsiReport()
+        : existingCollection.csi_report,
     });
     state.print_collections = upsertUkdocsPrintCollection(state.print_collections, updatedCollection);
     await writeUkdocsState(state);
