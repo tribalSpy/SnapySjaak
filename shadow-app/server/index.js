@@ -9,6 +9,7 @@ import {
   claimNextLlmJob,
   completeLlmJob,
   createLlmJob,
+  dbQuery,
   getFustDatabaseStats,
   getDatabaseStatus,
   getLlmQueueSnapshot,
@@ -221,7 +222,7 @@ const defaultUkdocsState = {
   print_collections: [],
 };
 
-const UKDOCS_CSI_DOCUMENT_KINDS = new Set(["temp_phyto", "ipaffs_file"]);
+const UKDOCS_CSI_DOCUMENT_KINDS = new Set(["temp_phyto", "ipaffs_file", "ipaffs_plants_file"]);
 
 const defaultExpeditionStickerState = {
   planning_file: null,
@@ -5242,18 +5243,32 @@ function buildUkdocsCsiDeterministicReport(collection, extractedDocuments) {
   const noPdNeeded = isUkdocsNoPdNeeded(collection);
   const invoiceDocs = documents.filter((document) => document?.kind === "generated_invoice");
   const exportDoc = documents.find((document) => document?.kind === "generated_export") || null;
-  const storedIpaffsDoc = collection?.documents?.ipaffs_file?.parsed_data
-    ? {
-      kind: "ipaffs_file",
-      name: String(collection.documents.ipaffs_file.original_name || collection.documents.ipaffs_file.storage_name || "").trim(),
-      content_type: String(collection.documents.ipaffs_file.content_type || collection.documents.ipaffs_file.mime_type || "").trim(),
-      line_count: Number(collection.documents.ipaffs_file.line_count || 0),
-      delimiter: String(collection.documents.ipaffs_file.delimiter || collection.documents.ipaffs_file?.parsed_data?.delimiter || "").trim(),
-      parsed_data: collection.documents.ipaffs_file.parsed_data,
-      error: String(collection.documents.ipaffs_file.parse_error || "").trim(),
+  const storedIpaffsDocs = ["ipaffs_file", "ipaffs_plants_file"]
+    .map((kind) => {
+      const source = collection?.documents?.[kind];
+      return source?.parsed_data
+        ? {
+          kind,
+          name: String(source.original_name || source.storage_name || "").trim(),
+          content_type: String(source.content_type || source.mime_type || "").trim(),
+          line_count: Number(source.line_count || 0),
+          delimiter: String(source.delimiter || source?.parsed_data?.delimiter || "").trim(),
+          parsed_data: source.parsed_data,
+          error: String(source.parse_error || "").trim(),
+        }
+        : null;
+    })
+    .filter(Boolean);
+  const rawIpaffsDocs = (() => {
+    const extracted = documents.filter((document) => document?.kind === "ipaffs_file" || document?.kind === "ipaffs_plants_file");
+    const merged = [...extracted];
+    for (const storedDocument of storedIpaffsDocs) {
+      if (!merged.some((item) => String(item?.kind || "").trim() === String(storedDocument.kind || "").trim())) {
+        merged.push(storedDocument);
+      }
     }
-    : null;
-  const rawIpaffsDoc = documents.find((document) => document?.kind === "ipaffs_file") || storedIpaffsDoc || null;
+    return merged;
+  })();
   const rawTempPhytoDocs = (() => {
     const extractedTempDocs = documents.filter((document) => document?.kind === "temp_phyto");
     if (extractedTempDocs.length) {
@@ -5286,9 +5301,11 @@ function buildUkdocsCsiDeterministicReport(collection, extractedDocuments) {
         error: String(document.parse_error || "").trim(),
       }));
   })();
-  const ipaffsDoc = noPdNeeded ? null : rawIpaffsDoc;
+  const ipaffsDocs = noPdNeeded ? [] : rawIpaffsDocs;
   const tempPhytoDocs = noPdNeeded ? [] : rawTempPhytoDocs;
-  const hasIpaffsAttached = noPdNeeded ? false : Boolean(collection?.documents?.ipaffs_file?.storage_name);
+  const hasIpaffsAttached = noPdNeeded
+    ? false
+    : Boolean(collection?.documents?.ipaffs_file?.storage_name || collection?.documents?.ipaffs_plants_file?.storage_name);
 
   const invoiceTotals = new Map();
   const exportTotals = new Map();
@@ -5299,17 +5316,16 @@ function buildUkdocsCsiDeterministicReport(collection, extractedDocuments) {
   const notes = [];
   const manualChecks = [];
   const extractedKinds = documents.map((document) => String(document?.kind || "").trim()).filter(Boolean);
-  const extractedIpaffsDebug = ipaffsDoc
-    ? {
-      name: String(ipaffsDoc?.name || "").trim(),
-      content_type: String(ipaffsDoc?.content_type || "").trim(),
-      line_count: Number.isFinite(Number(ipaffsDoc?.line_count)) ? Number(ipaffsDoc.line_count) : 0,
-      has_parsed_data: Boolean(ipaffsDoc?.parsed_data && typeof ipaffsDoc.parsed_data === "object"),
-      row_count: Array.isArray(ipaffsDoc?.parsed_data?.rows) ? ipaffsDoc.parsed_data.rows.length : 0,
-      delimiter: String(ipaffsDoc?.parsed_data?.delimiter || ipaffsDoc?.delimiter || "").trim(),
-      error: String(ipaffsDoc?.error || "").trim(),
-    }
-    : null;
+  const extractedIpaffsDebug = ipaffsDocs.map((ipaffsDoc) => ({
+    kind: String(ipaffsDoc?.kind || "").trim(),
+    name: String(ipaffsDoc?.name || "").trim(),
+    content_type: String(ipaffsDoc?.content_type || "").trim(),
+    line_count: Number.isFinite(Number(ipaffsDoc?.line_count)) ? Number(ipaffsDoc.line_count) : 0,
+    has_parsed_data: Boolean(ipaffsDoc?.parsed_data && typeof ipaffsDoc.parsed_data === "object"),
+    row_count: Array.isArray(ipaffsDoc?.parsed_data?.rows) ? ipaffsDoc.parsed_data.rows.length : 0,
+    delimiter: String(ipaffsDoc?.parsed_data?.delimiter || ipaffsDoc?.delimiter || "").trim(),
+    error: String(ipaffsDoc?.error || "").trim(),
+  }));
 
   for (const document of invoiceDocs) {
     const rows = Array.isArray(document?.parsed_data?.rows) ? document.parsed_data.rows : [];
@@ -5331,7 +5347,7 @@ function buildUkdocsCsiDeterministicReport(collection, extractedDocuments) {
     );
   }
 
-  const ipaffsRows = Array.isArray(ipaffsDoc?.parsed_data?.rows) ? ipaffsDoc.parsed_data.rows : [];
+  const ipaffsRows = ipaffsDocs.flatMap((ipaffsDoc) => (Array.isArray(ipaffsDoc?.parsed_data?.rows) ? ipaffsDoc.parsed_data.rows : []));
   for (const row of ipaffsRows) {
     addUkdocsCsiQuantity(
       ipaffsTotals,
@@ -5503,9 +5519,9 @@ function buildUkdocsCsiDeterministicReport(collection, extractedDocuments) {
       ? "pass"
       : !hasIpaffsAttached
       ? "warn"
-      : !ipaffsDoc
+      : !ipaffsDocs.length
         ? "warn"
-        : extractedIpaffsDebug?.error
+        : extractedIpaffsDebug.some((item) => item.error)
           ? "warn"
         : !ipaffsRows.length
           ? "warn"
@@ -5516,12 +5532,12 @@ function buildUkdocsCsiDeterministicReport(collection, extractedDocuments) {
       ? "IPAFFS is not required because PD code indicates no PD needed."
       : !hasIpaffsAttached
       ? "IPAFFS file is missing."
-      : !ipaffsDoc
-        ? `IPAFFS file is attached on the zending (${collection?.documents?.ipaffs_file?.original_name || "unknown file"}), but CSI extraction returned these document kinds only: ${extractedKinds.join(", ") || "none"}.`
-        : extractedIpaffsDebug?.error
-          ? `IPAFFS file is attached on the zending (${ipaffsDoc?.name || collection?.documents?.ipaffs_file?.original_name || "unknown file"}), but CSI could not extract it. ${extractedIpaffsDebug.error}`
+      : !ipaffsDocs.length
+        ? `IPAFFS file is attached on the zending, but CSI extraction returned these document kinds only: ${extractedKinds.join(", ") || "none"}.`
+        : extractedIpaffsDebug.some((item) => item.error)
+          ? `One or more IPAFFS files could not be extracted: ${extractedIpaffsDebug.filter((item) => item.error).map((item) => `${item.name || item.kind}: ${item.error}`).join("; ")}`
         : !ipaffsRows.length
-          ? `IPAFFS file was loaded (${ipaffsDoc?.name || "unknown file"}), but no product rows were parsed.${extractedIpaffsDebug?.delimiter ? ` Delimiter: ${extractedIpaffsDebug.delimiter}.` : ""}${extractedIpaffsDebug?.error ? ` Error: ${extractedIpaffsDebug.error}.` : ""}`
+          ? `IPAFFS file(s) were loaded (${ipaffsDocs.map((item) => item.name || item.kind || "unknown file").join(", ")}), but no product rows were parsed.`
           : ipaffsMismatchCount
             ? `${ipaffsMismatchCount} IPAFFS or IPAFFS/temp phyto product totals need review.`
             : "IPAFFS product totals stay within invoice/export and match temp phyto where both exist.",
@@ -5605,9 +5621,9 @@ function buildUkdocsCsiDeterministicReport(collection, extractedDocuments) {
       manual_checks: uniqueUkdocsCsiStrings(manualChecks),
       notes: uniqueUkdocsCsiStrings([
         ...notes,
-        extractedIpaffsDebug
-          ? `IPAFFS extractor debug: name=${extractedIpaffsDebug.name || "-"}, content_type=${extractedIpaffsDebug.content_type || "-"}, lines=${extractedIpaffsDebug.line_count}, rows=${extractedIpaffsDebug.row_count}, delimiter=${extractedIpaffsDebug.delimiter || "-"}${extractedIpaffsDebug.error ? `, error=${extractedIpaffsDebug.error}` : ""}.`
-          : (hasIpaffsAttached ? `IPAFFS extractor debug: attached file ${collection?.documents?.ipaffs_file?.original_name || "unknown file"} was not returned by CSI extraction.` : ""),
+        ...(extractedIpaffsDebug.length
+          ? extractedIpaffsDebug.map((item) => `IPAFFS extractor debug: kind=${item.kind || "-"}, name=${item.name || "-"}, content_type=${item.content_type || "-"}, lines=${item.line_count}, rows=${item.row_count}, delimiter=${item.delimiter || "-"}${item.error ? `, error=${item.error}` : ""}.`)
+          : (hasIpaffsAttached ? ["IPAFFS extractor debug: attached IPAFFS file was not returned by CSI extraction."] : [])),
       ]),
     },
     visual_context: {
@@ -5616,8 +5632,14 @@ function buildUkdocsCsiDeterministicReport(collection, extractedDocuments) {
   };
 }
 
-function buildUkdocsCsiAuditPayload(collection, deterministicBundle, requestUser) {
-  const tempPhytoFiles = (collection?.documents?.temp_phyto_files || []).map((file) => file.original_name || file.storage_name);
+function buildUkdocsCsiAuditPayload(collection, deterministicBundle, requestUser, options = {}) {
+  const visionDocuments = Array.isArray(options.vision_documents) ? options.vision_documents.filter(Boolean) : [];
+  const visualContext = options.visual_context && typeof options.visual_context === "object"
+    ? options.visual_context
+    : deterministicBundle?.visual_context;
+  const tempPhytoFiles = visionDocuments.length
+    ? visionDocuments.map((file) => file.name || "temp-phyto.pdf")
+    : (collection?.documents?.temp_phyto_files || []).map((file) => file.original_name || file.storage_name);
   const prompt = {
     task: "UKDocs CSI temporary phyto visual verification",
     instructions: [
@@ -5659,7 +5681,7 @@ function buildUkdocsCsiAuditPayload(collection, deterministicBundle, requestUser
       pd_type: collection?.pd_type || "",
     },
     temp_phyto_files: tempPhytoFiles,
-    expected_temp_phyto_checks: deterministicBundle?.visual_context?.temp_phyto_documents || [],
+    expected_temp_phyto_checks: visualContext?.temp_phyto_documents || [],
     return_example: {
       overall_status: "warn",
       summary: "PCNU numbers visible. Individual visible temp phyto product lines were listed where readable.",
@@ -5696,7 +5718,7 @@ function buildUkdocsCsiAuditPayload(collection, deterministicBundle, requestUser
     think: false,
     options: {
       temperature: 0,
-      num_predict: 2200,
+      num_predict: 4500,
     },
   };
 }
@@ -5739,6 +5761,302 @@ async function updateUkdocsCsiEmailResult(collectionId, csiEmailPatch) {
   return updatedCollection;
 }
 
+async function getUkdocsCsiGroupJobs(collectionId, groupId) {
+  if (!collectionId || !groupId) {
+    return [];
+  }
+  const result = await dbQuery(
+    `
+      SELECT *
+      FROM llm_jobs
+      WHERE collection_id = $1
+        AND job_type = 'ukdocs_csi_audit'
+        AND payload_json->>'csi_group_id' = $2
+      ORDER BY created_at ASC
+    `,
+    [String(collectionId || "").trim(), String(groupId || "").trim()],
+  );
+  return Array.isArray(result.rows) ? result.rows.map((row) => ({
+    id: String(row?.id || "").trim(),
+    job_type: String(row?.job_type || "").trim(),
+    status: String(row?.status || "").trim() || "pending",
+    created_by: String(row?.created_by || "").trim(),
+    shipment_id: String(row?.shipment_id || "").trim(),
+    collection_id: String(row?.collection_id || "").trim(),
+    document_kind: String(row?.document_kind || "").trim(),
+    priority: Number(row?.priority || 0),
+    attempt_count: Number(row?.attempt_count || 0),
+    max_attempts: Number(row?.max_attempts || 1),
+    agent_name: String(row?.agent_name || "").trim(),
+    payload_json: typeof row?.payload_json === "object" && row.payload_json ? row.payload_json : {},
+    result_json: typeof row?.result_json === "object" && row.result_json ? row.result_json : {},
+    error_text: String(row?.error_text || "").trim(),
+    created_at: row?.created_at ? new Date(row.created_at).toISOString() : "",
+    claimed_at: row?.claimed_at ? new Date(row.claimed_at).toISOString() : "",
+    finished_at: row?.finished_at ? new Date(row.finished_at).toISOString() : "",
+    updated_at: row?.updated_at ? new Date(row.updated_at).toISOString() : "",
+  })) : [];
+}
+
+function parseUkdocsCsiAuditJobResult(job) {
+  const deterministicSource = normalizeUkdocsCsiParsedResult(job?.payload_json?.deterministic_report) || {
+    overall_status: "warn",
+    summary: "",
+    checks: [],
+    products: [],
+    manual_checks: [],
+    notes: [],
+  };
+  const contentText = String(job?.result_json?.ollama_response?.message?.content || job?.result_json?.response || "").trim();
+  const thinkingText = String(job?.result_json?.ollama_response?.message?.thinking || "").trim();
+  const doneReason = String(job?.result_json?.ollama_response?.done_reason || "").trim();
+  const llmContent = contentText || thinkingText;
+  const parseCandidates = [
+    ["result_json.parsed_result", job?.result_json?.parsed_result],
+    ["result_json.result", job?.result_json?.result],
+    ["result_json.response_json", job?.result_json?.response_json],
+    ["ollama_response.message.content", extractJsonObjectFromText(contentText)],
+    ["ollama_response.message.thinking", extractJsonObjectFromText(thinkingText)],
+    ["result_json.root", job?.result_json],
+  ];
+  let parseSource = "";
+  let parsed = null;
+  for (const [sourceName, sourceValue] of parseCandidates) {
+    const normalized = normalizeUkdocsCsiParsedResult(sourceValue);
+    if (normalized) {
+      parseSource = sourceName;
+      parsed = normalized;
+      break;
+    }
+  }
+  if (!parsed) {
+    parsed = {
+      overall_status: "warn",
+      summary: "",
+      checks: [],
+      products: [],
+      manual_checks: [],
+      notes: [],
+    };
+  }
+  const hasStructuredRows = parsed.checks.length
+    || parsed.products.length
+    || parsed.manual_checks.length
+    || (Array.isArray(parsed.visible_documents) && parsed.visible_documents.length);
+  const documentLabel = String(job?.payload_json?.csi_document_label || "").trim();
+  const labelPrefix = documentLabel ? `${documentLabel}: ` : "";
+  const parseError = hasStructuredRows
+    ? ""
+    : contentText
+      ? `${labelPrefix}No structured CSI rows parsed. Source used: ${parseSource || "none"}.`
+      : thinkingText
+        ? `${labelPrefix}Model returned no final JSON content. It only returned thinking text${doneReason ? ` and stopped with done_reason: ${doneReason}` : ""}. prompt_eval_count=${job?.result_json?.ollama_response?.prompt_eval_count ?? "?"}, eval_count=${job?.result_json?.ollama_response?.eval_count ?? "?"}, thinking_chars=${thinkingText.length}.`
+        : `${labelPrefix}No structured CSI rows parsed. Source used: ${parseSource || "none"}.`;
+  const llmChecks = hasStructuredRows
+    ? (Array.isArray(parsed.checks) ? parsed.checks : [])
+    : parseError
+      ? [{ code: "LLM_OUTPUT", status: "warn", message: parseError }]
+      : [];
+  return {
+    job,
+    deterministicSource,
+    contentText,
+    thinkingText,
+    doneReason,
+    llmContent,
+    parseSource,
+    parsed,
+    hasStructuredRows,
+    parseError,
+    llmChecks,
+  };
+}
+
+function buildUkdocsCsiReportFromJobResults(jobResults) {
+  const results = Array.isArray(jobResults) ? jobResults : [];
+  const firstResult = results[0] || null;
+  const deterministicSource = firstResult?.deterministicSource || {
+    overall_status: "warn",
+    summary: "",
+    checks: [],
+    products: [],
+    manual_checks: [],
+    notes: [],
+  };
+  const combinedParsed = {
+    summary: uniqueUkdocsCsiStrings(results.map((item) => {
+      const summary = String(item?.parsed?.summary || "").trim();
+      const label = String(item?.job?.payload_json?.csi_document_label || "").trim();
+      return summary ? (label ? `${label}: ${summary}` : summary) : "";
+    })).join(" "),
+    checks: results.flatMap((item) => item?.llmChecks || []),
+    visible_documents: results.flatMap((item) => Array.isArray(item?.parsed?.visible_documents) ? item.parsed.visible_documents : []),
+    manual_checks: results.flatMap((item) => Array.isArray(item?.parsed?.manual_checks) ? item.parsed.manual_checks : []),
+    notes: results.flatMap((item) => Array.isArray(item?.parsed?.notes) ? item.parsed.notes : []),
+  };
+  const tempPhytoContexts = [];
+  for (const item of results) {
+    const docs = Array.isArray(item?.job?.payload_json?.deterministic_visual_context?.temp_phyto_documents)
+      ? item.job.payload_json.deterministic_visual_context.temp_phyto_documents
+      : [];
+    tempPhytoContexts.push(...docs);
+  }
+  const tempPhytoExpectedCount = tempPhytoContexts.length;
+  const visiblePcnuPassChecks = combinedParsed.checks.filter((item) => item?.code === "PHYTO_PCNU_VISIBLE" && item?.status === "pass");
+  const visiblePcnuDocumentLabels = new Set();
+  for (const item of combinedParsed.visible_documents) {
+    const pcnuValue = String(item?.pcnu_number || "").trim();
+    const rawLabel = String(item?.document_label || "").trim();
+    if (!pcnuValue || !rawLabel) {
+      continue;
+    }
+    for (const label of rawLabel.split("|")) {
+      const normalizedLabel = String(label || "").trim();
+      if (normalizedLabel) {
+        visiblePcnuDocumentLabels.add(normalizedLabel);
+      }
+    }
+  }
+  const combinedPcnuPassForAllDocs = visiblePcnuPassChecks.some((item) => {
+    const normalizedMessage = String(item?.message || "").trim().toLowerCase();
+    return normalizedMessage.includes("both temporary phyto documents")
+      || normalizedMessage.includes("all temporary phyto documents")
+      || normalizedMessage.includes("all three temporary phytosanitary certificates");
+  });
+  const visualPcnuCoveredAllTempPhytos = tempPhytoExpectedCount > 0 && (
+    visiblePcnuPassChecks.length >= tempPhytoExpectedCount
+    || visiblePcnuDocumentLabels.size >= tempPhytoExpectedCount
+    || combinedPcnuPassForAllDocs
+  );
+  const deterministicChecks = (Array.isArray(deterministicSource.checks) ? deterministicSource.checks : []).map((item) => {
+    if (
+      item?.code === "TEMP_PHYTO_PARSE"
+      && visualPcnuCoveredAllTempPhytos
+      && String(item?.message || "").includes("missing a parsed PCNU number from PDF text extraction")
+    ) {
+      return {
+        ...item,
+        status: "pass",
+        message: "PDF text extraction missed one or more PCNU numbers, but visual CSI confirmed all visible PCNU numbers.",
+      };
+    }
+    return item;
+  });
+  const visualContextByLabel = new Map(tempPhytoContexts.map((item) => [String(item?.document_label || "").trim(), item]));
+  const visualTempPhytoTotals = new Map();
+  const visualTempPhytoByLabel = new Map();
+  for (const item of combinedParsed.visible_documents) {
+    const documentLabel = String(item?.document_label || "").trim();
+    const mappedProduct = mapUkdocsCsiProductName(item?.product || "", "");
+    const quantity = Number(item?.quantity);
+    const noteText = String(item?.note || "").trim().toLowerCase();
+    if (!documentLabel || !mappedProduct || !Number.isFinite(quantity)) {
+      continue;
+    }
+    const context = visualContextByLabel.get(documentLabel);
+    const parsedLineProducts = Array.isArray(context?.expected_products) ? context.expected_products : [];
+    const needsFallback = !parsedLineProducts.length;
+    const mentionsTotal = noteText.includes("visible total") || noteText.includes("page total") || noteText.includes("total");
+    if (!needsFallback || mentionsTotal || isUkdocsCsiAggregateProductName(mappedProduct)) {
+      continue;
+    }
+    addUkdocsCsiQuantity(visualTempPhytoTotals, mappedProduct, quantity);
+    if (!visualTempPhytoByLabel.has(documentLabel)) {
+      visualTempPhytoByLabel.set(documentLabel, new Map());
+    }
+    const currentByProduct = visualTempPhytoByLabel.get(documentLabel).get(mappedProduct) || 0;
+    visualTempPhytoByLabel.get(documentLabel).set(mappedProduct, currentByProduct + quantity);
+  }
+  const finalChecks = [
+    ...deterministicChecks,
+    ...combinedParsed.checks.filter((item) => item?.code !== "PHYTO_VISIBLE_QTY"),
+  ];
+  const deterministicProducts = Array.isArray(deterministicSource.products) ? deterministicSource.products : [];
+  const finalProducts = deterministicProducts.map((item) => {
+    const productName = String(item?.product || "").trim();
+    const visualQty = productName && visualTempPhytoTotals.has(productName)
+      ? visualTempPhytoTotals.get(productName)
+      : null;
+    const currentQty = String(item?.temp_phyto_quantity || "").trim();
+    const currentPerDoc = Array.isArray(item?.temp_phyto_quantities) ? item.temp_phyto_quantities : [];
+    const mergedPerDoc = currentPerDoc.map((entry) => {
+      const label = String(entry?.document_label || "").trim();
+      const qty = String(entry?.quantity || "").trim();
+      if (qty || !label || !productName || !visualTempPhytoByLabel.has(label)) {
+        return entry;
+      }
+      const visualDocQty = visualTempPhytoByLabel.get(label).get(productName);
+      return visualDocQty === undefined
+        ? entry
+        : { ...entry, quantity: String(visualDocQty) };
+    });
+    for (const [label, productMap] of visualTempPhytoByLabel.entries()) {
+      if (!productName || !productMap.has(productName) || mergedPerDoc.some((entry) => String(entry?.document_label || "").trim() === label)) {
+        continue;
+      }
+      mergedPerDoc.push({
+        document_label: label,
+        quantity: String(productMap.get(productName)),
+      });
+    }
+    if (!currentQty && visualQty !== null) {
+      const existingMessage = String(item?.message || "").trim();
+      return {
+        ...item,
+        temp_phyto_quantity: String(visualQty),
+        temp_phyto_quantities: mergedPerDoc,
+        message: existingMessage
+          ? `${existingMessage} Visual fallback temp phyto quantity ${visualQty}.`
+          : `Visual fallback temp phyto quantity ${visualQty}.`,
+      };
+    }
+    return {
+      ...item,
+      temp_phyto_quantities: mergedPerDoc,
+    };
+  });
+  const finalManualChecks = uniqueUkdocsCsiStrings([
+    ...(Array.isArray(deterministicSource.manual_checks) ? deterministicSource.manual_checks : []),
+    ...combinedParsed.manual_checks,
+  ]).filter((item) => !(visualPcnuCoveredAllTempPhytos && String(item || "").toLowerCase().includes("pcnu")));
+  const finalNotes = uniqueUkdocsCsiStrings([
+    ...(Array.isArray(deterministicSource.notes) ? deterministicSource.notes : []),
+    ...combinedParsed.notes,
+    visualPcnuCoveredAllTempPhytos
+      ? "Visual CSI confirmed the visible PCNU number on every temporary phyto PDF, even where PDF text extraction missed it."
+      : "",
+  ]);
+  const overallStatus = finalizeUkdocsCsiOverallStatus(finalChecks, finalProducts);
+  const deterministicSummary = String(deterministicSource.summary || "").trim();
+  const finalSummary = uniqueUkdocsCsiStrings([
+    deterministicSummary,
+    combinedParsed.summary ? `Visual phyto check: ${combinedParsed.summary}` : "",
+    ...results.map((item) => item.parseError ? `Visual phyto check incomplete: ${item.parseError}` : ""),
+  ]).join(" ");
+  return {
+    status: "done",
+    error: "",
+    summary: finalSummary || deterministicSummary || "CSI audit completed.",
+    overall_status: overallStatus,
+    checks: finalChecks,
+    products: finalProducts,
+    manual_checks: finalManualChecks,
+    notes: finalNotes,
+    llm_content: results.map((item) => {
+      const label = String(item?.job?.payload_json?.csi_document_label || "").trim();
+      const text = String(item?.llmContent || "").trim();
+      return text ? `${label || item?.job?.id || "CSI"}\n${text}` : "";
+    }).filter(Boolean).join("\n\n"),
+    llm_parse_source: uniqueUkdocsCsiStrings(results.map((item) => item.parseSource || "")).join(", "),
+    llm_parse_error: uniqueUkdocsCsiStrings(results.map((item) => item.parseError || "")).join(" | "),
+    llm_raw_result_json: JSON.stringify(results.map((item) => ({
+      job_id: item?.job?.id || "",
+      document_label: item?.job?.payload_json?.csi_document_label || "",
+      result_json: item?.job?.result_json || {},
+    })), null, 2),
+  };
+}
+
 async function queueUkdocsCsiAudit(collection, requestUser) {
   if (!isDatabaseEnabled()) {
     throw new Error("Database is not enabled");
@@ -5751,17 +6069,19 @@ async function queueUkdocsCsiAudit(collection, requestUser) {
     ...(collection?.documents?.generated_files || []).map((document) => ({ kind: document.document_kind === "export" ? "generated_export" : "generated_invoice", document })),
     ...(collection?.documents?.temp_phyto_files || []).map((document) => ({ kind: "temp_phyto", document })),
     collection?.documents?.ipaffs_file ? [{ kind: "ipaffs_file", document: collection.documents.ipaffs_file }] : [],
+    collection?.documents?.ipaffs_plants_file ? [{ kind: "ipaffs_plants_file", document: collection.documents.ipaffs_plants_file }] : [],
   ]);
   const deterministicBundle = buildUkdocsCsiDeterministicReport(collection, extractedDocuments);
 
   const tempPhytoVisionDocuments = await Promise.all(
-    (collection?.documents?.temp_phyto_files || []).map(async (document) => {
+    (collection?.documents?.temp_phyto_files || []).map(async (document, index) => {
       const resolvedPath = path.resolve(ukdocsPrintDocumentPath(document));
       if (!resolvedPath.startsWith(path.resolve(ukdocsPrintFilesDir)) || !existsSync(resolvedPath)) {
         return null;
       }
       const contentBase64 = await fs.readFile(resolvedPath, "base64");
       return {
+        document_label: `Temp phyto ${String.fromCharCode(65 + index)}`,
         name: String(document.original_name || document.storage_name || "temp-phyto.pdf").trim(),
         mime_type: String(document.mime_type || "application/pdf").trim(),
         content_base64: contentBase64,
@@ -5769,26 +6089,73 @@ async function queueUkdocsCsiAudit(collection, requestUser) {
       };
     }),
   );
+  const usableVisionDocuments = tempPhytoVisionDocuments.filter(Boolean);
 
-  const job = await createLlmJob({
-    job_type: "ukdocs_csi_audit",
-    created_by: requestUser.username,
-    collection_id: collection.id,
-    shipment_id: collection.shipment_id,
-    document_kind: "ukdocs_csi_audit",
-    priority: 50,
-    max_attempts: 1,
-    payload_json: {
-      ...buildUkdocsCsiAuditPayload(collection, deterministicBundle, requestUser),
-      deterministic_report: deterministicBundle.report,
-      deterministic_visual_context: deterministicBundle.visual_context,
-      vision_documents: tempPhytoVisionDocuments.filter(Boolean),
-    },
-  });
+  if (!usableVisionDocuments.length) {
+    await updateUkdocsCsiReport(collection.id, {
+      status: "done",
+      job_id: "",
+      queued_at: new Date().toISOString(),
+      started_at: new Date().toISOString(),
+      completed_at: new Date().toISOString(),
+      error: "",
+      summary: deterministicBundle.report.summary || "CSI audit completed.",
+      overall_status: deterministicBundle.report.overall_status || "warn",
+      checks: deterministicBundle.report.checks || [],
+      products: deterministicBundle.report.products || [],
+      manual_checks: deterministicBundle.report.manual_checks || [],
+      notes: uniqueUkdocsCsiStrings([
+        ...(deterministicBundle.report.notes || []),
+        "No temp phyto vision job was queued because no readable temp phyto PDF was available on disk.",
+      ]),
+      llm_content: "",
+      llm_parse_source: "",
+      llm_parse_error: "",
+      llm_raw_result_json: "",
+    });
+    await updateUkdocsCsiEmailResult(collection.id, {
+      ok: false,
+      recipients: [],
+      sent_at: "",
+      error: "",
+    });
+    return [];
+  }
+
+  const csiGroupId = crypto.randomUUID();
+  const jobs = [];
+  for (const visionDocument of usableVisionDocuments) {
+    const visualContext = {
+      temp_phyto_documents: (deterministicBundle?.visual_context?.temp_phyto_documents || [])
+        .filter((item) => String(item?.document_label || "").trim() === String(visionDocument.document_label || "").trim()),
+    };
+    const job = await createLlmJob({
+      job_type: "ukdocs_csi_audit",
+      created_by: requestUser.username,
+      collection_id: collection.id,
+      shipment_id: collection.shipment_id,
+      document_kind: "ukdocs_csi_audit",
+      priority: 50,
+      max_attempts: 1,
+      payload_json: {
+        ...buildUkdocsCsiAuditPayload(collection, deterministicBundle, requestUser, {
+          vision_documents: [visionDocument],
+          visual_context: visualContext,
+        }),
+        csi_group_id: csiGroupId,
+        csi_document_label: visionDocument.document_label,
+        csi_job_mode: "temp_phyto_single",
+        deterministic_report: deterministicBundle.report,
+        deterministic_visual_context: visualContext,
+        vision_documents: [visionDocument],
+      },
+    });
+    jobs.push(job);
+  }
 
   await updateUkdocsCsiReport(collection.id, {
     status: "queued",
-    job_id: job.id,
+    job_id: jobs[0]?.id || "",
     queued_at: new Date().toISOString(),
     started_at: "",
     completed_at: "",
@@ -5798,7 +6165,10 @@ async function queueUkdocsCsiAudit(collection, requestUser) {
     checks: deterministicBundle.report.checks || [],
     products: deterministicBundle.report.products || [],
     manual_checks: deterministicBundle.report.manual_checks || [],
-    notes: deterministicBundle.report.notes || [],
+    notes: uniqueUkdocsCsiStrings([
+      ...(deterministicBundle.report.notes || []),
+      `Queued ${jobs.length} separate temp phyto CSI job(s).`,
+    ]),
     llm_content: "",
     llm_parse_source: "",
     llm_parse_error: "",
@@ -5811,7 +6181,7 @@ async function queueUkdocsCsiAudit(collection, requestUser) {
     error: "",
   });
 
-  return job;
+  return jobs;
 }
 
 function ukdocsPrintCollectionMatchScore(collection, haystackRaw) {
@@ -8014,234 +8384,36 @@ async function handleApi(req, res, url) {
       await saveUkdocsGeneratedInvoicePdfResult(job);
     }
     if (job.job_type === "ukdocs_csi_audit" && job.collection_id) {
-      const deterministicSource = normalizeUkdocsCsiParsedResult(job?.payload_json?.deterministic_report) || {
-        overall_status: "warn",
-        summary: "",
-        checks: [],
-        products: [],
-        manual_checks: [],
-        notes: [],
-      };
-      const contentText = String(job?.result_json?.ollama_response?.message?.content || job?.result_json?.response || "").trim();
-      const thinkingText = String(job?.result_json?.ollama_response?.message?.thinking || "").trim();
-      const doneReason = String(job?.result_json?.ollama_response?.done_reason || "").trim();
-      const llmContent = contentText || thinkingText;
-      const parseCandidates = [
-        ["result_json.parsed_result", job?.result_json?.parsed_result],
-        ["result_json.result", job?.result_json?.result],
-        ["result_json.response_json", job?.result_json?.response_json],
-        ["ollama_response.message.content", extractJsonObjectFromText(contentText)],
-        ["ollama_response.message.thinking", extractJsonObjectFromText(thinkingText)],
-        ["result_json.root", job?.result_json],
-      ];
-      let parseSource = "";
-      let parsed = null;
-      for (const [sourceName, sourceValue] of parseCandidates) {
-        const normalized = normalizeUkdocsCsiParsedResult(sourceValue);
-        if (normalized) {
-          parseSource = sourceName;
-          parsed = normalized;
-          break;
-        }
-      }
-      if (!parsed) {
-        parsed = {
-          overall_status: "warn",
-          summary: "",
-          checks: [],
-          products: [],
-          manual_checks: [],
-          notes: [],
-        };
-      }
-      const hasStructuredRows = parsed.checks.length
-        || parsed.products.length
-        || parsed.manual_checks.length
-        || (Array.isArray(parsed.visible_documents) && parsed.visible_documents.length);
-      const parseError = hasStructuredRows
-        ? ""
-        : contentText
-          ? `No structured CSI rows parsed. Source used: ${parseSource || "none"}.`
-          : thinkingText
-            ? `Model returned no final JSON content. It only returned thinking text${doneReason ? ` and stopped with done_reason: ${doneReason}` : ""}. prompt_eval_count=${job?.result_json?.ollama_response?.prompt_eval_count ?? "?"}, eval_count=${job?.result_json?.ollama_response?.eval_count ?? "?"}, thinking_chars=${thinkingText.length}.`
-            : `No structured CSI rows parsed. Source used: ${parseSource || "none"}.`;
-      const llmChecks = hasStructuredRows
-        ? (Array.isArray(parsed.checks) ? parsed.checks : [])
-        : parseError
-          ? [
-            {
-              code: "LLM_OUTPUT",
-              status: "warn",
-              message: parseError || "CSI model returned no structured rows.",
-            },
-          ]
-          : [];
-      const tempPhytoExpectedCount = Array.isArray(job?.payload_json?.deterministic_visual_context?.temp_phyto_documents)
-        ? job.payload_json.deterministic_visual_context.temp_phyto_documents.length
-        : 0;
-      const visiblePcnuPassChecks = llmChecks.filter((item) => item?.code === "PHYTO_PCNU_VISIBLE" && item?.status === "pass");
-      const visiblePcnuPassCount = visiblePcnuPassChecks.length;
-      const visiblePcnuDocumentLabels = new Set();
-      for (const item of Array.isArray(parsed.visible_documents) ? parsed.visible_documents : []) {
-        const pcnuValue = String(item?.pcnu_number || "").trim();
-        if (!pcnuValue) {
-          continue;
-        }
-        const rawLabel = String(item?.document_label || "").trim();
-        if (!rawLabel) {
-          continue;
-        }
-        for (const label of rawLabel.split("|")) {
-          const normalizedLabel = String(label || "").trim();
-          if (normalizedLabel) {
-            visiblePcnuDocumentLabels.add(normalizedLabel);
-          }
-        }
-      }
-      const combinedPcnuPassForAllDocs = visiblePcnuPassChecks.some((item) => {
-        const normalizedMessage = String(item?.message || "").trim().toLowerCase();
-        return normalizedMessage.includes("both temporary phyto documents")
-          || normalizedMessage.includes("all temporary phyto documents");
-      });
-      const visualPcnuCoveredAllTempPhytos = tempPhytoExpectedCount > 0 && (
-        visiblePcnuPassCount >= tempPhytoExpectedCount
-        || visiblePcnuDocumentLabels.size >= tempPhytoExpectedCount
-        || combinedPcnuPassForAllDocs
-      );
-      const deterministicChecks = (Array.isArray(deterministicSource.checks) ? deterministicSource.checks : []).map((item) => {
-        if (
-          item?.code === "TEMP_PHYTO_PARSE"
-          && visualPcnuCoveredAllTempPhytos
-          && String(item?.message || "").includes("missing a parsed PCNU number from PDF text extraction")
-        ) {
-          return {
-            ...item,
-            status: "pass",
-            message: "PDF text extraction missed one or more PCNU numbers, but visual CSI confirmed all visible PCNU numbers.",
-          };
-        }
-        return item;
-      });
-      const visualContextByLabel = new Map(
-        (Array.isArray(job?.payload_json?.deterministic_visual_context?.temp_phyto_documents)
-          ? job.payload_json.deterministic_visual_context.temp_phyto_documents
-          : [])
-          .map((item) => [String(item?.document_label || "").trim(), item]),
-      );
-      const visualTempPhytoTotals = new Map();
-      const visualTempPhytoByLabel = new Map();
-      for (const item of Array.isArray(parsed.visible_documents) ? parsed.visible_documents : []) {
-        const documentLabel = String(item?.document_label || "").trim();
-        const mappedProduct = mapUkdocsCsiProductName(item?.product || "", "");
-        const quantity = Number(item?.quantity);
-        const noteText = String(item?.note || "").trim().toLowerCase();
-        if (!documentLabel || !mappedProduct || !Number.isFinite(quantity)) {
-          continue;
-        }
-        const context = visualContextByLabel.get(documentLabel);
-        const parsedLineProducts = Array.isArray(context?.expected_products) ? context.expected_products : [];
-        const needsFallback = !parsedLineProducts.length;
-        const mentionsTotal = noteText.includes("visible total") || noteText.includes("page total") || noteText.includes("total");
-        if (!needsFallback || mentionsTotal || isUkdocsCsiAggregateProductName(mappedProduct)) {
-          continue;
-        }
-        addUkdocsCsiQuantity(visualTempPhytoTotals, mappedProduct, quantity);
-        if (!visualTempPhytoByLabel.has(documentLabel)) {
-          visualTempPhytoByLabel.set(documentLabel, new Map());
-        }
-        const currentByProduct = visualTempPhytoByLabel.get(documentLabel).get(mappedProduct) || 0;
-        visualTempPhytoByLabel.get(documentLabel).set(mappedProduct, currentByProduct + quantity);
-      }
-      const finalLlmChecks = llmChecks.filter((item) => item?.code !== "PHYTO_VISIBLE_QTY");
-      const finalChecks = [
-        ...deterministicChecks,
-        ...finalLlmChecks,
-      ];
-      const deterministicProducts = Array.isArray(deterministicSource.products) ? deterministicSource.products : [];
-      const finalProducts = deterministicProducts.map((item) => {
-        const productName = String(item?.product || "").trim();
-        const visualQty = productName && visualTempPhytoTotals.has(productName)
-          ? visualTempPhytoTotals.get(productName)
-          : null;
-        const currentQty = String(item?.temp_phyto_quantity || "").trim();
-        const currentPerDoc = Array.isArray(item?.temp_phyto_quantities) ? item.temp_phyto_quantities : [];
-        const mergedPerDoc = currentPerDoc.map((entry) => {
-          const label = String(entry?.document_label || "").trim();
-          const qty = String(entry?.quantity || "").trim();
-          if (qty || !label || !productName || !visualTempPhytoByLabel.has(label)) {
-            return entry;
-          }
-          const visualDocQty = visualTempPhytoByLabel.get(label).get(productName);
-          return visualDocQty === undefined
-            ? entry
-            : { ...entry, quantity: String(visualDocQty) };
-        });
-        for (const [label, productMap] of visualTempPhytoByLabel.entries()) {
-          if (!productName || !productMap.has(productName) || mergedPerDoc.some((entry) => String(entry?.document_label || "").trim() === label)) {
-            continue;
-          }
-          mergedPerDoc.push({
-            document_label: label,
-            quantity: String(productMap.get(productName)),
+      const csiGroupId = String(job?.payload_json?.csi_group_id || "").trim();
+      if (csiGroupId) {
+        const groupJobs = await getUkdocsCsiGroupJobs(job.collection_id, csiGroupId);
+        const allDone = groupJobs.length > 0 && groupJobs.every((item) => item.status === "done");
+        if (!allDone) {
+          await updateUkdocsCsiReport(job.collection_id, {
+            status: "running",
+            started_at: groupJobs.find((item) => item.claimed_at)?.claimed_at || job.claimed_at || "",
+            error: "",
+            summary: "CSI audit is still processing the temporary phyto documents.",
+          });
+        } else {
+          const finalReport = buildUkdocsCsiReportFromJobResults(groupJobs.map(parseUkdocsCsiAuditJobResult));
+          await updateUkdocsCsiReport(job.collection_id, {
+            ...finalReport,
+            started_at: groupJobs.find((item) => item.claimed_at)?.claimed_at || job.claimed_at || "",
+            completed_at: groupJobs.reduce((latest, item) => {
+              const candidate = String(item?.finished_at || "").trim();
+              return candidate > latest ? candidate : latest;
+            }, ""),
           });
         }
-        if (!currentQty && visualQty !== null) {
-          const existingMessage = String(item?.message || "").trim();
-          return {
-            ...item,
-            temp_phyto_quantity: String(visualQty),
-            temp_phyto_quantities: mergedPerDoc,
-            message: existingMessage
-              ? `${existingMessage} Visual fallback temp phyto quantity ${visualQty}.`
-              : `Visual fallback temp phyto quantity ${visualQty}.`,
-          };
-        }
-        return {
-          ...item,
-          temp_phyto_quantities: mergedPerDoc,
-        };
-      });
-      const finalManualChecks = uniqueUkdocsCsiStrings([
-        ...(Array.isArray(deterministicSource.manual_checks) ? deterministicSource.manual_checks : []),
-        ...(Array.isArray(parsed.manual_checks) ? parsed.manual_checks : []),
-      ]).filter((item) => {
-        const normalized = String(item || "").toLowerCase();
-        if (visualPcnuCoveredAllTempPhytos && normalized.includes("pcnu")) {
-          return false;
-        }
-        return true;
-      });
-      const finalNotes = uniqueUkdocsCsiStrings([
-        ...(Array.isArray(deterministicSource.notes) ? deterministicSource.notes : []),
-        ...(Array.isArray(parsed.notes) ? parsed.notes : []),
-        visualPcnuCoveredAllTempPhytos
-          ? "Visual CSI confirmed the visible PCNU number on every temporary phyto PDF, even where PDF text extraction missed it."
-          : "",
-      ]);
-      const overallStatus = finalizeUkdocsCsiOverallStatus(finalChecks, finalProducts);
-      const deterministicSummary = String(deterministicSource.summary || "").trim();
-      const visualSummary = String(parsed.summary || "").trim();
-      const finalSummary = uniqueUkdocsCsiStrings([
-        deterministicSummary,
-        hasStructuredRows && visualSummary ? `Visual phyto check: ${visualSummary}` : "",
-        !hasStructuredRows && parseError ? `Visual phyto check incomplete: ${parseError}` : "",
-      ]).join(" ");
-      await updateUkdocsCsiReport(job.collection_id, {
-        status: "done",
-        started_at: job.claimed_at || "",
-        completed_at: job.finished_at || new Date().toISOString(),
-        error: "",
-        summary: finalSummary || deterministicSummary || "CSI audit completed.",
-        overall_status: overallStatus,
-        checks: finalChecks,
-        products: finalProducts,
-        manual_checks: finalManualChecks,
-        notes: finalNotes,
-        llm_content: llmContent,
-        llm_parse_source: parseSource,
-        llm_parse_error: parseError,
-        llm_raw_result_json: JSON.stringify(job?.result_json || {}, null, 2),
-      });
+      } else {
+        const finalReport = buildUkdocsCsiReportFromJobResults([parseUkdocsCsiAuditJobResult(job)]);
+        await updateUkdocsCsiReport(job.collection_id, {
+          ...finalReport,
+          started_at: job.claimed_at || "",
+          completed_at: job.finished_at || new Date().toISOString(),
+        });
+      }
       await updateUkdocsCsiEmailResult(job.collection_id, {
         ok: false,
         recipients: [],
@@ -8289,12 +8461,14 @@ async function handleApi(req, res, url) {
       return;
     }
     if (job.job_type === "ukdocs_csi_audit" && job.collection_id) {
+      const label = String(job?.payload_json?.csi_document_label || "").trim();
       await updateUkdocsCsiReport(job.collection_id, {
         status: "failed",
         started_at: job.claimed_at || "",
         completed_at: job.finished_at || new Date().toISOString(),
         error: String(body.error_text || job.error_text || "CSI audit failed").trim(),
         summary: "CSI audit failed.",
+        notes: label ? [`Failed while processing ${label}.`] : [],
       });
     }
     await upsertLlmAgentHeartbeat({
@@ -9819,7 +9993,11 @@ async function handleApi(req, res, url) {
       sendJson(res, 400, { error: "Generate the export and invoice files before running CSI" });
       return;
     }
-    if (!isUkdocsNoPdNeeded(existingCollection) && !existingCollection.documents?.ipaffs_file?.storage_name) {
+    if (
+      !isUkdocsNoPdNeeded(existingCollection)
+      && !existingCollection.documents?.ipaffs_file?.storage_name
+      && !existingCollection.documents?.ipaffs_plants_file?.storage_name
+    ) {
       sendJson(res, 400, { error: "Upload the IPAFFS file before running CSI" });
       return;
     }
@@ -9869,11 +10047,12 @@ async function handleApi(req, res, url) {
       });
       return;
     }
-    const job = await queueUkdocsCsiAudit(collectionForRun, requestUser);
+    const queuedJobs = await queueUkdocsCsiAudit(collectionForRun, requestUser);
     const nextState = await readUkdocsState();
     sendJson(res, 200, {
       ok: true,
-      job,
+      job: Array.isArray(queuedJobs) ? (queuedJobs[0] || null) : queuedJobs,
+      jobs: Array.isArray(queuedJobs) ? queuedJobs : [queuedJobs].filter(Boolean),
       collection: ukdocsPrintCollectionById(nextState.print_collections, existingCollection.id),
       print_collections: normalizeUkdocsState(nextState).print_collections,
     });
