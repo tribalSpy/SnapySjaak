@@ -5670,7 +5670,7 @@ function buildUkdocsCsiAuditPayload(collection, deterministicBundle, requestUser
     think: false,
     options: {
       temperature: 0,
-      num_predict: 700,
+      num_predict: 2200,
     },
   };
 }
