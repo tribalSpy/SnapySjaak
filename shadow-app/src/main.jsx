@@ -3,6 +3,9 @@ import { createRoot } from "react-dom/client";
 import "./styles.css";
 
 const REFRESH_INTERVAL_MS = 15000;
+const HEARTBEAT_INTERVAL_MS = 20000;
+const HEARTBEAT_FAILURES_BEFORE_OVERLAY = 4;
+const HEARTBEAT_STALE_MS_BEFORE_OVERLAY = 45000;
 const CMR_A4_WIDTH = 827;
 const CMR_A4_HEIGHT = 1169;
 const CMR_DOCUMENT_PADDING = 20;
@@ -278,7 +281,7 @@ function useHeartbeatMonitor(enabled) {
     connected: true,
     message: "",
     failures: 0,
-    lastOkAt: "",
+    lastOkAt: new Date().toISOString(),
   });
 
   useEffect(() => {
@@ -288,25 +291,30 @@ function useHeartbeatMonitor(enabled) {
 
     let stopped = false;
     let failureCount = 0;
+    let lastOkAtMs = Date.now();
 
     function markConnected() {
       failureCount = 0;
+      lastOkAtMs = Date.now();
       if (!stopped) {
         setState({
           connected: true,
           message: "",
           failures: 0,
-          lastOkAt: new Date().toISOString(),
+          lastOkAt: new Date(lastOkAtMs).toISOString(),
         });
       }
     }
 
     function markDisconnected(message) {
       failureCount += 1;
+      const staleForMs = Date.now() - lastOkAtMs;
+      const shouldDisconnect = failureCount >= HEARTBEAT_FAILURES_BEFORE_OVERLAY
+        && staleForMs >= HEARTBEAT_STALE_MS_BEFORE_OVERLAY;
       if (!stopped) {
         setState((current) => ({
-          connected: failureCount < 2 ? current.connected : false,
-          message: failureCount < 2 ? current.message : (message || "Connection lost. The app may be updating or restarting."),
+          connected: shouldDisconnect ? false : current.connected,
+          message: shouldDisconnect ? (message || "Connection lost. The app may be updating or restarting.") : current.message,
           failures: failureCount,
           lastOkAt: current.lastOkAt,
         }));
@@ -314,6 +322,9 @@ function useHeartbeatMonitor(enabled) {
     }
 
     async function checkHeartbeat() {
+      if (typeof document !== "undefined" && document.hidden) {
+        return;
+      }
       try {
         const response = await fetch(`/api/status?_ts=${Date.now()}`, { cache: "no-store" });
         if (!response.ok) {
@@ -330,7 +341,7 @@ function useHeartbeatMonitor(enabled) {
     }
 
     function handleOffline() {
-      failureCount = Math.max(failureCount, 2);
+      failureCount = Math.max(failureCount, HEARTBEAT_FAILURES_BEFORE_OVERLAY);
       if (!stopped) {
         setState((current) => ({
           connected: false,
@@ -347,7 +358,7 @@ function useHeartbeatMonitor(enabled) {
         markConnected();
         return;
       }
-      failureCount = Math.max(failureCount + 1, 2);
+      failureCount = Math.max(failureCount + 1, HEARTBEAT_FAILURES_BEFORE_OVERLAY);
       if (!stopped) {
         setState((current) => ({
           connected: false,
@@ -364,7 +375,7 @@ function useHeartbeatMonitor(enabled) {
       checkHeartbeat();
     }
 
-    const interval = window.setInterval(checkHeartbeat, 10000);
+    const interval = window.setInterval(checkHeartbeat, HEARTBEAT_INTERVAL_MS);
     window.addEventListener("online", handleOnline);
     window.addEventListener("offline", handleOffline);
     window.addEventListener("shadow-connection-state", handleConnectionEvent);
@@ -5655,7 +5666,7 @@ function App() {
   const [expandedCustomers, setExpandedCustomers] = useState(() => new Set());
   const [lightbox, setLightbox] = useState(null);
   const [syncVersion, setSyncVersion] = useState(0);
-  const heartbeat = useHeartbeatMonitor(true);
+  const heartbeat = useHeartbeatMonitor(publicClockMode || Boolean(auth.user));
   const requestedDate = dateWasManuallySelected ? selectedDate : "";
   const canViewPhotos = hasPermission(auth.user, PERMISSIONS.PHOTOS_VIEW);
   const visiblePages = availablePagesForUser(auth.user);
