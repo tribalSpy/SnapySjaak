@@ -8114,7 +8114,8 @@ async function handleApi(req, res, url) {
         if (!visualTempPhytoByLabel.has(documentLabel)) {
           visualTempPhytoByLabel.set(documentLabel, new Map());
         }
-        visualTempPhytoByLabel.get(documentLabel).set(mappedProduct, quantity);
+        const currentByProduct = visualTempPhytoByLabel.get(documentLabel).get(mappedProduct) || 0;
+        visualTempPhytoByLabel.get(documentLabel).set(mappedProduct, currentByProduct + quantity);
       }
       const finalLlmChecks = llmChecks.filter((item) => item?.code !== "PHYTO_VISIBLE_QTY");
       const finalChecks = [
