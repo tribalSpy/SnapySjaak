@@ -5220,6 +5220,15 @@ function uniqueUkdocsCsiStrings(values) {
   return Array.from(new Set((Array.isArray(values) ? values : []).map((value) => String(value || "").trim()).filter(Boolean)));
 }
 
+function isUkdocsNoPdNeeded(collection) {
+  const pdCodeCompact = String(collection?.pd_code || "").trim().toLowerCase().replace(/[^a-z0-9]+/g, "");
+  const pdTypeCompact = String(collection?.pd_type || "").trim().toLowerCase().replace(/[^a-z0-9]+/g, "");
+  return pdCodeCompact.includes("nopdneeded")
+    || pdCodeCompact === "nopd"
+    || pdTypeCompact.includes("nophytoneeded")
+    || pdTypeCompact.includes("nopdneeded");
+}
+
 function finalizeUkdocsCsiOverallStatus(checks, products) {
   let overall = "pass";
   for (const item of [...(Array.isArray(checks) ? checks : []), ...(Array.isArray(products) ? products : [])]) {
@@ -5230,6 +5239,7 @@ function finalizeUkdocsCsiOverallStatus(checks, products) {
 
 function buildUkdocsCsiDeterministicReport(collection, extractedDocuments) {
   const documents = Array.isArray(extractedDocuments) ? extractedDocuments : [];
+  const noPdNeeded = isUkdocsNoPdNeeded(collection);
   const invoiceDocs = documents.filter((document) => document?.kind === "generated_invoice");
   const exportDoc = documents.find((document) => document?.kind === "generated_export") || null;
   const storedIpaffsDoc = collection?.documents?.ipaffs_file?.parsed_data
@@ -5243,8 +5253,8 @@ function buildUkdocsCsiDeterministicReport(collection, extractedDocuments) {
       error: String(collection.documents.ipaffs_file.parse_error || "").trim(),
     }
     : null;
-  const ipaffsDoc = documents.find((document) => document?.kind === "ipaffs_file") || storedIpaffsDoc || null;
-  const tempPhytoDocs = (() => {
+  const rawIpaffsDoc = documents.find((document) => document?.kind === "ipaffs_file") || storedIpaffsDoc || null;
+  const rawTempPhytoDocs = (() => {
     const extractedTempDocs = documents.filter((document) => document?.kind === "temp_phyto");
     if (extractedTempDocs.length) {
       return extractedTempDocs.map((document, index) => {
@@ -5276,7 +5286,9 @@ function buildUkdocsCsiDeterministicReport(collection, extractedDocuments) {
         error: String(document.parse_error || "").trim(),
       }));
   })();
-  const hasIpaffsAttached = Boolean(collection?.documents?.ipaffs_file?.storage_name);
+  const ipaffsDoc = noPdNeeded ? null : rawIpaffsDoc;
+  const tempPhytoDocs = noPdNeeded ? [] : rawTempPhytoDocs;
+  const hasIpaffsAttached = noPdNeeded ? false : Boolean(collection?.documents?.ipaffs_file?.storage_name);
 
   const invoiceTotals = new Map();
   const exportTotals = new Map();
@@ -5452,7 +5464,11 @@ function buildUkdocsCsiDeterministicReport(collection, extractedDocuments) {
         status = mergeUkdocsCsiStatus(status, "warn");
         ipaffsMismatchCount += 1;
         tempPhytoMismatchCount += 1;
-        messages.push(`IPAFFS ${ipaffsQty} and temp phyto ${phytoQty} differ by ${Math.abs(ipaffsQty - phytoQty)}.`);
+        if (ipaffsQty < phytoQty) {
+          messages.push(`IPAFFS quantity ${ipaffsQty} is lower than temp phyto ${phytoQty}.`);
+        } else {
+          messages.push(`IPAFFS quantity ${ipaffsQty} is higher than temp phyto ${phytoQty}.`);
+        }
       } else {
         messages.push(`IPAFFS and temp phyto match at ${ipaffsQty}.`);
       }
@@ -5483,7 +5499,9 @@ function buildUkdocsCsiDeterministicReport(collection, extractedDocuments) {
 
   checks.push({
     code: "IPAFFS_VERIFICATION",
-    status: !hasIpaffsAttached
+    status: noPdNeeded
+      ? "pass"
+      : !hasIpaffsAttached
       ? "warn"
       : !ipaffsDoc
         ? "warn"
@@ -5494,7 +5512,9 @@ function buildUkdocsCsiDeterministicReport(collection, extractedDocuments) {
           : ipaffsMismatchCount
             ? "warn"
             : "pass",
-    message: !hasIpaffsAttached
+    message: noPdNeeded
+      ? "IPAFFS is not required because PD code indicates no PD needed."
+      : !hasIpaffsAttached
       ? "IPAFFS file is missing."
       : !ipaffsDoc
         ? `IPAFFS file is attached on the zending (${collection?.documents?.ipaffs_file?.original_name || "unknown file"}), but CSI extraction returned these document kinds only: ${extractedKinds.join(", ") || "none"}.`
@@ -5509,8 +5529,10 @@ function buildUkdocsCsiDeterministicReport(collection, extractedDocuments) {
 
   checks.push({
     code: "TEMP_PHYTO_FILES",
-    status: tempPhytoDocs.length ? "pass" : "warn",
-    message: tempPhytoDocs.length
+    status: noPdNeeded ? "pass" : (tempPhytoDocs.length ? "pass" : "warn"),
+    message: noPdNeeded
+      ? "Temporary phyto PDF files are not required because PD code indicates no PD needed."
+      : tempPhytoDocs.length
       ? `${tempPhytoDocs.length} temporary phyto PDF file(s) attached.`
       : "No temporary phyto PDF files attached.",
   });
@@ -5558,14 +5580,18 @@ function buildUkdocsCsiDeterministicReport(collection, extractedDocuments) {
     invoiceExportMismatchCount
       ? `${invoiceExportMismatchCount} invoice/export mismatch(es)`
       : "invoice/export quantities match",
-    !hasIpaffsAttached
+    noPdNeeded
+      ? "no PD documents needed"
+      : !hasIpaffsAttached
       ? "IPAFFS missing"
       : !ipaffsDoc
         ? "IPAFFS extraction missing"
         : !ipaffsRows.length
           ? "IPAFFS rows not parsed"
           : (ipaffsMismatchCount ? `${ipaffsMismatchCount} IPAFFS mismatch(es)` : "IPAFFS matches"),
-    tempPhytoDocs.length
+    noPdNeeded
+      ? "temp phyto not needed"
+      : tempPhytoDocs.length
       ? (tempPhytoMismatchCount ? `${tempPhytoMismatchCount} temp phyto mismatch(es)` : "temp phyto quantities checked")
       : "no temp phyto PDFs",
   ];
@@ -7179,7 +7205,8 @@ async function sendUkdocsPrintReadyEmail(collection, customers, settings) {
   };
 }
 
-async function ukdocsCsiCollectionAttachments(collection) {
+async function ukdocsCsiCollectionAttachments(collection, options = {}) {
+  const includeSupportDocs = options.include_support_docs !== false;
   const attachments = [];
   const documents = [];
   const generatedFiles = Array.isArray(collection?.documents?.generated_files) ? collection.documents.generated_files : [];
@@ -7195,12 +7222,14 @@ async function ukdocsCsiCollectionAttachments(collection) {
     documents.push({ document: generatedExport, kind: "generated_export" });
   }
 
-  documents.push(
-    ...(collection?.documents?.temp_phyto_files || []).map((document) => ({ document, kind: "temp_phyto" })),
-  );
+  if (includeSupportDocs) {
+    documents.push(
+      ...(collection?.documents?.temp_phyto_files || []).map((document) => ({ document, kind: "temp_phyto" })),
+    );
 
-  if (collection?.documents?.ipaffs_file) {
-    documents.push({ document: collection.documents.ipaffs_file, kind: "ipaffs_file" });
+    if (collection?.documents?.ipaffs_file) {
+      documents.push({ document: collection.documents.ipaffs_file, kind: "ipaffs_file" });
+    }
   }
 
   for (const item of documents) {
@@ -7226,8 +7255,9 @@ function buildUkdocsCsiTemplateContext(collection, customer = null) {
   });
 }
 
-function buildUkdocsCsiSuccessEmail(collection, customer = null) {
+function buildUkdocsCsiSuccessEmail(collection, customer = null, options = {}) {
   const context = buildUkdocsCsiTemplateContext(collection, customer);
+  const includeSupportDocs = options.include_support_docs !== false;
   if (String(customer?.csi_email_body || "").trim()) {
     return applyUkdocsReadyTemplate(customer.csi_email_body, context).trim();
   }
@@ -7244,23 +7274,25 @@ function buildUkdocsCsiSuccessEmail(collection, customer = null) {
     `Trailer: ${context.trailer_number}`,
     "",
     "Attached files:",
-    "- Temporary phyto PDF files",
     "- Generated invoice PDF files",
     "- Generated export file",
-    "- IPAFFS file",
+    includeSupportDocs ? "- Temporary phyto PDF files" : "",
+    includeSupportDocs ? "- IPAFFS file" : "",
   ].join("\n");
 }
 
-async function sendUkdocsCsiSuccessEmail(collection, customers, settings) {
+async function sendUkdocsCsiSuccessEmail(collection, customers, settings, options = {}) {
   const customer = ukdocsPrintCollectionCustomer(collection, customers);
   const recipients = normalizeEmailRecipients(customer?.csi_email_recipients);
+  const noPdNeeded = isUkdocsNoPdNeeded(collection);
+  const includeSupportDocs = options.include_support_docs !== false && !noPdNeeded;
   if (!recipients.length) {
     return { ok: false, recipients: [], error: "No CSI email recipients configured for this customer" };
   }
   if (!settings?.smtp_host || !settings?.smtp_username || !settings?.smtp_password || !settings?.smtp_from) {
     return { ok: false, recipients, error: "SMTP is not fully configured" };
   }
-  const attachments = await ukdocsCsiCollectionAttachments(collection);
+  const attachments = await ukdocsCsiCollectionAttachments(collection, { include_support_docs: includeSupportDocs });
   if (!attachments.length) {
     return { ok: false, recipients, error: "No CSI attachments found to send" };
   }
@@ -7271,10 +7303,10 @@ async function sendUkdocsCsiSuccessEmail(collection, customers, settings) {
   if (!(collection?.documents?.generated_files || []).some((file) => file?.document_kind === "export")) {
     return { ok: false, recipients, error: "No generated export file found for CSI email" };
   }
-  if (!(collection?.documents?.temp_phyto_files || []).length) {
+  if (includeSupportDocs && !(collection?.documents?.temp_phyto_files || []).length) {
     return { ok: false, recipients, error: "No temporary phyto PDF files found for CSI email" };
   }
-  if (!collection?.documents?.ipaffs_file?.storage_name) {
+  if (includeSupportDocs && !collection?.documents?.ipaffs_file?.storage_name) {
     return { ok: false, recipients, error: "No IPAFFS file found for CSI email" };
   }
   const context = buildUkdocsCsiTemplateContext(collection, customer);
@@ -7286,7 +7318,7 @@ async function sendUkdocsCsiSuccessEmail(collection, customers, settings) {
     JSON.stringify({
       recipients,
       subject,
-      body: buildUkdocsCsiSuccessEmail(collection, customer),
+      body: buildUkdocsCsiSuccessEmail(collection, customer, { include_support_docs: includeSupportDocs }),
       attachments,
       smtp: {
         host: settings.smtp_host,
@@ -8207,31 +8239,12 @@ async function handleApi(req, res, url) {
         llm_parse_error: parseError,
         llm_raw_result_json: JSON.stringify(job?.result_json || {}, null, 2),
       });
-      if (overallStatus === "pass") {
-        try {
-          const state = await readUkdocsState();
-          const settings = await readFustSettings();
-          const currentCollection = ukdocsPrintCollectionById(state.print_collections, job.collection_id);
-          if (currentCollection) {
-            const csiEmail = await sendUkdocsCsiSuccessEmail(currentCollection, state.customers, settings);
-            await updateUkdocsCsiEmailResult(job.collection_id, csiEmail);
-          }
-        } catch (csiEmailError) {
-          await updateUkdocsCsiEmailResult(job.collection_id, {
-            ok: false,
-            recipients: [],
-            sent_at: "",
-            error: csiEmailError instanceof Error ? csiEmailError.message : String(csiEmailError),
-          });
-        }
-      } else {
-        await updateUkdocsCsiEmailResult(job.collection_id, {
-          ok: false,
-          recipients: [],
-          sent_at: "",
-          error: "",
-        });
-      }
+      await updateUkdocsCsiEmailResult(job.collection_id, {
+        ok: false,
+        recipients: [],
+        sent_at: "",
+        error: "",
+      });
     }
     await upsertLlmAgentHeartbeat({
       agent_name: agentName,
@@ -9803,7 +9816,7 @@ async function handleApi(req, res, url) {
       sendJson(res, 400, { error: "Generate the export and invoice files before running CSI" });
       return;
     }
-    if (!existingCollection.documents?.ipaffs_file?.storage_name) {
+    if (!isUkdocsNoPdNeeded(existingCollection) && !existingCollection.documents?.ipaffs_file?.storage_name) {
       sendJson(res, 400, { error: "Upload the IPAFFS file before running CSI" });
       return;
     }
@@ -9813,6 +9826,46 @@ async function handleApi(req, res, url) {
       state.print_collections = upsertUkdocsPrintCollection(state.print_collections, collectionForRun);
       await writeUkdocsState(state);
     }
+    if (isUkdocsNoPdNeeded(collectionForRun)) {
+      const extractedDocuments = await extractUkdocsCsiFileSnapshots([
+        ...(collectionForRun?.documents?.generated_files || []).map((document) => ({ kind: document.document_kind === "export" ? "generated_export" : "generated_invoice", document })),
+      ]);
+      const deterministicBundle = buildUkdocsCsiDeterministicReport(collectionForRun, extractedDocuments);
+      const completedCollection = await updateUkdocsCsiReport(collectionForRun.id, {
+        status: "done",
+        job_id: "",
+        queued_at: new Date().toISOString(),
+        started_at: new Date().toISOString(),
+        completed_at: new Date().toISOString(),
+        error: "",
+        summary: deterministicBundle.report.summary || "CSI audit completed.",
+        overall_status: deterministicBundle.report.overall_status || "pass",
+        checks: deterministicBundle.report.checks || [],
+        products: deterministicBundle.report.products || [],
+        manual_checks: deterministicBundle.report.manual_checks || [],
+        notes: uniqueUkdocsCsiStrings([
+          ...(deterministicBundle.report.notes || []),
+          "PD code indicates no PD needed, so CSI passed from generated invoice/export checks.",
+        ]),
+        llm_content: "",
+        llm_parse_source: "",
+        llm_parse_error: "",
+        llm_raw_result_json: "",
+      });
+      await updateUkdocsCsiEmailResult(collectionForRun.id, {
+        ok: false,
+        recipients: [],
+        sent_at: "",
+        error: "",
+      });
+      const nextState = await readUkdocsState();
+      sendJson(res, 200, {
+        ok: true,
+        collection: completedCollection,
+        print_collections: normalizeUkdocsState(nextState).print_collections,
+      });
+      return;
+    }
     const job = await queueUkdocsCsiAudit(collectionForRun, requestUser);
     const nextState = await readUkdocsState();
     sendJson(res, 200, {
@@ -9820,6 +9873,35 @@ async function handleApi(req, res, url) {
       job,
       collection: ukdocsPrintCollectionById(nextState.print_collections, existingCollection.id),
       print_collections: normalizeUkdocsState(nextState).print_collections,
+    });
+    return;
+  }
+
+  if (url.pathname.startsWith("/api/ukdocs-print/collections/") && url.pathname.endsWith("/csi/send") && req.method === "POST") {
+    if (!requirePermission(res, requestUser, PERMISSIONS.UKDOCS_CSI_VIEW)) {
+      return;
+    }
+    const collectionId = decodeURIComponent(url.pathname.slice("/api/ukdocs-print/collections/".length, -"/csi/send".length));
+    const state = await readUkdocsState();
+    const existingCollection = ukdocsPrintCollectionById(state.print_collections, collectionId);
+    if (!existingCollection) {
+      sendJson(res, 404, { error: "UKDocs zending not found" });
+      return;
+    }
+    const overallStatus = String(existingCollection?.csi_report?.overall_status || "").trim().toLowerCase();
+    if (String(existingCollection?.csi_report?.status || "").trim() !== "done" || overallStatus !== "pass") {
+      sendJson(res, 400, { error: "Run CSI successfully before sending papers to CSI" });
+      return;
+    }
+    const settings = await readFustSettings();
+    const csiEmail = await sendUkdocsCsiSuccessEmail(existingCollection, state.customers, settings);
+    const updatedCollection = await updateUkdocsCsiEmailResult(collectionId, csiEmail);
+    const nextState = await readUkdocsState();
+    sendJson(res, 200, {
+      ok: true,
+      collection: updatedCollection,
+      print_collections: normalizeUkdocsState(nextState).print_collections,
+      csi_email: csiEmail,
     });
     return;
   }

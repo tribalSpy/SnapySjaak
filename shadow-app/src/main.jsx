@@ -4928,6 +4928,26 @@ function UkdocsCSIPage({ currentUser }) {
     }
   }
 
+  async function sendCsiPapers(collectionId) {
+    setSaving(true);
+    setMessage("");
+    setError("");
+    try {
+      const payload = await apiJson(`/api/ukdocs-print/collections/${encodeURIComponent(collectionId)}/csi/send`, {
+        method: "POST",
+      });
+      setState((current) => ({ ...current, print_collections: payload.print_collections || current?.print_collections || [] }));
+      setMessage(payload.csi_email?.ok
+        ? `CSI papers sent to ${(payload.csi_email.recipients || []).join(", ")}`
+        : (payload.csi_email?.error || "Could not send CSI papers."));
+      setDetailDrawerOpen(true);
+    } catch (sendError) {
+      setError(sendError.message);
+    } finally {
+      setSaving(false);
+    }
+  }
+
   return (
     <section className="overview-stack">
       {message && <div className="notice success">{message}</div>}
@@ -4964,6 +4984,13 @@ function UkdocsCSIPage({ currentUser }) {
                   <div className="row-actions spread-actions">
                     <button type="button" className="primary" onClick={() => openCollectionDetail(collection.id)}>{isActive ? "Opened" : "Open"}</button>
                     <button type="button" onClick={() => runCsiAudit(collection.id)} disabled={saving}>Run CSI</button>
+                    <button
+                      type="button"
+                      onClick={() => sendCsiPapers(collection.id)}
+                      disabled={saving || collection?.csi_report?.status !== "done" || collection?.csi_report?.overall_status !== "pass"}
+                    >
+                      Send papers to CSI
+                    </button>
                   </div>
                 </div>
               );
@@ -5056,6 +5083,13 @@ function UkdocsCSIPage({ currentUser }) {
 
               <div className="row-actions spread-actions">
                 <button type="button" className="primary" onClick={() => runCsiAudit(selectedCollection.id)} disabled={saving}>Run CSI audit</button>
+                <button
+                  type="button"
+                  onClick={() => sendCsiPapers(selectedCollection.id)}
+                  disabled={saving || selectedCsiReport.status !== "done" || selectedCsiReport.overall_status !== "pass"}
+                >
+                  Send papers to CSI
+                </button>
               </div>
 
               <div className="ukdocs-download-box">
