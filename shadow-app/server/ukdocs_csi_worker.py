@@ -84,6 +84,8 @@ def row_find_label_value(values, expected):
 
 def map_ipaffs_product(genus, commodity_code):
     genus_key = normalize_key(genus)
+    if "hibiscus" in genus_key:
+        return "Flowering plants(no cactu"
     if "chrysanthem" in genus_key:
         return "Flowers chrysanthemums"
     if "dianthus" in genus_key:
@@ -117,13 +119,13 @@ def map_ipaffs_product(genus, commodity_code):
         return "Flowers lilies"
     if code.startswith("604209"):
         return "Flowers green"
-    if "bonsai" in genus_key or "sageretia" in genus_key:
+    if "bonsai" in genus_key or "sageretia" in genus_key or "aloe" in genus_key or "rhipsalis" in genus_key:
         return "CITES ge. non-flowering p"
     if any(token in genus_key for token in ["salvia", "lavandula", "helleborus", "campanula"]):
         return "Perennials"
-    if any(token in genus_key for token in ["dypsis", "maranta", "calathea", "chlorophytum", "curio"]):
+    if any(token in genus_key for token in ["dypsis", "maranta", "calathea", "chlorophytum", "curio", "dracaena", "epipremnum", "fittonia", "nephrolepis", "schefflera", "spathiphyllum", "sansevieria", "sanseveria", "zamioculcas", "succulent", "cactus"]):
         return "Other non-flowering plant"
-    if any(token in genus_key for token in ["echeveria", "fuchsia", "gerbera", "guzmania", "kalanchoe", "phalaenopsis", "anthurium", "celosia", "cymbidium", "cyclamen", "crassula"]):
+    if any(token in genus_key for token in ["echeveria", "fuchsia", "gerbera", "guzmania", "kalanchoe", "phalaenopsis", "anthurium", "celosia", "cymbidium", "cyclamen", "crassula", "begonia", "helianthus", "hydrangea", "mandevilla", "lithodora", "platycodon", "hibiscus"]):
         return "Flowering plants(no cactu"
     if "rosa" in genus_key:
         return "refined roses"
@@ -149,6 +151,7 @@ def parse_ipaffs_rows(rows):
             "product": product,
             "commodity_code": commodity_code,
             "genus": genus,
+            "mapped_group": product,
             "packages": packages,
             "quantity": quantity,
             "unit": unit,
@@ -224,6 +227,7 @@ def parse_export_sheet(workbook):
             "product": description,
             "origin": origin,
             "commodity_code": commodity_code,
+            "mapped_group": map_ipaffs_product(description, commodity_code),
             "quantity": quantity,
         }
         rows.append(parsed_row)
@@ -280,6 +284,7 @@ def parse_invoice_sheet(workbook):
             "product": description,
             "origin": origin,
             "commodity_code": commodity_code,
+            "mapped_group": map_ipaffs_product(description, commodity_code),
             "quantity": quantity,
         }
         rows.append(parsed_row)
@@ -574,7 +579,7 @@ def extract_pdf(path: Path, kind=""):
         default_text = page_variants[0]
         lines.append(f"[Page] {page_index}")
         lines.extend(split_clean_lines(default_text))
-        if clean_text(kind) == "temp_phyto":
+        if clean_text(kind).startswith("temp_phyto"):
             for variant_text in page_variants:
                 temp_phyto_text_candidates.append(f"[Page] {page_index}\n{variant_text}")
     payload = {
@@ -582,7 +587,7 @@ def extract_pdf(path: Path, kind=""):
         "text": "\n".join(limit_lines(lines)),
         "line_count": len(lines),
     }
-    if clean_text(kind) == "temp_phyto":
+    if clean_text(kind).startswith("temp_phyto"):
         combined_candidates = []
         if temp_phyto_text_candidates:
             combined_candidates.append("\n".join(temp_phyto_text_candidates))

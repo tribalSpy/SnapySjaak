@@ -1221,6 +1221,8 @@ function normalizeUkdocsCsiReport(report) {
       overall_status: "",
       checks: [],
       products: [],
+      flower_products: [],
+      plant_products: [],
       source_rows: [],
       manual_checks: [],
       notes: [],
@@ -1241,6 +1243,8 @@ function normalizeUkdocsCsiReport(report) {
     overall_status: normalizeUkdocsText(report.overall_status),
     checks: Array.isArray(report.checks) ? report.checks : [],
     products: Array.isArray(report.products) ? report.products : [],
+    flower_products: Array.isArray(report.flower_products) ? report.flower_products : [],
+    plant_products: Array.isArray(report.plant_products) ? report.plant_products : [],
     source_rows: Array.isArray(report.source_rows) ? report.source_rows : [],
     manual_checks: Array.isArray(report.manual_checks) ? report.manual_checks.map((item) => String(item || "").trim()).filter(Boolean) : [],
     notes: Array.isArray(report.notes) ? report.notes.map((item) => String(item || "").trim()).filter(Boolean) : [],
@@ -4890,6 +4894,9 @@ function normalizeUkdocsCsiParsedResult(source) {
   }
   const checks = Array.isArray(source.checks) ? source.checks : [];
   const products = Array.isArray(source.products) ? source.products : [];
+  const flowerProducts = Array.isArray(source.flower_products) ? source.flower_products : [];
+  const plantProducts = Array.isArray(source.plant_products) ? source.plant_products : [];
+  const sourceRows = Array.isArray(source.source_rows) ? source.source_rows : [];
   const visibleDocuments = Array.isArray(source.visible_documents)
     ? source.visible_documents
     : (Array.isArray(source.visibleDocuments) ? source.visibleDocuments : []);
@@ -4899,7 +4906,7 @@ function normalizeUkdocsCsiParsedResult(source) {
   const notes = Array.isArray(source.notes) ? source.notes : [];
   const summary = String(source.summary || "").trim();
   const overallStatus = normalizeUkdocsText(source.overall_status || source.overallStatus);
-  if (!summary && !checks.length && !products.length && !visibleDocuments.length && !manualChecks.length && !notes.length && !overallStatus) {
+  if (!summary && !checks.length && !products.length && !flowerProducts.length && !plantProducts.length && !sourceRows.length && !visibleDocuments.length && !manualChecks.length && !notes.length && !overallStatus) {
     return null;
   }
   return {
@@ -4907,6 +4914,9 @@ function normalizeUkdocsCsiParsedResult(source) {
     summary: summary || "CSI audit completed.",
     checks,
     products,
+    flower_products: flowerProducts,
+    plant_products: plantProducts,
+    source_rows: sourceRows,
     visible_documents: visibleDocuments,
     manual_checks: manualChecks,
     notes,
@@ -5134,6 +5144,88 @@ function normalizeUkdocsCsiOrigin(value) {
   return String(value || "").trim().toUpperCase();
 }
 
+const UKDOCS_CSI_PLANT_GROUPS = new Set([
+  "CITES ge. non-flowering p",
+  "Other non-flowering plant",
+  "Flowering plants(no cactu",
+  "Perennials",
+  "Others",
+  "refined roses",
+]);
+
+const UKDOCS_CSI_FLOWER_GROUPS = new Set([
+  "Flowers (other fresh)",
+  "Flowers carnation",
+  "Flowers chrysanthemums",
+  "Flowers green",
+  "Flowers lilies",
+  "Flowers orchids",
+  "Flowers roses",
+]);
+
+function getUkdocsCsiProductDomain(productName) {
+  const product = String(productName || "").trim();
+  if (UKDOCS_CSI_PLANT_GROUPS.has(product)) {
+    return "plants";
+  }
+  if (UKDOCS_CSI_FLOWER_GROUPS.has(product)) {
+    return "flowers";
+  }
+  return "";
+}
+
+function inferUkdocsCsiPlantsPreference(document, fallbackValue = false) {
+  if (document?.prefer_plants === true) {
+    return true;
+  }
+  const documentName = normalizeUkdocsCsiToken(document?.name || document?.original_name || "");
+  if (documentName.includes("plants")) {
+    return true;
+  }
+  const productLines = Array.isArray(document?.parsed_data?.product_lines) ? document.parsed_data.product_lines : [];
+  if (!productLines.length) {
+    return fallbackValue;
+  }
+  let plantScore = 0;
+  let flowerScore = 0;
+  for (const line of productLines) {
+    const text = normalizeUkdocsCsiToken(line?.product || "");
+    if (!text) {
+      continue;
+    }
+    if (
+      text.includes("aloe") || text.includes("anthurium") || text.includes("begonia")
+      || text.includes("bonsai") || text.includes("calathea") || text.includes("campanula")
+      || text.includes("celosia") || text.includes("chlorophytum") || text.includes("crassula")
+      || text.includes("curio") || text.includes("cyclamen") || text.includes("dracaena")
+      || text.includes("dypsis") || text.includes("echeveria") || text.includes("epipremnum")
+      || text.includes("fittonia") || text.includes("fuchsia") || text.includes("gerbera")
+      || text.includes("guzmania") || text.includes("helianthus") || text.includes("helleanthus")
+      || text.includes("hibiscus") || text.includes("hydrangea") || text.includes("kalanchoe")
+      || text.includes("lavandula") || text.includes("lithodora") || text.includes("mandevilla")
+      || text.includes("maranta") || text.includes("nephrolepis") || text.includes("phalaenopsis")
+      || text.includes("platycodon") || text.includes("rhipsalis") || text.includes("sageretia")
+      || text.includes("schefflera") || text.includes("spathiphyllum") || text.includes("succulent")
+      || text.includes("cactus") || text.includes("sansevieria") || text.includes("sanseveria")
+      || text.includes("zamioculcas")
+    ) {
+      plantScore += 2;
+    }
+    if (
+      text.includes("solidago") || text.includes("gypsoph") || text.includes("carnation")
+      || text.includes("other fresh") || text.includes("cutflowers") || text.includes("cut flowers")
+      || text.includes("branch")
+    ) {
+      flowerScore += 2;
+    }
+    if (text.includes("chrysanthem") || text.includes("dianthus") || text.includes("rosa") || text.includes("rose")) {
+      plantScore += 1;
+      flowerScore += 1;
+    }
+  }
+  return plantScore > flowerScore || fallbackValue;
+}
+
 function mapUkdocsCsiProductName(description, commodityCode = "", options = {}) {
   const text = normalizeUkdocsCsiToken(description);
   const code = String(commodityCode || "").replace(/\D+/g, "");
@@ -5160,16 +5252,26 @@ function mapUkdocsCsiProductName(description, commodityCode = "", options = {}) 
   }
 
   if (preferPlants) {
-    if (text.includes("bonsai") || text.includes("sageretia")) {
+    if (text.includes("bonsai") || text.includes("sageretia") || text.includes("aloe") || text.includes("rhipsalis")) {
       return "CITES ge. non-flowering p";
     }
     if (text.includes("salvia") || text.includes("lavandula") || text.includes("helleborus") || text.includes("campanula")) {
       return "Perennials";
     }
-    if (text.includes("rosa") || text.includes("rose")) {
+    if (text.includes("hibiscus")) {
+      return "Flowering plants(no cactu";
+    }
+    if (text.includes("rosa") || (text.includes("rose") && !text.includes("hibiscus"))) {
       return "refined roses";
     }
-    if (text.includes("dypsis") || text.includes("maranta") || text.includes("calathea") || text.includes("chlorophytum") || text.includes("curio")) {
+    if (
+      text.includes("dypsis") || text.includes("maranta") || text.includes("calathea")
+      || text.includes("chlorophytum") || text.includes("curio") || text.includes("dracaena")
+      || text.includes("epipremnum") || text.includes("fittonia") || text.includes("nephrolepis")
+      || text.includes("schefflera") || text.includes("spathiphyllum") || text.includes("sansevieria")
+      || text.includes("sanseveria") || text.includes("zamioculcas") || text.includes("cactus")
+      || text.includes("succulent")
+    ) {
       return "Other non-flowering plant";
     }
     if (
@@ -5177,7 +5279,9 @@ function mapUkdocsCsiProductName(description, commodityCode = "", options = {}) 
       || text.includes("guzmania") || text.includes("kalanchoe") || text.includes("phalaenopsis")
       || text.includes("anthurium") || text.includes("celosia") || text.includes("cymbidium")
       || text.includes("cyclamen") || text.includes("crassula") || text.includes("dianthus")
-      || text.includes("chrysanthem")
+      || text.includes("chrysanthem") || text.includes("begonia") || text.includes("helianthus")
+      || text.includes("helleanthus") || text.includes("hydrangea") || text.includes("mandevilla")
+      || text.includes("lithodora") || text.includes("platycodon")
     ) {
       return "Flowering plants(no cactu";
     }
@@ -5299,13 +5403,13 @@ function finalizeUkdocsCsiOverallStatus(checks, products) {
 function getUkdocsCsiTempPhytoSourceDocuments(collection) {
   const tempPhytoFiles = (collection?.documents?.temp_phyto_files || []).map((document) => ({
     kind: "temp_phyto",
-    prefer_plants: false,
+    prefer_plants: inferUkdocsCsiPlantsPreference(document, false),
     document,
   }));
   const plantTempPhyto = collection?.documents?.temp_phyto_plants_file?.storage_name
     ? [{
       kind: "temp_phyto_plants_file",
-      prefer_plants: true,
+      prefer_plants: inferUkdocsCsiPlantsPreference(collection.documents.temp_phyto_plants_file, true),
       document: collection.documents.temp_phyto_plants_file,
     }]
     : [];
@@ -5415,7 +5519,7 @@ function buildUkdocsCsiDeterministicReport(collection, extractedDocuments) {
   for (const document of invoiceDocs) {
     const rows = Array.isArray(document?.parsed_data?.rows) ? document.parsed_data.rows : [];
     for (const row of rows) {
-      const mappedProduct = mapUkdocsCsiProductName(row?.product, row?.commodity_code);
+      const mappedProduct = String(row?.mapped_group || "").trim() || mapUkdocsCsiProductName(row?.product, row?.commodity_code);
       addUkdocsCsiQuantity(
         invoiceTotals,
         mappedProduct,
@@ -5427,6 +5531,7 @@ function buildUkdocsCsiDeterministicReport(collection, extractedDocuments) {
         raw_product: String(row?.product || "").trim(),
         commodity_code: String(row?.commodity_code || "").trim(),
         mapped_product: mappedProduct,
+        product_domain: getUkdocsCsiProductDomain(mappedProduct),
         quantity: Number.isFinite(Number(row?.quantity)) ? Number(row.quantity) : null,
       });
     }
@@ -5434,7 +5539,7 @@ function buildUkdocsCsiDeterministicReport(collection, extractedDocuments) {
 
   const exportRows = Array.isArray(exportDoc?.parsed_data?.rows) ? exportDoc.parsed_data.rows : [];
   for (const row of exportRows) {
-    const mappedProduct = mapUkdocsCsiProductName(row?.product, row?.commodity_code);
+    const mappedProduct = String(row?.mapped_group || "").trim() || mapUkdocsCsiProductName(row?.product, row?.commodity_code);
     addUkdocsCsiQuantity(
       exportTotals,
       mappedProduct,
@@ -5446,6 +5551,7 @@ function buildUkdocsCsiDeterministicReport(collection, extractedDocuments) {
       raw_product: String(row?.product || "").trim(),
       commodity_code: String(row?.commodity_code || "").trim(),
       mapped_product: mappedProduct,
+      product_domain: getUkdocsCsiProductDomain(mappedProduct),
       quantity: Number.isFinite(Number(row?.quantity)) ? Number(row.quantity) : null,
     });
   }
@@ -5456,7 +5562,7 @@ function buildUkdocsCsiDeterministicReport(collection, extractedDocuments) {
       const rows = Array.isArray(item?.parsed_data?.rows) ? item.parsed_data.rows : [];
       return rows.includes(row);
     }) || null;
-    const mappedProduct = mapUkdocsCsiProductName(row?.product || row?.genus, row?.commodity_code, {
+    const mappedProduct = String(row?.mapped_group || "").trim() || mapUkdocsCsiProductName(row?.product || row?.genus, row?.commodity_code, {
       prefer_plants: sourceDoc?.kind === "ipaffs_plants_file",
       document_name: sourceDoc?.name || "",
     });
@@ -5471,6 +5577,7 @@ function buildUkdocsCsiDeterministicReport(collection, extractedDocuments) {
       raw_product: String(row?.genus || row?.product || "").trim(),
       commodity_code: String(row?.commodity_code || "").trim(),
       mapped_product: mappedProduct,
+      product_domain: getUkdocsCsiProductDomain(mappedProduct),
       quantity: Number.isFinite(Number(row?.quantity)) ? Number(row.quantity) : null,
     });
   }
@@ -5497,6 +5604,7 @@ function buildUkdocsCsiDeterministicReport(collection, extractedDocuments) {
         raw_product: String(line?.product || "").trim(),
         commodity_code: "",
         mapped_product: mappedProduct,
+        product_domain: getUkdocsCsiProductDomain(mappedProduct),
         quantity: Number.isFinite(Number(line?.quantity)) ? Number(line.quantity) : null,
       });
     }
@@ -5624,6 +5732,7 @@ function buildUkdocsCsiDeterministicReport(collection, extractedDocuments) {
 
     products.push({
       product,
+      product_domain: getUkdocsCsiProductDomain(product),
       invoice_quantity: invoiceQty === null ? "" : String(invoiceQty),
       export_quantity: exportQty === null ? "" : String(exportQty),
       ipaffs_quantity: ipaffsQty === null ? "" : String(ipaffsQty),
@@ -5724,6 +5833,8 @@ function buildUkdocsCsiDeterministicReport(collection, extractedDocuments) {
   }
 
   const overallStatus = finalizeUkdocsCsiOverallStatus(checks, products);
+  const flowerProducts = products.filter((item) => item?.product_domain === "flowers");
+  const plantProducts = products.filter((item) => item?.product_domain === "plants");
   const summaryParts = [
     invoiceExportMismatchCount
       ? `${invoiceExportMismatchCount} invoice/export mismatch(es)`
@@ -5750,6 +5861,8 @@ function buildUkdocsCsiDeterministicReport(collection, extractedDocuments) {
       summary: summaryParts.join(", ") + ".",
       checks,
       products,
+      flower_products: flowerProducts,
+      plant_products: plantProducts,
       source_rows: sourceRows,
       manual_checks: uniqueUkdocsCsiStrings(manualChecks),
       notes: uniqueUkdocsCsiStrings([
@@ -5787,6 +5900,7 @@ function buildUkdocsCsiAuditPayload(collection, deterministicBundle, requestUser
       "If a document has visible individual line quantities, include them even when the page also shows a TOTAL.",
       "If a value is not clearly visible, do not guess. Mark warn and add a manual check.",
       "If the document looks active and the PCNU number is readable, say so directly.",
+      "Never use the Packages or Box count as the product quantity; use only the Pieces quantity.",
       "Never use a page total as a product quantity.",
       "Never combine multiple visible product lines into one quantity.",
       "Never invent a quantity that is not printed on the page.",
@@ -5937,6 +6051,9 @@ function parseUkdocsCsiAuditJobResult(job) {
     summary: "",
     checks: [],
     products: [],
+    flower_products: [],
+    plant_products: [],
+    source_rows: [],
     manual_checks: [],
     notes: [],
   };
@@ -5968,6 +6085,9 @@ function parseUkdocsCsiAuditJobResult(job) {
       summary: "",
       checks: [],
       products: [],
+      flower_products: [],
+      plant_products: [],
+      source_rows: [],
       manual_checks: [],
       notes: [],
     };
@@ -6092,7 +6212,7 @@ function buildUkdocsCsiReportFromJobResults(jobResults) {
       prefer_plants: context?.prefer_plants === true,
     });
     const parsedLineProducts = Array.isArray(context?.expected_products) ? context.expected_products : [];
-    const needsFallback = !parsedLineProducts.length;
+    const needsFallback = !parsedLineProducts.length && context?.prefer_plants !== true;
     const mentionsTotal = noteText.includes("visible total") || noteText.includes("page total") || noteText.includes("total");
     if (!needsFallback || mentionsTotal || isUkdocsCsiAggregateProductName(mappedProduct)) {
       continue;
@@ -6152,23 +6272,31 @@ function buildUkdocsCsiReportFromJobResults(jobResults) {
       temp_phyto_quantities: mergedPerDoc,
     };
   });
+  const finalFlowerProducts = finalProducts.filter((item) => item?.product_domain === "flowers");
+  const finalPlantProducts = finalProducts.filter((item) => item?.product_domain === "plants");
   const finalSourceRows = [
     ...(Array.isArray(deterministicSource.source_rows) ? deterministicSource.source_rows : []),
-    ...combinedParsed.visible_documents.map((item) => {
+    ...combinedParsed.visible_documents.flatMap((item) => {
       const documentLabel = String(item?.document_label || "").trim();
       const context = visualContextByLabel.get(documentLabel);
-      return {
+      const parsedLineProducts = Array.isArray(context?.expected_products) ? context.expected_products : [];
+      if (parsedLineProducts.length) {
+        return [];
+      }
+      const mappedProduct = mapUkdocsCsiProductName(item?.product || "", "", {
+        document_name: context?.name || "",
+        prefer_plants: context?.prefer_plants === true,
+      });
+      return [{
         source: context?.prefer_plants === true ? "visual_temp_phyto_plants" : "visual_temp_phyto",
         document_name: String(context?.name || documentLabel).trim(),
         document_label: documentLabel,
         raw_product: String(item?.product || "").trim(),
         commodity_code: "",
-        mapped_product: mapUkdocsCsiProductName(item?.product || "", "", {
-          document_name: context?.name || "",
-          prefer_plants: context?.prefer_plants === true,
-        }),
+        mapped_product: mappedProduct,
+        product_domain: getUkdocsCsiProductDomain(mappedProduct),
         quantity: Number.isFinite(Number(item?.quantity)) ? Number(item.quantity) : null,
-      };
+      }];
     }),
   ];
   const finalManualChecks = uniqueUkdocsCsiStrings([
@@ -6196,6 +6324,8 @@ function buildUkdocsCsiReportFromJobResults(jobResults) {
     overall_status: overallStatus,
     checks: finalChecks,
     products: finalProducts,
+    flower_products: finalFlowerProducts,
+    plant_products: finalPlantProducts,
     source_rows: finalSourceRows,
     manual_checks: finalManualChecks,
     notes: finalNotes,

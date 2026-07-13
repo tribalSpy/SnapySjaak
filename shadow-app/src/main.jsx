@@ -4879,6 +4879,8 @@ function UkdocsCSIPage({ currentUser }) {
     return labels;
   }, [selectedCsiReport]);
   const selectedCsiSourceRows = Array.isArray(selectedCsiReport.source_rows) ? selectedCsiReport.source_rows : [];
+  const selectedCsiPlantProducts = Array.isArray(selectedCsiReport.plant_products) ? selectedCsiReport.plant_products : [];
+  const selectedCsiFlowerProducts = Array.isArray(selectedCsiReport.flower_products) ? selectedCsiReport.flower_products : [];
   const selectedCsiPlantSourceRows = useMemo(() => {
     const plantGroups = new Set([
       "CITES ge. non-flowering p",
@@ -4894,6 +4896,10 @@ function UkdocsCSIPage({ currentUser }) {
       return source.includes("plants") || plantGroups.has(mappedGroup);
     });
   }, [selectedCsiSourceRows]);
+  const selectedCsiFlowerSourceRows = useMemo(
+    () => selectedCsiSourceRows.filter((row) => !selectedCsiPlantSourceRows.includes(row)),
+    [selectedCsiSourceRows, selectedCsiPlantSourceRows],
+  );
 
   useEffect(() => {
     if (!filteredCollections.length) {
@@ -5271,9 +5277,89 @@ function UkdocsCSIPage({ currentUser }) {
                     </div>
                   </>
                 )}
+                {!!selectedCsiPlantProducts.length && (
+                  <>
+                    <strong>Plants quantity comparison</strong>
+                    <div className="table-wrap">
+                      <table className="data-table">
+                        <thead>
+                          <tr>
+                            <th>Plant group</th>
+                            <th>Invoice qty</th>
+                            <th>Export qty</th>
+                            <th>IPAFFS plants qty</th>
+                            {selectedCsiTempPhytoColumns.length > 1
+                              ? selectedCsiTempPhytoColumns.map((label) => <th key={`plant-${label}`}>{label} qty</th>)
+                              : <th>Temp phyto qty</th>}
+                            <th>Status</th>
+                            <th>Message</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {selectedCsiPlantProducts.map((row, index) => (
+                            <tr key={`plant-product-${row.product || "product"}-${index}`}>
+                              <td>{row.product || "-"}</td>
+                              <td>{row.invoice_quantity || "-"}</td>
+                              <td>{row.export_quantity || "-"}</td>
+                              <td>{row.ipaffs_quantity || "-"}</td>
+                              {selectedCsiTempPhytoColumns.length > 1
+                                ? selectedCsiTempPhytoColumns.map((label) => {
+                                  const match = (Array.isArray(row?.temp_phyto_quantities) ? row.temp_phyto_quantities : []).find((item) => String(item?.document_label || "").trim() === label);
+                                  return <td key={`plant-${label}`}>{match?.quantity || "-"}</td>;
+                                })
+                                : <td>{row.temp_phyto_quantity || "-"}</td>}
+                              <td>{row.status || "-"}</td>
+                              <td>{row.message || "-"}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  </>
+                )}
+                {!!selectedCsiFlowerProducts.length && (
+                  <>
+                    <strong>Flowers quantity comparison</strong>
+                    <div className="table-wrap">
+                      <table className="data-table">
+                        <thead>
+                          <tr>
+                            <th>Flower group</th>
+                            <th>Invoice qty</th>
+                            <th>Export qty</th>
+                            <th>IPAFFS flowers qty</th>
+                            {selectedCsiTempPhytoColumns.length > 1
+                              ? selectedCsiTempPhytoColumns.map((label) => <th key={`flower-${label}`}>{label} qty</th>)
+                              : <th>Temp phyto qty</th>}
+                            <th>Status</th>
+                            <th>Message</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {selectedCsiFlowerProducts.map((row, index) => (
+                            <tr key={`flower-product-${row.product || "product"}-${index}`}>
+                              <td>{row.product || "-"}</td>
+                              <td>{row.invoice_quantity || "-"}</td>
+                              <td>{row.export_quantity || "-"}</td>
+                              <td>{row.ipaffs_quantity || "-"}</td>
+                              {selectedCsiTempPhytoColumns.length > 1
+                                ? selectedCsiTempPhytoColumns.map((label) => {
+                                  const match = (Array.isArray(row?.temp_phyto_quantities) ? row.temp_phyto_quantities : []).find((item) => String(item?.document_label || "").trim() === label);
+                                  return <td key={`flower-${label}`}>{match?.quantity || "-"}</td>;
+                                })
+                                : <td>{row.temp_phyto_quantity || "-"}</td>}
+                              <td>{row.status || "-"}</td>
+                              <td>{row.message || "-"}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  </>
+                )}
                 {!!selectedCsiReport.products?.length && (
                   <>
-                    <strong>Product quantity comparison</strong>
+                    <strong>Combined summary table</strong>
                     <div className="table-wrap">
                       <table className="data-table">
                         <thead>
@@ -5331,6 +5417,37 @@ function UkdocsCSIPage({ currentUser }) {
                             <tbody>
                               {selectedCsiPlantSourceRows.map((row, index) => (
                                 <tr key={`plant-${row.source || "source"}-${row.document_name || "document"}-${row.raw_product || "product"}-${index}`}>
+                                  <td>{row.source || "-"}</td>
+                                  <td>{row.document_name || row.document_label || "-"}</td>
+                                  <td>{row.raw_product || "-"}</td>
+                                  <td>{row.commodity_code || "-"}</td>
+                                  <td>{row.mapped_product || "-"}</td>
+                                  <td>{row.quantity ?? "-"}</td>
+                                </tr>
+                              ))}
+                            </tbody>
+                          </table>
+                        </div>
+                      </>
+                    )}
+                    {!!selectedCsiFlowerSourceRows.length && (
+                      <>
+                        <strong>Flowers mapping table</strong>
+                        <div className="table-wrap">
+                          <table className="data-table">
+                            <thead>
+                              <tr>
+                                <th>Source</th>
+                                <th>Document</th>
+                                <th>Raw product</th>
+                                <th>Commodity code</th>
+                                <th>Mapped flower group</th>
+                                <th>Qty</th>
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {selectedCsiFlowerSourceRows.map((row, index) => (
+                                <tr key={`flower-${row.source || "source"}-${row.document_name || "document"}-${row.raw_product || "product"}-${index}`}>
                                   <td>{row.source || "-"}</td>
                                   <td>{row.document_name || row.document_label || "-"}</td>
                                   <td>{row.raw_product || "-"}</td>
