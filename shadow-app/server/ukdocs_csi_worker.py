@@ -135,17 +135,53 @@ def map_ipaffs_product(genus, commodity_code):
 def parse_ipaffs_rows(rows):
     parsed_rows = []
     summary = {}
-    header = [normalize_key(cell) for cell in (rows[0] if rows else [])]
-    start_index = 1 if header and any("commodity" in cell or "genus" in cell for cell in header) else 0
+    header_values = rows[0] if rows else []
+    normalized_header = [normalize_key(cell) for cell in header_values]
+    has_header = bool(normalized_header) and any(normalized_header)
+    commodity_index = None
+    genus_index = None
+    packages_index = None
+    quantity_index = None
+    unit_index = None
+    weight_index = None
+    if has_header:
+        commodity_index = (
+            row_find_index(header_values, "fullClassificationCode")
+            if row_find_index(header_values, "fullClassificationCode") is not None
+            else row_find_index(header_values, "taricCode")
+        )
+        if commodity_index is None:
+            commodity_index = row_find_index(header_values, "classificationType")
+        genus_index = (
+            row_find_index(header_values, "goodsDescriptionText")
+            if row_find_index(header_values, "goodsDescriptionText") is not None
+            else row_find_index(header_values, "classificationValue")
+        )
+        if genus_index is None:
+            genus_index = row_find_index(header_values, "genus")
+        if genus_index is None:
+            genus_index = row_find_index(header_values, "product")
+        packages_index = row_find_index(header_values, "packages")
+        quantity_index = row_find_index(header_values, "quantityValue")
+        unit_index = row_find_index(header_values, "quantityUnit")
+        weight_index = (
+            row_find_index(header_values, "netMassValue")
+            if row_find_index(header_values, "netMassValue") is not None
+            else row_find_index(header_values, "grossMassValue")
+        )
+    use_header_indexes = quantity_index is not None or packages_index is not None or commodity_index is not None or genus_index is not None
+    start_index = 1 if use_header_indexes or (has_header and any("commodity" in cell or "genus" in cell for cell in normalized_header)) else 0
     for row in rows[start_index:]:
         if not any(clean_text(cell) for cell in row):
             continue
-        commodity_code = clean_text(row[0] if len(row) > 0 else "")
-        genus = clean_text(row[1] if len(row) > 1 else "")
-        packages = parse_int_like(row[7] if len(row) > 7 else "")
-        quantity = parse_int_like(row[9] if len(row) > 9 else "")
-        unit = clean_text(row[10] if len(row) > 10 else "")
-        weight = parse_number(row[11] if len(row) > 11 else "")
+        commodity_code = clean_text(row[commodity_index] if commodity_index is not None and commodity_index < len(row) else (row[0] if len(row) > 0 else ""))
+        genus = clean_text(row[genus_index] if genus_index is not None and genus_index < len(row) else (row[1] if len(row) > 1 else ""))
+        packages = parse_int_like(row[packages_index] if packages_index is not None and packages_index < len(row) else (row[7] if len(row) > 7 else ""))
+        quantity = parse_int_like(row[quantity_index] if quantity_index is not None and quantity_index < len(row) else (row[9] if len(row) > 9 else ""))
+        unit = clean_text(row[unit_index] if unit_index is not None and unit_index < len(row) else (row[10] if len(row) > 10 else ""))
+        weight = parse_number(row[weight_index] if weight_index is not None and weight_index < len(row) else (row[11] if len(row) > 11 else ""))
+        if not commodity_code and not genus and quantity is None and packages is None:
+            continue
         product = map_ipaffs_product(genus, commodity_code)
         parsed_row = {
             "product": product,
