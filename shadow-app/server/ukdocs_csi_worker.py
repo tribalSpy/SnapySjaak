@@ -70,6 +70,14 @@ def row_find_index(values, expected):
     return None
 
 
+def row_find_first_index(values, candidates):
+    for candidate in candidates:
+        found = row_find_index(values, candidate)
+        if found is not None:
+            return found
+    return None
+
+
 def row_find_label_value(values, expected):
     target = normalize_key(expected)
     for index, value in enumerate(values):
@@ -132,6 +140,25 @@ def map_ipaffs_product(genus, commodity_code):
     return "Flowers (other fresh)"
 
 
+def find_ipaffs_quantity_columns(row):
+    unit_index = None
+    for index, value in enumerate(row):
+        text = normalize_key(value)
+        if text in {"pcs", "pc", "pieces", "piece"}:
+            unit_index = index
+            break
+    if unit_index is None:
+        return None, None, None
+    quantity_index = unit_index - 1 if unit_index - 1 >= 0 else None
+    packages_index = None
+    for index in range(quantity_index - 1 if quantity_index is not None else unit_index - 1, -1, -1):
+        text = normalize_key(row[index])
+        if text in {"pk", "box", "boxes", "pakket", "packages"}:
+            packages_index = index - 1 if index - 1 >= 0 else None
+            break
+    return packages_index, quantity_index, unit_index
+
+
 def parse_ipaffs_rows(rows):
     parsed_rows = []
     summary = {}
@@ -145,25 +172,28 @@ def parse_ipaffs_rows(rows):
     unit_index = None
     weight_index = None
     if has_header:
-        commodity_index = (
-            row_find_index(header_values, "fullClassificationCode")
-            if row_find_index(header_values, "fullClassificationCode") is not None
-            else row_find_index(header_values, "taricCode")
-        )
+        commodity_index = row_find_first_index(header_values, [
+            "fullClassificationCode",
+            "taricCode",
+            "Commodity code",
+            "Commodity",
+            "classificationType TARIC",
+        ])
         if commodity_index is None:
             commodity_index = row_find_index(header_values, "classificationType")
-        genus_index = (
-            row_find_index(header_values, "goodsDescriptionText")
-            if row_find_index(header_values, "goodsDescriptionText") is not None
-            else row_find_index(header_values, "classificationValue")
-        )
+        genus_index = row_find_first_index(header_values, [
+            "goodsDescriptionText",
+            "classificationValue",
+            "Genus",
+            "Goods description",
+        ])
         if genus_index is None:
             genus_index = row_find_index(header_values, "genus")
         if genus_index is None:
             genus_index = row_find_index(header_values, "product")
-        packages_index = row_find_index(header_values, "packages")
-        quantity_index = row_find_index(header_values, "quantityValue")
-        unit_index = row_find_index(header_values, "quantityUnit")
+        packages_index = row_find_first_index(header_values, ["packages", "Class"])
+        quantity_index = row_find_first_index(header_values, ["quantityValue", "for", "Quantity"])
+        unit_index = row_find_first_index(header_values, ["quantityUnit", "final", "Unit"])
         weight_index = (
             row_find_index(header_values, "netMassValue")
             if row_find_index(header_values, "netMassValue") is not None
@@ -174,11 +204,22 @@ def parse_ipaffs_rows(rows):
     for row in rows[start_index:]:
         if not any(clean_text(cell) for cell in row):
             continue
+        inferred_packages_index, inferred_quantity_index, inferred_unit_index = find_ipaffs_quantity_columns(row)
         commodity_code = clean_text(row[commodity_index] if commodity_index is not None and commodity_index < len(row) else (row[0] if len(row) > 0 else ""))
-        genus = clean_text(row[genus_index] if genus_index is not None and genus_index < len(row) else (row[1] if len(row) > 1 else ""))
-        packages = parse_int_like(row[packages_index] if packages_index is not None and packages_index < len(row) else (row[7] if len(row) > 7 else ""))
-        quantity = parse_int_like(row[quantity_index] if quantity_index is not None and quantity_index < len(row) else (row[9] if len(row) > 9 else ""))
-        unit = clean_text(row[unit_index] if unit_index is not None and unit_index < len(row) else (row[10] if len(row) > 10 else ""))
+        genus_fallback_index = 2 if len(row) > 2 and normalize_key(row[1]) in {"pl", "pl."} else 1
+        genus = clean_text(row[genus_index] if genus_index is not None and genus_index < len(row) else (row[genus_fallback_index] if len(row) > genus_fallback_index else ""))
+        packages = parse_int_like(
+            row[packages_index] if packages_index is not None and packages_index < len(row)
+            else (row[inferred_packages_index] if inferred_packages_index is not None and inferred_packages_index < len(row) else (row[7] if len(row) > 7 else ""))
+        )
+        quantity = parse_int_like(
+            row[quantity_index] if quantity_index is not None and quantity_index < len(row)
+            else (row[inferred_quantity_index] if inferred_quantity_index is not None and inferred_quantity_index < len(row) else (row[9] if len(row) > 9 else ""))
+        )
+        unit = clean_text(
+            row[unit_index] if unit_index is not None and unit_index < len(row)
+            else (row[inferred_unit_index] if inferred_unit_index is not None and inferred_unit_index < len(row) else (row[10] if len(row) > 10 else ""))
+        )
         weight = parse_number(row[weight_index] if weight_index is not None and weight_index < len(row) else (row[11] if len(row) > 11 else ""))
         if not commodity_code and not genus and quantity is None and packages is None:
             continue
