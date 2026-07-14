@@ -6657,31 +6657,39 @@ function buildUkdocsCsiReportFromJobResults(jobResults) {
       temp_phyto_quantities: mergedPerDoc,
     };
   });
+  const visualRows = combinedParsed.visible_documents.flatMap((item) => {
+    const documentLabel = String(item?.document_label || "").trim();
+    const context = visualContextByLabel.get(normalizeUkdocsCsiDocumentLabel(documentLabel));
+    const mappedProduct = mapUkdocsCsiProductName(item?.product || "", "", {
+      document_name: context?.name || "",
+      prefer_plants: context?.prefer_plants === true,
+      strict_domain: context?.prefer_plants === true ? "plants" : "flowers",
+    });
+    return [{
+      source: context?.prefer_plants === true ? "visual_temp_phyto_plants" : "visual_temp_phyto",
+      document_name: String(context?.name || documentLabel).trim(),
+      document_label: documentLabel,
+      raw_product: String(item?.product || "").trim(),
+      commodity_code: "",
+      mapped_product: mappedProduct,
+      product_domain: getUkdocsCsiProductDomain(mappedProduct),
+      quantity: Number.isFinite(Number(item?.quantity)) ? Number(item.quantity) : null,
+    }];
+  });
+  const visualDocumentLabels = new Set(
+    visualRows.map((item) => normalizeUkdocsCsiDocumentLabel(item?.document_label || "")).filter(Boolean),
+  );
   const finalSourceRows = [
-    ...(Array.isArray(deterministicSource.source_rows) ? deterministicSource.source_rows : []),
-    ...combinedParsed.visible_documents.flatMap((item) => {
-      const documentLabel = String(item?.document_label || "").trim();
-      const context = visualContextByLabel.get(normalizeUkdocsCsiDocumentLabel(documentLabel));
-      const parsedLineProducts = Array.isArray(context?.expected_products) ? context.expected_products : [];
-      if (parsedLineProducts.length) {
-        return [];
+    ...(Array.isArray(deterministicSource.source_rows) ? deterministicSource.source_rows : []).filter((row) => {
+      const source = String(row?.source || "").trim();
+      const isTempPhytoRow = source === "temp_phyto" || source === "temp_phyto_plants";
+      if (!isTempPhytoRow) {
+        return true;
       }
-      const mappedProduct = mapUkdocsCsiProductName(item?.product || "", "", {
-        document_name: context?.name || "",
-        prefer_plants: context?.prefer_plants === true,
-        strict_domain: context?.prefer_plants === true ? "plants" : "flowers",
-      });
-      return [{
-        source: context?.prefer_plants === true ? "visual_temp_phyto_plants" : "visual_temp_phyto",
-        document_name: String(context?.name || documentLabel).trim(),
-        document_label: documentLabel,
-        raw_product: String(item?.product || "").trim(),
-        commodity_code: "",
-        mapped_product: mappedProduct,
-        product_domain: getUkdocsCsiProductDomain(mappedProduct),
-        quantity: Number.isFinite(Number(item?.quantity)) ? Number(item.quantity) : null,
-      }];
+      const documentLabel = normalizeUkdocsCsiDocumentLabel(row?.document_label || "");
+      return !documentLabel || !visualDocumentLabels.has(documentLabel);
     }),
+    ...visualRows,
   ];
   const finalFlowerProducts = buildUkdocsCsiDomainProducts(finalProducts, finalSourceRows, "flowers");
   const finalPlantProducts = buildUkdocsCsiDomainProducts(finalProducts, finalSourceRows, "plants");
