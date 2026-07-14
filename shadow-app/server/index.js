@@ -5507,6 +5507,126 @@ function finalizeUkdocsCsiOverallStatus(checks, products) {
   return overall || "warn";
 }
 
+function parseUkdocsCsiReportQuantity(value) {
+  const text = String(value || "").trim();
+  if (!text) {
+    return null;
+  }
+  const numeric = Number(text);
+  return Number.isFinite(numeric) ? numeric : null;
+}
+
+function buildUkdocsCsiDomainProducts(baseProducts, sourceRows, domain) {
+  const scopedSources = domain === "plants"
+    ? {
+      ipaffs: new Set(["ipaffs_plants"]),
+      tempPhyto: new Set(["temp_phyto_plants", "visual_temp_phyto_plants"]),
+    }
+    : {
+      ipaffs: new Set(["ipaffs"]),
+      tempPhyto: new Set(["temp_phyto", "visual_temp_phyto"]),
+    };
+
+  return (Array.isArray(baseProducts) ? baseProducts : [])
+    .filter((item) => item?.product_domain === domain)
+    .map((item) => {
+      const productName = String(item?.product || "").trim();
+      const invoiceQty = parseUkdocsCsiReportQuantity(item?.invoice_quantity);
+      const exportQty = parseUkdocsCsiReportQuantity(item?.export_quantity);
+      const ipaffsQty = (Array.isArray(sourceRows) ? sourceRows : [])
+        .filter((row) => String(row?.mapped_product || "").trim() === productName && scopedSources.ipaffs.has(String(row?.source || "").trim()))
+        .reduce((sum, row) => sum + (Number.isFinite(Number(row?.quantity)) ? Number(row.quantity) : 0), 0);
+      const tempPhytoPerDocumentMap = new Map();
+      for (const row of Array.isArray(sourceRows) ? sourceRows : []) {
+        if (String(row?.mapped_product || "").trim() !== productName) {
+          continue;
+        }
+        if (!scopedSources.tempPhyto.has(String(row?.source || "").trim())) {
+          continue;
+        }
+        const label = String(row?.document_label || "").trim();
+        if (!label) {
+          continue;
+        }
+        const quantity = Number(row?.quantity);
+        if (!Number.isFinite(quantity)) {
+          continue;
+        }
+        tempPhytoPerDocumentMap.set(label, (tempPhytoPerDocumentMap.get(label) || 0) + quantity);
+      }
+      const tempPhytoQuantities = Array.from(tempPhytoPerDocumentMap.entries()).map(([documentLabel, quantity]) => ({
+        document_label: documentLabel,
+        quantity: String(quantity),
+      }));
+      const tempPhytoQty = tempPhytoQuantities.reduce((sum, entry) => sum + (Number(entry.quantity) || 0), 0);
+      const expectedQty = exportQty ?? invoiceQty;
+      const messages = [];
+      let status = "pass";
+
+      if (invoiceQty !== null || exportQty !== null) {
+        if (invoiceQty === null || exportQty === null) {
+          status = mergeUkdocsCsiStatus(status, "warn");
+          messages.push("Missing in invoice or export file.");
+        } else if (invoiceQty !== exportQty) {
+          status = mergeUkdocsCsiStatus(status, "warn");
+          messages.push(`Invoice/export differ by ${Math.abs(invoiceQty - exportQty)}.`);
+        } else {
+          messages.push("Invoice/export match.");
+        }
+      }
+
+      if (ipaffsQty > 0) {
+        if (expectedQty === null) {
+          status = mergeUkdocsCsiStatus(status, "warn");
+          messages.push("IPAFFS has quantity but invoice/export is missing.");
+        } else if (ipaffsQty > expectedQty) {
+          status = mergeUkdocsCsiStatus(status, "warn");
+          messages.push(`IPAFFS quantity ${ipaffsQty} is higher than invoice/export ${expectedQty}.`);
+        } else if (ipaffsQty === expectedQty) {
+          messages.push("IPAFFS matches invoice/export.");
+        } else {
+          messages.push(`IPAFFS subset ${ipaffsQty} is within invoice/export ${expectedQty}.`);
+        }
+      }
+
+      if (tempPhytoQty > 0) {
+        if (expectedQty === null) {
+          status = mergeUkdocsCsiStatus(status, "warn");
+          messages.push(`Temp phyto quantity ${tempPhytoQty} has no matching invoice/export line.`);
+        } else if (tempPhytoQty > expectedQty) {
+          status = mergeUkdocsCsiStatus(status, "warn");
+          messages.push(`Temp phyto quantity ${tempPhytoQty} is higher than invoice/export ${expectedQty}.`);
+        } else if (tempPhytoQty === expectedQty) {
+          messages.push(`Temp phyto quantity ${tempPhytoQty} matches invoice/export.`);
+        } else {
+          messages.push(`Temp phyto subset ${tempPhytoQty} is within invoice/export ${expectedQty}.`);
+        }
+      }
+
+      if (ipaffsQty > 0 && tempPhytoQty > 0) {
+        if (ipaffsQty !== tempPhytoQty) {
+          status = mergeUkdocsCsiStatus(status, "warn");
+          if (ipaffsQty < tempPhytoQty) {
+            messages.push(`IPAFFS quantity ${ipaffsQty} is lower than temp phyto ${tempPhytoQty}.`);
+          } else {
+            messages.push(`IPAFFS quantity ${ipaffsQty} is higher than temp phyto ${tempPhytoQty}.`);
+          }
+        } else {
+          messages.push(`IPAFFS and temp phyto match at ${ipaffsQty}.`);
+        }
+      }
+
+      return {
+        ...item,
+        ipaffs_quantity: ipaffsQty > 0 ? String(ipaffsQty) : "",
+        temp_phyto_quantity: tempPhytoQty > 0 ? String(tempPhytoQty) : "",
+        temp_phyto_quantities: tempPhytoQuantities,
+        status,
+        message: messages.join(" "),
+      };
+    });
+}
+
 function getUkdocsCsiTempPhytoSourceDocuments(collection) {
   const tempPhytoFiles = (collection?.documents?.temp_phyto_files || []).map((document) => ({
     kind: "temp_phyto",
@@ -6390,8 +6510,6 @@ function buildUkdocsCsiReportFromJobResults(jobResults) {
       temp_phyto_quantities: mergedPerDoc,
     };
   });
-  const finalFlowerProducts = finalProducts.filter((item) => item?.product_domain === "flowers");
-  const finalPlantProducts = finalProducts.filter((item) => item?.product_domain === "plants");
   const finalSourceRows = [
     ...(Array.isArray(deterministicSource.source_rows) ? deterministicSource.source_rows : []),
     ...combinedParsed.visible_documents.flatMap((item) => {
@@ -6417,6 +6535,8 @@ function buildUkdocsCsiReportFromJobResults(jobResults) {
       }];
     }),
   ];
+  const finalFlowerProducts = buildUkdocsCsiDomainProducts(finalProducts, finalSourceRows, "flowers");
+  const finalPlantProducts = buildUkdocsCsiDomainProducts(finalProducts, finalSourceRows, "plants");
   const finalManualChecks = uniqueUkdocsCsiStrings([
     ...(Array.isArray(deterministicSource.manual_checks) ? deterministicSource.manual_checks : []),
     ...combinedParsed.manual_checks,
