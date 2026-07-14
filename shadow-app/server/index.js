@@ -7234,6 +7234,52 @@ function buildUkdocsCsiReportFromJobResults(jobResults) {
   };
 }
 
+function buildUkdocsCsiDeterministicOnlyJobResults(deterministicBundle) {
+  const report = normalizeUkdocsCsiParsedResult(deterministicBundle?.report) || {
+    overall_status: "warn",
+    summary: "",
+    checks: [],
+    products: [],
+    flower_products: [],
+    plant_products: [],
+    source_rows: [],
+    manual_checks: [],
+    notes: [],
+  };
+  const tempPhytoDocuments = Array.isArray(deterministicBundle?.visual_context?.temp_phyto_documents)
+    ? deterministicBundle.visual_context.temp_phyto_documents
+    : [];
+  return [{
+    job: {
+      id: "",
+      payload_json: {
+        csi_document_label: "",
+        deterministic_visual_context: {
+          temp_phyto_documents: tempPhytoDocuments,
+        },
+      },
+      result_json: {},
+    },
+    deterministicSource: report,
+    contentText: "",
+    thinkingText: "",
+    doneReason: "",
+    llmContent: "",
+    parseSource: "",
+    parsed: {
+      overall_status: "pass",
+      summary: "",
+      checks: [],
+      visible_documents: [],
+      manual_checks: [],
+      notes: [],
+    },
+    hasStructuredRows: false,
+    parseError: "",
+    llmChecks: [],
+  }];
+}
+
 async function queueUkdocsCsiAudit(collection, requestUser) {
   if (!isDatabaseEnabled()) {
     throw new Error("Database is not enabled");
@@ -7279,30 +7325,23 @@ async function queueUkdocsCsiAudit(collection, requestUser) {
   const usableVisionDocuments = tempPhytoVisionDocuments.filter(Boolean);
 
   if (!usableVisionDocuments.length) {
+    const finalReport = buildUkdocsCsiReportFromJobResults(
+      buildUkdocsCsiDeterministicOnlyJobResults(deterministicBundle),
+    );
     await updateUkdocsCsiReport(collection.id, {
+      ...finalReport,
       status: "done",
       job_id: "",
       queued_at: new Date().toISOString(),
       started_at: new Date().toISOString(),
       completed_at: new Date().toISOString(),
       error: "",
-      summary: deterministicBundle.report.summary || "CSI audit completed.",
-      overall_status: deterministicBundle.report.overall_status || "warn",
-      checks: deterministicBundle.report.checks || [],
-      products: deterministicBundle.report.products || [],
-      flower_products: deterministicBundle.report.flower_products || [],
-      plant_products: deterministicBundle.report.plant_products || [],
-      manual_checks: deterministicBundle.report.manual_checks || [],
       notes: uniqueUkdocsCsiStrings([
-        ...(deterministicBundle.report.notes || []),
+        ...(finalReport.notes || []),
         (deterministicBundle?.visual_context?.temp_phyto_documents || []).some((item) => item?.deterministic_ready)
           ? "No temp phyto vision job was queued because deterministic temp phyto parsing was already sufficient for the available documents."
           : "No temp phyto vision job was queued because no readable temp phyto PDF was available on disk.",
       ]),
-      llm_content: "",
-      llm_parse_source: "",
-      llm_parse_error: "",
-      llm_raw_result_json: "",
     });
     await updateUkdocsCsiEmailResult(collection.id, {
       ok: false,
