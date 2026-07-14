@@ -6064,6 +6064,7 @@ function buildUkdocsCsiDeterministicReport(collection, extractedDocuments) {
       parsed_total_quantity: Number.isFinite(Number(parsed?.total_quantity)) ? Number(parsed.total_quantity) : null,
       expected_products: lineProducts.map((item) => ({
         product: item.product,
+        raw_product: item.raw_product,
         expected_quantity: exportTotals.get(item.product) ?? invoiceTotals.get(item.product) ?? null,
         parsed_quantity: item.quantity,
       })),
@@ -6327,11 +6328,15 @@ function buildUkdocsCsiAuditPayload(collection, deterministicBundle, requestUser
     instructions: [
       "Return strict JSON only.",
       "Use only the temporary phyto PDF page images for this task.",
-      "Do not analyze generated invoices, generated export files, IPAFFS totals, consignee address, destination text, or origin text here.",
+      "Do not analyze generated invoices, generated export files, consignee address, destination text, or origin text here.",
       "Ignore long legal, annex, and compliance text unless it clearly shows the document is blocked or not activated.",
       "Check these visual items: visible PCNU number, blocked or not activated state, and clearly visible individual product-line quantities on temp phyto pages.",
-      "Do not check invoice totals, export totals, or IPAFFS totals visually in this task.",
-      "Product quantity matching is handled in code first, but you must still list every clearly visible individual temp phyto product-line quantity in visible_documents.",
+      "Use expected_temp_phyto_checks for this exact document as your hunting list. Search the page for each expected product before you decide it is missing.",
+      "For each expected product, use raw_product as the visible botanical/product alias and product as the final CSI group it should map to.",
+      "When several lines are visible, match them against expected_temp_phyto_checks one by one instead of free-grouping by yourself.",
+      "If a page is a plants document, do not invent flower groups from similar names unless the expected_temp_phyto_checks for that same document already points to that flower group.",
+      "Do not check invoice totals, export totals, or IPAFFS totals visually as totals, but do use the expected product list to know what products you are hunting for on the page.",
+      "List every clearly visible individual temp phyto product-line quantity in visible_documents after matching it to the expected product list.",
       "When a temp phyto page shows two visible lines like chrysanthemum 17160 and solidago 25, return two separate visible_documents rows for that same document label.",
       "If a document has visible individual line quantities, include them even when the page also shows a TOTAL.",
       "If a value is not clearly visible, do not guess. Mark warn and add a manual check.",
@@ -6340,6 +6345,9 @@ function buildUkdocsCsiAuditPayload(collection, deterministicBundle, requestUser
       "Never use a page total as a product quantity.",
       "Never combine multiple visible product lines into one quantity.",
       "Never invent a quantity that is not printed on the page.",
+      "Never emit a quantity of 1 unless the page clearly shows '1 Pieces' for that same product line.",
+      "Ignore duplicate annex/continuation echoes of the same product line when a clearer main line with Pieces quantity is visible.",
+      "If the same product appears twice in the text view but only one line has a clear Pieces quantity, keep only the clear Pieces line.",
       "Never output explanation text before or after the JSON.",
     ],
     output_schema: {
@@ -6348,7 +6356,7 @@ function buildUkdocsCsiAuditPayload(collection, deterministicBundle, requestUser
       checks: [{ code: "string", status: "pass|warn|fail", message: "string" }],
       visible_documents: [{
         document_label: "temp phyto A|temp phyto B",
-        product: "normalized or visible product name when a clear fallback line quantity is visible",
+        product: "expected CSI product/group for the matched visible line",
         quantity: 0,
         pcnu_number: "visible PCNU if readable",
         state: "ok|not_activated|unclear",
@@ -6373,9 +6381,9 @@ function buildUkdocsCsiAuditPayload(collection, deterministicBundle, requestUser
         { code: "PHYTO_STATE", status: "pass", message: "No blocked or not activated text is visible." },
       ],
       visible_documents: [
-        { document_label: "temp phyto A", product: "Flowers chrysanthemums", quantity: 17160, pcnu_number: "123456789", state: "ok", note: "Visible individual product-line quantity read from the page." },
-        { document_label: "temp phyto A", product: "Flowers (other fresh)", quantity: 25, pcnu_number: "123456789", state: "ok", note: "Visible individual product-line quantity read from the page." },
-        { document_label: "temp phyto B", product: "Flowers carnations", quantity: 700, pcnu_number: "987654321", state: "ok", note: "Visible individual product-line quantity read from the page." },
+        { document_label: "temp phyto A", product: "Flowers chrysanthemums", quantity: 17160, pcnu_number: "123456789", state: "ok", note: "Matched expected product chrysanthemum to a clearly visible Pieces line." },
+        { document_label: "temp phyto A", product: "Flowers (other fresh)", quantity: 25, pcnu_number: "123456789", state: "ok", note: "Matched expected product solidago to a clearly visible Pieces line." },
+        { document_label: "temp phyto B", product: "Flowers carnations", quantity: 700, pcnu_number: "987654321", state: "ok", note: "Matched expected product dianthus to a clearly visible Pieces line." },
       ],
       manual_checks: [],
       notes: [
@@ -6390,18 +6398,18 @@ function buildUkdocsCsiAuditPayload(collection, deterministicBundle, requestUser
     messages: [
       {
         role: "system",
-        content: "You visually verify temporary phytosanitary PDF pages. Return JSON only and never add markdown.",
+        content: "You visually verify temporary phytosanitary PDF pages. Return JSON only and never add markdown. Use the provided expected product list as a strict hunt list for matching visible product lines.",
       },
       {
         role: "user",
-        content: `/no_think\n${JSON.stringify(prompt)}`,
+        content: JSON.stringify(prompt),
       },
     ],
     format: "json",
-    think: false,
+    think: true,
     options: {
       temperature: 0,
-      num_predict: 4500,
+      num_predict: 7000,
     },
   };
 }
