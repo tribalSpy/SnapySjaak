@@ -6723,6 +6723,13 @@ function buildUkdocsCsiReportFromJobResults(jobResults) {
   const visualRows = combinedParsed.visible_documents.flatMap((item) => {
     const documentLabel = String(item?.document_label || "").trim();
     const context = visualContextByLabel.get(normalizeUkdocsCsiDocumentLabel(documentLabel));
+    const hasParsedPlantRows = Array.isArray(deterministicSource.source_rows) && deterministicSource.source_rows.some((row) => (
+      String(row?.source || "").trim() === "temp_phyto_plants"
+      && normalizeUkdocsCsiDocumentLabel(row?.document_label || "") === normalizeUkdocsCsiDocumentLabel(documentLabel)
+    ));
+    if (context?.prefer_plants === true && hasParsedPlantRows) {
+      return [];
+    }
     const mappedProduct = mapUkdocsCsiProductName(item?.product || "", "", {
       document_name: context?.name || "",
       prefer_plants: context?.prefer_plants === true,
@@ -6750,7 +6757,13 @@ function buildUkdocsCsiReportFromJobResults(jobResults) {
         return true;
       }
       const documentLabel = normalizeUkdocsCsiDocumentLabel(row?.document_label || "");
-      return !documentLabel || !visualDocumentLabels.has(documentLabel);
+      if (!documentLabel || !visualDocumentLabels.has(documentLabel)) {
+        return true;
+      }
+      if (source === "temp_phyto_plants") {
+        return true;
+      }
+      return false;
     }),
     ...visualRows,
   ];
