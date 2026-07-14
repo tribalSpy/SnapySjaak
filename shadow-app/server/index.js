@@ -5858,9 +5858,28 @@ function relaxUkdocsCsiRedistributedDomainRows(rows, domainLabel) {
     return nextRows;
   }
 
+  if (exactDomainMatch) {
+    for (const row of nextRows) {
+      const hasAnyComparedQuantity = [
+        row?.invoice_quantity,
+        row?.export_quantity,
+        row?.ipaffs_quantity,
+        row?.temp_phyto_quantity,
+      ].some((value) => String(value || "").trim());
+      if (!hasAnyComparedQuantity) {
+        continue;
+      }
+      row.status = "pass";
+      const existingMessage = String(row?.message || "").trim();
+      const exactMatchMessage = `${domainLabel} domain totals match exactly at ${expectedTotal} across invoice/export, IPAFFS, and temp phyto, so redistributed group quantities are accepted.`;
+      row.message = existingMessage ? `${existingMessage} ${exactMatchMessage}` : exactMatchMessage;
+    }
+    return nextRows;
+  }
+
   for (const row of nextRows) {
     const product = String(row?.product || "").trim();
-    if (!exactDomainMatch && !ambiguousProducts.has(product)) {
+    if (!ambiguousProducts.has(product)) {
       continue;
     }
     const hasReviewMessage = /IPAFFS quantity|Temp phyto quantity|IPAFFS subset|Temp phyto subset/i.test(String(row?.message || ""));
@@ -5869,9 +5888,7 @@ function relaxUkdocsCsiRedistributedDomainRows(rows, domainLabel) {
     }
     row.status = "pass";
     const existingMessage = String(row?.message || "").trim();
-    const redistributionMessage = exactDomainMatch
-      ? `${domainLabel} domain totals match exactly at ${expectedTotal} across invoice/export, IPAFFS, and temp phyto, so redistributed group quantities are accepted.`
-      : `${domainLabel} commodity-code totals are redistributed across related groups, but the full domain total still aligns at ${expectedTotal}.`;
+    const redistributionMessage = `${domainLabel} commodity-code totals are redistributed across related groups, but the full domain total still aligns at ${expectedTotal}.`;
     row.message = existingMessage ? `${existingMessage} ${redistributionMessage}` : redistributionMessage;
   }
 
