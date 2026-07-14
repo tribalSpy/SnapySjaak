@@ -3662,6 +3662,7 @@ const UKDOCS_PRINT_DOCUMENTS = [
   { key: "inspection_list", label: "Inspection list", accept: ".pdf,.xlsx,.xls" },
   { key: "locations_file", label: "Locations file", accept: ".pdf,.xlsx,.xls" },
   { key: "temp_phyto", label: "Temporary phyto PDF", accept: ".pdf" },
+  { key: "temp_phyto_xml", label: "Temporary phyto Flowers XML", accept: ".xml" },
   { key: "temp_phyto_plants_file", label: "Temporary phyto Plants PDF", accept: ".pdf" },
   { key: "temp_phyto_plants_xml_file", label: "Temporary phyto Plants XML", accept: ".xml" },
   { key: "ipaffs_file", label: "IPAFFS Flowers+ACC", accept: ".csv,.xlsx,.xls" },
@@ -4856,6 +4857,7 @@ function UkdocsCSIPage({ currentUser }) {
   const selectedCsiReport = selectedCollection?.csi_report || {};
   const selectedCsiEmail = selectedCollection?.csi_email || {};
   const selectedTempPhytoFiles = selectedCollection?.documents?.temp_phyto_files || [];
+  const selectedTempPhytoXmlFiles = selectedCollection?.documents?.temp_phyto_xml_files || [];
   const selectedTempPhytoPlantsFile = selectedCollection?.documents?.temp_phyto_plants_file || null;
   const selectedTempPhytoPlantsXmlFile = selectedCollection?.documents?.temp_phyto_plants_xml_file || null;
   const selectedIpaffsFile = selectedCollection?.documents?.ipaffs_file || null;
@@ -5041,6 +5043,8 @@ function UkdocsCSIPage({ currentUser }) {
       }
       if (kind === "temp_phyto") {
         setMessage(uploadedCount ? `${uploadedCount} temporary phyto PDF file(s) added.` : "All selected temporary phyto PDF files were already saved.");
+      } else if (kind === "temp_phyto_xml") {
+        setMessage(uploadedCount ? `${uploadedCount} temporary phyto XML file(s) added.` : "All selected temporary phyto XML files were already saved.");
       } else {
         setMessage(`${UKDOCS_PRINT_DOCUMENTS.find((item) => item.key === kind)?.label || "File"} saved.`);
       }
@@ -5093,6 +5097,8 @@ function UkdocsCSIPage({ currentUser }) {
               nextDocuments.phyto_files = (nextDocuments.phyto_files || []).filter((_, itemIndex) => itemIndex !== index);
             } else if (kind === "temp_phyto") {
               nextDocuments.temp_phyto_files = (nextDocuments.temp_phyto_files || []).filter((_, itemIndex) => itemIndex !== index);
+            } else if (kind === "temp_phyto_xml") {
+              nextDocuments.temp_phyto_xml_files = (nextDocuments.temp_phyto_xml_files || []).filter((_, itemIndex) => itemIndex !== index);
             } else if (kind === "generated") {
               nextDocuments.generated_files = (nextDocuments.generated_files || []).filter((_, itemIndex) => itemIndex !== index);
             } else {
@@ -5229,6 +5235,23 @@ function UkdocsCSIPage({ currentUser }) {
                   )}
                 </div>
                 <div className="ukdocs-upload-card">
+                  <strong>Temporary phyto Flowers XML</strong>
+                  <input type="file" accept=".xml" multiple onChange={(event) => uploadCollectionFile("temp_phyto_xml", event.target.files)} disabled={saving} />
+                  <small>{selectedTempPhytoXmlFiles.length ? `${selectedTempPhytoXmlFiles.length} flower temp phyto XML file(s) saved in Zending.` : "No XML file saved yet in Zending."}</small>
+                  {!!selectedTempPhytoXmlFiles.length && (
+                    <div className="ukdocs-download-list">
+                      {selectedTempPhytoXmlFiles.map((file, index) => (
+                        <div key={`${file.storage_name}-${index}`} className="row-actions spread-actions">
+                          <a href={`/api/ukdocs-print/collections/${encodeURIComponent(selectedCollection.id)}/documents/temp_phyto_xml/${index}`} target="_blank" rel="noreferrer" className="ukdocs-download-link">
+                            {file.original_name || `Temporary phyto XML ${index + 1}`}
+                          </a>
+                          <button type="button" onClick={() => deleteCollectionDocument("temp_phyto_xml", index)} disabled={saving}>Delete</button>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+                <div className="ukdocs-upload-card">
                   <strong>Temporary phyto Plants PDF</strong>
                   <input type="file" accept=".pdf" onChange={(event) => uploadCollectionFile("temp_phyto_plants_file", event.target.files?.[0] || null)} disabled={saving} />
                   <small>{selectedTempPhytoPlantsFile?.original_name ? `${selectedTempPhytoPlantsFile.original_name} saved ${formatTimestamp(selectedTempPhytoPlantsFile.saved_at)}` : "No file saved yet in Zending."}</small>
@@ -5323,6 +5346,7 @@ function UkdocsCSIPage({ currentUser }) {
                         <thead>
                           <tr>
                             <th>Plant group</th>
+                            <th>Commodity code</th>
                             <th>Invoice qty</th>
                             <th>Export qty</th>
                             <th>IPAFFS plants qty</th>
@@ -5337,6 +5361,7 @@ function UkdocsCSIPage({ currentUser }) {
                           {selectedCsiPlantProducts.map((row, index) => (
                             <tr key={`plant-product-${row.product || "product"}-${index}`}>
                               <td>{row.product || "-"}</td>
+                              <td>{row.commodity_codes || "-"}</td>
                               <td>{row.invoice_quantity || "-"}</td>
                               <td>{row.export_quantity || "-"}</td>
                               <td>{row.ipaffs_quantity || "-"}</td>
@@ -5363,6 +5388,7 @@ function UkdocsCSIPage({ currentUser }) {
                         <thead>
                           <tr>
                             <th>Flower group</th>
+                            <th>Commodity code</th>
                             <th>Invoice qty</th>
                             <th>Export qty</th>
                             <th>IPAFFS flowers qty</th>
@@ -5377,6 +5403,7 @@ function UkdocsCSIPage({ currentUser }) {
                           {selectedCsiFlowerProducts.map((row, index) => (
                             <tr key={`flower-product-${row.product || "product"}-${index}`}>
                               <td>{row.product || "-"}</td>
+                              <td>{row.commodity_codes || "-"}</td>
                               <td>{row.invoice_quantity || "-"}</td>
                               <td>{row.export_quantity || "-"}</td>
                               <td>{row.ipaffs_quantity || "-"}</td>
