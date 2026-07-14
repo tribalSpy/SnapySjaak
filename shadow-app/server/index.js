@@ -6071,8 +6071,8 @@ function buildUkdocsCsiDeterministicReport(collection, extractedDocuments) {
   }
 
   const overallStatus = finalizeUkdocsCsiOverallStatus(checks, products);
-  const flowerProducts = products.filter((item) => item?.product_domain === "flowers");
-  const plantProducts = products.filter((item) => item?.product_domain === "plants");
+  const flowerProducts = buildUkdocsCsiDomainProducts(products, sourceRows, "flowers");
+  const plantProducts = buildUkdocsCsiDomainProducts(products, sourceRows, "plants");
   const summaryParts = [
     invoiceExportMismatchCount
       ? `${invoiceExportMismatchCount} invoice/export mismatch(es)`
@@ -6630,6 +6630,8 @@ async function queueUkdocsCsiAudit(collection, requestUser) {
       overall_status: deterministicBundle.report.overall_status || "warn",
       checks: deterministicBundle.report.checks || [],
       products: deterministicBundle.report.products || [],
+      flower_products: deterministicBundle.report.flower_products || [],
+      plant_products: deterministicBundle.report.plant_products || [],
       manual_checks: deterministicBundle.report.manual_checks || [],
       notes: uniqueUkdocsCsiStrings([
         ...(deterministicBundle.report.notes || []),
@@ -6691,6 +6693,8 @@ async function queueUkdocsCsiAudit(collection, requestUser) {
     overall_status: deterministicBundle.report.overall_status || "",
     checks: deterministicBundle.report.checks || [],
     products: deterministicBundle.report.products || [],
+    flower_products: deterministicBundle.report.flower_products || [],
+    plant_products: deterministicBundle.report.plant_products || [],
     manual_checks: deterministicBundle.report.manual_checks || [],
     notes: uniqueUkdocsCsiStrings([
       ...(deterministicBundle.report.notes || []),
@@ -10559,6 +10563,8 @@ async function handleApi(req, res, url) {
         overall_status: deterministicBundle.report.overall_status || "pass",
         checks: deterministicBundle.report.checks || [],
         products: deterministicBundle.report.products || [],
+        flower_products: deterministicBundle.report.flower_products || [],
+        plant_products: deterministicBundle.report.plant_products || [],
         manual_checks: deterministicBundle.report.manual_checks || [],
         notes: uniqueUkdocsCsiStrings([
           ...(deterministicBundle.report.notes || []),
