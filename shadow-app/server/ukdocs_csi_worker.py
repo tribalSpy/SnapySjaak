@@ -135,26 +135,47 @@ def map_ambiguous_plant_group(genus_key):
     return ""
 
 
-def map_ipaffs_product(genus, commodity_code):
+def map_ipaffs_product(genus, commodity_code, prefer_plants=False):
     genus_key = normalize_key(genus)
     code = re.sub(r"\D+", "", clean_text(commodity_code))
-    if code.startswith("060240") or code.startswith("60240"):
-        return "refined roses"
-    if code.startswith("060290500") or code.startswith("60290500") or code.startswith("6029050"):
-        return "Perennials"
-    if code.startswith("060319700") or code.startswith("60319700") or code.startswith("6031970"):
-        return "Others"
-    if code.startswith("06029091") or code.startswith("6029091"):
-        return "Flowering plants(no cactu"
     known_group = normalize_known_csi_group(genus)
-    if known_group in {"refined roses", "Perennials", "Others", "Flowering plants(no cactu"}:
-        return known_group
-    if code.startswith("060290990") or code.startswith("60290990") or code.startswith("060290991") or code.startswith("60290991"):
-        ambiguous_group = map_ambiguous_plant_group(genus_key)
-        if ambiguous_group:
-            return ambiguous_group
-        if known_group in {"CITES ge. non-flowering p", "Other non-flowering plant"}:
+    if prefer_plants:
+        if code.startswith("060240") or code.startswith("60240"):
+            return "refined roses"
+        if code.startswith("060290500") or code.startswith("60290500") or code.startswith("6029050"):
+            return "Perennials"
+        if code.startswith("060319700") or code.startswith("60319700") or code == "6031970":
+            return "Others"
+        if code.startswith("06029091") or code.startswith("6029091"):
+            return "Flowering plants(no cactu"
+        if known_group in {"refined roses", "Perennials", "Others", "Flowering plants(no cactu"}:
             return known_group
+        if code.startswith("060290990") or code.startswith("60290990") or code.startswith("060290991") or code.startswith("60290991"):
+            ambiguous_group = map_ambiguous_plant_group(genus_key)
+            if ambiguous_group:
+                return ambiguous_group
+            if known_group in {"CITES ge. non-flowering p", "Other non-flowering plant"}:
+                return known_group
+        if "cupressus" in genus_key:
+            return "Perennials"
+        if "ficus" in genus_key:
+            return "Others"
+        if "hibiscus" in genus_key:
+            return "Flowering plants(no cactu"
+        if "bonsai" in genus_key or "sageretia" in genus_key or "aloe" in genus_key or "rhipsalis" in genus_key:
+            return "CITES ge. non-flowering p"
+        if any(token in genus_key for token in ["salvia", "lavandula", "helleborus", "campanula"]):
+            return "Perennials"
+        if any(token in genus_key for token in ["dypsis", "maranta", "calathea", "chlorophytum", "dracaena", "epipremnum", "fittonia", "nephrolepis", "schefflera", "spathiphyllum", "sansevieria", "sanseveria", "zamioculcas"]):
+            return "Other non-flowering plant"
+        if any(token in genus_key for token in ["curio", "crassula", "echeveria", "succulent", "cactus"]):
+            return "CITES ge. non-flowering p"
+        if any(token in genus_key for token in ["echeveria", "fuchsia", "gerbera", "guzmania", "kalanchoe", "phalaenopsis", "anthurium", "celosia", "cymbidium", "cyclamen", "crassula", "begonia", "helianthus", "hydrangea", "mandevilla", "lithodora", "platycodon", "hibiscus", "chrysanthem", "dianthus"]):
+            return "Flowering plants(no cactu"
+        if "rosa" in genus_key:
+            return "refined roses"
+        return known_group or "Other non-flowering plant"
+
     if code.startswith("603140") or code.startswith("060314"):
         return "Flowers chrysanthemums"
     if code.startswith("603120") or code.startswith("060312"):
@@ -165,34 +186,18 @@ def map_ipaffs_product(genus, commodity_code):
         return "Flowers lilies"
     if code.startswith("604209"):
         return "Flowers green"
-    if "cupressus" in genus_key:
-        return "Perennials"
-    if "ficus" in genus_key:
-        return "Others"
-    if "hibiscus" in genus_key:
-        return "Flowering plants(no cactu"
-    if "chrysanthem" in genus_key and not (code.startswith("06029091") or code.startswith("6029091")):
+    if known_group in {"Flowers (other fresh)", "Flowers carnation", "Flowers chrysanthemums", "Flowers roses", "Flowers lilies", "Flowers orchids", "Flowers green"}:
+        return known_group
+    if "chrysanthem" in genus_key:
         return "Flowers chrysanthemums"
-    if "dianthus" in genus_key and not (code.startswith("06029091") or code.startswith("6029091")):
+    if "dianthus" in genus_key:
         return "Flowers carnation"
     if "gypsoph" in genus_key:
         return "Flowers (other fresh)"
-    if "rosa" in genus_key and not (code.startswith("060240") or code.startswith("60240")):
+    if "rosa" in genus_key:
         return "Flowers roses"
     if "solidago" in genus_key:
         return "Flowers (other fresh)"
-    if "bonsai" in genus_key or "sageretia" in genus_key or "aloe" in genus_key or "rhipsalis" in genus_key:
-        return "CITES ge. non-flowering p"
-    if any(token in genus_key for token in ["salvia", "lavandula", "helleborus", "campanula"]):
-        return "Perennials"
-    if any(token in genus_key for token in ["dypsis", "maranta", "calathea", "chlorophytum", "dracaena", "epipremnum", "fittonia", "nephrolepis", "schefflera", "spathiphyllum", "sansevieria", "sanseveria", "zamioculcas"]):
-        return "Other non-flowering plant"
-    if any(token in genus_key for token in ["curio", "crassula", "echeveria", "succulent", "cactus"]):
-        return "CITES ge. non-flowering p"
-    if any(token in genus_key for token in ["echeveria", "fuchsia", "gerbera", "guzmania", "kalanchoe", "phalaenopsis", "anthurium", "celosia", "cymbidium", "cyclamen", "crassula", "begonia", "helianthus", "hydrangea", "mandevilla", "lithodora", "platycodon", "hibiscus"]):
-        return "Flowering plants(no cactu"
-    if "rosa" in genus_key:
-        return "refined roses"
     return "Flowers (other fresh)"
 
 
@@ -255,7 +260,7 @@ def choose_ipaffs_unit(row, header_unit_index, inferred_unit_index):
     return header_unit or inferred_unit
 
 
-def parse_ipaffs_rows(rows):
+def parse_ipaffs_rows(rows, prefer_plants=False):
     parsed_rows = []
     summary = {}
     header_values = rows[0] if rows else []
@@ -304,6 +309,10 @@ def parse_ipaffs_rows(rows):
         commodity_code = clean_text(row[commodity_index] if commodity_index is not None and commodity_index < len(row) else (row[0] if len(row) > 0 else ""))
         genus_fallback_index = 2 if len(row) > 2 and normalize_key(row[1]) in {"pl", "pl."} else 1
         genus = clean_text(row[genus_index] if genus_index is not None and genus_index < len(row) else (row[genus_fallback_index] if len(row) > genus_fallback_index else ""))
+        if normalize_key(genus) in {"unknown", "xxxxx"}:
+            fallback_genus = clean_text(row[genus_fallback_index] if len(row) > genus_fallback_index else "")
+            if fallback_genus and normalize_key(fallback_genus) not in {"pl", "pl.", "unknown", "xxxxx"}:
+                genus = fallback_genus
         packages = parse_int_like(
             row[packages_index] if packages_index is not None and packages_index < len(row)
             else (row[inferred_packages_index] if inferred_packages_index is not None and inferred_packages_index < len(row) else (row[7] if len(row) > 7 else ""))
@@ -323,7 +332,7 @@ def parse_ipaffs_rows(rows):
         weight = parse_number(row[weight_index] if weight_index is not None and weight_index < len(row) else (row[11] if len(row) > 11 else ""))
         if not commodity_code and not genus and quantity is None and packages is None:
             continue
-        product = map_ipaffs_product(genus, commodity_code)
+        product = map_ipaffs_product(genus, commodity_code, prefer_plants=prefer_plants)
         parsed_row = {
             "product": product,
             "commodity_code": commodity_code,
@@ -651,7 +660,7 @@ def best_temp_phyto_parse(text_candidates):
     return best
 
 
-def extract_csv(path: Path):
+def extract_csv(path: Path, kind=""):
     try:
         text = path.read_text(encoding="utf-8-sig", errors="replace")
     except Exception:
@@ -670,7 +679,7 @@ def extract_csv(path: Path):
     }
     if raw_rows:
         payload["parsed_data"] = {
-            **parse_ipaffs_rows(raw_rows),
+            **parse_ipaffs_rows(raw_rows, prefer_plants=clean_text(kind) == "ipaffs_plants_file"),
             "delimiter": detected_delimiter,
         }
     return payload
@@ -796,7 +805,7 @@ def extract_file(entry):
     }
     try:
         if suffix == ".csv":
-            return {**base, **extract_csv(path)}
+            return {**base, **extract_csv(path, kind)}
         if suffix == ".xlsx":
             return {**base, **extract_xlsx(path, kind)}
         if suffix == ".xls":
