@@ -5659,6 +5659,111 @@ function uniqueUkdocsCsiStrings(values) {
   return Array.from(new Set((Array.isArray(values) ? values : []).map((value) => String(value || "").trim()).filter(Boolean)));
 }
 
+function normalizeUkdocsCsiCommodityCode(value) {
+  const digits = String(value || "").replace(/\D+/g, "");
+  if (!digits) {
+    return "";
+  }
+  const normalized = digits.replace(/^0+/, "");
+  return normalized || "0";
+}
+
+function getUkdocsCsiCommodityCodeTokens(value) {
+  return String(value || "")
+    .split(",")
+    .map((part) => normalizeUkdocsCsiCommodityCode(part))
+    .filter(Boolean);
+}
+
+function collectUkdocsCsiCommodityCodes(values) {
+  const displayByNormalized = new Map();
+  for (const rawValue of Array.isArray(values) ? values : []) {
+    const text = String(rawValue || "").trim();
+    if (!text) {
+      continue;
+    }
+    for (const part of text.split(",")) {
+      const display = String(part || "").trim();
+      const normalized = normalizeUkdocsCsiCommodityCode(display);
+      if (!normalized) {
+        continue;
+      }
+      const current = displayByNormalized.get(normalized) || "";
+      if (!current || display.length > current.length) {
+        displayByNormalized.set(normalized, display);
+      }
+    }
+  }
+  return Array.from(displayByNormalized.values());
+}
+
+function doesUkdocsCsiCommodityCodeIntersect(row, normalizedCodes) {
+  const expectedCodes = new Set(Array.isArray(normalizedCodes) ? normalizedCodes.filter(Boolean) : []);
+  if (!expectedCodes.size) {
+    return false;
+  }
+  return getUkdocsCsiCommodityCodeTokens(row?.commodity_code || "").some((code) => expectedCodes.has(code));
+}
+
+function sumUkdocsCsiRowsQuantity(rows, sources) {
+  const sourceSet = new Set(Array.isArray(sources) ? sources.map((source) => String(source || "").trim()) : []);
+  return (Array.isArray(rows) ? rows : []).reduce((sum, row) => {
+    if (sourceSet.size && !sourceSet.has(String(row?.source || "").trim())) {
+      return sum;
+    }
+    const quantity = Number(row?.quantity);
+    return Number.isFinite(quantity) ? sum + quantity : sum;
+  }, 0);
+}
+
+function buildUkdocsCsiCommodityFamilyMatch({ productName, matchingRows, sourceRows, domain, ipaffsQty, tempPhytoQty }) {
+  const normalizedCodes = collectUkdocsCsiCommodityCodes(matchingRows.map((row) => row?.commodity_code || ""))
+    .map((value) => normalizeUkdocsCsiCommodityCode(value))
+    .filter(Boolean);
+  if (!normalizedCodes.length) {
+    return { applied: false };
+  }
+
+  const familyRows = (Array.isArray(sourceRows) ? sourceRows : []).filter((row) => {
+    if (String(row?.product_domain || "").trim() !== String(domain || "").trim()) {
+      return false;
+    }
+    return doesUkdocsCsiCommodityCodeIntersect(row, normalizedCodes);
+  });
+  const familyGroups = uniqueUkdocsCsiStrings(familyRows.map((row) => getUkdocsCsiComparisonGroup(row)));
+  if (familyGroups.length <= 1 || !familyGroups.includes(productName)) {
+    return { applied: false };
+  }
+
+  const familyInvoiceQty = sumUkdocsCsiRowsQuantity(familyRows, ["invoice"]);
+  const familyExportQty = sumUkdocsCsiRowsQuantity(familyRows, ["export"]);
+  const familyExpectedQty = familyExportQty > 0 ? familyExportQty : familyInvoiceQty > 0 ? familyInvoiceQty : null;
+  const familyIpaffsQty = sumUkdocsCsiRowsQuantity(familyRows, domain === "plants" ? ["ipaffs_plants"] : ["ipaffs"]);
+  const familyTempPhytoQty = sumUkdocsCsiRowsQuantity(familyRows, domain === "plants" ? ["temp_phyto_plants", "visual_temp_phyto_plants"] : ["temp_phyto", "temp_phyto_xml", "visual_temp_phyto"]);
+
+  if (familyExpectedQty === null) {
+    return { applied: false };
+  }
+
+  const relevantIpaffs = Number.isFinite(Number(ipaffsQty)) && Number(ipaffsQty) > 0;
+  const relevantTempPhyto = Number.isFinite(Number(tempPhytoQty)) && Number(tempPhytoQty) > 0;
+  const ipaffsAligned = !relevantIpaffs || familyIpaffsQty <= familyExpectedQty;
+  const tempPhytoAligned = !relevantTempPhyto || familyTempPhytoQty <= familyExpectedQty;
+  const crossAligned = !relevantIpaffs || !relevantTempPhyto || familyIpaffsQty === familyTempPhytoQty;
+
+  if (!ipaffsAligned || !tempPhytoAligned || !crossAligned) {
+    return { applied: false };
+  }
+
+  return {
+    applied: true,
+    family_groups: familyGroups.filter((group) => group !== productName),
+    family_expected_quantity: familyExpectedQty,
+    family_ipaffs_quantity: familyIpaffsQty,
+    family_temp_phyto_quantity: familyTempPhytoQty,
+  };
+}
+
 function isUkdocsNoPdNeeded(collection) {
   const pdCodeCompact = String(collection?.pd_code || "").trim().toLowerCase().replace(/[^a-z0-9]+/g, "");
   const pdTypeCompact = String(collection?.pd_type || "").trim().toLowerCase().replace(/[^a-z0-9]+/g, "");
@@ -5706,7 +5811,7 @@ function buildUkdocsCsiDomainProducts(baseProducts, sourceRows, domain) {
       const ipaffsQty = matchingRows
         .filter((row) => scopedSources.ipaffs.has(String(row?.source || "").trim()))
         .reduce((sum, row) => sum + (Number.isFinite(Number(row?.quantity)) ? Number(row.quantity) : 0), 0);
-      const commodityCodes = uniqueUkdocsCsiStrings(matchingRows.map((row) => row?.commodity_code || ""));
+      const commodityCodes = collectUkdocsCsiCommodityCodes(matchingRows.map((row) => row?.commodity_code || ""));
       const tempPhytoPerDocumentMap = new Map();
       for (const row of matchingRows) {
         if (!scopedSources.tempPhyto.has(String(row?.source || "").trim())) {
@@ -5730,13 +5835,16 @@ function buildUkdocsCsiDomainProducts(baseProducts, sourceRows, domain) {
       const expectedQty = exportQty ?? invoiceQty;
       const messages = [];
       let status = "pass";
+      let hasInvoiceExportMismatch = false;
 
       if (invoiceQty !== null || exportQty !== null) {
         if (invoiceQty === null || exportQty === null) {
           status = mergeUkdocsCsiStatus(status, "warn");
+          hasInvoiceExportMismatch = true;
           messages.push("Missing in invoice or export file.");
         } else if (invoiceQty !== exportQty) {
           status = mergeUkdocsCsiStatus(status, "warn");
+          hasInvoiceExportMismatch = true;
           messages.push(`Invoice/export differ by ${Math.abs(invoiceQty - exportQty)}.`);
         } else {
           messages.push("Invoice/export match.");
@@ -5782,6 +5890,21 @@ function buildUkdocsCsiDomainProducts(baseProducts, sourceRows, domain) {
         } else {
           messages.push(`IPAFFS and temp phyto match at ${ipaffsQty}.`);
         }
+      }
+
+      const commodityFamilyMatch = buildUkdocsCsiCommodityFamilyMatch({
+        productName,
+        matchingRows,
+        sourceRows,
+        domain,
+        ipaffsQty,
+        tempPhytoQty,
+      });
+      if (commodityFamilyMatch.applied) {
+        status = hasInvoiceExportMismatch ? "warn" : "pass";
+        messages.push(
+          `Shared commodity-code family also appears under ${commodityFamilyMatch.family_groups.join(", ")}; code-family totals remain aligned, so this group is accepted.`,
+        );
       }
 
       return {
@@ -6160,10 +6283,12 @@ function buildUkdocsCsiDeterministicReport(collection, extractedDocuments) {
   let tempPhytoMismatchCount = 0;
 
   for (const product of Array.from(allProducts).sort()) {
+    const matchingRows = sourceRows.filter((row) => getUkdocsCsiComparisonGroup(row) === product);
     const invoiceQty = invoiceTotals.has(product) ? invoiceTotals.get(product) : null;
     const exportQty = exportTotals.has(product) ? exportTotals.get(product) : null;
     const ipaffsQty = ipaffsTotals.has(product) ? ipaffsTotals.get(product) : null;
     const phytoQty = tempPhytoTotals.has(product) ? tempPhytoTotals.get(product) : null;
+    const commodityCodes = collectUkdocsCsiCommodityCodes(matchingRows.map((row) => row?.commodity_code || ""));
     const phytoPerDocument = tempPhytoContexts
       .map((context) => {
         const match = (context.expected_products || []).find((item) => item.product === product);
@@ -6176,15 +6301,18 @@ function buildUkdocsCsiDeterministicReport(collection, extractedDocuments) {
     const expectedQty = exportQty ?? invoiceQty;
     const messages = [];
     let status = "pass";
+    let hasInvoiceExportMismatch = false;
+    let hasIpaffsMismatch = false;
+    let hasTempPhytoMismatch = false;
 
     if (invoiceQty !== null || exportQty !== null) {
       if (invoiceQty === null || exportQty === null) {
         status = mergeUkdocsCsiStatus(status, "warn");
-        invoiceExportMismatchCount += 1;
+        hasInvoiceExportMismatch = true;
         messages.push("Missing in invoice or export file.");
       } else if (invoiceQty !== exportQty) {
         status = mergeUkdocsCsiStatus(status, "warn");
-        invoiceExportMismatchCount += 1;
+        hasInvoiceExportMismatch = true;
         messages.push(`Invoice/export differ by ${Math.abs(invoiceQty - exportQty)}.`);
       } else {
         messages.push("Invoice/export match.");
@@ -6195,11 +6323,11 @@ function buildUkdocsCsiDeterministicReport(collection, extractedDocuments) {
       if (ipaffsQty !== null) {
         if (expectedQty === null) {
           status = mergeUkdocsCsiStatus(status, "warn");
-          ipaffsMismatchCount += 1;
+          hasIpaffsMismatch = true;
           messages.push("IPAFFS has quantity but invoice/export is missing.");
         } else if (ipaffsQty > expectedQty) {
           status = mergeUkdocsCsiStatus(status, "warn");
-          ipaffsMismatchCount += 1;
+          hasIpaffsMismatch = true;
           messages.push(`IPAFFS quantity ${ipaffsQty} is higher than invoice/export ${expectedQty}.`);
         } else if (ipaffsQty === expectedQty) {
           messages.push("IPAFFS matches invoice/export.");
@@ -6212,11 +6340,11 @@ function buildUkdocsCsiDeterministicReport(collection, extractedDocuments) {
     if (phytoQty !== null) {
       if (expectedQty === null) {
         status = mergeUkdocsCsiStatus(status, "warn");
-        tempPhytoMismatchCount += 1;
+        hasTempPhytoMismatch = true;
         messages.push(`Temp phyto quantity ${phytoQty} has no matching invoice/export line.`);
       } else if (phytoQty > expectedQty) {
         status = mergeUkdocsCsiStatus(status, "warn");
-        tempPhytoMismatchCount += 1;
+        hasTempPhytoMismatch = true;
         messages.push(`Temp phyto quantity ${phytoQty} is higher than invoice/export ${expectedQty}.`);
       } else if (phytoQty === expectedQty) {
         messages.push(`Temp phyto quantity ${phytoQty} matches invoice/export.`);
@@ -6228,8 +6356,8 @@ function buildUkdocsCsiDeterministicReport(collection, extractedDocuments) {
     if (ipaffsQty !== null && phytoQty !== null) {
       if (ipaffsQty !== phytoQty) {
         status = mergeUkdocsCsiStatus(status, "warn");
-        ipaffsMismatchCount += 1;
-        tempPhytoMismatchCount += 1;
+        hasIpaffsMismatch = true;
+        hasTempPhytoMismatch = true;
         if (ipaffsQty < phytoQty) {
           messages.push(`IPAFFS quantity ${ipaffsQty} is lower than temp phyto ${phytoQty}.`);
         } else {
@@ -6240,9 +6368,37 @@ function buildUkdocsCsiDeterministicReport(collection, extractedDocuments) {
       }
     }
 
+    const commodityFamilyMatch = buildUkdocsCsiCommodityFamilyMatch({
+      productName: product,
+      matchingRows,
+      sourceRows,
+      domain: getUkdocsCsiProductDomain(product),
+      ipaffsQty,
+      tempPhytoQty: phytoQty,
+    });
+    if (commodityFamilyMatch.applied) {
+      status = hasInvoiceExportMismatch ? "warn" : "pass";
+      hasIpaffsMismatch = false;
+      hasTempPhytoMismatch = false;
+      messages.push(
+        `Shared commodity-code family also appears under ${commodityFamilyMatch.family_groups.join(", ")}; code-family totals remain aligned, so this group is accepted.`,
+      );
+    }
+
+    if (hasInvoiceExportMismatch) {
+      invoiceExportMismatchCount += 1;
+    }
+    if (hasIpaffsMismatch) {
+      ipaffsMismatchCount += 1;
+    }
+    if (hasTempPhytoMismatch) {
+      tempPhytoMismatchCount += 1;
+    }
+
     products.push({
       product,
       product_domain: getUkdocsCsiProductDomain(product),
+      commodity_codes: commodityCodes.join(", "),
       invoice_quantity: invoiceQty === null ? "" : String(invoiceQty),
       export_quantity: exportQty === null ? "" : String(exportQty),
       ipaffs_quantity: ipaffsQty === null ? "" : String(ipaffsQty),
