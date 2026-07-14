@@ -5764,6 +5764,105 @@ function buildUkdocsCsiCommodityFamilyMatch({ productName, matchingRows, sourceR
   };
 }
 
+function getUkdocsCsiDomainTotals(rows) {
+  const totalFor = (field) => (Array.isArray(rows) ? rows : []).reduce((sum, row) => {
+    const value = Number(row?.[field]);
+    return Number.isFinite(value) ? sum + value : sum;
+  }, 0);
+
+  const invoiceTotal = totalFor("invoice_quantity");
+  const exportTotal = totalFor("export_quantity");
+  const ipaffsTotal = totalFor("ipaffs_quantity");
+  const tempPhytoTotal = totalFor("temp_phyto_quantity");
+
+  return {
+    invoice_total: invoiceTotal > 0 ? invoiceTotal : null,
+    export_total: exportTotal > 0 ? exportTotal : null,
+    ipaffs_total: ipaffsTotal > 0 ? ipaffsTotal : null,
+    temp_phyto_total: tempPhytoTotal > 0 ? tempPhytoTotal : null,
+  };
+}
+
+function getUkdocsCsiExpectedDomainTotal(totals) {
+  if (Number.isFinite(Number(totals?.export_total))) {
+    return Number(totals.export_total);
+  }
+  if (Number.isFinite(Number(totals?.invoice_total))) {
+    return Number(totals.invoice_total);
+  }
+  return null;
+}
+
+function isUkdocsCsiDomainTotalAligned(value, expected) {
+  if (!Number.isFinite(Number(value))) {
+    return true;
+  }
+  if (!Number.isFinite(Number(expected))) {
+    return false;
+  }
+  return Number(value) <= Number(expected);
+}
+
+function getUkdocsCsiAmbiguousCommodityGroups(rows) {
+  const normalizedCodeToProducts = new Map();
+  for (const row of Array.isArray(rows) ? rows : []) {
+    const product = String(row?.product || "").trim();
+    if (!product) {
+      continue;
+    }
+    for (const code of getUkdocsCsiCommodityCodeTokens(row?.commodity_codes || "")) {
+      if (!normalizedCodeToProducts.has(code)) {
+        normalizedCodeToProducts.set(code, new Set());
+      }
+      normalizedCodeToProducts.get(code).add(product);
+    }
+  }
+
+  const ambiguousProducts = new Set();
+  for (const products of normalizedCodeToProducts.values()) {
+    if (products.size <= 1) {
+      continue;
+    }
+    for (const product of products) {
+      ambiguousProducts.add(product);
+    }
+  }
+  return ambiguousProducts;
+}
+
+function relaxUkdocsCsiRedistributedDomainRows(rows, domainLabel) {
+  const nextRows = Array.isArray(rows) ? rows.map((row) => ({ ...row })) : [];
+  const domainTotals = getUkdocsCsiDomainTotals(nextRows);
+  const expectedTotal = getUkdocsCsiExpectedDomainTotal(domainTotals);
+  const ipaffsAligned = isUkdocsCsiDomainTotalAligned(domainTotals.ipaffs_total, expectedTotal);
+  const tempPhytoAligned = isUkdocsCsiDomainTotalAligned(domainTotals.temp_phyto_total, expectedTotal);
+  const crossAligned = domainTotals.ipaffs_total === null
+    || domainTotals.temp_phyto_total === null
+    || domainTotals.ipaffs_total === domainTotals.temp_phyto_total;
+  const ambiguousProducts = getUkdocsCsiAmbiguousCommodityGroups(nextRows);
+
+  if (!ambiguousProducts.size || !ipaffsAligned || !tempPhytoAligned || !crossAligned) {
+    return nextRows;
+  }
+
+  for (const row of nextRows) {
+    const product = String(row?.product || "").trim();
+    if (!ambiguousProducts.has(product)) {
+      continue;
+    }
+    const hasReviewMessage = /IPAFFS quantity|Temp phyto quantity|IPAFFS subset|Temp phyto subset/i.test(String(row?.message || ""));
+    if (!hasReviewMessage) {
+      continue;
+    }
+    row.status = "pass";
+    const existingMessage = String(row?.message || "").trim();
+    const redistributionMessage = `${domainLabel} commodity-code totals are redistributed across related groups, but the full domain total still aligns at ${expectedTotal}.`;
+    row.message = existingMessage ? `${existingMessage} ${redistributionMessage}` : redistributionMessage;
+  }
+
+  return nextRows;
+}
+
 function isUkdocsNoPdNeeded(collection) {
   const pdCodeCompact = String(collection?.pd_code || "").trim().toLowerCase().replace(/[^a-z0-9]+/g, "");
   const pdTypeCompact = String(collection?.pd_type || "").trim().toLowerCase().replace(/[^a-z0-9]+/g, "");
@@ -7001,11 +7100,66 @@ function buildUkdocsCsiReportFromJobResults(jobResults) {
     }),
     ...visualRows,
   ];
-  const finalFlowerProducts = buildUkdocsCsiDomainProducts(finalProducts, finalSourceRows, "flowers");
-  const finalPlantProducts = buildUkdocsCsiDomainProducts(finalProducts, finalSourceRows, "plants");
+  const finalFlowerProducts = relaxUkdocsCsiRedistributedDomainRows(
+    buildUkdocsCsiDomainProducts(finalProducts, finalSourceRows, "flowers"),
+    "Flower",
+  );
+  const finalPlantProducts = relaxUkdocsCsiRedistributedDomainRows(
+    buildUkdocsCsiDomainProducts(finalProducts, finalSourceRows, "plants"),
+    "Plant",
+  );
   const mergedProducts = [...finalFlowerProducts, ...finalPlantProducts].sort((left, right) => (
     String(left?.product || "").localeCompare(String(right?.product || ""))
   ));
+  const finalIpaffsReviewCount = mergedProducts.filter((item) => (
+    String(item?.status || "").trim().toLowerCase() !== "pass"
+    && String(item?.ipaffs_quantity || "").trim()
+    && /IPAFFS/i.test(String(item?.message || ""))
+  )).length;
+  const finalTempPhytoReviewCount = mergedProducts.filter((item) => (
+    String(item?.status || "").trim().toLowerCase() !== "pass"
+    && String(item?.temp_phyto_quantity || "").trim()
+    && /Temp phyto/i.test(String(item?.message || ""))
+  )).length;
+  const reconciledChecks = finalChecks.map((item) => {
+    if (item?.code === "IPAFFS_VERIFICATION") {
+      return {
+        ...item,
+        status: noPdNeeded
+          ? "pass"
+          : finalIpaffsReviewCount
+            ? "warn"
+            : "pass",
+        message: noPdNeeded
+          ? "IPAFFS is not required because PD code indicates no PD needed."
+          : finalIpaffsReviewCount
+            ? `${finalIpaffsReviewCount} IPAFFS or IPAFFS/temp phyto product totals need review.`
+            : "IPAFFS product totals stay within invoice/export and match temp phyto where both exist.",
+      };
+    }
+    if (item?.code === "TEMP_PHYTO_PARSE") {
+      const hasActiveProblems = tempPhytoContexts.some((context) => context?.parsed_document_state === "not_activated");
+      const missingPcnuCount = tempPhytoContexts.filter((context) => !String(context?.parsed_pcnu_number || "").trim()).length;
+      return {
+        ...item,
+        status: hasActiveProblems
+          ? "fail"
+          : missingPcnuCount
+            ? "warn"
+            : finalTempPhytoReviewCount
+              ? "warn"
+              : "pass",
+        message: hasActiveProblems
+          ? "At least one temporary phyto PDF is not activated."
+          : missingPcnuCount
+            ? `${missingPcnuCount} temp phyto PDF(s) are missing a parsed PCNU number from PDF text extraction.`
+            : finalTempPhytoReviewCount
+              ? `${finalTempPhytoReviewCount} temp phyto or temp phyto/IPAFFS quantity comparison(s) need review.`
+              : "Temporary phyto quantities parsed cleanly and stay aligned with invoice/export or related IPAFFS totals.",
+      };
+    }
+    return item;
+  });
   const finalManualChecks = uniqueUkdocsCsiStrings([
     ...(Array.isArray(deterministicSource.manual_checks) ? deterministicSource.manual_checks : []),
     ...combinedParsed.manual_checks,
@@ -7017,7 +7171,7 @@ function buildUkdocsCsiReportFromJobResults(jobResults) {
       ? "Visual CSI confirmed the visible PCNU number on every temporary phyto PDF, even where PDF text extraction missed it."
       : "",
   ]);
-  const overallStatus = finalizeUkdocsCsiOverallStatus(finalChecks, mergedProducts);
+  const overallStatus = finalizeUkdocsCsiOverallStatus(reconciledChecks, mergedProducts);
   const deterministicSummary = String(deterministicSource.summary || "").trim();
   const finalSummary = uniqueUkdocsCsiStrings([
     deterministicSummary,
@@ -7029,7 +7183,7 @@ function buildUkdocsCsiReportFromJobResults(jobResults) {
     error: "",
     summary: finalSummary || deterministicSummary || "CSI audit completed.",
     overall_status: overallStatus,
-    checks: finalChecks,
+    checks: reconciledChecks,
     products: mergedProducts,
     flower_products: finalFlowerProducts,
     plant_products: finalPlantProducts,
