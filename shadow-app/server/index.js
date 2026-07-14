@@ -5793,6 +5793,13 @@ function getUkdocsCsiExpectedDomainTotal(totals) {
   return null;
 }
 
+function isUkdocsCsiExactDomainTotalMatch(value, expected) {
+  if (!Number.isFinite(Number(value)) || !Number.isFinite(Number(expected))) {
+    return false;
+  }
+  return Number(value) === Number(expected);
+}
+
 function isUkdocsCsiDomainTotalAligned(value, expected) {
   if (!Number.isFinite(Number(value))) {
     return true;
@@ -5834,6 +5841,12 @@ function relaxUkdocsCsiRedistributedDomainRows(rows, domainLabel) {
   const nextRows = Array.isArray(rows) ? rows.map((row) => ({ ...row })) : [];
   const domainTotals = getUkdocsCsiDomainTotals(nextRows);
   const expectedTotal = getUkdocsCsiExpectedDomainTotal(domainTotals);
+  const exactIpaffsMatch = isUkdocsCsiExactDomainTotalMatch(domainTotals.ipaffs_total, expectedTotal);
+  const exactTempPhytoMatch = isUkdocsCsiExactDomainTotalMatch(domainTotals.temp_phyto_total, expectedTotal);
+  const exactCrossMatch = domainTotals.ipaffs_total !== null
+    && domainTotals.temp_phyto_total !== null
+    && domainTotals.ipaffs_total === domainTotals.temp_phyto_total;
+  const exactDomainMatch = exactIpaffsMatch && exactTempPhytoMatch && exactCrossMatch;
   const ipaffsAligned = isUkdocsCsiDomainTotalAligned(domainTotals.ipaffs_total, expectedTotal);
   const tempPhytoAligned = isUkdocsCsiDomainTotalAligned(domainTotals.temp_phyto_total, expectedTotal);
   const crossAligned = domainTotals.ipaffs_total === null
@@ -5841,13 +5854,13 @@ function relaxUkdocsCsiRedistributedDomainRows(rows, domainLabel) {
     || domainTotals.ipaffs_total === domainTotals.temp_phyto_total;
   const ambiguousProducts = getUkdocsCsiAmbiguousCommodityGroups(nextRows);
 
-  if (!ambiguousProducts.size || !ipaffsAligned || !tempPhytoAligned || !crossAligned) {
+  if (!exactDomainMatch && (!ambiguousProducts.size || !ipaffsAligned || !tempPhytoAligned || !crossAligned)) {
     return nextRows;
   }
 
   for (const row of nextRows) {
     const product = String(row?.product || "").trim();
-    if (!ambiguousProducts.has(product)) {
+    if (!exactDomainMatch && !ambiguousProducts.has(product)) {
       continue;
     }
     const hasReviewMessage = /IPAFFS quantity|Temp phyto quantity|IPAFFS subset|Temp phyto subset/i.test(String(row?.message || ""));
@@ -5856,7 +5869,9 @@ function relaxUkdocsCsiRedistributedDomainRows(rows, domainLabel) {
     }
     row.status = "pass";
     const existingMessage = String(row?.message || "").trim();
-    const redistributionMessage = `${domainLabel} commodity-code totals are redistributed across related groups, but the full domain total still aligns at ${expectedTotal}.`;
+    const redistributionMessage = exactDomainMatch
+      ? `${domainLabel} domain totals match exactly at ${expectedTotal} across invoice/export, IPAFFS, and temp phyto, so redistributed group quantities are accepted.`
+      : `${domainLabel} commodity-code totals are redistributed across related groups, but the full domain total still aligns at ${expectedTotal}.`;
     row.message = existingMessage ? `${existingMessage} ${redistributionMessage}` : redistributionMessage;
   }
 
@@ -7100,10 +7115,7 @@ function buildUkdocsCsiReportFromJobResults(jobResults) {
     }),
     ...visualRows,
   ];
-  const finalFlowerProducts = relaxUkdocsCsiRedistributedDomainRows(
-    buildUkdocsCsiDomainProducts(finalProducts, finalSourceRows, "flowers"),
-    "Flower",
-  );
+  const finalFlowerProducts = buildUkdocsCsiDomainProducts(finalProducts, finalSourceRows, "flowers");
   const finalPlantProducts = relaxUkdocsCsiRedistributedDomainRows(
     buildUkdocsCsiDomainProducts(finalProducts, finalSourceRows, "plants"),
     "Plant",
