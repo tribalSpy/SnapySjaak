@@ -3663,6 +3663,7 @@ const UKDOCS_PRINT_DOCUMENTS = [
   { key: "locations_file", label: "Locations file", accept: ".pdf,.xlsx,.xls" },
   { key: "temp_phyto", label: "Temporary phyto PDF", accept: ".pdf" },
   { key: "temp_phyto_plants_file", label: "Temporary phyto Plants PDF", accept: ".pdf" },
+  { key: "temp_phyto_plants_xml_file", label: "Temporary phyto Plants XML", accept: ".xml" },
   { key: "ipaffs_file", label: "IPAFFS Flowers+ACC", accept: ".csv,.xlsx,.xls" },
   { key: "ipaffs_plants_file", label: "IPAFFS Plants", accept: ".csv,.xlsx,.xls" },
 ];
@@ -4335,6 +4336,7 @@ function UkdocsPrintPage({ currentUser }) {
                   if (ukdocsPrintInspectionMode(selectedCollection) !== "stock_control") {
                     visibleKeys.add("temp_phyto");
                     visibleKeys.add("temp_phyto_plants_file");
+                    visibleKeys.add("temp_phyto_plants_xml_file");
                     visibleKeys.add("ipaffs_file");
                     visibleKeys.add("ipaffs_plants_file");
                   }
@@ -4855,6 +4857,7 @@ function UkdocsCSIPage({ currentUser }) {
   const selectedCsiEmail = selectedCollection?.csi_email || {};
   const selectedTempPhytoFiles = selectedCollection?.documents?.temp_phyto_files || [];
   const selectedTempPhytoPlantsFile = selectedCollection?.documents?.temp_phyto_plants_file || null;
+  const selectedTempPhytoPlantsXmlFile = selectedCollection?.documents?.temp_phyto_plants_xml_file || null;
   const selectedIpaffsFile = selectedCollection?.documents?.ipaffs_file || null;
   const selectedIpaffsPlantsFile = selectedCollection?.documents?.ipaffs_plants_file || null;
   const selectedCsiChecks = selectedCsiReport.checks || [];
@@ -5233,6 +5236,17 @@ function UkdocsCSIPage({ currentUser }) {
                     <div className="row-actions">
                       <a href={`/api/ukdocs-print/collections/${encodeURIComponent(selectedCollection.id)}/documents/temp_phyto_plants_file`} target="_blank" rel="noreferrer">Open</a>
                       <button type="button" onClick={() => deleteCollectionDocument("temp_phyto_plants_file")} disabled={saving}>Delete</button>
+                    </div>
+                  )}
+                </div>
+                <div className="ukdocs-upload-card">
+                  <strong>Temporary phyto Plants XML</strong>
+                  <input type="file" accept=".xml" onChange={(event) => uploadCollectionFile("temp_phyto_plants_xml_file", event.target.files?.[0] || null)} disabled={saving} />
+                  <small>{selectedTempPhytoPlantsXmlFile?.original_name ? `${selectedTempPhytoPlantsXmlFile.original_name} saved ${formatTimestamp(selectedTempPhytoPlantsXmlFile.saved_at)}` : "No XML file saved yet in Zending."}</small>
+                  {selectedTempPhytoPlantsXmlFile?.storage_name && (
+                    <div className="row-actions">
+                      <a href={`/api/ukdocs-print/collections/${encodeURIComponent(selectedCollection.id)}/documents/temp_phyto_plants_xml_file`} target="_blank" rel="noreferrer">Open</a>
+                      <button type="button" onClick={() => deleteCollectionDocument("temp_phyto_plants_xml_file")} disabled={saving}>Delete</button>
                     </div>
                   )}
                 </div>

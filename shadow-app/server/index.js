@@ -222,7 +222,7 @@ const defaultUkdocsState = {
   print_collections: [],
 };
 
-const UKDOCS_CSI_DOCUMENT_KINDS = new Set(["temp_phyto", "temp_phyto_plants_file", "ipaffs_file", "ipaffs_plants_file"]);
+const UKDOCS_CSI_DOCUMENT_KINDS = new Set(["temp_phyto", "temp_phyto_plants_file", "temp_phyto_plants_xml_file", "ipaffs_file", "ipaffs_plants_file"]);
 
 const defaultExpeditionStickerState = {
   planning_file: null,
@@ -1264,6 +1264,7 @@ function shouldResetUkdocsCsiReportForDocumentKind(kind) {
     "generated",
     "temp_phyto",
     "temp_phyto_plants_file",
+    "temp_phyto_plants_xml_file",
     "ipaffs_file",
     "ipaffs_plants_file",
   ].includes(String(kind || "").trim());
@@ -1622,6 +1623,7 @@ function normalizeUkdocsPrintCollection(collection) {
       locations_file: normalizeUkdocsPrintDocument(collection?.documents?.locations_file),
       temp_phyto_files: normalizeUkdocsPrintDocumentList(collection?.documents?.temp_phyto_files || (collection?.documents?.temp_phyto ? [collection.documents.temp_phyto] : [])),
       temp_phyto_plants_file: normalizeUkdocsPrintDocument(collection?.documents?.temp_phyto_plants_file),
+      temp_phyto_plants_xml_file: normalizeUkdocsPrintDocument(collection?.documents?.temp_phyto_plants_xml_file),
       ipaffs_file: normalizeUkdocsPrintDocument(collection?.documents?.ipaffs_file),
       ipaffs_plants_file: normalizeUkdocsPrintDocument(collection?.documents?.ipaffs_plants_file),
     },
@@ -4333,7 +4335,7 @@ async function saveUkdocsPrintUpload(collectionId, kind, filePayload, requestUse
   const originalName = path.basename(String(filePayload?.file_name || filePayload?.name || "").trim());
   const contentBase64 = String(filePayload?.content_base64 || "").trim();
   const mimeType = String(filePayload?.mime_type || guessMimeType(originalName)).trim() || "application/octet-stream";
-  if (!["phyto", "export_extra", "inspection_list", "locations_file", "temp_phyto", "temp_phyto_plants_file", "ipaffs_file", "ipaffs_plants_file"].includes(kind)) {
+  if (!["phyto", "export_extra", "inspection_list", "locations_file", "temp_phyto", "temp_phyto_plants_file", "temp_phyto_plants_xml_file", "ipaffs_file", "ipaffs_plants_file"].includes(kind)) {
     throw new Error("Unknown UKdocs Print document type");
   }
   if (!originalName || !contentBase64) {
@@ -4356,7 +4358,7 @@ async function saveUkdocsPrintUpload(collectionId, kind, filePayload, requestUse
 }
 
 async function saveUkdocsPrintBuffer(collectionId, kind, originalName, mimeType, fileBuffer, savedBy) {
-  if (!["phyto", "export_extra", "generated", "inspection_list", "locations_file", "temp_phyto", "temp_phyto_plants_file", "ipaffs_file", "ipaffs_plants_file"].includes(kind)) {
+  if (!["phyto", "export_extra", "generated", "inspection_list", "locations_file", "temp_phyto", "temp_phyto_plants_file", "temp_phyto_plants_xml_file", "ipaffs_file", "ipaffs_plants_file"].includes(kind)) {
     throw new Error("Unknown UKdocs Print document type");
   }
   const extension = safeExtension(originalName, mimeType);
@@ -4633,6 +4635,7 @@ function mergeUkdocsPrintCollectionPair(keeper, duplicate) {
       locations_file: chooseObject(keeper?.documents?.locations_file, duplicate?.documents?.locations_file),
       temp_phyto_files: mergeUkdocsPrintDocumentLists(keeper?.documents?.temp_phyto_files, duplicate?.documents?.temp_phyto_files),
       temp_phyto_plants_file: chooseObject(keeper?.documents?.temp_phyto_plants_file, duplicate?.documents?.temp_phyto_plants_file),
+      temp_phyto_plants_xml_file: chooseObject(keeper?.documents?.temp_phyto_plants_xml_file, duplicate?.documents?.temp_phyto_plants_xml_file),
       ipaffs_file: chooseObject(keeper?.documents?.ipaffs_file, duplicate?.documents?.ipaffs_file),
       ipaffs_plants_file: chooseObject(keeper?.documents?.ipaffs_plants_file, duplicate?.documents?.ipaffs_plants_file),
     },
@@ -4647,6 +4650,7 @@ function ukdocsPrintCollectionMergeScore(collection) {
     + ((documents.phyto_files || []).length * 5)
     + ((documents.temp_phyto_files || []).length * 5)
     + (documents.temp_phyto_plants_file?.storage_name ? 5 : 0)
+    + (documents.temp_phyto_plants_xml_file?.storage_name ? 3 : 0)
     + (documents.export_extra?.storage_name ? 4 : 0)
     + (documents.inspection_list?.storage_name ? 4 : 0)
     + (documents.locations_file?.storage_name ? 4 : 0)
@@ -4830,6 +4834,9 @@ async function deleteUkdocsPrintCollectionFiles(collection) {
   }
   if (collection?.documents?.temp_phyto_plants_file) {
     documents.push(collection.documents.temp_phyto_plants_file);
+  }
+  if (collection?.documents?.temp_phyto_plants_xml_file) {
+    documents.push(collection.documents.temp_phyto_plants_xml_file);
   }
   if (collection?.documents?.ipaffs_file) {
     documents.push(collection.documents.ipaffs_file);
@@ -5045,6 +5052,10 @@ async function hydrateUkdocsCsiCollectionInputs(collection, options = {}) {
     nextDocuments.temp_phyto_plants_file = await enrichUkdocsCsiStoredDocument(nextDocuments.temp_phyto_plants_file, "temp_phyto_plants_file");
     changed = true;
   }
+  if (nextDocuments.temp_phyto_plants_xml_file?.storage_name && (forceRefresh || !nextDocuments.temp_phyto_plants_xml_file?.parsed_data)) {
+    nextDocuments.temp_phyto_plants_xml_file = await enrichUkdocsCsiStoredDocument(nextDocuments.temp_phyto_plants_xml_file, "temp_phyto_plants_xml_file");
+    changed = true;
+  }
 
   if (!changed) {
     return { collection: normalizedCollection, changed: false };
@@ -5128,7 +5139,7 @@ function summarizeUkdocsCsiExtractedDocuments(extractedDocuments) {
       return summary;
     }
 
-    if (kind === "temp_phyto" || kind === "temp_phyto_plants_file") {
+    if (kind === "temp_phyto" || kind === "temp_phyto_plants_file" || kind === "temp_phyto_plants_xml_file") {
       const productLines = Array.isArray(parsedData?.product_lines) ? parsedData.product_lines.slice(0, 60) : [];
       summary.parsed_data = {
         document_state: parsedData?.document_state || "",
@@ -5756,7 +5767,31 @@ function buildUkdocsCsiDomainProducts(baseProducts, sourceRows, domain) {
     });
 }
 
-function getUkdocsCsiTempPhytoSourceDocuments(collection) {
+function getUkdocsCsiTempPhytoParsedSourceDocuments(collection) {
+  const tempPhytoFiles = (collection?.documents?.temp_phyto_files || []).map((document) => ({
+    kind: "temp_phyto",
+    prefer_plants: inferUkdocsCsiPlantsPreference(document, false),
+    document,
+  }));
+  const plantTempPhytoDocument = collection?.documents?.temp_phyto_plants_xml_file?.storage_name
+    ? collection.documents.temp_phyto_plants_xml_file
+    : collection?.documents?.temp_phyto_plants_file?.storage_name
+      ? collection.documents.temp_phyto_plants_file
+      : null;
+  const plantTempPhytoKind = collection?.documents?.temp_phyto_plants_xml_file?.storage_name
+    ? "temp_phyto_plants_xml_file"
+    : "temp_phyto_plants_file";
+  const plantTempPhyto = plantTempPhytoDocument?.storage_name
+    ? [{
+      kind: plantTempPhytoKind,
+      prefer_plants: inferUkdocsCsiPlantsPreference(plantTempPhytoDocument, true),
+      document: plantTempPhytoDocument,
+    }]
+    : [];
+  return [...tempPhytoFiles, ...plantTempPhyto];
+}
+
+function getUkdocsCsiTempPhytoVisionSourceDocuments(collection) {
   const tempPhytoFiles = (collection?.documents?.temp_phyto_files || []).map((document) => ({
     kind: "temp_phyto",
     prefer_plants: inferUkdocsCsiPlantsPreference(document, false),
@@ -5812,8 +5847,8 @@ function buildUkdocsCsiDeterministicReport(collection, extractedDocuments) {
     return merged;
   })();
   const rawTempPhytoDocs = (() => {
-    const sourceDocuments = getUkdocsCsiTempPhytoSourceDocuments(collection);
-    const extractedTempDocs = documents.filter((document) => document?.kind === "temp_phyto" || document?.kind === "temp_phyto_plants_file");
+    const sourceDocuments = getUkdocsCsiTempPhytoParsedSourceDocuments(collection);
+    const extractedTempDocs = documents.filter((document) => document?.kind === "temp_phyto" || document?.kind === "temp_phyto_plants_file" || document?.kind === "temp_phyto_plants_xml_file");
     const sourceDocumentByKey = new Map(
       sourceDocuments.map((item, index) => {
         const key = `${String(item?.kind || "").trim()}::${normalizeUkdocsCsiDocumentName(item?.document?.original_name || item?.document?.storage_name)}`;
@@ -5908,12 +5943,10 @@ function buildUkdocsCsiDeterministicReport(collection, extractedDocuments) {
     const rows = Array.isArray(document?.parsed_data?.rows) ? document.parsed_data.rows : [];
     const strictDomain = inferUkdocsCsiDocumentDomain(document?.name || "", document?.kind || "");
     for (const row of rows) {
-      const mappedProduct = strictDomain
-        ? mapUkdocsCsiProductName(row?.product, row?.commodity_code, {
-          strict_domain: strictDomain,
-          document_name: document?.name || "",
-        })
-        : (String(row?.mapped_group || "").trim() || mapUkdocsCsiProductName(row?.product, row?.commodity_code));
+      const mappedProduct = mapUkdocsCsiProductName(row?.product, row?.commodity_code, {
+        ...(strictDomain ? { strict_domain: strictDomain } : {}),
+        document_name: document?.name || "",
+      });
       addUkdocsCsiQuantity(
         invoiceTotals,
         mappedProduct,
@@ -5934,12 +5967,10 @@ function buildUkdocsCsiDeterministicReport(collection, extractedDocuments) {
   const exportRows = Array.isArray(exportDoc?.parsed_data?.rows) ? exportDoc.parsed_data.rows : [];
   const exportStrictDomain = inferUkdocsCsiDocumentDomain(exportDoc?.name || "", exportDoc?.kind || "");
   for (const row of exportRows) {
-    const mappedProduct = exportStrictDomain
-      ? mapUkdocsCsiProductName(row?.product, row?.commodity_code, {
-        strict_domain: exportStrictDomain,
-        document_name: exportDoc?.name || "",
-      })
-      : (String(row?.mapped_group || "").trim() || mapUkdocsCsiProductName(row?.product, row?.commodity_code));
+    const mappedProduct = mapUkdocsCsiProductName(row?.product, row?.commodity_code, {
+      ...(exportStrictDomain ? { strict_domain: exportStrictDomain } : {}),
+      document_name: exportDoc?.name || "",
+    });
     addUkdocsCsiQuantity(
       exportTotals,
       mappedProduct,
@@ -6783,14 +6814,14 @@ async function queueUkdocsCsiAudit(collection, requestUser) {
 
   const extractedDocuments = await extractUkdocsCsiFileSnapshots([
     ...(collection?.documents?.generated_files || []).map((document) => ({ kind: document.document_kind === "export" ? "generated_export" : "generated_invoice", document })),
-    ...getUkdocsCsiTempPhytoSourceDocuments(collection).map((item) => ({ kind: item.kind, document: item.document })),
+    ...getUkdocsCsiTempPhytoParsedSourceDocuments(collection).map((item) => ({ kind: item.kind, document: item.document })),
     collection?.documents?.ipaffs_file ? [{ kind: "ipaffs_file", document: collection.documents.ipaffs_file }] : [],
     collection?.documents?.ipaffs_plants_file ? [{ kind: "ipaffs_plants_file", document: collection.documents.ipaffs_plants_file }] : [],
   ]);
   const deterministicBundle = buildUkdocsCsiDeterministicReport(collection, extractedDocuments);
 
   const tempPhytoVisionDocuments = await Promise.all(
-    getUkdocsCsiTempPhytoSourceDocuments(collection).map(async (item, index) => {
+    getUkdocsCsiTempPhytoVisionSourceDocuments(collection).map(async (item, index) => {
       const document = item.document;
       const resolvedPath = path.resolve(ukdocsPrintDocumentPath(document));
       if (!resolvedPath.startsWith(path.resolve(ukdocsPrintFilesDir)) || !existsSync(resolvedPath)) {
@@ -10567,11 +10598,11 @@ async function handleApi(req, res, url) {
       sendJson(res, 200, { collection: existingCollection, print_collections: normalizeUkdocsState(state).print_collections, skipped: true, reason: "temp_phyto already exists" });
       return;
     }
-    if (["inspection_list", "locations_file", "export_extra", "temp_phyto_plants_file", "ipaffs_file", "ipaffs_plants_file"].includes(kind) && existingCollection.documents?.[kind]?.storage_name) {
+    if (["inspection_list", "locations_file", "export_extra", "temp_phyto_plants_file", "temp_phyto_plants_xml_file", "ipaffs_file", "ipaffs_plants_file"].includes(kind) && existingCollection.documents?.[kind]?.storage_name) {
       await deleteSingleUkdocsPrintDocumentFile(existingCollection.documents[kind]);
     }
     const savedDocumentRaw = await saveUkdocsPrintUpload(existingCollection.id, kind, body?.file || {}, requestUser);
-    const savedDocument = ["temp_phyto", "temp_phyto_plants_file", "ipaffs_file", "ipaffs_plants_file"].includes(kind)
+    const savedDocument = ["temp_phyto", "temp_phyto_plants_file", "temp_phyto_plants_xml_file", "ipaffs_file", "ipaffs_plants_file"].includes(kind)
       ? await enrichUkdocsCsiStoredDocument(savedDocumentRaw, kind)
       : savedDocumentRaw;
     const updatedCollection = normalizeUkdocsPrintCollection({
@@ -10679,7 +10710,7 @@ async function handleApi(req, res, url) {
       }
       generatedFiles.splice(documentIndex, 1);
       updatedDocuments = { ...updatedDocuments, generated_files: generatedFiles };
-    } else if (["export_extra", "inspection_list", "locations_file", "temp_phyto_plants_file", "ipaffs_file", "ipaffs_plants_file"].includes(kind)) {
+    } else if (["export_extra", "inspection_list", "locations_file", "temp_phyto_plants_file", "temp_phyto_plants_xml_file", "ipaffs_file", "ipaffs_plants_file"].includes(kind)) {
       removedDocument = existingCollection.documents?.[kind] || null;
       if (!removedDocument) {
         sendJson(res, 404, { error: "UKdocs Print document not found" });
