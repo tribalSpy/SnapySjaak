@@ -5189,6 +5189,26 @@ function getUkdocsCsiProductDomain(productName) {
   return "";
 }
 
+function inferUkdocsCsiDocumentDomain(documentName = "", fallbackKind = "") {
+  const nameToken = normalizeUkdocsCsiToken(documentName);
+  const kindToken = normalizeUkdocsCsiToken(fallbackKind);
+  if (
+    nameToken.includes("planten")
+    || nameToken.includes("plants")
+    || kindToken.includes("plants")
+  ) {
+    return "plants";
+  }
+  if (
+    nameToken.includes("bloemen")
+    || nameToken.includes("flowers")
+    || kindToken.includes("flower")
+  ) {
+    return "flowers";
+  }
+  return "";
+}
+
 function normalizeUkdocsCsiKnownGroup(value) {
   const text = normalizeUkdocsCsiToken(value);
   if (!text) {
@@ -5886,8 +5906,14 @@ function buildUkdocsCsiDeterministicReport(collection, extractedDocuments) {
 
   for (const document of invoiceDocs) {
     const rows = Array.isArray(document?.parsed_data?.rows) ? document.parsed_data.rows : [];
+    const strictDomain = inferUkdocsCsiDocumentDomain(document?.name || "", document?.kind || "");
     for (const row of rows) {
-      const mappedProduct = String(row?.mapped_group || "").trim() || mapUkdocsCsiProductName(row?.product, row?.commodity_code);
+      const mappedProduct = strictDomain
+        ? mapUkdocsCsiProductName(row?.product, row?.commodity_code, {
+          strict_domain: strictDomain,
+          document_name: document?.name || "",
+        })
+        : (String(row?.mapped_group || "").trim() || mapUkdocsCsiProductName(row?.product, row?.commodity_code));
       addUkdocsCsiQuantity(
         invoiceTotals,
         mappedProduct,
@@ -5906,8 +5932,14 @@ function buildUkdocsCsiDeterministicReport(collection, extractedDocuments) {
   }
 
   const exportRows = Array.isArray(exportDoc?.parsed_data?.rows) ? exportDoc.parsed_data.rows : [];
+  const exportStrictDomain = inferUkdocsCsiDocumentDomain(exportDoc?.name || "", exportDoc?.kind || "");
   for (const row of exportRows) {
-    const mappedProduct = String(row?.mapped_group || "").trim() || mapUkdocsCsiProductName(row?.product, row?.commodity_code);
+    const mappedProduct = exportStrictDomain
+      ? mapUkdocsCsiProductName(row?.product, row?.commodity_code, {
+        strict_domain: exportStrictDomain,
+        document_name: exportDoc?.name || "",
+      })
+      : (String(row?.mapped_group || "").trim() || mapUkdocsCsiProductName(row?.product, row?.commodity_code));
     addUkdocsCsiQuantity(
       exportTotals,
       mappedProduct,

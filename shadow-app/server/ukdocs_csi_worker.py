@@ -201,6 +201,16 @@ def map_ipaffs_product(genus, commodity_code, prefer_plants=False):
     return "Flowers (other fresh)"
 
 
+def workbook_is_plants_document(kind="", file_name=""):
+    kind_key = normalize_key(kind)
+    name_key = normalize_key(file_name)
+    return (
+        kind_key in {"generated plants invoice", "generated plants export"}
+        or "planten" in name_key
+        or "plants" in name_key
+    )
+
+
 def find_ipaffs_quantity_columns(row):
     unit_index = None
     for index, value in enumerate(row):
@@ -380,7 +390,7 @@ def parse_delimited_rows(text):
     return list(reader), fallback_delimiter
 
 
-def parse_export_sheet(workbook):
+def parse_export_sheet(workbook, prefer_plants=False):
     worksheet = workbook.worksheets[0]
     rows = []
     summary = {}
@@ -413,7 +423,7 @@ def parse_export_sheet(workbook):
             "product": description,
             "origin": origin,
             "commodity_code": commodity_code,
-            "mapped_group": map_ipaffs_product(description, commodity_code),
+            "mapped_group": map_ipaffs_product(description, commodity_code, prefer_plants=prefer_plants),
             "quantity": quantity,
         }
         rows.append(parsed_row)
@@ -425,7 +435,7 @@ def parse_export_sheet(workbook):
     }
 
 
-def parse_invoice_sheet(workbook):
+def parse_invoice_sheet(workbook, prefer_plants=False):
     worksheet = workbook.worksheets[0]
     rows = []
     summary = {}
@@ -470,7 +480,7 @@ def parse_invoice_sheet(workbook):
             "product": description,
             "origin": origin,
             "commodity_code": commodity_code,
-            "mapped_group": map_ipaffs_product(description, commodity_code),
+            "mapped_group": map_ipaffs_product(description, commodity_code, prefer_plants=prefer_plants),
             "quantity": quantity,
         }
         rows.append(parsed_row)
@@ -706,10 +716,11 @@ def extract_xlsx(path: Path, kind=""):
     }
     lower_name = path.name.lower()
     normalized_kind = clean_text(kind)
+    prefer_plants = workbook_is_plants_document(normalized_kind, path.name)
     if normalized_kind == "generated_invoice" or ("invoice " in lower_name):
-        payload["parsed_data"] = parse_invoice_sheet(workbook)
+        payload["parsed_data"] = parse_invoice_sheet(workbook, prefer_plants=prefer_plants)
     else:
-        payload["parsed_data"] = parse_export_sheet(workbook)
+        payload["parsed_data"] = parse_export_sheet(workbook, prefer_plants=prefer_plants)
     return payload
 
 
