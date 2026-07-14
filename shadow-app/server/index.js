@@ -6938,6 +6938,13 @@ function buildUkdocsCsiReportFromJobResults(jobResults) {
     manual_checks: [],
     notes: [],
   };
+  const noPdNeeded = isUkdocsNoPdNeeded({
+    pd_type: firstResult?.job?.payload_json?.zending?.pd_type || "",
+    pd_code: firstResult?.job?.payload_json?.zending?.pd_code || "",
+  }) || (Array.isArray(deterministicSource.checks) && deterministicSource.checks.some((item) => (
+    String(item?.code || "").trim() === "IPAFFS_VERIFICATION"
+    && /no pd needed|no phyto needed/i.test(String(item?.message || ""))
+  )));
   const combinedParsed = {
     summary: uniqueUkdocsCsiStrings(results.map((item) => {
       const summary = String(item?.parsed?.summary || "").trim();
