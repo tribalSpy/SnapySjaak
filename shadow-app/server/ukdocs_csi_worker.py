@@ -6,6 +6,8 @@ import sys
 from io import StringIO
 from pathlib import Path
 
+from phyto_xml_parser import build_validation_report, build_worker_payload, parse_phyto_xml, validate_phyto_xml
+
 try:
     from openpyxl import load_workbook
 except ImportError:
@@ -43,6 +45,16 @@ def limit_lines(lines, max_lines=220):
 
 def normalize_key(value):
     return re.sub(r"[^a-z0-9]+", " ", clean_text(value).lower()).strip()
+
+
+def extract_xml_blocks(text, tag_name):
+    pattern = re.compile(fr"<{tag_name}(?:\s[^>]*)?>([\s\S]*?)</{tag_name}>", flags=re.IGNORECASE)
+    return pattern.findall(text or "")
+
+
+def extract_xml_value(text, tag_name):
+    match = re.search(fr"<{tag_name}(?:\s[^>]*)?>([\s\S]*?)</{tag_name}>", text or "", flags=re.IGNORECASE)
+    return clean_text(match.group(1)) if match else ""
 
 
 def parse_number(value):
@@ -670,6 +682,21 @@ def best_temp_phyto_parse(text_candidates):
     return best
 
 
+def parse_temp_phyto_xml_text(text):
+    xml_text = str(text or "")
+    if not xml_text.strip():
+        return {}
+    raise RuntimeError("parse_temp_phyto_xml_text no longer accepts raw XML text; use parse_temp_phyto_xml_path")
+
+
+def parse_temp_phyto_xml_path(path: Path):
+    parsed = parse_phyto_xml(path)
+    validation = validate_phyto_xml(parsed)
+    payload = build_worker_payload(parsed)
+    payload["validation_report"] = build_validation_report(parsed, validation)
+    return payload
+
+
 def extract_csv(path: Path, kind=""):
     try:
         text = path.read_text(encoding="utf-8-sig", errors="replace")
@@ -795,6 +822,19 @@ def extract_pdf(path: Path, kind=""):
     return payload
 
 
+def extract_xml(path: Path, kind=""):
+    text = path.read_text(encoding="utf-8", errors="replace")
+    lines = split_clean_lines(text)
+    payload = {
+        "content_type": "xml",
+        "text": "\n".join(limit_lines(lines)),
+        "line_count": len(lines),
+    }
+    if clean_text(kind).startswith("temp_phyto"):
+        payload["parsed_data"] = parse_temp_phyto_xml_path(path)
+    return payload
+
+
 def extract_file(entry):
     path = Path(entry.get("path") or "")
     suffix = path.suffix.lower()
@@ -823,6 +863,8 @@ def extract_file(entry):
             return {**base, **extract_xls(path)}
         if suffix == ".pdf":
             return {**base, **extract_pdf(path, kind)}
+        if suffix == ".xml":
+            return {**base, **extract_xml(path, kind)}
         return {
             **base,
             "content_type": suffix.lstrip(".") or "binary",
