@@ -215,6 +215,46 @@ def find_ipaffs_quantity_columns(row):
     return packages_index, quantity_index, unit_index
 
 
+def parse_ipaffs_numeric_candidate(row, index):
+    if index is None or index < 0 or index >= len(row):
+        return None
+    return parse_int_like(row[index])
+
+
+def clean_ipaffs_unit_candidate(row, index):
+    if index is None or index < 0 or index >= len(row):
+        return ""
+    return clean_text(row[index])
+
+
+def is_ipaffs_quantity_unit(value):
+    return normalize_key(value) in {"pcs", "pc", "pieces", "piece"}
+
+
+def choose_ipaffs_quantity(row, header_quantity_index, inferred_quantity_index, header_unit_index, inferred_unit_index):
+    header_quantity = parse_ipaffs_numeric_candidate(row, header_quantity_index)
+    inferred_quantity = parse_ipaffs_numeric_candidate(row, inferred_quantity_index)
+    header_unit = clean_ipaffs_unit_candidate(row, header_unit_index)
+    inferred_unit = clean_ipaffs_unit_candidate(row, inferred_unit_index)
+
+    if inferred_quantity is not None:
+        if header_quantity is None:
+            return inferred_quantity
+        if header_quantity == 0 and inferred_quantity > 0:
+            return inferred_quantity
+        if not is_ipaffs_quantity_unit(header_unit) and is_ipaffs_quantity_unit(inferred_unit):
+            return inferred_quantity
+    return header_quantity
+
+
+def choose_ipaffs_unit(row, header_unit_index, inferred_unit_index):
+    header_unit = clean_ipaffs_unit_candidate(row, header_unit_index)
+    inferred_unit = clean_ipaffs_unit_candidate(row, inferred_unit_index)
+    if is_ipaffs_quantity_unit(inferred_unit) and not is_ipaffs_quantity_unit(header_unit):
+        return inferred_unit
+    return header_unit or inferred_unit
+
+
 def parse_ipaffs_rows(rows):
     parsed_rows = []
     summary = {}
@@ -268,13 +308,17 @@ def parse_ipaffs_rows(rows):
             row[packages_index] if packages_index is not None and packages_index < len(row)
             else (row[inferred_packages_index] if inferred_packages_index is not None and inferred_packages_index < len(row) else (row[7] if len(row) > 7 else ""))
         )
-        quantity = parse_int_like(
-            row[quantity_index] if quantity_index is not None and quantity_index < len(row)
-            else (row[inferred_quantity_index] if inferred_quantity_index is not None and inferred_quantity_index < len(row) else (row[9] if len(row) > 9 else ""))
+        quantity = choose_ipaffs_quantity(
+            row,
+            quantity_index if quantity_index is not None and quantity_index < len(row) else (9 if len(row) > 9 else None),
+            inferred_quantity_index,
+            unit_index if unit_index is not None and unit_index < len(row) else (10 if len(row) > 10 else None),
+            inferred_unit_index,
         )
-        unit = clean_text(
-            row[unit_index] if unit_index is not None and unit_index < len(row)
-            else (row[inferred_unit_index] if inferred_unit_index is not None and inferred_unit_index < len(row) else (row[10] if len(row) > 10 else ""))
+        unit = choose_ipaffs_unit(
+            row,
+            unit_index if unit_index is not None and unit_index < len(row) else (10 if len(row) > 10 else None),
+            inferred_unit_index,
         )
         weight = parse_number(row[weight_index] if weight_index is not None and weight_index < len(row) else (row[11] if len(row) > 11 else ""))
         if not commodity_code and not genus and quantity is None and packages is None:
