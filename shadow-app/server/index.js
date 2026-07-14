@@ -5797,7 +5797,7 @@ function getUkdocsCsiTempPhytoVisionSourceDocuments(collection) {
     prefer_plants: inferUkdocsCsiPlantsPreference(document, false),
     document,
   }));
-  const plantTempPhyto = collection?.documents?.temp_phyto_plants_file?.storage_name
+  const plantTempPhyto = (!collection?.documents?.temp_phyto_plants_xml_file?.storage_name && collection?.documents?.temp_phyto_plants_file?.storage_name)
     ? [{
       kind: "temp_phyto_plants_file",
       prefer_plants: inferUkdocsCsiPlantsPreference(collection.documents.temp_phyto_plants_file, true),
@@ -5805,6 +5805,33 @@ function getUkdocsCsiTempPhytoVisionSourceDocuments(collection) {
     }]
     : [];
   return [...tempPhytoFiles, ...plantTempPhyto];
+}
+
+function isUkdocsCsiTempPhytoDeterministicReady(parsedData) {
+  const parsed = parsedData && typeof parsedData === "object" ? parsedData : {};
+  const sourceFormat = String(parsed?.source_format || "").trim().toLowerCase();
+  const productLines = Array.isArray(parsed?.product_lines) ? parsed.product_lines : [];
+  const hasProductLines = productLines.some((line) => String(line?.product || "").trim() && Number.isFinite(Number(line?.quantity)));
+  const hasPcnu = Boolean(String(parsed?.pcnu_number || "").trim());
+  const state = String(parsed?.document_state || "").trim().toLowerCase();
+  const problems = Array.isArray(parsed?.problems) ? parsed.problems.filter(Boolean) : [];
+  const validationReport = parsed?.validation_report && typeof parsed.validation_report === "object"
+    ? parsed.validation_report
+    : null;
+  const validationLooksGood = !validationReport
+    || (
+      Number(validationReport?.duplicate_count || 0) === 0
+      && Number(validationReport?.missing_quantity_count || 0) === 0
+      && Number(validationReport?.extracted_row_count || 0) > 0
+    );
+
+  if (!hasProductLines || !hasPcnu || state === "not_activated") {
+    return false;
+  }
+  if (sourceFormat === "xml") {
+    return validationLooksGood;
+  }
+  return problems.length === 0;
 }
 
 function normalizeUkdocsCsiDocumentName(value) {
@@ -6058,10 +6085,12 @@ function buildUkdocsCsiDeterministicReport(collection, extractedDocuments) {
     return {
       document_label: documentLabel,
       name: String(document?.name || "").trim(),
+      source_format: String(parsed?.source_format || "").trim().toLowerCase(),
       parsed_pcnu_number: String(parsed?.pcnu_number || "").trim(),
       parsed_document_state: String(parsed?.document_state || "").trim() || "unknown",
       prefer_plants: document?.prefer_plants === true,
       parsed_total_quantity: Number.isFinite(Number(parsed?.total_quantity)) ? Number(parsed.total_quantity) : null,
+      deterministic_ready: isUkdocsCsiTempPhytoDeterministicReady(parsed),
       expected_products: lineProducts.map((item) => ({
         product: item.product,
         raw_product: item.raw_product,
@@ -6840,9 +6869,17 @@ async function queueUkdocsCsiAudit(collection, requestUser) {
     collection?.documents?.ipaffs_plants_file ? [{ kind: "ipaffs_plants_file", document: collection.documents.ipaffs_plants_file }] : [],
   ]);
   const deterministicBundle = buildUkdocsCsiDeterministicReport(collection, extractedDocuments);
+  const deterministicVisualContextByLabel = new Map(
+    (deterministicBundle?.visual_context?.temp_phyto_documents || []).map((item) => [String(item?.document_label || "").trim(), item]),
+  );
 
   const tempPhytoVisionDocuments = await Promise.all(
     getUkdocsCsiTempPhytoVisionSourceDocuments(collection).map(async (item, index) => {
+      const documentLabel = `Temp phyto ${String.fromCharCode(65 + index)}`;
+      const deterministicContext = deterministicVisualContextByLabel.get(documentLabel) || null;
+      if (deterministicContext?.deterministic_ready) {
+        return null;
+      }
       const document = item.document;
       const resolvedPath = path.resolve(ukdocsPrintDocumentPath(document));
       if (!resolvedPath.startsWith(path.resolve(ukdocsPrintFilesDir)) || !existsSync(resolvedPath)) {
@@ -6850,7 +6887,7 @@ async function queueUkdocsCsiAudit(collection, requestUser) {
       }
       const contentBase64 = await fs.readFile(resolvedPath, "base64");
       return {
-        document_label: `Temp phyto ${String.fromCharCode(65 + index)}`,
+        document_label: documentLabel,
         name: String(document.original_name || document.storage_name || "temp-phyto.pdf").trim(),
         prefer_plants: item.prefer_plants === true,
         mime_type: String(document.mime_type || "application/pdf").trim(),
@@ -6878,7 +6915,9 @@ async function queueUkdocsCsiAudit(collection, requestUser) {
       manual_checks: deterministicBundle.report.manual_checks || [],
       notes: uniqueUkdocsCsiStrings([
         ...(deterministicBundle.report.notes || []),
-        "No temp phyto vision job was queued because no readable temp phyto PDF was available on disk.",
+        (deterministicBundle?.visual_context?.temp_phyto_documents || []).some((item) => item?.deterministic_ready)
+          ? "No temp phyto vision job was queued because deterministic temp phyto parsing was already sufficient for the available documents."
+          : "No temp phyto vision job was queued because no readable temp phyto PDF was available on disk.",
       ]),
       llm_content: "",
       llm_parse_source: "",
