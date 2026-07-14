@@ -5349,6 +5349,10 @@ function mapUkdocsCsiProductName(description, commodityCode = "", options = {}) 
     );
   const knownGroup = normalizeUkdocsCsiKnownGroup(description);
 
+  if (!strictDomain && knownGroup) {
+    return knownGroup;
+  }
+
   if (strictDomain === "flowers") {
     if (knownGroup && UKDOCS_CSI_FLOWER_GROUPS.has(knownGroup)) {
       return knownGroup;
@@ -5561,6 +5565,14 @@ function mapUkdocsCsiProductName(description, commodityCode = "", options = {}) 
   return String(description || "").trim() || "Unknown product";
 }
 
+function getUkdocsCsiComparisonGroup(row) {
+  const comparisonGroup = String(row?.comparison_group || "").trim();
+  if (comparisonGroup) {
+    return comparisonGroup;
+  }
+  return String(row?.mapped_product || "").trim();
+}
+
 function isUkdocsCsiAggregateProductName(productName) {
   const normalized = normalizeUkdocsCsiToken(productName);
   return normalized.includes("mixed cut flowers and branches")
@@ -5674,11 +5686,11 @@ function buildUkdocsCsiDomainProducts(baseProducts, sourceRows, domain) {
       const invoiceQty = parseUkdocsCsiReportQuantity(item?.invoice_quantity);
       const exportQty = parseUkdocsCsiReportQuantity(item?.export_quantity);
       const ipaffsQty = (Array.isArray(sourceRows) ? sourceRows : [])
-        .filter((row) => String(row?.mapped_product || "").trim() === productName && scopedSources.ipaffs.has(String(row?.source || "").trim()))
+        .filter((row) => getUkdocsCsiComparisonGroup(row) === productName && scopedSources.ipaffs.has(String(row?.source || "").trim()))
         .reduce((sum, row) => sum + (Number.isFinite(Number(row?.quantity)) ? Number(row.quantity) : 0), 0);
       const tempPhytoPerDocumentMap = new Map();
       for (const row of Array.isArray(sourceRows) ? sourceRows : []) {
-        if (String(row?.mapped_product || "").trim() !== productName) {
+        if (getUkdocsCsiComparisonGroup(row) !== productName) {
           continue;
         }
         if (!scopedSources.tempPhyto.has(String(row?.source || "").trim())) {
@@ -5970,22 +5982,24 @@ function buildUkdocsCsiDeterministicReport(collection, extractedDocuments) {
     const rows = Array.isArray(document?.parsed_data?.rows) ? document.parsed_data.rows : [];
     const strictDomain = inferUkdocsCsiDocumentDomain(document?.name || "", document?.kind || "");
     for (const row of rows) {
-      const mappedProduct = mapUkdocsCsiProductName(row?.product, row?.commodity_code, {
+      const rawProduct = String(row?.product || "").trim();
+      const comparisonGroup = mapUkdocsCsiProductName(rawProduct, row?.commodity_code, {
         ...(strictDomain ? { strict_domain: strictDomain } : {}),
         document_name: document?.name || "",
       });
       addUkdocsCsiQuantity(
         invoiceTotals,
-        mappedProduct,
+        comparisonGroup,
         row?.quantity,
       );
       sourceRows.push({
         source: "invoice",
         document_name: String(document?.name || "").trim(),
-        raw_product: String(row?.product || "").trim(),
+        raw_product: rawProduct,
         commodity_code: String(row?.commodity_code || "").trim(),
-        mapped_product: mappedProduct,
-        product_domain: getUkdocsCsiProductDomain(mappedProduct),
+        mapped_product: rawProduct || comparisonGroup,
+        comparison_group: comparisonGroup,
+        product_domain: getUkdocsCsiProductDomain(comparisonGroup),
         quantity: Number.isFinite(Number(row?.quantity)) ? Number(row.quantity) : null,
       });
     }
@@ -5994,22 +6008,24 @@ function buildUkdocsCsiDeterministicReport(collection, extractedDocuments) {
   const exportRows = Array.isArray(exportDoc?.parsed_data?.rows) ? exportDoc.parsed_data.rows : [];
   const exportStrictDomain = inferUkdocsCsiDocumentDomain(exportDoc?.name || "", exportDoc?.kind || "");
   for (const row of exportRows) {
-    const mappedProduct = mapUkdocsCsiProductName(row?.product, row?.commodity_code, {
+    const rawProduct = String(row?.product || "").trim();
+    const comparisonGroup = mapUkdocsCsiProductName(rawProduct, row?.commodity_code, {
       ...(exportStrictDomain ? { strict_domain: exportStrictDomain } : {}),
       document_name: exportDoc?.name || "",
     });
     addUkdocsCsiQuantity(
       exportTotals,
-      mappedProduct,
+      comparisonGroup,
       row?.quantity,
     );
     sourceRows.push({
       source: "export",
       document_name: String(exportDoc?.name || "").trim(),
-      raw_product: String(row?.product || "").trim(),
+      raw_product: rawProduct,
       commodity_code: String(row?.commodity_code || "").trim(),
-      mapped_product: mappedProduct,
-      product_domain: getUkdocsCsiProductDomain(mappedProduct),
+      mapped_product: rawProduct || comparisonGroup,
+      comparison_group: comparisonGroup,
+      product_domain: getUkdocsCsiProductDomain(comparisonGroup),
       quantity: Number.isFinite(Number(row?.quantity)) ? Number(row.quantity) : null,
     });
   }
@@ -6036,6 +6052,7 @@ function buildUkdocsCsiDeterministicReport(collection, extractedDocuments) {
       raw_product: String(row?.genus || row?.product || "").trim(),
       commodity_code: String(row?.commodity_code || "").trim(),
       mapped_product: mappedProduct,
+      comparison_group: mappedProduct,
       product_domain: getUkdocsCsiProductDomain(mappedProduct),
       quantity: Number.isFinite(Number(row?.quantity)) ? Number(row.quantity) : null,
     });
@@ -6064,6 +6081,7 @@ function buildUkdocsCsiDeterministicReport(collection, extractedDocuments) {
         raw_product: String(line?.product || "").trim(),
         commodity_code: "",
         mapped_product: mappedProduct,
+        comparison_group: mappedProduct,
         product_domain: getUkdocsCsiProductDomain(mappedProduct),
         quantity: Number.isFinite(Number(line?.quantity)) ? Number(line.quantity) : null,
       });
@@ -6357,26 +6375,20 @@ function buildUkdocsCsiAuditPayload(collection, deterministicBundle, requestUser
     instructions: [
       "Return strict JSON only.",
       "Use only the temporary phyto PDF page images for this task.",
-      "Do not analyze generated invoices, generated export files, consignee address, destination text, or origin text here.",
-      "Ignore long legal, annex, and compliance text unless it clearly shows the document is blocked or not activated.",
-      "Check these visual items: visible PCNU number, blocked or not activated state, and clearly visible individual product-line quantities on temp phyto pages.",
-      "Use expected_temp_phyto_checks for this exact document as your hunting list. Search the page for each expected product before you decide it is missing.",
-      "For each expected product, use raw_product as the visible botanical/product alias and product as the final CSI group it should map to.",
-      "When several lines are visible, match them against expected_temp_phyto_checks one by one instead of free-grouping by yourself.",
-      "If a page is a plants document, do not invent flower groups from similar names unless the expected_temp_phyto_checks for that same document already points to that flower group.",
-      "Do not check invoice totals, export totals, or IPAFFS totals visually as totals, but do use the expected product list to know what products you are hunting for on the page.",
-      "List every clearly visible individual temp phyto product-line quantity in visible_documents after matching it to the expected product list.",
-      "When a temp phyto page shows two visible lines like chrysanthemum 17160 and solidago 25, return two separate visible_documents rows for that same document label.",
-      "If a document has visible individual line quantities, include them even when the page also shows a TOTAL.",
-      "If a value is not clearly visible, do not guess. Mark warn and add a manual check.",
+      "Check only: visible PCNU number, blocked or not activated state, and clearly visible individual product-line Pieces quantities.",
+      "Use expected_temp_phyto_checks for this exact document as your hunt list and match visible lines one by one.",
+      "Use raw_product as the visible alias and product as the final CSI group.",
+      "If expected_products is empty, you may still return clearly visible individual product lines using the best obvious group for that document domain.",
+      "For flower documents, keep flower groups. For plant documents, keep plant groups. Do not switch domains.",
+      "Ignore consignee text, invoice totals, export totals, IPAFFS totals, legal text, annex text, and repeated continuation echoes.",
+      "If a document has multiple visible product lines, return separate visible_documents rows.",
+      "If a value is not clearly visible, do not guess.",
       "If the document looks active and the PCNU number is readable, say so directly.",
       "Never use the Packages or Box count as the product quantity; use only the Pieces quantity.",
       "Never use a page total as a product quantity.",
       "Never combine multiple visible product lines into one quantity.",
       "Never invent a quantity that is not printed on the page.",
       "Never emit a quantity of 1 unless the page clearly shows '1 Pieces' for that same product line.",
-      "Ignore duplicate annex/continuation echoes of the same product line when a clearer main line with Pieces quantity is visible.",
-      "If the same product appears twice in the text view but only one line has a clear Pieces quantity, keep only the clear Pieces line.",
       "Never output explanation text before or after the JSON.",
     ],
     output_schema: {
@@ -6435,10 +6447,10 @@ function buildUkdocsCsiAuditPayload(collection, deterministicBundle, requestUser
       },
     ],
     format: "json",
-    think: true,
+    think: false,
     options: {
       temperature: 0,
-      num_predict: 7000,
+      num_predict: 1800,
     },
   };
 }

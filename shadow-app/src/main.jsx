@@ -4919,7 +4919,7 @@ function UkdocsCSIPage({ currentUser }) {
     ]);
     return selectedCsiSourceRows.filter((row) => {
       const source = String(row?.source || "").toLowerCase();
-      const mappedGroup = String(row?.mapped_product || "").trim();
+      const mappedGroup = String(row?.comparison_group || row?.mapped_product || "").trim();
       return source.includes("plants") || plantGroups.has(mappedGroup);
     });
   }, [selectedCsiSourceRows]);
@@ -5448,7 +5448,8 @@ function UkdocsCSIPage({ currentUser }) {
                                 <th>Document</th>
                                 <th>Raw product</th>
                                 <th>Commodity code</th>
-                                <th>Mapped plant group</th>
+                                <th>Shown group</th>
+                                <th>Compared as</th>
                                 <th>Qty</th>
                               </tr>
                             </thead>
@@ -5460,6 +5461,7 @@ function UkdocsCSIPage({ currentUser }) {
                                   <td>{row.raw_product || "-"}</td>
                                   <td>{row.commodity_code || "-"}</td>
                                   <td>{row.mapped_product || "-"}</td>
+                                  <td>{row.comparison_group || row.mapped_product || "-"}</td>
                                   <td>{row.quantity ?? "-"}</td>
                                 </tr>
                               ))}
@@ -5479,7 +5481,8 @@ function UkdocsCSIPage({ currentUser }) {
                                 <th>Document</th>
                                 <th>Raw product</th>
                                 <th>Commodity code</th>
-                                <th>Mapped flower group</th>
+                                <th>Shown group</th>
+                                <th>Compared as</th>
                                 <th>Qty</th>
                               </tr>
                             </thead>
@@ -5491,6 +5494,7 @@ function UkdocsCSIPage({ currentUser }) {
                                   <td>{row.raw_product || "-"}</td>
                                   <td>{row.commodity_code || "-"}</td>
                                   <td>{row.mapped_product || "-"}</td>
+                                  <td>{row.comparison_group || row.mapped_product || "-"}</td>
                                   <td>{row.quantity ?? "-"}</td>
                                 </tr>
                               ))}
@@ -5508,7 +5512,8 @@ function UkdocsCSIPage({ currentUser }) {
                             <th>Document</th>
                             <th>Raw product</th>
                             <th>Commodity code</th>
-                            <th>Mapped group</th>
+                            <th>Shown group</th>
+                            <th>Compared as</th>
                             <th>Qty</th>
                           </tr>
                         </thead>
@@ -5520,6 +5525,7 @@ function UkdocsCSIPage({ currentUser }) {
                               <td>{row.raw_product || "-"}</td>
                               <td>{row.commodity_code || "-"}</td>
                               <td>{row.mapped_product || "-"}</td>
+                              <td>{row.comparison_group || row.mapped_product || "-"}</td>
                               <td>{row.quantity ?? "-"}</td>
                             </tr>
                           ))}
