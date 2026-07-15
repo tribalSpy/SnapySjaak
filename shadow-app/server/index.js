@@ -5373,6 +5373,7 @@ const UKDOCS_CSI_PLANT_GROUPS = new Set([
 
 const UKDOCS_CSI_FLOWER_GROUPS = new Set([
   "Flowers (other fresh)",
+  "Flowers (other not fresh)",
   "Flowers carnation",
   "Flowers chrysanthemums",
   "Flowers green",
@@ -5437,6 +5438,9 @@ function normalizeUkdocsCsiKnownGroup(value) {
   }
   if (text.includes("flowers other fresh")) {
     return "Flowers (other fresh)";
+  }
+  if (text.includes("flowers other not fresh") || text.includes("flowers not fresh")) {
+    return "Flowers (other not fresh)";
   }
   if (text.includes("flowers carnation") || text.includes("flowers carnations")) {
     return "Flowers carnation";
@@ -5549,6 +5553,9 @@ function mapUkdocsCsiProductName(description, commodityCode = "", options = {}) 
     if (knownGroup && UKDOCS_CSI_FLOWER_GROUPS.has(knownGroup)) {
       return knownGroup;
     }
+    if (text.includes("other not fresh") || code.startsWith("060390") || code.startsWith("603900")) {
+      return "Flowers (other not fresh)";
+    }
     if (text.includes("chrysanthem") || code.startsWith("060314") || code.startsWith("603140")) {
       return "Flowers chrysanthemums";
     }
@@ -5566,6 +5573,9 @@ function mapUkdocsCsiProductName(description, commodityCode = "", options = {}) 
     }
     if (text.includes("green") || code.startsWith("0604209") || code.startsWith("604209")) {
       return "Flowers green";
+    }
+    if (code && !code.startsWith("06") && !code.startsWith("6")) {
+      return String(description || "").trim() || "Unknown product";
     }
     return "Flowers (other fresh)";
   }
@@ -5747,6 +5757,9 @@ function mapUkdocsCsiProductName(description, commodityCode = "", options = {}) 
   }
   if (text.includes("green") || code.startsWith("0604209") || code.startsWith("604209")) {
     return "Flowers green";
+  }
+  if (text.includes("other not fresh") || code.startsWith("060390") || code.startsWith("603900")) {
+    return "Flowers (other not fresh)";
   }
   if (
     text.includes("gypsoph") || text.includes("solidago") || text.includes("other fresh")

@@ -120,6 +120,8 @@ def normalize_known_csi_group(value):
         return "refined roses"
     if "flowers other fresh" in text:
         return "Flowers (other fresh)"
+    if "flowers other not fresh" in text or "flowers not fresh" in text:
+        return "Flowers (other not fresh)"
     if "flowers carnation" in text or "flowers carnations" in text:
         return "Flowers carnation"
     if "flowers chrysanthem" in text:
@@ -196,9 +198,13 @@ def map_ipaffs_product(genus, commodity_code, prefer_plants=False):
         return "Flowers roses"
     if code.startswith("603150") or code.startswith("060315"):
         return "Flowers lilies"
+    if code.startswith("603130") or code.startswith("060313"):
+        return "Flowers orchids"
     if code.startswith("604209"):
         return "Flowers green"
-    if known_group in {"Flowers (other fresh)", "Flowers carnation", "Flowers chrysanthemums", "Flowers roses", "Flowers lilies", "Flowers orchids", "Flowers green"}:
+    if code.startswith("603900") or code.startswith("060390"):
+        return "Flowers (other not fresh)"
+    if known_group in {"Flowers (other fresh)", "Flowers (other not fresh)", "Flowers carnation", "Flowers chrysanthemums", "Flowers roses", "Flowers lilies", "Flowers orchids", "Flowers green"}:
         return known_group
     if "chrysanthem" in genus_key:
         return "Flowers chrysanthemums"
@@ -210,7 +216,9 @@ def map_ipaffs_product(genus, commodity_code, prefer_plants=False):
         return "Flowers roses"
     if "solidago" in genus_key:
         return "Flowers (other fresh)"
-    return "Flowers (other fresh)"
+    if code.startswith("0603197") or code.startswith("603197") or code.startswith("0603199") or code.startswith("603199"):
+        return "Flowers (other fresh)"
+    return clean_text(genus) or "Unknown product"
 
 
 def workbook_is_plants_document(kind="", file_name=""):
