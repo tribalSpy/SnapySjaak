@@ -3701,6 +3701,281 @@ function ukdocsCsiStatusDefinition(report) {
   return { label: "CSI not started", tone: "muted" };
 }
 
+const CSI_PLANT_REVIEW_ACCEPTED_STORAGE_PREFIX = "ukdocs-csi-plant-ipaffs-temp-review";
+const CSI_PLANT_NAME_STOP_WORDS = new Set([
+  "hybrid",
+  "hybride",
+  "mix",
+  "mixed",
+  "var",
+  "variety",
+  "species",
+  "sp",
+  "spp",
+  "plant",
+  "plants",
+]);
+
+function normalizeCsiPlantDisplayName(value) {
+  return String(value || "")
+    .toLowerCase()
+    .replace(/\([^)]*\)/g, " ")
+    .replace(/[^a-z0-9]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function csiPlantNameTokens(value) {
+  return normalizeCsiPlantDisplayName(value)
+    .split(" ")
+    .filter((token) => token.length > 1 && !CSI_PLANT_NAME_STOP_WORDS.has(token));
+}
+
+function csiPlantNamesCompatible(left, right) {
+  const leftName = normalizeCsiPlantDisplayName(left);
+  const rightName = normalizeCsiPlantDisplayName(right);
+  if (!leftName || !rightName) {
+    return false;
+  }
+  if (leftName === rightName || leftName.includes(rightName) || rightName.includes(leftName)) {
+    return true;
+  }
+
+  const leftTokens = csiPlantNameTokens(left);
+  const rightTokens = csiPlantNameTokens(right);
+  if (!leftTokens.length || !rightTokens.length) {
+    return false;
+  }
+  if (leftTokens[0] === rightTokens[0]) {
+    return true;
+  }
+  const rightTokenSet = new Set(rightTokens);
+  return leftTokens.some((token) => rightTokenSet.has(token));
+}
+
+function csiPlantReviewNamesExactlySame(left, right) {
+  const leftName = normalizeCsiPlantDisplayName(left);
+  const rightName = normalizeCsiPlantDisplayName(right);
+  return Boolean(leftName && rightName && leftName === rightName);
+}
+
+function csiPlantReviewSourceGroup(row) {
+  return String(row?.comparison_group || row?.mapped_product || "").trim();
+}
+
+function csiPlantReviewQuantity(row) {
+  const quantity = Number(row?.quantity);
+  return Number.isFinite(quantity) ? quantity : null;
+}
+
+function csiPlantReviewItem(row, index) {
+  return {
+    index,
+    source: String(row?.source || "").trim(),
+    document: String(row?.document_name || row?.document_label || "").trim(),
+    name: String(row?.raw_product || row?.mapped_product || "").trim(),
+    commodityCode: String(row?.commodity_code || "").trim(),
+    group: csiPlantReviewSourceGroup(row),
+    quantity: csiPlantReviewQuantity(row),
+  };
+}
+
+function csiPlantReviewSameGroup(left, right) {
+  const leftGroup = String(left?.group || "").trim().toLowerCase();
+  const rightGroup = String(right?.group || "").trim().toLowerCase();
+  return Boolean(leftGroup && rightGroup && leftGroup === rightGroup);
+}
+
+function csiPlantReviewSameQuantity(left, right) {
+  if (left?.quantity === null || right?.quantity === null) {
+    return false;
+  }
+  return Math.abs(Number(left.quantity) - Number(right.quantity)) < 0.000001;
+}
+
+function csiPlantReviewCandidateRank(ipaffsRow, tempPhytoRow) {
+  const sameGroup = csiPlantReviewSameGroup(ipaffsRow, tempPhytoRow);
+  const sameQuantity = csiPlantReviewSameQuantity(ipaffsRow, tempPhytoRow);
+  const compatibleName = csiPlantNamesCompatible(ipaffsRow?.name, tempPhytoRow?.name);
+  if (sameGroup && sameQuantity && compatibleName) {
+    return 0;
+  }
+  if (sameGroup && sameQuantity) {
+    return 1;
+  }
+  if (sameGroup && compatibleName) {
+    return 2;
+  }
+  if (sameQuantity && compatibleName) {
+    return 3;
+  }
+  if (sameQuantity) {
+    return 4;
+  }
+  return null;
+}
+
+function csiPlantReviewRowKey(row) {
+  return [
+    row?.status,
+    row?.group,
+    row?.ipaffs?.index,
+    row?.ipaffs?.document,
+    row?.ipaffs?.name,
+    row?.ipaffs?.quantity,
+    row?.tempPhyto?.index,
+    row?.tempPhyto?.document,
+    row?.tempPhyto?.name,
+    row?.tempPhyto?.quantity,
+  ]
+    .map((value) => String(value ?? "").trim().toLowerCase())
+    .join("|");
+}
+
+function buildCsiPlantIpaffsTempPhytoReviewRows(sourceRows) {
+  const ipaffsRows = (Array.isArray(sourceRows) ? sourceRows : [])
+    .filter((row) => String(row?.source || "").trim() === "ipaffs_plants")
+    .map(csiPlantReviewItem);
+  const tempPhytoRows = (Array.isArray(sourceRows) ? sourceRows : [])
+    .filter((row) => {
+      const source = String(row?.source || "").trim();
+      return source === "temp_phyto_plants" || source === "visual_temp_phyto_plants";
+    })
+    .map(csiPlantReviewItem);
+
+  const usedTempPhytoIndexes = new Set();
+  const reviewRows = [];
+
+  for (const ipaffsRow of ipaffsRows) {
+    const candidates = tempPhytoRows
+      .map((tempPhytoRow, tempIndex) => {
+        if (usedTempPhytoIndexes.has(tempIndex)) {
+          return null;
+        }
+        const rank = csiPlantReviewCandidateRank(ipaffsRow, tempPhytoRow);
+        return rank === null ? null : { rank, tempIndex, tempPhytoRow };
+      })
+      .filter(Boolean)
+      .sort((left, right) => (
+        left.rank - right.rank
+        || Math.abs((ipaffsRow.quantity ?? 0) - (left.tempPhytoRow.quantity ?? 0)) - Math.abs((ipaffsRow.quantity ?? 0) - (right.tempPhytoRow.quantity ?? 0))
+        || String(left.tempPhytoRow.name || "").localeCompare(String(right.tempPhytoRow.name || ""))
+      ));
+
+    const best = candidates[0] || null;
+    if (!best) {
+      reviewRows.push({
+        status: "missing_temp_phyto",
+        canAccept: false,
+        group: ipaffsRow.group,
+        ipaffs: ipaffsRow,
+        tempPhyto: null,
+        message: "IPAFFS plant row has no matching temp phyto plant row by group/name/quantity.",
+      });
+      continue;
+    }
+
+    usedTempPhytoIndexes.add(best.tempIndex);
+    const tempPhytoRow = best.tempPhytoRow;
+    const sameGroup = csiPlantReviewSameGroup(ipaffsRow, tempPhytoRow);
+    const sameQuantity = csiPlantReviewSameQuantity(ipaffsRow, tempPhytoRow);
+    const compatibleName = csiPlantNamesCompatible(ipaffsRow.name, tempPhytoRow.name);
+    let status = "match";
+    let canAccept = false;
+    let message = "Name, group and quantity match.";
+
+    if (sameGroup && sameQuantity && compatibleName && !csiPlantReviewNamesExactlySame(ipaffsRow.name, tempPhytoRow.name)) {
+      status = "name_variant";
+      canAccept = true;
+      message = "Same group and quantity; names look compatible but are written differently.";
+    } else if (sameGroup && sameQuantity && !compatibleName) {
+      status = "name_mismatch";
+      canAccept = true;
+      message = "Same group and quantity, but the names do not look related.";
+    } else if (sameGroup && compatibleName && !sameQuantity) {
+      status = "quantity_mismatch";
+      message = "Same group and compatible name, but quantity differs.";
+    } else if (sameQuantity && compatibleName && !sameGroup) {
+      status = "group_mismatch";
+      canAccept = true;
+      message = "Same quantity and compatible name, but mapped plant groups differ.";
+    } else if (sameQuantity) {
+      status = "quantity_match_review";
+      canAccept = true;
+      message = "Same quantity, but name and group differ. Review as a possible inspector name/group switch.";
+    }
+
+    reviewRows.push({
+      status,
+      canAccept,
+      group: ipaffsRow.group || tempPhytoRow.group,
+      ipaffs: ipaffsRow,
+      tempPhyto: tempPhytoRow,
+      message,
+    });
+  }
+
+  tempPhytoRows.forEach((tempPhytoRow, tempIndex) => {
+    if (usedTempPhytoIndexes.has(tempIndex)) {
+      return;
+    }
+    reviewRows.push({
+      status: "extra_temp_phyto",
+      canAccept: false,
+      group: tempPhytoRow.group,
+      ipaffs: null,
+      tempPhyto: tempPhytoRow,
+      message: "Temp phyto plant row has no matching IPAFFS plant row by group/name/quantity.",
+    });
+  });
+
+  return reviewRows.map((row) => ({
+    ...row,
+    key: csiPlantReviewRowKey(row),
+  }));
+}
+
+function csiPlantReviewStatusLabel(status) {
+  switch (status) {
+    case "match":
+      return "Match";
+    case "name_variant":
+      return "Name variant";
+    case "name_mismatch":
+      return "Name mismatch";
+    case "quantity_mismatch":
+      return "Qty mismatch";
+    case "group_mismatch":
+      return "Group mismatch";
+    case "quantity_match_review":
+      return "Qty match review";
+    case "missing_temp_phyto":
+      return "Missing temp phyto";
+    case "extra_temp_phyto":
+      return "Extra temp phyto";
+    default:
+      return status || "-";
+  }
+}
+
+function csiPlantReviewStatusTone(status) {
+  switch (status) {
+    case "match":
+      return "success";
+    case "name_variant":
+    case "name_mismatch":
+    case "group_mismatch":
+    case "quantity_match_review":
+      return "info";
+    case "quantity_mismatch":
+    case "missing_temp_phyto":
+    case "extra_temp_phyto":
+      return "danger";
+    default:
+      return "muted";
+  }
+}
+
 function ukdocsCollectionDownloadEntries(collection, customer = null, menuKey = "all") {
   if (!collection?.id) {
     return [];
@@ -4811,6 +5086,8 @@ function UkdocsCSIPage({ currentUser }) {
   const [selectedCollectionDate, setSelectedCollectionDate] = useState(() => localDateIso());
   const [selectedCollectionId, setSelectedCollectionId] = useState("");
   const [detailDrawerOpen, setDetailDrawerOpen] = useState(false);
+  const [acceptedCsiPlantReviewKeys, setAcceptedCsiPlantReviewKeys] = useState([]);
+  const [showAcceptedCsiPlantReviewRows, setShowAcceptedCsiPlantReviewRows] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -4930,6 +5207,49 @@ function UkdocsCSIPage({ currentUser }) {
     () => selectedCsiSourceRows.filter((row) => !selectedCsiPlantSourceRows.includes(row)),
     [selectedCsiSourceRows, selectedCsiPlantSourceRows],
   );
+  const selectedCsiPlantReviewStorageKey = selectedCollection?.id
+    ? `${CSI_PLANT_REVIEW_ACCEPTED_STORAGE_PREFIX}:${selectedCollection.id}`
+    : "";
+  const selectedCsiPlantReviewRows = useMemo(
+    () => buildCsiPlantIpaffsTempPhytoReviewRows(selectedCsiPlantSourceRows),
+    [selectedCsiPlantSourceRows],
+  );
+  const acceptedCsiPlantReviewKeySet = useMemo(
+    () => new Set(acceptedCsiPlantReviewKeys),
+    [acceptedCsiPlantReviewKeys],
+  );
+  const selectedCsiPlantVisibleReviewRows = useMemo(
+    () => selectedCsiPlantReviewRows.filter((row) => (
+      showAcceptedCsiPlantReviewRows
+      || (row.status !== "match" && !acceptedCsiPlantReviewKeySet.has(row.key))
+    )),
+    [acceptedCsiPlantReviewKeySet, selectedCsiPlantReviewRows, showAcceptedCsiPlantReviewRows],
+  );
+  const selectedCsiPlantReviewTotals = useMemo(() => {
+    const totals = {
+      ipaffsQuantity: 0,
+      tempPhytoQuantity: 0,
+      ipaffsRows: 0,
+      tempPhytoRows: 0,
+    };
+    for (const row of selectedCsiPlantSourceRows) {
+      const source = String(row?.source || "").trim();
+      const quantity = Number(row?.quantity);
+      if (!Number.isFinite(quantity)) {
+        continue;
+      }
+      if (source === "ipaffs_plants") {
+        totals.ipaffsRows += 1;
+        totals.ipaffsQuantity += quantity;
+      } else if (source === "temp_phyto_plants" || source === "visual_temp_phyto_plants") {
+        totals.tempPhytoRows += 1;
+        totals.tempPhytoQuantity += quantity;
+      }
+    }
+    return totals;
+  }, [selectedCsiPlantSourceRows]);
+  const selectedCsiPlantAcceptedReviewCount = selectedCsiPlantReviewRows.filter((row) => acceptedCsiPlantReviewKeySet.has(row.key)).length;
+  const selectedCsiPlantExactReviewCount = selectedCsiPlantReviewRows.filter((row) => row.status === "match").length;
 
   useEffect(() => {
     if (!filteredCollections.length) {
@@ -4943,6 +5263,20 @@ function UkdocsCSIPage({ currentUser }) {
     }
   }, [filteredCollections, selectedCollectionId]);
 
+  useEffect(() => {
+    setShowAcceptedCsiPlantReviewRows(false);
+    if (!selectedCsiPlantReviewStorageKey || typeof window === "undefined") {
+      setAcceptedCsiPlantReviewKeys([]);
+      return;
+    }
+    try {
+      const savedKeys = JSON.parse(window.localStorage.getItem(selectedCsiPlantReviewStorageKey) || "[]");
+      setAcceptedCsiPlantReviewKeys(Array.isArray(savedKeys) ? savedKeys.map((item) => String(item || "")).filter(Boolean) : []);
+    } catch {
+      setAcceptedCsiPlantReviewKeys([]);
+    }
+  }, [selectedCsiPlantReviewStorageKey]);
+
   function openCollectionDetail(collectionId) {
     setSelectedCollectionId(collectionId);
     setDetailDrawerOpen(true);
@@ -4950,6 +5284,22 @@ function UkdocsCSIPage({ currentUser }) {
 
   function closeCollectionDetail() {
     setDetailDrawerOpen(false);
+  }
+
+  function toggleCsiPlantReviewAccepted(rowKey, accepted) {
+    setAcceptedCsiPlantReviewKeys((currentKeys) => {
+      const nextKeys = new Set(currentKeys);
+      if (accepted) {
+        nextKeys.add(rowKey);
+      } else {
+        nextKeys.delete(rowKey);
+      }
+      const nextList = Array.from(nextKeys);
+      if (selectedCsiPlantReviewStorageKey && typeof window !== "undefined") {
+        window.localStorage.setItem(selectedCsiPlantReviewStorageKey, JSON.stringify(nextList));
+      }
+      return nextList;
+    });
   }
 
   async function refreshState() {
@@ -5418,6 +5768,83 @@ function UkdocsCSIPage({ currentUser }) {
                         </tbody>
                       </table>
                     </div>
+                  </>
+                )}
+                {!!selectedCsiPlantReviewRows.length && (
+                  <>
+                    <div className="row-actions spread-actions">
+                      <strong>Plants IPAFFS/temp phyto detail review</strong>
+                      <label style={{ display: "inline-flex", alignItems: "center", gap: "8px", fontWeight: 600 }}>
+                        <input
+                          type="checkbox"
+                          checked={showAcceptedCsiPlantReviewRows}
+                          onChange={(event) => setShowAcceptedCsiPlantReviewRows(event.target.checked)}
+                          style={{ width: "auto", minHeight: "auto" }}
+                        />
+                        Show accepted and exact matches
+                      </label>
+                    </div>
+                    <div className="notice">
+                      Review-only plant table. It compares only IPAFFS plants against temp phyto plants and does not change the CSI group summary.
+                      {" "}IPAFFS plants: {selectedCsiPlantReviewTotals.ipaffsQuantity} qty in {selectedCsiPlantReviewTotals.ipaffsRows} row(s).
+                      {" "}Temp phyto plants: {selectedCsiPlantReviewTotals.tempPhytoQuantity} qty in {selectedCsiPlantReviewTotals.tempPhytoRows} row(s).
+                      {" "}{selectedCsiPlantExactReviewCount} exact match(es) hidden and {selectedCsiPlantAcceptedReviewCount} accepted review row(s) hidden.
+                    </div>
+                    {selectedCsiPlantVisibleReviewRows.length ? (
+                      <div className="table-wrap">
+                        <table className="data-table">
+                          <thead>
+                            <tr>
+                              <th>Accept</th>
+                              <th>Status</th>
+                              <th>Plant group</th>
+                              <th>IPAFFS plant</th>
+                              <th>IPAFFS qty</th>
+                              <th>Temp phyto plant</th>
+                              <th>Temp phyto qty</th>
+                              <th>Message</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {selectedCsiPlantVisibleReviewRows.map((row) => (
+                              <tr key={row.key}>
+                                <td>
+                                  {row.canAccept ? (
+                                    <input
+                                      type="checkbox"
+                                      checked={acceptedCsiPlantReviewKeySet.has(row.key)}
+                                      onChange={(event) => toggleCsiPlantReviewAccepted(row.key, event.target.checked)}
+                                      aria-label="Accept plant IPAFFS/temp phyto name or group difference"
+                                      style={{ width: "auto", minHeight: "auto" }}
+                                    />
+                                  ) : "-"}
+                                </td>
+                                <td><span className={`ukdocs-status-badge ${csiPlantReviewStatusTone(row.status)}`}>{csiPlantReviewStatusLabel(row.status)}</span></td>
+                                <td>
+                                  {row.ipaffs?.group || row.tempPhyto?.group || "-"}
+                                  {!!row.ipaffs?.group && !!row.tempPhyto?.group && row.ipaffs.group !== row.tempPhyto.group && (
+                                    <><br /><small>Temp: {row.tempPhyto.group}</small></>
+                                  )}
+                                </td>
+                                <td>
+                                  {row.ipaffs?.name || "-"}
+                                  {!!row.ipaffs?.document && <><br /><small>{row.ipaffs.document}</small></>}
+                                </td>
+                                <td>{row.ipaffs?.quantity ?? "-"}</td>
+                                <td>
+                                  {row.tempPhyto?.name || "-"}
+                                  {!!row.tempPhyto?.document && <><br /><small>{row.tempPhyto.document}</small></>}
+                                </td>
+                                <td>{row.tempPhyto?.quantity ?? "-"}</td>
+                                <td>{row.message || "-"}</td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    ) : (
+                      <div className="notice">No open plant IPAFFS/temp phyto name or quantity review rows. Use "Show accepted and exact matches" to inspect the hidden matches.</div>
+                    )}
                   </>
                 )}
                 {!!selectedCsiFlowerProducts.length && (
