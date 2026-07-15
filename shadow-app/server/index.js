@@ -5929,7 +5929,7 @@ function buildUkdocsCsiDomainProducts(baseProducts, sourceRows, domain) {
     }
     : {
       ipaffs: new Set(["ipaffs"]),
-      tempPhyto: new Set(["temp_phyto", "visual_temp_phyto"]),
+      tempPhyto: new Set(["temp_phyto", "temp_phyto_xml", "visual_temp_phyto"]),
     };
 
   return (Array.isArray(baseProducts) ? baseProducts : [])
@@ -6065,6 +6065,7 @@ function getUkdocsCsiTempPhytoParsedSourceDocuments(collection) {
     tempPhytoFiles.push({
       kind: xmlDocument?.storage_name ? "temp_phyto_xml" : "temp_phyto",
       prefer_plants: inferUkdocsCsiPlantsPreference(activeDocument, false),
+      vision_document: pdfDocument?.storage_name ? pdfDocument : null,
       document: activeDocument,
     });
   }
@@ -6080,6 +6081,9 @@ function getUkdocsCsiTempPhytoParsedSourceDocuments(collection) {
     ? [{
       kind: plantTempPhytoKind,
       prefer_plants: inferUkdocsCsiPlantsPreference(plantTempPhytoDocument, true),
+      vision_document: collection?.documents?.temp_phyto_plants_file?.storage_name
+        ? collection.documents.temp_phyto_plants_file
+        : null,
       document: plantTempPhytoDocument,
     }]
     : [];
@@ -6345,6 +6349,12 @@ function buildUkdocsCsiDeterministicReport(collection, extractedDocuments) {
     const parsed = document?.parsed_data && typeof document.parsed_data === "object" ? document.parsed_data : {};
     const lineProducts = [];
     const documentLabel = `Temp phyto ${String.fromCharCode(65 + index)}`;
+    const visualDocumentName = String(
+      document?.vision_document?.original_name
+      || document?.vision_document?.storage_name
+      || document?.name
+      || "",
+    ).trim();
     for (const line of Array.isArray(parsed?.product_lines) ? parsed.product_lines : []) {
       const mappedProduct = mapUkdocsCsiProductName(line?.product || "", "", {
         document_name: document?.name || "",
@@ -6358,7 +6368,11 @@ function buildUkdocsCsiDeterministicReport(collection, extractedDocuments) {
         quantity: Number.isFinite(Number(line?.quantity)) ? Number(line.quantity) : null,
       });
       sourceRows.push({
-        source: document?.prefer_plants === true ? "temp_phyto_plants" : "temp_phyto",
+        source: document?.prefer_plants === true
+          ? "temp_phyto_plants"
+          : document?.kind === "temp_phyto_xml"
+            ? "temp_phyto_xml"
+            : "temp_phyto",
         document_name: String(document?.name || documentLabel).trim(),
         document_label: documentLabel,
         raw_product: String(line?.product || "").trim(),
@@ -6385,7 +6399,8 @@ function buildUkdocsCsiDeterministicReport(collection, extractedDocuments) {
     }
     return {
       document_label: documentLabel,
-      name: String(document?.name || "").trim(),
+      name: visualDocumentName || String(document?.name || "").trim(),
+      parsed_document_name: String(document?.name || "").trim(),
       source_format: String(parsed?.source_format || "").trim().toLowerCase(),
       parsed_pcnu_number: String(parsed?.pcnu_number || "").trim(),
       parsed_document_state: String(parsed?.document_state || "").trim() || "unknown",
@@ -7124,7 +7139,7 @@ function buildUkdocsCsiReportFromJobResults(jobResults) {
   const finalSourceRows = [
     ...(Array.isArray(deterministicSource.source_rows) ? deterministicSource.source_rows : []).filter((row) => {
       const source = String(row?.source || "").trim();
-      const isTempPhytoRow = source === "temp_phyto" || source === "temp_phyto_plants";
+      const isTempPhytoRow = source === "temp_phyto" || source === "temp_phyto_xml" || source === "temp_phyto_plants";
       if (!isTempPhytoRow) {
         return true;
       }
