@@ -6365,6 +6365,7 @@ function buildUkdocsCsiDeterministicReport(collection, extractedDocuments) {
           return {
             kind: sourceItem?.kind || "",
             prefer_plants: sourceItem?.prefer_plants === true,
+            vision_document: sourceItem?.vision_document || null,
             name: String(fallback?.original_name || fallback?.storage_name || "").trim(),
             content_type: String(fallback?.content_type || fallback?.mime_type || "").trim(),
             line_count: Number(fallback?.line_count || 0),
@@ -6376,6 +6377,7 @@ function buildUkdocsCsiDeterministicReport(collection, extractedDocuments) {
           return {
             ...document,
             prefer_plants: sourceItem.prefer_plants === true,
+            vision_document: sourceItem?.vision_document || document?.vision_document || null,
           };
         }
         const extractedHasLines = Array.isArray(document?.parsed_data?.product_lines) && document.parsed_data.product_lines.length > 0;
@@ -6384,11 +6386,13 @@ function buildUkdocsCsiDeterministicReport(collection, extractedDocuments) {
           return {
             ...document,
             prefer_plants: sourceItem.prefer_plants === true,
+            vision_document: sourceItem?.vision_document || document?.vision_document || null,
           };
         }
         return {
           ...document,
           prefer_plants: sourceItem.prefer_plants === true,
+          vision_document: sourceItem?.vision_document || document?.vision_document || null,
           line_count: Number(document?.line_count || fallback.line_count || 0),
           parsed_data: fallback.parsed_data,
           error: String(document?.error || fallback.parse_error || "").trim(),
@@ -6400,6 +6404,7 @@ function buildUkdocsCsiDeterministicReport(collection, extractedDocuments) {
       .map((item) => ({
         kind: item.kind,
         prefer_plants: item.prefer_plants === true,
+        vision_document: item?.vision_document || null,
         name: String(item.document.original_name || item.document.storage_name || "").trim(),
         content_type: String(item.document.content_type || item.document.mime_type || "").trim(),
         line_count: Number(item.document.line_count || 0),
