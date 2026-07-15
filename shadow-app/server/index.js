@@ -5565,6 +5565,9 @@ function mapUkdocsCsiProductName(description, commodityCode = "", options = {}) 
   }
 
   if (strictDomain === "plants") {
+    if (knownGroup && UKDOCS_CSI_PLANT_GROUPS.has(knownGroup)) {
+      return knownGroup;
+    }
     if (code.startsWith("060240") || code.startsWith("60240")) {
       return "refined roses";
     }
@@ -5576,9 +5579,6 @@ function mapUkdocsCsiProductName(description, commodityCode = "", options = {}) 
     }
     if (code.startsWith("06029091") || code.startsWith("6029091")) {
       return "Flowering plants(no cactu";
-    }
-    if (knownGroup && UKDOCS_CSI_PLANT_GROUPS.has(knownGroup)) {
-      return knownGroup;
     }
     if (
       code.startsWith("060290990") || code.startsWith("60290990")
@@ -6022,8 +6022,14 @@ function relaxUkdocsCsiRedistributedDomainRows(rows, domainLabel) {
     || domainTotals.temp_phyto_total === null
     || domainTotals.ipaffs_total === domainTotals.temp_phyto_total;
   const ambiguousProducts = getUkdocsCsiAmbiguousCommodityGroups(nextRows);
+  const redistributedAlignedDomainMatch = !exactDomainMatch
+    && ambiguousProducts.size > 0
+    && expectedTotal !== null
+    && ipaffsAligned
+    && tempPhytoAligned
+    && crossAligned;
 
-  if (!exactDomainMatch && (!ambiguousProducts.size || !ipaffsAligned || !tempPhytoAligned || !crossAligned)) {
+  if (!exactDomainMatch && !redistributedAlignedDomainMatch) {
     return nextRows;
   }
 
@@ -6057,7 +6063,7 @@ function relaxUkdocsCsiRedistributedDomainRows(rows, domainLabel) {
     }
     row.status = "pass";
     const existingMessage = String(row?.message || "").trim();
-    const redistributionMessage = `${domainLabel} commodity-code totals are redistributed across related groups, but the full domain total still aligns at ${expectedTotal}.`;
+    const redistributionMessage = `${domainLabel} commodity-code totals are redistributed across related groups, but the shared ambiguous domain still aligns within invoice/export at ${expectedTotal}.`;
     row.message = existingMessage ? `${existingMessage} ${redistributionMessage}` : redistributionMessage;
   }
 
