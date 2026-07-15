@@ -47,8 +47,8 @@ const PAGE_DEFINITIONS = [
   { key: "bunches", label: "Bunches", permission: PERMISSIONS.BUNCHES_VIEW },
   { key: "dagfoutjes", label: "Fout Registratie", permission: PERMISSIONS.DAG_FOUTJES_VIEW },
   { key: "foutenoverzicht", label: "Fouten Overzicht", permission: PERMISSIONS.FOUTEN_OVERVIEW_VIEW },
-  { key: "ukdocs", label: "UKdocs", permission: PERMISSIONS.UKDOCS_VIEW },
-  { key: "ukdocsprint", label: "UKDocs Exportdocs", permission: PERMISSIONS.UKDOCS_VIEW },
+  { key: "ukdocs", label: "UKDocs Export", permission: PERMISSIONS.UKDOCS_VIEW },
+  { key: "ukdocsprint", label: "UKDocs Zendings", permission: PERMISSIONS.UKDOCS_VIEW },
   { key: "ukdocsinspection", label: "Phyto Inspection", permission: PERMISSIONS.UKDOCS_INSPECTION_VIEW },
   { key: "ukdocscsi", label: "UKDocs CSI", permission: PERMISSIONS.UKDOCS_CSI_VIEW },
   { key: "clock", label: "Inklokken", permission: PERMISSIONS.CLOCK_VIEW },
@@ -164,12 +164,12 @@ function pageHeading(page) {
       };
     case "ukdocs":
       return {
-        title: "UKdocs",
+        title: "UKDocs Export",
         caption: "Prepare UK export shipments, saved mappings, audit checks, and document generation workflows inside Shadow App.",
       };
     case "ukdocsprint":
       return {
-        title: "UKDocs Exportdocs",
+        title: "UKDocs Zendings",
         caption: "",
       };
     case "ukdocsinspection":
