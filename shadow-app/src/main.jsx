@@ -47,13 +47,13 @@ const PAGE_DEFINITIONS = [
   { key: "bunches", label: "Bunches", permission: PERMISSIONS.BUNCHES_VIEW },
   { key: "dagfoutjes", label: "Fout Registratie", permission: PERMISSIONS.DAG_FOUTJES_VIEW },
   { key: "foutenoverzicht", label: "Fouten Overzicht", permission: PERMISSIONS.FOUTEN_OVERVIEW_VIEW },
+  { key: "ukdocs", label: "UKdocs", permission: PERMISSIONS.UKDOCS_VIEW },
   { key: "ukdocsprint", label: "UKDocs Exportdocs", permission: PERMISSIONS.UKDOCS_VIEW },
   { key: "ukdocsinspection", label: "Phyto Inspection", permission: PERMISSIONS.UKDOCS_INSPECTION_VIEW },
   { key: "ukdocscsi", label: "UKDocs CSI", permission: PERMISSIONS.UKDOCS_CSI_VIEW },
   { key: "clock", label: "Inklokken", permission: PERMISSIONS.CLOCK_VIEW },
   { key: "users", label: "Users", permission: PERMISSIONS.USERS_MANAGE },
   { key: "settings", label: "Settings", permission: PERMISSIONS.SETTINGS_MANAGE },
-  { key: "ukdocs", label: "UKdocs", permission: PERMISSIONS.UKDOCS_VIEW },
 ];
 
 function formatTimestamp(value) {
@@ -6934,6 +6934,7 @@ function FustListPanel({ metaData, loading, defaults = null }) {
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
+  const [editingCodes, setEditingCodes] = useState(false);
   const customerOptions = records.filter((record) => record.country === form.country);
   const customerNames = [...new Set(customerOptions.map((record) => record.customer_name))].sort((left, right) => left.localeCompare(right));
   const selectedExporter = exporters.find((item) => item.name === form.exporter_name) || null;
@@ -7016,14 +7017,14 @@ function FustListPanel({ metaData, loading, defaults = null }) {
       }))
       .filter((row) => row.total_ok > 0 || row.total_broken > 0);
 
-    const invalidCustomRow = activeRows.find((row) => row.isCustom && !String(row.code || "").trim());
+    const invalidCodeRow = activeRows.find((row) => !String(row.code || "").trim());
     if (!form.customer_name.trim()) {
       setError("Customer is required.");
       setMessage("");
       return;
     }
-    if (invalidCustomRow) {
-      setError("Every extra row needs a code before you generate the Fust Lijst.");
+    if (invalidCodeRow) {
+      setError("Every filled row needs a code before you generate the Fust Lijst.");
       setMessage("");
       return;
     }
@@ -7076,7 +7077,7 @@ function FustListPanel({ metaData, loading, defaults = null }) {
         <div className="section-header">
           <div>
             <h2>Fust Lijst</h2>
-            <p>Generate a real Excel file from the Fust invoice template. Built-in rows are ready, and you can add extra rows when needed.</p>
+            <p>Generate a real Excel file from the Fust invoice template. Built-in rows are ready, you can edit their codes when needed, and you can add extra rows too.</p>
           </div>
         </div>
 
@@ -7141,11 +7142,11 @@ function FustListPanel({ metaData, loading, defaults = null }) {
             </div>
             {form.rows.map((row) => (
               <div className="fust-list-grid-row" role="row" key={row.id}>
-                {row.isCustom ? (
+                {row.isCustom || editingCodes ? (
                   <input
                     value={row.code}
                     onChange={(event) => updateRow(row.id, "code", event.target.value)}
-                    placeholder="Extra code"
+                    placeholder={row.isCustom ? "Extra code" : "Code"}
                   />
                 ) : (
                   <span>{row.code}</span>
@@ -7167,13 +7168,16 @@ function FustListPanel({ metaData, loading, defaults = null }) {
                 {row.isCustom ? (
                   <button type="button" onClick={() => removeCustomRow(row.id)}>Remove</button>
                 ) : (
-                  <span className="fust-list-row-hint">Standard</span>
+                  <span className="fust-list-row-hint">{editingCodes ? "Editing" : "Standard"}</span>
                 )}
               </div>
             ))}
           </div>
 
           <div className="cmr-actions">
+            <button type="button" onClick={() => setEditingCodes((current) => !current)} disabled={busy}>
+              {editingCodes ? "Done editing codes" : "Edit codes"}
+            </button>
             <button type="button" onClick={addCustomRow} disabled={busy}>Add extra field</button>
           </div>
 
