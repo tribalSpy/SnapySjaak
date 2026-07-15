@@ -12,7 +12,12 @@ import pandas as pd
 PRODUCT_PARENT_XPATH = "./DEELZENDINGEN/DEELZENDING"
 PRODUCT_DETAILS_TAG = "DEELZENDINGGEGEVENS"
 TOTAL_TEXT_XPATH = "./Z_AANTALLEN/Z_TOTALEN_TEKST"
-PCNU_XPATH = "./ZENDINGGEGEVENS/SPS_DOC_ID"
+PCNU_XPATHS = [
+    "./ZENDINGGEGEVENS/CFT_NUMMER",
+    "./ZENDINGGEGEVENS/SPS_DOC_ID",
+    "./ZENDINGGEGEVENS/CFT_NUMMER_BARCODE",
+    "./ZENDINGGEGEVENS/CERTIFICAAT_ID",
+]
 DESTINATION_COUNTRY_XPATH = "./ZENDINGGEGEVENS/SPS_COT_CN_COUNTRYNAME"
 ORIGIN_COUNTRY_XPATH = "./ZENDINGGEGEVENS/ORIGINE_ZENDING"
 CONSIGNEE_NAME_XPATH = "./ZENDINGGEGEVENS/SPS_COT_CN_NAME"
@@ -66,6 +71,26 @@ def find_first_text(parent: ET.Element | None, tags: list[str]) -> str:
         if value:
             return value
     return ""
+
+
+def find_first_xpath_text(parent: ET.Element | None, xpaths: list[str]) -> str:
+    if parent is None:
+        return ""
+    for xpath in xpaths:
+        node = parent.find(xpath)
+        value = clean_text(node.text if node is not None else "")
+        if value:
+            return value
+    return ""
+
+
+def normalize_pcnu_number(value: Any) -> str:
+    text = clean_text(value)
+    if not text:
+        return ""
+    if text.startswith("*") and text.endswith("*") and len(text) > 2:
+        text = text[1:-1]
+    return "".join(character for character in text if character.isalnum())
 
 
 def parse_numeric(value: Any) -> float | int | None:
@@ -155,12 +180,13 @@ def parse_phyto_xml(xml_path: str | Path) -> dict[str, Any]:
         ],
     )
     total = parse_total_text(find_text(root, TOTAL_TEXT_XPATH))
+    pcnu_number = normalize_pcnu_number(find_first_xpath_text(root, PCNU_XPATHS))
     metadata = {
         "xml_filename": path.name,
         "product_parent_xpath": PRODUCT_PARENT_XPATH,
         "product_details_tag": PRODUCT_DETAILS_TAG,
         "product_parent_count": len(parent_nodes),
-        "pcnu_number": find_text(root, PCNU_XPATH),
+        "pcnu_number": pcnu_number,
         "destination_country": find_text(root, DESTINATION_COUNTRY_XPATH),
         "origin_country": find_text(root, ORIGIN_COUNTRY_XPATH),
         "consignee": find_text(root, CONSIGNEE_NAME_XPATH),
