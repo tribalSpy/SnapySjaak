@@ -200,6 +200,8 @@ def map_ipaffs_product(genus, commodity_code, prefer_plants=False):
         return "Flowers lilies"
     if code.startswith("603130") or code.startswith("060313"):
         return "Flowers orchids"
+    if any(token in genus_key for token in ["phalaenopsis", "cymbidium", "dendrob", "orchid"]):
+        return "Flowers orchids"
     if code.startswith("604209"):
         return "Flowers green"
     if code.startswith("603900") or code.startswith("060390"):

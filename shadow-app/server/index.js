@@ -5568,7 +5568,7 @@ function mapUkdocsCsiProductName(description, commodityCode = "", options = {}) 
     if (text.includes("lil") || text.includes("lilium") || code.startsWith("060315") || code.startsWith("603150")) {
       return "Flowers lilies";
     }
-    if (text.includes("orchid") || text.includes("dendrob") || code.startsWith("060313") || code.startsWith("603130")) {
+    if (text.includes("orchid") || text.includes("phalaenopsis") || text.includes("cymbidium") || text.includes("dendrob") || code.startsWith("060313") || code.startsWith("603130")) {
       return "Flowers orchids";
     }
     if (text.includes("green") || code.startsWith("0604209") || code.startsWith("604209")) {
@@ -5752,7 +5752,7 @@ function mapUkdocsCsiProductName(description, commodityCode = "", options = {}) 
   if (text.includes("lil") || text.includes("lilium") || code.startsWith("060315") || code.startsWith("603150")) {
     return "Flowers lilies";
   }
-  if (text.includes("orchid") || text.includes("dendrob") || code.startsWith("060313") || code.startsWith("603130")) {
+  if (text.includes("orchid") || text.includes("phalaenopsis") || text.includes("cymbidium") || text.includes("dendrob") || code.startsWith("060313") || code.startsWith("603130")) {
     return "Flowers orchids";
   }
   if (text.includes("green") || code.startsWith("0604209") || code.startsWith("604209")) {
