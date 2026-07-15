@@ -10,6 +10,8 @@ import {
   completeLlmJob,
   createLlmJob,
   dbQuery,
+  deleteUkdocsCsiParsedDocumentFromDatabase,
+  getUkdocsCsiParsedDocumentFromDatabase,
   getFustDatabaseStats,
   getDatabaseStatus,
   getLlmQueueSnapshot,
@@ -17,6 +19,7 @@ import {
   initializeDatabase,
   isDatabaseEnabled,
   markFustActionDeletedInDatabase,
+  saveUkdocsCsiParsedDocumentToDatabase,
   saveFustActionToDatabase,
   upsertLlmAgentHeartbeat,
 } from "./db.js";
@@ -5027,6 +5030,116 @@ async function enrichUkdocsCsiStoredDocument(document, kind) {
   });
 }
 
+function getUkdocsCsiParsedDocumentDomain(kind) {
+  if (kind === "ipaffs_plants_file" || kind === "temp_phyto_plants_file" || kind === "temp_phyto_plants_xml_file") {
+    return "plants";
+  }
+  if (kind === "ipaffs_file" || kind === "temp_phyto" || kind === "temp_phyto_xml") {
+    return "flowers";
+  }
+  return "";
+}
+
+function toUkdocsCsiNumberOrNull(value) {
+  if (value === null || value === undefined || value === "") {
+    return null;
+  }
+  const numeric = Number(value);
+  return Number.isFinite(numeric) ? numeric : null;
+}
+
+function buildUkdocsCsiParsedDocumentRows(kind, document) {
+  const parsedData = document?.parsed_data && typeof document.parsed_data === "object"
+    ? document.parsed_data
+    : null;
+  if (!parsedData) {
+    return [];
+  }
+
+  if (kind === "ipaffs_file" || kind === "ipaffs_plants_file") {
+    return (Array.isArray(parsedData.rows) ? parsedData.rows : []).map((row, index) => ({
+      row_index: index,
+      source_kind: kind,
+      source_document: String(document?.original_name || document?.storage_name || "").trim(),
+      product_name: String(row?.product || row?.genus || "").trim(),
+      botanical_name: "",
+      mapped_group: String(row?.mapped_group || "").trim(),
+      commodity_code: String(row?.commodity_code || "").trim(),
+      quantity: toUkdocsCsiNumberOrNull(row?.quantity),
+      package_count: toUkdocsCsiNumberOrNull(row?.packages),
+      package_unit: String(row?.package_unit || "").trim(),
+      quantity_unit: String(row?.unit || row?.quantity_unit || "").trim(),
+      pcnu_number: String(row?.pcnu_number || parsedData?.pcnu_number || "").trim(),
+      raw_row: row && typeof row === "object" ? row : {},
+    }));
+  }
+
+  if (kind === "temp_phyto" || kind === "temp_phyto_xml" || kind === "temp_phyto_plants_file" || kind === "temp_phyto_plants_xml_file") {
+    return (Array.isArray(parsedData.product_lines) ? parsedData.product_lines : []).map((row, index) => ({
+      row_index: index,
+      source_kind: kind,
+      source_document: String(document?.original_name || document?.storage_name || "").trim(),
+      product_name: String(row?.product || "").trim(),
+      botanical_name: String(row?.botanical_name || "").trim(),
+      mapped_group: "",
+      commodity_code: "",
+      quantity: toUkdocsCsiNumberOrNull(row?.quantity),
+      package_count: toUkdocsCsiNumberOrNull(row?.packages || row?.package_count),
+      package_unit: String(row?.package_unit || row?.package_type || "").trim(),
+      quantity_unit: String(row?.unit || parsedData?.quantity_unit || "").trim(),
+      pcnu_number: String(row?.pcnu_number || parsedData?.pcnu_number || "").trim(),
+      raw_row: row && typeof row === "object" ? row : {},
+    }));
+  }
+
+  return [];
+}
+
+async function saveUkdocsCsiParsedDocumentSnapshot(collection, kind, document) {
+  if (!isDatabaseEnabled() || !collection?.id || !kind || !document?.storage_name || !document?.parsed_data) {
+    return;
+  }
+
+  await saveUkdocsCsiParsedDocumentToDatabase({
+    collection_id: collection.id,
+    shipment_id: collection.shipment_id || collection.shipment_reference || "",
+    document_kind: kind,
+    storage_name: document.storage_name,
+    original_name: document.original_name || "",
+    content_type: document.content_type || "",
+    document_domain: getUkdocsCsiParsedDocumentDomain(kind),
+    pcnu_number: String(document?.parsed_data?.pcnu_number || "").trim(),
+    line_count: Number(document?.line_count || 0),
+    parsed_data: document.parsed_data,
+    meta: {
+      delimiter: String(document?.delimiter || "").trim(),
+      parse_error: String(document?.parse_error || "").trim(),
+    },
+    rows: buildUkdocsCsiParsedDocumentRows(kind, document),
+  });
+}
+
+async function deleteUkdocsCsiParsedDocumentSnapshot(collection, kind, document) {
+  if (!isDatabaseEnabled() || !collection?.id || !kind || !document?.storage_name) {
+    return;
+  }
+  await deleteUkdocsCsiParsedDocumentFromDatabase(collection.id, kind, document.storage_name);
+}
+
+function applyUkdocsCsiParsedDatabaseSnapshot(document, snapshot) {
+  if (!document || !snapshot?.parsed_data) {
+    return document;
+  }
+  return normalizeUkdocsPrintDocument({
+    ...document,
+    content_type: snapshot.content_type || document.content_type || "",
+    line_count: Number.isFinite(Number(snapshot.line_count)) ? Number(snapshot.line_count) : Number(document.line_count || 0),
+    delimiter: String(snapshot?.meta?.delimiter || document?.delimiter || "").trim(),
+    parse_error: String(snapshot?.meta?.parse_error || document?.parse_error || "").trim(),
+    parsed_data: snapshot.parsed_data,
+  });
+}
+
 async function hydrateUkdocsCsiCollectionInputs(collection, options = {}) {
   const normalizedCollection = normalizeUkdocsPrintCollection(collection);
   if (!normalizedCollection) {
@@ -5036,41 +5149,97 @@ async function hydrateUkdocsCsiCollectionInputs(collection, options = {}) {
   let changed = false;
   const nextDocuments = { ...(normalizedCollection.documents || {}) };
 
-  if (nextDocuments.ipaffs_file?.storage_name && (forceRefresh || !nextDocuments.ipaffs_file?.parsed_data)) {
-    nextDocuments.ipaffs_file = await enrichUkdocsCsiStoredDocument(nextDocuments.ipaffs_file, "ipaffs_file");
-    changed = true;
+  if (nextDocuments.ipaffs_file?.storage_name) {
+    if (!forceRefresh && !nextDocuments.ipaffs_file?.parsed_data && isDatabaseEnabled()) {
+      const dbSnapshot = await getUkdocsCsiParsedDocumentFromDatabase(normalizedCollection.id, "ipaffs_file", nextDocuments.ipaffs_file.storage_name);
+      if (dbSnapshot?.parsed_data) {
+        nextDocuments.ipaffs_file = applyUkdocsCsiParsedDatabaseSnapshot(nextDocuments.ipaffs_file, dbSnapshot);
+        changed = true;
+      }
+    }
+    if (forceRefresh || !nextDocuments.ipaffs_file?.parsed_data) {
+      nextDocuments.ipaffs_file = await enrichUkdocsCsiStoredDocument(nextDocuments.ipaffs_file, "ipaffs_file");
+      await saveUkdocsCsiParsedDocumentSnapshot(normalizedCollection, "ipaffs_file", nextDocuments.ipaffs_file);
+      changed = true;
+    }
   }
-  if (nextDocuments.ipaffs_plants_file?.storage_name && (forceRefresh || !nextDocuments.ipaffs_plants_file?.parsed_data)) {
-    nextDocuments.ipaffs_plants_file = await enrichUkdocsCsiStoredDocument(nextDocuments.ipaffs_plants_file, "ipaffs_plants_file");
-    changed = true;
+  if (nextDocuments.ipaffs_plants_file?.storage_name) {
+    if (!forceRefresh && !nextDocuments.ipaffs_plants_file?.parsed_data && isDatabaseEnabled()) {
+      const dbSnapshot = await getUkdocsCsiParsedDocumentFromDatabase(normalizedCollection.id, "ipaffs_plants_file", nextDocuments.ipaffs_plants_file.storage_name);
+      if (dbSnapshot?.parsed_data) {
+        nextDocuments.ipaffs_plants_file = applyUkdocsCsiParsedDatabaseSnapshot(nextDocuments.ipaffs_plants_file, dbSnapshot);
+        changed = true;
+      }
+    }
+    if (forceRefresh || !nextDocuments.ipaffs_plants_file?.parsed_data) {
+      nextDocuments.ipaffs_plants_file = await enrichUkdocsCsiStoredDocument(nextDocuments.ipaffs_plants_file, "ipaffs_plants_file");
+      await saveUkdocsCsiParsedDocumentSnapshot(normalizedCollection, "ipaffs_plants_file", nextDocuments.ipaffs_plants_file);
+      changed = true;
+    }
   }
 
   const tempPhytoFiles = [];
   for (const document of nextDocuments.temp_phyto_files || []) {
-    if (document?.storage_name && (forceRefresh || !document?.parsed_data)) {
-      tempPhytoFiles.push(await enrichUkdocsCsiStoredDocument(document, "temp_phyto"));
+    let nextDocument = document;
+    if (!forceRefresh && !nextDocument?.parsed_data && nextDocument?.storage_name && isDatabaseEnabled()) {
+      const dbSnapshot = await getUkdocsCsiParsedDocumentFromDatabase(normalizedCollection.id, "temp_phyto", nextDocument.storage_name);
+      if (dbSnapshot?.parsed_data) {
+        nextDocument = applyUkdocsCsiParsedDatabaseSnapshot(nextDocument, dbSnapshot);
+        changed = true;
+      }
+    }
+    if (nextDocument?.storage_name && (forceRefresh || !nextDocument?.parsed_data)) {
+      const enriched = await enrichUkdocsCsiStoredDocument(nextDocument, "temp_phyto");
+      await saveUkdocsCsiParsedDocumentSnapshot(normalizedCollection, "temp_phyto", enriched);
+      tempPhytoFiles.push(enriched);
       changed = true;
     } else {
-      tempPhytoFiles.push(document);
+      tempPhytoFiles.push(nextDocument);
     }
   }
   nextDocuments.temp_phyto_files = tempPhytoFiles;
   const tempPhytoXmlFiles = [];
   for (const document of nextDocuments.temp_phyto_xml_files || []) {
-    if (document?.storage_name && (forceRefresh || !document?.parsed_data)) {
-      tempPhytoXmlFiles.push(await enrichUkdocsCsiStoredDocument(document, "temp_phyto_xml"));
+    let nextDocument = document;
+    if (!forceRefresh && !nextDocument?.parsed_data && nextDocument?.storage_name && isDatabaseEnabled()) {
+      const dbSnapshot = await getUkdocsCsiParsedDocumentFromDatabase(normalizedCollection.id, "temp_phyto_xml", nextDocument.storage_name);
+      if (dbSnapshot?.parsed_data) {
+        nextDocument = applyUkdocsCsiParsedDatabaseSnapshot(nextDocument, dbSnapshot);
+        changed = true;
+      }
+    }
+    if (nextDocument?.storage_name && (forceRefresh || !nextDocument?.parsed_data)) {
+      const enriched = await enrichUkdocsCsiStoredDocument(nextDocument, "temp_phyto_xml");
+      await saveUkdocsCsiParsedDocumentSnapshot(normalizedCollection, "temp_phyto_xml", enriched);
+      tempPhytoXmlFiles.push(enriched);
       changed = true;
     } else {
-      tempPhytoXmlFiles.push(document);
+      tempPhytoXmlFiles.push(nextDocument);
     }
   }
   nextDocuments.temp_phyto_xml_files = tempPhytoXmlFiles;
+  if (!forceRefresh && !nextDocuments.temp_phyto_plants_file?.parsed_data && nextDocuments.temp_phyto_plants_file?.storage_name && isDatabaseEnabled()) {
+    const dbSnapshot = await getUkdocsCsiParsedDocumentFromDatabase(normalizedCollection.id, "temp_phyto_plants_file", nextDocuments.temp_phyto_plants_file.storage_name);
+    if (dbSnapshot?.parsed_data) {
+      nextDocuments.temp_phyto_plants_file = applyUkdocsCsiParsedDatabaseSnapshot(nextDocuments.temp_phyto_plants_file, dbSnapshot);
+      changed = true;
+    }
+  }
   if (nextDocuments.temp_phyto_plants_file?.storage_name && (forceRefresh || !nextDocuments.temp_phyto_plants_file?.parsed_data)) {
     nextDocuments.temp_phyto_plants_file = await enrichUkdocsCsiStoredDocument(nextDocuments.temp_phyto_plants_file, "temp_phyto_plants_file");
+    await saveUkdocsCsiParsedDocumentSnapshot(normalizedCollection, "temp_phyto_plants_file", nextDocuments.temp_phyto_plants_file);
     changed = true;
+  }
+  if (!forceRefresh && !nextDocuments.temp_phyto_plants_xml_file?.parsed_data && nextDocuments.temp_phyto_plants_xml_file?.storage_name && isDatabaseEnabled()) {
+    const dbSnapshot = await getUkdocsCsiParsedDocumentFromDatabase(normalizedCollection.id, "temp_phyto_plants_xml_file", nextDocuments.temp_phyto_plants_xml_file.storage_name);
+    if (dbSnapshot?.parsed_data) {
+      nextDocuments.temp_phyto_plants_xml_file = applyUkdocsCsiParsedDatabaseSnapshot(nextDocuments.temp_phyto_plants_xml_file, dbSnapshot);
+      changed = true;
+    }
   }
   if (nextDocuments.temp_phyto_plants_xml_file?.storage_name && (forceRefresh || !nextDocuments.temp_phyto_plants_xml_file?.parsed_data)) {
     nextDocuments.temp_phyto_plants_xml_file = await enrichUkdocsCsiStoredDocument(nextDocuments.temp_phyto_plants_xml_file, "temp_phyto_plants_xml_file");
+    await saveUkdocsCsiParsedDocumentSnapshot(normalizedCollection, "temp_phyto_plants_xml_file", nextDocuments.temp_phyto_plants_xml_file);
     changed = true;
   }
 
@@ -11105,11 +11274,17 @@ async function handleApi(req, res, url) {
     }
     if (["inspection_list", "locations_file", "export_extra", "temp_phyto_plants_file", "temp_phyto_plants_xml_file", "ipaffs_file", "ipaffs_plants_file"].includes(kind) && existingCollection.documents?.[kind]?.storage_name) {
       await deleteSingleUkdocsPrintDocumentFile(existingCollection.documents[kind]);
+      if (UKDOCS_CSI_DOCUMENT_KINDS.has(kind)) {
+        await deleteUkdocsCsiParsedDocumentSnapshot(existingCollection, kind, existingCollection.documents[kind]);
+      }
     }
     const savedDocumentRaw = await saveUkdocsPrintUpload(existingCollection.id, kind, body?.file || {}, requestUser);
     const savedDocument = ["temp_phyto", "temp_phyto_xml", "temp_phyto_plants_file", "temp_phyto_plants_xml_file", "ipaffs_file", "ipaffs_plants_file"].includes(kind)
       ? await enrichUkdocsCsiStoredDocument(savedDocumentRaw, kind)
       : savedDocumentRaw;
+    if (UKDOCS_CSI_DOCUMENT_KINDS.has(kind)) {
+      await saveUkdocsCsiParsedDocumentSnapshot(existingCollection, kind, savedDocument);
+    }
     const updatedCollection = normalizeUkdocsPrintCollection({
       ...existingCollection,
       updated_at: new Date().toISOString(),
@@ -11241,6 +11416,9 @@ async function handleApi(req, res, url) {
     }
 
     await deleteSingleUkdocsPrintDocumentFile(removedDocument);
+    if (UKDOCS_CSI_DOCUMENT_KINDS.has(kind)) {
+      await deleteUkdocsCsiParsedDocumentSnapshot(existingCollection, kind, removedDocument);
+    }
     const updatedCollection = normalizeUkdocsPrintCollection({
       ...existingCollection,
       updated_at: new Date().toISOString(),

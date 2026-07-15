@@ -152,6 +152,210 @@ export async function saveFustActionToDatabase(action) {
   }
 }
 
+function numberOrNull(value) {
+  if (value === null || value === undefined || value === "") {
+    return null;
+  }
+  const numeric = Number(value);
+  return Number.isFinite(numeric) ? numeric : null;
+}
+
+function mapUkdocsCsiParsedDocumentRow(row) {
+  if (!row) {
+    return null;
+  }
+  return {
+    id: Number(row.id || 0),
+    collection_id: String(row.collection_id || "").trim(),
+    shipment_id: String(row.shipment_id || "").trim(),
+    document_kind: String(row.document_kind || "").trim(),
+    storage_name: String(row.storage_name || "").trim(),
+    original_name: String(row.original_name || "").trim(),
+    content_type: String(row.content_type || "").trim(),
+    document_domain: String(row.document_domain || "").trim(),
+    pcnu_number: String(row.pcnu_number || "").trim(),
+    line_count: Number(row.line_count || 0),
+    parsed_data: jsonValue(row.parsed_data_json, null),
+    meta: jsonValue(row.meta_json, {}),
+    parsed_at: row.parsed_at ? new Date(row.parsed_at).toISOString() : "",
+    created_at: row.created_at ? new Date(row.created_at).toISOString() : "",
+    updated_at: row.updated_at ? new Date(row.updated_at).toISOString() : "",
+  };
+}
+
+function mapUkdocsCsiParsedDocumentItemRow(row) {
+  return {
+    row_index: Number(row?.row_index || 0),
+    source_kind: String(row?.source_kind || "").trim(),
+    source_document: String(row?.source_document || "").trim(),
+    product_name: String(row?.product_name || "").trim(),
+    botanical_name: String(row?.botanical_name || "").trim(),
+    mapped_group: String(row?.mapped_group || "").trim(),
+    commodity_code: String(row?.commodity_code || "").trim(),
+    quantity: numberOrNull(row?.quantity),
+    package_count: numberOrNull(row?.package_count),
+    package_unit: String(row?.package_unit || "").trim(),
+    quantity_unit: String(row?.quantity_unit || "").trim(),
+    pcnu_number: String(row?.pcnu_number || "").trim(),
+    raw_row: jsonValue(row?.raw_row_json, {}),
+    created_at: row?.created_at ? new Date(row.created_at).toISOString() : "",
+    updated_at: row?.updated_at ? new Date(row.updated_at).toISOString() : "",
+  };
+}
+
+export async function saveUkdocsCsiParsedDocumentToDatabase(snapshot) {
+  if (!pool || !snapshot?.collection_id || !snapshot?.document_kind || !snapshot?.storage_name) {
+    return null;
+  }
+
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    const documentResult = await client.query(
+      `
+        INSERT INTO ukdocs_csi_parsed_documents (
+          collection_id, shipment_id, document_kind, storage_name, original_name, content_type,
+          document_domain, pcnu_number, line_count, parsed_data_json, meta_json, parsed_at, updated_at
+        )
+        VALUES (
+          $1, $2, $3, $4, $5, $6,
+          $7, $8, $9, $10::jsonb, $11::jsonb, now(), now()
+        )
+        ON CONFLICT (collection_id, document_kind, storage_name) DO UPDATE SET
+          shipment_id = EXCLUDED.shipment_id,
+          original_name = EXCLUDED.original_name,
+          content_type = EXCLUDED.content_type,
+          document_domain = EXCLUDED.document_domain,
+          pcnu_number = EXCLUDED.pcnu_number,
+          line_count = EXCLUDED.line_count,
+          parsed_data_json = EXCLUDED.parsed_data_json,
+          meta_json = EXCLUDED.meta_json,
+          parsed_at = now(),
+          updated_at = now()
+        RETURNING id
+      `,
+      [
+        String(snapshot.collection_id || "").trim(),
+        String(snapshot.shipment_id || "").trim(),
+        String(snapshot.document_kind || "").trim(),
+        String(snapshot.storage_name || "").trim(),
+        String(snapshot.original_name || "").trim(),
+        String(snapshot.content_type || "").trim(),
+        String(snapshot.document_domain || "").trim(),
+        String(snapshot.pcnu_number || "").trim(),
+        Number(snapshot.line_count || 0),
+        JSON.stringify(snapshot.parsed_data || null),
+        JSON.stringify(snapshot.meta || {}),
+      ],
+    );
+    const documentId = Number(documentResult.rows?.[0]?.id || 0);
+
+    await client.query(
+      `
+        DELETE FROM ukdocs_csi_parsed_document_rows
+        WHERE document_id = $1
+      `,
+      [documentId],
+    );
+
+    const rows = Array.isArray(snapshot.rows) ? snapshot.rows : [];
+    for (let index = 0; index < rows.length; index += 1) {
+      const row = rows[index] || {};
+      await client.query(
+        `
+          INSERT INTO ukdocs_csi_parsed_document_rows (
+            document_id, row_index, source_kind, source_document, product_name, botanical_name,
+            mapped_group, commodity_code, quantity, package_count, package_unit, quantity_unit,
+            pcnu_number, raw_row_json, updated_at
+          )
+          VALUES (
+            $1, $2, $3, $4, $5, $6,
+            $7, $8, $9, $10, $11, $12,
+            $13, $14::jsonb, now()
+          )
+        `,
+        [
+          documentId,
+          Number(row.row_index ?? index),
+          String(row.source_kind || "").trim(),
+          String(row.source_document || "").trim(),
+          String(row.product_name || "").trim(),
+          String(row.botanical_name || "").trim(),
+          String(row.mapped_group || "").trim(),
+          String(row.commodity_code || "").trim(),
+          numberOrNull(row.quantity),
+          numberOrNull(row.package_count),
+          String(row.package_unit || "").trim(),
+          String(row.quantity_unit || "").trim(),
+          String(row.pcnu_number || "").trim(),
+          JSON.stringify(row.raw_row || {}),
+        ],
+      );
+    }
+
+    await client.query("COMMIT");
+    return documentId;
+  } catch (error) {
+    await client.query("ROLLBACK");
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
+export async function getUkdocsCsiParsedDocumentFromDatabase(collectionId, documentKind, storageName) {
+  if (!pool || !collectionId || !documentKind || !storageName) {
+    return null;
+  }
+
+  const documentResult = await pool.query(
+    `
+      SELECT *
+      FROM ukdocs_csi_parsed_documents
+      WHERE collection_id = $1
+        AND document_kind = $2
+        AND storage_name = $3
+      LIMIT 1
+    `,
+    [String(collectionId).trim(), String(documentKind).trim(), String(storageName).trim()],
+  );
+
+  const mappedDocument = mapUkdocsCsiParsedDocumentRow(documentResult.rows?.[0]);
+  if (!mappedDocument) {
+    return null;
+  }
+
+  const rowsResult = await pool.query(
+    `
+      SELECT *
+      FROM ukdocs_csi_parsed_document_rows
+      WHERE document_id = $1
+      ORDER BY row_index ASC, id ASC
+    `,
+    [mappedDocument.id],
+  );
+
+  return {
+    ...mappedDocument,
+    rows: (rowsResult.rows || []).map(mapUkdocsCsiParsedDocumentItemRow),
+  };
+}
+
+export async function deleteUkdocsCsiParsedDocumentFromDatabase(collectionId, documentKind, storageName) {
+  if (!pool || !collectionId || !documentKind || !storageName) {
+    return;
+  }
+  await pool.query(
+    `
+      DELETE FROM ukdocs_csi_parsed_documents
+      WHERE collection_id = $1
+        AND document_kind = $2
+        AND storage_name = $3
+    `,
+    [String(collectionId).trim(), String(documentKind).trim(), String(storageName).trim()],
+  );
+}
+
 export async function markFustActionDeletedInDatabase(actionId) {
   if (!pool || !actionId) {
     return;
@@ -649,6 +853,55 @@ const databaseMigrations = [
       finished_at timestamptz,
       updated_at timestamptz NOT NULL DEFAULT now()
     )
+  `,
+  `
+    CREATE TABLE IF NOT EXISTS ukdocs_csi_parsed_documents (
+      id bigserial PRIMARY KEY,
+      collection_id text NOT NULL,
+      shipment_id text NOT NULL DEFAULT '',
+      document_kind text NOT NULL,
+      storage_name text NOT NULL,
+      original_name text,
+      content_type text,
+      document_domain text,
+      pcnu_number text,
+      line_count integer NOT NULL DEFAULT 0,
+      parsed_data_json jsonb NOT NULL DEFAULT 'null'::jsonb,
+      meta_json jsonb NOT NULL DEFAULT '{}'::jsonb,
+      parsed_at timestamptz NOT NULL DEFAULT now(),
+      created_at timestamptz NOT NULL DEFAULT now(),
+      updated_at timestamptz NOT NULL DEFAULT now(),
+      UNIQUE(collection_id, document_kind, storage_name)
+    )
+  `,
+  `
+    CREATE TABLE IF NOT EXISTS ukdocs_csi_parsed_document_rows (
+      id bigserial PRIMARY KEY,
+      document_id bigint NOT NULL REFERENCES ukdocs_csi_parsed_documents(id) ON DELETE CASCADE,
+      row_index integer NOT NULL DEFAULT 0,
+      source_kind text,
+      source_document text,
+      product_name text,
+      botanical_name text,
+      mapped_group text,
+      commodity_code text,
+      quantity numeric,
+      package_count numeric,
+      package_unit text,
+      quantity_unit text,
+      pcnu_number text,
+      raw_row_json jsonb NOT NULL DEFAULT '{}'::jsonb,
+      created_at timestamptz NOT NULL DEFAULT now(),
+      updated_at timestamptz NOT NULL DEFAULT now()
+    )
+  `,
+  `
+    CREATE INDEX IF NOT EXISTS ukdocs_csi_parsed_documents_lookup_idx
+    ON ukdocs_csi_parsed_documents (collection_id, document_kind, storage_name)
+  `,
+  `
+    CREATE INDEX IF NOT EXISTS ukdocs_csi_parsed_document_rows_document_idx
+    ON ukdocs_csi_parsed_document_rows (document_id, row_index)
   `,
 ];
 
