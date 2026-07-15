@@ -4855,6 +4855,7 @@ function UkdocsCSIPage({ currentUser }) {
   const selectedGeneratedFiles = selectedCollection?.documents?.generated_files || [];
   const selectedPhytoFiles = selectedCollection?.documents?.phyto_files || [];
   const selectedCsiReport = selectedCollection?.csi_report || {};
+  const selectedCsiValidationReport = selectedCsiReport.validation_report || null;
   const selectedCsiEmail = selectedCollection?.csi_email || {};
   const selectedTempPhytoFiles = selectedCollection?.documents?.temp_phyto_files || [];
   const selectedTempPhytoXmlFiles = selectedCollection?.documents?.temp_phyto_xml_files || [];
@@ -5319,6 +5320,45 @@ function UkdocsCSIPage({ currentUser }) {
                 {!!selectedCsiReport.error && <div className="notice danger">{selectedCsiReport.error}</div>}
                 {!!selectedCsiReport.llm_parse_error && <div className="notice danger">{selectedCsiReport.llm_parse_error}</div>}
                 {!!selectedCsiReport.llm_parse_source && <small>Parse source: {selectedCsiReport.llm_parse_source}</small>}
+                {!!selectedCsiValidationReport && (
+                  <details open>
+                    <summary>CSI validation route</summary>
+                    <div className="notice">{selectedCsiValidationReport.decision || "No route decision saved yet."}</div>
+                    <div className="table-wrap">
+                      <table className="data-table">
+                        <thead>
+                          <tr>
+                            <th>Document</th>
+                            <th>Source</th>
+                            <th>Parser</th>
+                            <th>Route</th>
+                            <th>Ready</th>
+                            <th>PCNU</th>
+                            <th>Rows</th>
+                            <th>Reason</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {(selectedCsiValidationReport.documents || []).map((item, index) => (
+                            <tr key={`${item.document_label || "document"}-${index}`}>
+                              <td>{item.document_label || item.document_name || "-"}</td>
+                              <td>{item.source_kind || "-"}</td>
+                              <td>{item.source_format || "-"}</td>
+                              <td>{item.route || "-"}</td>
+                              <td>{item.deterministic_ready ? "yes" : "no"}</td>
+                              <td>{item.pcnu_number || "-"}</td>
+                              <td>{item.parsed_product_count ?? "-"}</td>
+                              <td>{(item.reasons || []).join(" ") || item.parser_error || "-"}</td>
+                            </tr>
+                          ))}
+                          {!(selectedCsiValidationReport.documents || []).length && (
+                            <tr><td colSpan="8">No temporary phyto documents were included in this route report.</td></tr>
+                          )}
+                        </tbody>
+                      </table>
+                    </div>
+                  </details>
+                )}
                 {!!selectedCsiMathChecks.length && (
                   <>
                     <strong>Math and file checks</strong>

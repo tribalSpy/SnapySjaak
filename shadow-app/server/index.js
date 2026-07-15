@@ -1229,6 +1229,7 @@ function normalizeUkdocsCsiReport(report) {
       source_rows: [],
       manual_checks: [],
       notes: [],
+      validation_report: null,
       llm_content: "",
       llm_parse_source: "",
       llm_parse_error: "",
@@ -1251,6 +1252,7 @@ function normalizeUkdocsCsiReport(report) {
     source_rows: Array.isArray(report.source_rows) ? report.source_rows : [],
     manual_checks: Array.isArray(report.manual_checks) ? report.manual_checks.map((item) => String(item || "").trim()).filter(Boolean) : [],
     notes: Array.isArray(report.notes) ? report.notes.map((item) => String(item || "").trim()).filter(Boolean) : [],
+    validation_report: report.validation_report && typeof report.validation_report === "object" ? report.validation_report : null,
     llm_content: String(report.llm_content || "").trim(),
     llm_parse_source: String(report.llm_parse_source || "").trim(),
     llm_parse_error: String(report.llm_parse_error || "").trim(),
@@ -4935,9 +4937,12 @@ function normalizeUkdocsCsiParsedResult(source) {
     ? source.manual_checks
     : (Array.isArray(source.manualChecks) ? source.manualChecks : []);
   const notes = Array.isArray(source.notes) ? source.notes : [];
+  const validationReport = source.validation_report && typeof source.validation_report === "object"
+    ? source.validation_report
+    : null;
   const summary = String(source.summary || "").trim();
   const overallStatus = normalizeUkdocsText(source.overall_status || source.overallStatus);
-  if (!summary && !checks.length && !products.length && !flowerProducts.length && !plantProducts.length && !sourceRows.length && !visibleDocuments.length && !manualChecks.length && !notes.length && !overallStatus) {
+  if (!summary && !checks.length && !products.length && !flowerProducts.length && !plantProducts.length && !sourceRows.length && !visibleDocuments.length && !manualChecks.length && !notes.length && !validationReport && !overallStatus) {
     return null;
   }
   return {
@@ -4951,6 +4956,7 @@ function normalizeUkdocsCsiParsedResult(source) {
     visible_documents: visibleDocuments,
     manual_checks: manualChecks,
     notes,
+    validation_report: validationReport,
   };
 }
 
@@ -6308,6 +6314,104 @@ function isUkdocsCsiTempPhytoDeterministicReady(parsedData) {
   return problems.length === 0;
 }
 
+function buildUkdocsCsiTempPhytoRouteReasons(context, llmQueued) {
+  const reasons = [];
+  const sourceFormat = String(context?.source_format || "").trim() || "structured parser";
+  const productCount = Number(context?.parsed_product_count || 0);
+  const pcnuNumber = String(context?.parsed_pcnu_number || "").trim();
+  const parserError = String(context?.parser_error || "").trim();
+  const validationReport = context?.parsed_validation_report && typeof context.parsed_validation_report === "object"
+    ? context.parsed_validation_report
+    : null;
+
+  if (context?.deterministic_ready) {
+    reasons.push(`${sourceFormat.toUpperCase()} parser found PCNU ${pcnuNumber || "-"} and ${productCount} product row(s) with quantities.`);
+    if (validationReport) {
+      reasons.push(`XML validation passed with ${Number(validationReport.extracted_row_count || 0)} extracted row(s), ${Number(validationReport.duplicate_count || 0)} duplicate(s), and ${Number(validationReport.missing_quantity_count || 0)} missing quantity row(s).`);
+    }
+    return reasons;
+  }
+
+  if (parserError) {
+    reasons.push(`Parser error: ${parserError}`);
+  }
+  if (!pcnuNumber) {
+    reasons.push("PCNU was not parsed from the structured document.");
+  }
+  if (!productCount) {
+    reasons.push("No product rows with quantities were parsed from the structured document.");
+  }
+  if (String(context?.parsed_document_state || "").trim().toLowerCase() === "not_activated") {
+    reasons.push("The temporary phyto document appears not activated.");
+  }
+  if (validationReport) {
+    const duplicateCount = Number(validationReport.duplicate_count || 0);
+    const missingQuantityCount = Number(validationReport.missing_quantity_count || 0);
+    const extractedRowCount = Number(validationReport.extracted_row_count || 0);
+    if (!extractedRowCount || duplicateCount || missingQuantityCount) {
+      reasons.push(`XML validation was incomplete: rows=${extractedRowCount}, duplicates=${duplicateCount}, missing quantities=${missingQuantityCount}.`);
+    }
+  }
+  if (llmQueued) {
+    reasons.push("A matching temporary phyto PDF was available, so CSI queued the visual LLM check for this document.");
+  } else {
+    reasons.push("No visual LLM job was queued for this document.");
+  }
+  return reasons.length ? reasons : ["Structured parsing was not complete enough for deterministic CSI."];
+}
+
+function buildUkdocsCsiValidationReport(collection, deterministicBundle, visionDocuments = []) {
+  const contexts = Array.isArray(deterministicBundle?.visual_context?.temp_phyto_documents)
+    ? deterministicBundle.visual_context.temp_phyto_documents
+    : [];
+  const queuedLabels = new Set((Array.isArray(visionDocuments) ? visionDocuments : [])
+    .map((item) => String(item?.document_label || "").trim())
+    .filter(Boolean));
+  const documents = contexts.map((context) => {
+    const documentLabel = String(context?.document_label || "").trim();
+    const llmQueued = queuedLabels.has(documentLabel);
+    const route = context?.deterministic_ready
+      ? "deterministic"
+      : llmQueued
+        ? "llm_visual"
+        : "manual_or_blocked";
+    return {
+      document_label: documentLabel,
+      document_name: String(context?.name || context?.parsed_document_name || "").trim(),
+      source_kind: String(context?.source_kind || "").trim(),
+      source_format: String(context?.source_format || "").trim(),
+      route,
+      deterministic_ready: context?.deterministic_ready === true,
+      pcnu_number: String(context?.parsed_pcnu_number || "").trim(),
+      parsed_product_count: Number(context?.parsed_product_count || 0),
+      parsed_total_quantity: Number.isFinite(Number(context?.parsed_total_quantity)) ? Number(context.parsed_total_quantity) : null,
+      parser_error: String(context?.parser_error || "").trim(),
+      validation_report: context?.parsed_validation_report && typeof context.parsed_validation_report === "object" ? context.parsed_validation_report : null,
+      reasons: buildUkdocsCsiTempPhytoRouteReasons(context, llmQueued),
+    };
+  });
+  const deterministicCount = documents.filter((item) => item.route === "deterministic").length;
+  const llmCount = documents.filter((item) => item.route === "llm_visual").length;
+  const route = llmCount
+    ? "llm_visual"
+    : documents.length && deterministicCount === documents.length
+      ? "deterministic_only"
+      : "deterministic_or_manual";
+  return {
+    generated_at: new Date().toISOString(),
+    shipment_reference: String(collection?.shipment_reference || collection?.shipment_id || "").trim(),
+    route,
+    decision: llmCount
+      ? `${llmCount} temporary phyto document(s) were sent to the visual LLM because structured parsing was not deterministic-ready.`
+      : documents.length
+        ? "No visual LLM job was needed because every available temporary phyto document was deterministic-ready or had no visual fallback."
+        : "No temporary phyto documents were available for CSI route validation.",
+    deterministic_documents: deterministicCount,
+    llm_jobs_queued: llmCount,
+    documents,
+  };
+}
+
 function normalizeUkdocsCsiDocumentName(value) {
   return String(value || "").trim().toLowerCase();
 }
@@ -6529,13 +6633,18 @@ function buildUkdocsCsiDeterministicReport(collection, extractedDocuments) {
     const parsed = document?.parsed_data && typeof document.parsed_data === "object" ? document.parsed_data : {};
     const lineProducts = [];
     const documentLabel = `Temp phyto ${String.fromCharCode(65 + index)}`;
+    const productLines = Array.isArray(parsed?.product_lines) ? parsed.product_lines : [];
+    const validationReport = parsed?.validation_report && typeof parsed.validation_report === "object"
+      ? parsed.validation_report
+      : null;
+    const deterministicReady = isUkdocsCsiTempPhytoDeterministicReady(parsed);
     const visualDocumentName = String(
       document?.vision_document?.original_name
       || document?.vision_document?.storage_name
       || document?.name
       || "",
     ).trim();
-    for (const line of Array.isArray(parsed?.product_lines) ? parsed.product_lines : []) {
+    for (const line of productLines) {
       const mappedProduct = mapUkdocsCsiProductName(line?.product || "", "", {
         document_name: document?.name || "",
         prefer_plants: document?.prefer_plants === true,
@@ -6586,7 +6695,12 @@ function buildUkdocsCsiDeterministicReport(collection, extractedDocuments) {
       parsed_document_state: String(parsed?.document_state || "").trim() || "unknown",
       prefer_plants: document?.prefer_plants === true,
       parsed_total_quantity: Number.isFinite(Number(parsed?.total_quantity)) ? Number(parsed.total_quantity) : null,
-      deterministic_ready: isUkdocsCsiTempPhytoDeterministicReady(parsed),
+      deterministic_ready: deterministicReady,
+      source_kind: String(document?.kind || "").trim(),
+      content_type: String(document?.content_type || "").trim(),
+      parser_error: String(document?.error || document?.parse_error || "").trim(),
+      parsed_product_count: productLines.length,
+      parsed_validation_report: validationReport,
       expected_products: lineProducts.map((item) => ({
         product: item.product,
         raw_product: item.raw_product,
@@ -6866,6 +6980,7 @@ function buildUkdocsCsiDeterministicReport(collection, extractedDocuments) {
           ? extractedIpaffsDebug.map((item) => `IPAFFS extractor debug: kind=${item.kind || "-"}, name=${item.name || "-"}, content_type=${item.content_type || "-"}, lines=${item.line_count}, rows=${item.row_count}, delimiter=${item.delimiter || "-"}${item.error ? `, error=${item.error}` : ""}.`)
           : (hasIpaffsAttached ? ["IPAFFS extractor debug: attached IPAFFS file was not returned by CSI extraction."] : [])),
       ]),
+      validation_report: null,
     },
     visual_context: {
       temp_phyto_documents: tempPhytoContexts,
@@ -6888,7 +7003,8 @@ function buildUkdocsCsiAuditPayload(collection, deterministicBundle, requestUser
       "Use only the temporary phyto PDF page images for this task.",
       "Check only: visible PCNU number, blocked or not activated state, and clearly visible individual product-line Pieces quantities.",
       "Use expected_temp_phyto_checks for this exact document as your hunt list and match visible lines one by one.",
-      "Use raw_product as the visible alias and product as the final CSI group.",
+      "Always fill raw_product with the visible botanical/product name and product with the final CSI group.",
+      "When expected_products contains a matching raw_product, copy its product value exactly instead of choosing a generic group.",
       "If expected_products is empty, you may still return clearly visible individual product lines using the best obvious group for that document domain.",
       "For flower documents, keep flower groups. For plant documents, keep plant groups. Do not switch domains.",
       "Ignore consignee text, invoice totals, export totals, IPAFFS totals, legal text, annex text, and repeated continuation echoes.",
@@ -6908,6 +7024,7 @@ function buildUkdocsCsiAuditPayload(collection, deterministicBundle, requestUser
       checks: [{ code: "string", status: "pass|warn|fail", message: "string" }],
       visible_documents: [{
         document_label: "temp phyto A|temp phyto B",
+        raw_product: "visible botanical/product name",
         product: "expected CSI product/group for the matched visible line",
         quantity: 0,
         pcnu_number: "visible PCNU if readable",
@@ -6933,9 +7050,9 @@ function buildUkdocsCsiAuditPayload(collection, deterministicBundle, requestUser
         { code: "PHYTO_STATE", status: "pass", message: "No blocked or not activated text is visible." },
       ],
       visible_documents: [
-        { document_label: "temp phyto A", product: "Flowers chrysanthemums", quantity: 17160, pcnu_number: "123456789", state: "ok", note: "Matched expected product chrysanthemum to a clearly visible Pieces line." },
-        { document_label: "temp phyto A", product: "Flowers (other fresh)", quantity: 25, pcnu_number: "123456789", state: "ok", note: "Matched expected product solidago to a clearly visible Pieces line." },
-        { document_label: "temp phyto B", product: "Flowers carnations", quantity: 700, pcnu_number: "987654321", state: "ok", note: "Matched expected product dianthus to a clearly visible Pieces line." },
+        { document_label: "temp phyto A", raw_product: "Chrysanthemum hybrid", product: "Flowers chrysanthemums", quantity: 17160, pcnu_number: "123456789", state: "ok", note: "Matched expected product chrysanthemum to a clearly visible Pieces line." },
+        { document_label: "temp phyto A", raw_product: "Solidago hybrid", product: "Flowers (other fresh)", quantity: 25, pcnu_number: "123456789", state: "ok", note: "Matched expected product solidago to a clearly visible Pieces line." },
+        { document_label: "temp phyto B", raw_product: "Dianthus hybrid", product: "Flowers carnation", quantity: 700, pcnu_number: "987654321", state: "ok", note: "Matched expected product dianthus to a clearly visible Pieces line." },
       ],
       manual_checks: [],
       notes: [
@@ -7052,6 +7169,7 @@ function parseUkdocsCsiAuditJobResult(job) {
     source_rows: [],
     manual_checks: [],
     notes: [],
+    validation_report: null,
   };
   const contentText = String(job?.result_json?.ollama_response?.message?.content || job?.result_json?.response || "").trim();
   const thinkingText = String(job?.result_json?.ollama_response?.message?.thinking || "").trim();
@@ -7132,7 +7250,21 @@ function buildUkdocsCsiReportFromJobResults(jobResults) {
     source_rows: [],
     manual_checks: [],
     notes: [],
+    validation_report: null,
   };
+  const llmJobCount = results.filter((item) => String(item?.job?.id || "").trim()).length;
+  const validationReport = deterministicSource.validation_report && typeof deterministicSource.validation_report === "object"
+    ? {
+      ...deterministicSource.validation_report,
+      route: llmJobCount
+        ? "llm_visual"
+        : (deterministicSource.validation_report.route || "deterministic_only"),
+      decision: llmJobCount
+        ? `${llmJobCount} temporary phyto document(s) were sent to the visual LLM because structured parsing was not deterministic-ready.`
+        : (deterministicSource.validation_report.decision || "No visual LLM job was needed."),
+      llm_jobs_queued: llmJobCount,
+    }
+    : null;
   const noPdNeeded = isUkdocsNoPdNeeded({
     pd_type: firstResult?.job?.payload_json?.zending?.pd_type || "",
     pd_code: firstResult?.job?.payload_json?.zending?.pd_code || "",
@@ -7221,7 +7353,8 @@ function buildUkdocsCsiReportFromJobResults(jobResults) {
       continue;
     }
     const context = visualContextByLabel.get(normalizeUkdocsCsiDocumentLabel(documentLabel));
-    const mappedProduct = mapUkdocsCsiProductName(item?.product || "", "", {
+    const visualProductText = String(item?.raw_product || item?.product || item?.note || "").trim();
+    const mappedProduct = mapUkdocsCsiProductName(visualProductText, "", {
       document_name: context?.name || "",
       prefer_plants: context?.prefer_plants === true,
       strict_domain: context?.prefer_plants === true ? "plants" : "flowers",
@@ -7294,10 +7427,12 @@ function buildUkdocsCsiReportFromJobResults(jobResults) {
       String(row?.source || "").trim() === "temp_phyto_plants"
       && normalizeUkdocsCsiDocumentLabel(row?.document_label || "") === normalizeUkdocsCsiDocumentLabel(documentLabel)
     ));
-    if (context?.prefer_plants === true && hasParsedPlantRows) {
+    const parsedLineProducts = Array.isArray(context?.expected_products) ? context.expected_products : [];
+    if (parsedLineProducts.length || (context?.prefer_plants === true && hasParsedPlantRows)) {
       return [];
     }
-    const mappedProduct = mapUkdocsCsiProductName(item?.product || "", "", {
+    const visualProductText = String(item?.raw_product || item?.product || item?.note || "").trim();
+    const mappedProduct = mapUkdocsCsiProductName(visualProductText, "", {
       document_name: context?.name || "",
       prefer_plants: context?.prefer_plants === true,
       strict_domain: context?.prefer_plants === true ? "plants" : "flowers",
@@ -7306,7 +7441,7 @@ function buildUkdocsCsiReportFromJobResults(jobResults) {
       source: context?.prefer_plants === true ? "visual_temp_phyto_plants" : "visual_temp_phyto",
       document_name: String(context?.name || documentLabel).trim(),
       document_label: documentLabel,
-      raw_product: String(item?.product || "").trim(),
+      raw_product: visualProductText,
       commodity_code: "",
       mapped_product: mappedProduct,
       product_domain: getUkdocsCsiProductDomain(mappedProduct),
@@ -7421,6 +7556,7 @@ function buildUkdocsCsiReportFromJobResults(jobResults) {
     source_rows: finalSourceRows,
     manual_checks: finalManualChecks,
     notes: finalNotes,
+    validation_report: validationReport,
     llm_content: results.map((item) => {
       const label = String(item?.job?.payload_json?.csi_document_label || "").trim();
       const text = String(item?.llmContent || "").trim();
@@ -7447,6 +7583,7 @@ function buildUkdocsCsiDeterministicOnlyJobResults(deterministicBundle) {
     source_rows: [],
     manual_checks: [],
     notes: [],
+    validation_report: null,
   };
   const tempPhytoDocuments = Array.isArray(deterministicBundle?.visual_context?.temp_phyto_documents)
     ? deterministicBundle.visual_context.temp_phyto_documents
@@ -7525,6 +7662,8 @@ async function queueUkdocsCsiAudit(collection, requestUser) {
     }),
   );
   const usableVisionDocuments = tempPhytoVisionDocuments.filter(Boolean);
+  const validationReport = buildUkdocsCsiValidationReport(collection, deterministicBundle, usableVisionDocuments);
+  deterministicBundle.report.validation_report = validationReport;
 
   if (!usableVisionDocuments.length) {
     const finalReport = buildUkdocsCsiReportFromJobResults(
@@ -7599,6 +7738,7 @@ async function queueUkdocsCsiAudit(collection, requestUser) {
     flower_products: deterministicBundle.report.flower_products || [],
     plant_products: deterministicBundle.report.plant_products || [],
     manual_checks: deterministicBundle.report.manual_checks || [],
+    validation_report: deterministicBundle.report.validation_report || null,
     notes: uniqueUkdocsCsiStrings([
       ...(deterministicBundle.report.notes || []),
       `Queued ${jobs.length} separate temp phyto CSI job(s).`,
@@ -11481,6 +11621,7 @@ async function handleApi(req, res, url) {
         ...(collectionForRun?.documents?.generated_files || []).map((document) => ({ kind: document.document_kind === "export" ? "generated_export" : "generated_invoice", document })),
       ]);
       const deterministicBundle = buildUkdocsCsiDeterministicReport(collectionForRun, extractedDocuments);
+      deterministicBundle.report.validation_report = buildUkdocsCsiValidationReport(collectionForRun, deterministicBundle, []);
       const completedCollection = await updateUkdocsCsiReport(collectionForRun.id, {
         status: "done",
         job_id: "",
@@ -11495,6 +11636,7 @@ async function handleApi(req, res, url) {
         flower_products: deterministicBundle.report.flower_products || [],
         plant_products: deterministicBundle.report.plant_products || [],
         manual_checks: deterministicBundle.report.manual_checks || [],
+        validation_report: deterministicBundle.report.validation_report || null,
         notes: uniqueUkdocsCsiStrings([
           ...(deterministicBundle.report.notes || []),
           "PD code indicates no PD needed, so CSI passed from generated invoice/export checks.",

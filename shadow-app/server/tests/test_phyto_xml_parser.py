@@ -10,12 +10,20 @@ from phyto_xml_parser import (  # noqa: E402
     build_validation_report,
     build_worker_payload,
     export_phyto_xml,
+    parse_numeric,
     parse_phyto_xml,
     validate_phyto_xml,
 )
 
 
 FIXTURE_XML = Path(r"c:\Users\vdvfi\Downloads\Fytosanitair certificaat model 1 (geslachten gegroepeerd).xml")
+
+
+def test_parse_numeric_handles_certificate_thousands():
+    assert parse_numeric("1,911") == 1911
+    assert parse_numeric("1,911.00") == 1911
+    assert parse_numeric("4,172") == 4172
+    assert parse_numeric("12,5") == 12.5
 
 
 def test_parse_phyto_xml_fixture():

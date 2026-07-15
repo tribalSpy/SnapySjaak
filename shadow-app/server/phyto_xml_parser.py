@@ -94,11 +94,24 @@ def normalize_pcnu_number(value: Any) -> str:
 
 
 def parse_numeric(value: Any) -> float | int | None:
-    text = clean_text(value).replace(",", ".")
+    text = clean_text(value).replace("\u00a0", "").replace(" ", "")
     if not text:
         return None
+    if "," in text and "." in text:
+        if text.rfind(",") > text.rfind("."):
+            normalized_text = text.replace(".", "").replace(",", ".")
+        else:
+            normalized_text = text.replace(",", "")
+    elif "," in text:
+        parts = text.split(",")
+        if len(parts) > 1 and all(part.isdigit() for part in parts) and all(len(part) == 3 for part in parts[1:]):
+            normalized_text = "".join(parts)
+        else:
+            normalized_text = text.replace(",", ".")
+    else:
+        normalized_text = text
     try:
-        number = float(text)
+        number = float(normalized_text)
     except ValueError:
         return None
     if number.is_integer():
