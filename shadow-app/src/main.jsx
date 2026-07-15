@@ -3800,13 +3800,13 @@ function csiPlantReviewCandidateRank(ipaffsRow, tempPhytoRow) {
   if (sameGroup && sameQuantity && compatibleName) {
     return 0;
   }
-  if (sameGroup && sameQuantity) {
+  if (sameQuantity && compatibleName) {
     return 1;
   }
   if (sameGroup && compatibleName) {
     return 2;
   }
-  if (sameQuantity && compatibleName) {
+  if (sameGroup && sameQuantity) {
     return 3;
   }
   if (sameQuantity) {
@@ -3844,29 +3844,48 @@ function buildCsiPlantIpaffsTempPhytoReviewRows(sourceRows) {
     .map(csiPlantReviewItem);
 
   const usedTempPhytoIndexes = new Set();
+  const assignedTempPhytoByIpaffsIndex = new Map();
   const reviewRows = [];
 
-  for (const ipaffsRow of ipaffsRows) {
-    const candidates = tempPhytoRows
-      .map((tempPhytoRow, tempIndex) => {
-        if (usedTempPhytoIndexes.has(tempIndex)) {
-          return null;
-        }
-        const rank = csiPlantReviewCandidateRank(ipaffsRow, tempPhytoRow);
-        return rank === null ? null : { rank, tempIndex, tempPhytoRow };
-      })
-      .filter(Boolean)
-      .sort((left, right) => (
-        left.rank - right.rank
-        || Math.abs((ipaffsRow.quantity ?? 0) - (left.tempPhytoRow.quantity ?? 0)) - Math.abs((ipaffsRow.quantity ?? 0) - (right.tempPhytoRow.quantity ?? 0))
-        || String(left.tempPhytoRow.name || "").localeCompare(String(right.tempPhytoRow.name || ""))
-      ));
+  const candidates = [];
+  ipaffsRows.forEach((ipaffsRow, ipaffsIndex) => {
+    tempPhytoRows.forEach((tempPhytoRow, tempIndex) => {
+      const rank = csiPlantReviewCandidateRank(ipaffsRow, tempPhytoRow);
+      if (rank === null) {
+        return;
+      }
+      candidates.push({
+        rank,
+        ipaffsIndex,
+        tempIndex,
+        ipaffsRow,
+        tempPhytoRow,
+      });
+    });
+  });
 
-    const best = candidates[0] || null;
+  candidates
+    .sort((left, right) => (
+      left.rank - right.rank
+      || Math.abs((left.ipaffsRow.quantity ?? 0) - (left.tempPhytoRow.quantity ?? 0)) - Math.abs((right.ipaffsRow.quantity ?? 0) - (right.tempPhytoRow.quantity ?? 0))
+      || left.ipaffsIndex - right.ipaffsIndex
+      || left.tempIndex - right.tempIndex
+    ))
+    .forEach((candidate) => {
+      if (assignedTempPhytoByIpaffsIndex.has(candidate.ipaffsIndex) || usedTempPhytoIndexes.has(candidate.tempIndex)) {
+        return;
+      }
+      assignedTempPhytoByIpaffsIndex.set(candidate.ipaffsIndex, candidate);
+      usedTempPhytoIndexes.add(candidate.tempIndex);
+    });
+
+  for (const [ipaffsIndex, ipaffsRow] of ipaffsRows.entries()) {
+    const best = assignedTempPhytoByIpaffsIndex.get(ipaffsIndex) || null;
     if (!best) {
       reviewRows.push({
         status: "missing_temp_phyto",
         canAccept: false,
+        autoAccepted: false,
         group: ipaffsRow.group,
         ipaffs: ipaffsRow,
         tempPhyto: null,
@@ -3875,18 +3894,18 @@ function buildCsiPlantIpaffsTempPhytoReviewRows(sourceRows) {
       continue;
     }
 
-    usedTempPhytoIndexes.add(best.tempIndex);
     const tempPhytoRow = best.tempPhytoRow;
     const sameGroup = csiPlantReviewSameGroup(ipaffsRow, tempPhytoRow);
     const sameQuantity = csiPlantReviewSameQuantity(ipaffsRow, tempPhytoRow);
     const compatibleName = csiPlantNamesCompatible(ipaffsRow.name, tempPhytoRow.name);
     let status = "match";
     let canAccept = false;
+    let autoAccepted = false;
     let message = "Name, group and quantity match.";
 
     if (sameGroup && sameQuantity && compatibleName && !csiPlantReviewNamesExactlySame(ipaffsRow.name, tempPhytoRow.name)) {
       status = "name_variant";
-      canAccept = true;
+      autoAccepted = true;
       message = "Same group and quantity; names look compatible but are written differently.";
     } else if (sameGroup && sameQuantity && !compatibleName) {
       status = "name_mismatch";
@@ -3897,7 +3916,7 @@ function buildCsiPlantIpaffsTempPhytoReviewRows(sourceRows) {
       message = "Same group and compatible name, but quantity differs.";
     } else if (sameQuantity && compatibleName && !sameGroup) {
       status = "group_mismatch";
-      canAccept = true;
+      autoAccepted = true;
       message = "Same quantity and compatible name, but mapped plant groups differ.";
     } else if (sameQuantity) {
       status = "quantity_match_review";
@@ -3908,6 +3927,7 @@ function buildCsiPlantIpaffsTempPhytoReviewRows(sourceRows) {
     reviewRows.push({
       status,
       canAccept,
+      autoAccepted,
       group: ipaffsRow.group || tempPhytoRow.group,
       ipaffs: ipaffsRow,
       tempPhyto: tempPhytoRow,
@@ -3922,6 +3942,7 @@ function buildCsiPlantIpaffsTempPhytoReviewRows(sourceRows) {
     reviewRows.push({
       status: "extra_temp_phyto",
       canAccept: false,
+      autoAccepted: false,
       group: tempPhytoRow.group,
       ipaffs: null,
       tempPhyto: tempPhytoRow,
@@ -3933,6 +3954,42 @@ function buildCsiPlantIpaffsTempPhytoReviewRows(sourceRows) {
     ...row,
     key: csiPlantReviewRowKey(row),
   }));
+}
+
+function isCsiPlantReviewRowResolved(row, acceptedKeys) {
+  if (row?.status === "match" || row?.autoAccepted) {
+    return true;
+  }
+  if (!row?.canAccept) {
+    return false;
+  }
+  return acceptedKeys instanceof Set && acceptedKeys.has(row.key);
+}
+
+function parseCsiDisplayQuantity(value) {
+  const numeric = Number(value);
+  return Number.isFinite(numeric) ? numeric : null;
+}
+
+function mergeCsiDisplayStatuses(items) {
+  let hasWarn = false;
+  for (const item of Array.isArray(items) ? items : []) {
+    const status = String(item?.status || "").trim().toLowerCase();
+    if (status === "fail") {
+      return "fail";
+    }
+    if (status === "warn") {
+      hasWarn = true;
+    }
+  }
+  return hasWarn ? "warn" : "pass";
+}
+
+function isCsiPlantReviewQuantityCheck(check) {
+  const code = String(check?.code || "").trim().toUpperCase();
+  const message = String(check?.message || "");
+  return (code === "IPAFFS_VERIFICATION" || code === "TEMP_PHYTO_PARSE")
+    && /product totals need review|quantity comparison/i.test(message);
 }
 
 function csiPlantReviewStatusLabel(status) {
@@ -5140,15 +5197,7 @@ function UkdocsCSIPage({ currentUser }) {
   const selectedTempPhytoPlantsXmlFile = selectedCollection?.documents?.temp_phyto_plants_xml_file || null;
   const selectedIpaffsFile = selectedCollection?.documents?.ipaffs_file || null;
   const selectedIpaffsPlantsFile = selectedCollection?.documents?.ipaffs_plants_file || null;
-  const selectedCsiChecks = selectedCsiReport.checks || [];
-  const selectedCsiVisualChecks = useMemo(
-    () => selectedCsiChecks.filter((check) => String(check?.code || "").toUpperCase().startsWith("LLM_")),
-    [selectedCsiChecks],
-  );
-  const selectedCsiMathChecks = useMemo(
-    () => selectedCsiChecks.filter((check) => !String(check?.code || "").toUpperCase().startsWith("LLM_")),
-    [selectedCsiChecks],
-  );
+  const selectedCsiRawChecks = selectedCsiReport.checks || [];
   const selectedCsiTempPhytoColumns = useMemo(() => {
     const labels = [];
     for (const row of Array.isArray(selectedCsiReport.products) ? selectedCsiReport.products : []) {
@@ -5221,7 +5270,7 @@ function UkdocsCSIPage({ currentUser }) {
   const selectedCsiPlantVisibleReviewRows = useMemo(
     () => selectedCsiPlantReviewRows.filter((row) => (
       showAcceptedCsiPlantReviewRows
-      || (row.status !== "match" && !acceptedCsiPlantReviewKeySet.has(row.key))
+      || !isCsiPlantReviewRowResolved(row, acceptedCsiPlantReviewKeySet)
     )),
     [acceptedCsiPlantReviewKeySet, selectedCsiPlantReviewRows, showAcceptedCsiPlantReviewRows],
   );
@@ -5248,8 +5297,102 @@ function UkdocsCSIPage({ currentUser }) {
     }
     return totals;
   }, [selectedCsiPlantSourceRows]);
+  const selectedCsiPlantComparisonTotals = useMemo(() => (
+    selectedCsiPlantProducts.reduce((totals, row) => {
+      const invoiceQuantity = parseCsiDisplayQuantity(row?.invoice_quantity);
+      const exportQuantity = parseCsiDisplayQuantity(row?.export_quantity);
+      if (invoiceQuantity !== null) {
+        totals.invoiceQuantity += invoiceQuantity;
+      }
+      if (exportQuantity !== null) {
+        totals.exportQuantity += exportQuantity;
+      }
+      return totals;
+    }, { invoiceQuantity: 0, exportQuantity: 0 })
+  ), [selectedCsiPlantProducts]);
+  const selectedCsiPlantExpectedQuantity = selectedCsiPlantComparisonTotals.exportQuantity || selectedCsiPlantComparisonTotals.invoiceQuantity || null;
+  const selectedCsiPlantTotalsAligned = Boolean(
+    selectedCsiPlantReviewTotals.ipaffsQuantity > 0
+    && selectedCsiPlantReviewTotals.tempPhytoQuantity > 0
+    && selectedCsiPlantReviewTotals.ipaffsQuantity === selectedCsiPlantReviewTotals.tempPhytoQuantity
+    && selectedCsiPlantExpectedQuantity !== null
+    && selectedCsiPlantReviewTotals.ipaffsQuantity <= selectedCsiPlantExpectedQuantity
+    && selectedCsiPlantReviewTotals.tempPhytoQuantity <= selectedCsiPlantExpectedQuantity,
+  );
+  const selectedCsiPlantUnresolvedReviewRows = useMemo(
+    () => selectedCsiPlantReviewRows.filter((row) => !isCsiPlantReviewRowResolved(row, acceptedCsiPlantReviewKeySet)),
+    [acceptedCsiPlantReviewKeySet, selectedCsiPlantReviewRows],
+  );
+  const selectedCsiPlantReviewCleared = Boolean(
+    selectedCsiPlantReviewRows.length
+    && selectedCsiPlantTotalsAligned
+    && !selectedCsiPlantUnresolvedReviewRows.length,
+  );
   const selectedCsiPlantAcceptedReviewCount = selectedCsiPlantReviewRows.filter((row) => acceptedCsiPlantReviewKeySet.has(row.key)).length;
+  const selectedCsiPlantAutoAcceptedReviewCount = selectedCsiPlantReviewRows.filter((row) => row.autoAccepted).length;
   const selectedCsiPlantExactReviewCount = selectedCsiPlantReviewRows.filter((row) => row.status === "match").length;
+  const selectedCsiPlantDisplayProducts = useMemo(() => {
+    if (!selectedCsiPlantReviewCleared) {
+      return selectedCsiPlantProducts;
+    }
+    return selectedCsiPlantProducts.map((row) => {
+      if (String(row?.status || "").trim().toLowerCase() === "fail") {
+        return row;
+      }
+      const existingMessage = String(row?.message || "").trim();
+      const acceptedMessage = `Plant IPAFFS/temp phyto review accepted because both plant files total ${selectedCsiPlantReviewTotals.ipaffsQuantity}.`;
+      return {
+        ...row,
+        status: "pass",
+        message: existingMessage.includes(acceptedMessage)
+          ? existingMessage
+          : `${existingMessage}${existingMessage ? " " : ""}${acceptedMessage}`,
+      };
+    });
+  }, [selectedCsiPlantProducts, selectedCsiPlantReviewCleared, selectedCsiPlantReviewTotals.ipaffsQuantity]);
+  const selectedCsiDisplayChecks = useMemo(() => {
+    if (!selectedCsiPlantReviewCleared) {
+      return selectedCsiRawChecks;
+    }
+    return selectedCsiRawChecks.map((check) => {
+      if (String(check?.status || "").trim().toLowerCase() !== "warn" || !isCsiPlantReviewQuantityCheck(check)) {
+        return check;
+      }
+      return {
+        ...check,
+        status: "pass",
+        message: `${String(check?.message || "").trim()} Plant IPAFFS/temp phyto review accepted because the plant file totals match.`,
+      };
+    });
+  }, [selectedCsiPlantReviewCleared, selectedCsiRawChecks]);
+  const selectedCsiDisplayProducts = useMemo(() => {
+    const plantProductByName = new Map(selectedCsiPlantDisplayProducts.map((row) => [String(row?.product || "").trim(), row]));
+    return (Array.isArray(selectedCsiReport.products) ? selectedCsiReport.products : []).map((row) => {
+      const productName = String(row?.product || "").trim();
+      return plantProductByName.get(productName) || row;
+    });
+  }, [selectedCsiPlantDisplayProducts, selectedCsiReport.products]);
+  const selectedCsiDisplayReport = useMemo(() => {
+    const overallStatus = selectedCsiPlantReviewCleared
+      ? mergeCsiDisplayStatuses([...selectedCsiDisplayChecks, ...selectedCsiDisplayProducts])
+      : selectedCsiReport.overall_status;
+    return {
+      ...selectedCsiReport,
+      overall_status: overallStatus,
+      checks: selectedCsiDisplayChecks,
+      products: selectedCsiDisplayProducts,
+      plant_products: selectedCsiPlantDisplayProducts,
+    };
+  }, [selectedCsiDisplayChecks, selectedCsiDisplayProducts, selectedCsiPlantDisplayProducts, selectedCsiPlantReviewCleared, selectedCsiReport]);
+  const selectedCsiChecks = selectedCsiDisplayChecks;
+  const selectedCsiVisualChecks = useMemo(
+    () => selectedCsiChecks.filter((check) => String(check?.code || "").toUpperCase().startsWith("LLM_")),
+    [selectedCsiChecks],
+  );
+  const selectedCsiMathChecks = useMemo(
+    () => selectedCsiChecks.filter((check) => !String(check?.code || "").toUpperCase().startsWith("LLM_")),
+    [selectedCsiChecks],
+  );
 
   useEffect(() => {
     if (!filteredCollections.length) {
@@ -5493,7 +5636,8 @@ function UkdocsCSIPage({ currentUser }) {
           <div className="ukdocs-cards-grid">
             {filteredCollections.map((collection) => {
               const isActive = selectedCollection?.id === collection.id;
-              const csiStatus = ukdocsCsiStatusDefinition(collection.csi_report);
+              const tileCsiReport = isActive ? selectedCsiDisplayReport : collection.csi_report;
+              const csiStatus = ukdocsCsiStatusDefinition(tileCsiReport);
               return (
                 <div key={collection.id} className={`ukdocs-upload-card ukdocs-collection-tile${isActive ? " active" : ""}`}>
                   <strong>{collection.customer_name || collection.city_name || "Zending"}</strong>
@@ -5502,14 +5646,14 @@ function UkdocsCSIPage({ currentUser }) {
                   <small>Connect: {collection.reference_connect || "No connect ref yet"}</small>
                   <small>Invoices: {ukdocsCollectionInvoiceText(collection) || "No invoices linked yet"}</small>
                   <div className={`ukdocs-status-badge ${csiStatus.tone}`}>{csiStatus.label}</div>
-                  {!!collection.csi_report?.summary && <small>{collection.csi_report.summary}</small>}
+                  {!!tileCsiReport?.summary && <small>{tileCsiReport.summary}</small>}
                   <div className="row-actions spread-actions">
                     <button type="button" className="primary" onClick={() => openCollectionDetail(collection.id)}>{isActive ? "Opened" : "Open"}</button>
                     <button type="button" onClick={() => runCsiAudit(collection.id)} disabled={saving}>Run CSI</button>
                     <button
                       type="button"
                       onClick={() => sendCsiPapers(collection.id)}
-                      disabled={saving || collection?.csi_report?.status !== "done" || collection?.csi_report?.overall_status !== "pass"}
+                      disabled={saving || tileCsiReport?.status !== "done" || tileCsiReport?.overall_status !== "pass"}
                     >
                       Send papers to CSI
                     </button>
@@ -5653,7 +5797,7 @@ function UkdocsCSIPage({ currentUser }) {
                 <button
                   type="button"
                   onClick={() => sendCsiPapers(selectedCollection.id)}
-                  disabled={saving || selectedCsiReport.status !== "done" || selectedCsiReport.overall_status !== "pass"}
+                  disabled={saving || selectedCsiDisplayReport.status !== "done" || selectedCsiDisplayReport.overall_status !== "pass"}
                 >
                   Send papers to CSI
                 </button>
@@ -5662,7 +5806,7 @@ function UkdocsCSIPage({ currentUser }) {
               <div className="ukdocs-download-box">
                 <div className="row-actions spread-actions">
                   <strong>CSI result</strong>
-                  <div className={`ukdocs-status-badge ${ukdocsCsiStatusDefinition(selectedCsiReport).tone}`}>{ukdocsCsiStatusDefinition(selectedCsiReport).label}</div>
+                  <div className={`ukdocs-status-badge ${ukdocsCsiStatusDefinition(selectedCsiDisplayReport).tone}`}>{ukdocsCsiStatusDefinition(selectedCsiDisplayReport).label}</div>
                 </div>
                 <small>{selectedCsiReport.summary || "No CSI result yet."}</small>
                 {!!selectedCsiEmail.sent_at && <div className="notice success">CSI email sent: {formatTimestamp(selectedCsiEmail.sent_at)} to {(selectedCsiEmail.recipients || []).join(", ") || "-"}</div>}
@@ -5728,7 +5872,7 @@ function UkdocsCSIPage({ currentUser }) {
                     </div>
                   </>
                 )}
-                {!!selectedCsiPlantProducts.length && (
+                {!!selectedCsiPlantDisplayProducts.length && (
                   <>
                     <strong>Plants quantity comparison</strong>
                     <div className="table-wrap">
@@ -5748,7 +5892,7 @@ function UkdocsCSIPage({ currentUser }) {
                           </tr>
                         </thead>
                         <tbody>
-                          {selectedCsiPlantProducts.map((row, index) => (
+                          {selectedCsiPlantDisplayProducts.map((row, index) => (
                             <tr key={`plant-product-${row.product || "product"}-${index}`}>
                               <td>{row.product || "-"}</td>
                               <td>{row.commodity_codes || "-"}</td>
@@ -5788,7 +5932,8 @@ function UkdocsCSIPage({ currentUser }) {
                       Review-only plant table. It compares only IPAFFS plants against temp phyto plants and does not change the CSI group summary.
                       {" "}IPAFFS plants: {selectedCsiPlantReviewTotals.ipaffsQuantity} qty in {selectedCsiPlantReviewTotals.ipaffsRows} row(s).
                       {" "}Temp phyto plants: {selectedCsiPlantReviewTotals.tempPhytoQuantity} qty in {selectedCsiPlantReviewTotals.tempPhytoRows} row(s).
-                      {" "}{selectedCsiPlantExactReviewCount} exact match(es) hidden and {selectedCsiPlantAcceptedReviewCount} accepted review row(s) hidden.
+                      {" "}{selectedCsiPlantExactReviewCount} exact match(es), {selectedCsiPlantAutoAcceptedReviewCount} auto-accepted row(s), and {selectedCsiPlantAcceptedReviewCount} manually accepted row(s) hidden.
+                      {selectedCsiPlantReviewCleared && <> Plant review cleared: matched plant file totals are accepted.</>}
                     </div>
                     {selectedCsiPlantVisibleReviewRows.length ? (
                       <div className="table-wrap">
@@ -5817,7 +5962,7 @@ function UkdocsCSIPage({ currentUser }) {
                                       aria-label="Accept plant IPAFFS/temp phyto name or group difference"
                                       style={{ width: "auto", minHeight: "auto" }}
                                     />
-                                  ) : "-"}
+                                  ) : row.autoAccepted ? "Auto" : "-"}
                                 </td>
                                 <td><span className={`ukdocs-status-badge ${csiPlantReviewStatusTone(row.status)}`}>{csiPlantReviewStatusLabel(row.status)}</span></td>
                                 <td>
@@ -5889,7 +6034,7 @@ function UkdocsCSIPage({ currentUser }) {
                     </div>
                   </>
                 )}
-                {!!selectedCsiReport.products?.length && (
+                {!!selectedCsiDisplayProducts.length && (
                   <>
                     <strong>Combined summary table</strong>
                     <div className="table-wrap">
@@ -5908,7 +6053,7 @@ function UkdocsCSIPage({ currentUser }) {
                           </tr>
                         </thead>
                         <tbody>
-                          {selectedCsiReport.products.map((row, index) => (
+                          {selectedCsiDisplayProducts.map((row, index) => (
                             <tr key={`${row.product || "product"}-${index}`}>
                               <td>{row.product || "-"}</td>
                               <td>{row.invoice_quantity || "-"}</td>

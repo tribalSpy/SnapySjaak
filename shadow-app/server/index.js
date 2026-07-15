@@ -6041,6 +6041,14 @@ function relaxUkdocsCsiRedistributedDomainRows(rows, domainLabel) {
     || domainTotals.temp_phyto_total === null
     || domainTotals.ipaffs_total === domainTotals.temp_phyto_total;
   const ambiguousProducts = getUkdocsCsiAmbiguousCommodityGroups(nextRows);
+  const plantTotalsAlignedDomainMatch = String(domainLabel || "").trim().toLowerCase() === "plant"
+    && !exactDomainMatch
+    && expectedTotal !== null
+    && ipaffsAligned
+    && tempPhytoAligned
+    && crossAligned
+    && domainTotals.ipaffs_total !== null
+    && domainTotals.temp_phyto_total !== null;
   const redistributedAlignedDomainMatch = !exactDomainMatch
     && ambiguousProducts.size > 0
     && expectedTotal !== null
@@ -6048,7 +6056,7 @@ function relaxUkdocsCsiRedistributedDomainRows(rows, domainLabel) {
     && tempPhytoAligned
     && crossAligned;
 
-  if (!exactDomainMatch && !redistributedAlignedDomainMatch) {
+  if (!exactDomainMatch && !redistributedAlignedDomainMatch && !plantTotalsAlignedDomainMatch) {
     return nextRows;
   }
 
@@ -6067,6 +6075,25 @@ function relaxUkdocsCsiRedistributedDomainRows(rows, domainLabel) {
       const existingMessage = String(row?.message || "").trim();
       const exactMatchMessage = `${domainLabel} domain totals match exactly at ${expectedTotal} across invoice/export, IPAFFS, and temp phyto, so redistributed group quantities are accepted.`;
       row.message = existingMessage ? `${existingMessage} ${exactMatchMessage}` : exactMatchMessage;
+    }
+    return nextRows;
+  }
+
+  if (plantTotalsAlignedDomainMatch) {
+    for (const row of nextRows) {
+      const hasAnyComparedQuantity = [
+        row?.invoice_quantity,
+        row?.export_quantity,
+        row?.ipaffs_quantity,
+        row?.temp_phyto_quantity,
+      ].some((value) => String(value || "").trim());
+      if (!hasAnyComparedQuantity) {
+        continue;
+      }
+      row.status = "pass";
+      const existingMessage = String(row?.message || "").trim();
+      const plantMatchMessage = `${domainLabel} IPAFFS/temp phyto file totals match at ${domainTotals.ipaffs_total} and stay within invoice/export total ${expectedTotal}, so accepted plant name/group redistribution is treated as pass.`;
+      row.message = existingMessage ? `${existingMessage} ${plantMatchMessage}` : plantMatchMessage;
     }
     return nextRows;
   }
@@ -6104,6 +6131,63 @@ function finalizeUkdocsCsiOverallStatus(checks, products) {
     overall = mergeUkdocsCsiStatus(overall, item?.status || "");
   }
   return overall || "warn";
+}
+
+function getUkdocsCsiReportPlantTotals(report) {
+  const sourceRows = Array.isArray(report?.source_rows) ? report.source_rows : [];
+  const plantProducts = Array.isArray(report?.plant_products) ? report.plant_products : [];
+  const ipaffsQuantity = sumUkdocsCsiRowsQuantity(sourceRows, ["ipaffs_plants"]);
+  const tempPhytoQuantity = sumUkdocsCsiRowsQuantity(sourceRows, ["temp_phyto_plants", "visual_temp_phyto_plants"]);
+  const invoiceQuantity = plantProducts.reduce((sum, row) => {
+    const quantity = Number(row?.invoice_quantity);
+    return Number.isFinite(quantity) ? sum + quantity : sum;
+  }, 0);
+  const exportQuantity = plantProducts.reduce((sum, row) => {
+    const quantity = Number(row?.export_quantity);
+    return Number.isFinite(quantity) ? sum + quantity : sum;
+  }, 0);
+  const expectedQuantity = exportQuantity > 0 ? exportQuantity : invoiceQuantity > 0 ? invoiceQuantity : null;
+  return {
+    ipaffsQuantity,
+    tempPhytoQuantity,
+    expectedQuantity,
+    aligned: ipaffsQuantity > 0
+      && tempPhytoQuantity > 0
+      && ipaffsQuantity === tempPhytoQuantity
+      && expectedQuantity !== null
+      && ipaffsQuantity <= expectedQuantity
+      && tempPhytoQuantity <= expectedQuantity,
+  };
+}
+
+function isUkdocsCsiPlantReviewQuantityCheck(check) {
+  const code = String(check?.code || "").trim().toUpperCase();
+  const message = String(check?.message || "");
+  return (code === "IPAFFS_VERIFICATION" || code === "TEMP_PHYTO_PARSE")
+    && /product totals need review|quantity comparison/i.test(message);
+}
+
+function isUkdocsCsiPlantReconciledPassReport(report) {
+  if (!report || String(report?.status || "").trim() !== "done") {
+    return false;
+  }
+  const plantTotals = getUkdocsCsiReportPlantTotals(report);
+  if (!plantTotals.aligned) {
+    return false;
+  }
+  const checks = Array.isArray(report?.checks) ? report.checks : [];
+  if (checks.some((check) => String(check?.status || "").trim().toLowerCase() === "fail")) {
+    return false;
+  }
+  const hasBlockingCheckWarning = checks.some((check) => {
+    const status = String(check?.status || "").trim().toLowerCase();
+    return status === "warn" && !isUkdocsCsiPlantReviewQuantityCheck(check);
+  });
+  if (hasBlockingCheckWarning) {
+    return false;
+  }
+  const flowerProducts = Array.isArray(report?.flower_products) ? report.flower_products : [];
+  return !flowerProducts.some((row) => String(row?.status || "").trim().toLowerCase() !== "pass");
 }
 
 function parseUkdocsCsiReportQuantity(value) {
@@ -6952,11 +7036,41 @@ function buildUkdocsCsiDeterministicReport(collection, extractedDocuments) {
   }
 
   const flowerProducts = buildUkdocsCsiDomainProducts(products, sourceRows, "flowers");
-  const plantProducts = buildUkdocsCsiDomainProducts(products, sourceRows, "plants");
+  const plantProducts = relaxUkdocsCsiRedistributedDomainRows(
+    buildUkdocsCsiDomainProducts(products, sourceRows, "plants"),
+    "Plant",
+  );
   const combinedProducts = [...flowerProducts, ...plantProducts].sort((left, right) => (
     String(left?.product || "").localeCompare(String(right?.product || ""))
   ));
-  const overallStatus = finalizeUkdocsCsiOverallStatus(checks, combinedProducts);
+  const remainingIpaffsReviewCount = combinedProducts.filter((item) => (
+    String(item?.status || "").trim().toLowerCase() !== "pass"
+    && String(item?.ipaffs_quantity || "").trim()
+    && /IPAFFS/i.test(String(item?.message || ""))
+  )).length;
+  const remainingTempPhytoReviewCount = combinedProducts.filter((item) => (
+    String(item?.status || "").trim().toLowerCase() !== "pass"
+    && String(item?.temp_phyto_quantity || "").trim()
+    && /Temp phyto/i.test(String(item?.message || ""))
+  )).length;
+  const reconciledChecks = checks.map((item) => {
+    if (item?.code === "IPAFFS_VERIFICATION" && isUkdocsCsiPlantReviewQuantityCheck(item) && !remainingIpaffsReviewCount && ipaffsMismatchCount) {
+      return {
+        ...item,
+        status: "pass",
+        message: "IPAFFS product totals are accepted after plant IPAFFS/temp phyto file totals were reconciled.",
+      };
+    }
+    if (item?.code === "TEMP_PHYTO_PARSE" && isUkdocsCsiPlantReviewQuantityCheck(item) && !remainingTempPhytoReviewCount && tempPhytoMismatchCount) {
+      return {
+        ...item,
+        status: "pass",
+        message: "Temporary phyto quantities are accepted after plant IPAFFS/temp phyto file totals were reconciled.",
+      };
+    }
+    return item;
+  });
+  const overallStatus = finalizeUkdocsCsiOverallStatus(reconciledChecks, combinedProducts);
   const summaryParts = [
     invoiceExportMismatchCount
       ? `${invoiceExportMismatchCount} invoice/export mismatch(es)`
@@ -6969,11 +7083,11 @@ function buildUkdocsCsiDeterministicReport(collection, extractedDocuments) {
         ? "IPAFFS extraction missing"
         : !ipaffsRows.length
           ? "IPAFFS rows not parsed"
-          : (ipaffsMismatchCount ? `${ipaffsMismatchCount} IPAFFS mismatch(es)` : "IPAFFS matches"),
+          : (remainingIpaffsReviewCount ? `${remainingIpaffsReviewCount} IPAFFS mismatch(es)` : "IPAFFS matches"),
     noPdNeeded
       ? "temp phyto not needed"
       : tempPhytoDocs.length
-      ? (tempPhytoMismatchCount ? `${tempPhytoMismatchCount} temp phyto mismatch(es)` : "temp phyto quantities checked")
+      ? (remainingTempPhytoReviewCount ? `${remainingTempPhytoReviewCount} temp phyto mismatch(es)` : "temp phyto quantities checked")
       : "no temp phyto PDFs",
   ];
 
@@ -6981,7 +7095,7 @@ function buildUkdocsCsiDeterministicReport(collection, extractedDocuments) {
     report: {
       overall_status: overallStatus,
       summary: summaryParts.join(", ") + ".",
-      checks,
+      checks: reconciledChecks,
       products: combinedProducts,
       flower_products: flowerProducts,
       plant_products: plantProducts,
@@ -11697,7 +11811,8 @@ async function handleApi(req, res, url) {
       return;
     }
     const overallStatus = String(existingCollection?.csi_report?.overall_status || "").trim().toLowerCase();
-    if (String(existingCollection?.csi_report?.status || "").trim() !== "done" || overallStatus !== "pass") {
+    const plantReconciledPass = isUkdocsCsiPlantReconciledPassReport(existingCollection?.csi_report);
+    if (String(existingCollection?.csi_report?.status || "").trim() !== "done" || (overallStatus !== "pass" && !plantReconciledPass)) {
       sendJson(res, 400, { error: "Run CSI successfully before sending papers to CSI" });
       return;
     }
