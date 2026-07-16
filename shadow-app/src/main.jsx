@@ -2511,6 +2511,12 @@ function ukdocsCombinedInvoiceNumbers(invoiceNumbersByCategory, uploadedFiles) {
     .join("/");
 }
 
+function ukdocsInvoiceNumberFromFileName(fileName) {
+  const baseName = String(fileName || "").replace(/\.[^.]+$/, "");
+  const numberParts = baseName.match(/\d+/g) || [];
+  return numberParts.length ? numberParts[numberParts.length - 1] : "";
+}
+
 function mergeUkdocsExportDefaults(baseDefaults = {}, overrideDefaults = {}) {
   const next = { ...baseDefaults };
   for (const [key] of UKDOCS_EXPORT_DEFAULT_FIELDS) {
@@ -3099,10 +3105,16 @@ function UkdocsPage({ currentUser }) {
   }
 
   async function continueShipment() {
+    if (!confirmShipmentInvoiceNumbers("continue")) {
+      return;
+    }
     await analyzeShipment();
   }
 
   async function generateDocuments() {
+    if (!confirmShipmentInvoiceNumbers("generate the documents")) {
+      return;
+    }
     setSaving(true);
     setError("");
     setMessage("");
@@ -3263,6 +3275,7 @@ function UkdocsPage({ currentUser }) {
 
   async function updateUploadedFile(categoryCode, file) {
     let nextFile = { category: categoryCode, file_name: "", size: 0, uploaded_at: "", content_base64: "" };
+    const invoiceNumberFromFile = file ? ukdocsInvoiceNumberFromFileName(file.name) : "";
     if (file) {
       nextFile = {
         category: categoryCode,
@@ -3274,6 +3287,15 @@ function UkdocsPage({ currentUser }) {
     }
     setShipmentDraft((current) => ({
       ...current,
+      invoice_numbers_by_category: (() => {
+        const currentInvoice = String(current.invoice_numbers_by_category?.[categoryCode] || "").trim();
+        const previousFileInvoice = ukdocsInvoiceNumberFromFileName(current.uploaded_files?.[categoryCode]?.file_name || "");
+        const shouldUseFileInvoice = invoiceNumberFromFile && (!currentInvoice || currentInvoice === previousFileInvoice);
+        return {
+          ...(current.invoice_numbers_by_category || {}),
+          [categoryCode]: shouldUseFileInvoice ? invoiceNumberFromFile : currentInvoice,
+        };
+      })(),
       uploaded_files: {
         ...(current.uploaded_files || {}),
         [categoryCode]: nextFile,
@@ -3281,6 +3303,15 @@ function UkdocsPage({ currentUser }) {
     }));
     setAnalysis(null);
     setGeneratedFiles([]);
+  }
+
+  function confirmShipmentInvoiceNumbers(actionLabel = "continue") {
+    const invoiceText = String(combinedInvoiceNumbers || "").trim();
+    if (!invoiceText) {
+      window.alert("No invoice number is filled in.");
+      return false;
+    }
+    return window.confirm(`Invoice number(s): ${invoiceText}\n\nDo you want to ${actionLabel}?`);
   }
 
   const uploadedCount = Object.values(shipmentDraft.uploaded_files || {}).filter((item) => item?.file_name).length;
@@ -3403,30 +3434,35 @@ function UkdocsPage({ currentUser }) {
               <div className="form-grid">
                 <label><span>Customer / export user</span><select value={shipmentDraft.customer_id} onChange={(event) => applyCustomerDefaults(event.target.value)}><option value="">Choose customer</option>{customers.map((customer) => <option key={customer.id} value={customer.id}>{customer.customer_name}</option>)}</select></label>
                 <label><span>Date</span><input type="date" value={shipmentDraft.shipment_date} onChange={(event) => setShipmentDraft({ ...shipmentDraft, shipment_date: event.target.value })} /></label>
-            <label><span>Truck number</span><input value={shipmentDraft.truck_number || ""} onChange={(event) => setShipmentDraft({ ...shipmentDraft, truck_number: event.target.value })} placeholder="For example: 1 BHM" /></label>
-            <label><span>Truck / trailer licence plate</span><input value={shipmentDraft.trailer_number} onChange={(event) => setShipmentDraft({ ...shipmentDraft, trailer_number: event.target.value })} placeholder="One licence plate for the whole export" /></label>
-            <label><span>Combined export invoice numbers</span><input value={combinedInvoiceNumbers} readOnly placeholder="Filled automatically from the category invoice inputs below" /></label>
-            <label><span>Export reference</span><input value={shipmentDraft.export_reference} onChange={(event) => setShipmentDraft({ ...shipmentDraft, export_reference: event.target.value })} /></label>
-            <label><span>Reference connect</span><input value={shipmentDraft.reference_connect || ""} onChange={(event) => setShipmentDraft({ ...shipmentDraft, reference_connect: event.target.value })} placeholder="For example: 19053" /></label>
-            <label><span>Currency</span><input value={shipmentDraft.currency} onChange={(event) => setShipmentDraft({ ...shipmentDraft, currency: event.target.value })} /></label>
-            <label><span>Delivery terms</span><input value={shipmentDraft.delivery_terms} onChange={(event) => setShipmentDraft({ ...shipmentDraft, delivery_terms: event.target.value })} /></label>
-            <label><span>UK arrival port</span><input value={shipmentDraft.uk_arrival_port} onChange={(event) => setShipmentDraft({ ...shipmentDraft, uk_arrival_port: event.target.value })} /></label>
-            <label><span>Owner (export header)</span><input value={shipmentDraft.owner} onChange={(event) => setShipmentDraft({ ...shipmentDraft, owner: event.target.value })} placeholder="Exact owner text for the export file" /></label>
-            <label><span>Regulation</span><input value={shipmentDraft.regulation} onChange={(event) => setShipmentDraft({ ...shipmentDraft, regulation: event.target.value })} /></label>
-            <label><span>Country of destination</span><input value={shipmentDraft.destination_country} onChange={(event) => setShipmentDraft({ ...shipmentDraft, destination_country: event.target.value })} /></label>
-            <label><span>Customs office of exit</span><input value={shipmentDraft.customs_office_of_exit} onChange={(event) => setShipmentDraft({ ...shipmentDraft, customs_office_of_exit: event.target.value })} /></label>
-            <label><span>Location</span><input value={shipmentDraft.location} onChange={(event) => setShipmentDraft({ ...shipmentDraft, location: event.target.value })} /></label>
-            <label><span>Delivery terms city</span><input value={shipmentDraft.delivery_terms_city} onChange={(event) => setShipmentDraft({ ...shipmentDraft, delivery_terms_city: event.target.value })} /></label>
-            <label><span>Border transport mode</span><input value={shipmentDraft.border_transport_mode} onChange={(event) => setShipmentDraft({ ...shipmentDraft, border_transport_mode: event.target.value })} /></label>
-            <label><span>Border transport nationality</span><input value={shipmentDraft.border_transport_nationality} onChange={(event) => setShipmentDraft({ ...shipmentDraft, border_transport_nationality: event.target.value })} /></label>
-            <label><span>Importer number / reference</span><input value={shipmentDraft.importer} onChange={(event) => setShipmentDraft({ ...shipmentDraft, importer: event.target.value })} placeholder="Shown next to Importer in the export file" /></label>
-            <label><span>Vessel</span><input value={shipmentDraft.vessel} onChange={(event) => setShipmentDraft({ ...shipmentDraft, vessel: event.target.value })} /></label>
-            <label><span>Freight costs</span><input value={shipmentDraft.freight_costs} onChange={(event) => setShipmentDraft({ ...shipmentDraft, freight_costs: event.target.value })} /></label>
-            <label><span>Insurance</span><input value={shipmentDraft.insurance} onChange={(event) => setShipmentDraft({ ...shipmentDraft, insurance: event.target.value })} /></label>
-            <label><span>Marks and numbers</span><input value={shipmentDraft.marks_and_numbers} onChange={(event) => setShipmentDraft({ ...shipmentDraft, marks_and_numbers: event.target.value })} /></label>
-            <label><span>Container number</span><input value={shipmentDraft.container_number} onChange={(event) => setShipmentDraft({ ...shipmentDraft, container_number: event.target.value })} /></label>
-            <label className="wide"><span>Transport / customs information</span><textarea rows={4} value={shipmentDraft.transport_customs_info} onChange={(event) => setShipmentDraft({ ...shipmentDraft, transport_customs_info: event.target.value })} /></label>
-            <label className="wide"><span>Notes / references</span><textarea rows={4} value={shipmentDraft.notes} onChange={(event) => setShipmentDraft({ ...shipmentDraft, notes: event.target.value })} /></label>
+                <label><span>Truck number</span><input value={shipmentDraft.truck_number || ""} onChange={(event) => setShipmentDraft({ ...shipmentDraft, truck_number: event.target.value })} placeholder="For example: 1 BHM" /></label>
+                <label><span>Truck / trailer licence plate</span><input value={shipmentDraft.trailer_number} onChange={(event) => setShipmentDraft({ ...shipmentDraft, trailer_number: event.target.value })} placeholder="One licence plate for the whole export" /></label>
+                <label className="wide"><span>Combined export invoice numbers</span><input value={combinedInvoiceNumbers} readOnly placeholder="Filled automatically from the category invoice inputs below" /></label>
+                <details className="wide">
+                  <summary>More export details</summary>
+                  <div className="form-grid" style={{ marginTop: "14px" }}>
+                    <label><span>Export reference</span><input value={shipmentDraft.export_reference} onChange={(event) => setShipmentDraft({ ...shipmentDraft, export_reference: event.target.value })} /></label>
+                    <label><span>Reference connect</span><input value={shipmentDraft.reference_connect || ""} onChange={(event) => setShipmentDraft({ ...shipmentDraft, reference_connect: event.target.value })} placeholder="For example: 19053" /></label>
+                    <label><span>Currency</span><input value={shipmentDraft.currency} onChange={(event) => setShipmentDraft({ ...shipmentDraft, currency: event.target.value })} /></label>
+                    <label><span>Delivery terms</span><input value={shipmentDraft.delivery_terms} onChange={(event) => setShipmentDraft({ ...shipmentDraft, delivery_terms: event.target.value })} /></label>
+                    <label><span>UK arrival port</span><input value={shipmentDraft.uk_arrival_port} onChange={(event) => setShipmentDraft({ ...shipmentDraft, uk_arrival_port: event.target.value })} /></label>
+                    <label><span>Owner (export header)</span><input value={shipmentDraft.owner} onChange={(event) => setShipmentDraft({ ...shipmentDraft, owner: event.target.value })} placeholder="Exact owner text for the export file" /></label>
+                    <label><span>Regulation</span><input value={shipmentDraft.regulation} onChange={(event) => setShipmentDraft({ ...shipmentDraft, regulation: event.target.value })} /></label>
+                    <label><span>Country of destination</span><input value={shipmentDraft.destination_country} onChange={(event) => setShipmentDraft({ ...shipmentDraft, destination_country: event.target.value })} /></label>
+                    <label><span>Customs office of exit</span><input value={shipmentDraft.customs_office_of_exit} onChange={(event) => setShipmentDraft({ ...shipmentDraft, customs_office_of_exit: event.target.value })} /></label>
+                    <label><span>Location</span><input value={shipmentDraft.location} onChange={(event) => setShipmentDraft({ ...shipmentDraft, location: event.target.value })} /></label>
+                    <label><span>Delivery terms city</span><input value={shipmentDraft.delivery_terms_city} onChange={(event) => setShipmentDraft({ ...shipmentDraft, delivery_terms_city: event.target.value })} /></label>
+                    <label><span>Border transport mode</span><input value={shipmentDraft.border_transport_mode} onChange={(event) => setShipmentDraft({ ...shipmentDraft, border_transport_mode: event.target.value })} /></label>
+                    <label><span>Border transport nationality</span><input value={shipmentDraft.border_transport_nationality} onChange={(event) => setShipmentDraft({ ...shipmentDraft, border_transport_nationality: event.target.value })} /></label>
+                    <label><span>Importer number / reference</span><input value={shipmentDraft.importer} onChange={(event) => setShipmentDraft({ ...shipmentDraft, importer: event.target.value })} placeholder="Shown next to Importer in the export file" /></label>
+                    <label><span>Vessel</span><input value={shipmentDraft.vessel} onChange={(event) => setShipmentDraft({ ...shipmentDraft, vessel: event.target.value })} /></label>
+                    <label><span>Freight costs</span><input value={shipmentDraft.freight_costs} onChange={(event) => setShipmentDraft({ ...shipmentDraft, freight_costs: event.target.value })} /></label>
+                    <label><span>Insurance</span><input value={shipmentDraft.insurance} onChange={(event) => setShipmentDraft({ ...shipmentDraft, insurance: event.target.value })} /></label>
+                    <label><span>Marks and numbers</span><input value={shipmentDraft.marks_and_numbers} onChange={(event) => setShipmentDraft({ ...shipmentDraft, marks_and_numbers: event.target.value })} /></label>
+                    <label><span>Container number</span><input value={shipmentDraft.container_number} onChange={(event) => setShipmentDraft({ ...shipmentDraft, container_number: event.target.value })} /></label>
+                    <label className="wide"><span>Transport / customs information</span><textarea rows={4} value={shipmentDraft.transport_customs_info} onChange={(event) => setShipmentDraft({ ...shipmentDraft, transport_customs_info: event.target.value })} /></label>
+                    <label className="wide"><span>Notes / references</span><textarea rows={4} value={shipmentDraft.notes} onChange={(event) => setShipmentDraft({ ...shipmentDraft, notes: event.target.value })} /></label>
+                  </div>
+                </details>
               </div>
               {selectedPrintCollection && <div className="notice">Selected sending: {selectedPrintCollection.city_name || "-"} | connect {selectedPrintCollection.reference_connect || "-"} | hub {selectedPrintCollection.hub_code || "-"} | PD {selectedPrintCollection.pd_form || "-"}</div>}
 
