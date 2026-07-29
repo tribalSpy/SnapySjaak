@@ -2628,7 +2628,7 @@ function ukdocsInspectionDocumentKeys(collection) {
     return ["inspection_list", "locations_file"];
   }
   if (inspectionMode === "reinspection") {
-    return ["phyto", "inspection_list", "export_extra", "temp_phyto_plants_file"];
+    return ["phyto", "inspection_list", "locations_file", "export_extra", "temp_phyto_plants_file"];
   }
   return ["phyto", "export_extra", "temp_phyto_plants_file"];
 }
@@ -2704,7 +2704,7 @@ function ukdocsPrintCollectionProgress(collection, customers) {
     return {
       customer,
       missing,
-      status: missing.length === 0 ? "complete" : (phytoCount || generatedExportReady || generatedInvoiceCount || collection?.documents?.export_extra?.storage_name || collection?.documents?.inspection_list?.storage_name ? "partial" : "pending"),
+      status: missing.length === 0 ? "complete" : (phytoCount || generatedExportReady || generatedInvoiceCount || collection?.documents?.export_extra?.storage_name || collection?.documents?.inspection_list?.storage_name || collection?.documents?.locations_file?.storage_name ? "partial" : "pending"),
     };
   }
   const customer = ukdocsPrintCollectionCustomer(collection, customers);
@@ -8723,6 +8723,8 @@ function FustActionTable({
   const [error, setError] = useState("");
   const [editingActionId, setEditingActionId] = useState("");
   const [editForm, setEditForm] = useState(null);
+  const [editDocumentFile, setEditDocumentFile] = useState(null);
+  const [editDocumentInputKey, setEditDocumentInputKey] = useState(0);
   const [typeFilter, setTypeFilter] = useState("");
   const [dateFilter, setDateFilter] = useState(defaultDate);
   const [onlyUnconfirmed, setOnlyUnconfirmed] = useState(unconfirmedOnly);
@@ -8758,11 +8760,14 @@ function FustActionTable({
         vk: Number(action.metrics?.vk || 0),
       },
     });
+    setEditDocumentFile(null);
+    setEditDocumentInputKey((current) => current + 1);
   }
 
   function cancelEdit() {
     setEditingActionId("");
     setEditForm(null);
+    setEditDocumentFile(null);
   }
 
   async function saveEdit(actionId) {
@@ -8796,6 +8801,44 @@ function FustActionTable({
       onRefresh();
     } catch (retryError) {
       setError(retryError.message);
+    } finally {
+      setBusyActionId("");
+    }
+  }
+
+  async function reuploadEditedDocument(action) {
+    if (!action?.id) {
+      return;
+    }
+    const documentLabel = action.type === "IN" ? "Fustbon" : "CMR";
+    const uploadAction = action.type === "IN" ? "fustbon-upload" : "cmr-upload";
+    if (!editDocumentFile) {
+      setError(`Choose a ${documentLabel} photo or PDF first.`);
+      setMessage("");
+      return;
+    }
+
+    setBusyActionId(`${action.id}:document-upload`);
+    setMessage("");
+    setError("");
+    try {
+      await apiJson(`/api/fust/actions/${encodeURIComponent(action.id)}/${uploadAction}`, {
+        method: "PATCH",
+        body: JSON.stringify({
+          file: {
+            name: editDocumentFile.name,
+            type: editDocumentFile.type || "application/octet-stream",
+            content_base64: await fileToBase64(editDocumentFile),
+          },
+        }),
+      });
+      setMessage(`${documentLabel} reuploaded.`);
+      setEditDocumentFile(null);
+      setEditDocumentInputKey((current) => current + 1);
+      onRefresh();
+    } catch (uploadError) {
+      setError(uploadError.message);
+      onRefresh();
     } finally {
       setBusyActionId("");
     }
@@ -9015,6 +9058,7 @@ function FustActionTable({
                 const isEditing = editingActionId === action.id && editForm;
                 const confirmed = isFustActionConfirmed(action);
                 const canModify = !readOnly && (allowManage || !confirmed);
+                const editDocumentLabel = action.type === "IN" ? "Fustbon" : "CMR";
                 return (
                   <tr key={action.id}>
                     <td>{isEditing ? <select value={editForm.type} onChange={(event) => setEditForm({ ...editForm, type: event.target.value })}><option value="IN">IN</option><option value="OUT">OUT</option></select> : action.type}</td>
@@ -9052,6 +9096,20 @@ function FustActionTable({
                           <>
                             <button type="button" disabled={busyActionId === `${action.id}:save`} onClick={() => saveEdit(action.id)}>Save</button>
                             <button type="button" onClick={cancelEdit}>Cancel</button>
+                            <label className="fust-document-reupload">
+                              <span>Reupload {editDocumentLabel}</span>
+                              <input
+                                key={`${editDocumentInputKey}-${action.id}`}
+                                type="file"
+                                accept="image/*,.pdf"
+                                capture="environment"
+                                disabled={busyActionId === `${action.id}:document-upload`}
+                                onChange={(event) => setEditDocumentFile(event.target.files?.[0] || null)}
+                              />
+                            </label>
+                            <button type="button" disabled={busyActionId === `${action.id}:document-upload` || !editDocumentFile} onClick={() => reuploadEditedDocument(action)}>
+                              {busyActionId === `${action.id}:document-upload` ? "Uploading..." : "Reupload document"}
+                            </button>
                           </>
                         ) : (
                           <>

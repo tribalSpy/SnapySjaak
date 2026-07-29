@@ -905,6 +905,18 @@ textarea {
   min-height: 34px;
 }
 
+.fust-document-reupload {
+  display: grid;
+  gap: 4px;
+  text-align: left;
+}
+
+.fust-document-reupload span {
+  font-size: 0.78rem;
+  font-weight: 700;
+  color: #536171;
+}
+
 .action-table input,
 .action-table select {
   min-width: 86px;
