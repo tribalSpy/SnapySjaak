@@ -4338,6 +4338,49 @@ function buildUkdocsPrintCollectionFromShipment(existingCollection, shipment, cu
   });
 }
 
+// Collapses consecutive rows sharing the same leading numeric ID (col 1, ';'-delimited)
+// down to the last row of each run, e.g. 44471183b, 44471183c -> keep 44471183c.
+// Read/written as latin1 so unusual byte values in legacy exports survive untouched.
+// Only ever called for the "locations_file" upload on the Phyto Inspection page.
+function dedupeLocationsCsvBuffer(fileBuffer) {
+  const text = fileBuffer.toString("latin1");
+  if (!text) {
+    return null;
+  }
+  const lineEnding = text.includes("\r\n") ? "\r\n" : "\n";
+  const lines = text.split(/\r\n|\n/);
+  if (lines.length && lines[lines.length - 1] === "") {
+    lines.pop();
+  }
+  if (!lines.length) {
+    return null;
+  }
+
+  function baseIdFor(line) {
+    const firstField = line.split(";")[0] || "";
+    const match = firstField.match(/^\s*(\d+)/);
+    return match ? match[1] : firstField;
+  }
+
+  const deduped = [];
+  for (const line of lines) {
+    const key = baseIdFor(line);
+    if (deduped.length && deduped[deduped.length - 1].key === key) {
+      deduped[deduped.length - 1].line = line;
+    } else {
+      deduped.push({ key, line });
+    }
+  }
+
+  const outputLines = deduped.map((item) => item.line);
+  return {
+    buffer: Buffer.from(outputLines.join(lineEnding) + lineEnding, "latin1"),
+    original_rows: lines.length,
+    deduped_rows: outputLines.length,
+    removed_rows: lines.length - outputLines.length,
+  };
+}
+
 async function saveUkdocsPrintUpload(collectionId, kind, filePayload, requestUser) {
   const originalName = path.basename(String(filePayload?.file_name || filePayload?.name || "").trim());
   const contentBase64 = String(filePayload?.content_base64 || "").trim();
@@ -4350,7 +4393,23 @@ async function saveUkdocsPrintUpload(collectionId, kind, filePayload, requestUse
   }
 
   const extension = safeExtension(originalName, mimeType);
-  const fileBuffer = Buffer.from(contentBase64, "base64");
+  let fileBuffer = Buffer.from(contentBase64, "base64");
+  let dedupSummary = null;
+  if (kind === "locations_file" && (extension === ".csv" || mimeType.toLowerCase().includes("csv"))) {
+    try {
+      const result = dedupeLocationsCsvBuffer(fileBuffer);
+      if (result) {
+        fileBuffer = result.buffer;
+        dedupSummary = {
+          original_rows: result.original_rows,
+          deduped_rows: result.deduped_rows,
+          removed_rows: result.removed_rows,
+        };
+      }
+    } catch (error) {
+      console.warn("Locations file dedup failed, saving original file:", error.message);
+    }
+  }
   const storageName = `${sanitizeDriveName(collectionId)}-${kind}-${Date.now()}-${crypto.randomUUID()}${extension}`;
   await fs.mkdir(ukdocsPrintFilesDir, { recursive: true });
   await fs.writeFile(path.join(ukdocsPrintFilesDir, storageName), fileBuffer);
@@ -4361,6 +4420,7 @@ async function saveUkdocsPrintUpload(collectionId, kind, filePayload, requestUse
     size_bytes: fileBuffer.length,
     saved_at: new Date().toISOString(),
     saved_by: requestUser.username,
+    ...(dedupSummary ? { dedup_summary: dedupSummary } : {}),
   };
 }
 

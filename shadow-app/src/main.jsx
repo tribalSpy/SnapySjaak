@@ -4896,7 +4896,11 @@ function UkdocsInspectionPage({ currentUser }) {
         }),
       });
       setState((current) => ({ ...current, print_collections: payload.print_collections || current?.print_collections || [] }));
-      setMessage(`${UKDOCS_PRINT_DOCUMENTS.find((item) => item.key === kind)?.label || "File"} saved.`);
+      const label = UKDOCS_PRINT_DOCUMENTS.find((item) => item.key === kind)?.label || "File";
+      const dedupSummary = kind === "locations_file" ? payload.collection?.documents?.locations_file?.dedup_summary : null;
+      setMessage(dedupSummary && dedupSummary.removed_rows > 0
+        ? `${label} saved. Removed ${dedupSummary.removed_rows} duplicate row${dedupSummary.removed_rows === 1 ? "" : "s"} (${dedupSummary.original_rows} -> ${dedupSummary.deduped_rows}).`
+        : `${label} saved.`);
     } catch (uploadError) {
       setError(uploadError.message);
     } finally {
