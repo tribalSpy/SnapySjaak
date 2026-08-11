@@ -8132,6 +8132,7 @@ function FustOverview({ loading, actions, overview, sourceDebug, onRefresh }) {
   const [selectedToDate, setSelectedToDate] = useState("");
   const [selectedCountry, setSelectedCountry] = useState("");
   const [selectedCustomer, setSelectedCustomer] = useState("");
+  const [customerSearch, setCustomerSearch] = useState("");
   const [expandedCountryWeek, setExpandedCountryWeek] = useState(false);
   const [showTransactionRecords, setShowTransactionRecords] = useState(false);
 
@@ -8339,9 +8340,11 @@ function FustOverview({ loading, actions, overview, sourceDebug, onRefresh }) {
   const scopedOverview = selectedCountry
     ? (selectedWeek && !expandedCountryWeek ? collapsedCountryWeekRows : (selectedWeek ? customerRows : weekRows))
     : countryRows;
-  const visibleOverview = selectedCustomer
+  const customerSearchQuery = customerSearch.trim().toLowerCase();
+  const visibleOverview = (selectedCustomer
     ? customerRows.filter((entry) => entry.customer_name === selectedCustomer)
-    : scopedOverview;
+    : scopedOverview
+  ).filter((entry) => !customerSearchQuery || String(entry.customer_name || "").toLowerCase().includes(customerSearchQuery));
   const totals = sumOverviewEntries(visibleOverview);
   const transactionRecords = datedActions
     .filter((action) => showTransactionRecords)
@@ -8479,6 +8482,15 @@ function FustOverview({ loading, actions, overview, sourceDebug, onRefresh }) {
               <option value="">All cust/transports</option>
               {customerOptions.map((customer) => <option key={customer} value={customer}>{customer}</option>)}
             </select>
+          </label>
+          <label>
+            <span>Search klantnaam</span>
+            <input
+              type="search"
+              value={customerSearch}
+              placeholder="Search klantnaam..."
+              onChange={(event) => setCustomerSearch(event.target.value)}
+            />
           </label>
         </div>
         <div className="section-header">
@@ -8730,6 +8742,7 @@ function FustActionTable({
   const [onlyUnconfirmed, setOnlyUnconfirmed] = useState(unconfirmedOnly);
   const [countryFilter, setCountryFilter] = useState("");
   const [customerFilter, setCustomerFilter] = useState("");
+  const [searchText, setSearchText] = useState("");
 
   useEffect(() => {
     setDateFilter(defaultDate);
@@ -8925,12 +8938,23 @@ function FustActionTable({
       date,
       count: unconfirmedActions.filter((action) => fustActionControlDate(action) === date).length,
     }));
+  const searchQuery = searchText.trim().toLowerCase();
   const visibleActions = controlActions
     .filter((action) => !onlyUnconfirmed || !isFustActionConfirmed(action))
     .filter((action) => !typeFilter || action.type === typeFilter)
     .filter((action) => !dateFilter || (allowConfirm ? fustActionControlDate(action) : String(action.action_date || "")) === dateFilter)
     .filter((action) => !countryFilter || action.country === countryFilter)
-    .filter((action) => !customerFilter || action.customer_name === customerFilter);
+    .filter((action) => !customerFilter || action.customer_name === customerFilter)
+    .filter((action) => !searchQuery || [
+      action.customer_name,
+      action.connect_name,
+      action.customer_code,
+      action.remark,
+      action.fustbon_reference,
+      action.fustfactuur_reference,
+      action.country,
+      action.type,
+    ].some((field) => String(field || "").toLowerCase().includes(searchQuery)));
 
   if (loading) {
     return <div className="notice">Loading Fust actions...</div>;
@@ -8994,6 +9018,15 @@ function FustActionTable({
           <h2>{title}</h2>
         </div>
         <div className="overview-filters">
+          <label>
+            <span>Search</span>
+            <input
+              type="search"
+              value={searchText}
+              placeholder="Search klantnaam, connect, remark, fustbon..."
+              onChange={(event) => setSearchText(event.target.value)}
+            />
+          </label>
           <label>
             <span>Type</span>
             <select value={typeFilter} onChange={(event) => setTypeFilter(event.target.value)}>

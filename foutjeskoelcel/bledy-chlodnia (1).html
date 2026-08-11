@@ -446,10 +446,41 @@
     flex-shrink: 0;
   }
   .entry-row .comment { color: var(--steel-mid); flex: 1; }
+  .entry-main {
+    display: flex;
+    gap: 10px;
+    align-items: flex-start;
+    flex: 1;
+    min-width: 0;
+  }
+  .entry-actions {
+    display: flex;
+    gap: 8px;
+    flex-shrink: 0;
+    align-items: center;
+  }
+  .entry-actions .delete-entry-btn {
+    background: none; border: 1px solid var(--danger); color: var(--danger);
+    border-radius: 8px; padding: 6px 10px; font-size: 12px; cursor: pointer; font-weight: 600;
+  }
+  .entry-actions .confirm-del { display: flex; gap: 6px; align-items: center; }
+  .entry-actions .confirm-del span { font-size: 12px; color: var(--steel-mid); }
+  .entry-actions .confirm-del button.yes { background: var(--danger); color: white; border: 1px solid var(--danger); border-radius: 8px; padding: 6px 10px; font-size: 12px; cursor: pointer; font-weight: 600; }
+  .entry-actions .confirm-del button.no { background: none; border: 1px solid var(--line); color: var(--steel-mid); border-radius: 8px; padding: 6px 10px; font-size: 12px; cursor: pointer; font-weight: 600; }
 
   /* TEAM TODAY */
   .team-toolbar {
     display: flex; gap: 10px; margin-bottom: 16px;
+  }
+  .team-search {
+    width: 100%;
+    padding: 12px 14px;
+    border-radius: 12px;
+    border: 1.5px solid var(--line);
+    font-family: var(--sans);
+    font-size: 15px;
+    background: white;
+    margin-bottom: 12px;
   }
   .team-toolbar button {
     background: var(--frost-card);
@@ -588,6 +619,7 @@ const TRANSLATIONS = {
     yes: 'Tak',
     no: 'Nie',
     emptyPeopleShort: 'Brak osób. Dodaj pierwszą poniżej.',
+    searchPlaceholder: 'Szukaj osoby...',
     summaryTitle: 'Podsumowanie',
     today: 'Dzisiaj',
     allDays: 'Wszystkie dni',
@@ -643,6 +675,7 @@ const TRANSLATIONS = {
     yes: 'Ja',
     no: 'Nee',
     emptyPeopleShort: 'Geen personen. Voeg hieronder de eerste toe.',
+    searchPlaceholder: 'Zoek op naam...',
     summaryTitle: 'Overzicht',
     today: 'Vandaag',
     allDays: 'Alle dagen',
@@ -698,6 +731,7 @@ const TRANSLATIONS = {
     yes: 'Yes',
     no: 'No',
     emptyPeopleShort: 'No people yet. Add the first one below.',
+    searchPlaceholder: 'Search person...',
     summaryTitle: 'Summary',
     today: 'Today',
     allDays: 'All days',
@@ -1074,6 +1108,7 @@ async function renderTeamToday() {
     existing = prev || [];
   }
   state.teamDraft = existing.slice();
+  state.teamSearch = '';
 
   renderTeamTodayScreen();
 }
@@ -1090,6 +1125,7 @@ function renderTeamTodayScreen() {
         <button id="selectAllBtn">${T('selectAll')}</button>
         <button id="deselectAllBtn">${T('deselectAll')}</button>
       </div>
+      <input class="team-search" id="teamSearchInput" type="search" placeholder="${T('searchPlaceholder')}" value="${escapeHtml(state.teamSearch || '')}">
       <div class="team-list" id="teamList"></div>
     </main>
     <div class="team-save-bar">
@@ -1114,12 +1150,20 @@ function renderTeamTodayScreen() {
     state.view = 'home';
     render();
   };
+  document.getElementById('teamSearchInput').oninput = (event) => {
+    state.teamSearch = event.target.value || '';
+    renderTeamList();
+  };
   renderTeamList();
 }
 
 function renderTeamList() {
   const listEl = document.getElementById('teamList');
-  listEl.innerHTML = state.people.map(p => {
+  const query = (state.teamSearch || '').trim().toLowerCase();
+  const filteredPeople = !query
+    ? state.people
+    : state.people.filter(p => p.name.toLowerCase().includes(query));
+  listEl.innerHTML = filteredPeople.map(p => {
     const checked = state.teamDraft.includes(p.id);
     return `<div class="team-row ${checked ? 'checked' : ''}" data-id="${p.id}">
       <span class="check-box">${checked ? '✓' : ''}</span>
@@ -1246,9 +1290,9 @@ async function loadAndRenderSummary() {
 
   let errors;
   if (state.summaryMode === 'all') {
-    errors = await loadAllErrors();
+    errors = (await loadAllErrors()).map(e => ({ ...e, dateKey: e.timestamp ? todayStr(new Date(e.timestamp)) : state.summaryDate }));
   } else {
-    errors = await loadDayErrors(state.summaryDate);
+    errors = (await loadDayErrors(state.summaryDate)).map(e => ({ ...e, dateKey: state.summaryDate }));
   }
   state.summaryData = errors;
   renderSummaryContent(errors);
@@ -1297,10 +1341,15 @@ function renderSummaryContent(errors) {
         </div>
         <div class="entries-detail ${isOpen ? 'open' : ''}">
           ${data.entries.slice().sort((a,b)=>b.timestamp-a.timestamp).map(e => `
-            <div class="entry-row">
-              <span class="time">${e.time || ''}</span>
-              <span class="type-tag">${TYPE_MAP[e.type] ? TYPE_MAP[e.type].icon : ''} ${TT(e.type)}</span>
-              <span class="comment">${e.comment ? escapeHtml(e.comment) : '<em style="opacity:0.5;">' + T('noComment') + '</em>'}</span>
+            <div class="entry-row" data-entry-id="${e.id}">
+              <div class="entry-main">
+                <span class="time">${e.time || ''}</span>
+                <span class="type-tag">${TYPE_MAP[e.type] ? TYPE_MAP[e.type].icon : ''} ${TT(e.type)}</span>
+                <span class="comment">${e.comment ? escapeHtml(e.comment) : '<em style="opacity:0.5;">' + T('noComment') + '</em>'}</span>
+              </div>
+              <div class="entry-actions">
+                <button class="delete-entry-btn">${T('delete')}</button>
+              </div>
             </div>
           `).join('')}
         </div>
@@ -1314,6 +1363,28 @@ function renderSummaryContent(errors) {
       const id = head.dataset.id;
       state.openPersonId = state.openPersonId === id ? null : id;
       renderSummaryContent(state.summaryData);
+    };
+  });
+  content.querySelectorAll('.delete-entry-btn').forEach(btn => {
+    btn.onclick = () => {
+      const row = btn.closest('.entry-row');
+      const entryId = row.dataset.entryId;
+      row.querySelector('.entry-actions').innerHTML = `
+        <div class="confirm-del">
+          <span>${T('confirmDelete')}</span>
+          <button class="yes">${T('yes')}</button>
+          <button class="no">${T('no')}</button>
+        </div>
+      `;
+      row.querySelector('.yes').onclick = async () => {
+        const entry = (state.summaryData || []).find(x => x.id === entryId);
+        if (!entry) return;
+        const dateKey = entry.dateKey || state.summaryDate;
+        const dayEntries = await loadDayErrors(dateKey);
+        await saveDayErrors(dateKey, dayEntries.filter(x => x.id !== entryId));
+        await loadAndRenderSummary();
+      };
+      row.querySelector('.no').onclick = () => renderSummaryContent(state.summaryData);
     };
   });
 }

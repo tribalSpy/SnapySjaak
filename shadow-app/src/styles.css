@@ -828,6 +828,12 @@ textarea {
   overflow: auto;
 }
 
+/* Frozen header only for the Fust tables (action-table / balance-table) */
+.table-wrap:has(> .action-table),
+.table-wrap:has(> .balance-table) {
+  max-height: 70vh;
+}
+
 .overview-filters {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(180px, 220px));
@@ -866,6 +872,53 @@ textarea {
   color: #5a6876;
   font-size: 0.86rem;
   background: #f5f8fb;
+}
+
+/* Fust tables (action-table / balance-table): Excel-like grid with a frozen header */
+.action-table.data-table,
+.balance-table.data-table {
+  border-collapse: separate;
+  border-spacing: 0;
+  font-variant-numeric: tabular-nums;
+}
+
+.action-table.data-table th,
+.action-table.data-table td,
+.balance-table.data-table th,
+.balance-table.data-table td {
+  border-right: 1px solid #d9e1ea;
+  border-bottom: 1px solid #d9e1ea;
+  border-top: none;
+  border-left: none;
+  padding: 8px 10px;
+}
+
+.action-table.data-table th,
+.balance-table.data-table th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  font-weight: 700;
+  background: #eef3f8;
+  box-shadow: inset 0 -1px 0 #ccd6e2;
+}
+
+.action-table.data-table tbody tr:nth-child(even),
+.balance-table.data-table tbody tr:nth-child(even) {
+  background: #f8fafc;
+}
+
+.action-table.data-table tbody tr:hover,
+.balance-table.data-table tbody tr:hover {
+  background: #eaf2fb;
+}
+
+.balance-table.data-table tbody tr.active-row:nth-child(even) {
+  background: #e2f0ea;
+}
+
+.balance-table.data-table tbody tr.active-row:hover {
+  background: #d5e8dd;
 }
 
 .balance-table td,
