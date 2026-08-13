@@ -8283,6 +8283,13 @@ function FustOverview({ loading, actions, overview, sourceDebug, onRefresh }) {
   const countryFilteredOverview = weekFilteredOverview.filter((entry) => !selectedCountry || entry.country === selectedCountry);
   const customerOptions = [...new Set(countryFilteredOverview.map((entry) => entry.customer_name).filter(Boolean))]
     .sort((left, right) => left.localeCompare(right));
+  const customerSearchQuery = customerSearch.trim().toLowerCase();
+  const searchFilteredWeekOverview = customerSearchQuery
+    ? weekFilteredOverview.filter((entry) => String(entry.customer_name || "").toLowerCase().includes(customerSearchQuery))
+    : weekFilteredOverview;
+  const searchFilteredCountryOverview = customerSearchQuery
+    ? countryFilteredOverview.filter((entry) => String(entry.customer_name || "").toLowerCase().includes(customerSearchQuery))
+    : countryFilteredOverview;
 
   useEffect(() => {
     if (selectedCountry && !countryOptions.includes(selectedCountry)) {
@@ -8299,7 +8306,7 @@ function FustOverview({ loading, actions, overview, sourceDebug, onRefresh }) {
 
   const countryRows = useMemo(() => {
     const grouped = new Map();
-    for (const entry of weekFilteredOverview) {
+    for (const entry of searchFilteredWeekOverview) {
       if (!grouped.has(entry.country)) {
         grouped.set(entry.country, []);
       }
@@ -8315,11 +8322,11 @@ function FustOverview({ loading, actions, overview, sourceDebug, onRefresh }) {
         row_count: entries.length,
       }))
       .sort((left, right) => left.country.localeCompare(right.country));
-  }, [selectedWeek, weekFilteredOverview]);
+  }, [selectedWeek, searchFilteredWeekOverview]);
 
   const weekRows = useMemo(() => {
     const grouped = new Map();
-    for (const entry of countryFilteredOverview) {
+    for (const entry of searchFilteredCountryOverview) {
       const week = String(entry.week || "");
       if (!grouped.has(week)) {
         grouped.set(week, []);
@@ -8336,19 +8343,17 @@ function FustOverview({ loading, actions, overview, sourceDebug, onRefresh }) {
         row_count: entries.length,
       }))
       .sort((left, right) => Number(right.week || 0) - Number(left.week || 0));
-  }, [countryFilteredOverview, selectedCountry]);
+  }, [searchFilteredCountryOverview, selectedCountry]);
 
-  const customerRows = countryFilteredOverview
+  const customerRows = searchFilteredCountryOverview
     .sort((left, right) => left.customer_name.localeCompare(right.customer_name));
   const collapsedCountryWeekRows = selectedCountry && selectedWeek ? weekRows : [];
   const scopedOverview = selectedCountry
     ? (selectedWeek && !expandedCountryWeek ? collapsedCountryWeekRows : (selectedWeek ? customerRows : weekRows))
     : countryRows;
-  const customerSearchQuery = customerSearch.trim().toLowerCase();
-  const visibleOverview = (selectedCustomer
+  const visibleOverview = selectedCustomer
     ? customerRows.filter((entry) => entry.customer_name === selectedCustomer)
-    : scopedOverview
-  ).filter((entry) => !customerSearchQuery || String(entry.customer_name || "").toLowerCase().includes(customerSearchQuery));
+    : scopedOverview;
   const totals = sumOverviewEntries(visibleOverview);
   const transactionRecords = datedActions
     .filter((action) => showTransactionRecords)
@@ -8645,6 +8650,8 @@ function FustOverview({ loading, actions, overview, sourceDebug, onRefresh }) {
                     <th>PAL</th>
                     <th>VK</th>
                     <th>Document</th>
+                    <th>Fustbon</th>
+                    <th>Fustfactuur</th>
                     <th>Remark</th>
                   </tr>
                 </thead>
@@ -8663,12 +8670,14 @@ function FustOverview({ loading, actions, overview, sourceDebug, onRefresh }) {
                       <td>{action.metrics?.pal || 0}</td>
                       <td>{action.metrics?.vk || 0}</td>
                       <td><DocumentStatus action={action} /></td>
+                      <td>{action.fustbon_reference || "-"}</td>
+                      <td>{action.fustfactuur_reference || "-"}</td>
                       <td>{action.remark || "-"}</td>
                     </tr>
                   ))}
                   {!transactionRecords.length && (
                     <tr>
-                      <td colSpan="13">No transactions were found for this filter.</td>
+                      <td colSpan="15">No transactions were found for this filter.</td>
                     </tr>
                   )}
                 </tbody>

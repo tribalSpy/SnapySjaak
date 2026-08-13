@@ -3822,6 +3822,11 @@ function buildActionMergeKey(action) {
   return `sig:${buildActionSignature(action)}`;
 }
 
+function createStableSheetRowId(prefix, signature) {
+  const digest = crypto.createHash("sha1").update(String(signature || "")).digest("hex").slice(0, 16);
+  return `${String(prefix || "row").toLowerCase()}-sheet-${digest}`;
+}
+
 function parseDashboardSheetRows(rows) {
   if (!Array.isArray(rows) || rows.length < 2) {
     return [];
@@ -3832,32 +3837,40 @@ function parseDashboardSheetRows(rows) {
   const sourceRows = hasHeaderRow ? rows.slice(1) : rows;
 
   return sourceRows
-    .map((row, index) => normalizeFustAction({
-      id: rowValue(row, 17) || `sheet-${index + 1}`,
-      type: rowValue(row, 0).toLowerCase() === "uitgaand" ? "OUT" : "IN",
-      day_name: rowValue(row, 1),
-      action_date: parseSheetDateToIso(rowValue(row, 2)),
-      week: rowValue(row, 3) ? Number(rowValue(row, 3)) : null,
-      customer_name: rowValue(row, 4),
-      country: rowValue(row, 5),
-      customer_code: rowValue(row, 6),
-      connect_name: rowValue(row, 6),
-      remark: rowValue(row, 7),
-      fustbon_reference: rowValue(row, 15),
-      fustfactuur_reference: rowValue(row, 16),
-      metrics: {
-        dc: normalizeNumber(rowValue(row, 8)),
-        cctag: normalizeNumber(rowValue(row, 9)),
-        dcs: normalizeNumber(rowValue(row, 10)),
-        dco: normalizeNumber(rowValue(row, 11)),
-        pal: normalizeNumber(rowValue(row, 12)),
-        vk: normalizeNumber(rowValue(row, 13)),
-      },
-      created_by: "spreadsheet",
-      created_at: "",
-      sheet_sync: { ok: true, target_sheets: ["Dashboard"], error: "", row_number: index + (hasHeaderRow ? 2 : 1) },
-      email_sync: { ok: true, recipients: [], error: "" },
-    }))
+    .map((row, index) => {
+      const type = rowValue(row, 0).toLowerCase() === "uitgaand" ? "OUT" : "IN";
+      const rowFields = {
+        type,
+        action_date: parseSheetDateToIso(rowValue(row, 2)),
+        customer_name: rowValue(row, 4),
+        country: rowValue(row, 5),
+        customer_code: rowValue(row, 6),
+        connect_name: rowValue(row, 6),
+        remark: rowValue(row, 7),
+        metrics: {
+          dc: normalizeNumber(rowValue(row, 8)),
+          cctag: normalizeNumber(rowValue(row, 9)),
+          dcs: normalizeNumber(rowValue(row, 10)),
+          dco: normalizeNumber(rowValue(row, 11)),
+          pal: normalizeNumber(rowValue(row, 12)),
+          vk: normalizeNumber(rowValue(row, 13)),
+        },
+      };
+      const rawId = rowValue(row, 17);
+      const id = rawId || createStableSheetRowId(type, buildActionSignature(rowFields));
+      return normalizeFustAction({
+        id,
+        ...rowFields,
+        day_name: rowValue(row, 1),
+        week: rowValue(row, 3) ? Number(rowValue(row, 3)) : null,
+        fustbon_reference: rowValue(row, 15),
+        fustfactuur_reference: rowValue(row, 16),
+        created_by: "spreadsheet",
+        created_at: "",
+        sheet_sync: { ok: true, target_sheets: ["Dashboard"], error: "", row_number: index + (hasHeaderRow ? 2 : 1) },
+        email_sync: { ok: true, recipients: [], error: "" },
+      });
+    })
     .filter((action) => action.customer_name && action.country);
 }
 
@@ -3872,32 +3885,39 @@ function parseRegistrySheetRows(rows, type) {
   const sourceRows = hasHeaderRow ? rows.slice(1) : rows;
 
   return sourceRows
-    .map((row, index) => normalizeFustAction({
-      id: rowValue(row, layout.idIndex) || `${type.toLowerCase()}-sheet-${index + 1}`,
-      type,
-      day_name: rowValue(row, layout.dayIndex),
-      action_date: parseSheetDateToIso(rowValue(row, layout.dateIndex)),
-      week: rowValue(row, layout.weekIndex) ? Number(rowValue(row, layout.weekIndex)) : null,
-      customer_name: rowValue(row, layout.customerNameIndex),
-      country: rowValue(row, layout.countryIndex),
-      customer_code: rowValue(row, layout.connectIndex),
-      connect_name: rowValue(row, layout.connectIndex),
-      remark: rowValue(row, layout.remarkIndex),
-      fustbon_reference: rowValue(row, layout.fustbonIndex),
-      fustfactuur_reference: rowValue(row, layout.fustfactuurIndex),
-      metrics: {
-        dc: normalizeNumber(rowValue(row, layout.dcIndex)),
-        cctag: normalizeNumber(rowValue(row, layout.cctagIndex)),
-        dcs: normalizeNumber(rowValue(row, layout.dcsIndex)),
-        dco: normalizeNumber(rowValue(row, layout.dcoIndex)),
-        pal: normalizeNumber(rowValue(row, layout.palIndex)),
-        vk: normalizeNumber(rowValue(row, layout.vkIndex)),
-      },
-      created_by: "spreadsheet",
-      created_at: "",
-      sheet_sync: { ok: true, target_sheets: [type === "OUT" ? "Uitgaand" : "Retour"], error: "", row_number: index + (hasHeaderRow ? 2 : 1) },
-      email_sync: { ok: true, recipients: [], error: "" },
-    }))
+    .map((row, index) => {
+      const rowFields = {
+        type,
+        action_date: parseSheetDateToIso(rowValue(row, layout.dateIndex)),
+        customer_name: rowValue(row, layout.customerNameIndex),
+        country: rowValue(row, layout.countryIndex),
+        customer_code: rowValue(row, layout.connectIndex),
+        connect_name: rowValue(row, layout.connectIndex),
+        remark: rowValue(row, layout.remarkIndex),
+        metrics: {
+          dc: normalizeNumber(rowValue(row, layout.dcIndex)),
+          cctag: normalizeNumber(rowValue(row, layout.cctagIndex)),
+          dcs: normalizeNumber(rowValue(row, layout.dcsIndex)),
+          dco: normalizeNumber(rowValue(row, layout.dcoIndex)),
+          pal: normalizeNumber(rowValue(row, layout.palIndex)),
+          vk: normalizeNumber(rowValue(row, layout.vkIndex)),
+        },
+      };
+      const rawId = rowValue(row, layout.idIndex);
+      const id = rawId || createStableSheetRowId(type, buildActionSignature(rowFields));
+      return normalizeFustAction({
+        id,
+        ...rowFields,
+        day_name: rowValue(row, layout.dayIndex),
+        week: rowValue(row, layout.weekIndex) ? Number(rowValue(row, layout.weekIndex)) : null,
+        fustbon_reference: rowValue(row, layout.fustbonIndex),
+        fustfactuur_reference: rowValue(row, layout.fustfactuurIndex),
+        created_by: "spreadsheet",
+        created_at: "",
+        sheet_sync: { ok: true, target_sheets: [type === "OUT" ? "Uitgaand" : "Retour"], error: "", row_number: index + (hasHeaderRow ? 2 : 1) },
+        email_sync: { ok: true, recipients: [], error: "" },
+      });
+    })
     .filter((action) => action.customer_name && action.country);
 }
 
@@ -5634,10 +5654,13 @@ function mapUkdocsCsiProductName(description, commodityCode = "", options = {}) 
     if (text.includes("green") || code.startsWith("0604209") || code.startsWith("604209")) {
       return "Flowers green";
     }
-    if (code && !code.startsWith("06") && !code.startsWith("6")) {
-      return String(description || "").trim() || "Unknown product";
+    if (
+      text.includes("gypsoph") || text.includes("solidago") || text.includes("other fresh")
+      || code.startsWith("0603197") || code.startsWith("603197") || code.startsWith("0603199") || code.startsWith("603199")
+    ) {
+      return "Flowers (other fresh)";
     }
-    return "Flowers (other fresh)";
+    return String(description || "").trim() || "Unknown product";
   }
 
   if (strictDomain === "plants") {
@@ -8675,7 +8698,7 @@ function buildCmrFilename(action, originalName, mimeType) {
   return `${sanitizeDriveName(action.type)}-${sanitizeDriveName(action.action_date)}-${sanitizeDriveName(action.country)}-${sanitizeDriveName(action.customer_name)}-${stamp}${extension}`;
 }
 
-async function applyFustDocumentChoice(action, settings, documentPayload, requestUser) {
+async function applyFustDocumentChoice(action, settings, documentPayload, requestUser, requestPath = "") {
   const documentConfig = action.type === "IN"
     ? { field: "fustbon", label: "Fustbon" }
     : { field: "cmr", label: "CMR" };
@@ -8709,6 +8732,18 @@ async function applyFustDocumentChoice(action, settings, documentPayload, reques
       uploaded_by: requestUser.username,
     });
   } catch (documentError) {
+    const serviceLabel = "Google Drive";
+    const reconnectTarget = settings.cmr_google_connected_email || "the Google Drive upload account";
+    await sendSupportAttentionEmail(settings, {
+      service: serviceLabel,
+      action: `Upload ${documentConfig.label}`,
+      username: requestUser.username,
+      connected_account: settings.cmr_google_connected_email || "",
+      reconnect_target: reconnectTarget,
+      workaround: buildReconnectGuidance(serviceLabel, settings.cmr_google_connected_email, reconnectTarget),
+      error: documentError instanceof Error ? documentError.message : String(documentError),
+      path: requestPath,
+    });
     action[documentConfig.field] = normalizeCmrInfo({
       status: "failed",
       error: documentError instanceof Error ? documentError.message : String(documentError),
@@ -9138,7 +9173,7 @@ async function maybeSendFustConfirmationReminders(actions, settings) {
     const seededAction = normalizeFustAction({
       ...sourceAction,
       created_by: sourceAction?.created_by === "spreadsheet" ? "sheet-import" : (sourceAction?.created_by || "sheet-import"),
-      created_at: sourceAction?.created_at || new Date().toISOString(),
+      created_at: sourceAction?.created_at || "",
     });
     localActions.push(seededAction);
     const entry = { action: seededAction, index: localActions.length - 1 };
@@ -12814,7 +12849,7 @@ async function handleApi(req, res, url) {
     }
 
     try {
-      await applyFustDocumentChoice(action, settings, documentPayload, requestUser);
+      await applyFustDocumentChoice(action, settings, documentPayload, requestUser, url.pathname);
     } catch (documentChoiceError) {
       sendJson(res, 400, { error: documentChoiceError instanceof Error ? documentChoiceError.message : String(documentChoiceError), action });
       return;
