@@ -97,31 +97,28 @@ on deliberately.
 1. Confirm Render is genuinely healthy again (it's serving normally).
 2. **Immediately switch the office PC's Settings > System mode back to Backup.**
    Do this before anything else, so nobody keeps working on two systems at once.
-3. Run the reconciliation tool from the office PC:
-   ```
-   cd shadow-app/server/backup
-   set RENDER_BASE_URL=https://<your-render-service>.onrender.com
-   set RECONCILE_USERNAME=<an admin username>
-   set RECONCILE_PASSWORD=<that admin's password>
-   node reconcile.js
-   ```
-   This is a **dry run** by default — it reports what would change without
-   touching anything. Read the summary:
-   - New Fust actions created during the outage → will be **added** to Render.
-   - Existing Fust actions edited during the outage (confirmed, document
-     attached) → will be **updated** (only filling in what Render is missing;
-     it never overwrites something Render already has).
-   - `fust-settings.json` and `shadow-users.json` are only **diffed and
-     reported** — nothing here is applied automatically, since these hold live
-     credentials and account permissions. Review any differences shown and
-     decide by hand whether to apply them (e.g. through Settings normally on
-     Render, or via `POST /api/backup/reconcile/settings-apply` with just the
-     specific fields you approved).
-4. Once you're happy with the dry-run report, apply it for real:
-   ```
-   node reconcile.js --apply
-   ```
-5. Confirm Render's data now looks right, then resume normal operation on Render.
+   Once you do, a reminder banner appears on the office PC's Settings page —
+   it stays until you actually run reconciliation, so it's fine if you don't
+   get to step 3 immediately.
+3. Run reconciliation — two ways to do this, same result either way:
+   - **From the Settings page (easiest)**: on the office PC, scroll to the
+     "Reconciliation" card, fill in the Render base URL and an admin
+     username/password, and click **Dry run**. Review the summary — new Fust
+     actions show as "added", edited ones as "updated" (only filling in what
+     Render is missing; it never overwrites something Render already has).
+     `fust-settings.json`/`shadow-users.json` differences are only reported,
+     never applied automatically, since they hold live credentials and account
+     permissions — review those by hand. Once you're happy, click **Apply**.
+   - **From the command line**, if you prefer:
+     ```
+     cd shadow-app/server/backup
+     set RENDER_BASE_URL=https://<your-render-service>.onrender.com
+     set RECONCILE_USERNAME=<an admin username>
+     set RECONCILE_PASSWORD=<that admin's password>
+     node reconcile.js
+     node reconcile.js --apply
+     ```
+4. Confirm Render's data now looks right, then resume normal operation on Render.
    The office PC, back in Backup mode, will start pulling fresh data from Render
    again on its usual 15-minute cycle.
 

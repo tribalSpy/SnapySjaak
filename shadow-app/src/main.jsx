@@ -10210,6 +10210,10 @@ function SettingsPage({ currentUser }) {
   const [llmBusy, setLlmBusy] = useState(false);
   const [systemMode, setSystemMode] = useState(null);
   const [systemModeBusy, setSystemModeBusy] = useState(false);
+  const [reconcileReminder, setReconcileReminder] = useState(false);
+  const [reconcileForm, setReconcileForm] = useState({ render_base_url: "", username: "", password: "" });
+  const [reconcileBusy, setReconcileBusy] = useState(false);
+  const [reconcileResult, setReconcileResult] = useState(null);
 
   function normalizeEmailRecipientEntryForForm(entry) {
     if (typeof entry === "string") {
@@ -10327,6 +10331,12 @@ function SettingsPage({ currentUser }) {
     )) {
       return;
     }
+    if (mode === "online" && reconcileReminder && !window.confirm(
+      "Reconciliation hasn't been run yet since this PC was last Online. Switching to Online again without reconciling first can leave Render out of date. Continue anyway?",
+    )) {
+      return;
+    }
+    const previousMode = systemMode?.mode;
     setSystemModeBusy(true);
     setError("");
     setMessage("");
@@ -10337,10 +10347,41 @@ function SettingsPage({ currentUser }) {
       });
       setSystemMode(payload.system_mode);
       setMessage(`System mode set to ${payload.system_mode.mode}.`);
+      if (previousMode === "online" && payload.system_mode.mode === "backup") {
+        setReconcileReminder(true);
+      }
     } catch (modeError) {
       setError(modeError.message);
     } finally {
       setSystemModeBusy(false);
+    }
+  }
+
+  async function runReconcile(apply) {
+    if (apply && !window.confirm(
+      "Apply reconciliation now? This will merge any new/updated Fust actions from this PC into Render. Review the dry-run summary first if you haven't already.",
+    )) {
+      return;
+    }
+    setReconcileBusy(true);
+    setError("");
+    setMessage("");
+    try {
+      const payload = await apiJson("/api/backup/reconcile/run", {
+        method: "POST",
+        body: JSON.stringify({ ...reconcileForm, apply }),
+      });
+      setReconcileResult(payload);
+      if (apply) {
+        setReconcileReminder(false);
+        setMessage("Reconciliation applied.");
+      } else {
+        setMessage("Reconciliation dry run complete -- review the summary below.");
+      }
+    } catch (reconcileError) {
+      setError(reconcileError.message);
+    } finally {
+      setReconcileBusy(false);
     }
   }
 
@@ -10907,7 +10948,73 @@ function SettingsPage({ currentUser }) {
               Current mode: <strong>{systemMode.mode}</strong>
               {systemMode.changed_at ? ` — changed ${formatTimestamp(systemMode.changed_at)} by ${systemMode.changed_by || "unknown"}` : ""}
             </p>
+            {reconcileReminder && (
+              <div className="notice danger">
+                This PC was Online and is now back in Backup mode. Run Reconciliation below before switching back to
+                Online again, so anything created/changed while this PC was live gets merged into Render.
+              </div>
+            )}
           </>
+        )}
+      </div>
+
+      <div className="data-table-card">
+        <div className="section-header">
+          <h2>Reconciliation</h2>
+        </div>
+        <p className="sidebar-note">
+          Run this after a failover, once Render is healthy again and this PC has been switched back to Backup.
+          It merges any new/updated Fust actions from this PC into Render, and reports (without applying) any
+          differences in settings or user accounts for you to review by hand. Always run a dry run first.
+        </p>
+        <label>
+          <span>Render base URL</span>
+          <input
+            value={reconcileForm.render_base_url}
+            onChange={(event) => setReconcileForm({ ...reconcileForm, render_base_url: event.target.value })}
+            placeholder="https://snappysjaak-shadow.onrender.com"
+          />
+        </label>
+        <label>
+          <span>Render admin username</span>
+          <input
+            value={reconcileForm.username}
+            onChange={(event) => setReconcileForm({ ...reconcileForm, username: event.target.value })}
+          />
+        </label>
+        <label>
+          <span>Render admin password</span>
+          <input
+            type="password"
+            value={reconcileForm.password}
+            onChange={(event) => setReconcileForm({ ...reconcileForm, password: event.target.value })}
+          />
+        </label>
+        <div className="row-actions">
+          <button type="button" disabled={reconcileBusy} onClick={() => runReconcile(false)}>
+            {reconcileBusy ? "Working..." : "Dry run"}
+          </button>
+          <button type="button" className="primary" disabled={reconcileBusy} onClick={() => runReconcile(true)}>
+            {reconcileBusy ? "Working..." : "Apply"}
+          </button>
+        </div>
+        {!!reconcileResult && (
+          <div className="wide">
+            <p className="sidebar-note">
+              {reconcileResult.applied ? "Applied to Render:" : "Dry run (nothing changed yet):"}{" "}
+              {reconcileResult.merge?.summary?.added || 0} new action(s), {reconcileResult.merge?.summary?.updated || 0} updated,{" "}
+              {reconcileResult.merge?.summary?.unchanged || 0} already up to date.
+            </p>
+            {!reconcileResult.settings_diff?.identical && (
+              <p className="sidebar-note">
+                fust-settings.json differs in {reconcileResult.settings_diff?.differences?.length || 0} field(s) — review and apply
+                manually via Settings on Render.
+              </p>
+            )}
+            {!reconcileResult.users_diff?.identical && (
+              <p className="sidebar-note">shadow-users.json differs — review accounts/permissions manually.</p>
+            )}
+          </div>
         )}
       </div>
 

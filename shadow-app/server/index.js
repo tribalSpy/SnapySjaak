@@ -12773,6 +12773,74 @@ async function handleApi(req, res, url) {
     return;
   }
 
+  if (url.pathname === "/api/backup/reconcile/run" && req.method === "POST") {
+    if (!requirePermission(res, requestUser, PERMISSIONS.SETTINGS_MANAGE)) {
+      return;
+    }
+    const body = await readRequestJson(req);
+    const renderBaseUrl = String(body?.render_base_url || "").trim().replace(/\/+$/, "");
+    const username = String(body?.username || "").trim();
+    const password = String(body?.password || "");
+    const applyChanges = body?.apply === true;
+    if (!renderBaseUrl || !username || !password) {
+      sendJson(res, 400, { error: "render_base_url, username, and password are required" });
+      return;
+    }
+
+    try {
+      const loginResponse = await fetch(`${renderBaseUrl}/api/auth/login`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ username, password }),
+      });
+      if (!loginResponse.ok) {
+        sendJson(res, 400, { error: `Login to ${renderBaseUrl} failed: HTTP ${loginResponse.status}` });
+        return;
+      }
+      const cookie = (loginResponse.headers.get("set-cookie") || "").split(";")[0];
+      if (!cookie) {
+        sendJson(res, 400, { error: "Login succeeded but no session cookie was returned" });
+        return;
+      }
+
+      const remotePost = async (pathName, payload) => {
+        const response = await fetch(`${renderBaseUrl}${pathName}`, {
+          method: "POST",
+          headers: { "content-type": "application/json", cookie },
+          body: JSON.stringify(payload),
+        });
+        const payloadOut = await response.json().catch(() => ({}));
+        if (!response.ok) {
+          throw new Error(`${pathName} failed: HTTP ${response.status} ${JSON.stringify(payloadOut)}`);
+        }
+        return payloadOut;
+      };
+
+      const localActions = await readFustActions();
+      const mergeResult = await remotePost("/api/backup/reconcile/merge-actions", {
+        actions: localActions,
+        dry_run: !applyChanges,
+      });
+
+      const localSettings = await readFustSettings();
+      const settingsDiff = await remotePost("/api/backup/reconcile/diff", { dataset: "fust_settings", incoming: localSettings });
+
+      const localUsers = await readUsers();
+      const usersDiff = await remotePost("/api/backup/reconcile/diff", { dataset: "shadow_users", incoming: { users: localUsers.map(publicUser) } });
+
+      sendJson(res, 200, {
+        ok: true,
+        applied: applyChanges,
+        merge: mergeResult,
+        settings_diff: settingsDiff,
+        users_diff: usersDiff,
+      });
+    } catch (error) {
+      sendJson(res, 500, { error: error instanceof Error ? error.message : String(error) });
+    }
+    return;
+  }
+
   if (url.pathname === "/api/fust/meta") {
     if (!requirePermission(res, requestUser, PERMISSIONS.FUST_VIEW)) {
       return;
