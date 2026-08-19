@@ -9,7 +9,8 @@ echo ============================================================
 echo.
 echo Run this ONLY on the office PC that will act as the backup
 echo standby. It checks/installs prerequisites, installs app
-echo dependencies, and generates the backup encryption keypair.
+echo dependencies, generates the backup secrets, and writes a
+echo start_standby.bat with most of them already filled in.
 echo See docs\disaster-recovery-runbook.md for the full picture.
 echo.
 pause
@@ -45,7 +46,7 @@ if errorlevel 1 (
     if /i "!DO_PG_INSTALL!"=="y" (
         call :install_with_winget "PostgreSQL" "PostgreSQL.PostgreSQL.16"
         echo   IMPORTANT: remember the superuser password you just set --
-        echo   you will need it for DATABASE_URL in step 3 of the runbook.
+        echo   you will need it for DATABASE_URL in start_standby.bat later.
     ) else (
         echo   Skipped. Install manually from https://www.postgresql.org/download/windows/
         echo   then re-run this script.
@@ -90,7 +91,7 @@ call "%~dp0.venv\Scripts\pip.exe" install -r "%~dp0requirements.txt"
 :after_python
 
 echo.
-echo --- Step 3: Generating the backup encryption keypair ---
+echo --- Step 3: Generating secrets and start_standby.bat ---
 echo.
 where node >nul 2>nul
 if errorlevel 1 (
@@ -100,22 +101,22 @@ if errorlevel 1 (
 )
 
 echo ============================================================
-echo  COPY BOTH KEYS BELOW NOW -- this is the only time they are shown.
+echo  COPY WHAT'S PRINTED BELOW NOW -- this is the only time the
+echo  private key is shown. It has also been saved into
+echo  start_standby.bat for you.
 echo ============================================================
 node "%~dp0shadow-app\server\backup\generate-keypair.js"
 echo ============================================================
 echo.
-echo  BACKUP_PUBLIC_KEY   -^> paste into Render's dashboard environment variables
-echo  BACKUP_PRIVATE_KEY  -^> keep ONLY on this PC. Never on Render, never in git.
-echo                         Also save a copy somewhere safe (e.g. a password
-echo                         manager) -- losing it means losing every backup
-echo                         ever taken.
-echo.
-echo ============================================================
-echo.
-echo Setup finished. Next: follow docs\disaster-recovery-runbook.md
-echo section 1 (steps 5-8) to set the remaining environment variables
-echo and start the app.
+echo Next steps (also in docs\disaster-recovery-runbook.md section 1):
+echo   1. Paste BACKUP_PUBLIC_KEY and BACKUP_AGENT_API_KEY (printed above)
+echo      into Render's dashboard environment variables.
+echo   2. Create an empty Postgres database and note its connection string.
+echo   3. Copy credentials\service_account.json from your local dev setup
+echo      into this folder.
+echo   4. Open start_standby.bat and fill in RENDER_BACKUP_BASE_URL and
+echo      DATABASE_URL.
+echo   5. Double-click start_standby.bat to start the standby.
 echo.
 pause
 exit /b 0

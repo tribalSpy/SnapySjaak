@@ -12,51 +12,41 @@ be reading for the first time.
 Yes — the office PC needs a full copy of this repository, because it runs the
 exact same app, just pointed at its own local data instead of Render's.
 
-1. **Install prerequisites**: Node 22, Python 3, and Postgres (a local instance —
-   see step 5). On Windows, also install `postgresql-client` tools so `pg_restore`
-   is on PATH.
-2. **Copy the repo** to the office PC (git clone, or copy the folder). You need at
-   least: `shadow-app/`, `src/`, `requirements.txt`, `Dockerfile` is not needed
-   (you're running Node directly, not Docker, on this PC).
-3. **Install dependencies**:
-   ```
-   cd shadow-app && npm ci
-   python -m venv .venv && .venv\Scripts\activate && pip install -r ..\requirements.txt
-   ```
-4. **Generate the backup keypair** (do this once, only on the office PC):
-   ```
-   node shadow-app/server/backup/generate-keypair.js
-   ```
-   This prints a `BACKUP_PUBLIC_KEY` and a `BACKUP_PRIVATE_KEY`.
-   - Put `BACKUP_PUBLIC_KEY` in Render's environment variables (Render dashboard,
-     since it's marked `sync: false` in `render.yaml` and won't be picked up from git).
-   - Keep `BACKUP_PRIVATE_KEY` **only on this PC** — never commit it, never put it
-     on Render. Also save a copy somewhere safe (e.g. a password manager) — if
-     this key is lost, every backup ever taken becomes unreadable.
-5. **Set up local Postgres**: install Postgres, create an empty database, and set
-   `DATABASE_URL` (office PC's local env) to point at it. This lets the standby
-   fully match Render, including the LLM-poller job queue.
-6. **Generate a backup agent key** (any long random string works, e.g.
-   `openssl rand -hex 32`), and set it as `BACKUP_AGENT_API_KEY` in **both**
-   Render's environment variables and the office PC's local environment — it has
-   to be the identical value on both sides.
-7. **Set the office PC's environment variables** (e.g. in a `.env` file loaded by
-   your process manager, or system environment variables):
-   ```
-   SNAPPYSJAAK_CACHE_DIR=D:\SnappySjaakBackup\cache      (or wherever you want the data)
-   RENDER_BACKUP_BASE_URL=https://<your-render-service>.onrender.com
-   BACKUP_AGENT_API_KEY=<the shared key from step 6>
-   BACKUP_PRIVATE_KEY=<from step 4, THIS PC ONLY>
-   DATABASE_URL=<local Postgres connection string from step 5>
-   GOOGLE_APPLICATION_CREDENTIALS=credentials/service_account.json   (copy this file from local dev setup)
-   PORT=4174
-   ```
-8. **Start the app** the same way local dev already does (`npm start` inside
-   `shadow-app/`, or the existing `start_shadow_app.bat`). Leave it running.
+1. **Copy the repo** to the office PC (git clone, or copy the folder).
+2. **Run `setup_standby_pc.bat`** (repo root, double-click it). It will:
+   - Check for Node.js, Python, and PostgreSQL, and offer to install anything
+     missing via `winget`. PostgreSQL's installer needs a superuser password
+     set interactively, so that one step isn't silent — remember whatever
+     password you set, you'll need it in step 5 below.
+   - Install the app's Node and Python dependencies.
+   - Generate the backup secrets and write a **`start_standby.bat`** at the
+     repo root with two of them already filled in. **Copy the printed
+     `BACKUP_PUBLIC_KEY` and `BACKUP_AGENT_API_KEY` now** — the console output
+     is the only time the private key is shown in full (it's also saved into
+     `start_standby.bat` for you, so you don't need to copy that one).
+   - Running the script again later won't regenerate these secrets — it
+     detects `start_standby.bat` already exists and leaves it alone, so you
+     can't accidentally invalidate a key you've already given Render.
+3. **Add to Render's dashboard environment variables**: paste in the
+   `BACKUP_PUBLIC_KEY` and `BACKUP_AGENT_API_KEY` the script just printed.
+   (`PGDUMP_MIN_INTERVAL_MINUTES` already defaults on its own — nothing to do there.)
+4. **Create an empty Postgres database** (in the Postgres you just installed)
+   and note its connection string — this lets the standby fully match Render,
+   including the LLM-poller job queue.
+5. **Copy `credentials/service_account.json`** from your local dev setup into
+   this same folder on the office PC.
+6. **Open `start_standby.bat`** and fill in the two placeholders:
+   `RENDER_BACKUP_BASE_URL` (your Render service's URL) and `DATABASE_URL`
+   (from step 4). Everything else in that file is already set.
+7. **Double-click `start_standby.bat`** and leave it running.
 
 That's it — this instance now runs continuously in **Backup** mode (the default),
 quietly pulling data every 15 minutes. You'll see a "BACKUP MODE" banner across
 the app and the two normal background jobs (reminder emails, sheet sync) stay off.
+
+Also save a second copy of the private key (shown once during setup, and stored
+in `start_standby.bat`) somewhere safe, e.g. a password manager — losing it means
+losing the ability to read every backup ever taken.
 
 ## 2. Day to day
 
@@ -98,8 +88,8 @@ on deliberately.
 2. **Immediately switch the office PC's Settings > System mode back to Backup.**
    Do this before anything else, so nobody keeps working on two systems at once.
    Once you do, a reminder banner appears on the office PC's Settings page —
-   it stays until you actually run reconciliation, so it's fine if you don't
-   get to step 3 immediately.
+   it stays until you actually run reconciliation, and switching back to Online
+   while it's showing asks for an extra confirmation, so it's hard to miss.
 3. Run reconciliation — two ways to do this, same result either way:
    - **From the Settings page (easiest)**: on the office PC, scroll to the
      "Reconciliation" card, fill in the Render base URL and an admin
@@ -132,5 +122,11 @@ on deliberately.
 - The reconciliation tool only looks at what changed after this PC's last
   successful sync from Render — it assumes Render itself made no conflicting
   changes while it was down (true by definition, since it was down).
-- Losing `BACKUP_PRIVATE_KEY` means losing the ability to read any backup ever
-  taken. Keep a second copy somewhere safe.
+- Losing the private key (`start_standby.bat`'s `BACKUP_PRIVATE_KEY`) means
+  losing the ability to read any backup ever taken. Keep a second copy
+  somewhere safe.
+- `setup_standby_pc.bat` refuses to regenerate secrets once `start_standby.bat`
+  exists, specifically to prevent silently invalidating a key already given to
+  Render. If you genuinely need to rotate keys, delete `start_standby.bat`,
+  re-run the setup script, and update `BACKUP_PUBLIC_KEY`/`BACKUP_AGENT_API_KEY`
+  on Render to match the newly printed values.
