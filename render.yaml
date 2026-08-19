@@ -30,3 +30,9 @@ services:
         sync: false
       - key: GOOGLE_DRIVE_ACCOUNT_NAMES
         sync: false
+      - key: BACKUP_AGENT_API_KEY
+        sync: false
+      - key: BACKUP_PUBLIC_KEY
+        sync: false
+      - key: PGDUMP_MIN_INTERVAL_MINUTES
+        value: "360"

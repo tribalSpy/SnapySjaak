@@ -1219,6 +1219,56 @@ function useSyncStatus(enabled) {
   return status;
 }
 
+function useSystemMode(enabled) {
+  const [health, setHealth] = useState(null);
+
+  useEffect(() => {
+    if (!enabled) {
+      setHealth(null);
+      return undefined;
+    }
+
+    let stopped = false;
+
+    async function loadHealth() {
+      try {
+        const response = await fetch("/api/health");
+        if (!response.ok) {
+          return;
+        }
+        const payload = await response.json();
+        if (!stopped) {
+          setHealth(payload);
+        }
+      } catch {
+        if (!stopped) {
+          setHealth(null);
+        }
+      }
+    }
+
+    loadHealth();
+    const interval = window.setInterval(loadHealth, REFRESH_INTERVAL_MS);
+    return () => {
+      stopped = true;
+      window.clearInterval(interval);
+    };
+  }, [enabled]);
+
+  return health;
+}
+
+function SystemModeBanner({ health }) {
+  if (!health || health.mode !== "backup") {
+    return null;
+  }
+  return (
+    <div className="notice danger system-mode-banner">
+      BACKUP MODE — this instance is passively receiving data and is not the live system.
+    </div>
+  );
+}
+
 function useCmrPrintData(enabled) {
   const [refreshKey, setRefreshKey] = useState(0);
   const [state, setState] = useState({ loading: true, data: null, error: "" });
@@ -6745,6 +6795,7 @@ function App() {
   const [fustMenuVersion, setFustMenuVersion] = useState(0);
   const loggedIn = Boolean(auth.user);
   const syncStatus = useSyncStatus(loggedIn);
+  const systemHealth = useSystemMode(loggedIn || publicClockMode);
   const [selectedDate, setSelectedDate] = useState("");
   const [dateWasManuallySelected, setDateWasManuallySelected] = useState(false);
   const [searchTerm, setSearchTerm] = useState("");
@@ -6857,6 +6908,7 @@ function App() {
       <>
         {!heartbeat.connected && <ConnectionLostOverlay message={heartbeat.message} onRefresh={() => window.location.reload()} />}
         <main className="workspace public-clock-workspace">
+          <SystemModeBanner health={systemHealth} />
           <header className="page-header">
             <h1>{heading.title}</h1>
             {heading.caption ? <p>{heading.caption}</p> : null}
@@ -6973,6 +7025,7 @@ function App() {
       </aside>
 
       <main className="workspace">
+        <SystemModeBanner health={systemHealth} />
         <header className="page-header">
           <h1>{heading.title}</h1>
           <p>{heading.caption}</p>
@@ -10155,11 +10208,32 @@ function SettingsPage({ currentUser }) {
   const [googleBusy, setGoogleBusy] = useState(false);
   const [llmStatus, setLlmStatus] = useState(null);
   const [llmBusy, setLlmBusy] = useState(false);
+  const [systemMode, setSystemMode] = useState(null);
+  const [systemModeBusy, setSystemModeBusy] = useState(false);
+
+  function normalizeEmailRecipientEntryForForm(entry) {
+    if (typeof entry === "string") {
+      const email = entry.trim();
+      return email ? { email, notify_fust_action: true, notify_fust_reminder: true, notify_papers_ready: true } : null;
+    }
+    const email = String(entry?.email || "").trim();
+    if (!email) {
+      return null;
+    }
+    return {
+      email,
+      notify_fust_action: entry?.notify_fust_action !== false,
+      notify_fust_reminder: entry?.notify_fust_reminder !== false,
+      notify_papers_ready: entry?.notify_papers_ready !== false,
+    };
+  }
 
   function hydrateSettingsForm(settings) {
     return {
       ...settings,
-      email_recipients: (settings?.email_recipients || []).join("\n"),
+      email_recipients: (settings?.email_recipients || [])
+        .map(normalizeEmailRecipientEntryForForm)
+        .filter(Boolean),
       support_email_recipients: (settings?.support_email_recipients || []).join("\n"),
       cmr_country_folders_text: cmrFolderLines(settings?.cmr_country_folders),
       cmr_manage_usernames_text: (settings?.cmr_manage_usernames || []).join("\n"),
@@ -10169,9 +10243,8 @@ function SettingsPage({ currentUser }) {
   function buildSettingsPayload(source) {
     return {
       ...source,
-      email_recipients: String(source.email_recipients || "")
-        .split(/[\n,;]/)
-        .map((value) => value.trim())
+      email_recipients: (Array.isArray(source.email_recipients) ? source.email_recipients : [])
+        .map(normalizeEmailRecipientEntryForForm)
         .filter(Boolean),
       support_email_recipients: String(source.support_email_recipients || "")
         .split(/[\n,;]/)
@@ -10183,6 +10256,32 @@ function SettingsPage({ currentUser }) {
         .map((value) => value.trim().toLowerCase())
         .filter(Boolean),
     };
+  }
+
+  function addEmailRecipient() {
+    setForm((current) => ({
+      ...current,
+      email_recipients: [
+        ...(current.email_recipients || []),
+        { email: "", notify_fust_action: true, notify_fust_reminder: true, notify_papers_ready: true },
+      ],
+    }));
+  }
+
+  function updateEmailRecipient(index, patch) {
+    setForm((current) => ({
+      ...current,
+      email_recipients: (current.email_recipients || []).map((entry, entryIndex) => (
+        entryIndex === index ? { ...entry, ...patch } : entry
+      )),
+    }));
+  }
+
+  function removeEmailRecipient(index) {
+    setForm((current) => ({
+      ...current,
+      email_recipients: (current.email_recipients || []).filter((_, entryIndex) => entryIndex !== index),
+    }));
   }
 
   async function loadBackups() {
@@ -10207,6 +10306,41 @@ function SettingsPage({ currentUser }) {
       });
     } finally {
       setConnectionBusy(false);
+    }
+  }
+
+  async function loadSystemMode() {
+    try {
+      const payload = await apiJson("/api/system/mode");
+      setSystemMode(payload.system_mode);
+    } catch {
+      setSystemMode(null);
+    }
+  }
+
+  async function changeSystemMode(mode) {
+    if (systemMode?.mode === mode) {
+      return;
+    }
+    if (mode === "online" && !window.confirm(
+      "Switch this instance to ONLINE mode? It will start running the live background jobs (reminder emails, sheet sync) and should only be Online if this is meant to be the active system right now.",
+    )) {
+      return;
+    }
+    setSystemModeBusy(true);
+    setError("");
+    setMessage("");
+    try {
+      const payload = await apiJson("/api/system/mode", {
+        method: "POST",
+        body: JSON.stringify({ mode }),
+      });
+      setSystemMode(payload.system_mode);
+      setMessage(`System mode set to ${payload.system_mode.mode}.`);
+    } catch (modeError) {
+      setError(modeError.message);
+    } finally {
+      setSystemModeBusy(false);
     }
   }
 
@@ -10247,6 +10381,7 @@ function SettingsPage({ currentUser }) {
     loadBackups().catch((backupError) => setError(backupError.message));
     loadConnectionTest().catch(() => {});
     loadLlmStatus().catch(() => {});
+    loadSystemMode().catch(() => {});
   }, []);
 
   async function submit(event) {
@@ -10612,15 +10747,66 @@ function SettingsPage({ currentUser }) {
             <div className="section-header"><h2>Mail settings</h2></div>
             <p className="sidebar-note">Recipients and SMTP account used when papers are ready to send.</p>
           </div>
-          <label className="wide">
+          <div className="wide">
             <span>Target email recipients</span>
-            <textarea
-              value={Array.isArray(form.email_recipients) ? form.email_recipients.join("\n") : form.email_recipients}
-              onChange={(event) => setForm({ ...form, email_recipients: event.target.value })}
-              rows={6}
-              placeholder={"name@example.com\nother@example.com"}
-            />
-          </label>
+            <p className="sidebar-note">Choose which notifications each address should receive.</p>
+            <div className="table-wrap">
+              <table className="data-table">
+                <thead>
+                  <tr>
+                    <th>Email</th>
+                    <th>Fust action done</th>
+                    <th>Fust reminders</th>
+                    <th>Papers ready</th>
+                    <th></th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {(form.email_recipients || []).map((entry, index) => (
+                    <tr key={index}>
+                      <td>
+                        <input
+                          value={entry.email || ""}
+                          onChange={(event) => updateEmailRecipient(index, { email: event.target.value })}
+                          placeholder="name@example.com"
+                        />
+                      </td>
+                      <td>
+                        <input
+                          type="checkbox"
+                          checked={entry.notify_fust_action !== false}
+                          onChange={(event) => updateEmailRecipient(index, { notify_fust_action: event.target.checked })}
+                        />
+                      </td>
+                      <td>
+                        <input
+                          type="checkbox"
+                          checked={entry.notify_fust_reminder !== false}
+                          onChange={(event) => updateEmailRecipient(index, { notify_fust_reminder: event.target.checked })}
+                        />
+                      </td>
+                      <td>
+                        <input
+                          type="checkbox"
+                          checked={entry.notify_papers_ready !== false}
+                          onChange={(event) => updateEmailRecipient(index, { notify_papers_ready: event.target.checked })}
+                        />
+                      </td>
+                      <td>
+                        <button type="button" onClick={() => removeEmailRecipient(index)}>Remove</button>
+                      </td>
+                    </tr>
+                  ))}
+                  {!(form.email_recipients || []).length && (
+                    <tr>
+                      <td colSpan="5">No recipients yet.</td>
+                    </tr>
+                  )}
+                </tbody>
+              </table>
+            </div>
+            <button type="button" onClick={addEmailRecipient}>Add recipient</button>
+          </div>
           <label className="wide">
             <span>ICT support recipients</span>
             <textarea
@@ -10687,6 +10873,44 @@ function SettingsPage({ currentUser }) {
         </button>
       </form>
 
+      <div className="data-table-card">
+        <div className="section-header">
+          <h2>System mode</h2>
+        </div>
+        {!systemMode && <div className="notice">Loading system mode...</div>}
+        {!!systemMode && (
+          <>
+            <p className="sidebar-note">
+              Online is the live system: it runs the background reminder/sync jobs and is meant to be the active instance.
+              Backup passively receives synced data and keeps those jobs off — use it for a standby copy, and only switch it
+              to Online during a real failover.
+            </p>
+            <div className="row-actions">
+              <button
+                type="button"
+                className={systemMode.mode === "online" ? "primary" : ""}
+                disabled={systemModeBusy || systemMode.mode === "online"}
+                onClick={() => changeSystemMode("online")}
+              >
+                Online
+              </button>
+              <button
+                type="button"
+                className={systemMode.mode === "backup" ? "primary" : ""}
+                disabled={systemModeBusy || systemMode.mode === "backup"}
+                onClick={() => changeSystemMode("backup")}
+              >
+                Backup
+              </button>
+            </div>
+            <p className="sidebar-note">
+              Current mode: <strong>{systemMode.mode}</strong>
+              {systemMode.changed_at ? ` — changed ${formatTimestamp(systemMode.changed_at)} by ${systemMode.changed_by || "unknown"}` : ""}
+            </p>
+          </>
+        )}
+      </div>
+
       <InfoPanel
         title="Current live behavior"
         lines={[
@@ -10694,7 +10918,7 @@ function SettingsPage({ currentUser }) {
           "Secret Files are best kept as a seed or restore snapshot.",
           "Fust actions save locally first, then try Sheets and email.",
           "If one sync step fails, the saved action still stays in Render storage.",
-          "Target email recipients are where notifications go.",
+          "Target email recipients: each address only gets the notification types checked for it.",
           "ICT support recipients get alerts when Gmail, Google Drive, or Sheets need reconnecting.",
           "SMTP sender settings are how the app sends the email.",
         ]}

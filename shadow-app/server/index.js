@@ -5,6 +5,9 @@ import path from "node:path";
 import crypto from "node:crypto";
 import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
+import zlib from "node:zlib";
+import { sealBuffer, openSealed } from "./backup/crypto.js";
+import { buildBackupManifest, isAllowedBackupPath } from "./backup/manifest.js";
 import {
   claimNextLlmJob,
   completeLlmJob,
@@ -34,6 +37,7 @@ const syncStatusPath = path.join(cacheDir, "index_sync_status.json");
 const usersPath = path.join(cacheDir, "shadow-users.json");
 const fustActionsPath = path.join(cacheDir, "fust-actions.json");
 const fustSettingsPath = path.join(cacheDir, "fust-settings.json");
+const systemModePath = path.join(cacheDir, "system-mode.json");
 const clockRecordsPath = path.join(cacheDir, "clock-records.json");
 const ukdocsStatePath = path.join(cacheDir, "ukdocs-state.json");
 const ukdocsPrintFilesDir = path.join(cacheDir, "ukdocs-print-files");
@@ -78,6 +82,279 @@ const autoSyncOnVisit = process.env.AUTO_SYNC_ON_VISIT !== "0";
 const autoSyncThrottleMs = Number(process.env.AUTO_SYNC_THROTTLE_MINUTES || 5) * 60 * 1000;
 const syncStatusStaleMinutes = Math.max(1, Number(process.env.SHADOW_SYNC_STALE_MINUTES || 30));
 const llmPollerApiKey = String(process.env.SHADOW_LLM_POLLER_API_KEY || "").trim();
+const backupAgentApiKey = String(process.env.BACKUP_AGENT_API_KEY || "").trim();
+const backupPublicKey = String(process.env.BACKUP_PUBLIC_KEY || "").trim();
+const pgDumpMinIntervalMinutes = Math.max(1, Number(process.env.PGDUMP_MIN_INTERVAL_MINUTES || 360));
+const backupManifestCachePath = path.join(cacheDir, "backup-manifest-cache.json");
+let lastPostgresDumpAt = 0;
+
+function backupAgentEnabled() {
+  return Boolean(backupAgentApiKey && backupPublicKey);
+}
+
+function requireBackupAgentAuth(req, res) {
+  const key = readAgentApiKey(req);
+  if (!backupAgentEnabled() || !key || key !== backupAgentApiKey) {
+    sendJson(res, 401, { error: "Invalid or missing backup agent key" });
+    return false;
+  }
+  return true;
+}
+
+async function createPostgresDumpBuffer() {
+  return new Promise((resolve, reject) => {
+    const child = spawn("pg_dump", [process.env.DATABASE_URL, "--format=custom", "--no-owner"]);
+    let stderr = "";
+    child.stderr.on("data", (chunk) => {
+      stderr += chunk.toString();
+    });
+    child.on("error", reject);
+
+    const gzip = zlib.createGzip();
+    const chunks = [];
+    gzip.on("data", (chunk) => chunks.push(chunk));
+    gzip.on("error", reject);
+    gzip.on("end", () => resolve(Buffer.concat(chunks)));
+    child.stdout.pipe(gzip);
+
+    child.on("close", (code) => {
+      if (code !== 0) {
+        reject(new Error(`pg_dump exited with code ${code}: ${stderr.trim()}`));
+      }
+    });
+  });
+}
+
+// --- Office-PC side: pulls a verified, encrypted copy of Render's state while
+// this instance is in "backup" mode. See shadow-app/server/backup/README.md. ---
+const renderBackupBaseUrl = String(process.env.RENDER_BACKUP_BASE_URL || "").trim().replace(/\/+$/, "");
+const backupPrivateKey = String(process.env.BACKUP_PRIVATE_KEY || "").trim();
+const backupSyncStatusPath = path.join(cacheDir, "backup-sync-status.json");
+const backupSyncLastManifestPath = path.join(cacheDir, "backup-sync-last-manifest.json");
+const postgresRestoreMinIntervalMs = 6 * 60 * 60 * 1000;
+let lastPostgresRestoreAt = 0;
+
+function backupSyncClientConfigured() {
+  return Boolean(renderBackupBaseUrl && backupAgentApiKey && backupPrivateKey);
+}
+
+async function recordBackupSyncResult(result) {
+  const previous = await readJsonFile(backupSyncStatusPath, {});
+  const next = {
+    last_attempt_at: result.attempted_at,
+    last_success_at: result.ok ? result.attempted_at : (previous.last_success_at || ""),
+    last_error: result.ok ? "" : (result.error || (result.errors || []).join("; ") || "Unknown error"),
+    last_result: result,
+  };
+  await writeJsonFile(backupSyncStatusPath, next);
+
+  if (result.ok) {
+    return;
+  }
+  // Alert directly via the local SMTP bridge -- NOT through Render -- because the
+  // scenario that matters most (Render is actually unreachable) is exactly the one
+  // where an alert routed through Render would never arrive.
+  const staleMinutes = previous.last_success_at
+    ? (Date.now() - new Date(previous.last_success_at).getTime()) / 60000
+    : Infinity;
+  if (staleMinutes <= 45) {
+    return;
+  }
+  try {
+    const settings = await readFustSettings();
+    await sendSupportAttentionEmail(settings, {
+      service: "Office backup sync",
+      action: "Pull backup from Render",
+      error: next.last_error,
+      reconnect_target: "Render backup export API",
+      workaround: "Check RENDER_BACKUP_BASE_URL / BACKUP_AGENT_API_KEY / BACKUP_PRIVATE_KEY and this PC's internet connection.",
+    });
+  } catch {
+    // Best-effort -- if even the local settings/SMTP bridge is broken there is
+    // nothing else this process can do to raise the alarm on its own.
+  }
+}
+
+async function runBackupSyncCycle() {
+  const attemptedAt = new Date().toISOString();
+  if (!backupSyncClientConfigured()) {
+    return { ok: false, skipped: true, reason: "RENDER_BACKUP_BASE_URL / BACKUP_AGENT_API_KEY / BACKUP_PRIVATE_KEY not fully configured" };
+  }
+
+  const headers = { "x-shadow-agent-key": backupAgentApiKey };
+  let manifest;
+  try {
+    const response = await fetch(`${renderBackupBaseUrl}/api/backup/manifest`, { headers });
+    if (!response.ok) {
+      throw new Error(`Manifest request failed: HTTP ${response.status}`);
+    }
+    manifest = await response.json();
+  } catch (error) {
+    const result = { ok: false, attempted_at: attemptedAt, error: error instanceof Error ? error.message : String(error) };
+    await recordBackupSyncResult(result);
+    return result;
+  }
+
+  const previousManifest = await readJsonFile(backupSyncLastManifestPath, { files: [] });
+  const previousPaths = new Set((previousManifest.files || []).map((entry) => entry.path));
+  const nextPaths = new Set((manifest.files || []).map((entry) => entry.path));
+
+  let filesChanged = 0;
+  let filesUnchanged = 0;
+  const errors = [];
+
+  for (const entry of manifest.files || []) {
+    const absPath = path.join(cacheDir, ...entry.path.split("/"));
+    let needsFetch = true;
+    try {
+      const localData = await fs.readFile(absPath);
+      if (crypto.createHash("sha256").update(localData).digest("hex") === entry.sha256) {
+        needsFetch = false;
+      }
+    } catch {
+      needsFetch = true;
+    }
+
+    if (!needsFetch) {
+      filesUnchanged += 1;
+      continue;
+    }
+
+    try {
+      const fileResponse = await fetch(`${renderBackupBaseUrl}/api/backup/file?path=${encodeURIComponent(entry.path)}`, { headers });
+      if (!fileResponse.ok) {
+        throw new Error(`HTTP ${fileResponse.status}`);
+      }
+      const sealed = Buffer.from(await fileResponse.arrayBuffer());
+      const plaintext = openSealed(sealed, backupPrivateKey);
+      if (crypto.createHash("sha256").update(plaintext).digest("hex") !== entry.sha256) {
+        throw new Error("checksum mismatch after decrypt");
+      }
+      await fs.mkdir(path.dirname(absPath), { recursive: true });
+      const tmpPath = `${absPath}.tmp-${process.pid}`;
+      await fs.writeFile(tmpPath, plaintext);
+      await fs.rename(tmpPath, absPath);
+      filesChanged += 1;
+    } catch (error) {
+      errors.push(`${entry.path}: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+
+  let filesDeleted = 0;
+  for (const relPath of previousPaths) {
+    if (!nextPaths.has(relPath)) {
+      try {
+        await fs.unlink(path.join(cacheDir, ...relPath.split("/")));
+        filesDeleted += 1;
+      } catch {
+        // Already gone locally -- fine.
+      }
+    }
+  }
+
+  await writeJsonFile(backupSyncLastManifestPath, manifest);
+
+  const result = {
+    ok: errors.length === 0,
+    attempted_at: attemptedAt,
+    files_total: (manifest.files || []).length,
+    files_changed: filesChanged,
+    files_unchanged: filesUnchanged,
+    files_deleted: filesDeleted,
+    errors,
+  };
+  await recordBackupSyncResult(result);
+  return result;
+}
+
+async function restorePostgresDumpFile(dumpPath) {
+  return new Promise((resolve, reject) => {
+    const child = spawn("pg_restore", ["--clean", "--if-exists", "--no-owner", "-d", process.env.DATABASE_URL, dumpPath]);
+    let stderr = "";
+    child.stderr.on("data", (chunk) => {
+      stderr += chunk.toString();
+    });
+    child.on("error", reject);
+    child.on("close", (code) => {
+      if (code !== 0) {
+        reject(new Error(`pg_restore exited with code ${code}: ${stderr.trim()}`));
+      } else {
+        resolve();
+      }
+    });
+  });
+}
+
+async function runPostgresRestoreCycle() {
+  if (!backupSyncClientConfigured()) {
+    return { ok: false, skipped: true, reason: "Backup sync is not configured" };
+  }
+  if (!process.env.DATABASE_URL) {
+    return { ok: false, skipped: true, reason: "Local DATABASE_URL is not configured on this PC" };
+  }
+  if (Date.now() - lastPostgresRestoreAt < postgresRestoreMinIntervalMs) {
+    return { ok: false, skipped: true, reason: "Too soon since last restore" };
+  }
+
+  const tmpDumpPath = path.join(cacheDir, `postgres-restore-${Date.now()}.dump`);
+  try {
+    const headers = { "x-shadow-agent-key": backupAgentApiKey };
+    const response = await fetch(`${renderBackupBaseUrl}/api/backup/postgres-dump`, { headers });
+    if (!response.ok) {
+      throw new Error(`Postgres dump request failed: HTTP ${response.status}`);
+    }
+    const sealed = Buffer.from(await response.arrayBuffer());
+    const compressed = openSealed(sealed, backupPrivateKey);
+    const dumpBuffer = zlib.gunzipSync(compressed);
+    await fs.writeFile(tmpDumpPath, dumpBuffer);
+    await restorePostgresDumpFile(tmpDumpPath);
+    lastPostgresRestoreAt = Date.now();
+    return { ok: true };
+  } catch (error) {
+    return { ok: false, error: error instanceof Error ? error.message : String(error) };
+  } finally {
+    await fs.unlink(tmpDumpPath).catch(() => {});
+  }
+}
+
+// --- Peer-beacon safety net: catches the realistic slip-up where Render recovers
+// while the office PC is still (manually) set to Online and nobody has flipped it
+// back to Backup yet. The toggle stays the primary, human-driven control -- this
+// just stops both sides from silently running the same background jobs at once. ---
+const backupPeerStatusPath = path.join(cacheDir, "backup-peer-status.json");
+const PEER_ONLINE_STALE_MS = 20 * 60 * 1000; // a bit over the 15-minute beacon cadence
+
+async function peerClaimsOnline() {
+  const peerStatus = await readJsonFile(backupPeerStatusPath, null);
+  if (!peerStatus || peerStatus.mode !== "online") {
+    return false;
+  }
+  const receivedAt = new Date(peerStatus.received_at || 0).getTime();
+  return Number.isFinite(receivedAt) && (Date.now() - receivedAt) < PEER_ONLINE_STALE_MS;
+}
+
+// Only an instance that knows RENDER_BACKUP_BASE_URL (i.e. the office PC) ever has
+// a peer to beacon to -- Render has no stable address to beacon back, so this is
+// naturally one-directional without any extra configuration.
+async function sendPeerOnlineBeacon() {
+  if (!renderBackupBaseUrl || !backupAgentApiKey) {
+    return;
+  }
+  const systemMode = await readSystemMode();
+  if (systemMode.mode !== "online") {
+    return;
+  }
+  try {
+    await fetch(`${renderBackupBaseUrl}/api/backup/peer-status`, {
+      method: "POST",
+      headers: { "x-shadow-agent-key": backupAgentApiKey, "content-type": "application/json" },
+      body: JSON.stringify({ mode: "online", since: systemMode.changed_at }),
+    });
+  } catch {
+    // Best effort -- if Render is unreachable there is nothing to beacon to anyway.
+  }
+}
+
 const autoSyncStartedAt = new Map();
 const recentPreloadDays = Math.max(0, Number(process.env.SHADOW_PRELOAD_RECENT_DAYS || 3));
 const recentPreloadMaxImagesRaw = Number(process.env.SHADOW_PRELOAD_MAX_IMAGES || 120);
@@ -1009,6 +1286,59 @@ function normalizeCmrManageUsernames(values) {
   return [...new Set(values.map((value) => String(value || "").trim().toLowerCase()).filter(Boolean))];
 }
 
+// Each "Target email recipients" entry can opt in/out of each notification
+// category independently, so one address can get "papers ready" without also
+// getting Fust action/reminder emails, or vice versa. A plain string entry
+// (the old flat-list format) defaults to all categories on, so existing
+// settings keep behaving exactly as before until someone edits a checkbox.
+const EMAIL_RECIPIENT_CATEGORIES = ["fust_action", "fust_reminder", "papers_ready"];
+
+function normalizeEmailRecipientEntry(entry) {
+  if (typeof entry === "string" || typeof entry === "number") {
+    const email = String(entry).trim().toLowerCase();
+    if (!email.includes("@")) {
+      return null;
+    }
+    return {
+      email,
+      notify_fust_action: true,
+      notify_fust_reminder: true,
+      notify_papers_ready: true,
+    };
+  }
+  const email = String(entry?.email || "").trim().toLowerCase();
+  if (!email.includes("@")) {
+    return null;
+  }
+  return {
+    email,
+    notify_fust_action: entry?.notify_fust_action !== false,
+    notify_fust_reminder: entry?.notify_fust_reminder !== false,
+    notify_papers_ready: entry?.notify_papers_ready !== false,
+  };
+}
+
+function normalizeEmailRecipientList(value) {
+  const values = Array.isArray(value) ? value : [];
+  const byEmail = new Map();
+  for (const raw of values) {
+    const normalized = normalizeEmailRecipientEntry(raw);
+    if (normalized) {
+      byEmail.set(normalized.email, normalized);
+    }
+  }
+  return [...byEmail.values()];
+}
+
+function emailRecipientsForCategory(recipientList, category) {
+  const key = `notify_${category}`;
+  return normalizeEmailRecipients(
+    (Array.isArray(recipientList) ? recipientList : [])
+      .filter((entry) => entry?.[key] !== false)
+      .map((entry) => entry.email),
+  );
+}
+
 function normalizeFustSettings(settings) {
   const smtpPort = Number(settings?.smtp_port);
   return {
@@ -1017,7 +1347,7 @@ function normalizeFustSettings(settings) {
     in_sheet_name: String(settings?.in_sheet_name || defaultFustSettings.in_sheet_name).trim() || defaultFustSettings.in_sheet_name,
     out_sheet_name: String(settings?.out_sheet_name || defaultFustSettings.out_sheet_name).trim() || defaultFustSettings.out_sheet_name,
     dashboard_sheet_name: String(settings?.dashboard_sheet_name || defaultFustSettings.dashboard_sheet_name).trim() || defaultFustSettings.dashboard_sheet_name,
-    email_recipients: normalizeEmailRecipients(settings?.email_recipients),
+    email_recipients: normalizeEmailRecipientList(settings?.email_recipients),
     support_email_recipients: normalizeEmailRecipients(settings?.support_email_recipients),
     smtp_host: String(settings?.smtp_host || "").trim(),
     smtp_port: Number.isFinite(smtpPort) && smtpPort > 0 ? smtpPort : defaultFustSettings.smtp_port,
@@ -1054,6 +1384,36 @@ async function readFustSettings() {
 
 async function writeFustSettings(settings) {
   await writeJsonFile(fustSettingsPath, normalizeFustSettings(settings));
+}
+
+const SYSTEM_MODES = new Set(["online", "backup"]);
+const defaultSystemMode = { mode: "online", changed_at: "", changed_by: "" };
+
+function normalizeSystemMode(value) {
+  const mode = SYSTEM_MODES.has(value?.mode) ? value.mode : "online";
+  return {
+    mode,
+    changed_at: String(value?.changed_at || "").trim(),
+    changed_by: String(value?.changed_by || "").trim(),
+  };
+}
+
+async function readSystemMode() {
+  const payload = await readJsonFile(systemModePath, defaultSystemMode);
+  return normalizeSystemMode(payload);
+}
+
+async function writeSystemMode(mode, username) {
+  if (!SYSTEM_MODES.has(mode)) {
+    throw new Error(`Unknown system mode: ${mode}`);
+  }
+  const next = {
+    mode,
+    changed_at: new Date().toISOString(),
+    changed_by: String(username || "").trim(),
+  };
+  await writeJsonFile(systemModePath, next);
+  return next;
 }
 
 async function sendSupportAttentionEmail(settings, details = {}) {
@@ -2933,6 +3293,54 @@ function mergeMissingFustActionData(currentAction, backupAction) {
   };
 
   return { mergedAction, changes };
+}
+
+// Used to bring Fust actions created/edited on the office-PC standby during a
+// Render outage back into Render's own data once it's healthy again. Deliberately
+// conservative: existing Render records are never overwritten wholesale, only
+// filled in where a field is still missing (documents/references, via the same
+// mergeMissingFustActionData already used for backup restores) or where Render's
+// copy isn't confirmed yet but the incoming one is. Brand-new records (created
+// only on the standby) are added outright. This only ever touches data -- it
+// never re-triggers a Drive upload, email, or Sheets write, since those already
+// happened for real from the standby against the same live Google/SMTP accounts.
+function mergeIncomingFustActions(currentActions, incomingActions) {
+  const currentByKey = new Map(currentActions.map((action) => [buildActionMergeKey(action), action]));
+  const added = [];
+  const updated = [];
+  const unchanged = [];
+
+  for (const incomingRaw of incomingActions) {
+    if (incomingRaw?.deleted) {
+      continue;
+    }
+    const incoming = normalizeFustAction(incomingRaw);
+    const key = buildActionMergeKey(incoming);
+    const existing = currentByKey.get(key);
+
+    if (!existing) {
+      currentByKey.set(key, incoming);
+      added.push(incoming);
+      continue;
+    }
+
+    const { mergedAction, changes } = mergeMissingFustActionData(existing, incoming);
+    let confirmationChanged = false;
+    if (!isFustActionConfirmed(mergedAction) && isFustActionConfirmed(incoming)) {
+      mergedAction.confirmed_at = incoming.confirmed_at;
+      mergedAction.confirmed_by = incoming.confirmed_by;
+      confirmationChanged = true;
+    }
+    currentByKey.set(key, mergedAction);
+    const anyChange = confirmationChanged
+      || changes.cmr_restored
+      || changes.fustbon_restored
+      || changes.fustbon_reference_restored
+      || changes.fustfactuur_reference_restored;
+    (anyChange ? updated : unchanged).push(mergedAction);
+  }
+
+  return { mergedActions: [...currentByKey.values()], added, updated, unchanged };
 }
 
 async function restoreMissingFustDataFromBackup(filename, requestUser) {
@@ -9012,7 +9420,7 @@ function buildFustConfirmationReminderEmail(actions) {
 }
 
 async function sendFustActionEmail(action, settings) {
-  const recipients = normalizeEmailRecipients(settings.email_recipients);
+  const recipients = emailRecipientsForCategory(settings.email_recipients, "fust_action");
   if (!recipients.length) {
     return { ok: false, recipients: [], error: "No email recipients configured" };
   }
@@ -9043,7 +9451,7 @@ async function sendFustActionEmail(action, settings) {
 }
 
 async function sendFustConfirmationReminderEmail(actions, settings) {
-  const recipients = normalizeEmailRecipients(settings.email_recipients);
+  const recipients = emailRecipientsForCategory(settings.email_recipients, "fust_reminder");
   if (!recipients.length) {
     return { ok: false, recipients: [], error: "No email recipients configured" };
   }
@@ -9336,7 +9744,7 @@ function buildUkdocsPrintReadyEmail(collection, requirements) {
 }
 
 async function sendUkdocsPrintReadyEmail(collection, customers, settings) {
-  const recipients = normalizeEmailRecipients(settings.email_recipients);
+  const recipients = emailRecipientsForCategory(settings.email_recipients, "papers_ready");
   if (!recipients.length) {
     return { ok: false, recipients: [], error: "No email recipients configured" };
   }
@@ -9965,6 +10373,17 @@ async function loadGoogleUserEmail(accessToken) {
 }
 
 async function handleApi(req, res, url) {
+  if (url.pathname === "/api/health" && req.method === "GET") {
+    const systemMode = await readSystemMode();
+    sendJson(res, 200, {
+      ok: true,
+      mode: systemMode.mode,
+      mode_changed_at: systemMode.changed_at,
+      database: { enabled: isDatabaseEnabled() },
+    });
+    return;
+  }
+
   if (url.pathname === "/api/auth/me") {
     const users = await readUsers();
     const user = await getRequestUser(req);
@@ -10284,6 +10703,89 @@ async function handleApi(req, res, url) {
       meta: body.meta && typeof body.meta === "object" ? body.meta : {},
     }, apiKey);
     sendJson(res, 200, { ok: true, job });
+    return;
+  }
+
+  if (url.pathname === "/api/backup/manifest" && req.method === "GET") {
+    if (!requireBackupAgentAuth(req, res)) {
+      return;
+    }
+    const manifest = await buildBackupManifest(cacheDir, backupManifestCachePath);
+    sendJson(res, 200, manifest);
+    return;
+  }
+
+  if (url.pathname === "/api/backup/file" && req.method === "GET") {
+    if (!requireBackupAgentAuth(req, res)) {
+      return;
+    }
+    const relPath = String(url.searchParams.get("path") || "");
+    if (!isAllowedBackupPath(relPath)) {
+      sendJson(res, 400, { error: "Path is not in the backup allow-list" });
+      return;
+    }
+    const absPath = path.resolve(cacheDir, relPath);
+    if (!absPath.startsWith(path.resolve(cacheDir)) || !existsSync(absPath)) {
+      sendJson(res, 404, { error: "File not found" });
+      return;
+    }
+    if (!backupPublicKey) {
+      sendJson(res, 503, { error: "BACKUP_PUBLIC_KEY is not configured" });
+      return;
+    }
+    try {
+      const plaintext = await fs.readFile(absPath);
+      const sealed = sealBuffer(plaintext, backupPublicKey);
+      res.writeHead(200, { "content-type": "application/octet-stream", "cache-control": "no-store" });
+      res.end(sealed);
+    } catch (error) {
+      sendJson(res, 500, { error: error instanceof Error ? error.message : String(error) });
+    }
+    return;
+  }
+
+  if (url.pathname === "/api/backup/postgres-dump" && req.method === "GET") {
+    if (!requireBackupAgentAuth(req, res)) {
+      return;
+    }
+    if (!isDatabaseEnabled()) {
+      sendJson(res, 503, { error: "Database is not enabled" });
+      return;
+    }
+    if (!backupPublicKey) {
+      sendJson(res, 503, { error: "BACKUP_PUBLIC_KEY is not configured" });
+      return;
+    }
+    const forced = url.searchParams.get("force") === "1";
+    const minIntervalMs = pgDumpMinIntervalMinutes * 60 * 1000;
+    if (!forced && Date.now() - lastPostgresDumpAt < minIntervalMs) {
+      sendJson(res, 429, { error: `Postgres dump was already taken recently; wait ${pgDumpMinIntervalMinutes} minutes between dumps (use ?force=1 to override).` });
+      return;
+    }
+    try {
+      const dumpBuffer = await createPostgresDumpBuffer();
+      lastPostgresDumpAt = Date.now();
+      const sealed = sealBuffer(dumpBuffer, backupPublicKey);
+      res.writeHead(200, { "content-type": "application/octet-stream", "cache-control": "no-store" });
+      res.end(sealed);
+    } catch (error) {
+      sendJson(res, 500, { error: error instanceof Error ? error.message : String(error) });
+    }
+    return;
+  }
+
+  if (url.pathname === "/api/backup/peer-status" && req.method === "POST") {
+    if (!requireBackupAgentAuth(req, res)) {
+      return;
+    }
+    const body = await readRequestJson(req);
+    const mode = String(body?.mode || "").trim().toLowerCase();
+    await writeJsonFile(backupPeerStatusPath, {
+      mode: SYSTEM_MODES.has(mode) ? mode : "unknown",
+      since: String(body?.since || "").trim(),
+      received_at: new Date().toISOString(),
+    });
+    sendJson(res, 200, { ok: true });
     return;
   }
 
@@ -11924,6 +12426,29 @@ async function handleApi(req, res, url) {
     return;
   }
 
+  if (url.pathname === "/api/system/mode" && req.method === "GET") {
+    if (!requirePermission(res, requestUser, PERMISSIONS.SETTINGS_MANAGE)) {
+      return;
+    }
+    sendJson(res, 200, { system_mode: await readSystemMode() });
+    return;
+  }
+
+  if (url.pathname === "/api/system/mode" && req.method === "POST") {
+    if (!requirePermission(res, requestUser, PERMISSIONS.SETTINGS_MANAGE)) {
+      return;
+    }
+    const body = await readRequestJson(req);
+    const mode = String(body?.mode || "").trim().toLowerCase();
+    if (!SYSTEM_MODES.has(mode)) {
+      sendJson(res, 400, { error: `Mode must be one of: ${[...SYSTEM_MODES].join(", ")}` });
+      return;
+    }
+    const systemMode = await writeSystemMode(mode, requestUser.username);
+    sendJson(res, 200, { system_mode: systemMode });
+    return;
+  }
+
   if (url.pathname === "/api/fust/settings") {
     if (!requirePermission(res, requestUser, PERMISSIONS.SETTINGS_MANAGE)) {
       return;
@@ -12166,6 +12691,85 @@ async function handleApi(req, res, url) {
     } catch (error) {
       sendJson(res, 400, { error: error instanceof Error ? error.message : String(error) });
     }
+    return;
+  }
+
+  if (url.pathname === "/api/backup/reconcile/merge-actions" && req.method === "POST") {
+    if (!requirePermission(res, requestUser, PERMISSIONS.SETTINGS_MANAGE)) {
+      return;
+    }
+    const body = await readRequestJson(req, 32 * 1024 * 1024);
+    const incomingActions = Array.isArray(body?.actions) ? body.actions : [];
+    const applyChanges = body?.dry_run === false;
+    const currentActions = await readFustActions();
+    const { mergedActions, added, updated, unchanged } = mergeIncomingFustActions(currentActions, incomingActions);
+
+    if (applyChanges) {
+      await writeFustActions(mergedActions);
+      for (const action of [...added, ...updated]) {
+        await mirrorFustActionToDatabase(action);
+      }
+    }
+
+    sendJson(res, 200, {
+      ok: true,
+      dry_run: !applyChanges,
+      applied: applyChanges,
+      summary: {
+        incoming_total: incomingActions.length,
+        added: added.length,
+        updated: updated.length,
+        unchanged: unchanged.length,
+      },
+      added_ids: added.map((action) => action.id),
+      updated_ids: updated.map((action) => action.id),
+    });
+    return;
+  }
+
+  if (url.pathname === "/api/backup/reconcile/diff" && req.method === "POST") {
+    if (!requirePermission(res, requestUser, PERMISSIONS.SETTINGS_MANAGE)) {
+      return;
+    }
+    const body = await readRequestJson(req, 8 * 1024 * 1024);
+    const dataset = String(body?.dataset || "").trim();
+    const incoming = body?.incoming && typeof body.incoming === "object" ? body.incoming : {};
+    let current;
+    if (dataset === "fust_settings") {
+      current = await readFustSettings();
+    } else if (dataset === "shadow_users") {
+      current = { users: (await readUsers()).map(publicUser) };
+    } else {
+      sendJson(res, 400, { error: "Unknown dataset. Use fust_settings or shadow_users." });
+      return;
+    }
+    const keys = new Set([...Object.keys(current || {}), ...Object.keys(incoming || {})]);
+    const differences = [];
+    for (const key of keys) {
+      const currentValue = current?.[key];
+      const incomingValue = incoming?.[key];
+      if (JSON.stringify(currentValue) !== JSON.stringify(incomingValue)) {
+        differences.push({ key, current_value: currentValue, incoming_value: incomingValue });
+      }
+    }
+    sendJson(res, 200, { dataset, identical: differences.length === 0, differences });
+    return;
+  }
+
+  if (url.pathname === "/api/backup/reconcile/settings-apply" && req.method === "POST") {
+    if (!requirePermission(res, requestUser, PERMISSIONS.SETTINGS_MANAGE)) {
+      return;
+    }
+    const body = await readRequestJson(req);
+    const fields = body?.fields && typeof body.fields === "object" ? body.fields : {};
+    if (!Object.keys(fields).length) {
+      sendJson(res, 400, { error: "fields is required -- pass only the specific keys you reviewed and approved" });
+      return;
+    }
+    const currentSettings = await readFustSettings();
+    const nextSettings = normalizeFustSettings({ ...currentSettings, ...fields });
+    await writeFustSettings(nextSettings);
+    sendJson(res, 200, { ok: true, settings: nextSettings });
     return;
   }
 
@@ -12569,7 +13173,7 @@ async function handleApi(req, res, url) {
       } catch (emailError) {
         action.email_sync = {
           ok: false,
-          recipients: normalizeEmailRecipients(settings.email_recipients),
+          recipients: emailRecipientsForCategory(settings.email_recipients, "fust_action"),
           error: emailError instanceof Error ? emailError.message : String(emailError),
         };
       }
@@ -12843,7 +13447,7 @@ async function handleApi(req, res, url) {
     } catch (emailError) {
       action.email_sync = {
         ok: false,
-        recipients: normalizeEmailRecipients(settings.email_recipients),
+        recipients: emailRecipientsForCategory(settings.email_recipients, "fust_action"),
         error: emailError instanceof Error ? emailError.message : String(emailError),
       };
     }
@@ -13178,9 +13782,34 @@ async function startServer() {
     console.log("Postgres is not configured yet. DATABASE_URL is not set.");
   }
 
-  syncPendingDagFoutjesDaysToSheet().catch(() => {});
+  async function runIfOnline(jobName, jobFn) {
+    const systemMode = await readSystemMode();
+    if (systemMode.mode !== "online") {
+      console.log(`Skipped ${jobName}: system mode is "${systemMode.mode}", not "online".`);
+      return;
+    }
+    if (await peerClaimsOnline()) {
+      console.error(`Skipped ${jobName}: a peer instance is currently reporting itself as Online too.`);
+      try {
+        const settings = await readFustSettings();
+        await sendSupportAttentionEmail(settings, {
+          service: "System mode conflict",
+          action: jobName,
+          error: "Both this instance and its backup peer are set to Online at the same time.",
+          reconnect_target: "Settings > System mode",
+          workaround: "Confirm which instance should be live, then switch the other one back to Backup mode.",
+        });
+      } catch {
+        // Best effort -- don't let a broken alert path block the skip itself.
+      }
+      return;
+    }
+    await jobFn();
+  }
+
+  runIfOnline("dag-foutjes sheet sync", syncPendingDagFoutjesDaysToSheet).catch(() => {});
   setInterval(() => {
-    syncPendingDagFoutjesDaysToSheet().catch(() => {});
+    runIfOnline("dag-foutjes sheet sync", syncPendingDagFoutjesDaysToSheet).catch(() => {});
   }, 15 * 60 * 1000);
 
   const runFustReminderCheck = async () => {
@@ -13192,9 +13821,39 @@ async function startServer() {
     }
   };
 
-  runFustReminderCheck().catch(() => {});
+  runIfOnline("Fust confirmation reminder check", runFustReminderCheck).catch(() => {});
   setInterval(() => {
-    runFustReminderCheck().catch(() => {});
+    runIfOnline("Fust confirmation reminder check", runFustReminderCheck).catch(() => {});
+  }, 15 * 60 * 1000);
+
+  async function runIfBackup(jobName, jobFn) {
+    const systemMode = await readSystemMode();
+    if (systemMode.mode !== "backup") {
+      return;
+    }
+    const result = await jobFn();
+    if (result?.skipped) {
+      console.log(`Backup job "${jobName}" skipped: ${result.reason || "not configured"}.`);
+    } else if (result && result.ok === false) {
+      console.error(`Backup job "${jobName}" failed:`, result.error || (result.errors || []).join("; "));
+    } else if (result) {
+      console.log(`Backup job "${jobName}" completed:`, JSON.stringify(result));
+    }
+  }
+
+  runIfBackup("backup file sync", runBackupSyncCycle).catch(() => {});
+  setInterval(() => {
+    runIfBackup("backup file sync", runBackupSyncCycle).catch(() => {});
+  }, 15 * 60 * 1000);
+
+  runIfBackup("postgres restore", runPostgresRestoreCycle).catch(() => {});
+  setInterval(() => {
+    runIfBackup("postgres restore", runPostgresRestoreCycle).catch(() => {});
+  }, 15 * 60 * 1000);
+
+  sendPeerOnlineBeacon().catch(() => {});
+  setInterval(() => {
+    sendPeerOnlineBeacon().catch(() => {});
   }, 15 * 60 * 1000);
 
   server.listen(port, host, () => {
