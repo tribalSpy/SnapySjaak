@@ -14,7 +14,7 @@ PAGE_H = 841.8897637795277
 DRAW_W = PAGE_H
 HEADER_MATCH_LIMIT = 12
 HAL_ALLOWED_CUSTOMER = re.compile(r"^[A-Za-z0-9#]+$")
-STICKER_CUSTOMER_CODE = re.compile(r"^[A-Za-z0-9]{6}$")
+STICKER_CUSTOMER_CODE = re.compile(r"^[A-Za-z0-9#]{6}$")
 
 
 def select_sheet_name(sheet_names: list[str]) -> str:
@@ -173,16 +173,20 @@ def parse_planning_rows(input_path: Path) -> list[dict[str, object]]:
     count_index = first_matching_index(headers, ["split cc", "aantal denen", "stickers", "aantal", "cc"])
     carrier1_index = first_matching_index(headers, ["carrier 1", "eerste carrier", "1e carrier", "vervoerder 1", "auto 1"])
     carrier2_index = first_matching_index(headers, ["carrier 2", "tweede carrier", "2e carrier", "vervoerder 2", "auto 2"])
+    group_with_index = first_matching_index(headers, ["group with", "groupwith", "groeperen met", "groepeer met", "group"])
 
     parsed = []
     for row in rows[header_row_index + 1:]:
         customer = normalize_sticker_customer(row[customer_index] if customer_index >= 0 and customer_index < len(row) else "")
         if not customer:
             continue
+        raw_count_value = row[count_index] if count_index >= 0 and count_index < len(row) else None
         parsed.append({
             "split": None,
-            "count": to_positive_int(row[count_index] if count_index >= 0 and count_index < len(row) else 1),
+            "count": to_positive_int(raw_count_value, 1),
+            "raw_count": to_positive_int(raw_count_value, 0),
             "customer": customer,
+            "group_with": normalize_sticker_customer(row[group_with_index] if group_with_index >= 0 and group_with_index < len(row) else ""),
             "name": clean_text(row[name_index] if name_index >= 0 and name_index < len(row) else ""),
             "carrier1": clean_text(row[carrier1_index] if carrier1_index >= 0 and carrier1_index < len(row) else ""),
             "carrier2": clean_text(row[carrier2_index] if carrier2_index >= 0 and carrier2_index < len(row) else ""),
@@ -191,6 +195,29 @@ def parse_planning_rows(input_path: Path) -> list[dict[str, object]]:
     if not parsed:
         raise ValueError("No usable rows found in the planning file")
     return parsed
+
+
+def apply_group_with_consolidation(rows: list[dict[str, object]]) -> list[dict[str, object]]:
+    """Rows whose "Group With" points to a DIFFERENT code are consolidated into
+    that target row's sticker (their amount is added to the target's count) and
+    never get a separate sticker of their own. A row whose "Group With" is blank
+    or matches its own code is left untouched -- it's either ungrouped or is the
+    main/target customer for a group."""
+    by_customer = {str(row["customer"]): row for row in rows}
+    dropped: set[str] = set()
+    for row in rows:
+        customer = str(row["customer"])
+        target = str(row.get("group_with") or "")
+        if not target or target == customer:
+            continue
+        target_row = by_customer.get(target)
+        if target_row is None:
+            # Group With points at a code that isn't in this file -- leave the
+            # row alone rather than silently discarding its freight.
+            continue
+        target_row["count"] = to_positive_int(target_row.get("count"), 1) + int(row.get("raw_count") or 0)
+        dropped.add(customer)
+    return [row for row in rows if str(row["customer"]) not in dropped]
 
 
 def parse_split_rows(input_path: Path) -> list[dict[str, object]]:
@@ -232,7 +259,7 @@ def parse_split_rows(input_path: Path) -> list[dict[str, object]]:
 
 
 def inspect_source(kind: str, input_path: Path) -> dict[str, object]:
-    rows = parse_planning_rows(input_path) if kind == "planning" else parse_split_rows(input_path)
+    rows = apply_group_with_consolidation(parse_planning_rows(input_path)) if kind == "planning" else parse_split_rows(input_path)
     return {
         "row_count": len(rows),
         "preview": rows[:10],
@@ -353,7 +380,7 @@ def generate_files(hal_input: Path, planning_input: Path | None, split_input: Pa
     if not planning_input and not split_input:
         raise ValueError("Upload at least a planning file or a split file first")
 
-    planning_rows = parse_planning_rows(planning_input) if planning_input else []
+    planning_rows = apply_group_with_consolidation(parse_planning_rows(planning_input)) if planning_input else []
     split_rows = parse_split_rows(split_input) if split_input else []
     split_customers = {str(row["customer"]) for row in split_rows}
 
