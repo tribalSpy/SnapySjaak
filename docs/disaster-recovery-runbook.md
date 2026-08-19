@@ -12,12 +12,16 @@ be reading for the first time.
 Yes — the office PC needs a full copy of this repository, because it runs the
 exact same app, just pointed at its own local data instead of Render's.
 
-1. **Copy the repo** to the office PC (git clone, or copy the folder).
+1. **`git clone` the repo** to the office PC — use a clone specifically, not a
+   plain folder copy, so `update_standby_pc.bat` (section 3) can pull future
+   code changes. Cloning won't bring `credentials/service_account.json`
+   (it's deliberately excluded from git) — copy that file over separately
+   from your local dev setup, into the same relative path in the clone.
 2. **Run `setup_standby_pc.bat`** (repo root, double-click it). It will:
    - Check for Node.js, Python, and PostgreSQL, and offer to install anything
      missing via `winget`. PostgreSQL's installer needs a superuser password
      set interactively, so that one step isn't silent — remember whatever
-     password you set, you'll need it in step 5 below.
+     password you set, you'll need it in step 4 below.
    - Install the app's Node and Python dependencies.
    - Generate the backup secrets and write a **`start_standby.bat`** at the
      repo root with two of them already filled in. **Copy the printed
@@ -33,12 +37,10 @@ exact same app, just pointed at its own local data instead of Render's.
 4. **Create an empty Postgres database** (in the Postgres you just installed)
    and note its connection string — this lets the standby fully match Render,
    including the LLM-poller job queue.
-5. **Copy `credentials/service_account.json`** from your local dev setup into
-   this same folder on the office PC.
-6. **Open `start_standby.bat`** and fill in the two placeholders:
+5. **Open `start_standby.bat`** and fill in the two placeholders:
    `RENDER_BACKUP_BASE_URL` (your Render service's URL) and `DATABASE_URL`
    (from step 4). Everything else in that file is already set.
-7. **Double-click `start_standby.bat`** and leave it running.
+6. **Double-click `start_standby.bat`** and leave it running.
 
 That's it — this instance now runs continuously in **Backup** mode (the default),
 quietly pulling data every 15 minutes. You'll see a "BACKUP MODE" banner across
@@ -60,7 +62,21 @@ Check in on it occasionally: open the app on this PC and look at
 Settings > System mode to see when it last changed, and its `/api/health`
 endpoint for a quick status snapshot.
 
-## 3. Failover — Render is down, you need to keep working
+## 3. Updating the standby when the app changes
+
+When you push code changes (bug fixes, new features) to the main app, the
+office PC doesn't get them automatically — it's running its own local copy.
+
+1. Close the window running `start_standby.bat` (or press Ctrl+C in it).
+2. Double-click `update_standby_pc.bat`. It pulls the latest code (`git pull`)
+   and reinstalls Node/Python dependencies if anything changed. Your data
+   (`standby-cache\`, `start_standby.bat`, `credentials\`) is untouched.
+3. Double-click `start_standby.bat` again to resume.
+
+This only works if the office PC was set up via `git clone` (section 1, step 1)
+rather than a plain folder copy — a plain copy has no way to pull updates.
+
+## 4. Failover — Render is down, you need to keep working
 
 1. Confirm Render is actually down (try opening its normal URL).
 2. On the office PC, open the app (it's already running), go to
@@ -82,7 +98,7 @@ an alert if it detects the other side also claiming to be Online, but that's a
 safety net for the moment Render comes back unexpectedly — not something to rely
 on deliberately.
 
-## 4. Render is back — bringing it up to date
+## 5. Render is back — bringing it up to date
 
 1. Confirm Render is genuinely healthy again (it's serving normally).
 2. **Immediately switch the office PC's Settings > System mode back to Backup.**
@@ -112,7 +128,7 @@ on deliberately.
    The office PC, back in Backup mode, will start pulling fresh data from Render
    again on its usual 15-minute cycle.
 
-## 5. Known limitations (accepted trade-offs)
+## 6. Known limitations (accepted trade-offs)
 
 - Edits to secondary modules (clock records, expedition stickers, dag-foutjes,
   bunches) made on the standby during an outage are **not** auto-merged back —
