@@ -15,6 +15,7 @@ import {
   dbQuery,
   deleteUkdocsCsiParsedDocumentFromDatabase,
   getUkdocsCsiParsedDocumentFromDatabase,
+  getFustActionsFromDatabase,
   getFustDatabaseStats,
   getDatabaseStatus,
   getLlmQueueSnapshot,
@@ -2264,6 +2265,7 @@ function normalizeFustAction(action) {
     deleted_by: String(action?.deleted_by || ""),
     sheet_sync: action?.sheet_sync || { ok: false, target_sheets: [], error: "Not attempted" },
     email_sync: action?.email_sync || { ok: false, recipients: [], error: "Not attempted" },
+    db_sync: action?.db_sync || { ok: false, error: "Not attempted", synced_at: "" },
     confirmation_reminder: normalizeFustConfirmationReminder(action?.confirmation_reminder),
     cmr: normalizeCmrInfo(action?.cmr),
     fustbon: normalizeCmrInfo(action?.fustbon),
@@ -2279,25 +2281,50 @@ async function writeFustActions(actions) {
   await writeJsonFile(fustActionsPath, { actions: actions.map(normalizeFustAction) });
 }
 
+// Unlike the old silent version, this reports success/failure back to the
+// caller so it can be recorded as a visible, retryable "Database" status on
+// the action -- exactly like sheet_sync/email_sync already work -- instead
+// of only being logged to the server console where nobody would see it.
 async function mirrorFustActionToDatabase(action) {
   if (!isDatabaseEnabled()) {
-    return;
+    return { ok: false, error: "Database is not configured", synced_at: "" };
   }
+  const syncedAt = new Date().toISOString();
   try {
-    await saveFustActionToDatabase(normalizeFustAction(action));
+    await saveFustActionToDatabase(normalizeFustAction({
+      ...action,
+      db_sync: { ok: true, error: "", synced_at: syncedAt },
+    }));
+    return { ok: true, error: "", synced_at: syncedAt };
   } catch (error) {
-    console.error("Fust database mirror failed:", error instanceof Error ? error.message : String(error));
+    const message = error instanceof Error ? error.message : String(error);
+    console.error("Fust database mirror failed:", message);
+    return { ok: false, error: message, synced_at: action?.db_sync?.synced_at || "" };
   }
 }
 
-async function mirrorFustDeleteToDatabase(actionId) {
+// Upserts the deleted action rather than just UPDATE-ing an existing row --
+// a plain UPDATE silently affects zero rows (and looks like success) if this
+// action's original create-mirror never landed in Postgres yet, which would
+// let a later, delayed create-mirror resurrect it as not-deleted.
+async function mirrorFustDeleteToDatabase(action, deletedAt = "", deletedBy = "") {
   if (!isDatabaseEnabled()) {
-    return;
+    return { ok: false, error: "Database is not configured", synced_at: "" };
   }
+  const syncedAt = new Date().toISOString();
   try {
-    await markFustActionDeletedInDatabase(String(actionId || "").trim());
+    await saveFustActionToDatabase(normalizeFustAction({
+      ...action,
+      deleted: true,
+      deleted_at: deletedAt || syncedAt,
+      deleted_by: deletedBy,
+      db_sync: { ok: true, error: "", synced_at: syncedAt },
+    }));
+    return { ok: true, error: "", synced_at: syncedAt };
   } catch (error) {
-    console.error("Fust database delete mirror failed:", error instanceof Error ? error.message : String(error));
+    const message = error instanceof Error ? error.message : String(error);
+    console.error("Fust database delete mirror failed:", message);
+    return { ok: false, error: message, synced_at: "" };
   }
 }
 
@@ -3412,7 +3439,10 @@ async function restoreMissingFustDataFromBackup(filename, requestUser) {
   const nextLocalActions = [...nextLocalMap.values()];
   await writeFustActions(nextLocalActions);
   for (const restoredAction of restoredActions) {
-    await mirrorFustActionToDatabase(restoredAction);
+    restoredAction.db_sync = await mirrorFustActionToDatabase(restoredAction);
+  }
+  if (restoredActions.length) {
+    await writeFustActions(nextLocalActions);
   }
   return {
     filename: backup.filename,
@@ -3421,44 +3451,77 @@ async function restoreMissingFustDataFromBackup(filename, requestUser) {
   };
 }
 
-async function collectCurrentFustActions(settings) {
+// The single read path for "what Fust actions currently exist." Postgres is
+// the source of truth (mirrored on every write, see mirrorFustActionToDatabase);
+// the Retour/Uitgaand sheets are write-only from here on and are never
+// re-parsed to reconstruct state (that ambiguous merge is exactly what let a
+// row's identity drift and caused deleting one duplicate to affect another).
+// A local-JSON record whose own db_sync isn't yet confirmed "ok" is preferred
+// over whatever Postgres currently has for that id, purely by id -- never by
+// content -- so a just-created/edited/deleted action is never invisible
+// merely because its mirror write hasn't landed (or failed and is awaiting
+// a manual retry) yet.
+async function loadCurrentFustActions(settingsOverride = null) {
+  const settings = settingsOverride || await readFustSettings();
   const localActions = await readFustActions();
-  let inSheetActions = [];
-  let outSheetActions = [];
 
-  try {
-    const retourRows = await loadSheetRows(settings.spreadsheet_id, settings.in_sheet_name);
-    inSheetActions = parseRegistrySheetRows(retourRows, "IN");
-  } catch {
-    inSheetActions = [];
+  let databaseActions = [];
+  let databaseError = "";
+  if (isDatabaseEnabled()) {
+    try {
+      databaseActions = await getFustActionsFromDatabase();
+    } catch (error) {
+      databaseError = error instanceof Error ? error.message : String(error);
+    }
   }
 
-  try {
-    const uitgaandRows = await loadSheetRows(settings.spreadsheet_id, settings.out_sheet_name);
-    outSheetActions = parseRegistrySheetRows(uitgaandRows, "OUT");
-  } catch {
-    outSheetActions = [];
+  const byId = new Map();
+  for (const dbAction of databaseActions) {
+    const id = String(dbAction?.id || "").trim();
+    if (id) {
+      byId.set(id, normalizeFustAction(dbAction));
+    }
   }
-
-  const deletedMatchers = buildDeletedActionMatchers(localActions);
-
-  const dedupedActions = new Map();
-  for (const action of [...inSheetActions, ...outSheetActions, ...localActions]) {
-    if (isActionDeletedByMatchers(action, deletedMatchers)) {
+  for (const localAction of localActions) {
+    const id = String(localAction?.id || "").trim();
+    if (!id) {
       continue;
     }
+    if (localAction.db_sync?.ok !== true || !byId.has(id)) {
+      byId.set(id, normalizeFustAction(localAction));
+    }
+  }
+
+  const activeActions = [];
+  const deletedActionIds = [];
+  for (const action of byId.values()) {
     if (action.deleted) {
+      deletedActionIds.push(action.id);
       continue;
     }
-    dedupedActions.set(buildActionMergeKey(action), normalizeFustAction(action));
+    activeActions.push(action);
   }
 
   return {
-    activeActions: [...dedupedActions.values()],
-    deletedActionIds: [...deletedMatchers.ids],
+    settings,
+    localActions,
+    activeActions,
+    actions: activeActions,
+    deletedActionIds,
     localActionCount: localActions.length,
-    sheetActionCount: inSheetActions.length + outSheetActions.length,
+    databaseActionCount: databaseActions.length,
+    sourceDebug: {
+      local: {
+        action_count: localActions.filter((action) => !action.deleted).length,
+        deleted_action_count: localActions.filter((action) => action.deleted).length,
+      },
+      database: { enabled: isDatabaseEnabled(), action_count: databaseActions.length, error: databaseError },
+    },
   };
+}
+
+async function collectCurrentFustActions(settings) {
+  return loadCurrentFustActions(settings);
 }
 
 async function applyFustImportRows(filePayload, requestUser, selectedImportKeys = []) {
@@ -3598,6 +3661,7 @@ async function applyFustImportRows(filePayload, requestUser, selectedImportKeys 
         };
       }
 
+      nextAction.db_sync = await mirrorFustActionToDatabase(nextAction);
       const savedIndex = localActions.findIndex((item) => String(item.id || "").trim() === nextAction.id);
       if (savedIndex >= 0) {
         localActions[savedIndex] = nextAction;
@@ -3605,7 +3669,6 @@ async function applyFustImportRows(filePayload, requestUser, selectedImportKeys 
         localActions.push(nextAction);
       }
       await writeFustActions(localActions);
-      await mirrorFustActionToDatabase(nextAction);
 
       if (existingAction) {
         summary.updated += 1;
@@ -3636,23 +3699,58 @@ async function applyFustImportRows(filePayload, requestUser, selectedImportKeys 
   };
 }
 
+// A one-time (or occasional, admin-triggered) migration aid -- NOT part of
+// the live read path. It's the one deliberate place still allowed to read
+// the Retour/Uitgaand sheets: to pull in legacy rows (historical entries
+// that predate the app, or anything added directly in the sheet) that
+// aren't already known locally, so nothing is lost now that the live list
+// no longer reads the sheet automatically. New rows are only ever added
+// here, matched by id -- never used to overwrite or resolve an existing
+// local/Postgres record's content.
 async function backfillFustDatabase() {
   if (!isDatabaseEnabled()) {
     throw new Error("Database is not configured");
   }
   const settings = await readFustSettings();
-  const current = await collectCurrentFustActions(settings);
-  for (const action of current.activeActions) {
-    await saveFustActionToDatabase(action);
+  const localActions = await readFustActions();
+  const localIds = new Set(localActions.map((action) => String(action.id || "").trim()).filter(Boolean));
+
+  let legacySheetActions = [];
+  try {
+    const [retourRows, uitgaandRows] = await Promise.all([
+      loadSheetRows(settings.spreadsheet_id, settings.in_sheet_name).catch(() => []),
+      loadSheetRows(settings.spreadsheet_id, settings.out_sheet_name).catch(() => []),
+    ]);
+    legacySheetActions = [
+      ...parseRegistrySheetRows(retourRows, "IN"),
+      ...parseRegistrySheetRows(uitgaandRows, "OUT"),
+    ].filter((action) => !localIds.has(String(action.id || "").trim()));
+  } catch {
+    legacySheetActions = [];
   }
-  for (const actionId of current.deletedActionIds) {
-    await markFustActionDeletedInDatabase(actionId);
+
+  let activeUpserted = 0;
+  for (const action of [...localActions, ...legacySheetActions]) {
+    if (action.deleted) {
+      continue;
+    }
+    await saveFustActionToDatabase(normalizeFustAction(action));
+    activeUpserted += 1;
   }
+
+  let deletedMarked = 0;
+  for (const action of localActions) {
+    if (action.deleted) {
+      await markFustActionDeletedInDatabase(action.id, action.deleted_at, action.deleted_by);
+      deletedMarked += 1;
+    }
+  }
+
   return {
-    active_upserted: current.activeActions.length,
-    deleted_marked: current.deletedActionIds.length,
-    local_action_count: current.localActionCount,
-    sheet_action_count: current.sheetActionCount,
+    active_upserted: activeUpserted,
+    deleted_marked: deletedMarked,
+    local_action_count: localActions.length,
+    legacy_sheet_action_count: legacySheetActions.length,
     database: await getFustDatabaseStats(),
   };
 }
@@ -4224,52 +4322,6 @@ function buildActionMergeKey(action) {
   return `sig:${buildActionSignature(action)}`;
 }
 
-// Only sheet-parsed rows without a real id column value get one of these
-// synthetic placeholder ids (old numeric "out-sheet-251" / "sheet-15" style,
-// or the newer content-hash "out-sheet-<hex>" style) -- and only those can
-// change across a re-parse. A real, persistent id (a UUID from an
-// app-created action, or an actual value from the sheet's own id column)
-// never changes, so it's never appropriate to fall back to content matching
-// for those -- two distinct actions can legitimately share identical
-// business data (the exact "duplicate entries" this app has had bugs with
-// before), and deleting one must never also hide the other.
-const SYNTHETIC_SHEET_ID_PATTERN = /(^|-)sheet-/i;
-
-function isSyntheticSheetActionId(actionId) {
-  return SYNTHETIC_SHEET_ID_PATTERN.test(String(actionId || "").trim());
-}
-
-// A synthetic row id can change across re-parses (e.g. when the id-generation
-// scheme itself changes), so a deletion recorded against one such id can
-// silently stop matching. Falling back to the content signature -- but only
-// for rows that never had a stable id to begin with -- keeps a deleted
-// legacy row deleted even when its synthetic id no longer does.
-function buildDeletedActionMatchers(localActions) {
-  const deletedActions = (Array.isArray(localActions) ? localActions : []).filter((action) => action?.deleted);
-  return {
-    ids: new Set(deletedActions.map((action) => String(action.id || "").trim()).filter(Boolean)),
-    signatures: new Set(
-      deletedActions
-        .filter((action) => {
-          const id = String(action.id || "").trim();
-          return !id || isSyntheticSheetActionId(id);
-        })
-        .map((action) => buildActionSignature(action)),
-    ),
-  };
-}
-
-function isActionDeletedByMatchers(action, matchers) {
-  const actionId = String(action?.id || "").trim();
-  if (actionId && matchers.ids.has(actionId)) {
-    return true;
-  }
-  if (actionId && !isSyntheticSheetActionId(actionId)) {
-    return false;
-  }
-  return matchers.signatures.size > 0 && matchers.signatures.has(buildActionSignature(action));
-}
-
 function createStableSheetRowId(prefix, signature) {
   const digest = crypto.createHash("sha1").update(String(signature || "")).digest("hex").slice(0, 16);
   return `${String(prefix || "row").toLowerCase()}-sheet-${digest}`;
@@ -4352,7 +4404,12 @@ function parseRegistrySheetRows(rows, type) {
         },
       };
       const rawId = rowValue(row, layout.idIndex);
-      const id = rawId || createStableSheetRowId(type, buildActionSignature(rowFields));
+      const rowNumber = index + (hasHeaderRow ? 2 : 1);
+      // Two legacy rows without a real id can share identical business data
+      // (the exact "duplicate entries" this app has had bugs with before), so
+      // the generated id must come from the row's fixed position, never its
+      // content -- a content hash would collapse both rows onto one id.
+      const id = rawId || createStableSheetRowId(type, `row-${rowNumber}`);
       return normalizeFustAction({
         id,
         ...rowFields,
@@ -4362,7 +4419,7 @@ function parseRegistrySheetRows(rows, type) {
         fustfactuur_reference: rowValue(row, layout.fustfactuurIndex),
         created_by: "spreadsheet",
         created_at: "",
-        sheet_sync: { ok: true, target_sheets: [type === "OUT" ? "Uitgaand" : "Retour"], error: "", row_number: index + (hasHeaderRow ? 2 : 1) },
+        sheet_sync: { ok: true, target_sheets: [type === "OUT" ? "Uitgaand" : "Retour"], error: "", row_number: rowNumber },
         email_sync: { ok: true, recipients: [], error: "" },
       });
     })
@@ -4464,16 +4521,6 @@ function findFustSheetRowNumberByActionId(rows, actionId) {
     }
   }
   return 0;
-}
-
-function findFustSheetRowNumberBySignature(rows, type, action) {
-  if (!Array.isArray(rows) || rows.length < 2 || !action) {
-    return 0;
-  }
-  const parsedRows = parseRegistrySheetRows(rows, type);
-  const targetSignature = buildActionSignature(action);
-  const matched = parsedRows.find((entry) => buildActionSignature(entry) === targetSignature);
-  return Number(matched?.sheet_sync?.row_number || 0);
 }
 
 async function readUsers() {
@@ -9268,12 +9315,12 @@ async function clearFustActionRowInSheet(spreadsheetId, sheetName, type, action,
 
   const rows = await loadSheetRows(spreadsheetId, sheetName);
   const layout = getRegistrySheetLayout(rows);
+  // Only ever locate a row by its own stored position or its own real id --
+  // never by matching business-data content, which is ambiguous the moment
+  // two rows share identical data (a real, recurring situation here).
   let targetRowNumber = Number(explicitRowNumber || action?.sheet_sync?.row_number || 0);
   if (targetRowNumber < 2 && action?.id) {
     targetRowNumber = findFustSheetRowNumberByActionId(rows, action.id);
-  }
-  if (targetRowNumber < 2) {
-    targetRowNumber = findFustSheetRowNumberBySignature(rows, type, action);
   }
   if (targetRowNumber < 2) {
     return 0;
@@ -9282,6 +9329,30 @@ async function clearFustActionRowInSheet(spreadsheetId, sheetName, type, action,
   const existingRow = rows[targetRowNumber - 1] || [];
   const rowLength = Math.max(layout.rowLength, existingRow.length, 19);
   await writeSheetRowAt(spreadsheetId, sheetName, targetRowNumber, emptySheetRow(rowLength));
+  return targetRowNumber;
+}
+
+// A deliberate DELETE (as opposed to a row relocating between sheets on a
+// type change, see clearFustActionRowInSheet above) only ever overwrites the
+// id cell of a row it can locate with certainty -- its own previously stored
+// row number -- leaving the rest of that row's business data visible as a
+// historical record. It never scans the sheet to guess which row to touch.
+async function markFustActionRowDeletedInSheet(spreadsheetId, sheetName, action, explicitRowNumber = 0) {
+  if (!spreadsheetId || !sheetName) {
+    return 0;
+  }
+  const targetRowNumber = Number(explicitRowNumber || action?.sheet_sync?.row_number || 0);
+  if (targetRowNumber < 2) {
+    return 0;
+  }
+
+  const rows = await loadSheetRows(spreadsheetId, sheetName);
+  const layout = getRegistrySheetLayout(rows);
+  const existingRow = rows[targetRowNumber - 1] || [];
+  const rowLength = Math.max(layout.rowLength, existingRow.length, 19);
+  const updatedRow = Array.from({ length: rowLength }, (_, index) => String(existingRow[index] ?? ""));
+  updatedRow[layout.idIndex] = "DELETED";
+  await writeSheetRowAt(spreadsheetId, sheetName, targetRowNumber, updatedRow);
   return targetRowNumber;
 }
 
@@ -9297,10 +9368,9 @@ async function deleteFustActionFromSheets(action, settings) {
 
   const clearedSheets = [];
   for (const target of clearTargets) {
-    const clearedRowNumber = await clearFustActionRowInSheet(
+    const clearedRowNumber = await markFustActionRowDeletedInSheet(
       settings.spreadsheet_id,
       target.sheetName,
-      target.type,
       action,
       target.explicitRowNumber,
     );
@@ -9343,14 +9413,12 @@ async function syncFustActionToSheets(action, settings, options = {}) {
   }
 
   const existingRows = await loadSheetRows(settings.spreadsheet_id, targetSheet);
+  // Only its own stored position or its own real id -- never a guess by
+  // content. If neither is known (e.g. a brand-new action), fall through to
+  // appending a fresh row below rather than risking the wrong match.
   let targetRowNumber = Number(action?.sheet_sync?.row_number || 0);
-  if (targetRowNumber < 2) {
-    if (action?.id) {
-      targetRowNumber = findFustSheetRowNumberByActionId(existingRows, action.id);
-    }
-    if (targetRowNumber < 2) {
-      targetRowNumber = findFustSheetRowNumberBySignature(existingRows, action.type, options.previousAction || action);
-    }
+  if (targetRowNumber < 2 && action?.id) {
+    targetRowNumber = findFustSheetRowNumberByActionId(existingRows, action.id);
   }
 
   const existingRow = targetRowNumber >= 1 ? (existingRows[targetRowNumber - 1] || []) : [];
@@ -9521,62 +9589,7 @@ async function sendFustConfirmationReminderEmail(actions, settings) {
 }
 
 async function loadCurrentFustActionsSnapshot(settingsOverride = null) {
-  const settings = settingsOverride || await readFustSettings();
-  const localActions = await readFustActions();
-  let inSheetActions = [];
-  let outSheetActions = [];
-  const sourceDebug = {
-    local: {
-      action_count: localActions.length,
-    },
-    in_sheet: {
-      sheet_name: settings.in_sheet_name,
-      row_count: 0,
-      action_count: 0,
-      error: "",
-    },
-    out_sheet: {
-      sheet_name: settings.out_sheet_name,
-      row_count: 0,
-      action_count: 0,
-      error: "",
-    },
-  };
-
-  try {
-    const retourRows = await loadSheetRows(settings.spreadsheet_id, settings.in_sheet_name);
-    sourceDebug.in_sheet.row_count = retourRows.length;
-    inSheetActions = parseRegistrySheetRows(retourRows, "IN");
-    sourceDebug.in_sheet.action_count = inSheetActions.length;
-  } catch (error) {
-    inSheetActions = [];
-    sourceDebug.in_sheet.error = error instanceof Error ? error.message : String(error || "Unknown error");
-  }
-
-  try {
-    const uitgaandRows = await loadSheetRows(settings.spreadsheet_id, settings.out_sheet_name);
-    sourceDebug.out_sheet.row_count = uitgaandRows.length;
-    outSheetActions = parseRegistrySheetRows(uitgaandRows, "OUT");
-    sourceDebug.out_sheet.action_count = outSheetActions.length;
-  } catch (error) {
-    outSheetActions = [];
-    sourceDebug.out_sheet.error = error instanceof Error ? error.message : String(error || "Unknown error");
-  }
-
-  const deletedMatchers = buildDeletedActionMatchers(localActions);
-  const dedupedActions = new Map();
-  for (const action of [...inSheetActions, ...outSheetActions, ...localActions]) {
-    if (isActionDeletedByMatchers(action, deletedMatchers)) {
-      continue;
-    }
-    if (action.deleted) {
-      continue;
-    }
-    dedupedActions.set(buildActionMergeKey(action), action);
-  }
-
-  const actions = [...dedupedActions.values()];
-  return { settings, localActions, actions, sourceDebug };
+  return loadCurrentFustActions(settingsOverride);
 }
 
 async function maybeSendFustConfirmationReminders(actions, settings) {
@@ -9660,8 +9673,9 @@ async function maybeSendFustConfirmationReminders(actions, settings) {
   if (updatedIndexes.size) {
     await writeFustActions(localActions);
     for (const index of updatedIndexes) {
-      await mirrorFustActionToDatabase(localActions[index]);
+      localActions[index].db_sync = await mirrorFustActionToDatabase(localActions[index]);
     }
+    await writeFustActions(localActions);
   }
 
   return summary;
@@ -12741,8 +12755,9 @@ async function handleApi(req, res, url) {
     if (applyChanges) {
       await writeFustActions(mergedActions);
       for (const action of [...added, ...updated]) {
-        await mirrorFustActionToDatabase(action);
+        action.db_sync = await mirrorFustActionToDatabase(action);
       }
+      await writeFustActions(mergedActions);
     }
 
     sendJson(res, 200, {
@@ -13102,8 +13117,8 @@ async function handleApi(req, res, url) {
         uploaded_by: requestUser.username,
       });
       actions[actionIndex] = action;
+      action.db_sync = await mirrorFustActionToDatabase(action);
       await writeFustActions(actions);
-      await mirrorFustActionToDatabase(action);
       sendJson(res, 200, { action });
       return;
     }
@@ -13141,15 +13156,15 @@ async function handleApi(req, res, url) {
         uploaded_by: requestUser.username,
       });
       actions[actionIndex] = action;
+      action.db_sync = await mirrorFustActionToDatabase(action);
       await writeFustActions(actions);
-      await mirrorFustActionToDatabase(action);
       sendJson(res, 500, { error: action[documentConfig.field].error, action });
       return;
     }
 
     actions[actionIndex] = action;
+    action.db_sync = await mirrorFustActionToDatabase(action);
     await writeFustActions(actions);
-    await mirrorFustActionToDatabase(action);
     sendJson(res, 200, { action });
     return;
   }
@@ -13193,8 +13208,8 @@ async function handleApi(req, res, url) {
         action.confirmed_at = new Date().toISOString();
         action.confirmed_by = requestUser.username;
         localMatch.actions[localMatch.actionIndex] = normalizeFustAction(action);
+        localMatch.actions[localMatch.actionIndex].db_sync = await mirrorFustActionToDatabase(localMatch.actions[localMatch.actionIndex]);
         await writeFustActions(localMatch.actions);
-        await mirrorFustActionToDatabase(localMatch.actions[localMatch.actionIndex]);
         results.confirmed += 1;
       }
 
@@ -13227,8 +13242,8 @@ async function handleApi(req, res, url) {
         action.confirmed_by = "";
       }
       actions[actionIndex] = normalizeFustAction(action);
+      actions[actionIndex].db_sync = await mirrorFustActionToDatabase(actions[actionIndex]);
       await writeFustActions(actions);
-      await mirrorFustActionToDatabase(actions[actionIndex]);
       sendJson(res, 200, { action: actions[actionIndex] });
       return;
     }
@@ -13254,8 +13269,8 @@ async function handleApi(req, res, url) {
       }
 
       actions[actionIndex] = action;
+      action.db_sync = await mirrorFustActionToDatabase(action);
       await writeFustActions(actions);
-      await mirrorFustActionToDatabase(action);
       sendJson(res, 200, { action });
       return;
     }
@@ -13281,8 +13296,25 @@ async function handleApi(req, res, url) {
       }
 
       actions[actionIndex] = action;
+      action.db_sync = await mirrorFustActionToDatabase(action);
       await writeFustActions(actions);
-      await mirrorFustActionToDatabase(action);
+      sendJson(res, 200, { action });
+      return;
+    }
+
+    if (retryKind === "retry-db") {
+      const requiredPermission = action.type === "OUT" ? PERMISSIONS.FUST_OUT : PERMISSIONS.FUST_IN;
+      if (!requirePermission(res, requestUser, requiredPermission)) {
+        return;
+      }
+      if (isFustActionConfirmed(action) && !hasUserPermission(requestUser, PERMISSIONS.FUST_MANAGE)) {
+        sendJson(res, 403, { error: "Confirmed actions can only be changed in Fust Beheer" });
+        return;
+      }
+
+      action.db_sync = await mirrorFustActionToDatabase(action);
+      actions[actionIndex] = action;
+      await writeFustActions(actions);
       sendJson(res, 200, { action });
       return;
     }
@@ -13367,9 +13399,9 @@ async function handleApi(req, res, url) {
       };
     }
 
+    updatedAction.db_sync = await mirrorFustActionToDatabase(updatedAction);
     actions[actionIndex] = updatedAction;
     await writeFustActions(actions);
-    await mirrorFustActionToDatabase(updatedAction);
     sendJson(res, 200, { action: updatedAction });
     return;
   }
@@ -13381,25 +13413,15 @@ async function handleApi(req, res, url) {
     let actionIndex = actions.findIndex((item) => item.id === actionId);
     let action = actionIndex >= 0 ? actions[actionIndex] : null;
     if (!action) {
-      const settings = await readFustSettings();
-      let candidates = [];
-      try {
-        const [retourRows, uitgaandRows] = await Promise.all([
-          loadSheetRows(settings.spreadsheet_id, settings.in_sheet_name).catch(() => []),
-          loadSheetRows(settings.spreadsheet_id, settings.out_sheet_name).catch(() => []),
-        ]);
-        candidates = [
-          ...parseRegistrySheetRows(retourRows, "IN"),
-          ...parseRegistrySheetRows(uitgaandRows, "OUT"),
-        ];
-      } catch {
-        candidates = [];
-      }
-      action = candidates.find((item) => item.id === actionId) || null;
-      if (!action) {
+      // Not yet in local storage -- check Postgres (never the sheets) before
+      // giving up. This is the normal path for a legacy action that only
+      // exists via the one-time backfill.
+      const currentAction = await findCurrentFustActionById(actionId, await readFustSettings());
+      if (!currentAction) {
         sendJson(res, 404, { error: "Fust action not found" });
         return;
       }
+      action = currentAction;
       actionIndex = -1;
     }
 
@@ -13423,26 +13445,28 @@ async function handleApi(req, res, url) {
       return;
     }
 
-    // Always keep a local tombstone (matched later by id AND by content
-    // signature, see buildDeletedActionMatchers) so a sheet-only row can't
-    // resurface as "new" later just because its synthetic id changed on a
-    // re-parse, or the sheet row itself somehow got repopulated.
+    // Always keep a local tombstone so this action's deleted status is never
+    // lost, whether it previously lived only in local storage or was found
+    // via Postgres just now.
+    const deletedAt = new Date().toISOString();
+    const deletedBy = requestUser.username;
     const tombstone = normalizeFustAction({
       ...action,
       deleted: true,
-      deleted_at: new Date().toISOString(),
-      deleted_by: requestUser.username,
+      deleted_at: deletedAt,
+      deleted_by: deletedBy,
     });
+    tombstone.db_sync = await mirrorFustDeleteToDatabase(action, deletedAt, deletedBy);
     const nextActions = actionIndex >= 0
       ? actions.map((item, index) => (index === actionIndex ? tombstone : item))
       : [...actions, tombstone];
     await writeFustActions(nextActions);
-    await mirrorFustDeleteToDatabase(actionId);
 
     sendJson(res, 200, {
       ok: true,
       deleted_action_id: actionId,
       sheet_sync: deleteSync,
+      db_sync: tombstone.db_sync,
     });
     return;
   }
@@ -13570,13 +13594,13 @@ async function handleApi(req, res, url) {
       return;
     }
 
+    action.db_sync = await mirrorFustActionToDatabase(action);
     const savedActions = await readFustActions();
     const actionIndex = savedActions.findIndex((item) => item.id === action.id);
     if (actionIndex >= 0) {
       savedActions[actionIndex] = action;
       await writeFustActions(savedActions);
     }
-    await mirrorFustActionToDatabase(action);
 
     sendJson(res, 201, { action });
     return;

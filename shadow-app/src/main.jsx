@@ -8880,7 +8880,7 @@ function FustActionTable({
       await apiJson(`/api/fust/actions/${encodeURIComponent(actionId)}/${kind}`, {
         method: "POST",
       });
-      setMessage(kind === "retry-sheet" ? "Sheet sync retried." : "Email resend retried.");
+      setMessage(kind === "retry-sheet" ? "Sheet sync retried." : kind === "retry-db" ? "Database sync retried." : "Email resend retried.");
       onRefresh();
     } catch (retryError) {
       setError(retryError.message);
@@ -9185,6 +9185,7 @@ function FustActionTable({
                 <th>Fustfactuur</th>
                 <th>Sheet</th>
                 <th>Email</th>
+                <th>Database</th>
                 <th>Confirmed</th>
                 <th>Import</th>
                 <th>Actions</th>
@@ -9225,6 +9226,7 @@ function FustActionTable({
                     <td>{isEditing ? <input value={editForm.fustfactuur_reference} onChange={(event) => setEditForm({ ...editForm, fustfactuur_reference: event.target.value })} /> : (action.fustfactuur_reference || "-")}</td>
                     <td>{action.sheet_sync?.ok ? "ok" : action.sheet_sync?.error || "-"}</td>
                     <td>{action.email_sync?.ok ? "ok" : action.email_sync?.error || "-"}</td>
+                    <td>{action.db_sync?.ok ? "ok" : action.db_sync?.error || "-"}</td>
                     <td>{confirmed ? `${formatTimestamp(action.confirmed_at)}${action.confirmed_by ? ` by ${action.confirmed_by}` : ""}` : "-"}</td>
                     <td>{action.import_source?.file_name ? `${action.import_source.file_name}${action.import_source.row_number ? ` row ${action.import_source.row_number}` : ""}` : "-"}</td>
                     <td>
@@ -9257,6 +9259,7 @@ function FustActionTable({
                         )}
                         {!readOnly && !action.sheet_sync?.ok && <button type="button" disabled={busyActionId === `${action.id}:retry-sheet`} onClick={() => retryAction(action.id, "retry-sheet")}>Retry sheet</button>}
                         {!readOnly && !action.email_sync?.ok && <button type="button" disabled={busyActionId === `${action.id}:retry-email`} onClick={() => retryAction(action.id, "retry-email")}>Retry email</button>}
+                        {!readOnly && !action.db_sync?.ok && <button type="button" disabled={busyActionId === `${action.id}:retry-db`} onClick={() => retryAction(action.id, "retry-db")}>Retry database</button>}
                         {canModify && !isEditing && <button type="button" disabled={busyActionId === `${action.id}:delete`} onClick={() => deleteLocalAction(action.id)}>Delete</button>}
                       </div>
                     </td>

@@ -48,12 +48,14 @@ export async function saveFustActionToDatabase(action) {
       INSERT INTO fust_actions (
         id, type, action_date, week, day_name, country, customer_name, customer_code, connect_name,
         remark, fustbon_reference, fustfactuur_reference, dc, cctag, dcs, dco, pal, vk,
-        deleted, created_by, created_at, confirmed_at, confirmed_by, import_source, confirmation_reminder, updated_at
+        deleted, deleted_at, deleted_by, created_by, created_at, confirmed_at, confirmed_by,
+        import_source, confirmation_reminder, sheet_sync, email_sync, db_sync, updated_at
       )
       VALUES (
         $1, $2, $3, $4, $5, $6, $7, $8, $9,
         $10, $11, $12, $13, $14, $15, $16, $17, $18,
-        $19, $20, COALESCE($21, now()), $22, $23, $24::jsonb, $25::jsonb, now()
+        $19, $20, $21, $22, COALESCE($23, now()), $24, $25,
+        $26::jsonb, $27::jsonb, $28::jsonb, $29::jsonb, $30::jsonb, now()
       )
       ON CONFLICT (id) DO UPDATE SET
         type = EXCLUDED.type,
@@ -74,12 +76,17 @@ export async function saveFustActionToDatabase(action) {
         pal = EXCLUDED.pal,
         vk = EXCLUDED.vk,
         deleted = EXCLUDED.deleted,
+        deleted_at = EXCLUDED.deleted_at,
+        deleted_by = EXCLUDED.deleted_by,
         created_by = EXCLUDED.created_by,
         created_at = COALESCE(fust_actions.created_at, EXCLUDED.created_at),
         confirmed_at = EXCLUDED.confirmed_at,
         confirmed_by = EXCLUDED.confirmed_by,
         import_source = EXCLUDED.import_source,
         confirmation_reminder = EXCLUDED.confirmation_reminder,
+        sheet_sync = EXCLUDED.sheet_sync,
+        email_sync = EXCLUDED.email_sync,
+        db_sync = EXCLUDED.db_sync,
         updated_at = now()
     `,
     [
@@ -102,12 +109,17 @@ export async function saveFustActionToDatabase(action) {
       Number(action.metrics?.pal || 0),
       Number(action.metrics?.vk || 0),
       action.deleted === true,
+      action.deleted_at || null,
+      action.deleted_by || "",
       action.created_by || "",
       action.created_at || null,
       action.confirmed_at || null,
       action.confirmed_by || "",
       JSON.stringify(action.import_source || {}),
       JSON.stringify(action.confirmation_reminder || {}),
+      JSON.stringify(action.sheet_sync || {}),
+      JSON.stringify(action.email_sync || {}),
+      JSON.stringify(action.db_sync || {}),
     ],
   );
 
@@ -356,18 +368,106 @@ export async function deleteUkdocsCsiParsedDocumentFromDatabase(collectionId, do
   );
 }
 
-export async function markFustActionDeletedInDatabase(actionId) {
+export async function markFustActionDeletedInDatabase(actionId, deletedAt = null, deletedBy = "") {
   if (!pool || !actionId) {
     return;
   }
   await pool.query(
     `
       UPDATE fust_actions
-      SET deleted = true, updated_at = now()
+      SET deleted = true, deleted_at = COALESCE($2, now()), deleted_by = COALESCE($3, deleted_by), updated_at = now()
       WHERE id = $1
     `,
-    [actionId],
+    [actionId, deletedAt || null, deletedBy || null],
   );
+}
+
+function jsonOrEmpty(value) {
+  if (value === null || value === undefined) {
+    return {};
+  }
+  if (typeof value === "object") {
+    return value;
+  }
+  try {
+    return JSON.parse(value);
+  } catch {
+    return {};
+  }
+}
+
+function fustActionRowFromDatabase(row, documentsByKind) {
+  return {
+    id: row.id,
+    type: row.type,
+    action_date: row.action_date instanceof Date ? row.action_date.toISOString().slice(0, 10) : String(row.action_date || ""),
+    week: row.week === null || row.week === undefined ? null : Number(row.week),
+    day_name: row.day_name || "",
+    country: row.country || "",
+    customer_name: row.customer_name || "",
+    customer_code: row.customer_code || "",
+    connect_name: row.connect_name || "",
+    remark: row.remark || "",
+    fustbon_reference: row.fustbon_reference || "",
+    fustfactuur_reference: row.fustfactuur_reference || "",
+    metrics: {
+      dc: Number(row.dc || 0),
+      cctag: Number(row.cctag || 0),
+      dcs: Number(row.dcs || 0),
+      dco: Number(row.dco || 0),
+      pal: Number(row.pal || 0),
+      vk: Number(row.vk || 0),
+    },
+    created_by: row.created_by || "",
+    created_at: row.created_at ? new Date(row.created_at).toISOString() : "",
+    confirmed_at: row.confirmed_at ? new Date(row.confirmed_at).toISOString() : "",
+    confirmed_by: row.confirmed_by || "",
+    import_source: jsonOrEmpty(row.import_source),
+    deleted: row.deleted === true,
+    deleted_at: row.deleted_at ? new Date(row.deleted_at).toISOString() : "",
+    deleted_by: row.deleted_by || "",
+    sheet_sync: jsonOrEmpty(row.sheet_sync),
+    email_sync: jsonOrEmpty(row.email_sync),
+    db_sync: jsonOrEmpty(row.db_sync),
+    confirmation_reminder: jsonOrEmpty(row.confirmation_reminder),
+    cmr: documentsByKind.cmr || {},
+    fustbon: documentsByKind.fustbon || {},
+  };
+}
+
+// Mirror image of saveFustActionToDatabase(): reconstructs full action records
+// (including nested document status) straight from Postgres, so it can be
+// used as the primary read source for the live action list instead of
+// re-parsing the Retour/Uitgaand sheets.
+export async function getFustActionsFromDatabase() {
+  if (!pool) {
+    return [];
+  }
+
+  const [actionsResult, documentsResult] = await Promise.all([
+    pool.query("SELECT * FROM fust_actions"),
+    pool.query("SELECT * FROM fust_action_documents"),
+  ]);
+
+  const documentsByAction = new Map();
+  for (const docRow of documentsResult.rows) {
+    if (!documentsByAction.has(docRow.action_id)) {
+      documentsByAction.set(docRow.action_id, {});
+    }
+    documentsByAction.get(docRow.action_id)[docRow.document_kind] = {
+      status: docRow.status || "missing",
+      file_id: docRow.file_id || "",
+      file_name: docRow.file_name || "",
+      web_link: docRow.web_link || "",
+      mime_type: docRow.mime_type || "",
+      folder_id: docRow.folder_id || "",
+      error: docRow.error || "",
+      uploaded_at: docRow.uploaded_at ? new Date(docRow.uploaded_at).toISOString() : "",
+      uploaded_by: docRow.uploaded_by || "",
+    };
+  }
+
+  return actionsResult.rows.map((row) => fustActionRowFromDatabase(row, documentsByAction.get(row.id) || {}));
 }
 
 export async function getFustDatabaseStats() {
@@ -770,6 +870,26 @@ const databaseMigrations = [
   `
     ALTER TABLE IF EXISTS fust_actions
     ADD COLUMN IF NOT EXISTS confirmation_reminder jsonb NOT NULL DEFAULT '{}'::jsonb
+  `,
+  `
+    ALTER TABLE IF EXISTS fust_actions
+    ADD COLUMN IF NOT EXISTS deleted_at timestamptz
+  `,
+  `
+    ALTER TABLE IF EXISTS fust_actions
+    ADD COLUMN IF NOT EXISTS deleted_by text
+  `,
+  `
+    ALTER TABLE IF EXISTS fust_actions
+    ADD COLUMN IF NOT EXISTS sheet_sync jsonb NOT NULL DEFAULT '{}'::jsonb
+  `,
+  `
+    ALTER TABLE IF EXISTS fust_actions
+    ADD COLUMN IF NOT EXISTS email_sync jsonb NOT NULL DEFAULT '{}'::jsonb
+  `,
+  `
+    ALTER TABLE IF EXISTS fust_actions
+    ADD COLUMN IF NOT EXISTS db_sync jsonb NOT NULL DEFAULT '{}'::jsonb
   `,
   `
     CREATE TABLE IF NOT EXISTS fust_action_documents (
