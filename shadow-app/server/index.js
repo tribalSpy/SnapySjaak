@@ -3440,17 +3440,11 @@ async function collectCurrentFustActions(settings) {
     outSheetActions = [];
   }
 
-  const deletedActionIds = new Set(
-    localActions
-      .filter((action) => action.deleted)
-      .map((action) => String(action.id || "").trim())
-      .filter(Boolean),
-  );
+  const deletedMatchers = buildDeletedActionMatchers(localActions);
 
   const dedupedActions = new Map();
   for (const action of [...inSheetActions, ...outSheetActions, ...localActions]) {
-    const actionId = String(action?.id || "").trim();
-    if (actionId && deletedActionIds.has(actionId)) {
+    if (isActionDeletedByMatchers(action, deletedMatchers)) {
       continue;
     }
     if (action.deleted) {
@@ -3461,7 +3455,7 @@ async function collectCurrentFustActions(settings) {
 
   return {
     activeActions: [...dedupedActions.values()],
-    deletedActionIds: [...deletedActionIds],
+    deletedActionIds: [...deletedMatchers.ids],
     localActionCount: localActions.length,
     sheetActionCount: inSheetActions.length + outSheetActions.length,
   };
@@ -4228,6 +4222,27 @@ function buildActionMergeKey(action) {
     return `id:${actionId}`;
   }
   return `sig:${buildActionSignature(action)}`;
+}
+
+// A row's synthetic id can change across re-parses (e.g. when the id-generation
+// scheme itself changes, or a sheet-only legacy row's content shifts slightly),
+// so a deletion recorded against one id can silently stop matching. Falling
+// back to the content signature keeps a deleted row deleted even when its id
+// no longer does.
+function buildDeletedActionMatchers(localActions) {
+  const deletedActions = (Array.isArray(localActions) ? localActions : []).filter((action) => action?.deleted);
+  return {
+    ids: new Set(deletedActions.map((action) => String(action.id || "").trim()).filter(Boolean)),
+    signatures: new Set(deletedActions.map((action) => buildActionSignature(action))),
+  };
+}
+
+function isActionDeletedByMatchers(action, matchers) {
+  const actionId = String(action?.id || "").trim();
+  if (actionId && matchers.ids.has(actionId)) {
+    return true;
+  }
+  return matchers.signatures.has(buildActionSignature(action));
 }
 
 function createStableSheetRowId(prefix, signature) {
@@ -9523,16 +9538,10 @@ async function loadCurrentFustActionsSnapshot(settingsOverride = null) {
     sourceDebug.out_sheet.error = error instanceof Error ? error.message : String(error || "Unknown error");
   }
 
-  const deletedActionIds = new Set(
-    localActions
-      .filter((action) => action.deleted)
-      .map((action) => String(action.id || "").trim())
-      .filter(Boolean),
-  );
+  const deletedMatchers = buildDeletedActionMatchers(localActions);
   const dedupedActions = new Map();
   for (const action of [...inSheetActions, ...outSheetActions, ...localActions]) {
-    const actionId = String(action?.id || "").trim();
-    if (actionId && deletedActionIds.has(actionId)) {
+    if (isActionDeletedByMatchers(action, deletedMatchers)) {
       continue;
     }
     if (action.deleted) {
@@ -13389,11 +13398,20 @@ async function handleApi(req, res, url) {
       return;
     }
 
-    let nextActions = actions;
-    if (actionIndex >= 0) {
-      nextActions = actions.filter((item) => item.id !== actionId);
-      await writeFustActions(nextActions);
-    }
+    // Always keep a local tombstone (matched later by id AND by content
+    // signature, see buildDeletedActionMatchers) so a sheet-only row can't
+    // resurface as "new" later just because its synthetic id changed on a
+    // re-parse, or the sheet row itself somehow got repopulated.
+    const tombstone = normalizeFustAction({
+      ...action,
+      deleted: true,
+      deleted_at: new Date().toISOString(),
+      deleted_by: requestUser.username,
+    });
+    const nextActions = actionIndex >= 0
+      ? actions.map((item, index) => (index === actionIndex ? tombstone : item))
+      : [...actions, tombstone];
+    await writeFustActions(nextActions);
     await mirrorFustDeleteToDatabase(actionId);
 
     sendJson(res, 200, {
