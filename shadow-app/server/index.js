@@ -3706,7 +3706,9 @@ async function applyFustImportRows(filePayload, requestUser, selectedImportKeys 
 // aren't already known locally, so nothing is lost now that the live list
 // no longer reads the sheet automatically. New rows are only ever added
 // here, matched by id -- never used to overwrite or resolve an existing
-// local/Postgres record's content.
+// local/Postgres record's content. Any row still missing a real id gets one
+// written into its blank id cell here, once, so it can never again be
+// re-discovered as a "new" action under a different generated id.
 async function backfillFustDatabase() {
   if (!isDatabaseEnabled()) {
     throw new Error("Database is not configured");
@@ -3716,15 +3718,36 @@ async function backfillFustDatabase() {
   const localIds = new Set(localActions.map((action) => String(action.id || "").trim()).filter(Boolean));
 
   let legacySheetActions = [];
+  let permanentIdsAssigned = 0;
   try {
     const [retourRows, uitgaandRows] = await Promise.all([
       loadSheetRows(settings.spreadsheet_id, settings.in_sheet_name).catch(() => []),
       loadSheetRows(settings.spreadsheet_id, settings.out_sheet_name).catch(() => []),
     ]);
-    legacySheetActions = [
-      ...parseRegistrySheetRows(retourRows, "IN"),
-      ...parseRegistrySheetRows(uitgaandRows, "OUT"),
-    ].filter((action) => !localIds.has(String(action.id || "").trim()));
+    const tabs = [
+      { sheetName: settings.in_sheet_name, rows: retourRows, actions: parseRegistrySheetRows(retourRows, "IN") },
+      { sheetName: settings.out_sheet_name, rows: uitgaandRows, actions: parseRegistrySheetRows(uitgaandRows, "OUT") },
+    ];
+    for (const tab of tabs) {
+      for (const action of tab.actions) {
+        if (localIds.has(String(action.id || "").trim())) {
+          continue;
+        }
+        if (isGeneratedLegacySheetId(action.id) && settings.spreadsheet_id && tab.sheetName) {
+          const permanentId = crypto.randomUUID();
+          try {
+            await assignPermanentSheetRowId(settings.spreadsheet_id, tab.sheetName, tab.rows, action.sheet_sync?.row_number, permanentId);
+            action.id = permanentId;
+            permanentIdsAssigned += 1;
+          } catch {
+            // Leave the generated id in place for this run -- it's derived
+            // from the row's position, so it stays stable and safe to retry
+            // on the next backfill rather than risk a half-written id.
+          }
+        }
+        legacySheetActions.push(action);
+      }
+    }
   } catch {
     legacySheetActions = [];
   }
@@ -3751,6 +3774,7 @@ async function backfillFustDatabase() {
     deleted_marked: deletedMarked,
     local_action_count: localActions.length,
     legacy_sheet_action_count: legacySheetActions.length,
+    permanent_ids_assigned: permanentIdsAssigned,
     database: await getFustDatabaseStats(),
   };
 }
@@ -4325,6 +4349,16 @@ function buildActionMergeKey(action) {
 function createStableSheetRowId(prefix, signature) {
   const digest = crypto.createHash("sha1").update(String(signature || "")).digest("hex").slice(0, 16);
   return `${String(prefix || "row").toLowerCase()}-sheet-${digest}`;
+}
+
+// A generated id (createStableSheetRowId's output) is only ever a stand-in
+// for "this sheet row's id cell is still blank" -- it exists purely so a
+// legacy row can be represented in-memory for one backfill pass, and must
+// never be treated as the row's real identity, since the generation formula
+// itself has already changed more than once. Backfill replaces it with a
+// permanent real id (see assignPermanentSheetRowId) the moment it finds one.
+function isGeneratedLegacySheetId(actionId) {
+  return /^(in|out)-sheet-/i.test(String(actionId || "").trim());
 }
 
 function parseDashboardSheetRows(rows) {
@@ -9337,6 +9371,26 @@ async function clearFustActionRowInSheet(spreadsheetId, sheetName, type, action,
 // id cell of a row it can locate with certainty -- its own previously stored
 // row number -- leaving the rest of that row's business data visible as a
 // historical record. It never scans the sheet to guess which row to touch.
+// Writes a real, permanent id into a legacy row's blank id cell, one time,
+// during backfill. This replaces the row's temporary generated id (which is
+// only ever a stand-in for "no real id yet" and would change again if the
+// generation formula ever changes) with a value that never changes again --
+// exactly like an app-created action's own id -- so this row can never be
+// re-discovered as a "new" action and accidentally re-confirmed.
+async function assignPermanentSheetRowId(spreadsheetId, sheetName, rows, rowNumber, newId) {
+  const targetRowNumber = Number(rowNumber || 0);
+  if (!spreadsheetId || !sheetName || targetRowNumber < 2) {
+    return false;
+  }
+  const layout = getRegistrySheetLayout(rows);
+  const existingRow = rows[targetRowNumber - 1] || [];
+  const rowLength = Math.max(layout.rowLength, existingRow.length, 19);
+  const updatedRow = Array.from({ length: rowLength }, (_, index) => String(existingRow[index] ?? ""));
+  updatedRow[layout.idIndex] = newId;
+  await writeSheetRowAt(spreadsheetId, sheetName, targetRowNumber, updatedRow);
+  return true;
+}
+
 async function markFustActionRowDeletedInSheet(spreadsheetId, sheetName, action, explicitRowNumber = 0) {
   if (!spreadsheetId || !sheetName) {
     return 0;
