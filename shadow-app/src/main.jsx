@@ -8805,6 +8805,10 @@ function FustActionTable({
   const [editDocumentInputKey, setEditDocumentInputKey] = useState(0);
   const [typeFilter, setTypeFilter] = useState("");
   const [dateFilter, setDateFilter] = useState(defaultDate);
+  const [fromWeekFilter, setFromWeekFilter] = useState("");
+  const [toWeekFilter, setToWeekFilter] = useState("");
+  const [fromDateFilter, setFromDateFilter] = useState("");
+  const [toDateFilter, setToDateFilter] = useState("");
   const [onlyUnconfirmed, setOnlyUnconfirmed] = useState(unconfirmedOnly);
   const [countryFilter, setCountryFilter] = useState("");
   const [customerFilter, setCustomerFilter] = useState("");
@@ -8988,6 +8992,8 @@ function FustActionTable({
   }
 
   const typeOptions = [...new Set(actions.map((action) => action.type).filter(Boolean))].sort((left, right) => left.localeCompare(right));
+  const weekOptions = [...new Set(actions.map((action) => String(action.week || "")).filter(Boolean))]
+    .sort((left, right) => Number(left) - Number(right));
   const countryOptions = [...new Set(actions.map((action) => action.country).filter(Boolean))].sort((left, right) => left.localeCompare(right));
   const customerOptions = [...new Set(actions.map((action) => action.customer_name).filter(Boolean))].sort((left, right) => left.localeCompare(right));
   const controlActions = allowConfirm ? actions.filter((action) => !isImportedFustAction(action)) : actions;
@@ -9009,6 +9015,16 @@ function FustActionTable({
     .filter((action) => !onlyUnconfirmed || !isFustActionConfirmed(action))
     .filter((action) => !typeFilter || action.type === typeFilter)
     .filter((action) => !dateFilter || (allowConfirm ? fustActionControlDate(action) : String(action.action_date || "")) === dateFilter)
+    .filter((action) => !fromWeekFilter || Number(action.week || 0) >= Number(fromWeekFilter))
+    .filter((action) => !toWeekFilter || Number(action.week || 0) <= Number(toWeekFilter))
+    .filter((action) => {
+      const compareDate = allowConfirm ? fustActionControlDate(action) : String(action.action_date || "");
+      return !fromDateFilter || !compareDate || compareDate >= fromDateFilter;
+    })
+    .filter((action) => {
+      const compareDate = allowConfirm ? fustActionControlDate(action) : String(action.action_date || "");
+      return !toDateFilter || !compareDate || compareDate <= toDateFilter;
+    })
     .filter((action) => !countryFilter || action.country === countryFilter)
     .filter((action) => !customerFilter || action.customer_name === customerFilter)
     .filter((action) => !searchQuery || [
@@ -9103,6 +9119,28 @@ function FustActionTable({
           <label>
             <span>Date</span>
             <input type="date" value={dateFilter} onChange={(event) => setDateFilter(event.target.value)} />
+          </label>
+          <label>
+            <span>From week</span>
+            <select value={fromWeekFilter} onChange={(event) => setFromWeekFilter(event.target.value)}>
+              <option value="">All weeks</option>
+              {weekOptions.map((week) => <option key={`from-${week}`} value={week}>{week}</option>)}
+            </select>
+          </label>
+          <label>
+            <span>To week</span>
+            <select value={toWeekFilter} onChange={(event) => setToWeekFilter(event.target.value)}>
+              <option value="">All weeks</option>
+              {weekOptions.map((week) => <option key={`to-${week}`} value={week}>{week}</option>)}
+            </select>
+          </label>
+          <label>
+            <span>From date</span>
+            <input type="date" value={fromDateFilter} onChange={(event) => setFromDateFilter(event.target.value)} />
+          </label>
+          <label>
+            <span>To date</span>
+            <input type="date" value={toDateFilter} onChange={(event) => setToDateFilter(event.target.value)} />
           </label>
           <label>
             <span>Unconfirmed only</span>
