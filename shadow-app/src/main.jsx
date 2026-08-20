@@ -8801,6 +8801,7 @@ function FustActionTable({
   const [error, setError] = useState("");
   const [editingActionId, setEditingActionId] = useState("");
   const [editForm, setEditForm] = useState(null);
+  const [expandedActionId, setExpandedActionId] = useState("");
   const [editDocumentFile, setEditDocumentFile] = useState(null);
   const [editDocumentInputKey, setEditDocumentInputKey] = useState(0);
   const [typeFilter, setTypeFilter] = useState("");
@@ -9194,11 +9195,16 @@ function FustActionTable({
             <tbody>
               {visibleActions.map((action) => {
                 const isEditing = editingActionId === action.id && editForm;
+                const isExpanded = expandedActionId === action.id;
                 const confirmed = isFustActionConfirmed(action);
                 const canModify = !readOnly && (allowManage || !confirmed);
                 const editDocumentLabel = action.type === "IN" ? "Fustbon" : "CMR";
                 return (
-                  <tr key={action.id}>
+                  <tr
+                    key={action.id}
+                    className="fust-action-row"
+                    onClick={() => setExpandedActionId((current) => (current === action.id ? "" : action.id))}
+                  >
                     <td>{isEditing ? <select value={editForm.type} onChange={(event) => setEditForm({ ...editForm, type: event.target.value })}><option value="IN">IN</option><option value="OUT">OUT</option></select> : action.type}</td>
                     <td>{isEditing ? <input type="date" value={editForm.action_date} onChange={(event) => setEditForm({ ...editForm, action_date: event.target.value })} /> : action.action_date}</td>
                     <td>{isEditing ? <input value={editForm.country} onChange={(event) => setEditForm({ ...editForm, country: event.target.value })} /> : action.country}</td>
@@ -9229,7 +9235,7 @@ function FustActionTable({
                     <td>{action.db_sync?.ok ? "ok" : action.db_sync?.error || "-"}</td>
                     <td>{confirmed ? `${formatTimestamp(action.confirmed_at)}${action.confirmed_by ? ` by ${action.confirmed_by}` : ""}` : "-"}</td>
                     <td>{action.import_source?.file_name ? `${action.import_source.file_name}${action.import_source.row_number ? ` row ${action.import_source.row_number}` : ""}` : "-"}</td>
-                    <td>
+                    <td onClick={(event) => event.stopPropagation()}>
                       <div className="retry-actions">
                         {isEditing ? (
                           <>
@@ -9253,14 +9259,18 @@ function FustActionTable({
                         ) : (
                           <>
                             {canModify && <button type="button" onClick={() => startEdit(action)}>Edit</button>}
-                            {allowConfirm && !confirmed && <button type="button" disabled={busyActionId === `${action.id}:confirm`} onClick={() => toggleConfirm(action.id, false)}>Confirm</button>}
-                            {allowManage && confirmed && <button type="button" disabled={busyActionId === `${action.id}:unconfirm`} onClick={() => toggleConfirm(action.id, true)}>Unconfirm</button>}
+                            {isExpanded && (
+                              <>
+                                {allowConfirm && !confirmed && <button type="button" disabled={busyActionId === `${action.id}:confirm`} onClick={() => toggleConfirm(action.id, false)}>Confirm</button>}
+                                {allowManage && confirmed && <button type="button" disabled={busyActionId === `${action.id}:unconfirm`} onClick={() => toggleConfirm(action.id, true)}>Unconfirm</button>}
+                                {!readOnly && !action.sheet_sync?.ok && <button type="button" disabled={busyActionId === `${action.id}:retry-sheet`} onClick={() => retryAction(action.id, "retry-sheet")}>Retry sheet</button>}
+                                {!readOnly && !action.email_sync?.ok && <button type="button" disabled={busyActionId === `${action.id}:retry-email`} onClick={() => retryAction(action.id, "retry-email")}>Retry email</button>}
+                                {!readOnly && !action.db_sync?.ok && <button type="button" disabled={busyActionId === `${action.id}:retry-db`} onClick={() => retryAction(action.id, "retry-db")}>Retry database</button>}
+                                {canModify && <button type="button" disabled={busyActionId === `${action.id}:delete`} onClick={() => deleteLocalAction(action.id)}>Delete</button>}
+                              </>
+                            )}
                           </>
                         )}
-                        {!readOnly && !action.sheet_sync?.ok && <button type="button" disabled={busyActionId === `${action.id}:retry-sheet`} onClick={() => retryAction(action.id, "retry-sheet")}>Retry sheet</button>}
-                        {!readOnly && !action.email_sync?.ok && <button type="button" disabled={busyActionId === `${action.id}:retry-email`} onClick={() => retryAction(action.id, "retry-email")}>Retry email</button>}
-                        {!readOnly && !action.db_sync?.ok && <button type="button" disabled={busyActionId === `${action.id}:retry-db`} onClick={() => retryAction(action.id, "retry-db")}>Retry database</button>}
-                        {canModify && !isEditing && <button type="button" disabled={busyActionId === `${action.id}:delete`} onClick={() => deleteLocalAction(action.id)}>Delete</button>}
                       </div>
                     </td>
                   </tr>

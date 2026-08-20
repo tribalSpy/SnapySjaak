@@ -913,6 +913,10 @@ textarea {
   background: #eaf2fb;
 }
 
+.fust-action-row {
+  cursor: pointer;
+}
+
 .balance-table.data-table tbody tr.active-row:nth-child(even) {
   background: #e2f0ea;
 }
