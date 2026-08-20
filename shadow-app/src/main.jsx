@@ -8945,6 +8945,10 @@ function FustActionTable({
         next.delete(actionId);
         return next;
       });
+      if (editingActionId === actionId) {
+        setEditingActionId("");
+        setEditForm(null);
+      }
       onRefresh();
     } catch (deleteError) {
       setError(deleteError.message);
@@ -9272,6 +9276,7 @@ function FustActionTable({
                             <button type="button" disabled={busyActionId === `${action.id}:document-upload` || !editDocumentFile} onClick={() => reuploadEditedDocument(action)}>
                               {busyActionId === `${action.id}:document-upload` ? "Uploading..." : "Reupload document"}
                             </button>
+                            {canModify && <button type="button" disabled={busyActionId === `${action.id}:delete`} onClick={() => deleteLocalAction(action.id)}>Delete</button>}
                           </>
                         ) : (
                           <>
