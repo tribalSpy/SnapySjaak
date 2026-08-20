@@ -8801,7 +8801,7 @@ function FustActionTable({
   const [error, setError] = useState("");
   const [editingActionId, setEditingActionId] = useState("");
   const [editForm, setEditForm] = useState(null);
-  const [expandedActionId, setExpandedActionId] = useState("");
+  const [expandedActionIds, setExpandedActionIds] = useState(() => new Set());
   const [editDocumentFile, setEditDocumentFile] = useState(null);
   const [editDocumentInputKey, setEditDocumentInputKey] = useState(0);
   const [typeFilter, setTypeFilter] = useState("");
@@ -8937,6 +8937,14 @@ function FustActionTable({
         method: "DELETE",
       });
       setMessage("Action deleted.");
+      setExpandedActionIds((current) => {
+        if (!current.has(actionId)) {
+          return current;
+        }
+        const next = new Set(current);
+        next.delete(actionId);
+        return next;
+      });
       onRefresh();
     } catch (deleteError) {
       setError(deleteError.message);
@@ -9195,15 +9203,24 @@ function FustActionTable({
             <tbody>
               {visibleActions.map((action) => {
                 const isEditing = editingActionId === action.id && editForm;
-                const isExpanded = expandedActionId === action.id;
+                const isExpanded = expandedActionIds.has(action.id);
                 const confirmed = isFustActionConfirmed(action);
                 const canModify = !readOnly && (allowManage || !confirmed);
                 const editDocumentLabel = action.type === "IN" ? "Fustbon" : "CMR";
+                const toggleExpanded = () => setExpandedActionIds((current) => {
+                  const next = new Set(current);
+                  if (next.has(action.id)) {
+                    next.delete(action.id);
+                  } else {
+                    next.add(action.id);
+                  }
+                  return next;
+                });
                 return (
                   <tr
                     key={action.id}
                     className="fust-action-row"
-                    onClick={() => setExpandedActionId((current) => (current === action.id ? "" : action.id))}
+                    onClick={toggleExpanded}
                   >
                     <td>{isEditing ? <select value={editForm.type} onChange={(event) => setEditForm({ ...editForm, type: event.target.value })}><option value="IN">IN</option><option value="OUT">OUT</option></select> : action.type}</td>
                     <td>{isEditing ? <input type="date" value={editForm.action_date} onChange={(event) => setEditForm({ ...editForm, action_date: event.target.value })} /> : action.action_date}</td>
