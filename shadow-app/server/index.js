@@ -3717,6 +3717,26 @@ async function backfillFustDatabase() {
   const localActions = await readFustActions();
   const localIds = new Set(localActions.map((action) => String(action.id || "").trim()).filter(Boolean));
 
+  // A row this app already knows about locally (e.g. someone uploaded a
+  // CMR/Fustbon to it via ensureLocalFustAction, under whatever id scheme
+  // was active at the time) must never be re-identified by a freshly
+  // generated id -- that would create a second, document-less copy of the
+  // same physical row. Match by the row's actual sheet position instead,
+  // which is the one thing that never changes across id-scheme churn.
+  const localActionsByRowKey = new Map();
+  for (const localAction of localActions) {
+    const rowNumber = Number(localAction?.sheet_sync?.row_number || 0);
+    const targetSheets = Array.isArray(localAction?.sheet_sync?.target_sheets) ? localAction.sheet_sync.target_sheets : [];
+    if (rowNumber < 2) {
+      continue;
+    }
+    for (const sheetName of targetSheets) {
+      if (sheetName) {
+        localActionsByRowKey.set(`${sheetName}::${rowNumber}`, localAction);
+      }
+    }
+  }
+
   let legacySheetActions = [];
   let permanentIdsAssigned = 0;
   try {
@@ -3733,10 +3753,32 @@ async function backfillFustDatabase() {
         if (localIds.has(String(action.id || "").trim())) {
           continue;
         }
-        if (isGeneratedLegacySheetId(action.id) && settings.spreadsheet_id && tab.sheetName) {
+        if (!isGeneratedLegacySheetId(action.id)) {
+          legacySheetActions.push(action);
+          continue;
+        }
+        const rowNumber = action.sheet_sync?.row_number;
+        const existingLocalMatch = tab.sheetName ? localActionsByRowKey.get(`${tab.sheetName}::${rowNumber}`) : null;
+        if (existingLocalMatch) {
+          // This physical row already has a richer local record (possibly
+          // with an uploaded document) under a different id -- pin the
+          // sheet's blank cell to THAT id instead of minting a new one, and
+          // skip adding this document-less duplicate of the same row.
+          const existingId = String(existingLocalMatch.id || "").trim();
+          if (existingId && settings.spreadsheet_id && tab.sheetName) {
+            try {
+              await assignPermanentSheetRowId(settings.spreadsheet_id, tab.sheetName, tab.rows, rowNumber, existingId);
+              permanentIdsAssigned += 1;
+            } catch {
+              // Leave the sheet cell blank for now; safe to retry next run.
+            }
+          }
+          continue;
+        }
+        if (settings.spreadsheet_id && tab.sheetName) {
           const permanentId = crypto.randomUUID();
           try {
-            await assignPermanentSheetRowId(settings.spreadsheet_id, tab.sheetName, tab.rows, action.sheet_sync?.row_number, permanentId);
+            await assignPermanentSheetRowId(settings.spreadsheet_id, tab.sheetName, tab.rows, rowNumber, permanentId);
             action.id = permanentId;
             permanentIdsAssigned += 1;
           } catch {
