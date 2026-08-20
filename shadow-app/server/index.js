@@ -4224,16 +4224,38 @@ function buildActionMergeKey(action) {
   return `sig:${buildActionSignature(action)}`;
 }
 
-// A row's synthetic id can change across re-parses (e.g. when the id-generation
-// scheme itself changes, or a sheet-only legacy row's content shifts slightly),
-// so a deletion recorded against one id can silently stop matching. Falling
-// back to the content signature keeps a deleted row deleted even when its id
-// no longer does.
+// Only sheet-parsed rows without a real id column value get one of these
+// synthetic placeholder ids (old numeric "out-sheet-251" / "sheet-15" style,
+// or the newer content-hash "out-sheet-<hex>" style) -- and only those can
+// change across a re-parse. A real, persistent id (a UUID from an
+// app-created action, or an actual value from the sheet's own id column)
+// never changes, so it's never appropriate to fall back to content matching
+// for those -- two distinct actions can legitimately share identical
+// business data (the exact "duplicate entries" this app has had bugs with
+// before), and deleting one must never also hide the other.
+const SYNTHETIC_SHEET_ID_PATTERN = /(^|-)sheet-/i;
+
+function isSyntheticSheetActionId(actionId) {
+  return SYNTHETIC_SHEET_ID_PATTERN.test(String(actionId || "").trim());
+}
+
+// A synthetic row id can change across re-parses (e.g. when the id-generation
+// scheme itself changes), so a deletion recorded against one such id can
+// silently stop matching. Falling back to the content signature -- but only
+// for rows that never had a stable id to begin with -- keeps a deleted
+// legacy row deleted even when its synthetic id no longer does.
 function buildDeletedActionMatchers(localActions) {
   const deletedActions = (Array.isArray(localActions) ? localActions : []).filter((action) => action?.deleted);
   return {
     ids: new Set(deletedActions.map((action) => String(action.id || "").trim()).filter(Boolean)),
-    signatures: new Set(deletedActions.map((action) => buildActionSignature(action))),
+    signatures: new Set(
+      deletedActions
+        .filter((action) => {
+          const id = String(action.id || "").trim();
+          return !id || isSyntheticSheetActionId(id);
+        })
+        .map((action) => buildActionSignature(action)),
+    ),
   };
 }
 
@@ -4242,7 +4264,10 @@ function isActionDeletedByMatchers(action, matchers) {
   if (actionId && matchers.ids.has(actionId)) {
     return true;
   }
-  return matchers.signatures.has(buildActionSignature(action));
+  if (actionId && !isSyntheticSheetActionId(actionId)) {
+    return false;
+  }
+  return matchers.signatures.size > 0 && matchers.signatures.has(buildActionSignature(action));
 }
 
 function createStableSheetRowId(prefix, signature) {
