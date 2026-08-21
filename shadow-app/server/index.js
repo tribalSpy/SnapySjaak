@@ -9484,6 +9484,26 @@ async function deleteFustActionFromSheets(action, settings) {
   };
 }
 
+// Shared tail of every Fust action deletion, used by both the single
+// DELETE route and the duplicate-cleanup batch route. Callers are
+// responsible for their own lookup and permission checks first -- this
+// only performs the mechanics once an action has already been found and
+// authorized. Lets a sheet-write failure propagate (never marks something
+// deleted locally/in Postgres if the sheet couldn't also be updated).
+async function applyFustActionDeletion(action, settings, requestUser) {
+  const deleteSync = await deleteFustActionFromSheets(action, settings);
+  const deletedAt = new Date().toISOString();
+  const deletedBy = requestUser.username;
+  const tombstone = normalizeFustAction({
+    ...action,
+    deleted: true,
+    deleted_at: deletedAt,
+    deleted_by: deletedBy,
+  });
+  tombstone.db_sync = await mirrorFustDeleteToDatabase(action, deletedAt, deletedBy);
+  return { tombstone, sheet_sync: deleteSync, db_sync: tombstone.db_sync };
+}
+
 async function syncFustActionToSheets(action, settings, options = {}) {
   if (!settings.spreadsheet_id) {
     return { ok: false, target_sheets: [], error: "Spreadsheet ID is not configured" };
@@ -13312,6 +13332,59 @@ async function handleApi(req, res, url) {
       sendJson(res, 200, { ok: true, summary: results });
       return;
     }
+    if (actionId === "delete-batch") {
+      if (!requirePermission(res, requestUser, PERMISSIONS.FUST_MANAGE)) {
+        return;
+      }
+      const settings = await readFustSettings();
+      const body = await readRequestJson(req);
+      const requestedIds = Array.isArray(body?.action_ids)
+        ? body.action_ids.map((value) => String(value || "").trim()).filter(Boolean)
+        : [];
+      if (!requestedIds.length) {
+        sendJson(res, 400, { error: "No actions selected for deletion" });
+        return;
+      }
+      if (requestedIds.length > 500) {
+        sendJson(res, 400, { error: "Too many actions selected in one request (max 500)" });
+        return;
+      }
+
+      const actions = await readFustActions();
+      const results = { deleted: [], failed: [], not_found: [] };
+
+      for (const batchActionId of requestedIds) {
+        let actionIndex = actions.findIndex((item) => item.id === batchActionId);
+        let action = actionIndex >= 0 ? actions[actionIndex] : null;
+        if (!action) {
+          const currentAction = await findCurrentFustActionById(batchActionId, settings);
+          if (!currentAction) {
+            results.not_found.push(batchActionId);
+            continue;
+          }
+          action = currentAction;
+          actionIndex = -1;
+        }
+        try {
+          const deletion = await applyFustActionDeletion(action, settings, requestUser);
+          if (actionIndex >= 0) {
+            actions[actionIndex] = deletion.tombstone;
+          } else {
+            actions.push(deletion.tombstone);
+          }
+          results.deleted.push({ id: batchActionId, sheet_sync: deletion.sheet_sync, db_sync: deletion.db_sync });
+        } catch (deleteError) {
+          results.failed.push({
+            id: batchActionId,
+            error: deleteError instanceof Error ? deleteError.message : String(deleteError),
+          });
+        }
+      }
+
+      await writeFustActions(actions);
+      sendJson(res, 200, results);
+      return;
+    }
     const settings = await readFustSettings();
     const localMatch = await ensureLocalFustAction(actionId, settings);
     const actions = localMatch.actions;
@@ -13531,9 +13604,12 @@ async function handleApi(req, res, url) {
     }
 
     const settings = await readFustSettings();
-    let deleteSync;
+    let deletion;
     try {
-      deleteSync = await deleteFustActionFromSheets(action, settings);
+      // Always keep a local tombstone so this action's deleted status is
+      // never lost, whether it previously lived only in local storage or
+      // was found via Postgres just now.
+      deletion = await applyFustActionDeletion(action, settings, requestUser);
     } catch (deleteError) {
       sendJson(res, 500, {
         error: deleteError instanceof Error ? deleteError.message : String(deleteError),
@@ -13541,28 +13617,16 @@ async function handleApi(req, res, url) {
       return;
     }
 
-    // Always keep a local tombstone so this action's deleted status is never
-    // lost, whether it previously lived only in local storage or was found
-    // via Postgres just now.
-    const deletedAt = new Date().toISOString();
-    const deletedBy = requestUser.username;
-    const tombstone = normalizeFustAction({
-      ...action,
-      deleted: true,
-      deleted_at: deletedAt,
-      deleted_by: deletedBy,
-    });
-    tombstone.db_sync = await mirrorFustDeleteToDatabase(action, deletedAt, deletedBy);
     const nextActions = actionIndex >= 0
-      ? actions.map((item, index) => (index === actionIndex ? tombstone : item))
-      : [...actions, tombstone];
+      ? actions.map((item, index) => (index === actionIndex ? deletion.tombstone : item))
+      : [...actions, deletion.tombstone];
     await writeFustActions(nextActions);
 
     sendJson(res, 200, {
       ok: true,
       deleted_action_id: actionId,
-      sheet_sync: deleteSync,
-      db_sync: tombstone.db_sync,
+      sheet_sync: deletion.sheet_sync,
+      db_sync: deletion.db_sync,
     });
     return;
   }

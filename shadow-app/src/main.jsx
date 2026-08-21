@@ -7445,6 +7445,7 @@ function fustTileLabel(tab) {
     control: "Fust Controle",
     manage: "Fust Beheer",
     import: "Fust Import",
+    analyse: "Fust Analyse",
   }[tab] || tab.toUpperCase();
 }
 
@@ -7508,6 +7509,7 @@ function FustPage({ currentUser, menuVersion }) {
     hasPermission(currentUser, PERMISSIONS.FUST_OVERVIEW) ? "overview" : null,
     hasPermission(currentUser, PERMISSIONS.FUST_OVERVIEW) ? "last-actions" : null,
     hasPermission(currentUser, PERMISSIONS.FUST_OVERVIEW) ? "control" : null,
+    hasPermission(currentUser, PERMISSIONS.FUST_OVERVIEW) ? "analyse" : null,
     canManageFust ? "manage" : null,
     canManageFust ? "import" : null,
   ].filter(Boolean);
@@ -7614,6 +7616,15 @@ function FustPage({ currentUser, menuVersion }) {
           loading={actionsLoading}
           actions={actionsData?.actions || []}
           onRefresh={refresh}
+        />
+      )}
+
+      {activeTab === "analyse" && (
+        <FustAnalyse
+          loading={actionsLoading}
+          actions={actionsData?.actions || []}
+          onRefresh={refresh}
+          currentUser={currentUser}
         />
       )}
 
@@ -8181,6 +8192,49 @@ function FustActionForm({ type, metaData, loading, onSaved, onOpenFustList = nul
   );
 }
 
+function downloadExcelFriendlyTable(filename, headers, rows) {
+  const safeHeaders = headers.map((value) => String(value ?? "")
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;"));
+  const safeRows = rows.map((row) => row.map((value) => String(value ?? "")
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll("\n", "<br/>")));
+  const html = `<!DOCTYPE html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <style>
+      table { border-collapse: collapse; width: 100%; font-family: Calibri, Arial, sans-serif; font-size: 12px; }
+      th, td { border: 1px solid #9fb3c8; padding: 6px 8px; text-align: center; vertical-align: middle; }
+      th { background: #eef3f8; font-weight: 700; }
+      th:nth-child(-n+3), td:nth-child(-n+3) { text-align: left; }
+    </style>
+  </head>
+  <body>
+    <table>
+      <thead>
+        <tr>${safeHeaders.map((value) => `<th>${value}</th>`).join("")}</tr>
+      </thead>
+      <tbody>
+        ${safeRows.map((row) => `<tr>${row.map((value) => `<td>${value}</td>`).join("")}</tr>`).join("")}
+      </tbody>
+    </table>
+  </body>
+</html>`;
+  const blob = new Blob([html], { type: "application/vnd.ms-excel;charset=utf-8;" });
+  const url = window.URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = filename;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  window.URL.revokeObjectURL(url);
+}
+
 function FustOverview({ loading, actions, overview, sourceDebug, onRefresh }) {
   const [selectedWeek, setSelectedWeek] = useState("");
   const [selectedFromWeek, setSelectedFromWeek] = useState("");
@@ -8265,49 +8319,6 @@ function FustOverview({ loading, actions, overview, sourceDebug, onRefresh }) {
     return [...grouped.values()].sort((left, right) => (
       String(left.customer_name).localeCompare(String(right.customer_name))
     ));
-  }
-
-  function downloadExcelFriendlyTable(filename, headers, rows) {
-    const safeHeaders = headers.map((value) => String(value ?? "")
-      .replaceAll("&", "&amp;")
-      .replaceAll("<", "&lt;")
-      .replaceAll(">", "&gt;"));
-    const safeRows = rows.map((row) => row.map((value) => String(value ?? "")
-      .replaceAll("&", "&amp;")
-      .replaceAll("<", "&lt;")
-      .replaceAll(">", "&gt;")
-      .replaceAll("\n", "<br/>")));
-    const html = `<!DOCTYPE html>
-<html>
-  <head>
-    <meta charset="utf-8" />
-    <style>
-      table { border-collapse: collapse; width: 100%; font-family: Calibri, Arial, sans-serif; font-size: 12px; }
-      th, td { border: 1px solid #9fb3c8; padding: 6px 8px; text-align: center; vertical-align: middle; }
-      th { background: #eef3f8; font-weight: 700; }
-      th:nth-child(-n+3), td:nth-child(-n+3) { text-align: left; }
-    </style>
-  </head>
-  <body>
-    <table>
-      <thead>
-        <tr>${safeHeaders.map((value) => `<th>${value}</th>`).join("")}</tr>
-      </thead>
-      <tbody>
-        ${safeRows.map((row) => `<tr>${row.map((value) => `<td>${value}</td>`).join("")}</tr>`).join("")}
-      </tbody>
-    </table>
-  </body>
-</html>`;
-    const blob = new Blob([html], { type: "application/vnd.ms-excel;charset=utf-8;" });
-    const url = window.URL.createObjectURL(blob);
-    const link = document.createElement("a");
-    link.href = url;
-    link.download = filename;
-    document.body.appendChild(link);
-    link.click();
-    link.remove();
-    window.URL.revokeObjectURL(url);
   }
 
   const weekOptions = [...new Set(actions.map((action) => String(action.week || "")).filter(Boolean))]
@@ -9341,6 +9352,384 @@ function FustBeheer({ loading, actions, onRefresh }) {
       allowManage
       emptyMessage="No actions were found in Fust Beheer."
     />
+  );
+}
+
+function emptyFustMetricTotals() {
+  return { dc: 0, cctag: 0, dcs: 0, dco: 0, pal: 0, vk: 0 };
+}
+
+function addFustMetricsInto(target, metrics) {
+  target.dc += Number(metrics?.dc || 0);
+  target.cctag += Number(metrics?.cctag || 0);
+  target.dcs += Number(metrics?.dcs || 0);
+  target.dco += Number(metrics?.dco || 0);
+  target.pal += Number(metrics?.pal || 0);
+  target.vk += Number(metrics?.vk || 0);
+}
+
+function buildWeeklyVolumeFromActions(actions) {
+  const grouped = new Map();
+  for (const action of actions) {
+    const key = String(action.week || "").trim();
+    if (!key) {
+      continue;
+    }
+    if (!grouped.has(key)) {
+      grouped.set(key, { week: action.week, in: emptyFustMetricTotals(), out: emptyFustMetricTotals() });
+    }
+    const entry = grouped.get(key);
+    addFustMetricsInto(action.type === "OUT" ? entry.out : entry.in, action.metrics);
+  }
+  return [...grouped.values()]
+    .map((entry) => ({
+      ...entry,
+      balance: {
+        dc: entry.in.dc - entry.out.dc,
+        cctag: entry.in.cctag - entry.out.cctag,
+        dcs: entry.in.dcs - entry.out.dcs,
+        dco: entry.in.dco - entry.out.dco,
+        pal: entry.in.pal - entry.out.pal,
+        vk: entry.in.vk - entry.out.vk,
+      },
+    }))
+    .sort((left, right) => Number(left.week) - Number(right.week));
+}
+
+function buildTopCustomersFromActions(actions) {
+  const grouped = new Map();
+  for (const action of actions) {
+    const key = String(action.customer_name || "").trim() || "(unknown)";
+    if (!grouped.has(key)) {
+      grouped.set(key, { customer_name: key, in: emptyFustMetricTotals(), out: emptyFustMetricTotals() });
+    }
+    const entry = grouped.get(key);
+    addFustMetricsInto(action.type === "OUT" ? entry.out : entry.in, action.metrics);
+  }
+  return [...grouped.values()]
+    .map((entry) => ({ ...entry, total_dc: entry.in.dc + entry.out.dc }))
+    .sort((left, right) => right.total_dc - left.total_dc);
+}
+
+// Two actions are a duplicate pair only when every business-content field
+// matches exactly -- including document status, so a document-bearing row
+// can never be grouped with (and never be at risk of being deleted
+// alongside) a document-less one. Confirmation info, sync bookkeeping,
+// id, and created_at/by are deliberately excluded from the signature.
+function fustDuplicateSignature(action) {
+  const cmr = action.cmr || {};
+  const fustbon = action.fustbon || {};
+  return [
+    action.type,
+    action.action_date,
+    action.country,
+    String(action.customer_name || "").trim().toLowerCase(),
+    String(action.customer_code || "").trim().toLowerCase(),
+    String(action.connect_name || "").trim().toLowerCase(),
+    String(action.remark || "").trim().toLowerCase(),
+    Number(action.metrics?.dc || 0),
+    Number(action.metrics?.cctag || 0),
+    Number(action.metrics?.dcs || 0),
+    Number(action.metrics?.dco || 0),
+    Number(action.metrics?.pal || 0),
+    Number(action.metrics?.vk || 0),
+    String(action.fustbon_reference || "").trim(),
+    String(action.fustfactuur_reference || "").trim(),
+    cmr.status || "",
+    cmr.file_id || "",
+    fustbon.status || "",
+    fustbon.file_id || "",
+  ].join("|");
+}
+
+function findFustDuplicateGroups(actions) {
+  const grouped = new Map();
+  for (const action of actions) {
+    if (action.deleted) {
+      continue;
+    }
+    const key = fustDuplicateSignature(action);
+    if (!grouped.has(key)) {
+      grouped.set(key, []);
+    }
+    grouped.get(key).push(action);
+  }
+  return [...grouped.values()]
+    .filter((group) => group.length >= 2)
+    .map((group, index) => {
+      const sorted = [...group].sort((left, right) => String(left.created_at || "").localeCompare(String(right.created_at || "")));
+      const confirmedMembers = sorted.filter((action) => isFustActionConfirmed(action));
+      const preferred = confirmedMembers.length
+        ? [...confirmedMembers].sort((left, right) => String(left.confirmed_at || "").localeCompare(String(right.confirmed_at || "")))[0]
+        : sorted[0];
+      return { groupKey: `group-${index}`, actions: sorted, preferredKeepId: preferred.id };
+    })
+    .sort((left, right) => right.actions.length - left.actions.length);
+}
+
+function FustAnalyse({ loading, actions, onRefresh, currentUser }) {
+  const canManageFust = hasPermission(currentUser, PERMISSIONS.FUST_MANAGE);
+  const [duplicateGroups, setDuplicateGroups] = useState(null);
+  const [hasChecked, setHasChecked] = useState(false);
+  const [selectedIds, setSelectedIds] = useState([]);
+  const [busy, setBusy] = useState(false);
+  const [message, setMessage] = useState("");
+  const [error, setError] = useState("");
+
+  const weeklyVolume = useMemo(() => buildWeeklyVolumeFromActions(actions), [actions]);
+  const topCustomers = useMemo(() => buildTopCustomersFromActions(actions), [actions]);
+
+  useEffect(() => {
+    if (hasChecked) {
+      setDuplicateGroups(findFustDuplicateGroups(actions));
+      setSelectedIds([]);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [actions]);
+
+  function checkForDuplicates() {
+    setHasChecked(true);
+    setDuplicateGroups(findFustDuplicateGroups(actions));
+    setSelectedIds([]);
+    setMessage("");
+    setError("");
+  }
+
+  function toggleSelected(actionId, checked) {
+    setSelectedIds((current) => {
+      const next = new Set(current);
+      if (checked) {
+        next.add(actionId);
+      } else {
+        next.delete(actionId);
+      }
+      return [...next];
+    });
+  }
+
+  function selectAllButPreferred() {
+    if (!duplicateGroups) {
+      return;
+    }
+    const next = new Set();
+    for (const group of duplicateGroups) {
+      for (const action of group.actions) {
+        if (action.id !== group.preferredKeepId) {
+          next.add(action.id);
+        }
+      }
+    }
+    setSelectedIds([...next]);
+  }
+
+  function clearSelection() {
+    setSelectedIds([]);
+  }
+
+  async function deleteSelected() {
+    if (!selectedIds.length) {
+      return;
+    }
+    if (!window.confirm(`Delete ${selectedIds.length} selected duplicate action(s)? This cannot be undone.`)) {
+      return;
+    }
+    setBusy(true);
+    setMessage("");
+    setError("");
+    try {
+      const payload = await apiJson("/api/fust/actions/delete-batch", {
+        method: "POST",
+        body: JSON.stringify({ action_ids: selectedIds }),
+      });
+      setMessage(`Deleted ${payload.deleted?.length || 0}. Failed ${payload.failed?.length || 0}. Not found ${payload.not_found?.length || 0}.`);
+      setSelectedIds([]);
+      onRefresh();
+    } catch (deleteError) {
+      setError(deleteError.message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <section className="overview-stack">
+      {(message || error) && (
+        <div className={`notice${error ? " danger" : ""}`}>{error || message}</div>
+      )}
+
+      <div className="data-table-card">
+        <div className="section-header">
+          <h2>Weekly IN vs OUT volume</h2>
+          <button
+            type="button"
+            onClick={() => downloadExcelFriendlyTable(
+              "fust-analyse-weekly-volume.xls",
+              ["Week", "DC in", "DC out", "DC balance", "CCTag in", "CCTag out", "DCS in", "DCS out", "DCO in", "DCO out", "PAL in", "PAL out", "VK in", "VK out"],
+              weeklyVolume.map((entry) => [
+                entry.week, entry.in.dc, entry.out.dc, entry.balance.dc,
+                entry.in.cctag, entry.out.cctag, entry.in.dcs, entry.out.dcs,
+                entry.in.dco, entry.out.dco, entry.in.pal, entry.out.pal, entry.in.vk, entry.out.vk,
+              ]),
+            )}
+            disabled={!weeklyVolume.length}
+          >
+            Export
+          </button>
+        </div>
+        <div className="table-wrap">
+          <table className="data-table balance-table">
+            <thead>
+              <tr>
+                <th>Week</th><th>DC in</th><th>DC out</th><th>DC balance</th>
+                <th>CCTag in</th><th>CCTag out</th><th>DCS in</th><th>DCS out</th>
+                <th>DCO in</th><th>DCO out</th><th>PAL in</th><th>PAL out</th><th>VK in</th><th>VK out</th>
+              </tr>
+            </thead>
+            <tbody>
+              {weeklyVolume.map((entry) => (
+                <tr key={entry.week}>
+                  <td>{entry.week}</td>
+                  <td>{entry.in.dc}</td><td>{entry.out.dc}</td><td>{entry.balance.dc}</td>
+                  <td>{entry.in.cctag}</td><td>{entry.out.cctag}</td>
+                  <td>{entry.in.dcs}</td><td>{entry.out.dcs}</td>
+                  <td>{entry.in.dco}</td><td>{entry.out.dco}</td>
+                  <td>{entry.in.pal}</td><td>{entry.out.pal}</td>
+                  <td>{entry.in.vk}</td><td>{entry.out.vk}</td>
+                </tr>
+              ))}
+              {!weeklyVolume.length && (
+                <tr><td colSpan="14">{loading ? "Loading..." : "No actions with a week number were found."}</td></tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <div className="data-table-card">
+        <div className="section-header">
+          <h2>Top customers by volume</h2>
+          <button
+            type="button"
+            onClick={() => downloadExcelFriendlyTable(
+              "fust-analyse-top-customers.xls",
+              ["Klantnaam", "DC in", "DC out", "DC total", "CCTag in", "CCTag out", "DCS in", "DCS out", "DCO in", "DCO out", "PAL in", "PAL out", "VK in", "VK out"],
+              topCustomers.map((entry) => [
+                entry.customer_name, entry.in.dc, entry.out.dc, entry.total_dc,
+                entry.in.cctag, entry.out.cctag, entry.in.dcs, entry.out.dcs,
+                entry.in.dco, entry.out.dco, entry.in.pal, entry.out.pal, entry.in.vk, entry.out.vk,
+              ]),
+            )}
+            disabled={!topCustomers.length}
+          >
+            Export
+          </button>
+        </div>
+        <div className="table-wrap">
+          <table className="data-table balance-table">
+            <thead>
+              <tr>
+                <th>Klantnaam</th><th>DC in</th><th>DC out</th><th>DC total</th>
+                <th>CCTag in</th><th>CCTag out</th><th>DCS in</th><th>DCS out</th>
+                <th>DCO in</th><th>DCO out</th><th>PAL in</th><th>PAL out</th><th>VK in</th><th>VK out</th>
+              </tr>
+            </thead>
+            <tbody>
+              {topCustomers.map((entry) => (
+                <tr key={entry.customer_name}>
+                  <td>{entry.customer_name}</td>
+                  <td>{entry.in.dc}</td><td>{entry.out.dc}</td><td>{entry.total_dc}</td>
+                  <td>{entry.in.cctag}</td><td>{entry.out.cctag}</td>
+                  <td>{entry.in.dcs}</td><td>{entry.out.dcs}</td>
+                  <td>{entry.in.dco}</td><td>{entry.out.dco}</td>
+                  <td>{entry.in.pal}</td><td>{entry.out.pal}</td>
+                  <td>{entry.in.vk}</td><td>{entry.out.vk}</td>
+                </tr>
+              ))}
+              {!topCustomers.length && (
+                <tr><td colSpan="14">{loading ? "Loading..." : "No actions were found."}</td></tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <div className="data-table-card">
+        <div className="section-header">
+          <h2>Duplicate check</h2>
+          <button type="button" onClick={checkForDuplicates} disabled={loading}>
+            Check data from Fust actions
+          </button>
+        </div>
+
+        {duplicateGroups !== null && !duplicateGroups.length && (
+          <p>No duplicates found among {actions.length} active action(s).</p>
+        )}
+
+        {duplicateGroups !== null && duplicateGroups.length > 0 && (
+          <>
+            <p>
+              Found {duplicateGroups.length} duplicate group(s), {duplicateGroups.reduce((sum, group) => sum + group.actions.length, 0)} action(s) total.
+              {canManageFust && " Nothing is deleted until you review and press \"Delete selected\" below."}
+            </p>
+            {canManageFust && (
+              <div className="retry-actions">
+                <button type="button" onClick={selectAllButPreferred}>Select all but the best one in each group</button>
+                <button type="button" onClick={clearSelection} disabled={!selectedIds.length}>Clear selection</button>
+                <button type="button" disabled={busy || !selectedIds.length} onClick={deleteSelected}>
+                  {busy ? "Deleting..." : `Delete ${selectedIds.length} selected`}
+                </button>
+              </div>
+            )}
+
+            {duplicateGroups.map((group) => (
+              <div key={group.groupKey} className="table-wrap">
+                <table className="data-table action-table">
+                  <thead>
+                    <tr>
+                      {canManageFust && <th></th>}
+                      <th>Type</th><th>Date</th><th>Country</th><th>Klantnaam</th><th>Connect</th>
+                      <th>DC</th><th>DCS</th><th>DCO</th><th>CCTag</th><th>PAL</th><th>VK</th>
+                      <th>Document</th><th>Remark</th><th>Fustbon</th><th>Fustfactuur</th><th>Confirmed</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {group.actions.map((action) => (
+                      <tr key={action.id} className={action.id === group.preferredKeepId ? "active-row" : ""}>
+                        {canManageFust && (
+                          <td>
+                            <input
+                              type="checkbox"
+                              checked={selectedIds.includes(action.id)}
+                              onChange={(event) => toggleSelected(action.id, event.target.checked)}
+                            />
+                          </td>
+                        )}
+                        <td>{action.type}</td>
+                        <td>{action.action_date}</td>
+                        <td>{action.country}</td>
+                        <td>{action.customer_name}</td>
+                        <td>{action.connect_name}</td>
+                        <td>{action.metrics?.dc || 0}</td>
+                        <td>{action.metrics?.dcs || 0}</td>
+                        <td>{action.metrics?.dco || 0}</td>
+                        <td>{action.metrics?.cctag || 0}</td>
+                        <td>{action.metrics?.pal || 0}</td>
+                        <td>{action.metrics?.vk || 0}</td>
+                        <td><DocumentStatus action={action} /></td>
+                        <td>{action.remark || "-"}</td>
+                        <td>{action.fustbon_reference || "-"}</td>
+                        <td>{action.fustfactuur_reference || "-"}</td>
+                        <td>{isFustActionConfirmed(action) ? `${formatTimestamp(action.confirmed_at)}${action.confirmed_by ? ` by ${action.confirmed_by}` : ""}` : "-"}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            ))}
+          </>
+        )}
+      </div>
+    </section>
   );
 }
 
