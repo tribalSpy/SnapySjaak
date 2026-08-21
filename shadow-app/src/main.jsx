@@ -9292,9 +9292,9 @@ function FustActionTable({
                         ) : (
                           <>
                             {canModify && <button type="button" onClick={() => startEdit(action)}>Edit</button>}
+                            {allowConfirm && !confirmed && <button type="button" disabled={busyActionId === `${action.id}:confirm`} onClick={() => toggleConfirm(action.id, false)}>Confirm</button>}
                             {isExpanded && (
                               <>
-                                {allowConfirm && !confirmed && <button type="button" disabled={busyActionId === `${action.id}:confirm`} onClick={() => toggleConfirm(action.id, false)}>Confirm</button>}
                                 {allowManage && confirmed && <button type="button" disabled={busyActionId === `${action.id}:unconfirm`} onClick={() => toggleConfirm(action.id, true)}>Unconfirm</button>}
                                 {!readOnly && !action.sheet_sync?.ok && <button type="button" disabled={busyActionId === `${action.id}:retry-sheet`} onClick={() => retryAction(action.id, "retry-sheet")}>Retry sheet</button>}
                                 {!readOnly && !action.email_sync?.ok && <button type="button" disabled={busyActionId === `${action.id}:retry-email`} onClick={() => retryAction(action.id, "retry-email")}>Retry email</button>}
