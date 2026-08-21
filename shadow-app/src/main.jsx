@@ -3046,6 +3046,16 @@ function UkdocsPage({ currentUser }) {
     }));
   }
 
+  async function changeShipmentLoadDate(nextDate) {
+    if (nextDate === shipmentLoadDate) {
+      return;
+    }
+    if (shipmentDraftHasWork() && !window.confirm("Changing the day will clear the current shipment screen first. Continue?")) {
+      return;
+    }
+    await loadPrintCollectionsForDate(nextDate);
+  }
+
   async function loadPrintCollectionsForDate(date, options = {}) {
     const normalizedDate = String(date || "").slice(0, 10);
     setShipmentLoadDate(normalizedDate);
@@ -3437,20 +3447,15 @@ function UkdocsPage({ currentUser }) {
           <div className="form-grid">
             <label>
               <span>Shipment date</span>
-              <input
-                type="date"
-                value={shipmentLoadDate}
-                onChange={async (event) => {
-                  const nextDate = event.target.value;
-                  if (nextDate === shipmentLoadDate) {
-                    return;
-                  }
-                  if (shipmentDraftHasWork() && !window.confirm("Changing the day will clear the current shipment screen first. Continue?")) {
-                    return;
-                  }
-                  await loadPrintCollectionsForDate(nextDate);
-                }}
-              />
+              <div className="row-actions">
+                <input
+                  type="date"
+                  value={shipmentLoadDate}
+                  onClick={(event) => event.target.showPicker?.()}
+                  onChange={(event) => changeShipmentLoadDate(event.target.value)}
+                />
+                <button type="button" onClick={() => changeShipmentLoadDate(todayIso())}>Today</button>
+              </div>
             </label>
             <label>
               <span>&nbsp;</span>
@@ -8758,6 +8763,11 @@ function yesterdayIso() {
   const now = new Date();
   const yesterday = new Date(now.getFullYear(), now.getMonth(), now.getDate() - 1);
   return `${yesterday.getFullYear()}-${String(yesterday.getMonth() + 1).padStart(2, "0")}-${String(yesterday.getDate()).padStart(2, "0")}`;
+}
+
+function todayIso() {
+  const now = new Date();
+  return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`;
 }
 
 function isFustActionConfirmed(action) {
