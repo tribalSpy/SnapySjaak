@@ -252,8 +252,7 @@
       <div class="toolbar" id="tabs">
         <button data-tab="import" class="active">Import</button>
         <button data-tab="results">Results</button>
-        <button data-tab="articles">Articles</button>
-        <button data-tab="ape">APE</button>
+        <button data-tab="articles">Articles &amp; APE</button>
         <button data-tab="history">History</button>
       </div>
       <div class="meta-grid" id="counts"></div>
@@ -311,30 +310,7 @@
 
     <section id="page-articles" class="page">
       <div class="grid">
-        <article class="panel stack">
-          <div class="row" style="justify-content:space-between;">
-            <h2>Article master</h2>
-            <input id="articleSearch" type="search" placeholder="Search broncode, description, variant" style="max-width:320px;">
-          </div>
-          <div class="table-wrap">
-            <table>
-              <thead>
-                <tr>
-                  <th>Broncode</th>
-                  <th>Description</th>
-                  <th>Variant</th>
-                  <th>Inlezen code</th>
-                  <th>Round</th>
-                  <th>Zonder tak</th>
-                  <th>Status</th>
-                  <th></th>
-                </tr>
-              </thead>
-              <tbody id="articlesBody"></tbody>
-            </table>
-          </div>
-        </article>
-        <article class="panel stack">
+        <article class="panel stack" style="align-self:start;">
           <h2 id="articleFormTitle">Add or update article</h2>
           <div class="form-grid">
             <div><label for="articleBroncode">Broncode</label><input id="articleBroncode" type="number"></div>
@@ -363,31 +339,7 @@
             <button class="button secondary" id="bulkOffBtn" type="button">Set uit</button>
           </div>
         </article>
-      </div>
-    </section>
-
-    <section id="page-ape" class="page">
-      <div class="grid">
-        <article class="panel stack">
-          <div class="row" style="justify-content:space-between;">
-            <h2>APE master</h2>
-            <input id="apeSearch" type="search" placeholder="Search name" style="max-width:320px;">
-          </div>
-          <div class="table-wrap">
-            <table>
-              <thead>
-                <tr>
-                  <th>Description</th>
-                  <th>APE</th>
-                  <th>Updated</th>
-                  <th></th>
-                </tr>
-              </thead>
-              <tbody id="apeBody"></tbody>
-            </table>
-          </div>
-        </article>
-        <article class="panel stack">
+        <article class="panel stack" style="align-self:start;">
           <h2>Add or update APE</h2>
           <div>
             <label for="apeOmschrijving">Description</label>
@@ -403,6 +355,48 @@
           </div>
         </article>
       </div>
+      <article class="panel stack" style="margin-top:16px;">
+        <div class="row" style="justify-content:space-between;">
+          <h2>Article master</h2>
+          <input id="articleSearch" type="search" placeholder="Search broncode, description, variant" style="max-width:320px;">
+        </div>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Broncode</th>
+                <th>Description</th>
+                <th>Variant</th>
+                <th>Inlezen code</th>
+                <th>Round</th>
+                <th>Zonder tak</th>
+                <th>Status</th>
+                <th></th>
+              </tr>
+            </thead>
+            <tbody id="articlesBody"></tbody>
+          </table>
+        </div>
+      </article>
+      <article class="panel stack" style="margin-top:16px;">
+        <div class="row" style="justify-content:space-between;">
+          <h2>APE master</h2>
+          <input id="apeSearch" type="search" placeholder="Search name" style="max-width:320px;">
+        </div>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Description</th>
+                <th>APE</th>
+                <th>Updated</th>
+                <th></th>
+              </tr>
+            </thead>
+            <tbody id="apeBody"></tbody>
+          </table>
+        </div>
+      </article>
     </section>
 
     <section id="page-history" class="page">
@@ -423,7 +417,7 @@
 
     const tabs = document.getElementById("tabs");
     const flash = document.getElementById("flash");
-    const pageIds = ["import", "results", "articles", "ape", "history"];
+    const pageIds = ["import", "results", "articles", "history"];
 
     function showFlash(message, kind = "ok") {
       flash.textContent = message;
@@ -801,7 +795,7 @@
       if (typeof entry === "string") entry = JSON.parse(entry);
       document.getElementById("apeOmschrijving").value = entry.omschrijving ?? "";
       document.getElementById("apeValue").value = entry.ape ?? "";
-      setActiveTab("ape");
+      setActiveTab("articles");
     }
     window.editApe = editApe;
 
