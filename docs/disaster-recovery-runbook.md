@@ -54,13 +54,24 @@ losing the ability to read every backup ever taken.
 
 Nothing to do. Every 15 minutes the office PC pulls whatever changed on Render
 (JSON state files, uploaded documents) and verifies it; every 6 hours it also
-pulls and restores a fresh Postgres dump. If a sync fails repeatedly or goes
-stale for more than ~45 minutes, this PC emails the ICT support recipients
-directly (it does not rely on Render being reachable to raise that alarm).
+pulls and restores a fresh Postgres dump, immediately re-applying any schema
+migrations afterward so the local database always matches what the currently
+running code expects — not just eventually, whenever the app next restarts.
+If a sync fails repeatedly or goes stale for more than ~45 minutes, this PC
+emails the ICT support recipients directly (it does not rely on Render being
+reachable to raise that alarm).
+
+Every 15-minute cycle also compares this PC's own code version against
+Render's (both are just the git commit each side is running — nothing to
+maintain by hand). If they differ, the office PC's Settings page shows a
+banner telling you to run `update_standby_pc.bat`; if that gap persists for
+24 hours, it also emails ICT support the same way the sync-staleness alert
+does.
 
 Check in on it occasionally: open the app on this PC and look at
 Settings > System mode to see when it last changed, and its `/api/health`
-endpoint for a quick status snapshot.
+endpoint for a quick status snapshot (now includes `version`, the git commit
+this instance is running).
 
 ## 3. Updating the standby when the app changes
 
@@ -71,6 +82,16 @@ office PC doesn't get them automatically — it's running its own local copy.
 2. Double-click `update_standby_pc.bat`. It pulls the latest code (`git pull`)
    and reinstalls Node/Python dependencies if anything changed. Your data
    (`standby-cache\`, `start_standby.bat`, `credentials\`) is untouched.
+   It also:
+   - Checks that the existing Python virtual environment (`.venv`) actually
+     still works before reusing it, and rebuilds it from scratch if it's
+     gone stale (e.g. Python was moved or reinstalled since it was created) —
+     rather than failing partway through a broken install.
+   - Immediately re-applies any new Postgres schema migrations against the
+     local database, so it's current the moment the update finishes, not
+     just eventually once the app restarts.
+   - Prints the git commit it just updated to, so what happened is
+     unambiguous.
 3. Double-click `start_standby.bat` again to resume.
 
 This only works if the office PC was set up via `git clone` (section 1, step 1)
@@ -146,3 +167,8 @@ on deliberately.
   Render. If you genuinely need to rotate keys, delete `start_standby.bat`,
   re-run the setup script, and update `BACKUP_PUBLIC_KEY`/`BACKUP_AGENT_API_KEY`
   on Render to match the newly printed values.
+- Postgres schema migrations are re-applied automatically both at every
+  startup and immediately after every 6-hourly restore-from-Render-dump, so
+  a restored dump can never leave the local schema stale relative to the
+  currently running code — this used to be an unhandled gap and is not
+  anymore.

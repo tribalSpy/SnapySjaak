@@ -10682,6 +10682,7 @@ function SettingsPage({ currentUser }) {
   const [llmBusy, setLlmBusy] = useState(false);
   const [systemMode, setSystemMode] = useState(null);
   const [systemModeBusy, setSystemModeBusy] = useState(false);
+  const [backupSyncStatus, setBackupSyncStatus] = useState(null);
   const [reconcileReminder, setReconcileReminder] = useState(false);
   const [reconcileForm, setReconcileForm] = useState({ render_base_url: "", username: "", password: "" });
   const [reconcileBusy, setReconcileBusy] = useState(false);
@@ -10789,8 +10790,10 @@ function SettingsPage({ currentUser }) {
     try {
       const payload = await apiJson("/api/system/mode");
       setSystemMode(payload.system_mode);
+      setBackupSyncStatus(payload.backup_sync_status || null);
     } catch {
       setSystemMode(null);
+      setBackupSyncStatus(null);
     }
   }
 
@@ -11424,6 +11427,13 @@ function SettingsPage({ currentUser }) {
               <div className="notice danger">
                 This PC was Online and is now back in Backup mode. Run Reconciliation below before switching back to
                 Online again, so anything created/changed while this PC was live gets merged into Render.
+              </div>
+            )}
+            {backupSyncStatus?.last_result?.version_mismatch && (
+              <div className="notice danger">
+                Render is running a newer version ({backupSyncStatus.last_result.remote_version || "unknown"}) than
+                this standby ({backupSyncStatus.last_result.local_version || "unknown"}). Run{" "}
+                <code>update_standby_pc.bat</code>, then <code>start_standby.bat</code>.
               </div>
             )}
           </>

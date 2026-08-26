@@ -3,7 +3,7 @@ import http from "node:http";
 import os from "node:os";
 import path from "node:path";
 import crypto from "node:crypto";
-import { spawn } from "node:child_process";
+import { spawn, execSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import zlib from "node:zlib";
 import { sealBuffer, openSealed } from "./backup/crypto.js";
@@ -11,6 +11,7 @@ import { buildBackupManifest, isAllowedBackupPath } from "./backup/manifest.js";
 import {
   claimNextLlmJob,
   completeLlmJob,
+  applyDatabaseMigrations,
   createLlmJob,
   dbQuery,
   deleteUkdocsCsiParsedDocumentFromDatabase,
@@ -33,6 +34,21 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const appRoot = path.resolve(__dirname, "..");
 const repoRoot = path.resolve(appRoot, "..");
 const cacheDir = path.resolve(process.env.SNAPPYSJAAK_CACHE_DIR || path.join(repoRoot, ".cache"));
+
+// Render stamps every deploy with its own git commit automatically -- no
+// manual version bump to remember or forget. The standby PC is always a
+// real git clone (per the disaster-recovery runbook), so the same commit
+// hash is available there via git itself. Computed once at startup.
+const appVersion = (() => {
+  if (process.env.RENDER_GIT_COMMIT) {
+    return process.env.RENDER_GIT_COMMIT;
+  }
+  try {
+    return execSync("git rev-parse HEAD", { cwd: repoRoot, stdio: ["ignore", "pipe", "ignore"] }).toString().trim();
+  } catch {
+    return "unknown";
+  }
+})();
 const runDataPath = path.join(cacheDir, "run_data.json");
 const syncStatusPath = path.join(cacheDir, "index_sync_status.json");
 const usersPath = path.join(cacheDir, "shadow-users.json");
@@ -146,7 +162,34 @@ async function recordBackupSyncResult(result) {
     last_success_at: result.ok ? result.attempted_at : (previous.last_success_at || ""),
     last_error: result.ok ? "" : (result.error || (result.errors || []).join("; ") || "Unknown error"),
     last_result: result,
+    version_mismatch_since: result.version_mismatch ? (previous.version_mismatch_since || result.attempted_at) : "",
+    last_version_alert_at: previous.last_version_alert_at || "",
   };
+
+  // A version gap isn't itself an outage, so it gets its own, much slower
+  // alert cadence than the sync-staleness email below -- once per 24h that
+  // the standby is confirmed behind, not every 15-minute cycle.
+  if (result.version_mismatch) {
+    const mismatchHours = (Date.now() - new Date(next.version_mismatch_since).getTime()) / 3600000;
+    const alertedRecently = next.last_version_alert_at
+      && (Date.now() - new Date(next.last_version_alert_at).getTime()) < 24 * 3600000;
+    if (mismatchHours >= 24 && !alertedRecently) {
+      try {
+        const settings = await readFustSettings();
+        await sendSupportAttentionEmail(settings, {
+          service: "Office standby PC",
+          action: "Version check",
+          error: `Standby is on ${result.local_version || "unknown"}, Render is on ${result.remote_version || "unknown"}.`,
+          reconnect_target: "N/A",
+          workaround: "Run update_standby_pc.bat on the office PC, then start_standby.bat.",
+        });
+        next.last_version_alert_at = result.attempted_at;
+      } catch {
+        // Best-effort, same as the sync-staleness alert below.
+      }
+    }
+  }
+
   await writeJsonFile(backupSyncStatusPath, next);
 
   if (result.ok) {
@@ -194,6 +237,18 @@ async function runBackupSyncCycle() {
     const result = { ok: false, attempted_at: attemptedAt, error: error instanceof Error ? error.message : String(error) };
     await recordBackupSyncResult(result);
     return result;
+  }
+
+  // Best-effort version check -- never fails the sync cycle on its own.
+  let remoteVersion = "";
+  try {
+    const healthResponse = await fetch(`${renderBackupBaseUrl}/api/health`);
+    if (healthResponse.ok) {
+      const health = await healthResponse.json();
+      remoteVersion = String(health?.version || "");
+    }
+  } catch {
+    // Render being briefly unreachable for this check shouldn't block file sync.
   }
 
   const previousManifest = await readJsonFile(backupSyncLastManifestPath, { files: [] });
@@ -263,6 +318,9 @@ async function runBackupSyncCycle() {
     files_unchanged: filesUnchanged,
     files_deleted: filesDeleted,
     errors,
+    local_version: appVersion,
+    remote_version: remoteVersion,
+    version_mismatch: Boolean(remoteVersion) && remoteVersion !== appVersion,
   };
   await recordBackupSyncResult(result);
   return result;
@@ -310,6 +368,13 @@ async function runPostgresRestoreCycle() {
     await fs.writeFile(tmpDumpPath, dumpBuffer);
     await restorePostgresDumpFile(tmpDumpPath);
     lastPostgresRestoreAt = Date.now();
+    // A restored dump reflects whatever schema Render had at the moment it
+    // was taken -- re-apply migrations immediately so the standby's currently
+    // running code never ends up with a stale schema until its next restart.
+    const migrationResult = await applyDatabaseMigrations();
+    if (!migrationResult.ok) {
+      return { ok: true, migrations_error: migrationResult.error };
+    }
     return { ok: true };
   } catch (error) {
     return { ok: false, error: error instanceof Error ? error.message : String(error) };
@@ -10543,6 +10608,7 @@ async function handleApi(req, res, url) {
       ok: true,
       mode: systemMode.mode,
       mode_changed_at: systemMode.changed_at,
+      version: appVersion,
       database: { enabled: isDatabaseEnabled() },
     });
     return;
@@ -12594,7 +12660,12 @@ async function handleApi(req, res, url) {
     if (!requirePermission(res, requestUser, PERMISSIONS.SETTINGS_MANAGE)) {
       return;
     }
-    sendJson(res, 200, { system_mode: await readSystemMode() });
+    sendJson(res, 200, {
+      system_mode: await readSystemMode(),
+      // Only ever populated on the standby PC, which is the only side that
+      // ever calls recordBackupSyncResult() -- empty on Render itself.
+      backup_sync_status: await readJsonFile(backupSyncStatusPath, null),
+    });
     return;
   }
 

@@ -1025,6 +1025,26 @@ const databaseMigrations = [
   `,
 ];
 
+// Every statement in databaseMigrations is idempotent (CREATE TABLE IF NOT
+// EXISTS / ADD COLUMN IF NOT EXISTS / CREATE INDEX IF NOT EXISTS), so this is
+// always safe to call again against an already-initialized pool -- notably
+// after the standby PC restores a Postgres dump pulled from Render, which
+// would otherwise leave the schema however that dump happened to look,
+// until the next full server restart re-ran migrations.
+export async function applyDatabaseMigrations() {
+  if (!pool) {
+    return { ok: false, error: "Database pool is not initialized" };
+  }
+  try {
+    for (const migration of databaseMigrations) {
+      await pool.query(migration);
+    }
+    return { ok: true, error: "" };
+  } catch (error) {
+    return { ok: false, error: error instanceof Error ? error.message : String(error) };
+  }
+}
+
 export async function initializeDatabase() {
   if (!connectionString) {
     databaseStatus = {
@@ -1038,8 +1058,9 @@ export async function initializeDatabase() {
   try {
     pool = createPool();
     await pool.query("select 1");
-    for (const migration of databaseMigrations) {
-      await pool.query(migration);
+    const migrationResult = await applyDatabaseMigrations();
+    if (!migrationResult.ok) {
+      throw new Error(migrationResult.error);
     }
     databaseStatus = {
       enabled: true,
