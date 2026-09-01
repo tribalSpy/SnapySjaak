@@ -10011,6 +10011,76 @@ async function sendUkdocsPrintReadyEmail(collection, customers, settings) {
   };
 }
 
+// Zendingen-only (UKdocs Print), never CSI -- CSI papers stay a deliberate manual
+// send via the "Send papers to CSI" button. Runs on the same cadence as the other
+// runIfOnline jobs, so it only ever runs on whichever instance is currently live.
+async function runUkdocsPrintGmailAutoSync() {
+  const settings = await readFustSettings();
+  if (!settings.gmail_refresh_token) {
+    return { ok: false, skipped: true, reason: "Gmail is not connected for UKdocs Print" };
+  }
+  try {
+    const payload = await syncUkdocsPrintFromGmail(settings, { username: "gmail-auto-sync" }, "", localDateIso());
+    return { ok: true, ...payload };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    const serviceLabel = "UKdocs Gmail";
+    const reconnectTarget = settings.gmail_connected_email || "the Gmail account used for UKdocs Print";
+    await sendSupportAttentionEmail(settings, {
+      service: serviceLabel,
+      action: "Auto-sync Gmail attachments (Zendingen)",
+      reconnect_target: reconnectTarget,
+      workaround: buildReconnectGuidance(serviceLabel, settings.gmail_connected_email, reconnectTarget),
+      error: message,
+    }).catch(() => {});
+    return { ok: false, error: message };
+  }
+}
+
+// Auto-sends the same "papers ready" email the manual Send papers button triggers
+// ("/send-ready"), for any Zendingen collection that just became complete and
+// hasn't been successfully delivered yet -- stock_control collections are excluded,
+// same as the manual button.
+async function runUkdocsPrintAutoSend() {
+  const state = await readUkdocsState();
+  const settings = await readFustSettings();
+  const eligible = state.print_collections.filter((item) => {
+    if (ukdocsPrintInspectionMode(item) === "stock_control") {
+      return false;
+    }
+    if (item.delivery_email?.ok) {
+      return false;
+    }
+    return getUkdocsPrintCollectionRequirements(item, state.customers).complete;
+  });
+
+  let sent = 0;
+  const errors = [];
+  for (const collection of eligible) {
+    try {
+      const deliveryEmail = await sendUkdocsPrintReadyEmail(collection, state.customers, settings);
+      const updatedCollection = normalizeUkdocsPrintCollection({
+        ...collection,
+        updated_at: new Date().toISOString(),
+        delivery_email: deliveryEmail,
+      });
+      state.print_collections = upsertUkdocsPrintCollection(state.print_collections, updatedCollection);
+      if (deliveryEmail.ok) {
+        sent += 1;
+      } else {
+        errors.push(`${collection.shipment_reference || collection.id}: ${deliveryEmail.error}`);
+      }
+    } catch (error) {
+      errors.push(`${collection.shipment_reference || collection.id}: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+
+  if (eligible.length > 0) {
+    await writeUkdocsState(state);
+  }
+  return { ok: errors.length === 0, checked: eligible.length, sent, errors };
+}
+
 async function ukdocsCsiCollectionAttachments(collection, options = {}) {
   const includeSupportDocs = options.include_support_docs !== false;
   const attachments = [];
@@ -14170,7 +14240,14 @@ async function startServer() {
       }
       return;
     }
-    await jobFn();
+    const result = await jobFn();
+    if (result?.skipped) {
+      console.log(`Online job "${jobName}" skipped: ${result.reason || "not configured"}.`);
+    } else if (result && result.ok === false) {
+      console.error(`Online job "${jobName}" failed:`, result.error || (result.errors || []).join("; "));
+    } else if (result) {
+      console.log(`Online job "${jobName}" completed:`, JSON.stringify(result));
+    }
   }
 
   runIfOnline("dag-foutjes sheet sync", syncPendingDagFoutjesDaysToSheet).catch(() => {});
@@ -14190,6 +14267,16 @@ async function startServer() {
   runIfOnline("Fust confirmation reminder check", runFustReminderCheck).catch(() => {});
   setInterval(() => {
     runIfOnline("Fust confirmation reminder check", runFustReminderCheck).catch(() => {});
+  }, 15 * 60 * 1000);
+
+  runIfOnline("UKdocs Zendingen Gmail auto-sync", runUkdocsPrintGmailAutoSync).catch(() => {});
+  setInterval(() => {
+    runIfOnline("UKdocs Zendingen Gmail auto-sync", runUkdocsPrintGmailAutoSync).catch(() => {});
+  }, 15 * 60 * 1000);
+
+  runIfOnline("UKdocs Zendingen auto-send", runUkdocsPrintAutoSend).catch(() => {});
+  setInterval(() => {
+    runIfOnline("UKdocs Zendingen auto-send", runUkdocsPrintAutoSend).catch(() => {});
   }, 15 * 60 * 1000);
 
   async function runIfBackup(jobName, jobFn) {
