@@ -10044,7 +10044,11 @@ async function runUkdocsPrintGmailAutoSync() {
 async function runUkdocsPrintAutoSend() {
   const state = await readUkdocsState();
   const settings = await readFustSettings();
+  const today = localDateIso();
   const eligible = state.print_collections.filter((item) => {
+    if (String(item.shipment_date || "").slice(0, 10) !== today) {
+      return false;
+    }
     if (ukdocsPrintInspectionMode(item) === "stock_control") {
       return false;
     }
