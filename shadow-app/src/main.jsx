@@ -9421,14 +9421,15 @@ function buildTopCustomersFromActions(actions) {
     .sort((left, right) => right.total_dc - left.total_dc);
 }
 
-// Two actions are a duplicate pair only when every business-content field
-// matches exactly -- including document status, so a document-bearing row
-// can never be grouped with (and never be at risk of being deleted
-// alongside) a document-less one. Confirmation info, sync bookkeeping,
-// id, and created_at/by are deliberately excluded from the signature.
+// Two actions are a duplicate pair when every business-content field matches
+// exactly -- document status is deliberately excluded from the signature, so
+// the common real-world case (someone forgot to upload the file, then
+// re-entered the same action and uploaded it that time) still groups as a
+// duplicate. findFustDuplicateGroups() below always prefers a document-
+// bearing member as the one to keep, so this never recommends deleting the
+// row that actually has the file. Confirmation info, sync bookkeeping, id,
+// and created_at/by are also excluded from the signature.
 function fustDuplicateSignature(action) {
-  const cmr = action.cmr || {};
-  const fustbon = action.fustbon || {};
   return [
     action.type,
     action.action_date,
@@ -9445,11 +9446,16 @@ function fustDuplicateSignature(action) {
     Number(action.metrics?.vk || 0),
     String(action.fustbon_reference || "").trim(),
     String(action.fustfactuur_reference || "").trim(),
-    cmr.status || "",
-    cmr.file_id || "",
-    fustbon.status || "",
-    fustbon.file_id || "",
   ].join("|");
+}
+
+// Mirrors the "has a real, openable document" check DocumentStatus() uses for
+// display (uploaded status plus an actual file reference) -- "skipped" and
+// "failed" don't count as having a document.
+function fustActionHasDocument(action) {
+  const documentKind = action?.type === "IN" ? "fustbon" : "cmr";
+  const document = action?.[documentKind] || {};
+  return document.status === "uploaded" && Boolean(document.file_id || document.web_link);
 }
 
 function findFustDuplicateGroups(actions) {
@@ -9468,10 +9474,12 @@ function findFustDuplicateGroups(actions) {
     .filter((group) => group.length >= 2)
     .map((group, index) => {
       const sorted = [...group].sort((left, right) => String(left.created_at || "").localeCompare(String(right.created_at || "")));
-      const confirmedMembers = sorted.filter((action) => isFustActionConfirmed(action));
+      const withDocument = sorted.filter((action) => fustActionHasDocument(action));
+      const keepPool = withDocument.length ? withDocument : sorted;
+      const confirmedMembers = keepPool.filter((action) => isFustActionConfirmed(action));
       const preferred = confirmedMembers.length
         ? [...confirmedMembers].sort((left, right) => String(left.confirmed_at || "").localeCompare(String(right.confirmed_at || "")))[0]
-        : sorted[0];
+        : keepPool[0];
       return { groupKey: `group-${index}`, actions: sorted, preferredKeepId: preferred.id };
     })
     .sort((left, right) => right.actions.length - left.actions.length);
