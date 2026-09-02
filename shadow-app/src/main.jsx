@@ -8249,6 +8249,7 @@ function FustOverview({ loading, actions, overview, sourceDebug, onRefresh }) {
   const [selectedToDate, setSelectedToDate] = useState("");
   const [selectedCountry, setSelectedCountry] = useState("");
   const [selectedCustomer, setSelectedCustomer] = useState("");
+  const [selectedType, setSelectedType] = useState("");
   const [customerSearch, setCustomerSearch] = useState("");
   const [expandedCountryWeek, setExpandedCountryWeek] = useState(false);
   const [showTransactionRecords, setShowTransactionRecords] = useState(false);
@@ -8348,6 +8349,9 @@ function FustOverview({ loading, actions, overview, sourceDebug, onRefresh }) {
     if (selectedToWeek && actionWeek && actionWeek > Number(selectedToWeek)) {
       return false;
     }
+    if (selectedType && action.type !== selectedType) {
+      return false;
+    }
     return true;
   });
   const scopedActions = datedActions.filter((action) => !selectedWeek || (groupBy === "day" ? String(action.action_date || "") : String(action.week || "")) === selectedWeek);
@@ -8421,8 +8425,15 @@ function FustOverview({ loading, actions, overview, sourceDebug, onRefresh }) {
         : Number(right.week || 0) - Number(left.week || 0)));
   }, [searchFilteredCountryOverview, selectedCountry, groupBy]);
 
-  const customerRows = searchFilteredCountryOverview
-    .sort((left, right) => left.customer_name.localeCompare(right.customer_name));
+  const customerRows = [...searchFilteredCountryOverview].sort((left, right) => {
+    const nameCompare = left.customer_name.localeCompare(right.customer_name);
+    if (nameCompare !== 0) {
+      return nameCompare;
+    }
+    return groupBy === "day"
+      ? String(right.week || "").localeCompare(String(left.week || ""))
+      : Number(right.week || 0) - Number(left.week || 0);
+  });
   const collapsedCountryWeekRows = selectedCountry && selectedWeek ? weekRows : [];
   const scopedOverview = selectedCountry
     ? (selectedWeek && !expandedCountryWeek ? collapsedCountryWeekRows : (selectedWeek ? customerRows : weekRows))
@@ -8567,6 +8578,22 @@ function FustOverview({ loading, actions, overview, sourceDebug, onRefresh }) {
             >
               <option value="">All countries</option>
               {countryOptions.map((country) => <option key={country} value={country}>{country}</option>)}
+            </select>
+          </label>
+          <label>
+            <span>Type</span>
+            <select
+              value={selectedType}
+              onChange={(event) => {
+                setSelectedType(event.target.value);
+                setSelectedCustomer("");
+                setExpandedCountryWeek(false);
+                setShowTransactionRecords(false);
+              }}
+            >
+              <option value="">IN + OUT</option>
+              <option value="IN">IN only</option>
+              <option value="OUT">OUT only</option>
             </select>
           </label>
           <label>
