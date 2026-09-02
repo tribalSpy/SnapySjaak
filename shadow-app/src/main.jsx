@@ -8241,6 +8241,7 @@ function downloadExcelFriendlyTable(filename, headers, rows) {
 }
 
 function FustOverview({ loading, actions, overview, sourceDebug, onRefresh }) {
+  const [groupBy, setGroupBy] = useState("week");
   const [selectedWeek, setSelectedWeek] = useState("");
   const [selectedFromWeek, setSelectedFromWeek] = useState("");
   const [selectedToWeek, setSelectedToWeek] = useState("");
@@ -8292,10 +8293,11 @@ function FustOverview({ loading, actions, overview, sourceDebug, onRefresh }) {
   function buildOverviewFromActions(items) {
     const grouped = new Map();
     for (const action of items) {
-      const key = `${action.week || ""}__${action.country}__${action.customer_name}`;
+      const period = groupBy === "day" ? String(action.action_date || "") : String(action.week || "");
+      const key = `${period}__${action.country}__${action.customer_name}`;
       if (!grouped.has(key)) {
         grouped.set(key, {
-          week: action.week || "",
+          week: period,
           country: action.country,
           customer_name: action.customer_name,
           out: { dc: 0, cctag: 0, dcs: 0, dco: 0, pal: 0, vk: 0 },
@@ -8328,6 +8330,9 @@ function FustOverview({ loading, actions, overview, sourceDebug, onRefresh }) {
 
   const weekOptions = [...new Set(actions.map((action) => String(action.week || "")).filter(Boolean))]
     .sort((left, right) => Number(right) - Number(left));
+  const dayOptions = [...new Set(actions.map((action) => String(action.action_date || "")).filter(Boolean))]
+    .sort((left, right) => right.localeCompare(left));
+  const periodOptions = groupBy === "day" ? dayOptions : weekOptions;
   const datedActions = actions.filter((action) => {
     const actionDate = String(action.action_date || "");
     if (selectedFromDate && actionDate && actionDate < selectedFromDate) {
@@ -8345,7 +8350,7 @@ function FustOverview({ loading, actions, overview, sourceDebug, onRefresh }) {
     }
     return true;
   });
-  const scopedActions = datedActions.filter((action) => !selectedWeek || String(action.week || "") === selectedWeek);
+  const scopedActions = datedActions.filter((action) => !selectedWeek || (groupBy === "day" ? String(action.action_date || "") : String(action.week || "")) === selectedWeek);
   const weekFilteredOverview = buildOverviewFromActions(scopedActions);
   const countryOptions = [...new Set(weekFilteredOverview.map((entry) => entry.country).filter(Boolean))]
     .sort((left, right) => left.localeCompare(right));
@@ -8384,14 +8389,14 @@ function FustOverview({ loading, actions, overview, sourceDebug, onRefresh }) {
 
     return [...grouped.entries()]
       .map(([country, entries]) => ({
-        week: selectedWeek || "All weeks",
+        week: selectedWeek || (groupBy === "day" ? "All days" : "All weeks"),
         country,
         customer_name: `${entries.length} cust/transports`,
         ...sumOverviewEntries(entries),
         row_count: entries.length,
       }))
       .sort((left, right) => left.country.localeCompare(right.country));
-  }, [selectedWeek, searchFilteredWeekOverview]);
+  }, [selectedWeek, searchFilteredWeekOverview, groupBy]);
 
   const weekRows = useMemo(() => {
     const grouped = new Map();
@@ -8411,8 +8416,10 @@ function FustOverview({ loading, actions, overview, sourceDebug, onRefresh }) {
         ...sumOverviewEntries(entries),
         row_count: entries.length,
       }))
-      .sort((left, right) => Number(right.week || 0) - Number(left.week || 0));
-  }, [searchFilteredCountryOverview, selectedCountry]);
+      .sort((left, right) => (groupBy === "day"
+        ? right.week.localeCompare(left.week)
+        : Number(right.week || 0) - Number(left.week || 0)));
+  }, [searchFilteredCountryOverview, selectedCountry, groupBy]);
 
   const customerRows = searchFilteredCountryOverview
     .sort((left, right) => left.customer_name.localeCompare(right.customer_name));
@@ -8426,7 +8433,7 @@ function FustOverview({ loading, actions, overview, sourceDebug, onRefresh }) {
   const totals = sumOverviewEntries(visibleOverview);
   const transactionRecords = datedActions
     .filter((action) => showTransactionRecords)
-    .filter((action) => selectedWeek && String(action.week || "") === selectedWeek)
+    .filter((action) => selectedWeek && (groupBy === "day" ? String(action.action_date || "") : String(action.week || "")) === selectedWeek)
     .filter((action) => selectedCountry && action.country === selectedCountry)
     .filter((action) => selectedCustomer && action.customer_name === selectedCustomer)
     .sort((left, right) => {
@@ -8465,7 +8472,23 @@ function FustOverview({ loading, actions, overview, sourceDebug, onRefresh }) {
       <div className="data-table-card">
         <div className="overview-filters">
           <label>
-            <span>Week</span>
+            <span>Totals per</span>
+            <select
+              value={groupBy}
+              onChange={(event) => {
+                setGroupBy(event.target.value);
+                setSelectedWeek("");
+                setSelectedCustomer("");
+                setExpandedCountryWeek(false);
+                setShowTransactionRecords(false);
+              }}
+            >
+              <option value="week">Week</option>
+              <option value="day">Day</option>
+            </select>
+          </label>
+          <label>
+            <span>{groupBy === "day" ? "Day" : "Week"}</span>
             <select
               value={selectedWeek}
               onChange={(event) => {
@@ -8475,8 +8498,8 @@ function FustOverview({ loading, actions, overview, sourceDebug, onRefresh }) {
                 setShowTransactionRecords(false);
               }}
             >
-              <option value="">All weeks</option>
-              {weekOptions.map((week) => <option key={week} value={week}>{week}</option>)}
+              <option value="">{groupBy === "day" ? "All days" : "All weeks"}</option>
+              {periodOptions.map((period) => <option key={period} value={period}>{period}</option>)}
             </select>
           </label>
           <label>
@@ -8574,15 +8597,15 @@ function FustOverview({ loading, actions, overview, sourceDebug, onRefresh }) {
         <div className="section-header">
           <h2>
             {!selectedCountry && "Country totals"}
-            {selectedCountry && !selectedWeek && "Week totals"}
+            {selectedCountry && !selectedWeek && (groupBy === "day" ? "Day totals" : "Week totals")}
             {selectedCountry && selectedWeek && !expandedCountryWeek && !selectedCustomer && "Country total"}
             {selectedCountry && selectedWeek && (expandedCountryWeek || selectedCustomer) && "Customer totals"}
           </h2>
           <button
             type="button"
             onClick={() => downloadExcelFriendlyTable(
-              `fust-overview-${selectedWeek || "all-weeks"}-${selectedCountry || "all-countries"}-${selectedCustomer || "active-table"}.xls`,
-              ["Week", "Country", "Cust/transport", "DC out", "DC in", "DC balance", "CCTag out", "CCTag in", "CCTag balance", "DCS out", "DCS in", "DCS balance", "DCO out", "DCO in", "DCO balance", "VK out", "VK in", "VK balance", "pal out"],
+              `fust-overview-${selectedWeek || (groupBy === "day" ? "all-days" : "all-weeks")}-${selectedCountry || "all-countries"}-${selectedCustomer || "active-table"}.xls`,
+              [groupBy === "day" ? "Day" : "Week", "Country", "Cust/transport", "DC out", "DC in", "DC balance", "CCTag out", "CCTag in", "CCTag balance", "DCS out", "DCS in", "DCS balance", "DCO out", "DCO in", "DCO balance", "VK out", "VK in", "VK balance", "pal out"],
               exportRows,
             )}
             disabled={!visibleOverview.length}
@@ -8594,7 +8617,7 @@ function FustOverview({ loading, actions, overview, sourceDebug, onRefresh }) {
           <table className="data-table balance-table">
             <thead>
               <tr>
-                <th>Week</th>
+                <th>{groupBy === "day" ? "Day" : "Week"}</th>
                 <th>Country</th>
                 <th>Cust/transport</th>
                 <th>DC out</th>
