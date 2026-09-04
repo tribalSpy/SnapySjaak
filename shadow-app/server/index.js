@@ -8778,30 +8778,44 @@ async function queueUkdocsCsiAudit(collection, requestUser) {
   return jobs;
 }
 
+// Splits into whole alphanumeric words rather than one big concatenated
+// blob, so a short reference/invoice number can only match a genuine
+// standalone number in the text -- not an accidental substring inside a
+// longer, unrelated run of characters (e.g. a Gmail message ID happening to
+// contain the same three digits somewhere in the middle).
+function ukdocsPrintHaystackTokens(haystackRaw) {
+  return new Set(
+    String(haystackRaw || "")
+      .toUpperCase()
+      .split(/[^A-Z0-9]+/)
+      .filter(Boolean),
+  );
+}
+
 function ukdocsPrintCollectionMatchScore(collection, haystackRaw) {
-  const haystack = normalizeUkdocsPrintToken(haystackRaw);
-  if (!haystack) {
+  const haystackTokens = ukdocsPrintHaystackTokens(haystackRaw);
+  if (!haystackTokens.size) {
     return 0;
   }
   let score = 0;
   const referenceConnects = ukdocsPrintReferenceTokens(collection?.reference_connect);
   for (const referenceConnect of referenceConnects) {
-    if (referenceConnect && haystack.includes(referenceConnect)) {
+    if (referenceConnect && haystackTokens.has(referenceConnect)) {
       score += 8;
     }
   }
   const invoices = ukdocsPrintInvoiceTokens(collection?.invoice_numbers);
   for (const invoice of invoices) {
-    if (invoice && haystack.includes(invoice)) {
+    if (invoice && haystackTokens.has(invoice)) {
       score += 5;
     }
   }
   const truck = normalizeUkdocsPrintToken(collection?.truck_number);
   const trailer = normalizeUkdocsPrintToken(collection?.trailer_number);
-  if (truck && haystack.includes(truck)) {
+  if (truck && haystackTokens.has(truck)) {
     score += 2;
   }
-  if (trailer && haystack.includes(trailer)) {
+  if (trailer && haystackTokens.has(trailer)) {
     score += 2;
   }
   return score;
@@ -9001,7 +9015,11 @@ async function syncUkdocsPrintFromGmail(settings, requestUser, query, date) {
     const detail = await gmailApiJson(accessToken, `messages/${encodeURIComponent(message.id)}?format=full`);
     const subject = gmailHeaderValue(detail.payload?.headers, "subject");
     const fromHeader = gmailHeaderValue(detail.payload?.headers, "from");
-    const textBlob = [subject, fromHeader, detail.snippet, detail.id].join(" ");
+    // detail.id (Gmail's internal message ID) is deliberately excluded --
+    // it's an essentially-random string with no legitimate reason to
+    // contain a real reference/invoice/truck number, and including it in
+    // the match haystack only added false-positive risk.
+    const textBlob = [subject, fromHeader, detail.snippet].join(" ");
     const attachments = collectGmailAttachments(detail.payload?.parts || []);
     for (const attachment of attachments) {
       const attachmentName = attachment.filename || "attachment";
