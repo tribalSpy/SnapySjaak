@@ -4320,6 +4320,8 @@ function UkdocsPrintPage({ currentUser }) {
   const [selectedCollectionDate, setSelectedCollectionDate] = useState(() => localDateIso());
   const [detailDrawerOpen, setDetailDrawerOpen] = useState(false);
   const [notesDraft, setNotesDraft] = useState("");
+  const [expectedPiecesDraft, setExpectedPiecesDraft] = useState("");
+  const [expectedBoxesDraft, setExpectedBoxesDraft] = useState("");
   const [gmailQuery, setGmailQuery] = useState("has:attachment newer_than:30d");
   const [gmailSyncResults, setGmailSyncResults] = useState([]);
   const [gmailBusy, setGmailBusy] = useState(false);
@@ -4385,7 +4387,9 @@ function UkdocsPrintPage({ currentUser }) {
 
   useEffect(() => {
     setNotesDraft(selectedCollection?.notes || "");
-  }, [selectedCollection?.id, selectedCollection?.notes]);
+    setExpectedPiecesDraft(selectedCollection?.expected_pieces || "");
+    setExpectedBoxesDraft(selectedCollection?.expected_boxes || "");
+  }, [selectedCollection?.id, selectedCollection?.notes, selectedCollection?.expected_pieces, selectedCollection?.expected_boxes]);
 
   useEffect(() => {
     if (!shipmentCollections.length) {
@@ -4560,7 +4564,7 @@ function UkdocsPrintPage({ currentUser }) {
     try {
       const payload = await apiJson(`/api/ukdocs-print/collections/${encodeURIComponent(selectedCollection.id)}`, {
         method: "PATCH",
-        body: JSON.stringify({ notes: notesDraft }),
+        body: JSON.stringify({ notes: notesDraft, expected_pieces: expectedPiecesDraft, expected_boxes: expectedBoxesDraft }),
       });
       setState((current) => ({ ...current, print_collections: payload.print_collections || current?.print_collections || [] }));
       setMessage("Zending notes saved.");
@@ -4754,8 +4758,12 @@ function UkdocsPrintPage({ currentUser }) {
                   <small>{collection.reference_connect ? `Connect: ${collection.reference_connect}` : "No connect ref yet"}</small>
                   <small>{ukdocsCollectionInvoiceText(collection) ? `Invoices: ${ukdocsCollectionInvoiceText(collection)}` : "No invoices linked yet"}</small>
                   <small>{collection.truck_number || collection.trailer_number ? `Truck: ${collection.truck_number || collection.trailer_number}` : "No truck linked yet"}</small>
+                  {!!(collection.expected_pieces || collection.expected_boxes) && (
+                    <small>{[collection.expected_pieces && `${collection.expected_pieces} pieces`, collection.expected_boxes && `${collection.expected_boxes} boxes`].filter(Boolean).join(" / ")}</small>
+                  )}
                   <div className={`ukdocs-status-badge ${status.tone}`}>{progress.missing.length ? `${status.label} - ${progress.missing.join(", ")}` : status.label}</div>
                   {!!collection.delivery_email?.sent_at && <small>Sent {formatTimestamp(collection.delivery_email.sent_at)}</small>}
+                  {!!collection.delivery_email?.error && !collection.delivery_email?.ok && <small className="ukdocs-status-badge danger">Send failed: {collection.delivery_email.error}</small>}
                   <div className="row-actions spread-actions">
                     <button type="button" className="primary" onClick={() => openCollectionDetail(collection.id)}>{isActive ? "Opened" : "Open"}</button>
                     {!isStockControl && !progress.missing.length && <button type="button" onClick={() => sendReady(collection.id)} disabled={saving}>Send papers</button>}
@@ -4898,6 +4906,16 @@ function UkdocsPrintPage({ currentUser }) {
                 )}
               </div>}
 
+              <div className="form-grid">
+                <label>
+                  <span>Expected pieces</span>
+                  <input value={expectedPiecesDraft} onChange={(event) => setExpectedPiecesDraft(event.target.value)} placeholder="Info for whoever prepares the papers" />
+                </label>
+                <label>
+                  <span>Expected boxes</span>
+                  <input value={expectedBoxesDraft} onChange={(event) => setExpectedBoxesDraft(event.target.value)} placeholder="Info for whoever prepares the papers" />
+                </label>
+              </div>
               <label className="wide">
                 <span>Zending notes</span>
                 <textarea rows={4} value={notesDraft} onChange={(event) => setNotesDraft(event.target.value)} placeholder="Optional notes about received emails or missing documents" />

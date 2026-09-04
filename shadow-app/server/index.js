@@ -2086,6 +2086,10 @@ function normalizeUkdocsPrintCollection(collection) {
     generated_at: normalizeUkdocsText(collection?.generated_at),
     updated_at: normalizeUkdocsText(collection?.updated_at),
     notes: String(collection?.notes || "").trim(),
+    // Purely informational for whoever prepares the papers -- not used in
+    // any completeness/requirement check.
+    expected_pieces: normalizeUkdocsText(collection?.expected_pieces),
+    expected_boxes: normalizeUkdocsText(collection?.expected_boxes),
     delivery_email: {
       ok: collection?.delivery_email?.ok === true,
       recipients: Array.isArray(collection?.delivery_email?.recipients) ? collection.delivery_email.recipients.map((item) => String(item || "").trim()).filter(Boolean) : [],
@@ -12821,6 +12825,8 @@ async function handleApi(req, res, url) {
     let updatedCollection = normalizeUkdocsPrintCollection({
       ...existingCollection,
       notes: body?.notes ?? existingCollection.notes,
+      expected_pieces: body?.expected_pieces ?? existingCollection.expected_pieces,
+      expected_boxes: body?.expected_boxes ?? existingCollection.expected_boxes,
       // PD Keuring editable fields -- only touched if the request actually
       // includes them, so other callers (e.g. notes-only saves) keep working
       // unchanged.
