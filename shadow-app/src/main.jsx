@@ -32,6 +32,7 @@ const PERMISSIONS = {
   UKDOCS_VIEW: "ukdocs:view",
   UKDOCS_INSPECTION_VIEW: "ukdocs_inspection:view",
   UKDOCS_CSI_VIEW: "ukdocs_csi:view",
+  PD_KEURING_VIEW: "pd_keuring:view",
 };
 const ALL_PERMISSIONS = Object.values(PERMISSIONS);
 const DEFAULT_PERMISSIONS_BY_ROLE = {
@@ -51,6 +52,7 @@ const PAGE_DEFINITIONS = [
   { key: "ukdocsprint", label: "UKDocs Zendings", permission: PERMISSIONS.UKDOCS_VIEW },
   { key: "ukdocsinspection", label: "Phyto Inspection", permission: PERMISSIONS.UKDOCS_INSPECTION_VIEW },
   { key: "ukdocscsi", label: "UKDocs CSI", permission: PERMISSIONS.UKDOCS_CSI_VIEW },
+  { key: "pdkeuring", label: "PD Keuring", permission: PERMISSIONS.PD_KEURING_VIEW },
   { key: "clock", label: "Inklokken", permission: PERMISSIONS.CLOCK_VIEW },
   { key: "users", label: "Users", permission: PERMISSIONS.USERS_MANAGE },
   { key: "settings", label: "Settings", permission: PERMISSIONS.SETTINGS_MANAGE },
@@ -73,6 +75,41 @@ function localDateIso() {
   const now = new Date();
   const offsetMinutes = now.getTimezoneOffset();
   return new Date(now.getTime() - (offsetMinutes * 60 * 1000)).toISOString().slice(0, 10);
+}
+
+const DUTCH_DAY_NAMES = ["zondag", "maandag", "dinsdag", "woensdag", "donderdag", "vrijdag", "zaterdag"];
+
+function dutchDayName(dateIso) {
+  if (!dateIso) {
+    return "";
+  }
+  const date = new Date(`${dateIso}T00:00:00`);
+  if (Number.isNaN(date.getTime())) {
+    return "";
+  }
+  const name = DUTCH_DAY_NAMES[date.getDay()] || "";
+  return name ? `${name.charAt(0).toUpperCase()}${name.slice(1)}` : "";
+}
+
+// Standard ISO 8601 week number, matching the "week" column already used in
+// the PD keuringen spreadsheet.
+function isoWeekNumber(dateIso) {
+  if (!dateIso) {
+    return 0;
+  }
+  const date = new Date(`${dateIso}T00:00:00`);
+  if (Number.isNaN(date.getTime())) {
+    return 0;
+  }
+  const target = new Date(date.valueOf());
+  const dayNr = (date.getDay() + 6) % 7;
+  target.setDate(target.getDate() - dayNr + 3);
+  const firstThursday = target.valueOf();
+  target.setMonth(0, 1);
+  if (target.getDay() !== 4) {
+    target.setMonth(0, 1 + ((4 - target.getDay()) + 7) % 7);
+  }
+  return 1 + Math.round((firstThursday - target.valueOf()) / (7 * 24 * 3600 * 1000));
 }
 
 function normalizePermissions(role, permissions) {
@@ -181,6 +218,11 @@ function pageHeading(page) {
       return {
         title: "UKDocs CSI",
         caption: "",
+      };
+    case "pdkeuring":
+      return {
+        title: "PD Keuring",
+        caption: "Plan PD keuring shipments, kept in sync with the PD keuringen spreadsheet while both are in use.",
       };
     default:
       return {
@@ -2420,6 +2462,27 @@ const UKDOCS_CUSTOMER_MENU_DOCUMENT_FIELDS = [
   ["menu_show_ukdocsprint_inspection_list", "UKdocs Print - Inspection list"],
   ["menu_show_ukdocsprint_locations_file", "UKdocs Print - Locations file"],
 ];
+
+// The in-app equivalent of the PD keuringen spreadsheet's "data" tab
+// (columns A-E only -- city -> code -> PD form letter -> hub codes -> type).
+const UKDOCS_PD_REFERENCE_FIELDS = [
+  ["city_name", "City"],
+  ["code", "Code"],
+  ["pd_form_letter", "PD form letter"],
+  ["pd_type", "Type"],
+  ["hub_codes", "Hub codes"],
+];
+
+function emptyUkdocsPdReferenceEntry() {
+  return {
+    id: "",
+    city_name: "",
+    code: "",
+    pd_form_letter: "",
+    pd_type: "",
+    hub_codes: "",
+  };
+}
 
 const UKDOCS_EXPORT_DEFAULT_FIELDS = [
   ["destination_country", "Country of destination"],
@@ -6337,6 +6400,527 @@ function UkdocsCSIPage({ currentUser }) {
   );
 }
 
+function PdKeuringPage({ currentUser }) {
+  const canManageSettings = hasPermission(currentUser, PERMISSIONS.SETTINGS_MANAGE);
+  const [activeMenu, setActiveMenu] = useState("planning");
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [message, setMessage] = useState("");
+  const [error, setError] = useState("");
+  const [state, setState] = useState(null);
+  const [referenceDraft, setReferenceDraft] = useState(emptyUkdocsPdReferenceEntry());
+  const [backfillIncludeOud, setBackfillIncludeOud] = useState(false);
+  const [backfillBusy, setBackfillBusy] = useState(false);
+  const [backfillResult, setBackfillResult] = useState(null);
+  const [selectedDate, setSelectedDate] = useState(() => localDateIso());
+  const [rowDraft, setRowDraft] = useState(null);
+  const [proposalSelectedIds, setProposalSelectedIds] = useState([]);
+
+  useEffect(() => {
+    let cancelled = false;
+    apiJson("/api/ukdocs/state")
+      .then((payload) => {
+        if (!cancelled) {
+          setState(payload.state);
+        }
+      })
+      .catch((loadError) => {
+        if (!cancelled) {
+          setError(loadError.message);
+        }
+      })
+      .finally(() => {
+        if (!cancelled) {
+          setLoading(false);
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [currentUser]);
+
+  const pdReference = state?.pd_reference || [];
+  const printCollections = state?.print_collections || [];
+  const dayRows = printCollections.filter((item) => String(item.shipment_date || "").slice(0, 10) === selectedDate);
+  const lastWeekDate = addDaysToIso(selectedDate, -7);
+  const lastWeekRows = printCollections.filter((item) => String(item.shipment_date || "").slice(0, 10) === lastWeekDate);
+  const showProposals = dayRows.length === 0 && lastWeekRows.length > 0;
+
+  useEffect(() => {
+    // Same-weekday-last-week rows are proposed checked by default -- the
+    // recurring route usually still runs; staff uncheck what doesn't apply.
+    setProposalSelectedIds(dayRows.length === 0 ? lastWeekRows.map((item) => item.id) : []);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedDate, state]);
+
+  function toggleProposalSelected(rowId) {
+    setProposalSelectedIds((current) => (current.includes(rowId) ? current.filter((id) => id !== rowId) : [...current, rowId]));
+  }
+
+  async function acceptProposals() {
+    const accepted = lastWeekRows.filter((item) => proposalSelectedIds.includes(item.id));
+    if (!accepted.length) {
+      return;
+    }
+    setSaving(true);
+    setError("");
+    setMessage("");
+    try {
+      const collections = accepted.map((item) => ({
+        shipment_date: selectedDate,
+        week: isoWeekNumber(selectedDate),
+        day_name: dutchDayName(selectedDate),
+        customer_id: item.customer_id,
+        customer_name: item.customer_name,
+        collection_type: item.collection_type,
+        city_name: item.city_name,
+        border_crossing: item.border_crossing,
+        hub_code: item.hub_code,
+        remark: item.remark,
+        pd_form: item.pd_form,
+        re_export: item.re_export,
+        pd_type: item.pd_type,
+        pd_code: item.pd_code,
+      }));
+      const payload = await apiJson("/api/ukdocs-print/collections", {
+        method: "POST",
+        body: JSON.stringify({ collections }),
+      });
+      setState((current) => ({ ...current, print_collections: payload.print_collections }));
+      setMessage(`${payload.created.length} row(s) accepted from last week's proposal.`);
+    } catch (acceptError) {
+      setError(acceptError.message);
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  function emptyRowDraft() {
+    return {
+      id: "",
+      shipment_date: selectedDate,
+      week: isoWeekNumber(selectedDate),
+      day_name: dutchDayName(selectedDate),
+      customer_name: "",
+      customer_id: "",
+      city_name: "",
+      border_crossing: "",
+      hub_code: "",
+      remark: "",
+      pd_form: "",
+      re_export: "",
+      pd_type: "",
+      pd_code: "",
+      reference_connect: "",
+      pd_keuring_done: false,
+      pd_keuring_made_by: "",
+    };
+  }
+
+  function referenceAutofillForCity(cityName) {
+    const match = pdReference.find((item) => item.city_name.trim().toLowerCase() === String(cityName || "").trim().toLowerCase());
+    if (!match) {
+      return {};
+    }
+    return {
+      pd_form: match.pd_form_letter || "",
+      pd_type: match.pd_type || "",
+      hub_code: match.hub_codes || "",
+    };
+  }
+
+  function updateRowDraftField(key, value) {
+    setRowDraft((current) => {
+      const next = { ...current, [key]: value };
+      return key === "city_name" ? { ...next, ...referenceAutofillForCity(value) } : next;
+    });
+  }
+
+  async function saveRow() {
+    if (!rowDraft) {
+      return;
+    }
+    setSaving(true);
+    setError("");
+    setMessage("");
+    try {
+      if (rowDraft.id) {
+        const payload = await apiJson(`/api/ukdocs-print/collections/${encodeURIComponent(rowDraft.id)}`, {
+          method: "PATCH",
+          body: JSON.stringify(rowDraft),
+        });
+        setState((current) => ({ ...current, print_collections: payload.print_collections }));
+        setMessage("Row updated.");
+      } else {
+        const payload = await apiJson("/api/ukdocs-print/collections", {
+          method: "POST",
+          body: JSON.stringify({ collections: [rowDraft] }),
+        });
+        setState((current) => ({ ...current, print_collections: payload.print_collections }));
+        setMessage("Row added.");
+      }
+      setRowDraft(null);
+    } catch (saveError) {
+      setError(saveError.message);
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function deleteRow(rowId) {
+    if (!window.confirm("Delete this PD Keuring row?")) {
+      return;
+    }
+    setSaving(true);
+    setError("");
+    setMessage("");
+    try {
+      const payload = await apiJson(`/api/ukdocs-print/collections/${encodeURIComponent(rowId)}`, { method: "DELETE" });
+      setState((current) => ({ ...current, print_collections: payload.print_collections }));
+      setMessage("Row deleted.");
+    } catch (deleteError) {
+      setError(deleteError.message);
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function saveStatePatch(patch, successMessage) {
+    setSaving(true);
+    setError("");
+    setMessage("");
+    try {
+      const payload = await apiJson("/api/ukdocs/state", {
+        method: "PATCH",
+        body: JSON.stringify(patch),
+      });
+      setState(payload.state);
+      setMessage(successMessage);
+    } catch (saveError) {
+      setError(saveError.message);
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  function saveReferenceEntry() {
+    const nextEntry = { ...referenceDraft, id: referenceDraft.id || crypto.randomUUID() };
+    const nextReference = referenceDraft.id
+      ? pdReference.map((item) => (item.id === referenceDraft.id ? nextEntry : item))
+      : [nextEntry, ...pdReference];
+    saveStatePatch({ pd_reference: nextReference }, referenceDraft.id ? "Reference entry updated." : "Reference entry added.");
+    setReferenceDraft(emptyUkdocsPdReferenceEntry());
+  }
+
+  function startEditReferenceEntry(entry) {
+    setReferenceDraft(entry);
+  }
+
+  function deleteReferenceEntry(entryId) {
+    if (!window.confirm("Delete this reference entry?")) {
+      return;
+    }
+    saveStatePatch({ pd_reference: pdReference.filter((item) => item.id !== entryId) }, "Reference entry deleted.");
+  }
+
+  async function runBackfill() {
+    const sheetNames = backfillIncludeOud ? ["PD planning", "OUD PD Planning 2025"] : ["PD planning"];
+    if (!window.confirm(`Import all historical rows from ${sheetNames.join(" and ")}? This can be run again safely -- it only adds or updates matching rows.`)) {
+      return;
+    }
+    setBackfillBusy(true);
+    setError("");
+    setMessage("");
+    setBackfillResult(null);
+    try {
+      const payload = await apiJson("/api/ukdocs-print/pd-keuring/backfill-history", {
+        method: "POST",
+        body: JSON.stringify({ sheet_names: sheetNames }),
+      });
+      setBackfillResult(payload);
+      setMessage(`Backfill complete: ${payload.total_imported} imported, ${payload.total_updated} updated.`);
+    } catch (backfillError) {
+      setError(backfillError.message);
+    } finally {
+      setBackfillBusy(false);
+    }
+  }
+
+  if (loading) {
+    return <div className="notice">Loading PD Keuring workspace...</div>;
+  }
+
+  return (
+    <section className="overview-stack ukdocs-page">
+      <div className="tab-strip">
+        {[
+          ["planning", "Day planning"],
+          ["reference", "Reference data"],
+        ].map(([key, label]) => (
+          <button key={key} type="button" className={activeMenu === key ? "active" : ""} onClick={() => setActiveMenu(key)}>{label}</button>
+        ))}
+      </div>
+
+      {message && <div className="notice">{message}</div>}
+      {error && <div className="notice danger">{error}</div>}
+
+      {activeMenu === "planning" && (
+        <div className="data-table-card ukdocs-stack">
+          <div className="section-header"><h2>Day planning</h2></div>
+          <div className="notice">Propose-from-last-week and the two-way spreadsheet sync are coming in a later phase -- for now, rows are entered manually here or arrive via the spreadsheet sync/backfill.</div>
+
+          <div className="overview-filters">
+            <label>
+              <span>Date</span>
+              <input type="date" value={selectedDate} onChange={(event) => { setSelectedDate(event.target.value); setRowDraft(null); }} />
+            </label>
+          </div>
+
+          {rowDraft && (
+            <>
+              <div className="section-header"><h3>{rowDraft.id ? "Edit row" : "Add row"}</h3></div>
+              <div className="form-grid">
+                <label>
+                  <span>City</span>
+                  <input value={rowDraft.city_name || ""} onChange={(event) => updateRowDraftField("city_name", event.target.value)} />
+                </label>
+                <label>
+                  <span>Border crossing</span>
+                  <input value={rowDraft.border_crossing || ""} onChange={(event) => updateRowDraftField("border_crossing", event.target.value)} />
+                </label>
+                <label>
+                  <span>Hub code</span>
+                  <input value={rowDraft.hub_code || ""} onChange={(event) => updateRowDraftField("hub_code", event.target.value)} />
+                </label>
+                <label>
+                  <span>Remark</span>
+                  <input value={rowDraft.remark || ""} onChange={(event) => updateRowDraftField("remark", event.target.value)} />
+                </label>
+                <label>
+                  <span>PD form</span>
+                  <input value={rowDraft.pd_form || ""} onChange={(event) => updateRowDraftField("pd_form", event.target.value)} />
+                </label>
+                <label>
+                  <span>Re-export</span>
+                  <input value={rowDraft.re_export || ""} onChange={(event) => updateRowDraftField("re_export", event.target.value)} />
+                </label>
+                <label>
+                  <span>Type</span>
+                  <input value={rowDraft.pd_type || ""} onChange={(event) => updateRowDraftField("pd_type", event.target.value)} />
+                </label>
+                <label>
+                  <span>PD code</span>
+                  <input value={rowDraft.pd_code || ""} onChange={(event) => updateRowDraftField("pd_code", event.target.value)} />
+                </label>
+                <label>
+                  <span>Reference connect</span>
+                  <input value={rowDraft.reference_connect || ""} onChange={(event) => updateRowDraftField("reference_connect", event.target.value)} />
+                </label>
+                <label>
+                  <span>Customer name</span>
+                  <input value={rowDraft.customer_name || ""} onChange={(event) => updateRowDraftField("customer_name", event.target.value)} />
+                </label>
+                <label>
+                  <span>Keuring made by</span>
+                  <input value={rowDraft.pd_keuring_made_by || ""} onChange={(event) => updateRowDraftField("pd_keuring_made_by", event.target.value)} />
+                </label>
+              </div>
+              <label className="checkbox-label">
+                <input type="checkbox" checked={rowDraft.pd_keuring_done === true} onChange={(event) => updateRowDraftField("pd_keuring_done", event.target.checked)} />
+                <span>Done</span>
+              </label>
+              <div className="row-actions spread-actions">
+                <button type="button" className="primary" onClick={saveRow} disabled={saving}>{rowDraft.id ? "Update row" : "Add row"}</button>
+                <button type="button" onClick={() => setRowDraft(null)} disabled={saving}>Cancel</button>
+              </div>
+            </>
+          )}
+
+          {showProposals && !rowDraft && (
+            <>
+              <div className="section-header"><h3>Proposed from {lastWeekDate} (last week)</h3></div>
+              <div className="notice">No rows yet for {selectedDate}. These ran on the same weekday last week -- checked ones will be added for today, with reference connect and done/made-by left blank to fill in fresh.</div>
+              <div className="table-wrap">
+                <table className="data-table">
+                  <thead>
+                    <tr>
+                      <th></th>
+                      <th>City</th>
+                      <th>Hub</th>
+                      <th>Border</th>
+                      <th>Type</th>
+                      <th>PD form</th>
+                      <th>Customer</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {lastWeekRows.map((row) => (
+                      <tr key={row.id}>
+                        <td><input type="checkbox" checked={proposalSelectedIds.includes(row.id)} onChange={() => toggleProposalSelected(row.id)} /></td>
+                        <td>{row.city_name || "-"}</td>
+                        <td>{row.hub_code || "-"}</td>
+                        <td>{row.border_crossing || "-"}</td>
+                        <td>{row.pd_type || "-"}</td>
+                        <td>{row.pd_form || "-"}</td>
+                        <td>{row.customer_name || "-"}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+              <div className="row-actions spread-actions">
+                <button type="button" className="primary" onClick={acceptProposals} disabled={saving || !proposalSelectedIds.length}>Accept selected for {selectedDate}</button>
+              </div>
+            </>
+          )}
+
+          {!rowDraft && (
+            <div className="row-actions spread-actions">
+              <button type="button" className="primary" onClick={() => setRowDraft(emptyRowDraft())}>Add row for {selectedDate}</button>
+            </div>
+          )}
+
+          <div className="table-wrap">
+            <table className="data-table">
+              <thead>
+                <tr>
+                  <th>City</th>
+                  <th>Border</th>
+                  <th>Hub</th>
+                  <th>Remark</th>
+                  <th>PD form</th>
+                  <th>Type</th>
+                  <th>PD code</th>
+                  <th>Reference connect</th>
+                  <th>Customer</th>
+                  <th>Done</th>
+                  <th>Made by</th>
+                  <th>Sheet sync</th>
+                  <th>Actions</th>
+                </tr>
+              </thead>
+              <tbody>
+                {dayRows.map((row) => {
+                  const conflictCount = Array.isArray(row.pd_sheet_conflicts) ? row.pd_sheet_conflicts.length : 0;
+                  const conflictTitle = conflictCount
+                    ? row.pd_sheet_conflicts.map((conflict) => `${conflict.field}: app="${conflict.app_value}" vs sheet="${conflict.sheet_value}"`).join("\n")
+                    : "";
+                  return (
+                    <tr key={row.id}>
+                      <td>{row.city_name || "-"}</td>
+                      <td>{row.border_crossing || "-"}</td>
+                      <td>{row.hub_code || "-"}</td>
+                      <td>{row.remark || "-"}</td>
+                      <td>{row.pd_form || "-"}</td>
+                      <td>{row.pd_type || "-"}</td>
+                      <td>{row.pd_code || "-"}</td>
+                      <td>{row.reference_connect || "-"}</td>
+                      <td>{row.customer_name || "-"}</td>
+                      <td>{row.pd_keuring_done ? "Yes" : "No"}</td>
+                      <td>{row.pd_keuring_made_by || "-"}</td>
+                      <td title={conflictTitle}>
+                        {conflictCount
+                          ? `${conflictCount} conflict${conflictCount === 1 ? "" : "s"}`
+                          : row.pd_sheet_sync?.ok
+                            ? "Synced"
+                            : row.pd_sheet_sync?.error
+                              ? "Not synced"
+                              : "-"}
+                      </td>
+                      <td className="row-actions">
+                        <button type="button" onClick={() => setRowDraft({ ...row })}>Edit</button>
+                        <button type="button" onClick={() => deleteRow(row.id)}>Delete</button>
+                      </td>
+                    </tr>
+                  );
+                })}
+                {!dayRows.length && <tr><td colSpan="13">No PD Keuring rows for {selectedDate} yet.</td></tr>}
+              </tbody>
+            </table>
+          </div>
+
+          {canManageSettings && (
+            <>
+              <div className="section-header"><h3>Historical backfill</h3></div>
+              <div className="notice">
+                One-time import of every historical row from the PD keuringen spreadsheet, so PD Keuring's history doesn't depend on the spreadsheet staying available. Safe to run more than once -- it only adds or updates matching rows, never duplicates.
+              </div>
+              <label className="checkbox-label">
+                <input type="checkbox" checked={backfillIncludeOud} onChange={(event) => setBackfillIncludeOud(event.target.checked)} />
+                <span>Also include "OUD PD Planning 2025" (older archived history -- some rows there have known data-quality quirks, e.g. a few border-crossing values are stray numbers instead of text)</span>
+              </label>
+              <div className="row-actions spread-actions">
+                <button type="button" onClick={runBackfill} disabled={backfillBusy}>{backfillBusy ? "Running..." : "Run historical backfill"}</button>
+              </div>
+              {backfillResult && (
+                <div className="table-wrap">
+                  <table className="data-table">
+                    <thead><tr><th>Tab</th><th>Imported</th><th>Updated</th></tr></thead>
+                    <tbody>
+                      {backfillResult.tabs.map((tab) => (
+                        <tr key={tab.sheet_name}><td>{tab.sheet_name}</td><td>{tab.imported}</td><td>{tab.updated}</td></tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </>
+          )}
+        </div>
+      )}
+
+      {activeMenu === "reference" && (
+        <div className="data-table-card ukdocs-stack">
+          <div className="section-header"><h2>Reference data</h2></div>
+          <div className="notice">City to PD form letter / hub code lookup, used to autofill PD Keuring rows -- the in-app equivalent of the "data" tab in the PD keuringen spreadsheet.</div>
+          <div className="form-grid">
+            {UKDOCS_PD_REFERENCE_FIELDS.map(([key, label]) => (
+              <label key={key}>
+                <span>{label}</span>
+                <input value={referenceDraft[key] || ""} onChange={(event) => setReferenceDraft({ ...referenceDraft, [key]: event.target.value })} />
+              </label>
+            ))}
+          </div>
+          <div className="row-actions spread-actions">
+            <button type="button" className="primary" onClick={saveReferenceEntry} disabled={saving}>{referenceDraft.id ? "Update entry" : "Add entry"}</button>
+            <button type="button" onClick={() => setReferenceDraft(emptyUkdocsPdReferenceEntry())} disabled={saving}>Clear form</button>
+          </div>
+          <div className="table-wrap">
+            <table className="data-table">
+              <thead>
+                <tr>
+                  <th>City</th>
+                  <th>Code</th>
+                  <th>PD form letter</th>
+                  <th>Type</th>
+                  <th>Hub codes</th>
+                  <th>Actions</th>
+                </tr>
+              </thead>
+              <tbody>
+                {pdReference.map((entry) => (
+                  <tr key={entry.id}>
+                    <td>{entry.city_name}</td>
+                    <td>{entry.code}</td>
+                    <td>{entry.pd_form_letter}</td>
+                    <td>{entry.pd_type}</td>
+                    <td>{entry.hub_codes}</td>
+                    <td className="row-actions">
+                      <button type="button" onClick={() => startEditReferenceEntry(entry)}>Edit</button>
+                      <button type="button" onClick={() => deleteReferenceEntry(entry.id)}>Delete</button>
+                    </td>
+                  </tr>
+                ))}
+                {!pdReference.length && <tr><td colSpan="6">No reference entries saved yet.</td></tr>}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+    </section>
+  );
+}
+
 function DagFoutjesPage() {
   return (
     <section className="overview-stack">
@@ -7048,6 +7632,7 @@ function App() {
         {page === "ukdocsprint" && <UkdocsPrintPage currentUser={auth.user} />}
         {page === "ukdocsinspection" && <UkdocsInspectionPage currentUser={auth.user} />}
         {page === "ukdocscsi" && <UkdocsCSIPage currentUser={auth.user} />}
+        {page === "pdkeuring" && <PdKeuringPage currentUser={auth.user} />}
         {page === "settings" && <SettingsPage currentUser={auth.user} />}
         {page === "ukdocs" && <UkdocsPage currentUser={auth.user} />}
         {page === "dashboard" && canViewPhotos && (

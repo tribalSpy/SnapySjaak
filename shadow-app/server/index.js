@@ -453,6 +453,7 @@ const allPermissions = [
   "ukdocs:view",
   "ukdocs_inspection:view",
   "ukdocs_csi:view",
+  "pd_keuring:view",
 ];
 const PERMISSIONS = {
   PHOTOS_VIEW: "photos:view",
@@ -474,6 +475,7 @@ const PERMISSIONS = {
   UKDOCS_VIEW: "ukdocs:view",
   UKDOCS_INSPECTION_VIEW: "ukdocs_inspection:view",
   UKDOCS_CSI_VIEW: "ukdocs_csi:view",
+  PD_KEURING_VIEW: "pd_keuring:view",
 };
 const roleDefaultPermissions = {
   admin: allPermissions,
@@ -566,6 +568,7 @@ const defaultUkdocsState = {
   shipments: [],
   audit_reports: [],
   print_collections: [],
+  pd_reference: [],
 };
 
 const UKDOCS_CSI_DOCUMENT_KINDS = new Set(["temp_phyto", "temp_phyto_xml", "temp_phyto_plants_file", "temp_phyto_plants_xml_file", "ipaffs_file", "ipaffs_plants_file"]);
@@ -1589,6 +1592,21 @@ function normalizeUkdocsCompanySettings(settings) {
   };
 }
 
+// The in-app equivalent of the "data" tab in the PD keuringen spreadsheet
+// (columns A-E only -- city -> code -> PD form letter -> hub codes -> type).
+// Used to autofill/validate PD Keuring entries the same way that tab is used
+// as a manual lookup today.
+function normalizeUkdocsPdReferenceEntry(entry) {
+  return {
+    id: normalizeUkdocsText(entry?.id) || crypto.randomUUID(),
+    city_name: normalizeUkdocsText(entry?.city_name),
+    code: normalizeUkdocsText(entry?.code),
+    pd_form_letter: normalizeUkdocsText(entry?.pd_form_letter),
+    pd_type: String(entry?.pd_type || "").trim(),
+    hub_codes: normalizeUkdocsText(entry?.hub_codes),
+  };
+}
+
 function normalizeUkdocsCustomer(customer) {
   return {
     id: normalizeUkdocsText(customer?.id) || crypto.randomUUID(),
@@ -2031,7 +2049,32 @@ function normalizeUkdocsPrintCollection(collection) {
     re_export: String(collection?.re_export || "").trim(),
     pd_type: String(collection?.pd_type || "").trim(),
     pd_code: normalizeUkdocsText(collection?.pd_code),
+    week: Number(collection?.week || 0) || 0,
+    day_name: normalizeUkdocsText(collection?.day_name),
+    pd_keuring_done: collection?.pd_keuring_done === true,
+    pd_keuring_made_by: normalizeUkdocsText(collection?.pd_keuring_made_by),
     sheet_row_number: Number(collection?.sheet_row_number || 0),
+    // Write-back bookkeeping for the two-way PD Keuring sheet sync -- kept
+    // separate from sheet_row_number above, which is only ever used to match
+    // an incoming sheet row to an existing collection, never to locate where
+    // to write an app-side edit back to.
+    pd_sheet_sync: {
+      ok: collection?.pd_sheet_sync?.ok === true,
+      error: String(collection?.pd_sheet_sync?.error || "").trim(),
+      row_number: Number(collection?.pd_sheet_sync?.row_number || 0) || 0,
+      synced_at: normalizeUkdocsText(collection?.pd_sheet_sync?.synced_at),
+    },
+    // Only ever populated by the reconcile job when the same field has a
+    // different non-blank value on both sides -- surfaced for a human to
+    // resolve, never auto-picked. Cleared once the values converge again.
+    pd_sheet_conflicts: Array.isArray(collection?.pd_sheet_conflicts)
+      ? collection.pd_sheet_conflicts.map((conflict) => ({
+        field: normalizeUkdocsText(conflict?.field),
+        app_value: String(conflict?.app_value || "").trim(),
+        sheet_value: String(conflict?.sheet_value || "").trim(),
+        detected_at: normalizeUkdocsText(conflict?.detected_at),
+      })).filter((conflict) => conflict.field)
+      : [],
     generated_at: normalizeUkdocsText(collection?.generated_at),
     updated_at: normalizeUkdocsText(collection?.updated_at),
     notes: String(collection?.notes || "").trim(),
@@ -2178,6 +2221,7 @@ function normalizeUkdocsState(state) {
     shipments: Array.isArray(state?.shipments) ? state.shipments.map(normalizeUkdocsShipment).sort((a, b) => String(b.shipment_date || b.updated_at).localeCompare(String(a.shipment_date || a.updated_at))) : [],
     audit_reports: Array.isArray(state?.audit_reports) ? state.audit_reports.map(normalizeUkdocsAuditReport).sort((a, b) => String(b.created_at).localeCompare(String(a.created_at))) : [],
     print_collections: Array.isArray(state?.print_collections) ? state.print_collections.map(normalizeUkdocsPrintCollection).sort((a, b) => String(b.shipment_date || b.updated_at).localeCompare(String(a.shipment_date || a.updated_at))) : [],
+    pd_reference: Array.isArray(state?.pd_reference) ? state.pd_reference.map(normalizeUkdocsPdReferenceEntry).sort((a, b) => a.city_name.localeCompare(b.city_name)) : [],
   };
 }
 
@@ -4338,35 +4382,130 @@ function sanitizeUkdocsPrintRemark(value) {
   return raw;
 }
 
-function parseUkdocsPrintSheetRows(rows, date = localDateIso()) {
-  if (!Array.isArray(rows) || rows.length < 2) {
-    return [];
-  }
-  const headers = rows[0].map(normalizeHeader);
+// Shared between parseUkdocsPrintSheetRows (read) and the two-way write-back
+// (write) so both sides always agree on which column is which -- computed
+// fresh from the sheet's own header row rather than hardcoded, so it stays
+// correct if a column ever gets reordered.
+function pdKeuringSheetColumnIndices(headers) {
   const pick = (aliases, fallbackIndex) => {
     const index = firstMatchingIndex(headers, aliases);
     return index >= 0 ? index : fallbackIndex;
   };
-  const dateIndex = pick(["datum", "date"], 1);
-  const dayIndex = pick(["dag", "day"], 0);
-  const cityIndex = pick(["stad", "city"], 2);
-  const borderIndex = pick(["grensovergang", "border crossing"], 3);
-  const hubIndex = pick(["hubcode", "hub code", "hub"], 4);
-  const remarkIndex = pick(["remark", "opmerking"], 5);
-  const pdFormIndex = pick(["pd form", "pd form.", "pd-form"], 7);
-  const reExportIndex = pick(["re-export", "re export"], 8);
-  const typeIndex = pick(["type"], 9);
-  const pdCodeIndex = pick(["code voor pd", "pd code"], 11);
-  const referenceConnectIndex = pick(["referentie connect", "reference connect", "connect reference"], 12);
-  const trailerIndex = pick(["trailer", "trailer registration", "kenteken trailer"], -1);
-  const truckIndex = pick(["truck", "truck registration", "kenteken truck"], -1);
-  const invoiceIndex = pick(["invoice", "invoice number", "factuur", "factuurnummer"], -1);
+  return {
+    weekIndex: pick(["week"], -1),
+    dateIndex: pick(["datum", "date"], 1),
+    dayIndex: pick(["dag", "day"], 0),
+    cityIndex: pick(["stad", "city"], 2),
+    borderIndex: pick(["grensovergang", "border crossing"], 3),
+    hubIndex: pick(["hubcode", "hub code", "hub"], 4),
+    remarkIndex: pick(["remark", "opmerking"], 5),
+    pdFormIndex: pick(["pd form", "pd form.", "pd-form"], 7),
+    reExportIndex: pick(["re-export", "re export"], 8),
+    typeIndex: pick(["type"], 9),
+    pdCodeIndex: pick(["code voor pd", "pd code"], 11),
+    referenceConnectIndex: pick(["referentie connect", "reference connect", "connect reference"], 12),
+    doneIndex: pick(["done"], 13),
+    madeByIndex: pick(["keuring made by"], 14),
+    trailerIndex: pick(["trailer", "trailer registration", "kenteken trailer"], -1),
+    truckIndex: pick(["truck", "truck registration", "kenteken truck"], -1),
+    invoiceIndex: pick(["invoice", "invoice number", "factuur", "factuurnummer"], -1),
+  };
+}
+
+function buildPdKeuringSheetRowValues(collection, columnIndices) {
+  const maxIndex = Math.max(
+    columnIndices.weekIndex, columnIndices.dateIndex, columnIndices.dayIndex, columnIndices.cityIndex,
+    columnIndices.borderIndex, columnIndices.hubIndex, columnIndices.remarkIndex, columnIndices.pdFormIndex,
+    columnIndices.reExportIndex, columnIndices.typeIndex, columnIndices.pdCodeIndex, columnIndices.referenceConnectIndex,
+    columnIndices.doneIndex, columnIndices.madeByIndex,
+  );
+  const row = new Array(Math.max(maxIndex + 1, 1)).fill("");
+  const set = (index, value) => {
+    if (index >= 0 && index < row.length) {
+      row[index] = value;
+    }
+  };
+  set(columnIndices.weekIndex, collection.week || "");
+  set(columnIndices.dateIndex, collection.shipment_date || "");
+  set(columnIndices.dayIndex, collection.day_name || "");
+  set(columnIndices.cityIndex, collection.city_name || "");
+  set(columnIndices.borderIndex, collection.border_crossing || "");
+  set(columnIndices.hubIndex, collection.hub_code || "");
+  set(columnIndices.remarkIndex, collection.remark || "");
+  set(columnIndices.pdFormIndex, collection.pd_form || "");
+  set(columnIndices.reExportIndex, collection.re_export || "");
+  set(columnIndices.typeIndex, collection.pd_type || "");
+  set(columnIndices.pdCodeIndex, collection.pd_code || "");
+  set(columnIndices.referenceConnectIndex, collection.reference_connect || "");
+  set(columnIndices.doneIndex, collection.pd_keuring_done === true ? "TRUE" : "FALSE");
+  set(columnIndices.madeByIndex, collection.pd_keuring_made_by || "");
+  return row;
+}
+
+// Writes a single PD Keuring collection back to its row in the live sheet --
+// immediate write-on-save half of the two-way sync (the periodic reconcile
+// job below is the other half, and the catch-up net for anything that fails
+// here). Deliberately conservative: a collection that came from the sheet
+// (source "sheet"/"sheet-backfill") but was never individually pinned to a
+// row number is left alone rather than guessed at, because
+// parseUkdocsPrintSheetRows can fold several physical sheet rows into one
+// collection -- writing to sheet_row_number (the *minimum* of the group)
+// would silently clobber whichever other row happened to share it. Only
+// app-original rows (no sheet row yet) or rows already confirmed 1:1 by a
+// previous write/reconcile pass (pd_sheet_sync.row_number set) are written.
+async function syncPdKeuringCollectionToSheet(settings, collection) {
+  const spreadsheetId = String(settings.ukdocs_print_spreadsheet_id || "").trim();
+  const sheetName = String(settings.ukdocs_print_sheet_name || defaultFustSettings.ukdocs_print_sheet_name).trim();
+  if (!spreadsheetId || !sheetName) {
+    return null;
+  }
+  try {
+    const rows = await loadSheetRows(spreadsheetId, sheetName);
+    const headers = (rows[0] || []).map(normalizeHeader);
+    const columnIndices = pdKeuringSheetColumnIndices(headers);
+    const rowValues = buildPdKeuringSheetRowValues(collection, columnIndices);
+    const knownRowNumber = Number(collection?.pd_sheet_sync?.row_number || 0);
+    if (knownRowNumber >= 2) {
+      await writeSheetRowAt(spreadsheetId, sheetName, knownRowNumber, rowValues);
+      return { ok: true, error: "", row_number: knownRowNumber, synced_at: new Date().toISOString() };
+    }
+    if (Number(collection?.sheet_row_number || 0) > 0) {
+      return {
+        ok: false,
+        error: "Not written to the sheet yet -- this row came from the spreadsheet and may represent more than one physical row there; the reconcile job will pin it once it can confirm a 1:1 match.",
+        row_number: 0,
+        synced_at: "",
+      };
+    }
+    const result = await writeSheetRowToFirstEmpty(spreadsheetId, sheetName, rowValues);
+    return { ok: true, error: "", row_number: Number(result?.row_number || 0), synced_at: new Date().toISOString() };
+  } catch (error) {
+    return {
+      ok: false,
+      error: error instanceof Error ? error.message : String(error),
+      row_number: Number(collection?.pd_sheet_sync?.row_number || 0),
+      synced_at: "",
+    };
+  }
+}
+
+function parseUkdocsPrintSheetRows(rows, date = localDateIso(), options = {}) {
+  if (!Array.isArray(rows) || rows.length < 2) {
+    return [];
+  }
+  const headers = rows[0].map(normalizeHeader);
+  const {
+    weekIndex, dateIndex, dayIndex, cityIndex, borderIndex, hubIndex, remarkIndex,
+    pdFormIndex, reExportIndex, typeIndex, pdCodeIndex, referenceConnectIndex,
+    doneIndex, madeByIndex, trailerIndex, truckIndex, invoiceIndex,
+  } = pdKeuringSheetColumnIndices(headers);
 
   const parsedRows = rows.slice(1)
     .map((row, index) => {
       const shipmentDate = parseSheetDateToIso(rowValue(row, dateIndex));
       return {
         id: `sheet-row-${shipmentDate}-${rowValue(row, referenceConnectIndex) || index + 2}`,
+        week: Number(rowValue(row, weekIndex)) || 0,
         shipment_date: shipmentDate,
         day_name: rowValue(row, dayIndex),
         city_name: rowValue(row, cityIndex),
@@ -4378,6 +4517,8 @@ function parseUkdocsPrintSheetRows(rows, date = localDateIso()) {
         pd_type: rowValue(row, typeIndex),
         pd_code: rowValue(row, pdCodeIndex),
         reference_connect: rowValue(row, referenceConnectIndex),
+        pd_keuring_done: rowValue(row, doneIndex) === true || String(rowValue(row, doneIndex) || "").trim().toUpperCase() === "TRUE",
+        pd_keuring_made_by: rowValue(row, madeByIndex),
         trailer_number: rowValue(row, trailerIndex),
         truck_number: rowValue(row, truckIndex),
         invoice_numbers: rowValue(row, invoiceIndex),
@@ -4385,7 +4526,7 @@ function parseUkdocsPrintSheetRows(rows, date = localDateIso()) {
         sheet_row_number: index + 2,
       };
     })
-    .filter((item) => item.shipment_date === String(date || localDateIso()).slice(0, 10))
+    .filter((item) => options.allDates || item.shipment_date === String(date || localDateIso()).slice(0, 10))
     .filter((item) => item.reference_connect || item.city_name || item.hub_code);
 
   const uniqueJoin = (values, separator = "/") => [...new Set(values.map((item) => String(item || "").trim()).filter(Boolean))].join(separator);
@@ -4413,6 +4554,9 @@ function parseUkdocsPrintSheetRows(rows, date = localDateIso()) {
     existing.re_export = uniqueJoin([existing.re_export, item.re_export], "\n");
     existing.pd_type = uniqueJoin([existing.pd_type, item.pd_type], "\n");
     existing.pd_code = uniqueJoin([existing.pd_code, item.pd_code], "\n");
+    existing.pd_keuring_made_by = uniqueJoin([existing.pd_keuring_made_by, item.pd_keuring_made_by]);
+    // A grouped collection only counts as done once every physical row behind it does.
+    existing.pd_keuring_done = existing.pd_keuring_done && item.pd_keuring_done;
     existing.sheet_row_number = Math.min(existing.sheet_row_number || item.sheet_row_number, item.sheet_row_number);
   }
   return [...grouped.values()];
@@ -8939,6 +9083,8 @@ async function syncUkdocsPrintCollectionsFromSheet(settings, date, options = {})
           id: existingCollection?.id || sending.id,
           source: "sheet",
           shipment_date: sending.shipment_date,
+          week: sending.week,
+          day_name: sending.day_name,
           customer_id: existingCollection?.customer_id || matchedCustomer?.id || "",
           customer_name: matchedCustomer?.customer_name || existingCollection?.customer_name || sending.city_name || "",
           collection_type: existingCollection?.collection_type || sending.collection_type || (isHonselersdijkStockControl(sending) ? "stock_control" : "export"),
@@ -8951,6 +9097,8 @@ async function syncUkdocsPrintCollectionsFromSheet(settings, date, options = {})
           pd_type: sending.pd_type,
           pd_code: sending.pd_code,
           reference_connect: sending.reference_connect,
+          pd_keuring_done: sending.pd_keuring_done,
+          pd_keuring_made_by: sending.pd_keuring_made_by,
           trailer_number: sending.trailer_number || "",
           truck_number: sending.truck_number || "",
           invoice_numbers: sending.invoice_numbers || "",
@@ -8966,6 +9114,8 @@ async function syncUkdocsPrintCollectionsFromSheet(settings, date, options = {})
           id: existingCollection?.id || sending.id,
           source: "sheet",
           shipment_date: sending.shipment_date,
+          week: sending.week,
+          day_name: sending.day_name,
           customer_id: existingCollection?.customer_id || matchedCustomer?.id || "",
           customer_name: existingCollection?.customer_name || matchedCustomer?.customer_name || sending.city_name || "",
           collection_type: existingCollection?.collection_type || sending.collection_type || (isHonselersdijkStockControl(sending) ? "stock_control" : "export"),
@@ -8978,6 +9128,8 @@ async function syncUkdocsPrintCollectionsFromSheet(settings, date, options = {})
           pd_type: sending.pd_type,
           pd_code: sending.pd_code,
           reference_connect: sending.reference_connect,
+          pd_keuring_done: sending.pd_keuring_done,
+          pd_keuring_made_by: sending.pd_keuring_made_by,
           trailer_number: existingCollection?.trailer_number || sending.trailer_number || "",
           truck_number: existingCollection?.truck_number || sending.truck_number || "",
           invoice_numbers: existingCollection?.invoice_numbers || sending.invoice_numbers || "",
@@ -9005,6 +9157,237 @@ async function syncUkdocsPrintCollectionsFromSheet(settings, date, options = {})
   };
 }
 
+// A one-time (or occasional, admin-triggered) migration aid, mirroring
+// backfillFustDatabase's role: pulls in every historical row from the given
+// PD keuringen tabs, not just "today" like the daily sync above. Reuses
+// parseUkdocsPrintSheetRows's allDates option, so backfilled rows are
+// identical in shape to daily-synced ones -- the "propose from last week"
+// feature can't tell them apart. Idempotent for free: sendings.id is
+// content-derived (date+city+hub+remark), never random, so rerunning this
+// against the same sheet rows just updates the same collections in place via
+// upsertUkdocsPrintCollection, never creates duplicates.
+async function backfillPdKeuringHistoryFromSheet(settings, sheetNames = ["PD planning"]) {
+  const spreadsheetId = String(settings.ukdocs_print_spreadsheet_id || "").trim();
+  if (!spreadsheetId) {
+    throw new Error("Set a UKdocs Print spreadsheet ID in Settings first");
+  }
+  const state = await readUkdocsState();
+  const tabs = [];
+  const touchedDates = new Set();
+  for (const sheetName of sheetNames) {
+    const trimmedSheetName = String(sheetName || "").trim();
+    if (!trimmedSheetName) {
+      continue;
+    }
+    const rows = await loadSheetRows(spreadsheetId, trimmedSheetName);
+    const sendings = parseUkdocsPrintSheetRows(rows, null, { allDates: true });
+    let importedCount = 0;
+    let updatedCount = 0;
+    for (const sending of sendings) {
+      if (!sending.shipment_date) {
+        continue;
+      }
+      touchedDates.add(sending.shipment_date);
+      const existingCollection = findMatchingUkdocsPrintCollection(state.print_collections, sending, { allowInvoiceFallback: false });
+      const matchedCustomer = matchUkdocsCustomerForPrintCollection(state.customers, sending);
+      if (existingCollection) {
+        updatedCount += 1;
+      } else {
+        importedCount += 1;
+      }
+      const nextCollection = normalizeUkdocsPrintCollection({
+        ...existingCollection,
+        id: existingCollection?.id || sending.id,
+        source: existingCollection?.source || "sheet-backfill",
+        shipment_date: sending.shipment_date,
+        week: sending.week,
+        day_name: sending.day_name,
+        customer_id: existingCollection?.customer_id || matchedCustomer?.id || "",
+        customer_name: existingCollection?.customer_name || matchedCustomer?.customer_name || sending.city_name || "",
+        collection_type: existingCollection?.collection_type || sending.collection_type || (isHonselersdijkStockControl(sending) ? "stock_control" : "export"),
+        city_name: sending.city_name,
+        border_crossing: sending.border_crossing,
+        hub_code: sending.hub_code,
+        remark: sending.remark,
+        pd_form: sending.pd_form,
+        re_export: sending.re_export,
+        pd_type: sending.pd_type,
+        pd_code: sending.pd_code,
+        reference_connect: sending.reference_connect,
+        pd_keuring_done: sending.pd_keuring_done,
+        pd_keuring_made_by: sending.pd_keuring_made_by,
+        trailer_number: existingCollection?.trailer_number || sending.trailer_number || "",
+        truck_number: existingCollection?.truck_number || sending.truck_number || "",
+        invoice_numbers: existingCollection?.invoice_numbers || sending.invoice_numbers || "",
+        sheet_row_number: sending.sheet_row_number,
+        updated_at: new Date().toISOString(),
+        generated_at: existingCollection?.generated_at || "",
+        documents: existingCollection?.documents || {},
+        notes: existingCollection?.notes || "",
+      });
+      state.print_collections = upsertUkdocsPrintCollection(state.print_collections, nextCollection);
+    }
+    tabs.push({ sheet_name: trimmedSheetName, imported: importedCount, updated: updatedCount });
+  }
+  for (const touchedDate of touchedDates) {
+    dedupeUkdocsPrintCollectionsForDate(state, touchedDate);
+  }
+  await writeUkdocsState(state);
+  return {
+    spreadsheet_id: spreadsheetId,
+    tabs,
+    total_imported: tabs.reduce((sum, tab) => sum + tab.imported, 0),
+    total_updated: tabs.reduce((sum, tab) => sum + tab.updated, 0),
+  };
+}
+
+// The blank-fill-or-conflict comparison only applies to these text fields --
+// pd_keuring_done (a boolean, where "blank" is meaningless) and week/day_name
+// (derived from the date, not independently edited) are deliberately left
+// out of automatic reconciliation for now.
+const PD_KEURING_RECONCILE_FIELDS = [
+  "city_name", "border_crossing", "hub_code", "remark", "pd_form",
+  "re_export", "pd_type", "pd_code", "reference_connect", "pd_keuring_made_by",
+];
+
+// The other half of the two-way PD Keuring sync (the immediate write-on-save
+// in the collection PATCH/POST handlers above is the first half). Runs on
+// the same runIfOnline cadence as the other UKdocs jobs. Conservative by
+// design, mirroring mergeMissingFustActionData's philosophy: only ever fills
+// in a field that's blank on one side, and never picks a winner when both
+// sides are non-blank and different -- that gets recorded as a conflict on
+// the collection for a human to resolve by editing either side normally.
+async function runPdKeuringSheetReconcile() {
+  const settings = await readFustSettings();
+  const spreadsheetId = String(settings.ukdocs_print_spreadsheet_id || "").trim();
+  const sheetName = String(settings.ukdocs_print_sheet_name || defaultFustSettings.ukdocs_print_sheet_name).trim();
+  if (!spreadsheetId || !sheetName) {
+    return { ok: false, skipped: true, reason: "UKdocs Print spreadsheet ID/tab not configured" };
+  }
+
+  const today = localDateIso();
+  const windowStart = addDaysToIsoDate(today, -3);
+  const windowEnd = addDaysToIsoDate(today, 21);
+  let sendings;
+  try {
+    const rows = await loadSheetRows(spreadsheetId, sheetName);
+    sendings = parseUkdocsPrintSheetRows(rows, null, { allDates: true })
+      .filter((item) => item.shipment_date >= windowStart && item.shipment_date <= windowEnd);
+  } catch (error) {
+    return { ok: false, error: error instanceof Error ? error.message : String(error) };
+  }
+
+  const state = await readUkdocsState();
+  const matchedCollectionIds = new Set();
+  let created = 0;
+  let filled = 0;
+  let conflicts = 0;
+
+  for (const sending of sendings) {
+    const existingCollection = findMatchingUkdocsPrintCollection(state.print_collections, sending, { allowInvoiceFallback: false });
+    if (!existingCollection) {
+      const matchedCustomer = matchUkdocsCustomerForPrintCollection(state.customers, sending);
+      const newCollection = normalizeUkdocsPrintCollection({
+        id: sending.id,
+        source: "sheet",
+        shipment_date: sending.shipment_date,
+        week: sending.week,
+        day_name: sending.day_name,
+        customer_id: matchedCustomer?.id || "",
+        customer_name: matchedCustomer?.customer_name || sending.city_name || "",
+        collection_type: sending.collection_type || (isHonselersdijkStockControl(sending) ? "stock_control" : "export"),
+        city_name: sending.city_name,
+        border_crossing: sending.border_crossing,
+        hub_code: sending.hub_code,
+        remark: sending.remark,
+        pd_form: sending.pd_form,
+        re_export: sending.re_export,
+        pd_type: sending.pd_type,
+        pd_code: sending.pd_code,
+        reference_connect: sending.reference_connect,
+        pd_keuring_done: sending.pd_keuring_done,
+        pd_keuring_made_by: sending.pd_keuring_made_by,
+        sheet_row_number: sending.sheet_row_number,
+        updated_at: new Date().toISOString(),
+      });
+      state.print_collections = upsertUkdocsPrintCollection(state.print_collections, newCollection);
+      matchedCollectionIds.add(newCollection.id);
+      created += 1;
+      continue;
+    }
+
+    matchedCollectionIds.add(existingCollection.id);
+    const updates = {};
+    let nextConflicts = Array.isArray(existingCollection.pd_sheet_conflicts) ? [...existingCollection.pd_sheet_conflicts] : [];
+    const conflictsBefore = nextConflicts.length;
+    for (const field of PD_KEURING_RECONCILE_FIELDS) {
+      const appValue = String(existingCollection[field] || "").trim();
+      const sheetValue = String(sending[field] || "").trim();
+      if (!sheetValue) {
+        continue;
+      }
+      if (!appValue) {
+        updates[field] = sheetValue;
+        nextConflicts = nextConflicts.filter((conflict) => conflict.field !== field);
+        continue;
+      }
+      if (appValue === sheetValue) {
+        nextConflicts = nextConflicts.filter((conflict) => conflict.field !== field);
+        continue;
+      }
+      nextConflicts = [
+        ...nextConflicts.filter((conflict) => conflict.field !== field),
+        { field, app_value: appValue, sheet_value: sheetValue, detected_at: new Date().toISOString() },
+      ];
+    }
+    if (nextConflicts.length > conflictsBefore) {
+      conflicts += nextConflicts.length - conflictsBefore;
+    }
+    if (Object.keys(updates).length || nextConflicts.length !== conflictsBefore) {
+      filled += Object.keys(updates).length;
+      const updatedCollection = normalizeUkdocsPrintCollection({
+        ...existingCollection,
+        ...updates,
+        pd_sheet_conflicts: nextConflicts,
+        updated_at: new Date().toISOString(),
+      });
+      state.print_collections = upsertUkdocsPrintCollection(state.print_collections, updatedCollection);
+    }
+  }
+
+  // App-original rows in the window the sheet doesn't know about yet -- a
+  // catch-up write for anything the immediate on-save write missed (e.g. this
+  // instance was offline at the time).
+  let catchUpWrites = 0;
+  const unmatchedAppCollections = state.print_collections.filter((item) => {
+    const date = String(item.shipment_date || "").slice(0, 10);
+    if (date < windowStart || date > windowEnd || matchedCollectionIds.has(item.id)) {
+      return false;
+    }
+    if (Number(item.sheet_row_number || 0) > 0) {
+      return false;
+    }
+    return !(Number(item?.pd_sheet_sync?.row_number || 0) > 0);
+  });
+  for (const collection of unmatchedAppCollections) {
+    const sheetSyncResult = await syncPdKeuringCollectionToSheet(settings, collection);
+    if (sheetSyncResult?.ok) {
+      catchUpWrites += 1;
+      const updatedCollection = normalizeUkdocsPrintCollection({ ...collection, pd_sheet_sync: sheetSyncResult });
+      state.print_collections = upsertUkdocsPrintCollection(state.print_collections, updatedCollection);
+    }
+  }
+
+  await writeUkdocsState(state);
+  return {
+    ok: true,
+    window: { start: windowStart, end: windowEnd },
+    created,
+    filled,
+    conflicts,
+    catch_up_writes: catchUpWrites,
+  };
+}
 
 function runHalLocationsWorker(args) {
   return new Promise((resolve, reject) => {
@@ -12163,7 +12546,7 @@ async function handleApi(req, res, url) {
   }
 
   if (url.pathname === "/api/ukdocs/state") {
-    if (!requireAnyPermission(res, requestUser, [PERMISSIONS.UKDOCS_VIEW, PERMISSIONS.UKDOCS_INSPECTION_VIEW, PERMISSIONS.UKDOCS_CSI_VIEW])) {
+    if (!requireAnyPermission(res, requestUser, [PERMISSIONS.UKDOCS_VIEW, PERMISSIONS.UKDOCS_INSPECTION_VIEW, PERMISSIONS.UKDOCS_CSI_VIEW, PERMISSIONS.PD_KEURING_VIEW])) {
       return;
     }
 
@@ -12352,25 +12735,100 @@ async function handleApi(req, res, url) {
   }
 
   if (url.pathname.startsWith("/api/ukdocs-print/collections/") && req.method === "PATCH") {
-    if (!requireAnyPermission(res, requestUser, [PERMISSIONS.UKDOCS_VIEW, PERMISSIONS.UKDOCS_INSPECTION_VIEW, PERMISSIONS.UKDOCS_CSI_VIEW])) {
+    if (!requireAnyPermission(res, requestUser, [PERMISSIONS.UKDOCS_VIEW, PERMISSIONS.UKDOCS_INSPECTION_VIEW, PERMISSIONS.UKDOCS_CSI_VIEW, PERMISSIONS.PD_KEURING_VIEW])) {
       return;
     }
     const collectionId = decodeURIComponent(url.pathname.slice("/api/ukdocs-print/collections/".length));
     const body = await readRequestJson(req);
+    const settings = await readFustSettings();
     const state = await readUkdocsState();
     const existingCollection = state.print_collections.find((item) => item.id === collectionId || item.shipment_id === collectionId);
     if (!existingCollection) {
       sendJson(res, 404, { error: "UKdocs Print collection not found" });
       return;
     }
-    const updatedCollection = normalizeUkdocsPrintCollection({
+    let updatedCollection = normalizeUkdocsPrintCollection({
       ...existingCollection,
       notes: body?.notes ?? existingCollection.notes,
+      // PD Keuring editable fields -- only touched if the request actually
+      // includes them, so other callers (e.g. notes-only saves) keep working
+      // unchanged.
+      city_name: body?.city_name ?? existingCollection.city_name,
+      border_crossing: body?.border_crossing ?? existingCollection.border_crossing,
+      hub_code: body?.hub_code ?? existingCollection.hub_code,
+      remark: body?.remark ?? existingCollection.remark,
+      pd_form: body?.pd_form ?? existingCollection.pd_form,
+      re_export: body?.re_export ?? existingCollection.re_export,
+      pd_type: body?.pd_type ?? existingCollection.pd_type,
+      pd_code: body?.pd_code ?? existingCollection.pd_code,
+      reference_connect: body?.reference_connect ?? existingCollection.reference_connect,
+      week: body?.week ?? existingCollection.week,
+      day_name: body?.day_name ?? existingCollection.day_name,
+      pd_keuring_done: body?.pd_keuring_done ?? existingCollection.pd_keuring_done,
+      pd_keuring_made_by: body?.pd_keuring_made_by ?? existingCollection.pd_keuring_made_by,
+      customer_id: body?.customer_id ?? existingCollection.customer_id,
+      customer_name: body?.customer_name ?? existingCollection.customer_name,
       updated_at: new Date().toISOString(),
     });
+    const sheetSyncResult = await syncPdKeuringCollectionToSheet(settings, updatedCollection);
+    if (sheetSyncResult) {
+      updatedCollection = normalizeUkdocsPrintCollection({ ...updatedCollection, pd_sheet_sync: sheetSyncResult });
+    }
     state.print_collections = upsertUkdocsPrintCollection(state.print_collections, updatedCollection);
     await writeUkdocsState(state);
     sendJson(res, 200, { collection: updatedCollection, print_collections: normalizeUkdocsState(state).print_collections });
+    return;
+  }
+
+  if (url.pathname === "/api/ukdocs-print/collections" && req.method === "POST") {
+    if (!requireAnyPermission(res, requestUser, [PERMISSIONS.UKDOCS_VIEW, PERMISSIONS.PD_KEURING_VIEW])) {
+      return;
+    }
+    const body = await readRequestJson(req);
+    const incoming = Array.isArray(body?.collections) ? body.collections : [];
+    if (!incoming.length) {
+      sendJson(res, 400, { error: "No collections provided" });
+      return;
+    }
+    const settings = await readFustSettings();
+    const state = await readUkdocsState();
+    const created = [];
+    for (const item of incoming) {
+      let newCollection = normalizeUkdocsPrintCollection({
+        id: crypto.randomUUID(),
+        source: "manual",
+        shipment_date: item?.shipment_date,
+        week: item?.week,
+        day_name: item?.day_name,
+        customer_id: item?.customer_id,
+        customer_name: item?.customer_name,
+        collection_type: item?.collection_type,
+        city_name: item?.city_name,
+        border_crossing: item?.border_crossing,
+        hub_code: item?.hub_code,
+        remark: item?.remark,
+        pd_form: item?.pd_form,
+        re_export: item?.re_export,
+        pd_type: item?.pd_type,
+        pd_code: item?.pd_code,
+        // Reference connect and done/made-by are deliberately never carried
+        // over from a proposal -- each shipment needs these entered fresh.
+        reference_connect: "",
+        pd_keuring_done: false,
+        pd_keuring_made_by: "",
+        updated_at: new Date().toISOString(),
+      });
+      // Brand new, app-original row -- always unambiguous to write, never a
+      // grouped sheet row, so this always attempts writeSheetRowToFirstEmpty.
+      const sheetSyncResult = await syncPdKeuringCollectionToSheet(settings, newCollection);
+      if (sheetSyncResult) {
+        newCollection = normalizeUkdocsPrintCollection({ ...newCollection, pd_sheet_sync: sheetSyncResult });
+      }
+      state.print_collections = upsertUkdocsPrintCollection(state.print_collections, newCollection);
+      created.push(newCollection);
+    }
+    await writeUkdocsState(state);
+    sendJson(res, 200, { created, print_collections: normalizeUkdocsState(state).print_collections });
     return;
   }
 
@@ -12403,7 +12861,7 @@ async function handleApi(req, res, url) {
   }
 
   if (url.pathname.startsWith("/api/ukdocs-print/collections/") && !url.pathname.includes("/documents/") && req.method === "DELETE") {
-    if (!requireAnyPermission(res, requestUser, [PERMISSIONS.UKDOCS_VIEW, PERMISSIONS.UKDOCS_INSPECTION_VIEW, PERMISSIONS.UKDOCS_CSI_VIEW])) {
+    if (!requireAnyPermission(res, requestUser, [PERMISSIONS.UKDOCS_VIEW, PERMISSIONS.UKDOCS_INSPECTION_VIEW, PERMISSIONS.UKDOCS_CSI_VIEW, PERMISSIONS.PD_KEURING_VIEW])) {
       return;
     }
     const collectionId = decodeURIComponent(url.pathname.slice("/api/ukdocs-print/collections/".length));
@@ -12943,6 +13401,24 @@ async function handleApi(req, res, url) {
       sendJson(res, 400, {
         error: `${error instanceof Error ? error.message : String(error)} Check that the spreadsheet is shared with ${reconnectTarget} and that the service account credentials are still valid.`,
       });
+    }
+    return;
+  }
+
+  if (url.pathname === "/api/ukdocs-print/pd-keuring/backfill-history" && req.method === "POST") {
+    if (!requirePermission(res, requestUser, PERMISSIONS.SETTINGS_MANAGE)) {
+      return;
+    }
+    const body = await readRequestJson(req);
+    const settings = await readFustSettings();
+    const sheetNames = Array.isArray(body?.sheet_names) && body.sheet_names.length
+      ? body.sheet_names.map((name) => String(name || "").trim()).filter(Boolean)
+      : ["PD planning"];
+    try {
+      const payload = await backfillPdKeuringHistoryFromSheet(settings, sheetNames);
+      sendJson(res, 200, payload);
+    } catch (error) {
+      sendJson(res, 400, { error: error instanceof Error ? error.message : String(error) });
     }
     return;
   }
@@ -14281,6 +14757,11 @@ async function startServer() {
   runIfOnline("UKdocs Zendingen auto-send", runUkdocsPrintAutoSend).catch(() => {});
   setInterval(() => {
     runIfOnline("UKdocs Zendingen auto-send", runUkdocsPrintAutoSend).catch(() => {});
+  }, 15 * 60 * 1000);
+
+  runIfOnline("PD Keuring sheet reconcile", runPdKeuringSheetReconcile).catch(() => {});
+  setInterval(() => {
+    runIfOnline("PD Keuring sheet reconcile", runPdKeuringSheetReconcile).catch(() => {});
   }, 15 * 60 * 1000);
 
   async function runIfBackup(jobName, jobFn) {

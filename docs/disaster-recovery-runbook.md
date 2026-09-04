@@ -45,7 +45,8 @@ exact same app, just pointed at its own local data instead of Render's.
 That's it — this instance now runs continuously in **Backup** mode (the default),
 quietly pulling data every 15 minutes. You'll see a "BACKUP MODE" banner across
 the app and the normal background jobs (reminder emails, dag-foutjes sheet sync,
-UKdocs Zendingen Gmail auto-sync, UKdocs Zendingen auto-send) stay off.
+UKdocs Zendingen Gmail auto-sync, UKdocs Zendingen auto-send, PD Keuring sheet
+reconcile) stay off.
 
 Also save a second copy of the private key (shown once during setup, and stored
 in `start_standby.bat`) somewhere safe, e.g. a password manager — losing it means
@@ -104,8 +105,8 @@ rather than a plain folder copy — a plain copy has no way to pull updates.
 2. On the office PC, open the app (it's already running), go to
    **Settings > System mode**, and click **Online**. Confirm the prompt.
 3. The background jobs (reminders, dag-foutjes sheet sync, UKdocs Zendingen Gmail
-   auto-sync, UKdocs Zendingen auto-send) start running locally, and
-   this PC now behaves exactly like Render did.
+   auto-sync, UKdocs Zendingen auto-send, PD Keuring sheet reconcile) start
+   running locally, and this PC now behaves exactly like Render did.
 4. Share the LAN address with whoever else needs it — the console this app was
    started from already prints it (`Open from another PC on the same network:`).
    Everyone on the office Wi-Fi/LAN can use it; there's no remote access to this
