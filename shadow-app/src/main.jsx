@@ -6440,6 +6440,7 @@ function PdKeuringPage({ currentUser }) {
   }, [currentUser]);
 
   const pdReference = state?.pd_reference || [];
+  const pdDropdownOptions = state?.pd_dropdown_options || {};
   const printCollections = state?.print_collections || [];
   const dayRows = printCollections.filter((item) => String(item.shipment_date || "").slice(0, 10) === selectedDate);
   const lastWeekDate = addDaysToIso(selectedDate, -7);
@@ -6603,6 +6604,21 @@ function PdKeuringPage({ currentUser }) {
     }
   }
 
+  async function syncDropdownOptions() {
+    setSaving(true);
+    setError("");
+    setMessage("");
+    try {
+      const payload = await apiJson("/api/ukdocs-print/pd-keuring/sync-options", { method: "POST" });
+      setState((current) => ({ ...current, pd_dropdown_options: payload.pd_dropdown_options }));
+      setMessage("Dropdown options refreshed from the \"data\" tab.");
+    } catch (syncError) {
+      setError(syncError.message);
+    } finally {
+      setSaving(false);
+    }
+  }
+
   function saveReferenceEntry() {
     const nextEntry = { ...referenceDraft, id: referenceDraft.id || crypto.randomUUID() };
     const nextReference = referenceDraft.id
@@ -6667,7 +6683,6 @@ function PdKeuringPage({ currentUser }) {
       {activeMenu === "planning" && (
         <div className="data-table-card ukdocs-stack">
           <div className="section-header"><h2>Day planning</h2></div>
-          <div className="notice">Propose-from-last-week and the two-way spreadsheet sync are coming in a later phase -- for now, rows are entered manually here or arrive via the spreadsheet sync/backfill.</div>
 
           <div className="overview-filters">
             <label>
@@ -6675,14 +6690,27 @@ function PdKeuringPage({ currentUser }) {
               <input type="date" value={selectedDate} onChange={(event) => { setSelectedDate(event.target.value); setRowDraft(null); }} />
             </label>
           </div>
+          <div className="row-actions spread-actions">
+            <button type="button" onClick={syncDropdownOptions} disabled={saving}>Sync dropdown options from data tab</button>
+          </div>
 
           {rowDraft && (
             <>
+              <datalist id="pd-keuring-cities">{(pdDropdownOptions.cities || []).map((option) => <option key={option} value={option} />)}</datalist>
+              <datalist id="pd-keuring-hub-codes">{(pdDropdownOptions.hub_codes || []).map((option) => <option key={option} value={option} />)}</datalist>
+              <datalist id="pd-keuring-pd-forms">{(pdDropdownOptions.pd_form_letters || []).map((option) => <option key={option} value={option} />)}</datalist>
+              <datalist id="pd-keuring-types">{(pdDropdownOptions.types || []).map((option) => <option key={option} value={option} />)}</datalist>
+              <datalist id="pd-keuring-pd-codes">{(pdDropdownOptions.pd_codes || []).map((option) => <option key={option} value={option} />)}</datalist>
+              <datalist id="pd-keuring-staff-names">{(pdDropdownOptions.staff_names || []).map((option) => <option key={option} value={option} />)}</datalist>
+
               <div className="section-header"><h3>{rowDraft.id ? "Edit row" : "Add row"}</h3></div>
+              {!pdDropdownOptions.cities?.length && (
+                <div className="notice">No dropdown suggestions loaded yet -- use "Sync dropdown options from data tab" below to pull the city/code/type lists from the spreadsheet.</div>
+              )}
               <div className="form-grid">
                 <label>
                   <span>City</span>
-                  <input value={rowDraft.city_name || ""} onChange={(event) => updateRowDraftField("city_name", event.target.value)} />
+                  <input list="pd-keuring-cities" value={rowDraft.city_name || ""} onChange={(event) => updateRowDraftField("city_name", event.target.value)} />
                 </label>
                 <label>
                   <span>Border crossing</span>
@@ -6690,7 +6718,7 @@ function PdKeuringPage({ currentUser }) {
                 </label>
                 <label>
                   <span>Hub code</span>
-                  <input value={rowDraft.hub_code || ""} onChange={(event) => updateRowDraftField("hub_code", event.target.value)} />
+                  <input list="pd-keuring-hub-codes" value={rowDraft.hub_code || ""} onChange={(event) => updateRowDraftField("hub_code", event.target.value)} />
                 </label>
                 <label>
                   <span>Remark</span>
@@ -6698,7 +6726,7 @@ function PdKeuringPage({ currentUser }) {
                 </label>
                 <label>
                   <span>PD form</span>
-                  <input value={rowDraft.pd_form || ""} onChange={(event) => updateRowDraftField("pd_form", event.target.value)} />
+                  <input list="pd-keuring-pd-forms" value={rowDraft.pd_form || ""} onChange={(event) => updateRowDraftField("pd_form", event.target.value)} />
                 </label>
                 <label>
                   <span>Re-export</span>
@@ -6706,11 +6734,11 @@ function PdKeuringPage({ currentUser }) {
                 </label>
                 <label>
                   <span>Type</span>
-                  <input value={rowDraft.pd_type || ""} onChange={(event) => updateRowDraftField("pd_type", event.target.value)} />
+                  <input list="pd-keuring-types" value={rowDraft.pd_type || ""} onChange={(event) => updateRowDraftField("pd_type", event.target.value)} />
                 </label>
                 <label>
                   <span>PD code</span>
-                  <input value={rowDraft.pd_code || ""} onChange={(event) => updateRowDraftField("pd_code", event.target.value)} />
+                  <input list="pd-keuring-pd-codes" value={rowDraft.pd_code || ""} onChange={(event) => updateRowDraftField("pd_code", event.target.value)} />
                 </label>
                 <label>
                   <span>Reference connect</span>
@@ -6722,7 +6750,7 @@ function PdKeuringPage({ currentUser }) {
                 </label>
                 <label>
                   <span>Keuring made by</span>
-                  <input value={rowDraft.pd_keuring_made_by || ""} onChange={(event) => updateRowDraftField("pd_keuring_made_by", event.target.value)} />
+                  <input list="pd-keuring-staff-names" value={rowDraft.pd_keuring_made_by || ""} onChange={(event) => updateRowDraftField("pd_keuring_made_by", event.target.value)} />
                 </label>
               </div>
               <label className="checkbox-label">

@@ -569,6 +569,14 @@ const defaultUkdocsState = {
   audit_reports: [],
   print_collections: [],
   pd_reference: [],
+  pd_dropdown_options: {
+    cities: [],
+    pd_codes: [],
+    pd_form_letters: [],
+    types: [],
+    hub_codes: [],
+    staff_names: [],
+  },
 };
 
 const UKDOCS_CSI_DOCUMENT_KINDS = new Set(["temp_phyto", "temp_phyto_xml", "temp_phyto_plants_file", "temp_phyto_plants_xml_file", "ipaffs_file", "ipaffs_plants_file"]);
@@ -2222,6 +2230,24 @@ function normalizeUkdocsState(state) {
     audit_reports: Array.isArray(state?.audit_reports) ? state.audit_reports.map(normalizeUkdocsAuditReport).sort((a, b) => String(b.created_at).localeCompare(String(a.created_at))) : [],
     print_collections: Array.isArray(state?.print_collections) ? state.print_collections.map(normalizeUkdocsPrintCollection).sort((a, b) => String(b.shipment_date || b.updated_at).localeCompare(String(a.shipment_date || a.updated_at))) : [],
     pd_reference: Array.isArray(state?.pd_reference) ? state.pd_reference.map(normalizeUkdocsPdReferenceEntry).sort((a, b) => a.city_name.localeCompare(b.city_name)) : [],
+    pd_dropdown_options: normalizeUkdocsPdDropdownOptions(state?.pd_dropdown_options),
+  };
+}
+
+// Dropdown option lists sourced from the "data" tab of the PD keuringen
+// spreadsheet -- each column there is an independent list of valid choices
+// for one field (cities, PD codes, PD form letters, types, hub codes), not a
+// per-city lookup row. Kept as plain string lists rather than the richer
+// pd_reference entity above, since that's genuinely what the sheet is.
+function normalizeUkdocsPdDropdownOptions(options) {
+  const stringList = (value) => (Array.isArray(value) ? [...new Set(value.map((item) => String(item || "").trim()).filter(Boolean))] : []);
+  return {
+    cities: stringList(options?.cities),
+    pd_codes: stringList(options?.pd_codes),
+    pd_form_letters: stringList(options?.pd_form_letters),
+    types: stringList(options?.types),
+    hub_codes: stringList(options?.hub_codes),
+    staff_names: stringList(options?.staff_names),
   };
 }
 
@@ -9166,6 +9192,51 @@ async function syncUkdocsPrintCollectionsFromSheet(settings, date, options = {})
 // content-derived (date+city+hub+remark), never random, so rerunning this
 // against the same sheet rows just updates the same collections in place via
 // upsertUkdocsPrintCollection, never creates duplicates.
+// Pulls the "data" tab's independent option columns (city, PD code, PD form
+// letter, type, hub code, staff name) into the app so the PD Keuring add/edit
+// form can offer them as dropdown suggestions instead of free typing. Not
+// tied to pd_reference (which models per-city lookup entries) -- this is
+// deliberately just plain option lists, matching what the sheet actually is.
+async function syncPdKeuringDropdownOptionsFromSheet(settings) {
+  const spreadsheetId = String(settings.ukdocs_print_spreadsheet_id || "").trim();
+  if (!spreadsheetId) {
+    throw new Error("Set a UKdocs Print spreadsheet ID in Settings first");
+  }
+  const rows = await loadSheetRows(spreadsheetId, "data");
+  if (!Array.isArray(rows) || rows.length < 2) {
+    throw new Error('No rows found in the "data" tab');
+  }
+  const headers = rows[0].map(normalizeHeader);
+  const pick = (aliases, fallbackIndex) => {
+    const index = firstMatchingIndex(headers, aliases);
+    return index >= 0 ? index : fallbackIndex;
+  };
+  const cityIndex = pick(["stad", "city"], 0);
+  const codeIndex = pick(["code"], 1);
+  const formIndex = pick(["pd formulier", "pd form"], 2);
+  const typeIndex = pick(["type"], 3);
+  const hubIndex = pick(["hubcodes", "hub code", "hub"], 4);
+  const nameIndex = pick(["name"], 8);
+  const collectColumn = (index) => {
+    if (index < 0) {
+      return [];
+    }
+    return rows.slice(1).map((row) => rowValue(row, index)).filter(Boolean);
+  };
+
+  const state = await readUkdocsState();
+  state.pd_dropdown_options = normalizeUkdocsPdDropdownOptions({
+    cities: collectColumn(cityIndex),
+    pd_codes: collectColumn(codeIndex),
+    pd_form_letters: collectColumn(formIndex),
+    types: collectColumn(typeIndex),
+    hub_codes: collectColumn(hubIndex),
+    staff_names: collectColumn(nameIndex),
+  });
+  await writeUkdocsState(state);
+  return normalizeUkdocsState(state).pd_dropdown_options;
+}
+
 async function backfillPdKeuringHistoryFromSheet(settings, sheetNames = ["PD planning"]) {
   const spreadsheetId = String(settings.ukdocs_print_spreadsheet_id || "").trim();
   if (!spreadsheetId) {
@@ -13417,6 +13488,20 @@ async function handleApi(req, res, url) {
     try {
       const payload = await backfillPdKeuringHistoryFromSheet(settings, sheetNames);
       sendJson(res, 200, payload);
+    } catch (error) {
+      sendJson(res, 400, { error: error instanceof Error ? error.message : String(error) });
+    }
+    return;
+  }
+
+  if (url.pathname === "/api/ukdocs-print/pd-keuring/sync-options" && req.method === "POST") {
+    if (!requireAnyPermission(res, requestUser, [PERMISSIONS.UKDOCS_VIEW, PERMISSIONS.PD_KEURING_VIEW])) {
+      return;
+    }
+    const settings = await readFustSettings();
+    try {
+      const pdDropdownOptions = await syncPdKeuringDropdownOptionsFromSheet(settings);
+      sendJson(res, 200, { pd_dropdown_options: pdDropdownOptions });
     } catch (error) {
       sendJson(res, 400, { error: error instanceof Error ? error.message : String(error) });
     }
