@@ -419,7 +419,8 @@ def email_send() -> int:
         maintype, subtype = (mime_type.split("/", 1) + ["octet-stream"])[:2]
         message.add_attachment(content_bytes, maintype=maintype, subtype=subtype, filename=file_name)
 
-    with smtplib.SMTP(smtp_host, smtp_port, timeout=30) as server:
+    server = smtplib.SMTP(smtp_host, smtp_port, timeout=30)
+    try:
         server.ehlo()
         if smtp_starttls:
             server.starttls()
@@ -427,6 +428,16 @@ def email_send() -> int:
         if smtp_username:
             server.login(smtp_username, smtp_password or "")
         server.send_message(message)
+    finally:
+        # The message is already delivered once send_message returns -- a
+        # server that hangs up abruptly during the closing QUIT handshake
+        # must never be reported as a failed send. Without this, callers
+        # (e.g. the UKdocs auto-send job) would retry and genuinely re-send
+        # an email that already reached its recipient, every cycle.
+        try:
+            server.quit()
+        except Exception:
+            pass
 
     sys.stdout.write(json.dumps({"ok": True}, ensure_ascii=True))
     return 0

@@ -10565,7 +10565,19 @@ async function runUkdocsPrintAutoSend() {
         errors.push(`${collection.shipment_reference || collection.id}: ${deliveryEmail.error}`);
       }
     } catch (error) {
-      errors.push(`${collection.shipment_reference || collection.id}: ${error instanceof Error ? error.message : String(error)}`);
+      // Record the failed attempt on the collection itself, not just in the
+      // job's own return value -- otherwise a persistently-throwing send
+      // (as opposed to one that cleanly returns ok: false) never shows up
+      // anywhere a human would see it (e.g. the "Send failed" card badge),
+      // and silently keeps retrying with zero visible trace.
+      const message = error instanceof Error ? error.message : String(error);
+      const updatedCollection = normalizeUkdocsPrintCollection({
+        ...collection,
+        updated_at: new Date().toISOString(),
+        delivery_email: { ok: false, recipients: collection.delivery_email?.recipients || [], sent_at: "", error: message },
+      });
+      state.print_collections = upsertUkdocsPrintCollection(state.print_collections, updatedCollection);
+      errors.push(`${collection.shipment_reference || collection.id}: ${message}`);
     }
   }
 
