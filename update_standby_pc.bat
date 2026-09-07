@@ -47,6 +47,8 @@ if errorlevel 1 (
 )
 pushd "%~dp0shadow-app"
 call npm ci
+echo Rebuilding the frontend (dist/) so UI changes actually show up...
+call npm run build
 popd
 :after_npm
 

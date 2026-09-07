@@ -73,6 +73,8 @@ if errorlevel 1 (
 echo Installing Node dependencies (shadow-app)...
 pushd "%~dp0shadow-app"
 call npm ci
+echo Building the frontend (dist/)...
+call npm run build
 popd
 :after_npm
 
