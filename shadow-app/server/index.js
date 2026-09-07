@@ -3633,7 +3633,15 @@ async function loadCurrentFustActions(settingsOverride = null) {
       continue;
     }
     if (localAction.db_sync?.ok !== true || !byId.has(id)) {
-      byId.set(id, normalizeFustAction(localAction));
+      const normalizedLocal = normalizeFustAction(localAction);
+      const dbAction = byId.get(id);
+      // A stale local copy (e.g. from a later, unrelated mirror failure on
+      // this same row) must never resurrect an action as "unconfirmed" when
+      // the database already has it confirmed -- that's a real confirmation
+      // getting silently lost, not just a formatting/freshness question.
+      byId.set(id, dbAction && isFustActionConfirmed(dbAction) && !isFustActionConfirmed(normalizedLocal)
+        ? normalizeFustAction({ ...normalizedLocal, confirmed_at: dbAction.confirmed_at, confirmed_by: dbAction.confirmed_by })
+        : normalizedLocal);
     }
   }
 
