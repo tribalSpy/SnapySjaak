@@ -6433,6 +6433,10 @@ function PdKeuringPage({ currentUser }) {
   const [selectedDate, setSelectedDate] = useState(() => localDateIso());
   const [rowDraft, setRowDraft] = useState(null);
   const [proposalSelectedIds, setProposalSelectedIds] = useState([]);
+  // Uncommitted inline edits, keyed by row id -- only reference_connect,
+  // expected_boxes, and expected_pieces are ever edited this way (fast,
+  // no need to open the row form). Everything else stays edit-only.
+  const [inlineEdits, setInlineEdits] = useState({});
 
   useEffect(() => {
     let cancelled = false;
@@ -6599,6 +6603,52 @@ function PdKeuringPage({ currentUser }) {
       setMessage("Row deleted.");
     } catch (deleteError) {
       setError(deleteError.message);
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  const INLINE_EDIT_FIELDS = ["reference_connect", "expected_boxes", "expected_pieces"];
+
+  function inlineFieldValue(row, field) {
+    const edits = inlineEdits[row.id];
+    return edits && field in edits ? edits[field] : (row[field] || "");
+  }
+
+  function updateInlineField(rowId, field, value) {
+    setInlineEdits((current) => ({ ...current, [rowId]: { ...current[rowId], [field]: value } }));
+  }
+
+  function isRowDirty(row) {
+    const edits = inlineEdits[row.id];
+    if (!edits) {
+      return false;
+    }
+    return INLINE_EDIT_FIELDS.some((field) => field in edits && edits[field] !== (row[field] || ""));
+  }
+
+  async function saveInlineEdits(row) {
+    const edits = inlineEdits[row.id];
+    if (!edits) {
+      return;
+    }
+    setSaving(true);
+    setError("");
+    setMessage("");
+    try {
+      const payload = await apiJson(`/api/ukdocs-print/collections/${encodeURIComponent(row.id)}`, {
+        method: "PATCH",
+        body: JSON.stringify(edits),
+      });
+      setState((current) => ({ ...current, print_collections: payload.print_collections }));
+      setInlineEdits((current) => {
+        const next = { ...current };
+        delete next[row.id];
+        return next;
+      });
+      setMessage("Row updated.");
+    } catch (saveError) {
+      setError(saveError.message);
     } finally {
       setSaving(false);
     }
@@ -6841,6 +6891,8 @@ function PdKeuringPage({ currentUser }) {
                   <th>Customer</th>
                   <th>Done</th>
                   <th>Made by</th>
+                  <th>Boxes</th>
+                  <th>Pieces</th>
                   <th>Sheet sync</th>
                   <th>Actions</th>
                 </tr>
@@ -6851,6 +6903,7 @@ function PdKeuringPage({ currentUser }) {
                   const conflictTitle = conflictCount
                     ? row.pd_sheet_conflicts.map((conflict) => `${conflict.field}: app="${conflict.app_value}" vs sheet="${conflict.sheet_value}"`).join("\n")
                     : "";
+                  const dirty = isRowDirty(row);
                   return (
                     <tr key={row.id}>
                       <td>{row.city_name || "-"}</td>
@@ -6860,10 +6913,12 @@ function PdKeuringPage({ currentUser }) {
                       <td>{row.pd_form || "-"}</td>
                       <td>{row.pd_type || "-"}</td>
                       <td>{row.pd_code || "-"}</td>
-                      <td>{row.reference_connect || "-"}</td>
+                      <td><input value={inlineFieldValue(row, "reference_connect")} onChange={(event) => updateInlineField(row.id, "reference_connect", event.target.value)} /></td>
                       <td>{row.customer_name || "-"}</td>
                       <td>{row.pd_keuring_done ? "Yes" : "No"}</td>
                       <td>{row.pd_keuring_made_by || "-"}</td>
+                      <td><input value={inlineFieldValue(row, "expected_boxes")} onChange={(event) => updateInlineField(row.id, "expected_boxes", event.target.value)} placeholder="Boxes" /></td>
+                      <td><input value={inlineFieldValue(row, "expected_pieces")} onChange={(event) => updateInlineField(row.id, "expected_pieces", event.target.value)} placeholder="Pieces" /></td>
                       <td title={conflictTitle}>
                         {conflictCount
                           ? `${conflictCount} conflict${conflictCount === 1 ? "" : "s"}`
@@ -6874,13 +6929,14 @@ function PdKeuringPage({ currentUser }) {
                               : "-"}
                       </td>
                       <td className="row-actions">
+                        {dirty && <button type="button" className="primary" onClick={() => saveInlineEdits(row)} disabled={saving}>Save</button>}
                         <button type="button" onClick={() => setRowDraft({ ...row })}>Edit</button>
                         <button type="button" onClick={() => deleteRow(row.id)}>Delete</button>
                       </td>
                     </tr>
                   );
                 })}
-                {!dayRows.length && <tr><td colSpan="13">No PD Keuring rows for {selectedDate} yet.</td></tr>}
+                {!dayRows.length && <tr><td colSpan="15">No PD Keuring rows for {selectedDate} yet.</td></tr>}
               </tbody>
             </table>
           </div>
