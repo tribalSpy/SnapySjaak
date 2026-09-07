@@ -1947,7 +1947,13 @@ function ukdocsPrintInspectionMode(collection) {
   if (pdTypeCompact === "voorraad") {
     return "stock_control";
   }
-  if (!pdTypeCompact && collection?.collection_type === "stock_control") {
+  // Falls back to collection_type whenever pd_type doesn't clearly say
+  // otherwise -- not just when pd_type is blank. A stray/garbage pd_type
+  // value (e.g. a malformed sheet row) must never be able to knock a
+  // genuinely stock_control collection (identified by city at creation
+  // time) into the normal export flow, where it becomes eligible for
+  // customer-facing actions like auto-send that should never apply to it.
+  if (collection?.collection_type === "stock_control") {
     return "stock_control";
   }
   return "";
