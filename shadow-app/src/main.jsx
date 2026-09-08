@@ -2693,6 +2693,17 @@ function ukdocsPrintSplitTokens(value) {
     .filter(Boolean);
 }
 
+// Mirrors the server-side check in the /csi/send route -- a passing CSI
+// audit says nothing about whether the Excel-to-PDF invoice files (produced
+// asynchronously) have actually finished yet.
+function ukdocsCsiInvoicesReady(collection) {
+  const invoiceExpected = ukdocsPrintSplitTokens(collection?.invoice_numbers).length;
+  if (invoiceExpected === 0) {
+    return true;
+  }
+  return countUkdocsGeneratedInvoiceGroups(collection?.documents?.generated_files) >= invoiceExpected;
+}
+
 function countUkdocsGeneratedInvoiceGroups(files) {
   const seen = new Set();
   for (const file of Array.isArray(files) ? files : []) {
@@ -5855,7 +5866,8 @@ function UkdocsCSIPage({ currentUser }) {
                     <button
                       type="button"
                       onClick={() => sendCsiPapers(collection.id)}
-                      disabled={saving || tileCsiReport?.status !== "done" || tileCsiReport?.overall_status !== "pass"}
+                      disabled={saving || tileCsiReport?.status !== "done" || tileCsiReport?.overall_status !== "pass" || !ukdocsCsiInvoicesReady(collection)}
+                      title={ukdocsCsiInvoicesReady(collection) ? "" : "Waiting for generated invoice PDFs to finish"}
                     >
                       Send papers to CSI
                     </button>
@@ -5999,7 +6011,8 @@ function UkdocsCSIPage({ currentUser }) {
                 <button
                   type="button"
                   onClick={() => sendCsiPapers(selectedCollection.id)}
-                  disabled={saving || selectedCsiDisplayReport.status !== "done" || selectedCsiDisplayReport.overall_status !== "pass"}
+                  disabled={saving || selectedCsiDisplayReport.status !== "done" || selectedCsiDisplayReport.overall_status !== "pass" || !ukdocsCsiInvoicesReady(selectedCollection)}
+                  title={ukdocsCsiInvoicesReady(selectedCollection) ? "" : "Waiting for generated invoice PDFs to finish"}
                 >
                   Send papers to CSI
                 </button>

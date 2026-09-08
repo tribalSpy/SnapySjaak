@@ -13379,6 +13379,18 @@ async function handleApi(req, res, url) {
       sendJson(res, 400, { error: "Run CSI successfully before sending papers to CSI" });
       return;
     }
+    // A passing CSI audit only means the uploaded source files are
+    // consistent with each other -- it says nothing about whether the
+    // generated Excel-to-PDF invoice files have actually finished processing
+    // yet (they're produced asynchronously via queueUkdocsInvoicePdfJobs).
+    // Sending CSI papers before those exist means the recipient gets an
+    // incomplete set of documents.
+    const invoiceExpectedForCsi = ukdocsPrintSplitTokens(existingCollection?.invoice_numbers).length;
+    const generatedInvoiceCountForCsi = countUkdocsGeneratedInvoiceGroups(existingCollection?.documents?.generated_files);
+    if (invoiceExpectedForCsi > 0 && generatedInvoiceCountForCsi < invoiceExpectedForCsi) {
+      sendJson(res, 400, { error: `Generated invoice PDFs are not all ready yet (${generatedInvoiceCountForCsi}/${invoiceExpectedForCsi}) -- wait for them to finish before sending CSI papers` });
+      return;
+    }
     const settings = await readFustSettings();
     const csiEmail = await sendUkdocsCsiSuccessEmail(existingCollection, state.customers, settings);
     const updatedCollection = await updateUkdocsCsiEmailResult(collectionId, csiEmail);
@@ -14967,19 +14979,40 @@ async function startServer() {
     runIfOnline("Fust confirmation reminder check", runFustReminderCheck).catch(() => {});
   }, 15 * 60 * 1000);
 
-  runIfOnline("UKdocs Zendingen Gmail auto-sync", runUkdocsPrintGmailAutoSync).catch(() => {});
+  // These three jobs all read-modify-write the same ukdocs-state.json
+  // print_collections array independently. Left to run concurrently (all
+  // three fire their first run at boot, then land on the same 15-minute
+  // tick forever after), one job's write can silently clobber another's --
+  // e.g. Gmail auto-sync reads state before auto-send's "sent" flag lands,
+  // then writes its own stale copy back afterward, reverting the send as
+  // unsent and causing it to be re-sent indefinitely. Funneling all three
+  // through one promise chain means only one is ever mid-read-modify-write
+  // at a time, which removes the race instead of just reacting to it.
+  let ukdocsPrintCollectionsJobLock = Promise.resolve();
+  function serializeUkdocsPrintCollectionsJob(jobFn) {
+    return () => {
+      const runPromise = ukdocsPrintCollectionsJobLock.then(() => jobFn());
+      ukdocsPrintCollectionsJobLock = runPromise.catch(() => {});
+      return runPromise;
+    };
+  }
+  const serializedGmailAutoSync = serializeUkdocsPrintCollectionsJob(runUkdocsPrintGmailAutoSync);
+  const serializedAutoSend = serializeUkdocsPrintCollectionsJob(runUkdocsPrintAutoSend);
+  const serializedPdKeuringReconcile = serializeUkdocsPrintCollectionsJob(runPdKeuringSheetReconcile);
+
+  runIfOnline("UKdocs Zendingen Gmail auto-sync", serializedGmailAutoSync).catch(() => {});
   setInterval(() => {
-    runIfOnline("UKdocs Zendingen Gmail auto-sync", runUkdocsPrintGmailAutoSync).catch(() => {});
+    runIfOnline("UKdocs Zendingen Gmail auto-sync", serializedGmailAutoSync).catch(() => {});
   }, 15 * 60 * 1000);
 
-  runIfOnline("UKdocs Zendingen auto-send", runUkdocsPrintAutoSend).catch(() => {});
+  runIfOnline("UKdocs Zendingen auto-send", serializedAutoSend).catch(() => {});
   setInterval(() => {
-    runIfOnline("UKdocs Zendingen auto-send", runUkdocsPrintAutoSend).catch(() => {});
+    runIfOnline("UKdocs Zendingen auto-send", serializedAutoSend).catch(() => {});
   }, 15 * 60 * 1000);
 
-  runIfOnline("PD Keuring sheet reconcile", runPdKeuringSheetReconcile).catch(() => {});
+  runIfOnline("PD Keuring sheet reconcile", serializedPdKeuringReconcile).catch(() => {});
   setInterval(() => {
-    runIfOnline("PD Keuring sheet reconcile", runPdKeuringSheetReconcile).catch(() => {});
+    runIfOnline("PD Keuring sheet reconcile", serializedPdKeuringReconcile).catch(() => {});
   }, 15 * 60 * 1000);
 
   async function runIfBackup(jobName, jobFn) {
