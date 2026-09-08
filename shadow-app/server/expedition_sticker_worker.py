@@ -174,11 +174,17 @@ def parse_planning_rows(input_path: Path) -> list[dict[str, object]]:
     carrier1_index = first_matching_index(headers, ["carrier 1", "eerste carrier", "1e carrier", "vervoerder 1", "auto 1"])
     carrier2_index = first_matching_index(headers, ["carrier 2", "tweede carrier", "2e carrier", "vervoerder 2", "auto 2"])
     group_with_index = first_matching_index(headers, ["group with", "groupwith", "groeperen met", "groepeer met", "group"])
+    no_departure_index = first_matching_index(headers, ["no departure", "nodeparture", "geen vertrek"])
 
     parsed = []
     for row in rows[header_row_index + 1:]:
         customer = normalize_sticker_customer(row[customer_index] if customer_index >= 0 and customer_index < len(row) else "")
         if not customer:
+            continue
+        # Any mark at all in "NO Departure" (an "V"/x/etc, not specifically a
+        # particular value) means this customer isn't actually departing --
+        # never generate a sticker or ready a car for it.
+        if no_departure_index >= 0 and no_departure_index < len(row) and clean_text(row[no_departure_index]):
             continue
         raw_count_value = row[count_index] if count_index >= 0 and count_index < len(row) else None
         parsed.append({
