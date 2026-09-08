@@ -2120,6 +2120,9 @@ function normalizeUkdocsPrintCollection(collection) {
       temp_phyto_plants_xml_file: normalizeUkdocsPrintDocument(collection?.documents?.temp_phyto_plants_xml_file),
       ipaffs_file: normalizeUkdocsPrintDocument(collection?.documents?.ipaffs_file),
       ipaffs_plants_file: normalizeUkdocsPrintDocument(collection?.documents?.ipaffs_plants_file),
+      // A TrackonTrade "confirmation of exit" release -- a separate customs
+      // event from the EAD/phyto documents, arriving on its own schedule.
+      exit_confirmation_files: normalizeUkdocsPrintDocumentList(collection?.documents?.exit_confirmation_files),
     },
     csi_report: normalizeUkdocsCsiReport(collection?.csi_report),
   };
@@ -5229,7 +5232,7 @@ async function saveUkdocsPrintUpload(collectionId, kind, filePayload, requestUse
   const originalName = path.basename(String(filePayload?.file_name || filePayload?.name || "").trim());
   const contentBase64 = String(filePayload?.content_base64 || "").trim();
   const mimeType = String(filePayload?.mime_type || guessMimeType(originalName)).trim() || "application/octet-stream";
-  if (!["phyto", "export_extra", "inspection_list", "locations_file", "temp_phyto", "temp_phyto_xml", "temp_phyto_plants_file", "temp_phyto_plants_xml_file", "ipaffs_file", "ipaffs_plants_file"].includes(kind)) {
+  if (!["phyto", "export_extra", "inspection_list", "locations_file", "temp_phyto", "temp_phyto_xml", "temp_phyto_plants_file", "temp_phyto_plants_xml_file", "ipaffs_file", "ipaffs_plants_file", "exit_confirmation"].includes(kind)) {
     throw new Error("Unknown UKdocs Print document type");
   }
   if (!originalName || !contentBase64) {
@@ -5269,7 +5272,7 @@ async function saveUkdocsPrintUpload(collectionId, kind, filePayload, requestUse
 }
 
 async function saveUkdocsPrintBuffer(collectionId, kind, originalName, mimeType, fileBuffer, savedBy) {
-  if (!["phyto", "export_extra", "generated", "inspection_list", "locations_file", "temp_phyto", "temp_phyto_xml", "temp_phyto_plants_file", "temp_phyto_plants_xml_file", "ipaffs_file", "ipaffs_plants_file"].includes(kind)) {
+  if (!["phyto", "export_extra", "generated", "inspection_list", "locations_file", "temp_phyto", "temp_phyto_xml", "temp_phyto_plants_file", "temp_phyto_plants_xml_file", "ipaffs_file", "ipaffs_plants_file", "exit_confirmation"].includes(kind)) {
     throw new Error("Unknown UKdocs Print document type");
   }
   const extension = safeExtension(originalName, mimeType);
@@ -8835,6 +8838,19 @@ function ukdocsPrintCollectionMatchScore(collection, haystackRaw) {
   return score;
 }
 
+// Maps a document "kind" to its list field name on collection.documents, for
+// the kinds that can hold more than one file (as opposed to a single slot
+// keyed directly by kind). Returns "" for single-slot kinds.
+function ukdocsPrintListDocumentsField(kind) {
+  if (kind === "phyto") {
+    return "phyto_files";
+  }
+  if (kind === "exit_confirmation") {
+    return "exit_confirmation_files";
+  }
+  return "";
+}
+
 function collectionAcceptsUkdocsPrintDocument(collection, customers, kind) {
   const inspectionMode = ukdocsPrintInspectionMode(collection);
   const customer = ukdocsPrintCollectionCustomer(collection, customers);
@@ -8866,8 +8882,9 @@ function findUkdocsPrintDocumentOwner(collections, date, kind, originalName) {
     if (String(collection?.shipment_date || "").slice(0, 10) !== syncDate) {
       continue;
     }
-    if (kind === "phyto") {
-      const files = normalizeUkdocsPrintDocumentList(collection?.documents?.phyto_files);
+    const listField = ukdocsPrintListDocumentsField(kind);
+    if (listField) {
+      const files = normalizeUkdocsPrintDocumentList(collection?.documents?.[listField]);
       const index = files.findIndex((document) => ukdocsPrintDocumentIdentity(document) === target);
       if (index >= 0) {
         return { collection, document: files[index], index };
@@ -8887,13 +8904,14 @@ function removeUkdocsPrintDocumentByName(collection, kind, originalName) {
   if (!target) {
     return normalizeUkdocsPrintCollection(collection);
   }
-  if (kind === "phyto") {
+  const listField = ukdocsPrintListDocumentsField(kind);
+  if (listField) {
     return normalizeUkdocsPrintCollection({
       ...collection,
       updated_at: new Date().toISOString(),
       documents: {
         ...(collection?.documents || {}),
-        phyto_files: normalizeUkdocsPrintDocumentList(collection?.documents?.phyto_files).filter((document) => ukdocsPrintDocumentIdentity(document) !== target),
+        [listField]: normalizeUkdocsPrintDocumentList(collection?.documents?.[listField]).filter((document) => ukdocsPrintDocumentIdentity(document) !== target),
       },
     });
   }
@@ -8929,8 +8947,25 @@ function removeUkdocsPrintDocumentFromOtherCollections(collections, date, target
   });
 }
 
+function insertExitMarkerIntoFilename(name) {
+  const trimmed = String(name || "").trim();
+  const dotIndex = trimmed.lastIndexOf(".");
+  if (dotIndex <= 0) {
+    return `${trimmed} (exit)`.trim();
+  }
+  return `${trimmed.slice(0, dotIndex)} (exit)${trimmed.slice(dotIndex)}`;
+}
+
 function detectUkdocsPrintDocumentKind(text) {
   const normalized = String(text || "").toLowerCase();
+  // Checked first: a TrackonTrade "confirmation of exit" release is a
+  // distinct customs event from the EAD release itself, and characteristically
+  // arrives a day or more after the shipment (once customs confirms the
+  // goods actually left) -- matched and stored separately so it never
+  // silently overwrites or gets confused with the EAD/phyto documents.
+  if (/confirmation[_ ]of[_ ]exit/.test(normalized)) {
+    return "exit_confirmation";
+  }
   if (/(phyto|phytosan|kcb|certificate|certificaat|e-certnl|nvwa\.nl|no-reply@nvwa\.nl)/.test(normalized)) {
     return "phyto";
   }
@@ -9023,6 +9058,18 @@ async function syncUkdocsPrintFromGmail(settings, requestUser, query, date) {
     const inspectionMode = ukdocsPrintInspectionMode(item);
     return inspectionMode !== "stock_control";
   });
+  // Confirmation-of-exit releases characteristically arrive a day or more
+  // after the shipment itself (once customs confirms the goods actually
+  // left), so matching them needs a trailing window, not just "today" --
+  // everything else stays same-day-only to avoid loosening real matching.
+  const recentWindowStart = addDaysToIsoDate(syncDate, -3);
+  const recentCollections = state.print_collections.filter((item) => {
+    const itemDate = String(item.shipment_date || "").slice(0, 10);
+    if (itemDate < recentWindowStart || itemDate > syncDate) {
+      return false;
+    }
+    return ukdocsPrintInspectionMode(item) !== "stock_control";
+  });
   const results = [];
 
   for (const message of messages) {
@@ -9043,7 +9090,14 @@ async function syncUkdocsPrintFromGmail(settings, requestUser, query, date) {
       }
       const candidateText = `${textBlob} ${attachmentName}`;
       const kind = detectUkdocsPrintDocumentKind(candidateText);
-      const eligibleCollections = dayCollections.filter((collection) => collectionAcceptsUkdocsPrintDocument(collection, state.customers, kind));
+      const listField = ukdocsPrintListDocumentsField(kind);
+      // A confirmation-of-exit file often shares its exact name with the
+      // EAD/original document already saved for the same shipment the day
+      // before -- store it under a distinguishable name so it never
+      // silently overwrites (or gets treated as identical to) that file.
+      const storedAttachmentName = kind === "exit_confirmation" ? insertExitMarkerIntoFilename(attachmentName) : attachmentName;
+      const candidateCollections = kind === "exit_confirmation" ? recentCollections : dayCollections;
+      const eligibleCollections = candidateCollections.filter((collection) => collectionAcceptsUkdocsPrintDocument(collection, state.customers, kind));
       const ranked = eligibleCollections
         .map((collection) => ({ collection, score: ukdocsPrintCollectionMatchScore(collection, candidateText) }))
         .filter((item) => item.score > 0)
@@ -9057,37 +9111,41 @@ async function syncUkdocsPrintFromGmail(settings, requestUser, query, date) {
         continue;
       }
       const currentMatch = state.print_collections.find((item) => item.id === bestMatch.id || item.shipment_id === bestMatch.shipment_id) || bestMatch;
-      const existingOwner = findUkdocsPrintDocumentOwner(state.print_collections, syncDate, kind, attachmentName);
-      state.print_collections = removeUkdocsPrintDocumentFromOtherCollections(state.print_collections, syncDate, currentMatch.id, kind, attachmentName);
+      // Scoped to the matched collection's own shipment date -- for
+      // exit_confirmation this can be an earlier day than syncDate, and
+      // dedup must apply against that day, not "today".
+      const matchDate = String(currentMatch.shipment_date || syncDate).slice(0, 10);
+      const existingOwner = findUkdocsPrintDocumentOwner(state.print_collections, matchDate, kind, storedAttachmentName);
+      state.print_collections = removeUkdocsPrintDocumentFromOtherCollections(state.print_collections, matchDate, currentMatch.id, kind, storedAttachmentName);
       if (existingOwner?.collection?.id === currentMatch.id) {
         const refreshedCurrent = state.print_collections.find((item) => item.id === currentMatch.id) || currentMatch;
         state.print_collections = upsertUkdocsPrintCollection(state.print_collections, refreshedCurrent);
-        results.push({ status: "skipped", file_name: attachmentName, shipment_reference: currentMatch.shipment_reference, reason: `${kind} already exists` });
+        results.push({ status: "skipped", file_name: storedAttachmentName, shipment_reference: currentMatch.shipment_reference, reason: `${kind} already exists` });
         continue;
       }
-      if (kind !== "phyto" && currentMatch.documents?.[kind]?.storage_name && !existingOwner) {
-        results.push({ status: "skipped", file_name: attachmentName, shipment_reference: currentMatch.shipment_reference, reason: `${kind} already exists` });
+      if (!listField && currentMatch.documents?.[kind]?.storage_name && !existingOwner) {
+        results.push({ status: "skipped", file_name: storedAttachmentName, shipment_reference: currentMatch.shipment_reference, reason: `${kind} already exists` });
         continue;
       }
       let savedDocument = existingOwner?.document || null;
       if (!savedDocument) {
         const buffer = await gmailAttachmentBuffer(accessToken, detail.id, attachment.attachment_id);
-        savedDocument = await saveUkdocsPrintBuffer(currentMatch.id, kind, attachmentName, attachment.mime_type, buffer, requestUser.username);
+        savedDocument = await saveUkdocsPrintBuffer(currentMatch.id, kind, storedAttachmentName, attachment.mime_type, buffer, requestUser.username);
       }
       const updatedCollection = normalizeUkdocsPrintCollection({
         ...currentMatch,
         updated_at: new Date().toISOString(),
         documents: {
           ...(currentMatch.documents || {}),
-          ...(kind === "phyto"
-            ? { phyto_files: [...(currentMatch.documents?.phyto_files || []), savedDocument] }
+          ...(listField
+            ? { [listField]: [...(currentMatch.documents?.[listField] || []), savedDocument] }
             : { [kind]: savedDocument }),
         },
       });
       state.print_collections = upsertUkdocsPrintCollection(state.print_collections, updatedCollection);
       results.push({
         status: "matched",
-        file_name: attachmentName,
+        file_name: storedAttachmentName,
         shipment_reference: updatedCollection.shipment_reference,
         kind,
         reason: existingOwner && existingOwner.collection.id !== currentMatch.id ? "moved to better match" : "-",
@@ -13038,6 +13096,10 @@ async function handleApi(req, res, url) {
       sendJson(res, 200, { collection: existingCollection, print_collections: normalizeUkdocsState(state).print_collections, skipped: true, reason: "temp_phyto_xml already exists" });
       return;
     }
+    if (kind === "exit_confirmation" && hasUkdocsPrintDocumentWithName(existingCollection.documents?.exit_confirmation_files, originalName)) {
+      sendJson(res, 200, { collection: existingCollection, print_collections: normalizeUkdocsState(state).print_collections, skipped: true, reason: "exit_confirmation already exists" });
+      return;
+    }
     if (["inspection_list", "locations_file", "export_extra", "temp_phyto_plants_file", "temp_phyto_plants_xml_file", "ipaffs_file", "ipaffs_plants_file"].includes(kind) && existingCollection.documents?.[kind]?.storage_name) {
       await deleteSingleUkdocsPrintDocumentFile(existingCollection.documents[kind]);
       if (UKDOCS_CSI_DOCUMENT_KINDS.has(kind)) {
@@ -13062,6 +13124,8 @@ async function handleApi(req, res, url) {
             ? { temp_phyto_files: [...(existingCollection.documents?.temp_phyto_files || []), savedDocument] }
             : kind === "temp_phyto_xml"
               ? { temp_phyto_xml_files: [...(existingCollection.documents?.temp_phyto_xml_files || []), savedDocument] }
+              : kind === "exit_confirmation"
+                ? { exit_confirmation_files: [...(existingCollection.documents?.exit_confirmation_files || []), savedDocument] }
             : { [kind]: savedDocument }),
       },
       csi_report: shouldResetUkdocsCsiReportForDocumentKind(kind)
@@ -13094,6 +13158,8 @@ async function handleApi(req, res, url) {
         ? (collection?.documents?.temp_phyto_xml_files || [])[documentIndex]
       : kind === "generated"
         ? (collection?.documents?.generated_files || [])[documentIndex]
+      : kind === "exit_confirmation"
+        ? (collection?.documents?.exit_confirmation_files || [])[documentIndex]
         : collection?.documents?.[kind];
     if (!collection || !document?.storage_name) {
       sendText(res, 404, "UKdocs Print document not found");
@@ -13169,6 +13235,15 @@ async function handleApi(req, res, url) {
       }
       generatedFiles.splice(documentIndex, 1);
       updatedDocuments = { ...updatedDocuments, generated_files: generatedFiles };
+    } else if (kind === "exit_confirmation") {
+      const exitConfirmationFiles = [...(existingCollection.documents?.exit_confirmation_files || [])];
+      removedDocument = exitConfirmationFiles[documentIndex] || null;
+      if (!removedDocument) {
+        sendJson(res, 404, { error: "UKdocs Print document not found" });
+        return;
+      }
+      exitConfirmationFiles.splice(documentIndex, 1);
+      updatedDocuments = { ...updatedDocuments, exit_confirmation_files: exitConfirmationFiles };
     } else if (["export_extra", "inspection_list", "locations_file", "temp_phyto_plants_file", "temp_phyto_plants_xml_file", "ipaffs_file", "ipaffs_plants_file"].includes(kind)) {
       removedDocument = existingCollection.documents?.[kind] || null;
       if (!removedDocument) {

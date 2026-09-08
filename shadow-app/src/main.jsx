@@ -2741,9 +2741,9 @@ function ukdocsInspectionDocumentKeys(collection) {
     return ["inspection_list", "locations_file"];
   }
   if (inspectionMode === "reinspection") {
-    return ["phyto", "inspection_list", "locations_file", "export_extra", "temp_phyto_plants_file"];
+    return ["phyto", "inspection_list", "locations_file", "export_extra", "temp_phyto_plants_file", "exit_confirmation"];
   }
-  return ["phyto", "export_extra", "temp_phyto_plants_file"];
+  return ["phyto", "export_extra", "temp_phyto_plants_file", "exit_confirmation"];
 }
 
 function ukdocsMenuDocumentVisibility(customer, menuKey) {
@@ -3827,6 +3827,7 @@ const UKDOCS_PRINT_DOCUMENTS = [
   { key: "temp_phyto_plants_xml_file", label: "Temporary phyto Plants XML", accept: ".xml" },
   { key: "ipaffs_file", label: "IPAFFS Flowers+ACC", accept: ".csv,.xlsx,.xls" },
   { key: "ipaffs_plants_file", label: "IPAFFS Plants", accept: ".csv,.xlsx,.xls" },
+  { key: "exit_confirmation", label: "Confirmation of exit", accept: ".pdf,.xlsx,.xls" },
 ];
 
 function ukdocsPrintStatusDefinition(status) {
@@ -4389,6 +4390,7 @@ function UkdocsPrintPage({ currentUser }) {
   const selectedPhytoFiles = selectedCollection?.documents?.phyto_files || [];
   const selectedTempPhytoFiles = selectedCollection?.documents?.temp_phyto_files || [];
   const selectedGeneratedFiles = selectedCollection?.documents?.generated_files || [];
+  const selectedExitConfirmationFiles = selectedCollection?.documents?.exit_confirmation_files || [];
   const selectedCollectionProgress = selectedCollection ? ukdocsPrintCollectionProgress(selectedCollection, customers) : null;
 
   useEffect(() => {
@@ -4847,6 +4849,8 @@ function UkdocsPrintPage({ currentUser }) {
                     ? null
                     : documentDefinition.key === "temp_phyto"
                       ? null
+                    : documentDefinition.key === "exit_confirmation"
+                      ? null
                     : selectedCollection.documents?.[documentDefinition.key] || null;
                   return (
                     <div key={documentDefinition.key} className="ukdocs-upload-card">
@@ -4879,6 +4883,22 @@ function UkdocsPrintPage({ currentUser }) {
                                     {tempPhytoFile.original_name || `Temporary phyto ${index + 1}`}
                                   </a>
                                   <button type="button" onClick={() => deleteCollectionDocument("temp_phyto", index)} disabled={saving}>Delete</button>
+                                </span>
+                              ))}
+                            </div>
+                          )}
+                        </>
+                      ) : documentDefinition.key === "exit_confirmation" ? (
+                        <>
+                          <small>{selectedExitConfirmationFiles.length ? `${selectedExitConfirmationFiles.length} confirmation of exit document(s) saved.` : "No file saved yet."}</small>
+                          {!!selectedExitConfirmationFiles.length && (
+                            <div className="row-actions spread-actions">
+                              {selectedExitConfirmationFiles.map((exitFile, index) => (
+                                <span key={`${exitFile.storage_name}-${index}`} className="row-actions spread-actions">
+                                  <a href={`/api/ukdocs-print/collections/${encodeURIComponent(selectedCollection.id)}/documents/exit_confirmation/${index}`}>
+                                    {exitFile.original_name || `Confirmation of exit ${index + 1}`}
+                                  </a>
+                                  <button type="button" onClick={() => deleteCollectionDocument("exit_confirmation", index)} disabled={saving}>Delete</button>
                                 </span>
                               ))}
                             </div>
