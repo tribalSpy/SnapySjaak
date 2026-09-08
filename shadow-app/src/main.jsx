@@ -2394,6 +2394,90 @@ const UKDOCS_CATEGORY_DEFINITIONS = [
   { code: "920", label: "Plants", shortLabel: "Plants" },
 ];
 
+function financeAuditTruckNumber(collection) {
+  const match = String(collection?.truck_number || "").match(/^\s*(\d+)/);
+  return match ? match[1] : (collection?.truck_number || "");
+}
+
+function financeAuditOmschrijving(category, collection) {
+  // Bouquets (1000) never get a hub code on the finance sheet -- always the
+  // fixed label instead, per how finance already reads this report.
+  if (category === "1000") {
+    return "LTD Boeketten";
+  }
+  return collection?.hub_code || "";
+}
+
+// audit_reports[].summary_rows already carries per-category packages/value
+// totals from when the invoices were generated (ukdocs_worker.py) -- reused
+// here rather than re-deriving anything.
+function financeAuditSummaryValue(auditReport, category, field) {
+  const rows = Array.isArray(auditReport?.summary_rows) ? auditReport.summary_rows : [];
+  const row = rows.find((item) => item.scope === "category" && item.field === field && String(item.group_label || "").startsWith(`${category} `));
+  if (!row) {
+    return "";
+  }
+  const value = row.invoice_value !== "" && row.invoice_value != null ? row.invoice_value : row.export_value;
+  return value === "" || value == null ? "" : String(value);
+}
+
+// One row per (shipment, uploaded category) -- Finance Audit UKDocs. Pure
+// derivation from state already returned by GET /api/ukdocs/state, plus the
+// small finance_audit_overrides list for the parts that genuinely can't be
+// derived (opmerking, and manual value/volume corrections).
+function buildUkdocsFinanceAuditRows(state) {
+  const shipments = Array.isArray(state?.shipments) ? state.shipments : [];
+  const printCollections = Array.isArray(state?.print_collections) ? state.print_collections : [];
+  const customers = Array.isArray(state?.customers) ? state.customers : [];
+  const auditReports = Array.isArray(state?.audit_reports) ? state.audit_reports : [];
+  const overrides = Array.isArray(state?.finance_audit_overrides) ? state.finance_audit_overrides : [];
+  const rows = [];
+  for (const shipment of shipments) {
+    const collection = printCollections.find((item) => item.id === shipment.print_collection_id) || null;
+    const customer = customers.find((item) => item.id === shipment.customer_id) || null;
+    // audit_reports is already sorted newest-first by normalizeUkdocsState,
+    // so the first match is the most recent generation for this shipment.
+    const auditReport = auditReports.find((item) => item.shipment_id === shipment.id) || null;
+    const phytoNames = (collection?.documents?.phyto_files || []).map((file) => file.original_name).filter(Boolean).join("/");
+    const currency = String(customer?.default_currency || customer?.export_defaults?.currency || "").trim().toUpperCase();
+    const isEuroCustomer = currency.includes("EUR") || currency === "EU";
+    for (const categoryDefinition of UKDOCS_CATEGORY_DEFINITIONS) {
+      const category = categoryDefinition.code;
+      const uploaded = shipment.uploaded_files?.[category];
+      if (!uploaded?.file_name) {
+        continue;
+      }
+      const override = overrides.find((item) => item.shipment_id === shipment.id && item.category === category) || null;
+      const rawValue = override?.value_override || financeAuditSummaryValue(auditReport, category, "customs_value");
+      rows.push({
+        key: `${shipment.id}-${category}`,
+        shipment_id: shipment.id,
+        category,
+        week: isoWeekNumber(shipment.shipment_date),
+        datum: shipment.shipment_date,
+        truck: financeAuditTruckNumber(collection),
+        rit: category,
+        omschrijving: financeAuditOmschrijving(category, collection),
+        type: categoryDefinition.label,
+        customer_name: customer?.customer_name || shipment.customer_name || "",
+        transporteur: customer?.transporter_name || "",
+        grensovergang: customer?.border_crossing_default || collection?.border_crossing || "",
+        expediteur: customer?.expediteur_name || "",
+        kenteken: collection?.trailer_number || "",
+        factuur_nummer: shipment.invoice_numbers_by_category?.[category] || "",
+        location_connect: collection?.reference_connect || "",
+        opmerking: override?.opmerking || "",
+        is_euro_customer: isEuroCustomer,
+        waarde_gbp: !isEuroCustomer ? rawValue : "",
+        waarde_eu: isEuroCustomer ? rawValue : "",
+        volume: override?.volume_override || financeAuditSummaryValue(auditReport, category, "packages"),
+        phyto_marston: phytoNames,
+      });
+    }
+  }
+  return rows.sort((a, b) => String(b.datum || "").localeCompare(String(a.datum || "")));
+}
+
 const UKDOCS_COMPANY_FIELDS = [
   ["company_name", "Company name"],
   ["address", "Address", "textarea"],
@@ -2432,6 +2516,9 @@ const UKDOCS_CUSTOMER_FIELDS = [
   ["csi_email_body", "CSI email body template", "textarea"],
   ["default_invoice_language_text", "Default invoice language / text", "textarea"],
   ["default_document_references", "Default document references", "textarea"],
+  ["transporter_name", "Transporteur (Finance Audit default)"],
+  ["border_crossing_default", "Grensovergang (Finance Audit default)"],
+  ["expediteur_name", "Expediteur (Finance Audit default)"],
 ];
 
 const UKDOCS_CUSTOMER_INVOICE_VISIBILITY_FIELDS = [
@@ -2558,6 +2645,9 @@ function emptyUkdocsCustomer() {
     menu_show_ukdocsprint_inspection_list: false,
     menu_show_ukdocsprint_locations_file: false,
     export_defaults: Object.fromEntries(UKDOCS_EXPORT_DEFAULT_FIELDS.map(([key]) => [key, ""])),
+    transporter_name: "",
+    border_crossing_default: "",
+    expediteur_name: "",
   };
 }
 
@@ -2972,6 +3062,11 @@ function UkdocsPage({ currentUser }) {
   const [selectedAuditReportId, setSelectedAuditReportId] = useState("");
   const [exampleImportFiles, setExampleImportFiles] = useState({ invoice_example: null, export_example: null });
   const [shipmentUploadInputVersion, setShipmentUploadInputVersion] = useState(0);
+  const [financeAuditFromDate, setFinanceAuditFromDate] = useState("");
+  const [financeAuditToDate, setFinanceAuditToDate] = useState("");
+  // Uncommitted edits for opmerking/value/volume, keyed by "shipmentId-category" --
+  // everything else on a Finance Audit row is derived, not editable.
+  const [financeAuditEdits, setFinanceAuditEdits] = useState({});
 
   useEffect(() => {
     let cancelled = false;
@@ -3005,6 +3100,16 @@ function UkdocsPage({ currentUser }) {
   const auditReports = state?.audit_reports || [];
   const printCollections = state?.print_collections || [];
   const selectedAuditReport = auditReports.find((report) => report.id === selectedAuditReportId) || auditReports[0] || null;
+  const financeAuditRows = useMemo(() => buildUkdocsFinanceAuditRows(state), [state]);
+  const financeAuditVisibleRows = financeAuditRows.filter((row) => {
+    if (financeAuditFromDate && String(row.datum || "") < financeAuditFromDate) {
+      return false;
+    }
+    if (financeAuditToDate && String(row.datum || "") > financeAuditToDate) {
+      return false;
+    }
+    return true;
+  });
   const selectedUkdocsCustomer = customers.find((item) => item.id === shipmentDraft.customer_id) || null;
   const selectedPrintCollection = printCollections.find((item) => item.id === shipmentDraft.print_collection_id) || null;
   const availablePrintCollections = useMemo(
@@ -3211,6 +3316,65 @@ function UkdocsPage({ currentUser }) {
     } finally {
       setSaving(false);
     }
+  }
+
+  const FINANCE_AUDIT_EDIT_FIELDS = ["opmerking", "value_override", "volume_override"];
+
+  function financeAuditEditKey(shipmentId, category) {
+    return `${shipmentId}-${category}`;
+  }
+
+  function financeAuditFieldValue(row, field) {
+    const edits = financeAuditEdits[financeAuditEditKey(row.shipment_id, row.category)];
+    if (edits && field in edits) {
+      return edits[field];
+    }
+    if (field === "value_override") {
+      return row.waarde_gbp || row.waarde_eu || "";
+    }
+    if (field === "volume_override") {
+      return row.volume || "";
+    }
+    return row.opmerking || "";
+  }
+
+  function updateFinanceAuditEdit(row, field, value) {
+    const key = financeAuditEditKey(row.shipment_id, row.category);
+    setFinanceAuditEdits((current) => ({ ...current, [key]: { ...current[key], [field]: value } }));
+  }
+
+  function isFinanceAuditRowDirty(row) {
+    const edits = financeAuditEdits[financeAuditEditKey(row.shipment_id, row.category)];
+    if (!edits) {
+      return false;
+    }
+    return FINANCE_AUDIT_EDIT_FIELDS.some((field) => field in edits && edits[field] !== financeAuditFieldValue(row, field));
+  }
+
+  async function saveFinanceAuditEdit(row) {
+    const key = financeAuditEditKey(row.shipment_id, row.category);
+    const edits = financeAuditEdits[key];
+    if (!edits) {
+      return;
+    }
+    const existingOverrides = state?.finance_audit_overrides || [];
+    const existingOverride = existingOverrides.find((item) => item.shipment_id === row.shipment_id && item.category === row.category) || {};
+    const nextOverride = {
+      shipment_id: row.shipment_id,
+      category: row.category,
+      opmerking: "opmerking" in edits ? edits.opmerking : (existingOverride.opmerking || row.opmerking || ""),
+      value_override: "value_override" in edits ? edits.value_override : (existingOverride.value_override || ""),
+      volume_override: "volume_override" in edits ? edits.volume_override : (existingOverride.volume_override || ""),
+    };
+    const nextOverrides = existingOverrides.some((item) => item.shipment_id === row.shipment_id && item.category === row.category)
+      ? existingOverrides.map((item) => (item.shipment_id === row.shipment_id && item.category === row.category ? nextOverride : item))
+      : [...existingOverrides, nextOverride];
+    await saveStatePatch({ finance_audit_overrides: nextOverrides }, "Finance audit row saved.");
+    setFinanceAuditEdits((current) => {
+      const next = { ...current };
+      delete next[key];
+      return next;
+    });
   }
 
   function currentShipmentPayload() {
@@ -3509,6 +3673,7 @@ function UkdocsPage({ currentUser }) {
           ["templates", "Templates"],
           ["history", "Shipment history"],
           ["audits", "Audit reports"],
+          ["financeaudit", "Finance Audit UKDocs"],
         ].map(([key, label]) => (
           <button key={key} type="button" className={activeMenu === key ? "active" : ""} onClick={() => (key === "new" ? openNewShipmentScreen() : setActiveMenu(key))}>{label}</button>
         ))}
@@ -3821,6 +3986,84 @@ function UkdocsPage({ currentUser }) {
               </div>
             </>
           )}
+        </div>
+      )}
+
+      {activeMenu === "financeaudit" && (
+        <div className="data-table-card ukdocs-stack">
+          <div className="section-header"><h2>Finance Audit UKDocs</h2></div>
+          <div className="notice">One row per invoice/category actually shipped, built from the same shipments/customers/audit data already saved elsewhere -- opmerking and the value/volume figures are the only editable parts.</div>
+          <div className="overview-filters">
+            <label>
+              <span>From date</span>
+              <input type="date" value={financeAuditFromDate} onChange={(event) => setFinanceAuditFromDate(event.target.value)} />
+            </label>
+            <label>
+              <span>To date</span>
+              <input type="date" value={financeAuditToDate} onChange={(event) => setFinanceAuditToDate(event.target.value)} />
+            </label>
+          </div>
+          <div className="row-actions spread-actions">
+            <button
+              type="button"
+              onClick={() => downloadExcelFriendlyTable(
+                "finance-audit-ukdocs.xls",
+                ["Week", "Datum", "Truck", "Rit", "Omschrijving", "Type", "Customer", "Transporteur", "Grensovergang", "Expediteur", "Kenteken", "Factuur nummer", "Location Connect", "Opmerking", "Waarde als GBP", "Waarde als EU", "Volume Marston (EF+EC)", "Phyto Marston"],
+                financeAuditVisibleRows.map((row) => [
+                  row.week, row.datum, row.truck, row.rit, row.omschrijving, row.type, row.customer_name,
+                  row.transporteur, row.grensovergang, row.expediteur, row.kenteken, row.factuur_nummer,
+                  row.location_connect, financeAuditFieldValue(row, "opmerking"), row.waarde_gbp, row.waarde_eu,
+                  financeAuditFieldValue(row, "volume_override"), row.phyto_marston,
+                ]),
+              )}
+              disabled={!financeAuditVisibleRows.length}
+            >
+              Export active table
+            </button>
+          </div>
+          <div className="table-wrap">
+            <table className="data-table">
+              <thead>
+                <tr>
+                  <th>Week</th><th>Datum</th><th>Truck</th><th>Rit</th><th>Omschrijving</th><th>Type</th>
+                  <th>Customer</th><th>Transporteur</th><th>Grensovergang</th><th>Expediteur</th><th>Kenteken</th>
+                  <th>Factuur nummer</th><th>Location Connect</th><th>Opmerking</th><th>Waarde als GBP</th>
+                  <th>Waarde als EU</th><th>Volume Marston (EF+EC)</th><th>Phyto Marston</th><th>Actions</th>
+                </tr>
+              </thead>
+              <tbody>
+                {financeAuditVisibleRows.map((row) => {
+                  const dirty = isFinanceAuditRowDirty(row);
+                  return (
+                    <tr key={row.key}>
+                      <td>{row.week || "-"}</td>
+                      <td>{row.datum || "-"}</td>
+                      <td>{row.truck || "-"}</td>
+                      <td>{row.rit}</td>
+                      <td>{row.omschrijving || "-"}</td>
+                      <td>{row.type}</td>
+                      <td>{row.customer_name || "-"}</td>
+                      <td>{row.transporteur || "-"}</td>
+                      <td>{row.grensovergang || "-"}</td>
+                      <td>{row.expediteur || "-"}</td>
+                      <td>{row.kenteken || "-"}</td>
+                      <td>{row.factuur_nummer || "-"}</td>
+                      <td>{row.location_connect || "-"}</td>
+                      <td><input value={financeAuditFieldValue(row, "opmerking")} onChange={(event) => updateFinanceAuditEdit(row, "opmerking", event.target.value)} /></td>
+                      <td>{row.is_euro_customer ? "-" : <input value={financeAuditFieldValue(row, "value_override")} onChange={(event) => updateFinanceAuditEdit(row, "value_override", event.target.value)} placeholder="GBP" />}</td>
+                      <td>{row.is_euro_customer ? <input value={financeAuditFieldValue(row, "value_override")} onChange={(event) => updateFinanceAuditEdit(row, "value_override", event.target.value)} placeholder="EUR" /> : "-"}</td>
+                      <td><input value={financeAuditFieldValue(row, "volume_override")} onChange={(event) => updateFinanceAuditEdit(row, "volume_override", event.target.value)} /></td>
+                      <td>{row.phyto_marston || "-"}</td>
+                      <td className="row-actions">
+                        {dirty && <button type="button" className="primary" onClick={() => saveFinanceAuditEdit(row)} disabled={saving}>Save</button>}
+                      </td>
+                    </tr>
+                  );
+                })}
+                {!financeAuditVisibleRows.length && <tr><td colSpan="19">No finance audit rows for the selected date range.</td></tr>}
+              </tbody>
+            </table>
+          </div>
         </div>
       )}
     </section>

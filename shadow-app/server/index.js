@@ -569,6 +569,7 @@ const defaultUkdocsState = {
   audit_reports: [],
   print_collections: [],
   pd_reference: [],
+  finance_audit_overrides: [],
   pd_dropdown_options: {
     cities: [],
     pd_codes: [],
@@ -1615,6 +1616,19 @@ function normalizeUkdocsPdReferenceEntry(entry) {
   };
 }
 
+// Only the parts of a Finance Audit UKDocs row that can't be derived from
+// existing data: the free-text remark, plus optional manual corrections for
+// value/volume when the underlying audit data is missing or wrong.
+function normalizeUkdocsFinanceAuditOverride(entry) {
+  return {
+    shipment_id: normalizeUkdocsText(entry?.shipment_id),
+    category: normalizeUkdocsText(entry?.category),
+    opmerking: String(entry?.opmerking || "").trim(),
+    value_override: normalizeUkdocsText(entry?.value_override),
+    volume_override: normalizeUkdocsText(entry?.volume_override),
+  };
+}
+
 function normalizeUkdocsCustomer(customer) {
   return {
     id: normalizeUkdocsText(customer?.id) || crypto.randomUUID(),
@@ -1660,6 +1674,11 @@ function normalizeUkdocsCustomer(customer) {
     show_invoice_eori_number: customer?.show_invoice_eori_number !== false,
     show_invoice_importer_number: customer?.show_invoice_importer_number !== false,
     export_defaults: normalizeUkdocsExportDefaults(customer?.export_defaults || {}),
+    // Defaults used only by the Finance Audit UKDocs report -- purely
+    // additive, no other feature reads these.
+    transporter_name: normalizeUkdocsText(customer?.transporter_name),
+    border_crossing_default: normalizeUkdocsText(customer?.border_crossing_default),
+    expediteur_name: normalizeUkdocsText(customer?.expediteur_name),
   };
 }
 
@@ -2244,6 +2263,9 @@ function normalizeUkdocsState(state) {
     print_collections: Array.isArray(state?.print_collections) ? state.print_collections.map(normalizeUkdocsPrintCollection).sort((a, b) => String(b.shipment_date || b.updated_at).localeCompare(String(a.shipment_date || a.updated_at))) : [],
     pd_reference: Array.isArray(state?.pd_reference) ? state.pd_reference.map(normalizeUkdocsPdReferenceEntry).sort((a, b) => a.city_name.localeCompare(b.city_name)) : [],
     pd_dropdown_options: normalizeUkdocsPdDropdownOptions(state?.pd_dropdown_options),
+    finance_audit_overrides: Array.isArray(state?.finance_audit_overrides)
+      ? state.finance_audit_overrides.map(normalizeUkdocsFinanceAuditOverride).filter((item) => item.shipment_id && item.category)
+      : [],
   };
 }
 
