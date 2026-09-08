@@ -2882,7 +2882,7 @@ function ukdocsShipmentStatus(shipment) {
   return "files_uploaded";
 }
 
-async function downloadUkdocsFilesWithPrompt(files) {
+async function downloadUkdocsFilesWithPrompt(files, folderName = "") {
   if (!Array.isArray(files) || !files.length) {
     return;
   }
@@ -2892,9 +2892,15 @@ async function downloadUkdocsFilesWithPrompt(files) {
   }
 
   try {
-    const directoryHandle = await window.showDirectoryPicker();
+    const pickedDirectoryHandle = await window.showDirectoryPicker();
+    const cleanedFolderName = safeDownloadFilename(String(folderName || "").trim());
+    // Puts every generated file for this shipment together in one truck-named
+    // folder inside wherever the user picked, instead of dumping them loose.
+    const targetDirectoryHandle = cleanedFolderName && cleanedFolderName !== "download"
+      ? await pickedDirectoryHandle.getDirectoryHandle(cleanedFolderName, { create: true })
+      : pickedDirectoryHandle;
     for (const file of files) {
-      const fileHandle = await directoryHandle.getFileHandle(safeDownloadFilename(file.name), { create: true });
+      const fileHandle = await targetDirectoryHandle.getFileHandle(safeDownloadFilename(file.name), { create: true });
       const writable = await fileHandle.createWritable();
       const binary = window.atob(file.content_base64);
       const bytes = new Uint8Array(binary.length);
@@ -3259,7 +3265,7 @@ function UkdocsPage({ currentUser }) {
       }
       setShipmentDraft(payload.shipment || shipmentDraft);
       setMessage(`Generated ${payload.files?.length || 0} UKdocs files and saved the finished shipment.`);
-      await downloadUkdocsFilesWithPrompt(payload.files || []);
+      await downloadUkdocsFilesWithPrompt(payload.files || [], payload.shipment?.truck_number || shipmentDraft.truck_number);
     } catch (generateError) {
       setError(generateError.message);
     } finally {
@@ -3615,7 +3621,7 @@ function UkdocsPage({ currentUser }) {
                 {saving ? "Generating..." : "Generate documents"}
               </button>
             )}
-            <button type="button" disabled={!generatedFiles.length} onClick={() => downloadUkdocsFilesWithPrompt(generatedFiles)}>Download files</button>
+            <button type="button" disabled={!generatedFiles.length} onClick={() => downloadUkdocsFilesWithPrompt(generatedFiles, shipmentDraft.truck_number)}>Download files</button>
             <button type="button" disabled={!generatedFiles.length} onClick={() => generatedFiles.forEach((file) => downloadBase64File(file.name, file.content_base64, file.mime_type))}>Download only</button>
               </div>
 
@@ -6537,6 +6543,8 @@ function PdKeuringPage({ currentUser }) {
       reference_connect: "",
       pd_keuring_done: false,
       pd_keuring_made_by: "",
+      truck_number: "",
+      trailer_number: "",
     };
   }
 
@@ -6820,6 +6828,14 @@ function PdKeuringPage({ currentUser }) {
                   <span>Keuring made by</span>
                   <input list="pd-keuring-staff-names" value={rowDraft.pd_keuring_made_by || ""} onChange={(event) => updateRowDraftField("pd_keuring_made_by", event.target.value)} />
                 </label>
+                <label>
+                  <span>Truck number</span>
+                  <input value={rowDraft.truck_number || ""} onChange={(event) => updateRowDraftField("truck_number", event.target.value)} placeholder="For example: 1 BHM" />
+                </label>
+                <label>
+                  <span>Truck / trailer licence plate</span>
+                  <input value={rowDraft.trailer_number || ""} onChange={(event) => updateRowDraftField("trailer_number", event.target.value)} />
+                </label>
               </div>
               <label className="checkbox-label">
                 <input type="checkbox" checked={rowDraft.pd_keuring_done === true} onChange={(event) => updateRowDraftField("pd_keuring_done", event.target.checked)} />
@@ -6889,8 +6905,8 @@ function PdKeuringPage({ currentUser }) {
                   <th>PD code</th>
                   <th>Reference connect</th>
                   <th>Customer</th>
-                  <th>Done</th>
-                  <th>Made by</th>
+                  <th>Truck number</th>
+                  <th>Truck / trailer licence plate</th>
                   <th>Boxes</th>
                   <th>Pieces</th>
                   <th>Sheet sync</th>
@@ -6915,8 +6931,8 @@ function PdKeuringPage({ currentUser }) {
                       <td>{row.pd_code || "-"}</td>
                       <td><input value={inlineFieldValue(row, "reference_connect")} onChange={(event) => updateInlineField(row.id, "reference_connect", event.target.value)} /></td>
                       <td>{row.customer_name || "-"}</td>
-                      <td>{row.pd_keuring_done ? "Yes" : "No"}</td>
-                      <td>{row.pd_keuring_made_by || "-"}</td>
+                      <td>{row.truck_number || "-"}</td>
+                      <td>{row.trailer_number || "-"}</td>
                       <td><input value={inlineFieldValue(row, "expected_boxes")} onChange={(event) => updateInlineField(row.id, "expected_boxes", event.target.value)} placeholder="Boxes" /></td>
                       <td><input value={inlineFieldValue(row, "expected_pieces")} onChange={(event) => updateInlineField(row.id, "expected_pieces", event.target.value)} placeholder="Pieces" /></td>
                       <td title={conflictTitle}>

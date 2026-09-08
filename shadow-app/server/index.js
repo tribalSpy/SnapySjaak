@@ -12887,6 +12887,8 @@ async function handleApi(req, res, url) {
       day_name: body?.day_name ?? existingCollection.day_name,
       pd_keuring_done: body?.pd_keuring_done ?? existingCollection.pd_keuring_done,
       pd_keuring_made_by: body?.pd_keuring_made_by ?? existingCollection.pd_keuring_made_by,
+      truck_number: body?.truck_number ?? existingCollection.truck_number,
+      trailer_number: body?.trailer_number ?? existingCollection.trailer_number,
       customer_id: body?.customer_id ?? existingCollection.customer_id,
       customer_name: body?.customer_name ?? existingCollection.customer_name,
       updated_at: new Date().toISOString(),
@@ -12934,9 +12936,15 @@ async function handleApi(req, res, url) {
         pd_code: item?.pd_code,
         // Reference connect and done/made-by are deliberately never carried
         // over from a proposal -- each shipment needs these entered fresh.
+        // truck_number/trailer_number are likewise left blank unless the
+        // caller explicitly provides them (a manual "Add row" does; an
+        // accepted last-week proposal doesn't, since trucks aren't tied to
+        // the route).
         reference_connect: "",
         pd_keuring_done: false,
         pd_keuring_made_by: "",
+        truck_number: item?.truck_number || "",
+        trailer_number: item?.trailer_number || "",
         updated_at: new Date().toISOString(),
       });
       // Brand new, app-original row -- always unambiguous to write, never a
