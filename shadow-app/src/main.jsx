@@ -7957,6 +7957,10 @@ function App() {
   const heartbeat = useHeartbeatMonitor(publicClockMode || Boolean(auth.user));
   const requestedDate = dateWasManuallySelected ? selectedDate : "";
   const canViewPhotos = hasPermission(auth.user, PERMISSIONS.PHOTOS_VIEW);
+  // Not a PAGE_DEFINITIONS entry -- this is a separate static app
+  // (warehouse-dashboard/public), served under /warehouse/, not a React
+  // page rendered by setPage().
+  const canViewWarehouse = hasPermission(auth.user, PERMISSIONS.WAREHOUSE_VIEW);
   const visiblePages = availablePagesForUser(auth.user);
   const onPhotosPage = page === "dashboard" && canViewPhotos;
   const { data, loading, error } = useDashboardData(requestedDate, searchTerm, syncVersion, loggedIn && onPhotosPage);
@@ -8147,6 +8151,11 @@ function App() {
               {item.label}
             </button>
           ))}
+          {canViewWarehouse && (
+            <a href="/warehouse/" target="_blank" rel="noreferrer">
+              Warehouse Dashboard
+            </a>
+          )}
         </nav>
 
         {canViewPhotos && (

@@ -282,6 +282,19 @@ h1 {
   font-weight: 800;
 }
 
+.side-nav a {
+  display: block;
+  box-sizing: border-box;
+  min-height: 40px;
+  padding: 8px 10px;
+  border: 1px solid #b8c2cc;
+  border-radius: 8px;
+  background: #ffffff;
+  color: #17202a;
+  text-decoration: none;
+  text-align: left;
+}
+
 .signed-in {
   margin-top: 24px;
   border-top: 1px solid #d9dee5;
