@@ -2147,6 +2147,11 @@ function normalizeUkdocsPrintCollection(collection) {
     csi_report: normalizeUkdocsCsiReport(collection?.csi_report),
   };
   normalized.status = deriveUkdocsPrintCollectionStatus(normalized);
+  // Same pass condition the /csi/send route gates on -- computed once here
+  // so every consumer (Finance Audit UKDocs included) agrees on what "passed
+  // the CSI check" means without re-deriving the plant-reconciled rule.
+  normalized.csi_check_passed = normalized.csi_report.status === "done"
+    && (String(normalized.csi_report.overall_status || "").trim().toLowerCase() === "pass" || isUkdocsCsiPlantReconciledPassReport(normalized.csi_report));
   return normalized;
 }
 

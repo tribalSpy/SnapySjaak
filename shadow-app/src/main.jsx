@@ -2431,9 +2431,29 @@ function buildUkdocsFinanceAuditRows(state) {
   const customers = Array.isArray(state?.customers) ? state.customers : [];
   const auditReports = Array.isArray(state?.audit_reports) ? state.audit_reports : [];
   const overrides = Array.isArray(state?.finance_audit_overrides) ? state.finance_audit_overrides : [];
-  const rows = [];
+
+  // Redoing a shipment's documents without reopening the same shipment
+  // record creates a second shipment pointing at the same print collection
+  // (the generate route matches the collection by date/truck/reference even
+  // when the shipment id is new) -- keep only the most recently updated
+  // shipment per collection so a redo never doubles a row up.
+  const latestShipmentByCollection = new Map();
   for (const shipment of shipments) {
+    const collectionKey = shipment.print_collection_id || shipment.id;
+    const existing = latestShipmentByCollection.get(collectionKey);
+    if (!existing || String(shipment.updated_at || "") > String(existing.updated_at || "")) {
+      latestShipmentByCollection.set(collectionKey, shipment);
+    }
+  }
+
+  const rows = [];
+  for (const shipment of latestShipmentByCollection.values()) {
     const collection = printCollections.find((item) => item.id === shipment.print_collection_id) || null;
+    // Finance only wants sendings that actually cleared the CSI check --
+    // same pass condition that unlocks "Send papers to CSI" in UKDocs CSI.
+    if (!collection?.csi_check_passed) {
+      continue;
+    }
     const customer = customers.find((item) => item.id === shipment.customer_id) || null;
     // audit_reports is already sorted newest-first by normalizeUkdocsState,
     // so the first match is the most recent generation for this shipment.
