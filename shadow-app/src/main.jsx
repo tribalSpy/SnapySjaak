@@ -4770,10 +4770,6 @@ function UkdocsPrintPage({ currentUser }) {
 
   const collections = state?.print_collections || [];
   const customers = state?.customers || [];
-  const availableCollectionDates = useMemo(
-    () => [...new Set(collections.map((item) => String(item.shipment_date || "").slice(0, 10)).filter(Boolean))].sort(),
-    [collections],
-  );
   const hasCollectionsLoadedForSheetDate = useMemo(
     () => collections.some((item) => item.collection_type !== "stock_control" && String(item.shipment_date || "").slice(0, 10) === sheetSyncDate),
     [collections, sheetSyncDate],
@@ -5118,57 +5114,11 @@ function UkdocsPrintPage({ currentUser }) {
       {message && <div className="notice">{message}</div>}
       {error && <div className="notice danger">{error}</div>}
 
-      <div className="data-table-card ukdocs-stack">
-        <div className="section-header"><h2>Today Sendings Spreadsheet</h2></div>
-        <div className="form-grid">
-          <label><span>Date to import</span><input type="date" value={sheetSyncDate} onChange={(event) => setSheetSyncDate(event.target.value)} /></label>
-          <label><span>Spreadsheet settings</span><input value={gmailSettings.ukdocs_print_spreadsheet_id ? "Managed in Settings" : "Not set in Settings"} readOnly /></label>
-        </div>
-        <div className="row-actions spread-actions">
-          <button type="button" className="primary" onClick={syncSheetSendings} disabled={sheetBusy}>{sheetBusy ? (hasCollectionsLoadedForSheetDate ? "Updating..." : "Starting...") : (hasCollectionsLoadedForSheetDate ? "Update" : "Start")}</button>
-        </div>
-      </div>
-
-      <div className="data-table-card ukdocs-stack">
-        <div className="section-header"><h2>Gmail Inbox Pickup</h2></div>
-        <div className="form-grid">
-          <label><span>Connected Gmail account</span><input value={gmailSettings.gmail_connected_email || ""} readOnly placeholder="Not connected yet" /></label>
-          <label><span>Export date</span><input type="date" value={sheetSyncDate} onChange={(event) => setSheetSyncDate(event.target.value)} /></label>
-          <label className="wide"><span>Extra Gmail filter</span><input value={gmailQuery} onChange={(event) => setGmailQuery(event.target.value)} placeholder="has:attachment" /></label>
-        </div>
-        {gmailSettings.gmail_connected_email ? (
-          <div className="notice">Reconnect UKdocs Gmail with this exact account: {gmailSettings.gmail_connected_email}</div>
-        ) : (
-          <div className="notice danger">UKdocs Gmail is not connected. Reconnect with the Gmail account that should receive the UKdocs documents.</div>
-        )}
-        <div className="checkbox-grid">
-          <label className="checkbox-field">
-            <input type="checkbox" checked={autoSyncEnabled} onChange={(event) => setAutoSyncEnabled(event.target.checked)} />
-            <span>Auto listen for Gmail attachments while this page is open</span>
-          </label>
-        </div>
-        <div className="row-actions spread-actions">
-          {canManageSettings && <button type="button" onClick={connectGmail} disabled={gmailBusy}>{gmailBusy ? "Connecting..." : gmailSettings.gmail_connected_email ? `Reconnect Gmail for ${gmailSettings.gmail_connected_email}` : "Connect Gmail"}</button>}
-          <button type="button" className="primary" onClick={syncGmail} disabled={gmailBusy}>{gmailBusy ? "Syncing..." : "Sync Gmail attachments"}</button>
-        </div>
-        {!!gmailSyncResults.length && (
-          <div className="table-wrap">
-            <table className="data-table">
-              <thead><tr><th>Status</th><th>File</th><th>Shipment</th><th>Type</th><th>Reason</th></tr></thead>
-              <tbody>
-                {gmailSyncResults.map((item, index) => <tr key={`${item.file_name}-${index}`}><td>{item.status}</td><td>{item.file_name || "-"}</td><td>{item.shipment_reference || "-"}</td><td>{item.kind || "-"}</td><td>{item.reason || "-"}</td></tr>)}
-              </tbody>
-            </table>
-          </div>
-        )}
-      </div>
-
       <div className="ukdocs-print-layout">
         <div className="data-table-card ukdocs-stack">
           <div className="section-header"><h2>Zending</h2></div>
           <div className="form-grid">
             <label><span>Zending date</span><input type="date" value={selectedCollectionDate} onChange={(event) => setSelectedCollectionDate(event.target.value)} /></label>
-            <label><span>Saved zending dates</span><input value={availableCollectionDates.length ? `${availableCollectionDates.length} day(s) saved` : "No saved dates yet"} readOnly /></label>
           </div>
           <div className="row-actions spread-actions">
             <button type="button" onClick={() => stepCollectionDate(-1)}>Previous day</button>
@@ -5378,6 +5328,51 @@ function UkdocsPrintPage({ currentUser }) {
           )}
         </div>
       </div>
+
+      <details className="data-table-card ukdocs-stack">
+        <summary>Today Sendings Spreadsheet</summary>
+        <div className="form-grid" style={{ marginTop: "14px" }}>
+          <label><span>Date to import</span><input type="date" value={sheetSyncDate} onChange={(event) => setSheetSyncDate(event.target.value)} /></label>
+          <label><span>Spreadsheet settings</span><input value={gmailSettings.ukdocs_print_spreadsheet_id ? "Managed in Settings" : "Not set in Settings"} readOnly /></label>
+        </div>
+        <div className="row-actions spread-actions">
+          <button type="button" className="primary" onClick={syncSheetSendings} disabled={sheetBusy}>{sheetBusy ? (hasCollectionsLoadedForSheetDate ? "Updating..." : "Starting...") : (hasCollectionsLoadedForSheetDate ? "Update" : "Start")}</button>
+        </div>
+      </details>
+
+      <details className="data-table-card ukdocs-stack">
+        <summary>Gmail Inbox Pickup</summary>
+        <div className="form-grid" style={{ marginTop: "14px" }}>
+          <label><span>Connected Gmail account</span><input value={gmailSettings.gmail_connected_email || ""} readOnly placeholder="Not connected yet" /></label>
+          <label><span>Export date</span><input type="date" value={sheetSyncDate} onChange={(event) => setSheetSyncDate(event.target.value)} /></label>
+          <label className="wide"><span>Extra Gmail filter</span><input value={gmailQuery} onChange={(event) => setGmailQuery(event.target.value)} placeholder="has:attachment" /></label>
+        </div>
+        {gmailSettings.gmail_connected_email ? (
+          <div className="notice">Reconnect UKdocs Gmail with this exact account: {gmailSettings.gmail_connected_email}</div>
+        ) : (
+          <div className="notice danger">UKdocs Gmail is not connected. Reconnect with the Gmail account that should receive the UKdocs documents.</div>
+        )}
+        <div className="checkbox-grid">
+          <label className="checkbox-field">
+            <input type="checkbox" checked={autoSyncEnabled} onChange={(event) => setAutoSyncEnabled(event.target.checked)} />
+            <span>Auto listen for Gmail attachments while this page is open</span>
+          </label>
+        </div>
+        <div className="row-actions spread-actions">
+          {canManageSettings && <button type="button" onClick={connectGmail} disabled={gmailBusy}>{gmailBusy ? "Connecting..." : gmailSettings.gmail_connected_email ? `Reconnect Gmail for ${gmailSettings.gmail_connected_email}` : "Connect Gmail"}</button>}
+          <button type="button" className="primary" onClick={syncGmail} disabled={gmailBusy}>{gmailBusy ? "Syncing..." : "Sync Gmail attachments"}</button>
+        </div>
+        {!!gmailSyncResults.length && (
+          <div className="table-wrap">
+            <table className="data-table">
+              <thead><tr><th>Status</th><th>File</th><th>Shipment</th><th>Type</th><th>Reason</th></tr></thead>
+              <tbody>
+                {gmailSyncResults.map((item, index) => <tr key={`${item.file_name}-${index}`}><td>{item.status}</td><td>{item.file_name || "-"}</td><td>{item.shipment_reference || "-"}</td><td>{item.kind || "-"}</td><td>{item.reason || "-"}</td></tr>)}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </details>
     </section>
   );
 }
