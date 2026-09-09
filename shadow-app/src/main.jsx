@@ -2458,7 +2458,10 @@ function buildUkdocsFinanceAuditRows(state) {
     // audit_reports is already sorted newest-first by normalizeUkdocsState,
     // so the first match is the most recent generation for this shipment.
     const auditReport = auditReports.find((item) => item.shipment_id === shipment.id) || null;
-    const phytoNames = (collection?.documents?.phyto_files || []).map((file) => file.original_name).filter(Boolean).join("/");
+    const phytoNames = (collection?.documents?.phyto_files || [])
+      .map((file) => String(file.original_name || "").replace(/\.pdf$/i, ""))
+      .filter(Boolean)
+      .join("/");
     const currency = String(customer?.default_currency || customer?.export_defaults?.currency || "").trim().toUpperCase();
     const isEuroCustomer = currency.includes("EUR") || currency === "EU";
     for (const categoryDefinition of UKDOCS_CATEGORY_DEFINITIONS) {
@@ -4125,7 +4128,7 @@ function UkdocsPage({ currentUser, onNavigate }) {
               type="button"
               onClick={() => downloadExcelFriendlyTable(
                 "finance-audit-ukdocs.xls",
-                ["Week", "Datum", "Truck", "Rit", "Omschrijving", "Type", "Customer Connect", "Customer", "Transporteur", "Grensovergang", "Expediteur", "Kenteken", "Factuur nummer", "Location Connect", "Opmerking", "Waarde als GBP", "Waarde als EU", "Volume(colli)", "Phyto Marston"],
+                ["Week", "Datum", "Truck", "Rit", "Omschrijving", "Type", "Customer Connect", "Customer", "Transporteur", "Grensovergang", "Expediteur", "Kenteken", "Factuur nummer", "Location Connect", "Opmerking", "Waarde als GBP", "Waarde als EU", "Volume(colli)", "Phyto number"],
                 financeAuditVisibleRows.map((row) => [
                   row.week, row.datum, row.truck, row.rit, row.omschrijving, row.type, row.customer_connect, row.customer_name,
                   row.transporteur, row.grensovergang, row.expediteur, row.kenteken, row.factuur_nummer,
@@ -4145,7 +4148,7 @@ function UkdocsPage({ currentUser, onNavigate }) {
                   <th>Week</th><th>Datum</th><th>Truck</th><th>Rit</th><th>Omschrijving</th><th>Type</th>
                   <th>Customer Connect</th><th>Customer</th><th>Transporteur</th><th>Grensovergang</th><th>Expediteur</th><th>Kenteken</th>
                   <th>Factuur nummer</th><th>Location Connect</th><th>Opmerking</th><th>Waarde als GBP</th>
-                  <th>Waarde als EU</th><th>Volume(colli)</th><th>Phyto Marston</th><th>Actions</th>
+                  <th>Waarde als EU</th><th>Volume(colli)</th><th>Phyto number</th><th>Actions</th>
                 </tr>
               </thead>
               <tbody>
