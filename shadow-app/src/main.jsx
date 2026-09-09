@@ -2472,6 +2472,7 @@ function buildUkdocsFinanceAuditRows(state) {
       rows.push({
         key: `${shipment.id}-${category}`,
         shipment_id: shipment.id,
+        print_collection_id: shipment.print_collection_id || collection?.id || "",
         category,
         week: isoWeekNumber(shipment.shipment_date),
         datum: shipment.shipment_date,
@@ -2497,6 +2498,75 @@ function buildUkdocsFinanceAuditRows(state) {
     }
   }
   return rows.sort((a, b) => String(b.datum || "").localeCompare(String(a.datum || "")));
+}
+
+// Groups Finance Audit rows by shipment -- the table shows one compact
+// summary row per sending (with the category codes/values rolled up) and
+// only reveals the per-category rows once the summary row is expanded.
+function groupUkdocsFinanceAuditRows(rows) {
+  const groups = [];
+  const byShipment = new Map();
+  for (const row of rows) {
+    let group = byShipment.get(row.shipment_id);
+    if (!group) {
+      group = {
+        shipment_id: row.shipment_id,
+        print_collection_id: row.print_collection_id,
+        week: row.week,
+        datum: row.datum,
+        truck: row.truck,
+        customer_connect: row.customer_connect,
+        customer_name: row.customer_name,
+        transporteur: row.transporteur,
+        grensovergang: row.grensovergang,
+        expediteur: row.expediteur,
+        kenteken: row.kenteken,
+        location_connect: row.location_connect,
+        phyto_marston: row.phyto_marston,
+        rits: [],
+        omschrijvingen: [],
+        types: [],
+        factuur_nummers: [],
+        waarde_gbp_total: 0,
+        waarde_eu_total: 0,
+        volume_total: 0,
+        rows: [],
+      };
+      byShipment.set(row.shipment_id, group);
+      groups.push(group);
+    }
+    group.rits.push(row.rit);
+    if (row.omschrijving && !group.omschrijvingen.includes(row.omschrijving)) {
+      group.omschrijvingen.push(row.omschrijving);
+    }
+    if (row.type && !group.types.includes(row.type)) {
+      group.types.push(row.type);
+    }
+    if (row.factuur_nummer) {
+      group.factuur_nummers.push(row.factuur_nummer);
+    }
+    group.waarde_gbp_total += Number(row.waarde_gbp) || 0;
+    group.waarde_eu_total += Number(row.waarde_eu) || 0;
+    group.volume_total += Number(row.volume) || 0;
+    group.rows.push(row);
+  }
+  return groups;
+}
+
+// Cross-page navigation bridge -- this app has no router, so "Go to Docs" on
+// a Finance Audit row stashes which collection/date to open here, then the
+// UKDocs Print page (a separate top-level component that fully remounts on
+// every visit) picks it up on its next mount.
+let ukdocsPrintPendingOpen = null;
+
+function requestUkdocsPrintOpen(collectionId, shipmentDate) {
+  ukdocsPrintPendingOpen = { collectionId, shipmentDate };
+}
+
+function consumeUkdocsPrintPendingOpen() {
+  const pending = ukdocsPrintPendingOpen;
+  ukdocsPrintPendingOpen = null;
+  return pending;
 }
 
 const UKDOCS_COMPANY_FIELDS = [
@@ -3069,7 +3139,7 @@ async function downloadUkdocsFileWithPrompt(file) {
   }
 }
 
-function UkdocsPage({ currentUser }) {
+function UkdocsPage({ currentUser, onNavigate }) {
   const [activeMenu, setActiveMenu] = useState("new");
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -3090,6 +3160,9 @@ function UkdocsPage({ currentUser }) {
   // Uncommitted edits for opmerking/value/volume, keyed by "shipmentId-category" --
   // everything else on a Finance Audit row is derived, not editable.
   const [financeAuditEdits, setFinanceAuditEdits] = useState({});
+  // Which sendings' category rows are expanded -- everything starts
+  // collapsed to one summary row per sending.
+  const [financeAuditExpanded, setFinanceAuditExpanded] = useState(() => new Set());
 
   useEffect(() => {
     let cancelled = false;
@@ -3133,6 +3206,7 @@ function UkdocsPage({ currentUser }) {
     }
     return true;
   });
+  const financeAuditGroups = useMemo(() => groupUkdocsFinanceAuditRows(financeAuditVisibleRows), [financeAuditVisibleRows]);
   const selectedUkdocsCustomer = customers.find((item) => item.id === shipmentDraft.customer_id) || null;
   const selectedPrintCollection = printCollections.find((item) => item.id === shipmentDraft.print_collection_id) || null;
   const availablePrintCollections = useMemo(
@@ -3398,6 +3472,26 @@ function UkdocsPage({ currentUser }) {
       delete next[key];
       return next;
     });
+  }
+
+  function toggleFinanceAuditExpanded(shipmentId) {
+    setFinanceAuditExpanded((current) => {
+      const next = new Set(current);
+      if (next.has(shipmentId)) {
+        next.delete(shipmentId);
+      } else {
+        next.add(shipmentId);
+      }
+      return next;
+    });
+  }
+
+  function goToFinanceAuditDocs(group) {
+    if (!group.print_collection_id) {
+      return;
+    }
+    requestUkdocsPrintOpen(group.print_collection_id, group.datum);
+    onNavigate?.("ukdocsprint");
   }
 
   function currentShipmentPayload() {
@@ -4015,7 +4109,7 @@ function UkdocsPage({ currentUser }) {
       {activeMenu === "financeaudit" && (
         <div className="data-table-card ukdocs-stack">
           <div className="section-header"><h2>Finance Audit UKDocs</h2></div>
-          <div className="notice">One row per invoice/category actually shipped, built from the same shipments/customers/audit data already saved elsewhere -- opmerking and the value/volume figures are the only editable parts.</div>
+          <div className="notice">One row per sending that has passed the CSI check, built from the same shipments/customers/audit data already saved elsewhere -- click a row to see its per-invoice/category breakdown. Opmerking and the value/volume figures are the only editable parts.</div>
           <div className="overview-filters">
             <label>
               <span>From date</span>
@@ -4055,36 +4149,67 @@ function UkdocsPage({ currentUser }) {
                 </tr>
               </thead>
               <tbody>
-                {financeAuditVisibleRows.map((row) => {
-                  const dirty = isFinanceAuditRowDirty(row);
+                {financeAuditGroups.map((group) => {
+                  const isExpanded = financeAuditExpanded.has(group.shipment_id);
                   return (
-                    <tr key={row.key}>
-                      <td>{row.week || "-"}</td>
-                      <td>{row.datum || "-"}</td>
-                      <td>{row.truck || "-"}</td>
-                      <td>{row.rit}</td>
-                      <td>{row.omschrijving || "-"}</td>
-                      <td>{row.type}</td>
-                      <td>{row.customer_connect || "-"}</td>
-                      <td>{row.customer_name || "-"}</td>
-                      <td>{row.transporteur || "-"}</td>
-                      <td>{row.grensovergang || "-"}</td>
-                      <td>{row.expediteur || "-"}</td>
-                      <td>{row.kenteken || "-"}</td>
-                      <td>{row.factuur_nummer || "-"}</td>
-                      <td>{row.location_connect || "-"}</td>
-                      <td><input value={financeAuditFieldValue(row, "opmerking")} onChange={(event) => updateFinanceAuditEdit(row, "opmerking", event.target.value)} /></td>
-                      <td>{row.is_euro_customer ? "-" : <input value={financeAuditFieldValue(row, "value_override")} onChange={(event) => updateFinanceAuditEdit(row, "value_override", event.target.value)} placeholder="GBP" />}</td>
-                      <td>{row.is_euro_customer ? <input value={financeAuditFieldValue(row, "value_override")} onChange={(event) => updateFinanceAuditEdit(row, "value_override", event.target.value)} placeholder="EUR" /> : "-"}</td>
-                      <td><input value={financeAuditFieldValue(row, "volume_override")} onChange={(event) => updateFinanceAuditEdit(row, "volume_override", event.target.value)} /></td>
-                      <td>{row.phyto_marston || "-"}</td>
-                      <td className="row-actions">
-                        {dirty && <button type="button" className="primary" onClick={() => saveFinanceAuditEdit(row)} disabled={saving}>Save</button>}
-                      </td>
-                    </tr>
+                    <React.Fragment key={group.shipment_id}>
+                      <tr className="finance-audit-summary-row" onClick={() => toggleFinanceAuditExpanded(group.shipment_id)}>
+                        <td>{group.week || "-"}</td>
+                        <td>{group.datum || "-"}</td>
+                        <td>{group.truck || "-"}</td>
+                        <td>{group.rits.join("/")}</td>
+                        <td>{group.omschrijvingen.join("/") || "-"}</td>
+                        <td>{group.types.join("/") || "-"}</td>
+                        <td>{group.customer_connect || "-"}</td>
+                        <td>{group.customer_name || "-"}</td>
+                        <td>{group.transporteur || "-"}</td>
+                        <td>{group.grensovergang || "-"}</td>
+                        <td>{group.expediteur || "-"}</td>
+                        <td>{group.kenteken || "-"}</td>
+                        <td>{group.factuur_nummers.join("/") || "-"}</td>
+                        <td>{group.location_connect || "-"}</td>
+                        <td>-</td>
+                        <td>{group.waarde_gbp_total ? group.waarde_gbp_total.toFixed(2) : "-"}</td>
+                        <td>{group.waarde_eu_total ? group.waarde_eu_total.toFixed(2) : "-"}</td>
+                        <td>{group.volume_total || "-"}</td>
+                        <td>{group.phyto_marston || "-"}</td>
+                        <td className="row-actions">
+                          <button type="button">{isExpanded ? "Collapse" : `Expand (${group.rows.length})`}</button>
+                          <button
+                            type="button"
+                            onClick={(event) => { event.stopPropagation(); goToFinanceAuditDocs(group); }}
+                            disabled={!group.print_collection_id}
+                          >
+                            Go to Docs
+                          </button>
+                        </td>
+                      </tr>
+                      {isExpanded && group.rows.map((row) => {
+                        const dirty = isFinanceAuditRowDirty(row);
+                        return (
+                          <tr key={row.key} className="finance-audit-child-row">
+                            <td colSpan={3} />
+                            <td>{row.rit}</td>
+                            <td>{row.omschrijving || "-"}</td>
+                            <td>{row.type}</td>
+                            <td colSpan={6} />
+                            <td>{row.factuur_nummer || "-"}</td>
+                            <td colSpan={1} />
+                            <td><input value={financeAuditFieldValue(row, "opmerking")} onChange={(event) => updateFinanceAuditEdit(row, "opmerking", event.target.value)} /></td>
+                            <td>{row.is_euro_customer ? "-" : <input value={financeAuditFieldValue(row, "value_override")} onChange={(event) => updateFinanceAuditEdit(row, "value_override", event.target.value)} placeholder="GBP" />}</td>
+                            <td>{row.is_euro_customer ? <input value={financeAuditFieldValue(row, "value_override")} onChange={(event) => updateFinanceAuditEdit(row, "value_override", event.target.value)} placeholder="EUR" /> : "-"}</td>
+                            <td><input value={financeAuditFieldValue(row, "volume_override")} onChange={(event) => updateFinanceAuditEdit(row, "volume_override", event.target.value)} /></td>
+                            <td>{row.phyto_marston || "-"}</td>
+                            <td className="row-actions">
+                              {dirty && <button type="button" className="primary" onClick={() => saveFinanceAuditEdit(row)} disabled={saving}>Save</button>}
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </React.Fragment>
                   );
                 })}
-                {!financeAuditVisibleRows.length && <tr><td colSpan="20">No finance audit rows for the selected date range.</td></tr>}
+                {!financeAuditGroups.length && <tr><td colSpan="20">No finance audit rows for the selected date range.</td></tr>}
               </tbody>
             </table>
           </div>
@@ -4670,6 +4795,9 @@ function UkdocsPrintPage({ currentUser }) {
   const selectedGeneratedFiles = selectedCollection?.documents?.generated_files || [];
   const selectedExitConfirmationFiles = selectedCollection?.documents?.exit_confirmation_files || [];
   const selectedCollectionProgress = selectedCollection ? ukdocsPrintCollectionProgress(selectedCollection, customers) : null;
+  // A confirmation of exit already received means this zending is closed --
+  // info and documents can no longer be changed (server-enforced too).
+  const isSelectedCollectionClosed = Boolean(selectedCollection?.closed);
 
   useEffect(() => {
     setNotesDraft(selectedCollection?.notes || "");
@@ -4699,6 +4827,22 @@ function UkdocsPrintPage({ currentUser }) {
     setSelectedCollectionId(collectionId);
     setDetailDrawerOpen(true);
   }
+
+  // "Go to Docs" from Finance Audit UKDocs stashes a pending open request --
+  // pick it up as soon as this page has state to open it against.
+  useEffect(() => {
+    if (!state) {
+      return;
+    }
+    const pending = consumeUkdocsPrintPendingOpen();
+    if (!pending) {
+      return;
+    }
+    if (pending.shipmentDate) {
+      setSelectedCollectionDate(pending.shipmentDate);
+    }
+    openCollectionDetail(pending.collectionId);
+  }, [state]);
 
   function closeCollectionDetail() {
     setDetailDrawerOpen(false);
@@ -5048,12 +5192,13 @@ function UkdocsPrintPage({ currentUser }) {
                     <small>{[collection.expected_pieces && `${collection.expected_pieces} pieces`, collection.expected_boxes && `${collection.expected_boxes} boxes`].filter(Boolean).join(" / ")}</small>
                   )}
                   <div className={`ukdocs-status-badge ${status.tone}`}>{progress.missing.length ? `${status.label} - ${progress.missing.join(", ")}` : status.label}</div>
+                  {!!collection.closed && <div className="ukdocs-status-badge muted">Closed (confirmation of exit received)</div>}
                   {!!collection.delivery_email?.sent_at && <small>Sent {formatTimestamp(collection.delivery_email.sent_at)}</small>}
                   {!!collection.delivery_email?.error && !collection.delivery_email?.ok && <small className="ukdocs-status-badge danger">Send failed: {collection.delivery_email.error}</small>}
                   <div className="row-actions spread-actions">
                     <button type="button" className="primary" onClick={() => openCollectionDetail(collection.id)}>{isActive ? "Opened" : "Open"}</button>
                     {!isStockControl && !progress.missing.length && <button type="button" onClick={() => sendReady(collection.id)} disabled={saving}>Send papers</button>}
-                    <button type="button" onClick={() => deleteCollection(collection.id)}>Delete</button>
+                    <button type="button" onClick={() => deleteCollection(collection.id)} disabled={collection.closed} title={collection.closed ? "Closed -- confirmation of exit received" : ""}>Delete</button>
                   </div>
                   {!!downloadEntries.length && (
                     <div className="ukdocs-download-box">
@@ -5084,7 +5229,7 @@ function UkdocsPrintPage({ currentUser }) {
         <div className={`data-table-card ukdocs-stack ukdocs-drawer-panel ukdocs-sidebar-panel${detailDrawerOpen ? " open" : ""}`}>
           <div className="section-header">
             <h2>Zending detail</h2>
-            {selectedCollection && selectedCollectionProgress && <div className="row-actions"><div className={`ukdocs-status-badge ${ukdocsPrintStatusDefinition(selectedCollectionProgress.status).tone}`}>{ukdocsPrintStatusDefinition(selectedCollectionProgress.status).label}</div>{ukdocsPrintInspectionMode(selectedCollection) !== "stock_control" && !selectedCollectionProgress.missing.length && <button type="button" className="primary" onClick={() => sendReady(selectedCollection.id)} disabled={saving}>{saving ? "Sending..." : "Send papers ready"}</button>}<button type="button" onClick={closeCollectionDetail}>Close</button><button type="button" onClick={() => deleteCollection(selectedCollection.id)}>Delete</button></div>}
+            {selectedCollection && selectedCollectionProgress && <div className="row-actions"><div className={`ukdocs-status-badge ${ukdocsPrintStatusDefinition(selectedCollectionProgress.status).tone}`}>{ukdocsPrintStatusDefinition(selectedCollectionProgress.status).label}</div>{isSelectedCollectionClosed && <div className="ukdocs-status-badge muted">Closed</div>}{ukdocsPrintInspectionMode(selectedCollection) !== "stock_control" && !selectedCollectionProgress.missing.length && <button type="button" className="primary" onClick={() => sendReady(selectedCollection.id)} disabled={saving}>{saving ? "Sending..." : "Send papers ready"}</button>}<button type="button" onClick={closeCollectionDetail}>Close</button><button type="button" onClick={() => deleteCollection(selectedCollection.id)} disabled={isSelectedCollectionClosed} title={isSelectedCollectionClosed ? "Closed -- confirmation of exit received" : ""}>Delete</button></div>}
           </div>
 
           {!selectedCollection && <div className="notice">Open a zending to see the details.</div>}
@@ -5133,7 +5278,7 @@ function UkdocsPrintPage({ currentUser }) {
                   return (
                     <div key={documentDefinition.key} className="ukdocs-upload-card">
                       <strong>{documentDefinition.label}</strong>
-                      <input type="file" accept={documentDefinition.accept} multiple={documentDefinition.key === "temp_phyto"} onChange={(event) => uploadCollectionFile(documentDefinition.key, documentDefinition.key === "temp_phyto" ? event.target.files : (event.target.files?.[0] || null))} disabled={saving} />
+                      <input type="file" accept={documentDefinition.accept} multiple={documentDefinition.key === "temp_phyto"} onChange={(event) => uploadCollectionFile(documentDefinition.key, documentDefinition.key === "temp_phyto" ? event.target.files : (event.target.files?.[0] || null))} disabled={saving || isSelectedCollectionClosed} />
                       {documentDefinition.key === "phyto" ? (
                         <>
                           <small>{selectedPhytoFiles.length ? `${selectedPhytoFiles.length} phytosanitary document(s) saved.` : "No file saved yet."}</small>
@@ -5144,7 +5289,7 @@ function UkdocsPrintPage({ currentUser }) {
                                   <a href={`/api/ukdocs-print/collections/${encodeURIComponent(selectedCollection.id)}/documents/phyto/${index}`}>
                                     {phytoFile.original_name || `Phyto ${index + 1}`}
                                   </a>
-                                  <button type="button" onClick={() => deleteCollectionDocument("phyto", index)} disabled={saving}>Delete</button>
+                                  <button type="button" onClick={() => deleteCollectionDocument("phyto", index)} disabled={saving || isSelectedCollectionClosed}>Delete</button>
                                 </span>
                               ))}
                             </div>
@@ -5160,7 +5305,7 @@ function UkdocsPrintPage({ currentUser }) {
                                   <a href={`/api/ukdocs-print/collections/${encodeURIComponent(selectedCollection.id)}/documents/temp_phyto/${index}`}>
                                     {tempPhytoFile.original_name || `Temporary phyto ${index + 1}`}
                                   </a>
-                                  <button type="button" onClick={() => deleteCollectionDocument("temp_phyto", index)} disabled={saving}>Delete</button>
+                                  <button type="button" onClick={() => deleteCollectionDocument("temp_phyto", index)} disabled={saving || isSelectedCollectionClosed}>Delete</button>
                                 </span>
                               ))}
                             </div>
@@ -5176,7 +5321,7 @@ function UkdocsPrintPage({ currentUser }) {
                                   <a href={`/api/ukdocs-print/collections/${encodeURIComponent(selectedCollection.id)}/documents/exit_confirmation/${index}`}>
                                     {exitFile.original_name || `Confirmation of exit ${index + 1}`}
                                   </a>
-                                  <button type="button" onClick={() => deleteCollectionDocument("exit_confirmation", index)} disabled={saving}>Delete</button>
+                                  <button type="button" onClick={() => deleteCollectionDocument("exit_confirmation", index)} disabled={saving || isSelectedCollectionClosed}>Delete</button>
                                 </span>
                               ))}
                             </div>
@@ -5185,7 +5330,7 @@ function UkdocsPrintPage({ currentUser }) {
                       ) : (
                         <>
                           <small>{document?.original_name ? `${document.original_name} saved ${formatTimestamp(document.saved_at)}` : "No file saved yet."}</small>
-                          {document?.storage_name && <div className="row-actions"><a href={`/api/ukdocs-print/collections/${encodeURIComponent(selectedCollection.id)}/documents/${documentDefinition.key}`}>Download</a><button type="button" onClick={() => deleteCollectionDocument(documentDefinition.key)} disabled={saving}>Delete</button></div>}
+                          {document?.storage_name && <div className="row-actions"><a href={`/api/ukdocs-print/collections/${encodeURIComponent(selectedCollection.id)}/documents/${documentDefinition.key}`}>Download</a><button type="button" onClick={() => deleteCollectionDocument(documentDefinition.key)} disabled={saving || isSelectedCollectionClosed}>Delete</button></div>}
                         </>
                       )}
                     </div>
@@ -5203,28 +5348,29 @@ function UkdocsPrintPage({ currentUser }) {
                         <a href={`/api/ukdocs-print/collections/${encodeURIComponent(selectedCollection.id)}/documents/generated/${index}`}>
                           {generatedFile.original_name || `Generated file ${index + 1}`}
                         </a>
-                        <button type="button" onClick={() => deleteCollectionDocument("generated", index)} disabled={saving}>Delete</button>
+                        <button type="button" onClick={() => deleteCollectionDocument("generated", index)} disabled={saving || isSelectedCollectionClosed}>Delete</button>
                       </span>
                     ))}
                   </div>
                 )}
               </div>}
 
+              {isSelectedCollectionClosed && <div className="notice">Closed -- confirmation of exit received, info and documents can no longer be changed.</div>}
               <div className="form-grid">
                 <label>
                   <span>Expected pieces</span>
-                  <input value={expectedPiecesDraft} onChange={(event) => setExpectedPiecesDraft(event.target.value)} placeholder="Info for whoever prepares the papers" />
+                  <input value={expectedPiecesDraft} onChange={(event) => setExpectedPiecesDraft(event.target.value)} placeholder="Info for whoever prepares the papers" disabled={isSelectedCollectionClosed} />
                 </label>
                 <label>
                   <span>Expected boxes</span>
-                  <input value={expectedBoxesDraft} onChange={(event) => setExpectedBoxesDraft(event.target.value)} placeholder="Info for whoever prepares the papers" />
+                  <input value={expectedBoxesDraft} onChange={(event) => setExpectedBoxesDraft(event.target.value)} placeholder="Info for whoever prepares the papers" disabled={isSelectedCollectionClosed} />
                 </label>
               </div>
               <label className="wide">
                 <span>Zending notes</span>
-                <textarea rows={4} value={notesDraft} onChange={(event) => setNotesDraft(event.target.value)} placeholder="Optional notes about received emails or missing documents" />
+                <textarea rows={4} value={notesDraft} onChange={(event) => setNotesDraft(event.target.value)} placeholder="Optional notes about received emails or missing documents" disabled={isSelectedCollectionClosed} />
               </label>
-              <div className="row-actions spread-actions"><button type="button" className="primary" onClick={saveNotes} disabled={saving}>{saving ? "Saving..." : "Save notes"}</button></div>
+              <div className="row-actions spread-actions"><button type="button" className="primary" onClick={saveNotes} disabled={saving || isSelectedCollectionClosed}>{saving ? "Saving..." : "Save notes"}</button></div>
             </>
           )}
         </div>
@@ -8052,7 +8198,7 @@ function App() {
         {page === "ukdocscsi" && <UkdocsCSIPage currentUser={auth.user} />}
         {page === "pdkeuring" && <PdKeuringPage currentUser={auth.user} />}
         {page === "settings" && <SettingsPage currentUser={auth.user} />}
-        {page === "ukdocs" && <UkdocsPage currentUser={auth.user} />}
+        {page === "ukdocs" && <UkdocsPage currentUser={auth.user} onNavigate={setPage} />}
         {page === "dashboard" && canViewPhotos && (
           <>
             <section className="toolbar" aria-label="Filters">

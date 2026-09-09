@@ -2152,7 +2152,25 @@ function normalizeUkdocsPrintCollection(collection) {
   // the CSI check" means without re-deriving the plant-reconciled rule.
   normalized.csi_check_passed = normalized.csi_report.status === "done"
     && (String(normalized.csi_report.overall_status || "").trim().toLowerCase() === "pass" || isUkdocsCsiPlantReconciledPassReport(normalized.csi_report));
+  // A TrackonTrade "confirmation of exit" release means the shipment has
+  // already cleared customs -- from that point on the zending is closed:
+  // derived purely from whether an exit confirmation file exists, so it
+  // stays correct regardless of whether that file arrived via Gmail
+  // auto-sync or a manual upload.
+  normalized.closed = normalized.documents.exit_confirmation_files.length > 0;
+  normalized.closed_at = normalized.closed ? (normalized.documents.exit_confirmation_files[0].saved_at || "") : "";
   return normalized;
+}
+
+// Guards every route that would change a zending's info or its documents --
+// once a confirmation of exit has arrived, the collection is closed for
+// editing. Returns an error message to send back, or null when it's fine to
+// proceed.
+function ukdocsPrintCollectionClosedError(collection) {
+  if (!collection?.closed) {
+    return null;
+  }
+  return "This zending is closed (confirmation of exit received) -- info and documents can no longer be changed.";
 }
 
 function ukdocsPrintSplitTokens(value) {
@@ -9139,6 +9157,13 @@ async function syncUkdocsPrintFromGmail(settings, requestUser, query, date) {
         continue;
       }
       const currentMatch = state.print_collections.find((item) => item.id === bestMatch.id || item.shipment_id === bestMatch.shipment_id) || bestMatch;
+      // Once a confirmation of exit has already landed, the zending is
+      // closed -- any later attachment attempt (a stray late invoice, a
+      // duplicate phyto, etc.) is skipped rather than silently reopening it.
+      if (currentMatch.closed && kind !== "exit_confirmation") {
+        results.push({ status: "skipped", file_name: storedAttachmentName, shipment_reference: currentMatch.shipment_reference, reason: "zending is closed (confirmation of exit received)" });
+        continue;
+      }
       // Scoped to the matched collection's own shipment date -- for
       // exit_confirmation this can be an earlier day than syncDate, and
       // dedup must apply against that day, not "today".
@@ -12952,6 +12977,11 @@ async function handleApi(req, res, url) {
       sendJson(res, 404, { error: "UKdocs Print collection not found" });
       return;
     }
+    const closedError = ukdocsPrintCollectionClosedError(existingCollection);
+    if (closedError) {
+      sendJson(res, 400, { error: closedError });
+      return;
+    }
     let updatedCollection = normalizeUkdocsPrintCollection({
       ...existingCollection,
       notes: body?.notes ?? existingCollection.notes,
@@ -13086,6 +13116,11 @@ async function handleApi(req, res, url) {
       sendJson(res, 404, { error: "UKdocs Print collection not found" });
       return;
     }
+    const closedError = ukdocsPrintCollectionClosedError(existingCollection);
+    if (closedError) {
+      sendJson(res, 400, { error: closedError });
+      return;
+    }
     await deleteUkdocsPrintCollectionFiles(existingCollection);
     state.print_collections = state.print_collections.filter((item) => item.id !== existingCollection.id && item.shipment_id !== existingCollection.shipment_id);
     await writeUkdocsState(state);
@@ -13105,6 +13140,11 @@ async function handleApi(req, res, url) {
     const existingCollection = state.print_collections.find((item) => item.id === collectionId || item.shipment_id === collectionId);
     if (!existingCollection) {
       sendJson(res, 404, { error: "UKdocs Print collection not found" });
+      return;
+    }
+    const closedError = ukdocsPrintCollectionClosedError(existingCollection);
+    if (closedError) {
+      sendJson(res, 400, { error: closedError });
       return;
     }
     const originalName = path.basename(String(body?.file?.file_name || body?.file?.name || "").trim());
@@ -13221,6 +13261,11 @@ async function handleApi(req, res, url) {
     const existingCollection = state.print_collections.find((item) => item.id === collectionId || item.shipment_id === collectionId);
     if (!existingCollection) {
       sendJson(res, 404, { error: "UKdocs Print collection not found" });
+      return;
+    }
+    const closedError = ukdocsPrintCollectionClosedError(existingCollection);
+    if (closedError) {
+      sendJson(res, 400, { error: closedError });
       return;
     }
 

@@ -916,6 +916,20 @@ textarea {
   background: #f5f8fb;
 }
 
+.finance-audit-summary-row {
+  cursor: pointer;
+  font-weight: 600;
+}
+
+.finance-audit-summary-row:hover {
+  background: #f0f4f9;
+}
+
+.finance-audit-child-row td {
+  background: #fafbfd;
+  color: #4a5560;
+}
+
 /* Fust tables (action-table / balance-table): Excel-like grid with a frozen header */
 .action-table.data-table,
 .balance-table.data-table {
