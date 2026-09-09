@@ -1679,6 +1679,7 @@ function normalizeUkdocsCustomer(customer) {
     transporter_name: normalizeUkdocsText(customer?.transporter_name),
     border_crossing_default: normalizeUkdocsText(customer?.border_crossing_default),
     expediteur_name: normalizeUkdocsText(customer?.expediteur_name),
+    customer_connect: normalizeUkdocsText(customer?.customer_connect),
   };
 }
 

@@ -2460,6 +2460,7 @@ function buildUkdocsFinanceAuditRows(state) {
         omschrijving: financeAuditOmschrijving(category, collection),
         type: categoryDefinition.label,
         customer_name: customer?.customer_name || shipment.customer_name || "",
+        customer_connect: customer?.customer_connect || "",
         transporteur: customer?.transporter_name || "",
         grensovergang: customer?.border_crossing_default || collection?.border_crossing || "",
         expediteur: customer?.expediteur_name || "",
@@ -2519,6 +2520,7 @@ const UKDOCS_CUSTOMER_FIELDS = [
   ["transporter_name", "Transporteur (Finance Audit default)"],
   ["border_crossing_default", "Grensovergang (Finance Audit default)"],
   ["expediteur_name", "Expediteur (Finance Audit default)"],
+  ["customer_connect", "Customer Connect (Finance Audit default)"],
 ];
 
 const UKDOCS_CUSTOMER_INVOICE_VISIBILITY_FIELDS = [
@@ -2648,6 +2650,7 @@ function emptyUkdocsCustomer() {
     transporter_name: "",
     border_crossing_default: "",
     expediteur_name: "",
+    customer_connect: "",
   };
 }
 
@@ -4008,9 +4011,9 @@ function UkdocsPage({ currentUser }) {
               type="button"
               onClick={() => downloadExcelFriendlyTable(
                 "finance-audit-ukdocs.xls",
-                ["Week", "Datum", "Truck", "Rit", "Omschrijving", "Type", "Customer", "Transporteur", "Grensovergang", "Expediteur", "Kenteken", "Factuur nummer", "Location Connect", "Opmerking", "Waarde als GBP", "Waarde als EU", "Volume Marston (EF+EC)", "Phyto Marston"],
+                ["Week", "Datum", "Truck", "Rit", "Omschrijving", "Type", "Customer Connect", "Customer", "Transporteur", "Grensovergang", "Expediteur", "Kenteken", "Factuur nummer", "Location Connect", "Opmerking", "Waarde als GBP", "Waarde als EU", "Volume(colli)", "Phyto Marston"],
                 financeAuditVisibleRows.map((row) => [
-                  row.week, row.datum, row.truck, row.rit, row.omschrijving, row.type, row.customer_name,
+                  row.week, row.datum, row.truck, row.rit, row.omschrijving, row.type, row.customer_connect, row.customer_name,
                   row.transporteur, row.grensovergang, row.expediteur, row.kenteken, row.factuur_nummer,
                   row.location_connect, financeAuditFieldValue(row, "opmerking"), row.waarde_gbp, row.waarde_eu,
                   financeAuditFieldValue(row, "volume_override"), row.phyto_marston,
@@ -4026,9 +4029,9 @@ function UkdocsPage({ currentUser }) {
               <thead>
                 <tr>
                   <th>Week</th><th>Datum</th><th>Truck</th><th>Rit</th><th>Omschrijving</th><th>Type</th>
-                  <th>Customer</th><th>Transporteur</th><th>Grensovergang</th><th>Expediteur</th><th>Kenteken</th>
+                  <th>Customer Connect</th><th>Customer</th><th>Transporteur</th><th>Grensovergang</th><th>Expediteur</th><th>Kenteken</th>
                   <th>Factuur nummer</th><th>Location Connect</th><th>Opmerking</th><th>Waarde als GBP</th>
-                  <th>Waarde als EU</th><th>Volume Marston (EF+EC)</th><th>Phyto Marston</th><th>Actions</th>
+                  <th>Waarde als EU</th><th>Volume(colli)</th><th>Phyto Marston</th><th>Actions</th>
                 </tr>
               </thead>
               <tbody>
@@ -4042,6 +4045,7 @@ function UkdocsPage({ currentUser }) {
                       <td>{row.rit}</td>
                       <td>{row.omschrijving || "-"}</td>
                       <td>{row.type}</td>
+                      <td>{row.customer_connect || "-"}</td>
                       <td>{row.customer_name || "-"}</td>
                       <td>{row.transporteur || "-"}</td>
                       <td>{row.grensovergang || "-"}</td>
@@ -4060,7 +4064,7 @@ function UkdocsPage({ currentUser }) {
                     </tr>
                   );
                 })}
-                {!financeAuditVisibleRows.length && <tr><td colSpan="19">No finance audit rows for the selected date range.</td></tr>}
+                {!financeAuditVisibleRows.length && <tr><td colSpan="20">No finance audit rows for the selected date range.</td></tr>}
               </tbody>
             </table>
           </div>
