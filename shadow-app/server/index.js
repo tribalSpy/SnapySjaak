@@ -20,13 +20,17 @@ import {
   getFustDatabaseStats,
   getDatabaseStatus,
   getLlmQueueSnapshot,
+  getWarehouseActivityLog,
+  getWarehouseStatus,
   failLlmJob,
   initializeDatabase,
+  insertWarehouseActivityEvents,
   isDatabaseEnabled,
   markFustActionDeletedInDatabase,
   saveUkdocsCsiParsedDocumentToDatabase,
   saveFustActionToDatabase,
   upsertLlmAgentHeartbeat,
+  upsertWarehouseStatus,
 } from "./db.js";
 import { createBunchesService } from "./bunches.js";
 
@@ -84,6 +88,12 @@ const dagFoutjesStatePath = path.join(cacheDir, "dag-foutjes.json");
 const bunchesStatePath = path.join(cacheDir, "bunches-state.json");
 const bunchesAppHtmlPath = path.join(appRoot, "public", "bunches.html");
 const bunchesSeedDir = path.join(appRoot, "server", "bunches-seed");
+const warehouseDashboardSettingsPath = path.join(cacheDir, "warehouse-dashboard-settings.json");
+const warehouseDashboardPublicDirCandidates = [
+  path.join(repoRoot, "warehouse-dashboard", "public"),
+  path.join(process.cwd(), "warehouse-dashboard", "public"),
+  path.join(appRoot, "..", "warehouse-dashboard", "public"),
+];
 const usersSeedPathCandidates = [
   process.env.SHADOW_USERS_SEED_PATH,
   process.platform === "win32" ? null : "/etc/secrets/shadow-users.json",
@@ -454,6 +464,7 @@ const allPermissions = [
   "ukdocs_inspection:view",
   "ukdocs_csi:view",
   "pd_keuring:view",
+  "warehouse:view",
 ];
 const PERMISSIONS = {
   PHOTOS_VIEW: "photos:view",
@@ -476,6 +487,7 @@ const PERMISSIONS = {
   UKDOCS_INSPECTION_VIEW: "ukdocs_inspection:view",
   UKDOCS_CSI_VIEW: "ukdocs_csi:view",
   PD_KEURING_VIEW: "pd_keuring:view",
+  WAREHOUSE_VIEW: "warehouse:view",
 };
 const roleDefaultPermissions = {
   admin: allPermissions,
@@ -1217,6 +1229,12 @@ async function readJsonFile(filePath, fallback) {
 async function writeJsonFile(filePath, payload) {
   await fs.mkdir(path.dirname(filePath), { recursive: true });
   await fs.writeFile(filePath, JSON.stringify(payload, null, 2), "utf8");
+}
+
+async function readWarehouseDashboardExcludedReferences() {
+  const payload = await readJsonFile(warehouseDashboardSettingsPath, null);
+  const list = Array.isArray(payload?.excluded_references) ? payload.excluded_references : [];
+  return Array.from(new Set(list.map((item) => String(item || "").trim().toUpperCase()).filter(Boolean))).sort();
 }
 
 async function ensureUsersSeeded() {
@@ -11706,6 +11724,27 @@ async function handleApi(req, res, url) {
     return;
   }
 
+  // Machine-to-machine push from the LAN warehouse backend (serverBackend.js)
+  // -- gated by a shared secret header, never by a user session, since
+  // nobody is logged in on that side. Must stay before the blanket
+  // requestUser gate below, same as /api/backup/peer-status above.
+  if (url.pathname === "/warehouse/ingest" && req.method === "POST") {
+    const expectedSecret = String(process.env.RENDER_INGEST_SECRET || "").trim();
+    if (!expectedSecret || req.headers["x-ingest-secret"] !== expectedSecret) {
+      sendJson(res, 401, { ok: false });
+      return;
+    }
+    if (!isDatabaseEnabled()) {
+      sendJson(res, 503, { ok: false, error: "Database is not configured" });
+      return;
+    }
+    const body = await readRequestJson(req, 2 * 1024 * 1024);
+    await upsertWarehouseStatus(body?.status ?? {});
+    await insertWarehouseActivityEvents(Array.isArray(body?.activity) ? body.activity : []);
+    sendJson(res, 200, { ok: true });
+    return;
+  }
+
   const requestUser = await getRequestUser(req);
   if (!requestUser) {
     sendUnauthorized(res);
@@ -14927,6 +14966,62 @@ async function handleApi(req, res, url) {
     return;
   }
 
+  if (url.pathname === "/warehouse/api/config") {
+    if (!requirePermission(res, requestUser, PERMISSIONS.WAREHOUSE_VIEW)) {
+      return;
+    }
+    sendJson(res, 200, { backendHost: "postgres (shared with shadow-app)", settingsPath: warehouseDashboardSettingsPath });
+    return;
+  }
+
+  if (url.pathname === "/warehouse/api/settings" && req.method === "GET") {
+    if (!requirePermission(res, requestUser, PERMISSIONS.WAREHOUSE_VIEW)) {
+      return;
+    }
+    sendJson(res, 200, { excludedReferences: await readWarehouseDashboardExcludedReferences() });
+    return;
+  }
+
+  if (url.pathname === "/warehouse/api/settings" && req.method === "POST") {
+    if (!requirePermission(res, requestUser, PERMISSIONS.WAREHOUSE_VIEW)) {
+      return;
+    }
+    const body = await readRequestJson(req);
+    const list = Array.isArray(body?.excludedReferences) ? body.excludedReferences : [];
+    const normalized = Array.from(new Set(list.map((item) => String(item || "").trim().toUpperCase()).filter(Boolean))).sort();
+    await writeJsonFile(warehouseDashboardSettingsPath, { excluded_references: normalized });
+    sendJson(res, 200, { ok: true, excludedReferences: normalized });
+    return;
+  }
+
+  if (url.pathname === "/warehouse/api/status") {
+    if (!requirePermission(res, requestUser, PERMISSIONS.WAREHOUSE_VIEW)) {
+      return;
+    }
+    if (!isDatabaseEnabled()) {
+      sendJson(res, 200, { ok: false, error: "Database is not configured", data: {} });
+      return;
+    }
+    sendJson(res, 200, { ok: true, data: await getWarehouseStatus() });
+    return;
+  }
+
+  if (url.pathname === "/warehouse/api/activity-log") {
+    if (!requirePermission(res, requestUser, PERMISSIONS.WAREHOUSE_VIEW)) {
+      return;
+    }
+    if (!isDatabaseEnabled()) {
+      sendJson(res, 200, { ok: false, error: "Database is not configured", events: [] });
+      return;
+    }
+    const events = await getWarehouseActivityLog({
+      date: url.searchParams.get("date") || "",
+      limit: url.searchParams.get("limit") || "",
+    });
+    sendJson(res, 200, { ok: true, events });
+    return;
+  }
+
   sendJson(res, 404, { error: "Not found" });
 }
 
@@ -14944,10 +15039,44 @@ async function serveStatic(req, res, url) {
   createReadStream(filePath).pipe(res);
 }
 
+// The warehouse dashboard is a separate, non-React static app (its own
+// index.html/app.js/etc, all fetch()'d via relative paths) -- served from its
+// own folder rather than shadow-app's dist/, but under the same host so its
+// api/* fetches share the shadow-app session cookie automatically.
+async function serveWarehouseStatic(req, res, url) {
+  const publicDir = warehouseDashboardPublicDirCandidates.find((candidate) => existsSync(candidate));
+  if (!publicDir) {
+    sendText(res, 404, `Warehouse dashboard app not found. Checked: ${warehouseDashboardPublicDirCandidates.join(" | ")}`);
+    return;
+  }
+
+  const requestedPath = decodeURIComponent(url.pathname === "/warehouse" || url.pathname === "/warehouse/"
+    ? "/index.html"
+    : url.pathname.slice("/warehouse".length));
+  const resolvedPath = path.resolve(publicDir, `.${requestedPath}`);
+  if (!resolvedPath.startsWith(publicDir)) {
+    sendText(res, 403, "Forbidden");
+    return;
+  }
+  if (!existsSync(resolvedPath)) {
+    sendText(res, 404, "Not found");
+    return;
+  }
+  res.writeHead(200, { "content-type": guessMimeType(resolvedPath) });
+  createReadStream(resolvedPath).pipe(res);
+}
+
 const server = http.createServer((req, res) => {
   const url = new URL(req.url || "/", `http://${req.headers.host || "127.0.0.1"}`);
-  if (url.pathname.startsWith("/api/")) {
+  if (url.pathname.startsWith("/api/") || url.pathname === "/warehouse/ingest" || url.pathname.startsWith("/warehouse/api/")) {
     handleApi(req, res, url).catch((error) => {
+      sendJson(res, 500, { error: error instanceof Error ? error.message : String(error) });
+    });
+    return;
+  }
+
+  if (url.pathname === "/warehouse" || url.pathname.startsWith("/warehouse/")) {
+    serveWarehouseStatic(req, res, url).catch((error) => {
       sendJson(res, 500, { error: error instanceof Error ? error.message : String(error) });
     });
     return;

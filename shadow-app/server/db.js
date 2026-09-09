@@ -439,6 +439,68 @@ function fustActionRowFromDatabase(row, documentsByKind) {
 // (including nested document status) straight from Postgres, so it can be
 // used as the primary read source for the live action list instead of
 // re-parsing the Retour/Uitgaand sheets.
+// The LAN warehouse backend (serverBackend.js) pushes here on its own
+// schedule -- upserts the single status snapshot and appends whatever new
+// activity events came in since the last push.
+export async function upsertWarehouseStatus(data) {
+  if (!pool) {
+    return;
+  }
+  await pool.query(
+    `
+      INSERT INTO warehouse_status (id, data, updated_at)
+      VALUES (1, $1::jsonb, now())
+      ON CONFLICT (id) DO UPDATE SET data = $1::jsonb, updated_at = now()
+    `,
+    [JSON.stringify(data ?? {})],
+  );
+}
+
+function warehouseEventTimestamp(event) {
+  const parsed = new Date(event?.timestamp);
+  return Number.isNaN(parsed.getTime()) ? new Date() : parsed;
+}
+
+export async function insertWarehouseActivityEvents(events) {
+  if (!pool || !Array.isArray(events) || !events.length) {
+    return;
+  }
+  const values = [];
+  const placeholders = events.map((event) => {
+    values.push(JSON.stringify(event ?? {}), warehouseEventTimestamp(event));
+    return `($${values.length - 1}::jsonb, $${values.length})`;
+  });
+  await pool.query(
+    `INSERT INTO warehouse_activity_log (event, ts) VALUES ${placeholders.join(", ")}`,
+    values,
+  );
+}
+
+export async function getWarehouseStatus() {
+  if (!pool) {
+    return {};
+  }
+  const result = await pool.query("SELECT data FROM warehouse_status WHERE id = 1");
+  return result.rows[0]?.data || {};
+}
+
+export async function getWarehouseActivityLog({ date, limit } = {}) {
+  if (!pool) {
+    return [];
+  }
+  const safeLimit = Number(limit) > 0 ? Math.min(Number(limit), 20000) : 5000;
+  const result = date
+    ? await pool.query(
+      "SELECT event FROM warehouse_activity_log WHERE ts::date = $1 ORDER BY ts DESC LIMIT $2",
+      [date, safeLimit],
+    )
+    : await pool.query(
+      "SELECT event FROM warehouse_activity_log ORDER BY ts DESC LIMIT $1",
+      [safeLimit],
+    );
+  return result.rows.map((row) => row.event).reverse();
+}
+
 export async function getFustActionsFromDatabase() {
   if (!pool) {
     return [];
@@ -1022,6 +1084,27 @@ const databaseMigrations = [
   `
     CREATE INDEX IF NOT EXISTS ukdocs_csi_parsed_document_rows_document_idx
     ON ukdocs_csi_parsed_document_rows (document_id, row_index)
+  `,
+  // Single always-id=1 row (upserted) -- the warehouse dashboard only ever
+  // needs the current snapshot, not per-location history.
+  `
+    CREATE TABLE IF NOT EXISTS warehouse_status (
+      id integer PRIMARY KEY DEFAULT 1,
+      data jsonb NOT NULL,
+      updated_at timestamptz NOT NULL DEFAULT now(),
+      CHECK (id = 1)
+    )
+  `,
+  `
+    CREATE TABLE IF NOT EXISTS warehouse_activity_log (
+      id bigserial PRIMARY KEY,
+      event jsonb NOT NULL,
+      ts timestamptz NOT NULL
+    )
+  `,
+  `
+    CREATE INDEX IF NOT EXISTS warehouse_activity_log_ts_idx
+    ON warehouse_activity_log (ts)
   `,
 ];
 

@@ -1,0 +1,16 @@
+{
+  "name": "warehouse-dashboard",
+  "version": "0.1.0",
+  "description": "Read-only warehouse status dashboard. Standalone today; an Express router module so it can be mounted as a route inside another app later.",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "dotenv": "^16.4.5",
+    "express": "^4.19.2"
+  }
+}

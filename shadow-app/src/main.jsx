@@ -33,6 +33,7 @@ const PERMISSIONS = {
   UKDOCS_INSPECTION_VIEW: "ukdocs_inspection:view",
   UKDOCS_CSI_VIEW: "ukdocs_csi:view",
   PD_KEURING_VIEW: "pd_keuring:view",
+  WAREHOUSE_VIEW: "warehouse:view",
 };
 const ALL_PERMISSIONS = Object.values(PERMISSIONS);
 const DEFAULT_PERMISSIONS_BY_ROLE = {
