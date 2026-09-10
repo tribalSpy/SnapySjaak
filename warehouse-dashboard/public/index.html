@@ -53,10 +53,22 @@
       <section class="panel">
         <h2 class="panel-title">Completion</h2>
         <div class="completion-row">
-          <div id="donut"></div>
+          <div class="donut-group">
+            <div id="donut"></div>
+            <span class="donut-caption">Total</span>
+          </div>
+          <div class="donut-group">
+            <div id="donut-photo"></div>
+            <span class="donut-caption">Photo</span>
+          </div>
+          <div class="donut-group">
+            <div id="donut-rfid"></div>
+            <span class="donut-caption">RFID</span>
+          </div>
           <div class="completion-legend">
             <span class="legend-item"><span class="swatch" style="background:var(--st-good)"></span>Scanned</span>
             <span class="legend-item"><span class="swatch" style="background:var(--pending-soft)"></span>Remaining</span>
+            <span class="legend-item">RFID/Photo rings only count references that actually require that check.</span>
           </div>
         </div>
       </section>

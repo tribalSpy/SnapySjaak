@@ -38,7 +38,8 @@ window.WD = (function () {
     return [String(value)];
   }
 
-  function statusFromCounts(scanned, expected) {
+  function statusFromCounts(scanned, expected, required = true) {
+    if (!required) return 'not_required';
     if (scanned <= 0) return 'pending';
     if (expected <= 0) return 'extra';
     if (scanned < expected) return 'partial';
@@ -59,6 +60,12 @@ window.WD = (function () {
           status: item.status || '',
           trolleyCount: Number(item.trolleyCount) || 0,
           scannedCount: Number(item.scannedCount) || 0,
+          rfidCount: Number(item.rfidCount) || 0,
+          photoCount: Number(item.photoCount) || 0,
+          requiresRfid: item.requiresRfid !== false,
+          requiresPhoto: item.requiresPhoto !== false,
+          rfidStatus: item.rfidStatus || '',
+          photoStatus: item.photoStatus || '',
           lastScannedBy: item.lastScannedBy || '',
           lastScannedAt: item.lastScannedAt || ''
         });
@@ -82,6 +89,8 @@ window.WD = (function () {
         byRef[ref] = {
           reference: ref, truck: '', group: row.group || '', status: 'pending',
           trolleyCount: Number(row.trolleyCount) || 0, scannedCount: 0,
+          rfidCount: 0, photoCount: 0,
+          requiresRfid: row.requiresRfid !== false, requiresPhoto: row.requiresPhoto !== false,
           lastScannedBy: '', lastScannedAt: '',
           locations: location ? [location] : []
         };
@@ -103,6 +112,8 @@ window.WD = (function () {
         byRef[ref] = {
           reference: ref, truck: '', group: e.group || '', status: 'pending',
           trolleyCount: Number(e.trolleyCount) || 0, scannedCount: 0,
+          rfidCount: 0, photoCount: 0,
+          requiresRfid: e.requiresRfid !== false, requiresPhoto: e.requiresPhoto !== false,
           lastScannedBy: '', lastScannedAt: '',
           locations: normalizeLocations(e.locations)
         };
@@ -141,11 +152,17 @@ window.WD = (function () {
         byRef[ref] = {
           reference: ref, truck: '', group: '', status: 'pending',
           trolleyCount: Number(e.trolleyCount) || 0, scannedCount: 0,
+          rfidCount: 0, photoCount: 0,
+          requiresRfid: e.requiresRfid !== false, requiresPhoto: e.requiresPhoto !== false,
           lastScannedBy: '', lastScannedAt: '', locations: eventLocations
         };
       }
       const item = byRef[ref];
       item.scannedCount = Number(e.scannedCount) || item.scannedCount;
+      item.rfidCount = Number(e.rfidCount) || item.rfidCount;
+      item.photoCount = Number(e.photoCount) || item.photoCount;
+      if (e.requiresRfid !== undefined) item.requiresRfid = e.requiresRfid !== false;
+      if (e.requiresPhoto !== undefined) item.requiresPhoto = e.requiresPhoto !== false;
       item.trolleyCount = Number(e.trolleyCount) || item.trolleyCount;
       item.status = e.status || statusFromCounts(item.scannedCount, item.trolleyCount);
       item.lastScannedBy = e.scannerId || item.lastScannedBy;
@@ -156,6 +173,8 @@ window.WD = (function () {
 
     for (const item of Object.values(byRef)) {
       item.status = statusFromCounts(Number(item.scannedCount) || 0, Number(item.trolleyCount) || 0);
+      item.rfidStatus = statusFromCounts(Number(item.rfidCount) || 0, Number(item.trolleyCount) || 0, item.requiresRfid !== false);
+      item.photoStatus = statusFromCounts(Number(item.photoCount) || 0, Number(item.trolleyCount) || 0, item.requiresPhoto !== false);
       if (!useLiveFallback && !hasHistoricalExpectedList && (Number(item.scannedCount) || 0) === 0) {
         item.status = 'scheduled';
       }
@@ -179,13 +198,31 @@ window.WD = (function () {
 
   function statusSummary(rows) {
     if (!rows.length) {
-      return { expected_refs: 0, expected_trolleys: 0, scanned_refs: 0, scanned_trolleys: 0, effective_scanned_trolleys: 0, pending_refs: 0, pending_trolleys: 0, extra_refs: 0 };
+      return {
+        expected_refs: 0, expected_trolleys: 0, scanned_refs: 0, scanned_trolleys: 0, effective_scanned_trolleys: 0,
+        pending_refs: 0, pending_trolleys: 0, extra_refs: 0,
+        rfid_expected_trolleys: 0, rfid_effective_trolleys: 0,
+        photo_expected_trolleys: 0, photo_effective_trolleys: 0,
+        total_required_units: 0, total_completed_units: 0,
+      };
     }
     const perRef = dedupeByReference(rows);
     const scannedRefs = perRef.filter(r => r.scannedCount >= r.trolleyCount);
     const pendingRefs = perRef.filter(r => r.scannedCount === 0);
     const pendingTrolleys = perRef.reduce((acc, r) => acc + Math.max(r.trolleyCount - r.scannedCount, 0), 0);
     const extraRefs = perRef.filter(r => String(r.status || '').toLowerCase() === 'extra');
+
+    // Photo and RFID are independent checks -- some references need only one
+    // of the two, or neither -- so each ring only counts references that
+    // actually require that check, and "Total" is the combined completion
+    // across both dimensions' required units (a reference needing both counts
+    // toward the total twice; one needing only one counts once).
+    const needsRfid = perRef.filter((r) => r.requiresRfid !== false);
+    const needsPhoto = perRef.filter((r) => r.requiresPhoto !== false);
+    const rfidExpected = needsRfid.reduce((a, r) => a + r.trolleyCount, 0);
+    const rfidEffective = needsRfid.reduce((a, r) => a + Math.min(r.rfidCount || 0, r.trolleyCount), 0);
+    const photoExpected = needsPhoto.reduce((a, r) => a + r.trolleyCount, 0);
+    const photoEffective = needsPhoto.reduce((a, r) => a + Math.min(r.photoCount || 0, r.trolleyCount), 0);
 
     return {
       expected_refs: perRef.length,
@@ -198,7 +235,13 @@ window.WD = (function () {
       effective_scanned_trolleys: perRef.reduce((a, r) => a + Math.min(r.scannedCount, r.trolleyCount), 0),
       pending_refs: pendingRefs.length,
       pending_trolleys: pendingTrolleys,
-      extra_refs: extraRefs.length
+      extra_refs: extraRefs.length,
+      rfid_expected_trolleys: rfidExpected,
+      rfid_effective_trolleys: rfidEffective,
+      photo_expected_trolleys: photoExpected,
+      photo_effective_trolleys: photoEffective,
+      total_required_units: rfidExpected + photoExpected,
+      total_completed_units: rfidEffective + photoEffective,
     };
   }
 

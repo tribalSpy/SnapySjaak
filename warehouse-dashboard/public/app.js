@@ -91,9 +91,9 @@
   }
 
   function statusPill(status) {
-    const known = ['scanned', 'partial', 'pending', 'extra', 'scheduled'];
+    const known = ['scanned', 'partial', 'pending', 'extra', 'scheduled', 'not_required'];
     const key = known.includes(status) ? status : 'pending';
-    const label = { scanned: 'Scanned', partial: 'Partial', pending: 'Pending', extra: 'Extra', scheduled: 'Scheduled' }[key];
+    const label = { scanned: 'Scanned', partial: 'Partial', pending: 'Pending', extra: 'Extra', scheduled: 'Scheduled', not_required: 'Not needed' }[key];
     return `<span class="pill ${key}">${label}</span>`;
   }
 
@@ -133,18 +133,34 @@
       ['Scanned count', summary.scanned_trolleys],
       ['Pending refs', summary.pending_refs],
       ['Pending trolleys', summary.pending_trolleys],
-      ['Extra refs', summary.extra_refs]
+      ['Extra refs', summary.extra_refs],
+      ['Photo done / needed', `${summary.photo_effective_trolleys} / ${summary.photo_expected_trolleys}`],
+      ['RFID done / needed', `${summary.rfid_effective_trolleys} / ${summary.rfid_expected_trolleys}`]
     ];
     el.stats.innerHTML = items.map(([label, val]) =>
       `<div class="stat"><span class="num">${val}</span><span class="label">${label}</span></div>`
     ).join('');
   }
 
+  // effective/expected in trolleys for one dimension (RFID or photo) -- 0
+  // expected (nothing requires this check) reads as 100%, not 0%, since
+  // there's trivially nothing left to do; that's only shown once real data
+  // has loaded at all (guarded by hasAnyData in the caller).
+  function pctForDimension(effective, expected) {
+    if (expected <= 0) return 100;
+    return Math.round((Math.min(Math.max(effective, 0), expected) / expected) * 1000) / 10;
+  }
+
   function renderDonutFor(summary) {
-    const expected = Math.max(summary.expected_trolleys, 0);
-    const scanned = Math.min(Math.max(summary.effective_scanned_trolleys, 0), expected);
-    const pct = expected ? Math.round((scanned / expected) * 1000) / 10 : 0;
-    C.renderDonut(el.donut, pct);
+    const hasAnyData = summary.expected_trolleys > 0;
+    const totalPct = !hasAnyData ? 0 : (
+      summary.total_required_units <= 0 ? 100 : Math.round((summary.total_completed_units / summary.total_required_units) * 1000) / 10
+    );
+    const photoPct = !hasAnyData ? 0 : pctForDimension(summary.photo_effective_trolleys, summary.photo_expected_trolleys);
+    const rfidPct = !hasAnyData ? 0 : pctForDimension(summary.rfid_effective_trolleys, summary.rfid_expected_trolleys);
+    C.renderDonut(el.donut, totalPct);
+    C.renderDonut(el.donutPhoto, photoPct);
+    C.renderDonut(el.donutRfid, rfidPct);
   }
 
   // ---------------------------------------------------------------
@@ -178,6 +194,8 @@
       { key: 'truck', label: 'Truck' },
       { key: 'group', label: 'Group' },
       { key: 'status', label: 'Status', render: r => statusPill(r.status) },
+      { key: 'photoStatus', label: 'Photo', render: r => `${statusPill(r.photoStatus)} ${r.photoCount}/${r.trolleyCount}` },
+      { key: 'rfidStatus', label: 'RFID', render: r => `${statusPill(r.rfidStatus)} ${r.rfidCount}/${r.trolleyCount}` },
       { key: 'scannedCount', label: 'Scanned', render: r => `${r.scannedCount} / ${r.trolleyCount}` },
       { key: 'lastScannedBy', label: 'Last scanned by' },
       { key: 'lastScannedAt', label: 'Last scanned at', render: r => escapeHtml(r.lastScannedAt ? localTime(r.lastScannedAt) : '—') }
