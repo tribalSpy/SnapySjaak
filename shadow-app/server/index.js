@@ -1698,6 +1698,11 @@ function normalizeUkdocsCustomer(customer) {
     border_crossing_default: normalizeUkdocsText(customer?.border_crossing_default),
     expediteur_name: normalizeUkdocsText(customer?.expediteur_name),
     customer_connect: normalizeUkdocsText(customer?.customer_connect),
+    // Per-customer rit number for each of the 4 fixed upload categories,
+    // keyed by category code -- falls back to the category code itself
+    // (the old global behavior) wherever it's blank, see
+    // buildUkdocsFinanceAuditRows.
+    rit_overrides: normalizeUkdocsCustomerRitOverrides(customer?.rit_overrides),
   };
 }
 
@@ -1804,6 +1809,15 @@ function normalizeUkdocsColumnMappings(mappings) {
   const next = {};
   for (const category of ["508", "515", "1000", "920"]) {
     next[category] = { aliases: normalizeUkdocsAliases(source?.[category]?.aliases) };
+  }
+  return next;
+}
+
+function normalizeUkdocsCustomerRitOverrides(values) {
+  const source = values && typeof values === "object" ? values : {};
+  const next = {};
+  for (const category of ["508", "515", "1000", "920"]) {
+    next[category] = normalizeUkdocsText(source?.[category]);
   }
   return next;
 }
@@ -13063,6 +13077,16 @@ async function handleApi(req, res, url) {
       customer_name: body?.customer_name ?? existingCollection.customer_name,
       updated_at: new Date().toISOString(),
     });
+    // Only enforced when the request is itself asserting a customer_id (the
+    // PD Keuring edit form always sends the whole row, customer_id included)
+    // -- a narrower notes-only save on an older row keeps working unchanged.
+    if (Object.prototype.hasOwnProperty.call(body || {}, "customer_id")) {
+      const validCustomer = updatedCollection.customer_id && state.customers.some((customer) => customer.id === updatedCollection.customer_id);
+      if (!validCustomer) {
+        sendJson(res, 400, { error: "No valid customer selected -- choose a customer before saving" });
+        return;
+      }
+    }
     const sheetSyncResult = await syncPdKeuringCollectionToSheet(settings, updatedCollection);
     if (sheetSyncResult) {
       updatedCollection = normalizeUkdocsPrintCollection({ ...updatedCollection, pd_sheet_sync: sheetSyncResult });
@@ -13085,6 +13109,17 @@ async function handleApi(req, res, url) {
     }
     const settings = await readFustSettings();
     const state = await readUkdocsState();
+    // Reject the whole batch before any sheet-sync side effects run if any
+    // row has no resolved customer -- a PD Keuring row with no customer
+    // means paperwork can go out without knowing who it's for.
+    const invalidIndex = incoming.findIndex((item) => {
+      const customerId = String(item?.customer_id || "").trim();
+      return !customerId || !state.customers.some((customer) => customer.id === customerId);
+    });
+    if (invalidIndex !== -1) {
+      sendJson(res, 400, { error: `Row ${invalidIndex + 1} has no valid customer selected -- choose a customer before saving` });
+      return;
+    }
     const created = [];
     for (const item of incoming) {
       let newCollection = normalizeUkdocsPrintCollection({

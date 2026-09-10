@@ -2481,7 +2481,7 @@ function buildUkdocsFinanceAuditRows(state) {
         week: isoWeekNumber(shipment.shipment_date),
         datum: shipment.shipment_date,
         truck: financeAuditTruckNumber(collection),
-        rit: category,
+        rit: customer?.rit_overrides?.[category] || category,
         omschrijving: financeAuditOmschrijving(category, collection),
         type: categoryDefinition.label,
         customer_name: customer?.customer_name || shipment.customer_name || "",
@@ -2745,6 +2745,7 @@ function emptyUkdocsCustomer() {
     border_crossing_default: "",
     expediteur_name: "",
     customer_connect: "",
+    rit_overrides: Object.fromEntries(UKDOCS_CATEGORY_DEFINITIONS.map((item) => [item.code, ""])),
   };
 }
 
@@ -2836,6 +2837,23 @@ function ukdocsMatchLines(value) {
     .split(/\r?\n+/)
     .map(normalizeUkdocsMatchToken)
     .filter(Boolean);
+}
+
+// All customers whose hub code list contains this hub code, ignoring remark
+// entirely -- used to detect whether a hub code is shared by more than one
+// customer (remark is then required to disambiguate) and, when it isn't
+// shared, to auto-fill the remark a lone matching customer expects.
+function findUkdocsCustomerCandidatesByHub(customers, hubCode) {
+  const normalizedHub = normalizeUkdocsMatchToken(hubCode);
+  if (!normalizedHub) {
+    return [];
+  }
+  return (customers || []).filter((customer) => {
+    if (!String(customer?.customer_name || "").trim()) {
+      return false;
+    }
+    return ukdocsMatchLines(customer?.match_hub_code).includes(normalizedHub);
+  });
 }
 
 function findUkdocsCustomerMatch(customers, collection) {
@@ -3668,6 +3686,16 @@ function UkdocsPage({ currentUser, onNavigate }) {
     }));
   }
 
+  function updateCustomerRitOverride(category, value) {
+    setCustomerDraft((current) => ({
+      ...current,
+      rit_overrides: {
+        ...(current.rit_overrides || {}),
+        [category]: value,
+      },
+    }));
+  }
+
   function saveCustomer() {
     const nextCustomer = { ...customerDraft, id: customerDraft.id || `ukdocs-customer-${Date.now()}` };
     const nextCustomers = customerDraft.id
@@ -4013,6 +4041,16 @@ function UkdocsPage({ currentUser, onNavigate }) {
                 ) : (
                   <input value={customerDraft.export_defaults?.[key] || ""} onChange={(event) => updateCustomerExportDefault(key, event.target.value)} />
                 )}
+              </label>
+            ))}
+          </div>
+          <div className="section-header"><h3>Rit numbers per category (Finance Audit)</h3></div>
+          <div className="notice">Leave blank to keep using the category code ({UKDOCS_CATEGORY_DEFINITIONS.map((item) => item.code).join("/")}) as the rit number. Fill in only the categories where this customer uses a different rit.</div>
+          <div className="form-grid">
+            {UKDOCS_CATEGORY_DEFINITIONS.map((item) => (
+              <label key={`customer-rit-${item.code}`}>
+                <span>{item.label} (default {item.code})</span>
+                <input value={customerDraft.rit_overrides?.[item.code] || ""} onChange={(event) => updateCustomerRitOverride(item.code, event.target.value)} />
               </label>
             ))}
           </div>
@@ -6915,6 +6953,7 @@ function PdKeuringPage({ currentUser }) {
   const pdReference = state?.pd_reference || [];
   const pdDropdownOptions = state?.pd_dropdown_options || {};
   const printCollections = state?.print_collections || [];
+  const customers = state?.customers || [];
   const dayRows = printCollections.filter((item) => String(item.shipment_date || "").slice(0, 10) === selectedDate);
   const lastWeekDate = addDaysToIso(selectedDate, -7);
   const lastWeekRows = printCollections.filter((item) => String(item.shipment_date || "").slice(0, 10) === lastWeekDate);
@@ -7005,15 +7044,57 @@ function PdKeuringPage({ currentUser }) {
     };
   }
 
+  // Only fills the remark in when the hub code unambiguously belongs to one
+  // customer with a single expected remark token, and only when the staff
+  // member hasn't already typed something -- never overwrites a manual edit.
+  function autofillRemarkForHub(hubCode, currentRemark) {
+    if (String(currentRemark || "").trim()) {
+      return {};
+    }
+    const candidates = findUkdocsCustomerCandidatesByHub(customers, hubCode);
+    if (candidates.length !== 1) {
+      return {};
+    }
+    const remarkTokens = ukdocsMatchLines(candidates[0]?.match_remark);
+    return remarkTokens.length === 1 ? { remark: remarkTokens[0] } : {};
+  }
+
+  // Re-resolves customer_id/customer_name from the current hub code + remark
+  // every time either one changes, so a stale match from a previous hub code
+  // can never silently survive onto a different row.
+  function resolveCustomerForDraft(draft) {
+    const matched = findUkdocsCustomerMatch(customers, draft);
+    return {
+      customer_id: matched?.id || "",
+      customer_name: matched?.customer_name || "",
+    };
+  }
+
   function updateRowDraftField(key, value) {
     setRowDraft((current) => {
-      const next = { ...current, [key]: value };
-      return key === "city_name" ? { ...next, ...referenceAutofillForCity(value) } : next;
+      let next = { ...current, [key]: value };
+      if (key === "city_name") {
+        // City can bring its own hub code from the reference table, which
+        // then needs to flow through the same remark/customer resolution as
+        // if the hub code had been typed directly.
+        next = { ...next, ...referenceAutofillForCity(value) };
+      }
+      if (key === "hub_code" || key === "city_name") {
+        next = { ...next, ...autofillRemarkForHub(next.hub_code, next.remark) };
+      }
+      if (key === "hub_code" || key === "remark" || key === "city_name") {
+        next = { ...next, ...resolveCustomerForDraft(next) };
+      }
+      return next;
     });
   }
 
   async function saveRow() {
     if (!rowDraft) {
+      return;
+    }
+    if (!rowDraft.customer_id || !customers.some((item) => item.id === rowDraft.customer_id)) {
+      setError("Select a customer before saving -- the hub code/remark didn't resolve to exactly one customer.");
       return;
     }
     setSaving(true);
@@ -7266,8 +7347,21 @@ function PdKeuringPage({ currentUser }) {
                   <input value={rowDraft.reference_connect || ""} onChange={(event) => updateRowDraftField("reference_connect", event.target.value)} />
                 </label>
                 <label>
-                  <span>Customer name</span>
-                  <input value={rowDraft.customer_name || ""} onChange={(event) => updateRowDraftField("customer_name", event.target.value)} />
+                  <span>Customer</span>
+                  <select
+                    value={rowDraft.customer_id || ""}
+                    onChange={(event) => {
+                      const chosen = customers.find((item) => item.id === event.target.value);
+                      setRowDraft((current) => ({
+                        ...current,
+                        customer_id: chosen?.id || "",
+                        customer_name: chosen?.customer_name || "",
+                      }));
+                    }}
+                  >
+                    <option value="">-- Select customer --</option>
+                    {customers.map((customer) => <option key={customer.id} value={customer.id}>{customer.customer_name}</option>)}
+                  </select>
                 </label>
                 <label>
                   <span>Keuring made by</span>
@@ -7286,8 +7380,13 @@ function PdKeuringPage({ currentUser }) {
                 <input type="checkbox" checked={rowDraft.pd_keuring_done === true} onChange={(event) => updateRowDraftField("pd_keuring_done", event.target.checked)} />
                 <span>Done</span>
               </label>
+              {rowDraft.customer_id && customers.some((item) => item.id === rowDraft.customer_id) ? (
+                <span className="ukdocs-status-badge success">Matched customer: {rowDraft.customer_name}</span>
+              ) : (
+                <span className="ukdocs-status-badge danger">No customer matched -- fix the hub code/remark above or pick one from the Customer dropdown before saving.</span>
+              )}
               <div className="row-actions spread-actions">
-                <button type="button" className="primary" onClick={saveRow} disabled={saving}>{rowDraft.id ? "Update row" : "Add row"}</button>
+                <button type="button" className="primary" onClick={saveRow} disabled={saving || !rowDraft.customer_id || !customers.some((item) => item.id === rowDraft.customer_id)}>{rowDraft.id ? "Update row" : "Add row"}</button>
                 <button type="button" onClick={() => setRowDraft(null)} disabled={saving}>Cancel</button>
               </div>
             </>
