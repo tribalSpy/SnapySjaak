@@ -11768,9 +11768,95 @@ async function handleApi(req, res, url) {
       return;
     }
     const body = await readRequestJson(req, 2 * 1024 * 1024);
-    await upsertWarehouseStatus(body?.status ?? {});
-    await insertWarehouseActivityEvents(Array.isArray(body?.activity) ? body.activity : []);
+    const activity = Array.isArray(body?.activity) ? body.activity : [];
+    const incomingStatus = body?.status && typeof body.status === "object" ? body.status : null;
+    // This is the LAN warehouse backend's periodic full-snapshot push -- it
+    // doesn't know about photos the Android app has reported straight to
+    // Render (see /warehouse/ingest/photo below), so a blind replace here
+    // would wipe those back to whatever serverBackend.js's own local
+    // photoCount is. Keep the higher photoCount per location instead, unless
+    // this push is itself the daily reset, which must always win outright.
+    const isResetPush = activity.some((event) => event?.type === "reset");
+    if (incomingStatus) {
+      let nextStatus = incomingStatus;
+      if (!isResetPush) {
+        const currentStatus = await getWarehouseStatus();
+        nextStatus = { ...incomingStatus };
+        for (const [location, row] of Object.entries(nextStatus)) {
+          const previous = currentStatus?.[location];
+          if (previous && Number(previous.photoCount) > Number(row?.photoCount || 0)) {
+            nextStatus[location] = { ...row, photoCount: previous.photoCount, photoStatus: previous.photoStatus };
+          }
+        }
+      }
+      await upsertWarehouseStatus(nextStatus);
+    }
+    await insertWarehouseActivityEvents(activity);
     sendJson(res, 200, { ok: true });
+    return;
+  }
+
+  if (url.pathname === "/warehouse/ingest/photo" && req.method === "POST") {
+    const expectedSecret = String(process.env.RENDER_INGEST_SECRET || "").trim();
+    if (!expectedSecret || req.headers["x-ingest-secret"] !== expectedSecret) {
+      sendJson(res, 401, { ok: false });
+      return;
+    }
+    if (!isDatabaseEnabled()) {
+      sendJson(res, 503, { ok: false, error: "Database is not configured" });
+      return;
+    }
+    const body = await readRequestJson(req, 64 * 1024);
+    const reference = String(body?.reference || "").trim().toUpperCase();
+    if (!reference) {
+      sendJson(res, 400, { ok: false, error: "Missing reference" });
+      return;
+    }
+    const scannerId = String(body?.scannerId || "android-photo").trim();
+
+    // The Android app has no LAN route to serverBackend.js, so it reports
+    // photos here instead. This directly increments photoCount on the
+    // reference's status row that serverBackend.js's own push last wrote --
+    // the merge logic above then keeps that increment across the next
+    // periodic push, since serverBackend.js has no idea it happened.
+    const currentStatus = await getWarehouseStatus();
+    const nextStatus = { ...currentStatus };
+    let updatedPhotoCount = null;
+    for (const [location, row] of Object.entries(currentStatus || {})) {
+      if (String(row?.reference || "").trim().toUpperCase() !== reference) {
+        continue;
+      }
+      const trolleyCount = Number(row.trolleyCount) || 0;
+      const requiresPhoto = row.requiresPhoto !== false;
+      const photoCount = (Number(row.photoCount) || 0) + 1;
+      const photoStatus = !requiresPhoto
+        ? "not_required"
+        : photoCount < trolleyCount ? "partial" : photoCount === trolleyCount ? "scanned" : "extra";
+      nextStatus[location] = {
+        ...row,
+        photoCount,
+        photoStatus,
+        scannedCount: photoCount,
+        status: photoStatus,
+        lastScannedBy: scannerId,
+        lastScannedAt: new Date().toISOString(),
+      };
+      updatedPhotoCount = photoCount;
+    }
+    if (updatedPhotoCount === null) {
+      sendJson(res, 404, { ok: false, error: `Reference not found: ${reference}` });
+      return;
+    }
+    await upsertWarehouseStatus(nextStatus);
+    await insertWarehouseActivityEvents([{
+      type: "scan_complete",
+      reference,
+      scannerId,
+      actionType: "photo",
+      photoCount: updatedPhotoCount,
+      timestamp: new Date().toISOString(),
+    }]);
+    sendJson(res, 200, { ok: true, reference, photoCount: updatedPhotoCount });
     return;
   }
 
@@ -15118,7 +15204,7 @@ async function serveWarehouseStatic(req, res, url) {
 
 const server = http.createServer((req, res) => {
   const url = new URL(req.url || "/", `http://${req.headers.host || "127.0.0.1"}`);
-  if (url.pathname.startsWith("/api/") || url.pathname === "/warehouse/ingest" || url.pathname.startsWith("/warehouse/api/")) {
+  if (url.pathname.startsWith("/api/") || url.pathname.startsWith("/warehouse/ingest") || url.pathname.startsWith("/warehouse/api/")) {
     handleApi(req, res, url).catch((error) => {
       sendJson(res, 500, { error: error instanceof Error ? error.message : String(error) });
     });
