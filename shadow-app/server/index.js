@@ -11729,8 +11729,12 @@ async function handleApi(req, res, url) {
   // nobody is logged in on that side. Must stay before the blanket
   // requestUser gate below, same as /api/backup/peer-status above.
   if (url.pathname === "/warehouse/ingest" && req.method === "POST") {
+    console.log("ingest hit", url.pathname, req.method);
+    const rawHeader = req.headers["x-ingest-secret"];
     const expectedSecret = String(process.env.RENDER_INGEST_SECRET || "").trim();
-    if (!expectedSecret || req.headers["x-ingest-secret"] !== expectedSecret) {
+    console.log("got:", JSON.stringify(rawHeader), rawHeader?.length);
+    console.log("want:", JSON.stringify(process.env.RENDER_INGEST_SECRET), expectedSecret.length);
+    if (!expectedSecret || rawHeader !== expectedSecret) {
       sendJson(res, 401, { ok: false });
       return;
     }
