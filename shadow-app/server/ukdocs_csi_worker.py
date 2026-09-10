@@ -110,6 +110,8 @@ def normalize_known_csi_group(value):
         return "CITES ge. non-flowering p"
     if "other non flowering plant" in text:
         return "Other non-flowering plant"
+    if "dendron" in text or "azalea" in text:
+        return "Rhododendrons and azaleas"
     if "cites flowering plants" in text or "flowering plants no cactu" in text:
         return "Flowering plants(no cactu"
     if text == "perennials" or "perennials" in text:
@@ -162,6 +164,8 @@ def map_ipaffs_product(genus, commodity_code, prefer_plants=False):
             return "Others"
         if code.startswith("06029091") or code.startswith("6029091"):
             return "Flowering plants(no cactu"
+        if code.startswith("060230") or code.startswith("60230") or "dendron" in genus_key or "azalea" in genus_key:
+            return "Rhododendrons and azaleas"
         if known_group in {"refined roses", "Perennials", "Others", "Flowering plants(no cactu"}:
             return known_group
         if code.startswith("060290990") or code.startswith("60290990") or code.startswith("060290991") or code.startswith("60290991"):
@@ -188,7 +192,12 @@ def map_ipaffs_product(genus, commodity_code, prefer_plants=False):
             return "Flowering plants(no cactu"
         if "rosa" in genus_key:
             return "refined roses"
-        return known_group or "Other non-flowering plant"
+        # Nothing recognized this as a known label, code prefix, or genus
+        # keyword. Fall back to the genus text itself rather than a fixed
+        # catch-all, so a brand-new plant type gets its own distinct
+        # comparison group instead of silently merging into
+        # "Other non-flowering plant".
+        return known_group or clean_text(genus) or "Other non-flowering plant"
 
     if code.startswith("603140") or code.startswith("060314"):
         return "Flowers chrysanthemums"

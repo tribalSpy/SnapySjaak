@@ -6340,6 +6340,7 @@ const UKDOCS_CSI_PLANT_GROUPS = new Set([
   "Perennials",
   "Others",
   "refined roses",
+  "Rhododendrons and azaleas",
 ]);
 
 const UKDOCS_CSI_FLOWER_GROUPS = new Set([
@@ -6394,6 +6395,9 @@ function normalizeUkdocsCsiKnownGroup(value) {
   }
   if (text.includes("other non flowering plant")) {
     return "Other non-flowering plant";
+  }
+  if (text.includes("dendron") || text.includes("azalea")) {
+    return "Rhododendrons and azaleas";
   }
   if (text.includes("cites flowering plants") || text.includes("flowering plants no cactu")) {
     return "Flowering plants(no cactu";
@@ -6570,6 +6574,9 @@ function mapUkdocsCsiProductName(description, commodityCode = "", options = {}) 
     if (code.startsWith("06029091") || code.startsWith("6029091")) {
       return "Flowering plants(no cactu";
     }
+    if (code.startsWith("060230") || code.startsWith("60230") || text.includes("dendron") || text.includes("azalea")) {
+      return "Rhododendrons and azaleas";
+    }
     if (
       code.startsWith("060290990") || code.startsWith("60290990")
       || code.startsWith("060290991") || code.startsWith("60290991")
@@ -6626,7 +6633,12 @@ function mapUkdocsCsiProductName(description, commodityCode = "", options = {}) 
     ) {
       return "Flowering plants(no cactu";
     }
-    return knownGroup || "Other non-flowering plant";
+    // Nothing recognized this as a known label, code prefix, or genus keyword.
+    // Fall back to the product's own text rather than a fixed catch-all, so a
+    // brand-new plant type gets its own distinct comparison group instead of
+    // silently merging into "Other non-flowering plant" (see the flowers
+    // branch above and the legacy fallback below, which already do this).
+    return knownGroup || String(description || "").trim() || "Other non-flowering plant";
   }
 
   if (code.startsWith("060240") || code.startsWith("60240")) {
@@ -6634,6 +6646,9 @@ function mapUkdocsCsiProductName(description, commodityCode = "", options = {}) 
   }
   if (code.startsWith("06029091") || code.startsWith("6029091")) {
     return "Flowering plants(no cactu";
+  }
+  if (code.startsWith("060230") || code.startsWith("60230") || text.includes("dendron") || text.includes("azalea")) {
+    return "Rhododendrons and azaleas";
   }
   if (code.startsWith("060290500") || code.startsWith("60290500") || code.startsWith("6029050")) {
     return "Perennials";
