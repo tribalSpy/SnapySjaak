@@ -496,6 +496,13 @@
   // ---------------------------------------------------------------
   el.filterDate.value = state.filters.date;
   el.filterDate.addEventListener('change', () => { state.filters.date = el.filterDate.value; recomputeAndRender(); });
+  // Clicking anywhere in a native date input doesn't reliably pop the
+  // calendar in every browser (some only open it from the small icon) --
+  // force it open on click/focus so it never falls back to hand-typing.
+  if (typeof el.filterDate.showPicker === 'function') {
+    el.filterDate.addEventListener('click', () => { try { el.filterDate.showPicker(); } catch { /* ignore */ } });
+    el.filterDate.addEventListener('focus', () => { try { el.filterDate.showPicker(); } catch { /* ignore */ } });
+  }
   el.filterTruck.addEventListener('change', () => { state.filters.truck = el.filterTruck.value; recomputeAndRender(); });
   el.filterGroup.addEventListener('change', () => { state.filters.group = el.filterGroup.value; recomputeAndRender(); });
   el.filterStatus.addEventListener('change', () => { state.filters.status = el.filterStatus.value; recomputeAndRender(); });
