@@ -142,7 +142,7 @@
 
   function renderDonutFor(summary) {
     const expected = Math.max(summary.expected_trolleys, 0);
-    const scanned = Math.min(Math.max(summary.scanned_trolleys, 0), expected);
+    const scanned = Math.min(Math.max(summary.effective_scanned_trolleys, 0), expected);
     const pct = expected ? Math.round((scanned / expected) * 1000) / 10 : 0;
     C.renderDonut(el.donut, pct);
   }

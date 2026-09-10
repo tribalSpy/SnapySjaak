@@ -179,7 +179,7 @@ window.WD = (function () {
 
   function statusSummary(rows) {
     if (!rows.length) {
-      return { expected_refs: 0, expected_trolleys: 0, scanned_refs: 0, scanned_trolleys: 0, pending_refs: 0, pending_trolleys: 0, extra_refs: 0 };
+      return { expected_refs: 0, expected_trolleys: 0, scanned_refs: 0, scanned_trolleys: 0, effective_scanned_trolleys: 0, pending_refs: 0, pending_trolleys: 0, extra_refs: 0 };
     }
     const perRef = dedupeByReference(rows);
     const scannedRefs = perRef.filter(r => r.scannedCount >= r.trolleyCount);
@@ -192,6 +192,10 @@ window.WD = (function () {
       expected_trolleys: perRef.reduce((a, r) => a + r.trolleyCount, 0),
       scanned_refs: scannedRefs.length,
       scanned_trolleys: perRef.reduce((a, r) => a + r.scannedCount, 0),
+      // Per-reference capped at its own trolleyCount, so extra scans on one
+      // reference can never offset another reference that's still pending —
+      // used for the completion percentage, not the raw "Scanned count" stat.
+      effective_scanned_trolleys: perRef.reduce((a, r) => a + Math.min(r.scannedCount, r.trolleyCount), 0),
       pending_refs: pendingRefs.length,
       pending_trolleys: pendingTrolleys,
       extra_refs: extraRefs.length
