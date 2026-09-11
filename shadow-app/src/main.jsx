@@ -3185,6 +3185,11 @@ function UkdocsPage({ currentUser, onNavigate }) {
   // Which sendings' category rows are expanded -- everything starts
   // collapsed to one summary row per sending.
   const [financeAuditExpanded, setFinanceAuditExpanded] = useState(() => new Set());
+  // Right-click "Add factuur" menu on a Finance Audit summary row --
+  // { x, y, shipmentId } while open, else null.
+  const [financeAuditContextMenu, setFinanceAuditContextMenu] = useState(null);
+  const financeAuditInvoiceInputRef = useRef(null);
+  const financeAuditInvoiceTargetShipmentId = useRef("");
 
   useEffect(() => {
     let cancelled = false;
@@ -3506,6 +3511,95 @@ function UkdocsPage({ currentUser, onNavigate }) {
       }
       return next;
     });
+  }
+
+  function openFinanceAuditContextMenu(event, shipmentId) {
+    event.preventDefault();
+    setFinanceAuditContextMenu({ x: event.clientX, y: event.clientY, shipmentId });
+  }
+
+  function triggerFinanceAuditInvoiceUpload() {
+    financeAuditInvoiceTargetShipmentId.current = financeAuditContextMenu?.shipmentId || "";
+    setFinanceAuditContextMenu(null);
+    financeAuditInvoiceInputRef.current?.click();
+  }
+
+  async function uploadFinanceAuditInvoiceFiles(shipmentId, fileList) {
+    const files = Array.from(fileList || []);
+    if (!shipmentId || !files.length) {
+      return;
+    }
+    setSaving(true);
+    setMessage("");
+    setError("");
+    try {
+      const payloadFiles = await Promise.all(files.map(async (file) => ({
+        file_name: file.name,
+        content_base64: await fileToBase64(file),
+      })));
+      const payload = await apiJson("/api/finance-audit/invoice-documents", {
+        method: "POST",
+        body: JSON.stringify({ shipment_id: shipmentId, files: payloadFiles }),
+      });
+      setState((current) => ({ ...current, finance_audit_invoice_documents: payload.finance_audit_invoice_documents }));
+      const results = payload.results || [];
+      const failed = results.filter((item) => !item.ok);
+      setMessage(failed.length
+        ? `${results.length - failed.length} invoice(s) matched. ${failed.length} failed: ${failed.map((item) => `${item.file_name} (${item.error})`).join("; ")}`
+        : `${results.length} invoice(s) matched and attached.`);
+    } catch (uploadError) {
+      setError(uploadError.message);
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  function handleFinanceAuditInvoiceInputChange(event) {
+    const shipmentId = financeAuditInvoiceTargetShipmentId.current;
+    const fileList = event.target.files;
+    event.target.value = "";
+    uploadFinanceAuditInvoiceFiles(shipmentId, fileList);
+  }
+
+  async function deleteFinanceAuditInvoiceDocument(documentId) {
+    if (!window.confirm("Remove this invoice document?")) {
+      return;
+    }
+    setSaving(true);
+    setError("");
+    try {
+      const payload = await apiJson(`/api/finance-audit/invoice-documents/${encodeURIComponent(documentId)}`, { method: "DELETE" });
+      setState((current) => ({ ...current, finance_audit_invoice_documents: payload.finance_audit_invoice_documents }));
+    } catch (deleteError) {
+      setError(deleteError.message);
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  // Sums every matched invoice document for this (shipment, category) row
+  // and compares against what Finance Audit already recorded for it --
+  // colli and the relevant currency's value have a baseline to compare
+  // against; pieces is shown informationally since nothing else on this
+  // row tracks an expected piece count.
+  function financeAuditInvoiceComparison(row, docs) {
+    if (!docs.length) {
+      return null;
+    }
+    const colli = docs.reduce((total, doc) => total + (Number(doc.parsed?.colli) || 0), 0);
+    const pieces = docs.reduce((total, doc) => total + (Number(doc.parsed?.pieces) || 0), 0);
+    const amount = docs.reduce((total, doc) => total + (Number(doc.parsed?.total_amount) || 0), 0);
+    const expectedColli = Number(row.volume) || 0;
+    const expectedAmount = Number(row.is_euro_customer ? row.waarde_eu : row.waarde_gbp) || 0;
+    return {
+      colli,
+      pieces,
+      amount,
+      expectedColli,
+      expectedAmount,
+      colliMatch: expectedColli > 0 && colli === expectedColli,
+      amountMatch: expectedAmount > 0 && Math.abs(amount - expectedAmount) < 0.01,
+    };
   }
 
   function goToFinanceAuditDocs(group) {
@@ -4195,7 +4289,11 @@ function UkdocsPage({ currentUser, onNavigate }) {
                   const isExpanded = financeAuditExpanded.has(group.shipment_id);
                   return (
                     <React.Fragment key={group.shipment_id}>
-                      <tr className="finance-audit-summary-row" onClick={() => toggleFinanceAuditExpanded(group.shipment_id)}>
+                      <tr
+                        className="finance-audit-summary-row"
+                        onClick={() => toggleFinanceAuditExpanded(group.shipment_id)}
+                        onContextMenu={(event) => openFinanceAuditContextMenu(event, group.shipment_id)}
+                      >
                         <td>{group.week || "-"}</td>
                         <td>{group.datum || "-"}</td>
                         <td>{group.truck || "-"}</td>
@@ -4228,24 +4326,55 @@ function UkdocsPage({ currentUser, onNavigate }) {
                       </tr>
                       {isExpanded && group.rows.map((row) => {
                         const dirty = isFinanceAuditRowDirty(row);
+                        const rowInvoiceDocs = (state?.finance_audit_invoice_documents || [])
+                          .filter((doc) => doc.shipment_id === row.shipment_id && doc.category === row.category);
+                        const comparison = financeAuditInvoiceComparison(row, rowInvoiceDocs);
                         return (
-                          <tr key={row.key} className="finance-audit-child-row">
-                            <td colSpan={3} />
-                            <td>{row.rit}</td>
-                            <td>{row.omschrijving || "-"}</td>
-                            <td>{row.type}</td>
-                            <td colSpan={6} />
-                            <td>{row.factuur_nummer || "-"}</td>
-                            <td colSpan={1} />
-                            <td><input value={financeAuditFieldValue(row, "opmerking")} onChange={(event) => updateFinanceAuditEdit(row, "opmerking", event.target.value)} /></td>
-                            <td>{row.is_euro_customer ? "-" : <input value={financeAuditFieldValue(row, "value_override")} onChange={(event) => updateFinanceAuditEdit(row, "value_override", event.target.value)} placeholder="GBP" />}</td>
-                            <td>{row.is_euro_customer ? <input value={financeAuditFieldValue(row, "value_override")} onChange={(event) => updateFinanceAuditEdit(row, "value_override", event.target.value)} placeholder="EUR" /> : "-"}</td>
-                            <td><input value={financeAuditFieldValue(row, "volume_override")} onChange={(event) => updateFinanceAuditEdit(row, "volume_override", event.target.value)} /></td>
-                            <td>{row.phyto_marston || "-"}</td>
-                            <td className="row-actions">
-                              {dirty && <button type="button" className="primary" onClick={() => saveFinanceAuditEdit(row)} disabled={saving}>Save</button>}
-                            </td>
-                          </tr>
+                          <React.Fragment key={row.key}>
+                            <tr className="finance-audit-child-row">
+                              <td colSpan={3} />
+                              <td>{row.rit}</td>
+                              <td>{row.omschrijving || "-"}</td>
+                              <td>{row.type}</td>
+                              <td colSpan={6} />
+                              <td>{row.factuur_nummer || "-"}</td>
+                              <td colSpan={1} />
+                              <td><input value={financeAuditFieldValue(row, "opmerking")} onChange={(event) => updateFinanceAuditEdit(row, "opmerking", event.target.value)} /></td>
+                              <td>{row.is_euro_customer ? "-" : <input value={financeAuditFieldValue(row, "value_override")} onChange={(event) => updateFinanceAuditEdit(row, "value_override", event.target.value)} placeholder="GBP" />}</td>
+                              <td>{row.is_euro_customer ? <input value={financeAuditFieldValue(row, "value_override")} onChange={(event) => updateFinanceAuditEdit(row, "value_override", event.target.value)} placeholder="EUR" /> : "-"}</td>
+                              <td><input value={financeAuditFieldValue(row, "volume_override")} onChange={(event) => updateFinanceAuditEdit(row, "volume_override", event.target.value)} /></td>
+                              <td>{row.phyto_marston || "-"}</td>
+                              <td className="row-actions">
+                                {dirty && <button type="button" className="primary" onClick={() => saveFinanceAuditEdit(row)} disabled={saving}>Save</button>}
+                              </td>
+                            </tr>
+                            {!!rowInvoiceDocs.length && (
+                              <tr className="finance-audit-invoice-check-row">
+                                <td colSpan={3} />
+                                <td colSpan={17}>
+                                  <div className="finance-audit-invoice-check">
+                                    <strong>Factuur check:</strong>
+                                    {rowInvoiceDocs.map((doc) => (
+                                      <span key={doc.id} className="finance-audit-invoice-chip">
+                                        <a href={`/api/finance-audit/invoice-documents/${doc.id}/file`} target="_blank" rel="noreferrer">{doc.file_name}</a>
+                                        {doc.parsed?.ok
+                                          ? ` -- ${doc.parsed.colli ?? "?"} colli, ${doc.parsed.pieces ?? "?"} pcs, ${doc.parsed.currency || ""} ${doc.parsed.total_amount ?? "?"}`
+                                          : ` -- ${doc.parsed?.error || "could not read this PDF"}`}
+                                        <button type="button" onClick={() => deleteFinanceAuditInvoiceDocument(doc.id)} title="Remove">×</button>
+                                      </span>
+                                    ))}
+                                    {comparison && (
+                                      <span className={`ukdocs-status-badge ${comparison.colliMatch && comparison.amountMatch ? "success" : "danger"}`}>
+                                        Colli {comparison.colli}/{comparison.expectedColli || "?"} {comparison.colliMatch ? "match" : "MISMATCH"}
+                                        {" · "}
+                                        Value {comparison.amount.toFixed(2)}/{comparison.expectedAmount ? comparison.expectedAmount.toFixed(2) : "?"} {comparison.amountMatch ? "match" : "MISMATCH"}
+                                      </span>
+                                    )}
+                                  </div>
+                                </td>
+                              </tr>
+                            )}
+                          </React.Fragment>
                         );
                       })}
                     </React.Fragment>
@@ -4255,6 +4384,22 @@ function UkdocsPage({ currentUser, onNavigate }) {
               </tbody>
             </table>
           </div>
+          <input
+            ref={financeAuditInvoiceInputRef}
+            type="file"
+            accept=".pdf"
+            multiple
+            style={{ display: "none" }}
+            onChange={handleFinanceAuditInvoiceInputChange}
+          />
+          {financeAuditContextMenu && (
+            <>
+              <button type="button" className="finance-audit-context-backdrop" onClick={() => setFinanceAuditContextMenu(null)} aria-label="Close menu" />
+              <div className="finance-audit-context-menu" style={{ top: financeAuditContextMenu.y, left: financeAuditContextMenu.x }}>
+                <button type="button" onClick={triggerFinanceAuditInvoiceUpload}>Add factuur</button>
+              </div>
+            </>
+          )}
         </div>
       )}
     </section>

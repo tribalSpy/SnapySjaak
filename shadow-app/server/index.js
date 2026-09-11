@@ -72,6 +72,7 @@ const fustImportWorkerPath = path.join(appRoot, "server", "fust_import_worker.py
 const fustListWorkerPath = path.join(appRoot, "server", "fust_list_worker.py");
 const ukdocsWorkerPath = path.join(appRoot, "server", "ukdocs_worker.py");
 const ukdocsCsiWorkerPath = path.join(appRoot, "server", "ukdocs_csi_worker.py");
+const financeAuditInvoiceWorkerPath = path.join(appRoot, "server", "finance_audit_invoice_worker.py");
 const dagFoutjesHtmlPathCandidates = [
   path.join(repoRoot, "foutjeskoelcel", "bledy-chlodnia (1).html"),
   path.join(process.cwd(), "foutjeskoelcel", "bledy-chlodnia (1).html"),
@@ -582,6 +583,7 @@ const defaultUkdocsState = {
   print_collections: [],
   pd_reference: [],
   finance_audit_overrides: [],
+  finance_audit_invoice_documents: [],
   pd_dropdown_options: {
     cities: [],
     pd_codes: [],
@@ -1647,6 +1649,34 @@ function normalizeUkdocsFinanceAuditOverride(entry) {
   };
 }
 
+// One uploaded supplier invoice PDF, matched to a (shipment, category) pair
+// by its invoice number -- either found in the filename or cross-checked
+// against the text extracted from inside the PDF itself. Several documents
+// can exist for the same (shipment_id, category) pair when that category's
+// invoice_numbers field bundles more than one supplier invoice.
+function normalizeUkdocsFinanceAuditInvoiceDocument(entry) {
+  return {
+    id: normalizeUkdocsText(entry?.id) || crypto.randomUUID(),
+    shipment_id: normalizeUkdocsText(entry?.shipment_id),
+    category: normalizeUkdocsText(entry?.category),
+    invoice_number: normalizeUkdocsText(entry?.invoice_number),
+    file_name: normalizeUkdocsText(entry?.file_name),
+    storage_name: normalizeUkdocsText(entry?.storage_name),
+    uploaded_at: normalizeUkdocsText(entry?.uploaded_at),
+    uploaded_by: normalizeUkdocsText(entry?.uploaded_by),
+    parsed: {
+      ok: entry?.parsed?.ok === true,
+      error: String(entry?.parsed?.error || "").trim(),
+      currency: normalizeUkdocsText(entry?.parsed?.currency),
+      total_amount: Number.isFinite(Number(entry?.parsed?.total_amount)) ? Number(entry.parsed.total_amount) : null,
+      nett_kg: Number.isFinite(Number(entry?.parsed?.nett_kg)) ? Number(entry.parsed.nett_kg) : null,
+      gross_kg: Number.isFinite(Number(entry?.parsed?.gross_kg)) ? Number(entry.parsed.gross_kg) : null,
+      colli: Number.isFinite(Number(entry?.parsed?.colli)) ? Number(entry.parsed.colli) : null,
+      pieces: Number.isFinite(Number(entry?.parsed?.pieces)) ? Number(entry.parsed.pieces) : null,
+    },
+  };
+}
+
 function normalizeUkdocsCustomer(customer) {
   return {
     id: normalizeUkdocsText(customer?.id) || crypto.randomUUID(),
@@ -2330,6 +2360,9 @@ function normalizeUkdocsState(state) {
     pd_dropdown_options: normalizeUkdocsPdDropdownOptions(state?.pd_dropdown_options),
     finance_audit_overrides: Array.isArray(state?.finance_audit_overrides)
       ? state.finance_audit_overrides.map(normalizeUkdocsFinanceAuditOverride).filter((item) => item.shipment_id && item.category)
+      : [],
+    finance_audit_invoice_documents: Array.isArray(state?.finance_audit_invoice_documents)
+      ? state.finance_audit_invoice_documents.map(normalizeUkdocsFinanceAuditInvoiceDocument).filter((item) => item.shipment_id && item.category)
       : [],
   };
 }
@@ -5175,6 +5208,30 @@ function runUkdocsCsiWorker(args, input = "") {
     if (input) {
       child.stdin.write(input);
     }
+    child.stdin.end();
+  });
+}
+
+function runFinanceAuditInvoiceWorker(args) {
+  return new Promise((resolve, reject) => {
+    const child = spawn(resolvePythonCommand(), [financeAuditInvoiceWorkerPath, ...args], {
+      cwd: repoRoot,
+      windowsHide: true,
+    });
+
+    const stdout = [];
+    const stderr = [];
+    child.stdout.on("data", (chunk) => stdout.push(chunk));
+    child.stderr.on("data", (chunk) => stderr.push(chunk));
+    child.on("error", reject);
+    child.on("close", (code) => {
+      const output = Buffer.concat(stdout);
+      if (code === 0) {
+        resolve(output);
+        return;
+      }
+      reject(new Error(Buffer.concat(stderr).toString("utf8") || `Finance audit invoice worker exited with ${code}`));
+    });
     child.stdin.end();
   });
 }
@@ -13761,6 +13818,142 @@ async function handleApi(req, res, url) {
       print_collections: normalizeUkdocsState(nextState).print_collections,
       csi_email: csiEmail,
     });
+    return;
+  }
+
+  // Matches an uploaded supplier invoice PDF to a (shipment, category) row on
+  // Finance Audit UKDocs, by invoice number -- from the filename (e.g.
+  // "F734879_01.pdf" -> "734879") and cross-checked against the number found
+  // inside the PDF text itself. Several files can be sent in one call (right-
+  // click a summary row -> "Add factuur" -> pick multiple PDFs).
+  if (url.pathname === "/api/finance-audit/invoice-documents" && req.method === "POST") {
+    if (!requirePermission(res, requestUser, PERMISSIONS.UKDOCS_VIEW)) {
+      return;
+    }
+    const body = await readRequestJson(req, 60 * 1024 * 1024);
+    const shipmentId = String(body?.shipment_id || "").trim();
+    const files = Array.isArray(body?.files) ? body.files : [];
+    if (!shipmentId) {
+      sendJson(res, 400, { error: "Missing shipment_id" });
+      return;
+    }
+    if (!files.length) {
+      sendJson(res, 400, { error: "No files provided" });
+      return;
+    }
+    const state = await readUkdocsState();
+    const shipment = state.shipments.find((item) => item.id === shipmentId);
+    if (!shipment) {
+      sendJson(res, 404, { error: "Shipment not found" });
+      return;
+    }
+
+    const results = [];
+    let changed = false;
+    for (const file of files) {
+      const fileName = String(file?.file_name || "").trim();
+      const contentBase64 = String(file?.content_base64 || "").trim();
+      if (!fileName || !contentBase64) {
+        results.push({ file_name: fileName || "(unnamed)", ok: false, error: "Empty file" });
+        continue;
+      }
+      const fileBuffer = Buffer.from(contentBase64, "base64");
+      const extension = safeExtension(fileName, "application/pdf");
+      const storageName = `finance-invoice-${sanitizeDriveName(shipmentId)}-${Date.now()}-${crypto.randomUUID()}${extension}`;
+      const storagePath = path.join(ukdocsPrintFilesDir, storageName);
+      await fs.mkdir(ukdocsPrintFilesDir, { recursive: true });
+      await fs.writeFile(storagePath, fileBuffer);
+
+      let parsed;
+      try {
+        const output = await runFinanceAuditInvoiceWorker(["parse", "--input", storagePath]);
+        parsed = JSON.parse(output.toString("utf8"));
+      } catch (error) {
+        parsed = { ok: false, error: error instanceof Error ? error.message : String(error) };
+      }
+
+      const filenameMatch = fileName.match(/(\d{5,8})/);
+      const invoiceNumber = String(parsed?.invoice_number || "").trim() || (filenameMatch ? filenameMatch[1] : "");
+      if (!invoiceNumber) {
+        await fs.unlink(storagePath).catch(() => {});
+        results.push({ file_name: fileName, ok: false, error: "Could not find an invoice number in the filename or inside the PDF" });
+        continue;
+      }
+
+      const matchedCategory = ["508", "515", "1000", "920"].find((category) =>
+        ukdocsPrintInvoiceTokens(shipment.invoice_numbers_by_category?.[category]).includes(invoiceNumber));
+      if (!matchedCategory) {
+        await fs.unlink(storagePath).catch(() => {});
+        results.push({ file_name: fileName, ok: false, error: `Invoice ${invoiceNumber} doesn't match any invoice number set on this shipment` });
+        continue;
+      }
+
+      const document = normalizeUkdocsFinanceAuditInvoiceDocument({
+        shipment_id: shipmentId,
+        category: matchedCategory,
+        invoice_number: invoiceNumber,
+        file_name: fileName,
+        storage_name: storageName,
+        uploaded_at: new Date().toISOString(),
+        uploaded_by: requestUser.username,
+        parsed,
+      });
+      state.finance_audit_invoice_documents = [...state.finance_audit_invoice_documents, document];
+      changed = true;
+      results.push({ file_name: fileName, ok: true, document });
+    }
+
+    if (changed) {
+      await writeUkdocsState(state);
+    }
+    const nextState = await readUkdocsState();
+    sendJson(res, 200, { results, finance_audit_invoice_documents: nextState.finance_audit_invoice_documents });
+    return;
+  }
+
+  if (url.pathname.startsWith("/api/finance-audit/invoice-documents/") && url.pathname.endsWith("/file") && req.method === "GET") {
+    if (!requirePermission(res, requestUser, PERMISSIONS.UKDOCS_VIEW)) {
+      return;
+    }
+    const documentId = decodeURIComponent(url.pathname.slice("/api/finance-audit/invoice-documents/".length, -"/file".length));
+    const state = await readUkdocsState();
+    const document = state.finance_audit_invoice_documents.find((item) => item.id === documentId);
+    if (!document?.storage_name) {
+      sendText(res, 404, "Invoice document not found");
+      return;
+    }
+    const resolvedPath = path.resolve(path.join(ukdocsPrintFilesDir, document.storage_name));
+    if (!resolvedPath.startsWith(path.resolve(ukdocsPrintFilesDir)) || !existsSync(resolvedPath)) {
+      sendText(res, 404, "Stored document not found");
+      return;
+    }
+    res.writeHead(200, {
+      "content-type": guessMimeType(document.file_name) || "application/pdf",
+      "content-disposition": `attachment; filename="${path.basename(document.file_name || resolvedPath)}"`,
+      "cache-control": "no-store",
+    });
+    createReadStream(resolvedPath).pipe(res);
+    return;
+  }
+
+  if (url.pathname.startsWith("/api/finance-audit/invoice-documents/") && req.method === "DELETE") {
+    if (!requirePermission(res, requestUser, PERMISSIONS.UKDOCS_VIEW)) {
+      return;
+    }
+    const documentId = decodeURIComponent(url.pathname.slice("/api/finance-audit/invoice-documents/".length));
+    const state = await readUkdocsState();
+    const document = state.finance_audit_invoice_documents.find((item) => item.id === documentId);
+    if (!document) {
+      sendJson(res, 404, { error: "Invoice document not found" });
+      return;
+    }
+    if (document.storage_name) {
+      await fs.unlink(path.join(ukdocsPrintFilesDir, document.storage_name)).catch(() => {});
+    }
+    state.finance_audit_invoice_documents = state.finance_audit_invoice_documents.filter((item) => item.id !== documentId);
+    await writeUkdocsState(state);
+    const nextState = await readUkdocsState();
+    sendJson(res, 200, { ok: true, finance_audit_invoice_documents: nextState.finance_audit_invoice_documents });
     return;
   }
 
