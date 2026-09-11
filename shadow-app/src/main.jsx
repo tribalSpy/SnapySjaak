@@ -3556,9 +3556,20 @@ function UkdocsPage({ currentUser, onNavigate }) {
 
   function handleFinanceAuditInvoiceInputChange(event) {
     const shipmentId = financeAuditInvoiceTargetShipmentId.current;
-    const fileList = event.target.files;
+    // Snapshot into a plain array before resetting the input's value -- in
+    // some browsers, clearing value also invalidates the live FileList
+    // object, so reading event.target.files after this line silently comes
+    // back empty rather than throwing.
+    const files = Array.from(event.target.files || []);
     event.target.value = "";
-    uploadFinanceAuditInvoiceFiles(shipmentId, fileList);
+    if (!shipmentId) {
+      setError("Could not determine which sending to attach the invoice(s) to -- right-click the row again and retry.");
+      return;
+    }
+    if (!files.length) {
+      return;
+    }
+    uploadFinanceAuditInvoiceFiles(shipmentId, files);
   }
 
   async function deleteFinanceAuditInvoiceDocument(documentId) {
