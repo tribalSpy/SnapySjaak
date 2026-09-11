@@ -27,6 +27,23 @@ def extract_pdf_text(path: Path) -> str:
     return "\n".join(pages)
 
 
+# Dutch/EUR invoices print amounts with a comma decimal ("19424,00") instead
+# of a period ("19424.00") -- normalize by treating whichever separator sits
+# right before the final 2 digits as the decimal point, and stripping any
+# others (thousands separators, in either convention).
+def normalize_amount(text: str):
+    match = re.search(r"[.,](\d{2})$", text.strip())
+    if not match:
+        return None
+    integer_part = re.sub(r"[.,]", "", text.strip()[: match.start()])
+    if not integer_part:
+        return None
+    try:
+        return float(f"{integer_part}.{match.group(1)}")
+    except ValueError:
+        return None
+
+
 # The supplier invoice always ends with a grand-total breakdown line right
 # after a "Nett Gross Colli Pieces Amount" header -- that single line gives
 # nett/gross weight, colli (boxes), pieces, and the total amount together,
@@ -50,14 +67,18 @@ def parse_invoice_text(text: str) -> dict:
 
     if "£" in text:
         result["currency"] = "GBP"
-    elif "€" in text:
+    elif "€" in text or "¬" in text:
+        # "¬" shows up in place of "€" from some suppliers' embedded PDF
+        # fonts -- pypdf/PyPDF2 extract the glyph at the wrong codepoint.
         result["currency"] = "EUR"
 
-    total_matches = re.findall(r"(?<!Sub )Total\s*[£€]\s*([\d,]+\.\d{2})", text)
-    standalone_total = float(total_matches[-1].replace(",", "")) if total_matches else None
+    # Up to a few non-digit characters (currency symbol and/or spacing,
+    # possibly garbled) between "Total" and the amount itself.
+    total_matches = re.findall(r"(?<!Sub )Total[^\d\n]{0,6}(\d[\d.,]*\d)", text)
+    standalone_total = normalize_amount(total_matches[-1]) if total_matches else None
 
     summary_matches = re.findall(
-        r"Nett\s+Gross\s+Colli\s+Pieces\s+Amount\s*\n\s*(\d+)\s*KG\s+(\d+)\s*KG\s+(\d+)\s+(\d+)\s+([\d,]+\.\d{2})",
+        r"Nett\s+Gross\s+Colli\s+Pieces\s+Amount\s*\n\s*(\d+)\s*KG\s+(\d+)\s*KG\s+(\d+)\s+(\d+)\s+(\d[\d.,]*\d)",
         text,
     )
     if not summary_matches:
@@ -70,9 +91,9 @@ def parse_invoice_text(text: str) -> dict:
     result["gross_kg"] = int(gross)
     result["colli"] = int(colli)
     result["pieces"] = int(pieces)
-    summary_amount = float(amount.replace(",", ""))
+    summary_amount = normalize_amount(amount)
     result["total_amount"] = standalone_total if standalone_total is not None else summary_amount
-    if standalone_total is not None and abs(summary_amount - standalone_total) > 0.01:
+    if standalone_total is not None and summary_amount is not None and abs(summary_amount - standalone_total) > 0.01:
         result["error"] = f"Total {result['currency'] or ''} {standalone_total} does not match the summary row amount {summary_amount}"
 
     return result
