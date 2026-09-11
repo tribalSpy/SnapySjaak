@@ -13831,19 +13831,25 @@ async function handleApi(req, res, url) {
       return;
     }
     const body = await readRequestJson(req, 60 * 1024 * 1024);
-    const shipmentId = String(body?.shipment_id || "").trim();
+    const singleShipmentId = String(body?.shipment_id || "").trim();
+    // Bulk/"folder" mode: a list of candidate shipment ids to search across
+    // (the frontend sends whichever shipments are currently visible in the
+    // filtered Finance Audit table) -- each file finds its own match among
+    // them by invoice number, same as the single-shipment path finds its
+    // match among just one shipment's categories.
+    const candidateShipmentIds = Array.isArray(body?.shipment_ids)
+      ? body.shipment_ids.map((item) => String(item || "").trim()).filter(Boolean)
+      : (singleShipmentId ? [singleShipmentId] : null);
     const files = Array.isArray(body?.files) ? body.files : [];
-    if (!shipmentId) {
-      sendJson(res, 400, { error: "Missing shipment_id" });
-      return;
-    }
     if (!files.length) {
       sendJson(res, 400, { error: "No files provided" });
       return;
     }
     const state = await readUkdocsState();
-    const shipment = state.shipments.find((item) => item.id === shipmentId);
-    if (!shipment) {
+    const candidateShipments = candidateShipmentIds
+      ? state.shipments.filter((item) => candidateShipmentIds.includes(item.id))
+      : state.shipments;
+    if (singleShipmentId && !candidateShipments.length) {
       sendJson(res, 404, { error: "Shipment not found" });
       return;
     }
@@ -13859,7 +13865,7 @@ async function handleApi(req, res, url) {
       }
       const fileBuffer = Buffer.from(contentBase64, "base64");
       const extension = safeExtension(fileName, "application/pdf");
-      const storageName = `finance-invoice-${sanitizeDriveName(shipmentId)}-${Date.now()}-${crypto.randomUUID()}${extension}`;
+      const storageName = `finance-invoice-${Date.now()}-${crypto.randomUUID()}${extension}`;
       const storagePath = path.join(ukdocsPrintFilesDir, storageName);
       await fs.mkdir(ukdocsPrintFilesDir, { recursive: true });
       await fs.writeFile(storagePath, fileBuffer);
@@ -13880,16 +13886,25 @@ async function handleApi(req, res, url) {
         continue;
       }
 
-      const matchedCategory = ["508", "515", "1000", "920"].find((category) =>
-        ukdocsPrintInvoiceTokens(shipment.invoice_numbers_by_category?.[category]).includes(invoiceNumber));
+      let matchedShipmentId = "";
+      let matchedCategory = "";
+      for (const candidate of candidateShipments) {
+        const category = ["508", "515", "1000", "920"].find((item) =>
+          ukdocsPrintInvoiceTokens(candidate.invoice_numbers_by_category?.[item]).includes(invoiceNumber));
+        if (category) {
+          matchedShipmentId = candidate.id;
+          matchedCategory = category;
+          break;
+        }
+      }
       if (!matchedCategory) {
         await fs.unlink(storagePath).catch(() => {});
-        results.push({ file_name: fileName, ok: false, error: `Invoice ${invoiceNumber} doesn't match any invoice number set on this shipment` });
+        results.push({ file_name: fileName, ok: false, error: `Invoice ${invoiceNumber} doesn't match any invoice number on ${singleShipmentId ? "this shipment" : "any of the visible sendings"}` });
         continue;
       }
 
       const document = normalizeUkdocsFinanceAuditInvoiceDocument({
-        shipment_id: shipmentId,
+        shipment_id: matchedShipmentId,
         category: matchedCategory,
         invoice_number: invoiceNumber,
         file_name: fileName,

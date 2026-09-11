@@ -3190,6 +3190,9 @@ function UkdocsPage({ currentUser, onNavigate }) {
   const [financeAuditContextMenu, setFinanceAuditContextMenu] = useState(null);
   const financeAuditInvoiceInputRef = useRef(null);
   const financeAuditInvoiceTargetShipmentId = useRef("");
+  const financeAuditFolderInputRef = useRef(null);
+  // Progress while bulk-matching a folder of factuur PDFs -- null when idle.
+  const [financeAuditFolderProgress, setFinanceAuditFolderProgress] = useState(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -3586,6 +3589,66 @@ function UkdocsPage({ currentUser, onNavigate }) {
     } finally {
       setSaving(false);
     }
+  }
+
+  function triggerFinanceAuditFolderUpload() {
+    financeAuditFolderInputRef.current?.click();
+  }
+
+  // Bulk "pick a folder of factuur PDFs" upload -- each file finds its own
+  // match among whichever shipments are currently visible in the filtered
+  // Finance Audit table (respecting the date range, so a stray invoice
+  // number from an unrelated week can't accidentally attach itself here).
+  // Sent in small batches rather than one giant request, both to stay well
+  // under any request-size limit and to show live progress for what can be
+  // a few hundred files taking a couple of minutes.
+  async function uploadFinanceAuditInvoiceFolder(files, shipmentIds) {
+    const BATCH_SIZE = 10;
+    setError("");
+    setMessage("");
+    let matched = 0;
+    let failed = 0;
+    const failedDetails = [];
+    setFinanceAuditFolderProgress({ processed: 0, total: files.length, matched: 0, failed: 0 });
+    for (let i = 0; i < files.length; i += BATCH_SIZE) {
+      const batch = files.slice(i, i + BATCH_SIZE);
+      try {
+        const payloadFiles = await Promise.all(batch.map(async (file) => ({
+          file_name: file.name,
+          content_base64: await fileToBase64(file),
+        })));
+        const payload = await apiJson("/api/finance-audit/invoice-documents", {
+          method: "POST",
+          body: JSON.stringify({ shipment_ids: shipmentIds, files: payloadFiles }),
+        });
+        setState((current) => ({ ...current, finance_audit_invoice_documents: payload.finance_audit_invoice_documents }));
+        const results = payload.results || [];
+        const batchFailed = results.filter((item) => !item.ok);
+        matched += results.length - batchFailed.length;
+        failed += batchFailed.length;
+        failedDetails.push(...batchFailed.map((item) => `${item.file_name} (${item.error})`));
+      } catch (batchError) {
+        failed += batch.length;
+        failedDetails.push(`Batch starting at "${batch[0]?.name}": ${batchError.message}`);
+      }
+      setFinanceAuditFolderProgress({ processed: Math.min(i + BATCH_SIZE, files.length), total: files.length, matched, failed });
+    }
+    setFinanceAuditFolderProgress(null);
+    setMessage(
+      `Factuur folder processed: ${matched} matched, ${failed} not matched out of ${files.length}.`
+      + (failedDetails.length ? ` Unmatched: ${failedDetails.slice(0, 10).join("; ")}${failedDetails.length > 10 ? " ..." : ""}` : "")
+    );
+  }
+
+  function handleFinanceAuditFolderInputChange(event) {
+    const files = Array.from(event.target.files || []).filter((file) => /\.pdf$/i.test(file.name));
+    event.target.value = "";
+    if (!files.length) {
+      setError("No PDF files found in that folder.");
+      return;
+    }
+    const shipmentIds = financeAuditGroups.map((group) => group.shipment_id).filter(Boolean);
+    uploadFinanceAuditInvoiceFolder(files, shipmentIds);
   }
 
   // Sums every matched invoice document for this (shipment, category) row
@@ -4284,6 +4347,29 @@ function UkdocsPage({ currentUser, onNavigate }) {
             >
               Export active table
             </button>
+            <button
+              type="button"
+              onClick={triggerFinanceAuditFolderUpload}
+              disabled={!!financeAuditFolderProgress || !financeAuditGroups.length}
+              title="Pick a folder of factuur PDFs -- each one is matched by invoice number against the sendings currently shown below"
+            >
+              {financeAuditFolderProgress ? "Matching folder..." : "Match factuur folder"}
+            </button>
+            <input
+              ref={financeAuditFolderInputRef}
+              type="file"
+              webkitdirectory=""
+              directory=""
+              multiple
+              style={{ display: "none" }}
+              onChange={handleFinanceAuditFolderInputChange}
+            />
+            {financeAuditFolderProgress && (
+              <span>
+                {financeAuditFolderProgress.processed}/{financeAuditFolderProgress.total} processed
+                -- {financeAuditFolderProgress.matched} matched, {financeAuditFolderProgress.failed} not matched
+              </span>
+            )}
           </div>
           <div className="table-wrap">
             <table className="data-table">
