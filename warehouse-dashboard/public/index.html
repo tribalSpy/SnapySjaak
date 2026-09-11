@@ -12,7 +12,6 @@
 <body>
   <div class="layout">
     <aside class="sidebar">
-      <span class="eyebrow">Read-Only · Live</span>
       <h1>Warehouse<br>Dashboard</h1>
 
       <div class="conn" id="conn">
@@ -37,11 +36,6 @@
         <span>Status</span>
         <select id="filter-status"><option value="All">All</option></select>
       </label>
-
-      <div class="side-divider"></div>
-      <h2 class="side-title">Connected via</h2>
-      <code class="side-code" id="backend-host">…</code>
-      <p class="side-note">Backend API — <code>/status</code> &amp; <code>/activity-log</code>, proxied server-side.</p>
     </aside>
 
     <main class="content">
@@ -68,7 +62,6 @@
           <div class="completion-legend">
             <span class="legend-item"><span class="swatch" style="background:var(--st-good)"></span>Scanned</span>
             <span class="legend-item"><span class="swatch" style="background:var(--pending-soft)"></span>Remaining</span>
-            <span class="legend-item">RFID/Photo rings only count references that actually require that check.</span>
           </div>
         </div>
       </section>
@@ -84,7 +77,6 @@
 
       <!-- Expected Work -->
       <section class="tab-panel active" id="tab-expected">
-        <p class="panel-caption" id="expected-caption"></p>
         <div class="table-wrap"><table id="tbl-expected"><thead></thead><tbody></tbody></table></div>
         <p class="empty" id="expected-empty" hidden>No locations match the current filters.</p>
       </section>

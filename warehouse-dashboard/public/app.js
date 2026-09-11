@@ -18,14 +18,6 @@
   // ---------------------------------------------------------------
   // Fetching
   // ---------------------------------------------------------------
-  async function loadConfig() {
-    try {
-      const res = await fetch('api/config');
-      const data = await res.json();
-      el.backendHost.textContent = data.backendHost || 'unknown';
-    } catch { el.backendHost.textContent = 'unknown'; }
-  }
-
   async function loadSettings() {
     try {
       const res = await fetch('api/settings');
@@ -185,8 +177,6 @@
   // Tabs: Expected Work
   // ---------------------------------------------------------------
   function renderExpectedTab(filteredState, selectedDate) {
-    el.expectedCaption.textContent =
-      `Expected Work on ${selectedDate}. For older dates this is rebuilt from the activity log and current expected list.`;
     el.expectedEmpty.hidden = filteredState.length > 0;
     renderTable(el.tblExpected, [
       { key: 'location', label: 'Location' },
@@ -539,7 +529,7 @@
   // Boot
   // ---------------------------------------------------------------
   async function boot() {
-    await Promise.all([loadConfig(), loadSettings(), loadStatus(), loadActivity()]);
+    await Promise.all([loadSettings(), loadStatus(), loadActivity()]);
     recomputeAndRender();
   }
   boot();
