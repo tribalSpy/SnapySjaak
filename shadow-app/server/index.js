@@ -13913,7 +13913,20 @@ async function handleApi(req, res, url) {
         uploaded_by: requestUser.username,
         parsed,
       });
-      state.finance_audit_invoice_documents = [...state.finance_audit_invoice_documents, document];
+      // Re-uploading the same invoice (e.g. re-running a folder match after
+      // fixing a parse issue) replaces the earlier attempt for this exact
+      // (shipment, category, invoice number) instead of piling up a
+      // duplicate -- the old stored PDF is deleted too.
+      const previousDocument = state.finance_audit_invoice_documents.find((item) =>
+        item.shipment_id === matchedShipmentId && item.category === matchedCategory && item.invoice_number === invoiceNumber);
+      if (previousDocument?.storage_name) {
+        await fs.unlink(path.join(ukdocsPrintFilesDir, previousDocument.storage_name)).catch(() => {});
+      }
+      state.finance_audit_invoice_documents = [
+        ...state.finance_audit_invoice_documents.filter((item) =>
+          !(item.shipment_id === matchedShipmentId && item.category === matchedCategory && item.invoice_number === invoiceNumber)),
+        document,
+      ];
       changed = true;
       results.push({ file_name: fileName, ok: true, document });
     }
