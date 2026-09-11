@@ -2160,6 +2160,15 @@ function normalizeUkdocsPrintCollection(collection) {
       sent_at: normalizeUkdocsText(collection?.csi_email?.sent_at),
       error: String(collection?.csi_email?.error || "").trim(),
     },
+    // Set when "Send papers to CSI" is pressed while the CSI audit has
+    // passed but the generated invoice PDFs aren't all back yet --
+    // runUkdocsCsiSendQueue (a background job) fires the actual send once
+    // they are, so pressing the button doesn't mean waiting around for them.
+    csi_send_queue: {
+      queued: collection?.csi_send_queue?.queued === true,
+      queued_at: normalizeUkdocsText(collection?.csi_send_queue?.queued_at),
+      queued_by: normalizeUkdocsText(collection?.csi_send_queue?.queued_by),
+    },
     documents: {
       phyto_files: normalizeUkdocsPrintDocumentList(collection?.documents?.phyto_files || (collection?.documents?.phyto ? [collection.documents.phyto] : [])),
       export_extra: normalizeUkdocsPrintDocument(collection?.documents?.export_extra),
@@ -5542,6 +5551,16 @@ function countUkdocsGeneratedInvoiceGroups(files) {
   return seen.size;
 }
 
+// Mirrors the front-end's ukdocsCsiInvoicesReady() -- used both by the manual
+// /csi/send route and by runUkdocsCsiSendQueue's deferred retry.
+function ukdocsCsiInvoicesReadyServer(collection) {
+  const invoiceExpected = ukdocsPrintSplitTokens(collection?.invoice_numbers).length;
+  if (invoiceExpected === 0) {
+    return true;
+  }
+  return countUkdocsGeneratedInvoiceGroups(collection?.documents?.generated_files) >= invoiceExpected;
+}
+
 function ukdocsPrintReferenceTokens(value) {
   return String(value || "")
     .split(/[\/,\s;]+/)
@@ -8251,6 +8270,25 @@ async function updateUkdocsCsiEmailResult(collectionId, csiEmailPatch) {
   return updatedCollection;
 }
 
+async function updateUkdocsCsiSendQueue(collectionId, csiSendQueuePatch) {
+  const state = await readUkdocsState();
+  const existingCollection = ukdocsPrintCollectionById(state.print_collections, collectionId);
+  if (!existingCollection) {
+    return null;
+  }
+  const updatedCollection = normalizeUkdocsPrintCollection({
+    ...existingCollection,
+    updated_at: new Date().toISOString(),
+    csi_send_queue: {
+      ...(existingCollection.csi_send_queue || {}),
+      ...(csiSendQueuePatch || {}),
+    },
+  });
+  state.print_collections = upsertUkdocsPrintCollection(state.print_collections, updatedCollection);
+  await writeUkdocsState(state);
+  return updatedCollection;
+}
+
 async function getUkdocsCsiGroupJobs(collectionId, groupId) {
   if (!collectionId || !groupId) {
     return [];
@@ -10659,9 +10697,11 @@ async function sendUkdocsPrintReadyEmail(collection, customers, settings) {
   };
 }
 
-// Zendingen-only (UKdocs Print), never CSI -- CSI papers stay a deliberate manual
-// send via the "Send papers to CSI" button. Runs on the same cadence as the other
-// runIfOnline jobs, so it only ever runs on whichever instance is currently live.
+// Zendingen-only (UKdocs Print) -- CSI papers stay a deliberate manual send via
+// the "Send papers to CSI" button (see runUkdocsCsiSendQueue for what happens
+// after that button is pressed while invoices aren't ready yet). Runs on the
+// same cadence as the other runIfOnline jobs, so it only ever runs on
+// whichever instance is currently live.
 async function runUkdocsPrintGmailAutoSync() {
   const settings = await readFustSettings();
   if (!settings.gmail_refresh_token) {
@@ -10743,6 +10783,69 @@ async function runUkdocsPrintAutoSend() {
     await writeUkdocsState(state);
   }
   return { ok: errors.length === 0, checked: eligible.length, sent, errors };
+}
+
+// Fires the CSI-papers send for any collection queued via the "Send papers to
+// CSI" button before its invoice PDFs had finished generating (see the
+// /csi/send route) -- same eligibility the button already required (CSI
+// passed), just deferred until the async Excel->PDF conversion catches up.
+// Runs on the same cadence as the other runIfOnline jobs.
+async function runUkdocsCsiSendQueue() {
+  const state = await readUkdocsState();
+  const queued = state.print_collections.filter((item) => item.csi_send_queue?.queued === true);
+  if (!queued.length) {
+    return { ok: true, checked: 0, sent: 0, errors: [] };
+  }
+
+  const settings = await readFustSettings();
+  let sent = 0;
+  const errors = [];
+  for (const collection of queued) {
+    // Already sent through some other path (e.g. a second manual click that
+    // landed after invoices became ready) -- just clear the stale queue flag.
+    if (collection.csi_email?.ok) {
+      state.print_collections = upsertUkdocsPrintCollection(
+        state.print_collections,
+        normalizeUkdocsPrintCollection({ ...collection, csi_send_queue: { queued: false, queued_at: "", queued_by: "" } }),
+      );
+      continue;
+    }
+    if (!collection.csi_check_passed || !ukdocsCsiInvoicesReadyServer(collection)) {
+      continue;
+    }
+    try {
+      const csiEmail = await sendUkdocsCsiSuccessEmail(collection, state.customers, settings);
+      state.print_collections = upsertUkdocsPrintCollection(
+        state.print_collections,
+        normalizeUkdocsPrintCollection({
+          ...collection,
+          updated_at: new Date().toISOString(),
+          csi_email: csiEmail,
+          csi_send_queue: { queued: false, queued_at: "", queued_by: "" },
+        }),
+      );
+      if (csiEmail.ok) {
+        sent += 1;
+      } else {
+        errors.push(`${collection.shipment_reference || collection.id}: ${csiEmail.error}`);
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      state.print_collections = upsertUkdocsPrintCollection(
+        state.print_collections,
+        normalizeUkdocsPrintCollection({
+          ...collection,
+          updated_at: new Date().toISOString(),
+          csi_email: { ok: false, recipients: collection.csi_email?.recipients || [], sent_at: "", error: message },
+          csi_send_queue: { queued: false, queued_at: "", queued_by: "" },
+        }),
+      );
+      errors.push(`${collection.shipment_reference || collection.id}: ${message}`);
+    }
+  }
+
+  await writeUkdocsState(state);
+  return { ok: errors.length === 0, checked: queued.length, sent, errors };
 }
 
 async function ukdocsCsiCollectionAttachments(collection, options = {}) {
@@ -13631,12 +13734,21 @@ async function handleApi(req, res, url) {
     // consistent with each other -- it says nothing about whether the
     // generated Excel-to-PDF invoice files have actually finished processing
     // yet (they're produced asynchronously via queueUkdocsInvoicePdfJobs).
-    // Sending CSI papers before those exist means the recipient gets an
-    // incomplete set of documents.
-    const invoiceExpectedForCsi = ukdocsPrintSplitTokens(existingCollection?.invoice_numbers).length;
-    const generatedInvoiceCountForCsi = countUkdocsGeneratedInvoiceGroups(existingCollection?.documents?.generated_files);
-    if (invoiceExpectedForCsi > 0 && generatedInvoiceCountForCsi < invoiceExpectedForCsi) {
-      sendJson(res, 400, { error: `Generated invoice PDFs are not all ready yet (${generatedInvoiceCountForCsi}/${invoiceExpectedForCsi}) -- wait for them to finish before sending CSI papers` });
+    // Rather than blocking the button until they land, queue the send --
+    // runUkdocsCsiSendQueue fires it automatically once they're ready.
+    if (!ukdocsCsiInvoicesReadyServer(existingCollection)) {
+      const queuedCollection = await updateUkdocsCsiSendQueue(collectionId, {
+        queued: true,
+        queued_at: new Date().toISOString(),
+        queued_by: requestUser.username,
+      });
+      const nextState = await readUkdocsState();
+      sendJson(res, 200, {
+        ok: true,
+        collection: queuedCollection,
+        print_collections: normalizeUkdocsState(nextState).print_collections,
+        csi_send_queued: true,
+      });
       return;
     }
     const settings = await readFustSettings();
@@ -15317,13 +15429,13 @@ async function startServer() {
     runIfOnline("Fust confirmation reminder check", runFustReminderCheck).catch(() => {});
   }, 15 * 60 * 1000);
 
-  // These three jobs all read-modify-write the same ukdocs-state.json
+  // These four jobs all read-modify-write the same ukdocs-state.json
   // print_collections array independently. Left to run concurrently (all
-  // three fire their first run at boot, then land on the same 15-minute
+  // four fire their first run at boot, then land on the same 15-minute
   // tick forever after), one job's write can silently clobber another's --
   // e.g. Gmail auto-sync reads state before auto-send's "sent" flag lands,
   // then writes its own stale copy back afterward, reverting the send as
-  // unsent and causing it to be re-sent indefinitely. Funneling all three
+  // unsent and causing it to be re-sent indefinitely. Funneling all four
   // through one promise chain means only one is ever mid-read-modify-write
   // at a time, which removes the race instead of just reacting to it.
   let ukdocsPrintCollectionsJobLock = Promise.resolve();
@@ -15337,6 +15449,7 @@ async function startServer() {
   const serializedGmailAutoSync = serializeUkdocsPrintCollectionsJob(runUkdocsPrintGmailAutoSync);
   const serializedAutoSend = serializeUkdocsPrintCollectionsJob(runUkdocsPrintAutoSend);
   const serializedPdKeuringReconcile = serializeUkdocsPrintCollectionsJob(runPdKeuringSheetReconcile);
+  const serializedCsiSendQueue = serializeUkdocsPrintCollectionsJob(runUkdocsCsiSendQueue);
 
   runIfOnline("UKdocs Zendingen Gmail auto-sync", serializedGmailAutoSync).catch(() => {});
   setInterval(() => {
@@ -15351,6 +15464,11 @@ async function startServer() {
   runIfOnline("PD Keuring sheet reconcile", serializedPdKeuringReconcile).catch(() => {});
   setInterval(() => {
     runIfOnline("PD Keuring sheet reconcile", serializedPdKeuringReconcile).catch(() => {});
+  }, 15 * 60 * 1000);
+
+  runIfOnline("UKdocs CSI send queue", serializedCsiSendQueue).catch(() => {});
+  setInterval(() => {
+    runIfOnline("UKdocs CSI send queue", serializedCsiSendQueue).catch(() => {});
   }, 15 * 60 * 1000);
 
   async function runIfBackup(jobName, jobFn) {

@@ -5854,6 +5854,7 @@ function UkdocsCSIPage({ currentUser }) {
   const selectedCsiReport = selectedCollection?.csi_report || {};
   const selectedCsiValidationReport = selectedCsiReport.validation_report || null;
   const selectedCsiEmail = selectedCollection?.csi_email || {};
+  const selectedCsiSendQueue = selectedCollection?.csi_send_queue || {};
   const selectedTempPhytoFiles = selectedCollection?.documents?.temp_phyto_files || [];
   const selectedTempPhytoXmlFiles = selectedCollection?.documents?.temp_phyto_xml_files || [];
   const selectedTempPhytoPlantsFile = selectedCollection?.documents?.temp_phyto_plants_file || null;
@@ -6148,9 +6149,11 @@ function UkdocsCSIPage({ currentUser }) {
         method: "POST",
       });
       setState((current) => ({ ...current, print_collections: payload.print_collections || current?.print_collections || [] }));
-      setMessage(payload.csi_email?.ok
-        ? `CSI papers sent to ${(payload.csi_email.recipients || []).join(", ")}`
-        : (payload.csi_email?.error || "Could not send CSI papers."));
+      setMessage(payload.csi_send_queued
+        ? "CSI papers queued -- will send automatically once the generated invoice PDFs are ready."
+        : payload.csi_email?.ok
+          ? `CSI papers sent to ${(payload.csi_email.recipients || []).join(", ")}`
+          : (payload.csi_email?.error || "Could not send CSI papers."));
       setDetailDrawerOpen(true);
     } catch (sendError) {
       setError(sendError.message);
@@ -6316,10 +6319,10 @@ function UkdocsCSIPage({ currentUser }) {
                     <button
                       type="button"
                       onClick={() => sendCsiPapers(collection.id)}
-                      disabled={saving || tileCsiReport?.status !== "done" || tileCsiReport?.overall_status !== "pass" || !ukdocsCsiInvoicesReady(collection)}
-                      title={ukdocsCsiInvoicesReady(collection) ? "" : "Waiting for generated invoice PDFs to finish"}
+                      disabled={saving || tileCsiReport?.status !== "done" || tileCsiReport?.overall_status !== "pass"}
+                      title={ukdocsCsiInvoicesReady(collection) ? "" : "Invoice PDFs aren't ready yet -- will queue and send automatically once they are"}
                     >
-                      Send papers to CSI
+                      {collection.csi_send_queue?.queued ? "Queued for CSI" : "Send papers to CSI"}
                     </button>
                   </div>
                 </div>
@@ -6461,10 +6464,10 @@ function UkdocsCSIPage({ currentUser }) {
                 <button
                   type="button"
                   onClick={() => sendCsiPapers(selectedCollection.id)}
-                  disabled={saving || selectedCsiDisplayReport.status !== "done" || selectedCsiDisplayReport.overall_status !== "pass" || !ukdocsCsiInvoicesReady(selectedCollection)}
-                  title={ukdocsCsiInvoicesReady(selectedCollection) ? "" : "Waiting for generated invoice PDFs to finish"}
+                  disabled={saving || selectedCsiDisplayReport.status !== "done" || selectedCsiDisplayReport.overall_status !== "pass"}
+                  title={ukdocsCsiInvoicesReady(selectedCollection) ? "" : "Invoice PDFs aren't ready yet -- will queue and send automatically once they are"}
                 >
-                  Send papers to CSI
+                  {selectedCsiSendQueue.queued ? "Queued for CSI" : "Send papers to CSI"}
                 </button>
               </div>
 
@@ -6474,6 +6477,7 @@ function UkdocsCSIPage({ currentUser }) {
                   <div className={`ukdocs-status-badge ${ukdocsCsiStatusDefinition(selectedCsiDisplayReport).tone}`}>{ukdocsCsiStatusDefinition(selectedCsiDisplayReport).label}</div>
                 </div>
                 <small>{selectedCsiReport.summary || "No CSI result yet."}</small>
+                {!!selectedCsiSendQueue.queued && <div className="notice">Queued {formatTimestamp(selectedCsiSendQueue.queued_at)} by {selectedCsiSendQueue.queued_by || "-"} -- will send automatically once invoice PDFs finish generating.</div>}
                 {!!selectedCsiEmail.sent_at && <div className="notice success">CSI email sent: {formatTimestamp(selectedCsiEmail.sent_at)} to {(selectedCsiEmail.recipients || []).join(", ") || "-"}</div>}
                 {!!selectedCsiEmail.error && <div className="notice danger">{selectedCsiEmail.error}</div>}
                 {!!selectedCsiReport.error && <div className="notice danger">{selectedCsiReport.error}</div>}
