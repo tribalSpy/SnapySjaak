@@ -2763,14 +2763,18 @@ const UKDOCS_CUSTOMER_MENU_DOCUMENT_FIELDS = [
   ["menu_show_ukdocsprint_locations_file", "UKdocs Print - Locations file"],
 ];
 
-// The in-app equivalent of the PD keuringen spreadsheet's "data" tab
-// (columns A-E only -- city -> code -> PD form letter -> hub codes -> type).
+// Per-city template used to autofill a new PD Keuring row -- everything
+// except PD form letter, which changes day to day and is kept here only as
+// a reference/reminder, never auto-applied (see referenceAutofillForCity).
 const UKDOCS_PD_REFERENCE_FIELDS = [
   ["city_name", "City"],
   ["code", "Code"],
-  ["pd_form_letter", "PD form letter"],
-  ["pd_type", "Type"],
   ["hub_codes", "Hub codes"],
+  ["border_crossing", "Border crossing"],
+  ["re_export", "Re-export"],
+  ["pd_type", "Type"],
+  ["pd_code", "PD code"],
+  ["pd_form_letter", "PD form letter (reference only, not auto-applied)"],
 ];
 
 function emptyUkdocsPdReferenceEntry() {
@@ -2781,6 +2785,9 @@ function emptyUkdocsPdReferenceEntry() {
     pd_form_letter: "",
     pd_type: "",
     hub_codes: "",
+    border_crossing: "",
+    re_export: "",
+    pd_code: "",
   };
 }
 
@@ -7373,6 +7380,7 @@ function PdKeuringPage({ currentUser }) {
   const [referenceDraft, setReferenceDraft] = useState(emptyUkdocsPdReferenceEntry());
   const [backfillIncludeOud, setBackfillIncludeOud] = useState(false);
   const [backfillBusy, setBackfillBusy] = useState(false);
+  const [buildingReferenceFromHistory, setBuildingReferenceFromHistory] = useState(false);
   const [backfillResult, setBackfillResult] = useState(null);
   const [selectedDate, setSelectedDate] = useState(() => localDateIso());
   const [rowDraft, setRowDraft] = useState(null);
@@ -7492,10 +7500,15 @@ function PdKeuringPage({ currentUser }) {
     if (!match) {
       return {};
     }
+    // pd_form is deliberately never autofilled -- it changes day to day, so
+    // it always needs a fresh manual entry regardless of what this city's
+    // template last saw.
     return {
-      pd_form: match.pd_form_letter || "",
       pd_type: match.pd_type || "",
       hub_code: match.hub_codes || "",
+      border_crossing: match.border_crossing || "",
+      re_export: match.re_export || "",
+      pd_code: match.pd_code || "",
     };
   }
 
@@ -7696,6 +7709,24 @@ function PdKeuringPage({ currentUser }) {
     saveStatePatch({ pd_reference: pdReference.filter((item) => item.id !== entryId) }, "Reference entry deleted.");
   }
 
+  async function buildReferenceFromHistory() {
+    if (!window.confirm("Build/update city templates from every historical row imported so far? This overwrites hub codes/border crossing/re-export/type/PD code per city with whatever's most common in the history -- PD form letter is left untouched.")) {
+      return;
+    }
+    setBuildingReferenceFromHistory(true);
+    setError("");
+    setMessage("");
+    try {
+      const payload = await apiJson("/api/ukdocs-print/pd-keuring/build-reference-from-history", { method: "POST" });
+      setState((current) => ({ ...current, pd_reference: payload.pd_reference }));
+      setMessage(`Templates built from ${payload.cities_processed} cities: ${payload.created} created, ${payload.updated} updated.`);
+    } catch (buildError) {
+      setError(buildError.message);
+    } finally {
+      setBuildingReferenceFromHistory(false);
+    }
+  }
+
   async function runBackfill() {
     const sheetNames = backfillIncludeOud ? ["PD planning", "OUD PD Planning 2025"] : ["PD planning"];
     if (!window.confirm(`Import all historical rows from ${sheetNames.join(" and ")}? This can be run again safely -- it only adds or updates matching rows.`)) {
@@ -7728,7 +7759,7 @@ function PdKeuringPage({ currentUser }) {
       <div className="tab-strip">
         {[
           ["planning", "Day planning"],
-          ["reference", "Reference data"],
+          ["reference", "Data"],
         ].map(([key, label]) => (
           <button key={key} type="button" className={activeMenu === key ? "active" : ""} onClick={() => setActiveMenu(key)}>{label}</button>
         ))}
@@ -7988,8 +8019,13 @@ function PdKeuringPage({ currentUser }) {
 
       {activeMenu === "reference" && (
         <div className="data-table-card ukdocs-stack">
-          <div className="section-header"><h2>Reference data</h2></div>
-          <div className="notice">City to PD form letter / hub code lookup, used to autofill PD Keuring rows -- the in-app equivalent of the "data" tab in the PD keuringen spreadsheet.</div>
+          <div className="section-header"><h2>Data</h2></div>
+          <div className="notice">Per-city templates used to autofill a new PD Keuring row when you pick its city -- hub codes, border crossing, re-export, type, and PD code. PD form letter changes daily and is never auto-applied, kept here for reference only.</div>
+          <div className="row-actions spread-actions">
+            <button type="button" onClick={buildReferenceFromHistory} disabled={buildingReferenceFromHistory}>
+              {buildingReferenceFromHistory ? "Building..." : "Build templates from history"}
+            </button>
+          </div>
           <div className="form-grid">
             {UKDOCS_PD_REFERENCE_FIELDS.map(([key, label]) => (
               <label key={key}>
@@ -8008,9 +8044,12 @@ function PdKeuringPage({ currentUser }) {
                 <tr>
                   <th>City</th>
                   <th>Code</th>
-                  <th>PD form letter</th>
-                  <th>Type</th>
                   <th>Hub codes</th>
+                  <th>Border crossing</th>
+                  <th>Re-export</th>
+                  <th>Type</th>
+                  <th>PD code</th>
+                  <th>PD form letter (ref only)</th>
                   <th>Actions</th>
                 </tr>
               </thead>
@@ -8019,16 +8058,19 @@ function PdKeuringPage({ currentUser }) {
                   <tr key={entry.id}>
                     <td>{entry.city_name}</td>
                     <td>{entry.code}</td>
-                    <td>{entry.pd_form_letter}</td>
-                    <td>{entry.pd_type}</td>
                     <td>{entry.hub_codes}</td>
+                    <td>{entry.border_crossing}</td>
+                    <td>{entry.re_export}</td>
+                    <td>{entry.pd_type}</td>
+                    <td>{entry.pd_code}</td>
+                    <td>{entry.pd_form_letter}</td>
                     <td className="row-actions">
                       <button type="button" onClick={() => startEditReferenceEntry(entry)}>Edit</button>
                       <button type="button" onClick={() => deleteReferenceEntry(entry.id)}>Delete</button>
                     </td>
                   </tr>
                 ))}
-                {!pdReference.length && <tr><td colSpan="6">No reference entries saved yet.</td></tr>}
+                {!pdReference.length && <tr><td colSpan="9">No reference entries saved yet -- try "Build templates from history" if you've already run the historical backfill.</td></tr>}
               </tbody>
             </table>
           </div>

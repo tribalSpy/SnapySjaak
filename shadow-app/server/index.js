@@ -1630,9 +1630,14 @@ function normalizeUkdocsPdReferenceEntry(entry) {
     id: normalizeUkdocsText(entry?.id) || crypto.randomUUID(),
     city_name: normalizeUkdocsText(entry?.city_name),
     code: normalizeUkdocsText(entry?.code),
+    // Deliberately never autofilled onto a new row -- the PD form changes
+    // day to day, so this is kept only as a reference/reminder, not applied.
     pd_form_letter: normalizeUkdocsText(entry?.pd_form_letter),
     pd_type: String(entry?.pd_type || "").trim(),
     hub_codes: normalizeUkdocsText(entry?.hub_codes),
+    border_crossing: normalizeUkdocsText(entry?.border_crossing),
+    re_export: normalizeUkdocsText(entry?.re_export),
+    pd_code: normalizeUkdocsText(entry?.pd_code),
   };
 }
 
@@ -14224,6 +14229,83 @@ async function handleApi(req, res, url) {
     } catch (error) {
       sendJson(res, 400, { error: error instanceof Error ? error.message : String(error) });
     }
+    return;
+  }
+
+  // Auto-derives city -> hub_code/border_crossing/re_export/pd_type/pd_code
+  // templates from every historical PD Keuring row already imported (see
+  // backfill-history above), rather than requiring each city's template to
+  // be typed in by hand. pd_form_letter is deliberately left untouched here
+  // -- it changes day to day and was never meant to be reused.
+  if (url.pathname === "/api/ukdocs-print/pd-keuring/build-reference-from-history" && req.method === "POST") {
+    if (!requireAnyPermission(res, requestUser, [PERMISSIONS.UKDOCS_VIEW, PERMISSIONS.PD_KEURING_VIEW])) {
+      return;
+    }
+    const state = await readUkdocsState();
+    const byCity = new Map();
+    for (const collection of state.print_collections) {
+      const cityName = normalizeUkdocsText(collection?.city_name);
+      if (!cityName) {
+        continue;
+      }
+      if (!byCity.has(cityName)) {
+        byCity.set(cityName, { hub_code: [], border_crossing: [], re_export: [], pd_type: [], pd_code: [] });
+      }
+      const bucket = byCity.get(cityName);
+      if (collection.hub_code) bucket.hub_code.push(collection.hub_code);
+      if (collection.border_crossing) bucket.border_crossing.push(collection.border_crossing);
+      if (collection.re_export) bucket.re_export.push(collection.re_export);
+      if (collection.pd_type) bucket.pd_type.push(collection.pd_type);
+      if (collection.pd_code) bucket.pd_code.push(collection.pd_code);
+    }
+    if (!byCity.size) {
+      sendJson(res, 400, { error: "No historical rows with a city found -- run the historical backfill first" });
+      return;
+    }
+
+    const mostCommon = (values) => {
+      if (!values.length) {
+        return "";
+      }
+      const counts = new Map();
+      for (const value of values) {
+        counts.set(value, (counts.get(value) || 0) + 1);
+      }
+      let best = values[0];
+      let bestCount = 0;
+      for (const [value, count] of counts) {
+        if (count > bestCount) {
+          best = value;
+          bestCount = count;
+        }
+      }
+      return best;
+    };
+
+    let created = 0;
+    let updated = 0;
+    const nextReference = [...state.pd_reference];
+    for (const [cityName, bucket] of byCity) {
+      const derived = {
+        hub_codes: mostCommon(bucket.hub_code),
+        border_crossing: mostCommon(bucket.border_crossing),
+        re_export: mostCommon(bucket.re_export),
+        pd_type: mostCommon(bucket.pd_type),
+        pd_code: mostCommon(bucket.pd_code),
+      };
+      const existingIndex = nextReference.findIndex((item) => item.city_name.toLowerCase() === cityName.toLowerCase());
+      if (existingIndex >= 0) {
+        nextReference[existingIndex] = normalizeUkdocsPdReferenceEntry({ ...nextReference[existingIndex], ...derived });
+        updated += 1;
+      } else {
+        nextReference.push(normalizeUkdocsPdReferenceEntry({ city_name: cityName, ...derived }));
+        created += 1;
+      }
+    }
+    state.pd_reference = nextReference;
+    await writeUkdocsState(state);
+    const nextState = await readUkdocsState();
+    sendJson(res, 200, { ok: true, cities_processed: byCity.size, created, updated, pd_reference: nextState.pd_reference });
     return;
   }
 
