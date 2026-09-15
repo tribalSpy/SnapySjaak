@@ -2557,6 +2557,122 @@ function groupUkdocsFinanceAuditRows(rows) {
   return groups;
 }
 
+// Sums every matched invoice document for this (shipment, category) row and
+// compares against what Finance Audit already recorded for it -- colli and
+// the relevant currency's value have a baseline to compare against; pieces
+// is shown informationally since nothing else on this row tracks an
+// expected piece count.
+function financeAuditInvoiceComparison(row, docs) {
+  if (!docs.length) {
+    return null;
+  }
+  const colli = docs.reduce((total, doc) => total + (Number(doc.parsed?.colli) || 0), 0);
+  const pieces = docs.reduce((total, doc) => total + (Number(doc.parsed?.pieces) || 0), 0);
+  const amount = docs.reduce((total, doc) => total + (Number(doc.parsed?.total_amount) || 0), 0);
+  const expectedColli = Number(row.volume) || 0;
+  const expectedAmount = Number(row.is_euro_customer ? row.waarde_eu : row.waarde_gbp) || 0;
+  return {
+    colli,
+    pieces,
+    amount,
+    expectedColli,
+    expectedAmount,
+    colliMatch: expectedColli > 0 && colli === expectedColli,
+    amountMatch: expectedAmount > 0 && Math.abs(amount - expectedAmount) < 0.01,
+  };
+}
+
+function financeAuditGroupInvoiceStatus(group, invoiceDocuments) {
+  const docs = Array.isArray(invoiceDocuments) ? invoiceDocuments : [];
+  let anyChecked = false;
+  let allMatch = true;
+  for (const row of group.rows) {
+    const rowDocs = docs.filter((doc) => doc.shipment_id === row.shipment_id && doc.category === row.category);
+    if (!rowDocs.length) {
+      continue;
+    }
+    anyChecked = true;
+    const comparison = financeAuditInvoiceComparison(row, rowDocs);
+    if (!comparison || !comparison.colliMatch || !comparison.amountMatch) {
+      allMatch = false;
+    }
+  }
+  if (!anyChecked) {
+    return "none";
+  }
+  return allMatch ? "match" : "mismatch";
+}
+
+// Compressed statistics across the CSI audit and the factuur check, for the
+// "Audit Overview" tab -- which customers/categories have mismatches, of
+// what kind, and how often. Pure function of state, same inputs the Finance
+// Audit table and CSI page already derive from.
+function buildUkdocsAuditOverviewStats(state) {
+  const printCollections = Array.isArray(state?.print_collections) ? state.print_collections : [];
+  const financeAuditRows = buildUkdocsFinanceAuditRows(state);
+  const invoiceDocs = Array.isArray(state?.finance_audit_invoice_documents) ? state.finance_audit_invoice_documents : [];
+
+  const csi = { pass: 0, fail: 0, warning: 0, total: 0, byCustomer: {} };
+  for (const collection of printCollections) {
+    if (String(collection?.csi_report?.status || "") !== "done") {
+      continue;
+    }
+    const overall = String(collection?.csi_report?.overall_status || "").trim().toLowerCase();
+    const bucket = collection.csi_check_passed === true ? "pass" : (overall === "fail" ? "fail" : "warning");
+    csi[bucket] += 1;
+    csi.total += 1;
+    const customerName = collection.customer_name || "Unknown";
+    if (!csi.byCustomer[customerName]) {
+      csi.byCustomer[customerName] = { pass: 0, fail: 0, warning: 0, total: 0 };
+    }
+    csi.byCustomer[customerName][bucket] += 1;
+    csi.byCustomer[customerName].total += 1;
+  }
+
+  const rowByKey = new Map(financeAuditRows.map((row) => [`${row.shipment_id}|${row.category}`, row]));
+  const docsByKey = new Map();
+  for (const doc of invoiceDocs) {
+    const key = `${doc.shipment_id}|${doc.category}`;
+    if (!docsByKey.has(key)) {
+      docsByKey.set(key, []);
+    }
+    docsByKey.get(key).push(doc);
+  }
+
+  const factuur = { checked: 0, colli_mismatch: 0, value_mismatch: 0, ok: 0, byCustomer: {}, byType: {} };
+  const bumpFactuurBucket = (bucket, colliOk, valueOk) => {
+    bucket.checked += 1;
+    if (!colliOk) bucket.colli_mismatch += 1;
+    if (!valueOk) bucket.value_mismatch += 1;
+    if (colliOk && valueOk) bucket.ok += 1;
+  };
+  for (const docs of docsByKey.values()) {
+    const row = rowByKey.get(`${docs[0].shipment_id}|${docs[0].category}`);
+    if (!row) {
+      continue;
+    }
+    const comparison = financeAuditInvoiceComparison(row, docs);
+    if (!comparison) {
+      continue;
+    }
+    bumpFactuurBucket(factuur, comparison.colliMatch, comparison.amountMatch);
+
+    const customerName = row.customer_name || "Unknown";
+    if (!factuur.byCustomer[customerName]) {
+      factuur.byCustomer[customerName] = { checked: 0, colli_mismatch: 0, value_mismatch: 0, ok: 0 };
+    }
+    bumpFactuurBucket(factuur.byCustomer[customerName], comparison.colliMatch, comparison.amountMatch);
+
+    const type = row.type || "Unknown";
+    if (!factuur.byType[type]) {
+      factuur.byType[type] = { checked: 0, colli_mismatch: 0, value_mismatch: 0, ok: 0 };
+    }
+    bumpFactuurBucket(factuur.byType[type], comparison.colliMatch, comparison.amountMatch);
+  }
+
+  return { csi, factuur };
+}
+
 // Cross-page navigation bridge -- this app has no router, so "Go to Docs" on
 // a Finance Audit row stashes which collection/date to open here, then the
 // UKDocs Print page (a separate top-level component that fully remounts on
@@ -3237,6 +3353,7 @@ function UkdocsPage({ currentUser, onNavigate }) {
     return true;
   });
   const financeAuditGroups = useMemo(() => groupUkdocsFinanceAuditRows(financeAuditVisibleRows), [financeAuditVisibleRows]);
+  const auditOverviewStats = useMemo(() => buildUkdocsAuditOverviewStats(state), [state]);
   const selectedUkdocsCustomer = customers.find((item) => item.id === shipmentDraft.customer_id) || null;
   const selectedPrintCollection = printCollections.find((item) => item.id === shipmentDraft.print_collection_id) || null;
   const availablePrintCollections = useMemo(
@@ -3651,31 +3768,6 @@ function UkdocsPage({ currentUser, onNavigate }) {
     uploadFinanceAuditInvoiceFolder(files, shipmentIds);
   }
 
-  // Sums every matched invoice document for this (shipment, category) row
-  // and compares against what Finance Audit already recorded for it --
-  // colli and the relevant currency's value have a baseline to compare
-  // against; pieces is shown informationally since nothing else on this
-  // row tracks an expected piece count.
-  function financeAuditInvoiceComparison(row, docs) {
-    if (!docs.length) {
-      return null;
-    }
-    const colli = docs.reduce((total, doc) => total + (Number(doc.parsed?.colli) || 0), 0);
-    const pieces = docs.reduce((total, doc) => total + (Number(doc.parsed?.pieces) || 0), 0);
-    const amount = docs.reduce((total, doc) => total + (Number(doc.parsed?.total_amount) || 0), 0);
-    const expectedColli = Number(row.volume) || 0;
-    const expectedAmount = Number(row.is_euro_customer ? row.waarde_eu : row.waarde_gbp) || 0;
-    return {
-      colli,
-      pieces,
-      amount,
-      expectedColli,
-      expectedAmount,
-      colliMatch: expectedColli > 0 && colli === expectedColli,
-      amountMatch: expectedAmount > 0 && Math.abs(amount - expectedAmount) < 0.01,
-    };
-  }
-
   function goToFinanceAuditDocs(group) {
     if (!group.print_collection_id) {
       return;
@@ -3991,6 +4083,7 @@ function UkdocsPage({ currentUser, onNavigate }) {
           ["history", "Shipment history"],
           ["audits", "Audit reports"],
           ["financeaudit", "Finance Audit UKDocs"],
+          ["auditoverview", "Audit Overview"],
         ].map(([key, label]) => (
           <button key={key} type="button" className={activeMenu === key ? "active" : ""} onClick={() => (key === "new" ? openNewShipmentScreen() : setActiveMenu(key))}>{label}</button>
         ))}
@@ -4384,6 +4477,7 @@ function UkdocsPage({ currentUser, onNavigate }) {
               <tbody>
                 {financeAuditGroups.map((group) => {
                   const isExpanded = financeAuditExpanded.has(group.shipment_id);
+                  const invoiceStatus = financeAuditGroupInvoiceStatus(group, state?.finance_audit_invoice_documents);
                   return (
                     <React.Fragment key={group.shipment_id}>
                       <tr
@@ -4403,7 +4497,17 @@ function UkdocsPage({ currentUser, onNavigate }) {
                         <td>{group.grensovergang || "-"}</td>
                         <td>{group.expediteur || "-"}</td>
                         <td>{group.kenteken || "-"}</td>
-                        <td>{group.factuur_nummers.join("/") || "-"}</td>
+                        <td>
+                          {group.factuur_nummers.join("/") || "-"}
+                          {invoiceStatus !== "none" && (
+                            <span
+                              className={`ukdocs-status-badge ${invoiceStatus === "match" ? "success" : "danger"}`}
+                              title="Factuur check across this sending's categories"
+                            >
+                              {invoiceStatus === "match" ? "Factuur OK" : "Factuur MISMATCH"}
+                            </span>
+                          )}
+                        </td>
                         <td>{group.location_connect || "-"}</td>
                         <td>-</td>
                         <td>{group.waarde_gbp_total ? group.waarde_gbp_total.toFixed(2) : "-"}</td>
@@ -4461,11 +4565,14 @@ function UkdocsPage({ currentUser, onNavigate }) {
                                       </span>
                                     ))}
                                     {comparison && (
-                                      <span className={`ukdocs-status-badge ${comparison.colliMatch && comparison.amountMatch ? "success" : "danger"}`}>
-                                        Colli {comparison.colli}/{comparison.expectedColli || "?"} {comparison.colliMatch ? "match" : "MISMATCH"}
-                                        {" · "}
-                                        Value {comparison.amount.toFixed(2)}/{comparison.expectedAmount ? comparison.expectedAmount.toFixed(2) : "?"} {comparison.amountMatch ? "match" : "MISMATCH"}
-                                      </span>
+                                      <>
+                                        <span className={`ukdocs-status-badge ${comparison.colliMatch ? "success" : "danger"}`}>
+                                          Colli -- Factuur {comparison.colli} vs Export {comparison.expectedColli || "?"} {comparison.colliMatch ? "match" : "MISMATCH"}
+                                        </span>
+                                        <span className={`ukdocs-status-badge ${comparison.amountMatch ? "success" : "danger"}`}>
+                                          Value -- Factuur {comparison.amount.toFixed(2)} vs Export {comparison.expectedAmount ? comparison.expectedAmount.toFixed(2) : "?"} {comparison.amountMatch ? "match" : "MISMATCH"}
+                                        </span>
+                                      </>
                                     )}
                                   </div>
                                 </td>
@@ -4497,6 +4604,92 @@ function UkdocsPage({ currentUser, onNavigate }) {
               </div>
             </>
           )}
+        </div>
+      )}
+
+      {activeMenu === "auditoverview" && (
+        <div className="data-table-card ukdocs-stack">
+          <div className="section-header"><h2>Audit Overview</h2></div>
+          <div className="notice">Compressed statistics across the CSI audit and the factuur check -- which customers and categories have mismatches, of what kind, and how often.</div>
+
+          <div className="section-header"><h3>Factuur check summary</h3></div>
+          <div className="stats">
+            <div className="stat"><span className="num">{auditOverviewStats.factuur.checked}</span><span className="label">Checked</span></div>
+            <div className="stat"><span className="num">{auditOverviewStats.factuur.ok}</span><span className="label">Fully OK</span></div>
+            <div className="stat"><span className="num">{auditOverviewStats.factuur.colli_mismatch}</span><span className="label">Colli mismatches</span></div>
+            <div className="stat"><span className="num">{auditOverviewStats.factuur.value_mismatch}</span><span className="label">Value mismatches</span></div>
+          </div>
+
+          <div className="section-header"><h3>Factuur mismatches by customer</h3></div>
+          <div className="table-wrap">
+            <table className="data-table">
+              <thead><tr><th>Customer</th><th>Checked</th><th>OK</th><th>Colli mismatches</th><th>Value mismatches</th></tr></thead>
+              <tbody>
+                {Object.entries(auditOverviewStats.factuur.byCustomer)
+                  .sort((a, b) => (b[1].colli_mismatch + b[1].value_mismatch) - (a[1].colli_mismatch + a[1].value_mismatch))
+                  .map(([customerName, entry]) => (
+                    <tr key={customerName}>
+                      <td>{customerName}</td>
+                      <td>{entry.checked}</td>
+                      <td>{entry.ok}</td>
+                      <td>{entry.colli_mismatch}</td>
+                      <td>{entry.value_mismatch}</td>
+                    </tr>
+                  ))}
+                {!Object.keys(auditOverviewStats.factuur.byCustomer).length && <tr><td colSpan="5">No factuur checks recorded yet.</td></tr>}
+              </tbody>
+            </table>
+          </div>
+
+          <div className="section-header"><h3>Factuur mismatches by category</h3></div>
+          <div className="table-wrap">
+            <table className="data-table">
+              <thead><tr><th>Type</th><th>Checked</th><th>OK</th><th>Colli mismatches</th><th>Value mismatches</th></tr></thead>
+              <tbody>
+                {Object.entries(auditOverviewStats.factuur.byType)
+                  .sort((a, b) => (b[1].colli_mismatch + b[1].value_mismatch) - (a[1].colli_mismatch + a[1].value_mismatch))
+                  .map(([type, entry]) => (
+                    <tr key={type}>
+                      <td>{type}</td>
+                      <td>{entry.checked}</td>
+                      <td>{entry.ok}</td>
+                      <td>{entry.colli_mismatch}</td>
+                      <td>{entry.value_mismatch}</td>
+                    </tr>
+                  ))}
+                {!Object.keys(auditOverviewStats.factuur.byType).length && <tr><td colSpan="5">No factuur checks recorded yet.</td></tr>}
+              </tbody>
+            </table>
+          </div>
+
+          <div className="section-header"><h3>CSI audit summary</h3></div>
+          <div className="stats">
+            <div className="stat"><span className="num">{auditOverviewStats.csi.total}</span><span className="label">Audits run</span></div>
+            <div className="stat"><span className="num">{auditOverviewStats.csi.pass}</span><span className="label">Pass</span></div>
+            <div className="stat"><span className="num">{auditOverviewStats.csi.fail}</span><span className="label">Fail</span></div>
+            <div className="stat"><span className="num">{auditOverviewStats.csi.warning}</span><span className="label">Warning</span></div>
+          </div>
+
+          <div className="section-header"><h3>CSI audit by customer</h3></div>
+          <div className="table-wrap">
+            <table className="data-table">
+              <thead><tr><th>Customer</th><th>Total</th><th>Pass</th><th>Fail</th><th>Warning</th></tr></thead>
+              <tbody>
+                {Object.entries(auditOverviewStats.csi.byCustomer)
+                  .sort((a, b) => (b[1].fail + b[1].warning) - (a[1].fail + a[1].warning))
+                  .map(([customerName, entry]) => (
+                    <tr key={customerName}>
+                      <td>{customerName}</td>
+                      <td>{entry.total}</td>
+                      <td>{entry.pass}</td>
+                      <td>{entry.fail}</td>
+                      <td>{entry.warning}</td>
+                    </tr>
+                  ))}
+                {!Object.keys(auditOverviewStats.csi.byCustomer).length && <tr><td colSpan="5">No CSI audits run yet.</td></tr>}
+              </tbody>
+            </table>
+          </div>
         </div>
       )}
     </section>

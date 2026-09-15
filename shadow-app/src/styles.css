@@ -1951,6 +1951,41 @@ pre {
   padding: 6px 0;
 }
 
+.stats {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin-bottom: 8px;
+}
+
+.stats .stat {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 10px 16px;
+  border: 1px solid #cdd8e4;
+  border-radius: 8px;
+  background: #f8fafc;
+  min-width: 110px;
+}
+
+.stats .stat .num {
+  font-size: 22px;
+  font-weight: 700;
+}
+
+.stats .stat .label {
+  font-size: 12px;
+  color: #55687c;
+}
+
+.finance-audit-summary-row .ukdocs-status-badge {
+  margin-left: 8px;
+  min-height: 22px;
+  padding: 2px 8px;
+  font-size: 11px;
+}
+
 .finance-audit-invoice-chip {
   display: inline-flex;
   align-items: center;
