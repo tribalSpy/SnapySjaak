@@ -2608,26 +2608,8 @@ function financeAuditGroupInvoiceStatus(group, invoiceDocuments) {
 // what kind, and how often. Pure function of state, same inputs the Finance
 // Audit table and CSI page already derive from.
 function buildUkdocsAuditOverviewStats(state) {
-  const printCollections = Array.isArray(state?.print_collections) ? state.print_collections : [];
   const financeAuditRows = buildUkdocsFinanceAuditRows(state);
   const invoiceDocs = Array.isArray(state?.finance_audit_invoice_documents) ? state.finance_audit_invoice_documents : [];
-
-  const csi = { pass: 0, fail: 0, warning: 0, total: 0, byCustomer: {} };
-  for (const collection of printCollections) {
-    if (String(collection?.csi_report?.status || "") !== "done") {
-      continue;
-    }
-    const overall = String(collection?.csi_report?.overall_status || "").trim().toLowerCase();
-    const bucket = collection.csi_check_passed === true ? "pass" : (overall === "fail" ? "fail" : "warning");
-    csi[bucket] += 1;
-    csi.total += 1;
-    const customerName = collection.customer_name || "Unknown";
-    if (!csi.byCustomer[customerName]) {
-      csi.byCustomer[customerName] = { pass: 0, fail: 0, warning: 0, total: 0 };
-    }
-    csi.byCustomer[customerName][bucket] += 1;
-    csi.byCustomer[customerName].total += 1;
-  }
 
   const rowByKey = new Map(financeAuditRows.map((row) => [`${row.shipment_id}|${row.category}`, row]));
   const docsByKey = new Map();
@@ -2659,9 +2641,25 @@ function buildUkdocsAuditOverviewStats(state) {
 
     const customerName = row.customer_name || "Unknown";
     if (!factuur.byCustomer[customerName]) {
-      factuur.byCustomer[customerName] = { checked: 0, colli_mismatch: 0, value_mismatch: 0, ok: 0 };
+      factuur.byCustomer[customerName] = { checked: 0, colli_mismatch: 0, value_mismatch: 0, ok: 0, details: [] };
     }
     bumpFactuurBucket(factuur.byCustomer[customerName], comparison.colliMatch, comparison.amountMatch);
+    factuur.byCustomer[customerName].details.push({
+      key: `${row.shipment_id}|${row.category}`,
+      shipment_id: row.shipment_id,
+      week: row.week,
+      datum: row.datum,
+      type: row.type,
+      omschrijving: row.omschrijving,
+      currency: row.is_euro_customer ? "EUR" : "GBP",
+      files: docs.map((doc) => doc.file_name),
+      colli: comparison.colli,
+      expectedColli: comparison.expectedColli,
+      colliMatch: comparison.colliMatch,
+      amount: comparison.amount,
+      expectedAmount: comparison.expectedAmount,
+      amountMatch: comparison.amountMatch,
+    });
 
     const type = row.type || "Unknown";
     if (!factuur.byType[type]) {
@@ -2669,8 +2667,11 @@ function buildUkdocsAuditOverviewStats(state) {
     }
     bumpFactuurBucket(factuur.byType[type], comparison.colliMatch, comparison.amountMatch);
   }
+  for (const bucket of Object.values(factuur.byCustomer)) {
+    bucket.details.sort((a, b) => Number(a.colliMatch && a.amountMatch) - Number(b.colliMatch && b.amountMatch));
+  }
 
-  return { csi, factuur };
+  return { factuur };
 }
 
 // Cross-page navigation bridge -- this app has no router, so "Go to Docs" on
@@ -3309,6 +3310,9 @@ function UkdocsPage({ currentUser, onNavigate }) {
   const financeAuditFolderInputRef = useRef(null);
   // Progress while bulk-matching a folder of factuur PDFs -- null when idle.
   const [financeAuditFolderProgress, setFinanceAuditFolderProgress] = useState(null);
+  // Which customer's row is expanded on the Audit Overview tab -- null when
+  // none is (the table starts fully collapsed).
+  const [auditOverviewExpandedCustomer, setAuditOverviewExpandedCustomer] = useState(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -4610,7 +4614,7 @@ function UkdocsPage({ currentUser, onNavigate }) {
       {activeMenu === "auditoverview" && (
         <div className="data-table-card ukdocs-stack">
           <div className="section-header"><h2>Audit Overview</h2></div>
-          <div className="notice">Compressed statistics across the CSI audit and the factuur check -- which customers and categories have mismatches, of what kind, and how often.</div>
+          <div className="notice">Compressed statistics from the factuur check -- which customers and categories have mismatches, of what kind, and how often. Click a customer row to see the individual mismatches.</div>
 
           <div className="section-header"><h3>Factuur check summary</h3></div>
           <div className="stats">
@@ -4623,20 +4627,61 @@ function UkdocsPage({ currentUser, onNavigate }) {
           <div className="section-header"><h3>Factuur mismatches by customer</h3></div>
           <div className="table-wrap">
             <table className="data-table">
-              <thead><tr><th>Customer</th><th>Checked</th><th>OK</th><th>Colli mismatches</th><th>Value mismatches</th></tr></thead>
+              <thead><tr><th>Customer</th><th>Checked</th><th>OK</th><th>Colli mismatches</th><th>Value mismatches</th><th></th></tr></thead>
               <tbody>
                 {Object.entries(auditOverviewStats.factuur.byCustomer)
                   .sort((a, b) => (b[1].colli_mismatch + b[1].value_mismatch) - (a[1].colli_mismatch + a[1].value_mismatch))
-                  .map(([customerName, entry]) => (
-                    <tr key={customerName}>
-                      <td>{customerName}</td>
-                      <td>{entry.checked}</td>
-                      <td>{entry.ok}</td>
-                      <td>{entry.colli_mismatch}</td>
-                      <td>{entry.value_mismatch}</td>
-                    </tr>
-                  ))}
-                {!Object.keys(auditOverviewStats.factuur.byCustomer).length && <tr><td colSpan="5">No factuur checks recorded yet.</td></tr>}
+                  .map(([customerName, entry]) => {
+                    const isExpanded = auditOverviewExpandedCustomer === customerName;
+                    return (
+                      <React.Fragment key={customerName}>
+                        <tr
+                          className="finance-audit-summary-row"
+                          onClick={() => setAuditOverviewExpandedCustomer(isExpanded ? null : customerName)}
+                        >
+                          <td>{customerName}</td>
+                          <td>{entry.checked}</td>
+                          <td>{entry.ok}</td>
+                          <td>{entry.colli_mismatch}</td>
+                          <td>{entry.value_mismatch}</td>
+                          <td className="row-actions"><button type="button">{isExpanded ? "Collapse" : "Details"}</button></td>
+                        </tr>
+                        {isExpanded && (
+                          <tr>
+                            <td colSpan={6}>
+                              <table className="data-table">
+                                <thead>
+                                  <tr><th>Week</th><th>Datum</th><th>Type</th><th>Omschrijving</th><th>Factuur file(s)</th><th>Colli</th><th>Value</th></tr>
+                                </thead>
+                                <tbody>
+                                  {entry.details.map((detail) => (
+                                    <tr key={detail.key}>
+                                      <td>{detail.week || "-"}</td>
+                                      <td>{detail.datum || "-"}</td>
+                                      <td>{detail.type || "-"}</td>
+                                      <td>{detail.omschrijving || "-"}</td>
+                                      <td>{detail.files.join(", ") || "-"}</td>
+                                      <td>
+                                        <span className={`ukdocs-status-badge ${detail.colliMatch ? "success" : "danger"}`}>
+                                          {detail.colli}/{detail.expectedColli || "?"}
+                                        </span>
+                                      </td>
+                                      <td>
+                                        <span className={`ukdocs-status-badge ${detail.amountMatch ? "success" : "danger"}`}>
+                                          {detail.currency} {detail.amount.toFixed(2)}/{detail.expectedAmount ? detail.expectedAmount.toFixed(2) : "?"}
+                                        </span>
+                                      </td>
+                                    </tr>
+                                  ))}
+                                </tbody>
+                              </table>
+                            </td>
+                          </tr>
+                        )}
+                      </React.Fragment>
+                    );
+                  })}
+                {!Object.keys(auditOverviewStats.factuur.byCustomer).length && <tr><td colSpan="6">No factuur checks recorded yet.</td></tr>}
               </tbody>
             </table>
           </div>
@@ -4658,35 +4703,6 @@ function UkdocsPage({ currentUser, onNavigate }) {
                     </tr>
                   ))}
                 {!Object.keys(auditOverviewStats.factuur.byType).length && <tr><td colSpan="5">No factuur checks recorded yet.</td></tr>}
-              </tbody>
-            </table>
-          </div>
-
-          <div className="section-header"><h3>CSI audit summary</h3></div>
-          <div className="stats">
-            <div className="stat"><span className="num">{auditOverviewStats.csi.total}</span><span className="label">Audits run</span></div>
-            <div className="stat"><span className="num">{auditOverviewStats.csi.pass}</span><span className="label">Pass</span></div>
-            <div className="stat"><span className="num">{auditOverviewStats.csi.fail}</span><span className="label">Fail</span></div>
-            <div className="stat"><span className="num">{auditOverviewStats.csi.warning}</span><span className="label">Warning</span></div>
-          </div>
-
-          <div className="section-header"><h3>CSI audit by customer</h3></div>
-          <div className="table-wrap">
-            <table className="data-table">
-              <thead><tr><th>Customer</th><th>Total</th><th>Pass</th><th>Fail</th><th>Warning</th></tr></thead>
-              <tbody>
-                {Object.entries(auditOverviewStats.csi.byCustomer)
-                  .sort((a, b) => (b[1].fail + b[1].warning) - (a[1].fail + a[1].warning))
-                  .map(([customerName, entry]) => (
-                    <tr key={customerName}>
-                      <td>{customerName}</td>
-                      <td>{entry.total}</td>
-                      <td>{entry.pass}</td>
-                      <td>{entry.fail}</td>
-                      <td>{entry.warning}</td>
-                    </tr>
-                  ))}
-                {!Object.keys(auditOverviewStats.csi.byCustomer).length && <tr><td colSpan="5">No CSI audits run yet.</td></tr>}
               </tbody>
             </table>
           </div>
