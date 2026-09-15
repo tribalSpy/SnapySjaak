@@ -4570,7 +4570,8 @@ function UkdocsPage({ currentUser, onNavigate }) {
                                       <span key={doc.id} className="finance-audit-invoice-chip">
                                         <a href={`/api/finance-audit/invoice-documents/${doc.id}/file`} target="_blank" rel="noreferrer">{doc.file_name}</a>
                                         {doc.parsed?.ok
-                                          ? ` -- ${doc.parsed.colli ?? "?"} colli, ${doc.parsed.pieces ?? "?"} pcs, ${doc.parsed.currency || ""} ${doc.parsed.total_amount ?? "?"}`
+                                          ? ` -- ${doc.parsed.colli ?? "?"} colli, ${doc.parsed.pieces ?? "?"} pcs, ${doc.parsed.currency || ""} ${doc.parsed.total_amount ?? "?"} (goods only)`
+                                            + (doc.parsed.packaging_cost ? `, packaging ${doc.parsed.currency || ""} ${doc.parsed.packaging_cost} excluded` : "")
                                           : ` -- ${doc.parsed?.error || "could not read this PDF"}`}
                                         <button type="button" onClick={() => deleteFinanceAuditInvoiceDocument(doc.id)} title="Remove">×</button>
                                       </span>

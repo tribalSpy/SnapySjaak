@@ -1673,7 +1673,11 @@ function normalizeUkdocsFinanceAuditInvoiceDocument(entry) {
       ok: entry?.parsed?.ok === true,
       error: String(entry?.parsed?.error || "").trim(),
       currency: normalizeUkdocsText(entry?.parsed?.currency),
+      // The value compared against our own records -- goods only, with any
+      // separately-charged packaging/embalage cost already excluded.
       total_amount: Number.isFinite(Number(entry?.parsed?.total_amount)) ? Number(entry.parsed.total_amount) : null,
+      grand_total: Number.isFinite(Number(entry?.parsed?.grand_total)) ? Number(entry.parsed.grand_total) : null,
+      packaging_cost: Number.isFinite(Number(entry?.parsed?.packaging_cost)) ? Number(entry.parsed.packaging_cost) : null,
       nett_kg: Number.isFinite(Number(entry?.parsed?.nett_kg)) ? Number(entry.parsed.nett_kg) : null,
       gross_kg: Number.isFinite(Number(entry?.parsed?.gross_kg)) ? Number(entry.parsed.gross_kg) : null,
       colli: Number.isFinite(Number(entry?.parsed?.colli)) ? Number(entry.parsed.colli) : null,
