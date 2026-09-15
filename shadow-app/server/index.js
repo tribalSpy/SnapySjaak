@@ -13457,7 +13457,14 @@ async function handleApi(req, res, url) {
       return;
     }
     await deleteUkdocsPrintCollectionFiles(existingCollection);
-    state.print_collections = state.print_collections.filter((item) => item.id !== existingCollection.id && item.shipment_id !== existingCollection.shipment_id);
+    // Was `item.id !== X.id && item.shipment_id !== X.shipment_id` -- since
+    // most PD Keuring rows have no shipment_id at all (blank until a
+    // shipment is created from them later), every row sharing that same
+    // blank shipment_id matched the "OR" this AND-of-negatives actually
+    // implements (De Morgan's), wiping out every other unlinked row along
+    // with the one actually being deleted. existingCollection is the exact
+    // object found in this array, so remove it by reference instead.
+    state.print_collections = state.print_collections.filter((item) => item !== existingCollection);
     await writeUkdocsState(state);
     sendJson(res, 200, { ok: true, print_collections: normalizeUkdocsState(state).print_collections });
     return;
