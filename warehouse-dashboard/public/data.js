@@ -57,6 +57,7 @@ window.WD = (function () {
           reference: item.reference || '',
           truck: item.truck || '',
           group: item.group || '',
+          mainCarrier: item.mainCarrier || '',
           status: item.status || '',
           trolleyCount: Number(item.trolleyCount) || 0,
           scannedCount: Number(item.scannedCount) || 0,
@@ -87,7 +88,7 @@ window.WD = (function () {
         const ref = String(row.reference || '').trim().toUpperCase();
         if (!ref) continue;
         byRef[ref] = {
-          reference: ref, truck: '', group: row.group || '', status: 'pending',
+          reference: ref, truck: '', group: row.group || '', mainCarrier: row.mainCarrier || '', status: 'pending',
           trolleyCount: Number(row.trolleyCount) || 0, scannedCount: 0,
           rfidCount: 0, photoCount: 0,
           requiresRfid: row.requiresRfid !== false, requiresPhoto: row.requiresPhoto !== false,
@@ -110,7 +111,7 @@ window.WD = (function () {
         const ref = String(e.reference || '').trim().toUpperCase();
         if (!ref) continue;
         byRef[ref] = {
-          reference: ref, truck: '', group: e.group || '', status: 'pending',
+          reference: ref, truck: '', group: e.group || '', mainCarrier: e.mainCarrier || '', status: 'pending',
           trolleyCount: Number(e.trolleyCount) || 0, scannedCount: 0,
           rfidCount: 0, photoCount: 0,
           requiresRfid: e.requiresRfid !== false, requiresPhoto: e.requiresPhoto !== false,
@@ -129,7 +130,7 @@ window.WD = (function () {
       const eventLocations = normalizeLocations(e.locations).filter(Boolean);
       if (!byRef[ref]) {
         byRef[ref] = {
-          reference: ref, truck: '', group: '', status: 'pending',
+          reference: ref, truck: '', group: '', mainCarrier: '', status: 'pending',
           trolleyCount: Number(e.trolleyCount) || 0, scannedCount: 0,
           lastScannedBy: '', lastScannedAt: '', locations: eventLocations
         };
@@ -137,6 +138,7 @@ window.WD = (function () {
       const item = byRef[ref];
       item.truck = e.truck || item.truck;
       item.group = e.group || item.group;
+      item.mainCarrier = e.mainCarrier || item.mainCarrier;
       if (e.trolleyCount) item.trolleyCount = Number(e.trolleyCount) || item.trolleyCount;
       if (eventLocations.length) item.locations = [eventLocations[eventLocations.length - 1]];
     }
@@ -150,7 +152,7 @@ window.WD = (function () {
       const eventLocations = normalizeLocations(e.locations).filter(Boolean);
       if (!byRef[ref]) {
         byRef[ref] = {
-          reference: ref, truck: '', group: '', status: 'pending',
+          reference: ref, truck: '', group: '', mainCarrier: '', status: 'pending',
           trolleyCount: Number(e.trolleyCount) || 0, scannedCount: 0,
           rfidCount: 0, photoCount: 0,
           requiresRfid: e.requiresRfid !== false, requiresPhoto: e.requiresPhoto !== false,
@@ -168,6 +170,7 @@ window.WD = (function () {
       item.lastScannedBy = e.scannerId || item.lastScannedBy;
       item.lastScannedAt = e.timestamp || item.lastScannedAt;
       item.group = e.group || item.group;
+      item.mainCarrier = e.mainCarrier || item.mainCarrier;
       if (eventLocations.length) item.locations = [eventLocations[eventLocations.length - 1]];
     }
 
@@ -285,12 +288,13 @@ window.WD = (function () {
       const stateRow = perRef[String(e.reference || '').toUpperCase()];
       const truck = e.truck || (stateRow ? stateRow.truck : '') || '';
       const group = e.group || (stateRow ? stateRow.group : '') || '';
+      const mainCarrier = e.mainCarrier || (stateRow ? stateRow.mainCarrier : '') || '';
       let locations = e.locations;
       const hasLocations = Array.isArray(locations) ? locations.length > 0 : !!locations;
       if (!hasLocations) locations = stateRow ? stateRow.location : '';
       let expectedCount = e.expectedCount;
       if (!expectedCount) expectedCount = (stateRow ? stateRow.trolleyCount : 0) || 0;
-      return { ...e, truck, group, locations, expectedCount };
+      return { ...e, truck, group, mainCarrier, locations, expectedCount };
     });
   }
 
@@ -334,6 +338,42 @@ window.WD = (function () {
     });
   }
 
+  function carrierScanDurations(events) {
+    const withTs = events.filter(e => e._localTs);
+    const byCarrier = {};
+    for (const e of withTs) {
+      const carrier = e.mainCarrier || 'No carrier';
+      if (!byCarrier[carrier]) byCarrier[carrier] = [];
+      byCarrier[carrier].push(e._localTs);
+    }
+    return Object.entries(byCarrier).map(([carrier, times]) => {
+      const sorted = times.slice().sort((a, b) => a - b);
+      const first = sorted[0], last = sorted[sorted.length - 1];
+      return {
+        carrier,
+        first_scan: formatHms(first),
+        last_scan: formatHms(last),
+        scan_events: times.length,
+        load_minutes: Math.round(((last - first) / 60000) * 10) / 10
+      };
+    });
+  }
+
+  function carrierTimeframe(events) {
+    const counts = {};
+    for (const e of events) {
+      if (!e._localTs) continue;
+      const hour = String(e._localTs.getHours()).padStart(2, '0') + ':00';
+      const carrier = e.mainCarrier || 'No carrier';
+      const key = hour + '|' + carrier;
+      counts[key] = (counts[key] || 0) + 1;
+    }
+    return Object.entries(counts).map(([key, scans]) => {
+      const [hour, carrier] = key.split('|');
+      return { hour, carrier, scans };
+    });
+  }
+
   function collapseMissingReferenceEvents(events) {
     const missing = events.filter(e => e.type === 'scan_missing_reference');
     const others = events.filter(e => e.type !== 'scan_missing_reference');
@@ -360,6 +400,7 @@ window.WD = (function () {
     statusFromCounts, rowsFromReferenceMap, buildStateForDate, dedupeByReference,
     statusSummary, filterState, applyReferenceExclusions, filterEventsToVisibleReferences,
     classifyCanceledScan, enrichScansWithState, truckScanDurations, scanTimeframe,
+    carrierScanDurations, carrierTimeframe,
     collapseMissingReferenceEvents, uniqueSorted, formatHms
   };
 })();

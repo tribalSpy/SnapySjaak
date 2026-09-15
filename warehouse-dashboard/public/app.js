@@ -288,6 +288,95 @@
   }
 
   // ---------------------------------------------------------------
+  // Tabs: Carrier Schedule
+  // ---------------------------------------------------------------
+  function renderCarriersTab(filteredState, selectedActivity, visibleRefs, selectedDate) {
+    let scansForGraph = selectedActivity.filter(e => e.type === 'scan_complete');
+    scansForGraph = D.filterEventsToVisibleReferences(scansForGraph, visibleRefs);
+    scansForGraph = D.enrichScansWithState(scansForGraph, filteredState);
+    if (state.filters.truck !== 'All') scansForGraph = scansForGraph.filter(e => e.truck === state.filters.truck);
+    if (state.filters.group !== 'All') scansForGraph = scansForGraph.filter(e => e.group === state.filters.group);
+
+    // Per-carrier summary -- keyed by (mainCarrier|truck) so two different
+    // trucks sharing a carrier never collapse into one row, and truck-less
+    // references get organized by carrier instead of one undifferentiated
+    // bucket.
+    const byCarrier = {};
+    for (const r of D.dedupeByReference(filteredState)) {
+      const key = (r.mainCarrier || '') + '|' + (r.truck || '');
+      if (!byCarrier[key]) byCarrier[key] = { mainCarrier: r.mainCarrier || '', truck: r.truck || '', references: 0, expected_trolleys: 0, scanned_count: 0 };
+      byCarrier[key].references++;
+      byCarrier[key].expected_trolleys += r.trolleyCount;
+      byCarrier[key].scanned_count += r.scannedCount;
+    }
+    const durations = D.carrierScanDurations(scansForGraph);
+    const durationByCarrier = Object.fromEntries(durations.map(d => [d.carrier, d]));
+    const perCarrier = Object.values(byCarrier).map(t => ({ ...t, ...(durationByCarrier[t.mainCarrier] || {}) }));
+
+    renderTable(el.tblCarrierSummary, [
+      { key: 'mainCarrier', label: 'Carrier', render: r => escapeHtml(r.mainCarrier || 'No carrier') },
+      { key: 'truck', label: 'Truck', render: r => escapeHtml(r.truck || 'No truck') },
+      { key: 'references', label: 'References' },
+      { key: 'expected_trolleys', label: 'Expected trolleys' },
+      { key: 'scanned_count', label: 'Scanned count' },
+      { key: 'first_scan', label: 'First scan' },
+      { key: 'last_scan', label: 'Last scan' },
+      { key: 'load_minutes', label: 'Load minutes' }
+    ], perCarrier.sort((a, b) => (a.mainCarrier || '').localeCompare(b.mainCarrier || '') || (a.truck || '').localeCompare(b.truck || '')));
+
+    // Carrier detail dropdown
+    const carrierChoices = D.uniqueSorted(filteredState.map(r => r.mainCarrier));
+    const prev = el.carrierDetailSelect.value;
+    el.carrierDetailSelect.innerHTML = carrierChoices.length
+      ? carrierChoices.map(c => `<option value="${escapeHtml(c)}">${escapeHtml(c)}</option>`).join('')
+      : '<option value="">—</option>';
+    if (carrierChoices.includes(prev)) el.carrierDetailSelect.value = prev;
+    renderCarrierDetail(el.carrierDetailSelect.value, filteredState, durationByCarrier);
+
+    // All carrier lines
+    renderTable(el.tblCarrierLines, [
+      { key: 'mainCarrier', label: 'Carrier' }, { key: 'truck', label: 'Truck' }, { key: 'reference', label: 'Reference' },
+      { key: 'location', label: 'Location' }, { key: 'group', label: 'Group' },
+      { key: 'trolleyCount', label: 'Trolleys' }, { key: 'scannedCount', label: 'Scanned' },
+      { key: 'status', label: 'Status', render: r => statusPill(r.status) }
+    ], filteredState.slice().sort((a, b) => (a.mainCarrier || '').localeCompare(b.mainCarrier || '') || a.reference.localeCompare(b.reference)));
+
+    // Loading timeframe chart
+    const timeframeRows = D.carrierTimeframe(scansForGraph).map(r => ({ x: r.hour, series: r.carrier, value: r.scans }));
+    C.renderGroupedBarChart(el.chartCarrierTimeframe, timeframeRows);
+  }
+
+  function renderCarrierDetail(carrier, filteredState, durationByCarrier) {
+    if (!carrier) { el.carrierDetail.innerHTML = ''; return; }
+    const detailRows = filteredState.filter(r => r.mainCarrier === carrier)
+      .sort((a, b) => a.status.localeCompare(b.status) || a.reference.localeCompare(b.reference));
+    const summary = D.statusSummary(detailRows);
+    const dur = durationByCarrier[carrier];
+
+    let html = `<div class="detail-stats">
+      <div class="stat"><span class="num">${summary.expected_refs}</span><span class="label">References</span></div>
+      <div class="stat"><span class="num">${summary.expected_trolleys}</span><span class="label">Expected trolleys</span></div>
+      <div class="stat"><span class="num">${summary.scanned_trolleys}</span><span class="label">Scanned count</span></div>
+      <div class="stat"><span class="num">${summary.pending_refs}</span><span class="label">Pending refs</span></div>
+    </div>`;
+    if (dur) {
+      html += `<div class="detail-stats">
+        <div class="stat"><span class="num">${dur.load_minutes}</span><span class="label">Load minutes</span></div>
+        <div class="stat"><span class="num">${dur.first_scan}</span><span class="label">First scan</span></div>
+        <div class="stat"><span class="num">${dur.last_scan}</span><span class="label">Last scan</span></div>
+      </div>`;
+    }
+
+    const pending = detailRows.filter(r => r.status === 'pending');
+    const partial = detailRows.filter(r => r.status === 'partial');
+    if (pending.length) html += `<h3 class="section-title">Pending for ${escapeHtml(carrier)}</h3>` + tableHtml(pending);
+    if (partial.length) html += `<h3 class="section-title">Partially scanned for ${escapeHtml(carrier)}</h3>` + tableHtml(partial);
+    html += `<h3 class="section-title">All references for ${escapeHtml(carrier)}</h3>` + tableHtml(detailRows);
+
+    el.carrierDetail.innerHTML = html;
+  }
+
+  // ---------------------------------------------------------------
   // Tabs: Scans
   // ---------------------------------------------------------------
   function renderScansTab(selectedActivity, filteredState, visibleRefs, selectedDate) {
@@ -493,6 +582,7 @@
 
     renderExpectedTab(filteredState, selectedDate);
     renderTrucksTab(filteredState, selectedActivity, visibleRefs, selectedDate);
+    renderCarriersTab(filteredState, selectedActivity, visibleRefs, selectedDate);
     renderScansTab(selectedActivity, filteredState, visibleRefs, selectedDate);
     renderCanceledTab(selectedActivity, filteredState, selectedDate);
     renderTimelineTab(selectedActivity, visibleRefs, selectedDate);
@@ -515,6 +605,7 @@
   el.filterGroup.addEventListener('change', () => { state.filters.group = el.filterGroup.value; recomputeAndRender(); });
   el.filterStatus.addEventListener('change', () => { state.filters.status = el.filterStatus.value; recomputeAndRender(); });
   el.truckDetailSelect.addEventListener('change', () => recomputeAndRender());
+  el.carrierDetailSelect.addEventListener('change', () => recomputeAndRender());
 
   document.querySelectorAll('.tab-btn').forEach(btn => {
     btn.addEventListener('click', () => {
