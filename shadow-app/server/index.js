@@ -34,6 +34,7 @@ import {
 } from "./db.js";
 import { createBunchesService } from "./bunches.js";
 import ExcelJS from "exceljs";
+import archiver from "archiver";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const appRoot = path.resolve(__dirname, "..");
@@ -4560,6 +4561,31 @@ function buildOverview(actions) {
       vk: entry.in.vk - entry.out.vk,
     },
   }));
+}
+
+function sanitizeAuditZipEntryName(name) {
+  return String(name || "")
+    .replace(/[\\/:*?"<>|]/g, "-")
+    .replace(/\s+/g, " ")
+    .trim() || "unnamed";
+}
+
+// Every document type "Save audit" backs up, for one print collection --
+// mirrors exactly what the UKdocs Print document panel shows for a shipment
+// (phyto, second export file, generated invoice/export files, IPAFFS
+// flowers/plants, confirmation of exit). Factuur PDFs live separately, keyed
+// by shipment id in finance_audit_invoice_documents, and are added by the
+// caller since they aren't part of a print collection's own documents.
+function collectUkdocsPrintDocumentsForZip(collection) {
+  const documents = collection?.documents || {};
+  return [
+    ...(documents.phyto_files || []),
+    ...(documents.export_extra?.storage_name ? [documents.export_extra] : []),
+    ...(documents.generated_files || []),
+    ...(documents.ipaffs_file?.storage_name ? [documents.ipaffs_file] : []),
+    ...(documents.ipaffs_plants_file?.storage_name ? [documents.ipaffs_plants_file] : []),
+    ...(documents.exit_confirmation_files || []),
+  ];
 }
 
 // Excel sheet names: <=31 chars, no : \ / ? * [ ] -- and must be unique
@@ -14157,6 +14183,98 @@ async function handleApi(req, res, url) {
     await writeUkdocsState(state);
     const nextState = await readUkdocsState();
     sendJson(res, 200, { ok: true, finance_audit_invoice_documents: nextState.finance_audit_invoice_documents });
+    return;
+  }
+
+  // "Save audit": backs up every document collected for every audited
+  // (CSI-passed) sending in a date range into one .zip, one folder per
+  // sending named "<truck> <customer>" -- phyto/export/IPAFFS/exit-confirmation/
+  // generated files plus any matched factuur PDFs, so the export table and its
+  // source documents can be archived together.
+  if (url.pathname === "/api/finance-audit/save-audit-zip") {
+    if (!requirePermission(res, requestUser, PERMISSIONS.UKDOCS_VIEW)) {
+      return;
+    }
+    const fromDate = String(url.searchParams.get("from") || "").trim();
+    const toDate = String(url.searchParams.get("to") || "").trim();
+    const state = await readUkdocsState();
+
+    const latestShipmentByCollection = new Map();
+    for (const shipment of state.shipments) {
+      const collectionKey = shipment.print_collection_id || shipment.id;
+      const existing = latestShipmentByCollection.get(collectionKey);
+      if (!existing || String(shipment.updated_at || "") > String(existing.updated_at || "")) {
+        latestShipmentByCollection.set(collectionKey, shipment);
+      }
+    }
+
+    const auditedShipments = [...latestShipmentByCollection.values()].filter((shipment) => {
+      const collection = state.print_collections.find((item) => item.id === shipment.print_collection_id);
+      if (!collection?.csi_check_passed) {
+        return false;
+      }
+      const shipmentDate = String(shipment.shipment_date || "").slice(0, 10);
+      if (fromDate && shipmentDate < fromDate) {
+        return false;
+      }
+      if (toDate && shipmentDate > toDate) {
+        return false;
+      }
+      return true;
+    });
+
+    if (!auditedShipments.length) {
+      sendJson(res, 404, { error: "No audited shipments found for that date range" });
+      return;
+    }
+
+    res.writeHead(200, {
+      "content-type": "application/zip",
+      "content-disposition": `attachment; filename="save-audit-${fromDate || "all"}-to-${toDate || "all"}.zip"`,
+      "cache-control": "private, no-store",
+    });
+    const archive = archiver("zip", { zlib: { level: 9 } });
+    archive.on("error", (archiveError) => {
+      console.error("Save audit zip failed:", archiveError);
+      res.destroy(archiveError);
+    });
+    archive.pipe(res);
+
+    const usedFolderNames = new Set();
+    for (const shipment of auditedShipments) {
+      const collection = state.print_collections.find((item) => item.id === shipment.print_collection_id) || null;
+      const customer = state.customers.find((item) => item.id === shipment.customer_id) || null;
+      const truckLabel = shipment.truck_number || collection?.truck_number || "no-truck";
+      const customerLabel = customer?.customer_name || shipment.customer_name || "unknown-customer";
+      const baseFolderName = sanitizeAuditZipEntryName(`${truckLabel} ${customerLabel}`);
+      let folderName = baseFolderName;
+      let suffix = 2;
+      while (usedFolderNames.has(folderName.toLowerCase())) {
+        folderName = `${baseFolderName} (${suffix})`;
+        suffix += 1;
+      }
+      usedFolderNames.add(folderName.toLowerCase());
+
+      for (const document of collectUkdocsPrintDocumentsForZip(collection)) {
+        const storagePath = document.storage_name ? path.join(ukdocsPrintFilesDir, document.storage_name) : "";
+        if (!storagePath || !existsSync(storagePath)) {
+          continue;
+        }
+        archive.file(storagePath, { name: `${folderName}/${sanitizeAuditZipEntryName(document.original_name || document.storage_name)}` });
+      }
+
+      const factuurDocs = state.finance_audit_invoice_documents.filter((doc) => doc.shipment_id === shipment.id);
+      for (const doc of factuurDocs) {
+        const storagePath = doc.storage_name ? path.join(ukdocsPrintFilesDir, doc.storage_name) : "";
+        if (!storagePath || !existsSync(storagePath)) {
+          continue;
+        }
+        const entryName = sanitizeAuditZipEntryName(`factuur-${doc.category}-${doc.file_name || doc.storage_name}`);
+        archive.file(storagePath, { name: `${folderName}/${entryName}` });
+      }
+    }
+
+    await archive.finalize();
     return;
   }
 

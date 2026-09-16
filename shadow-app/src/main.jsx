@@ -2582,6 +2582,22 @@ function financeAuditInvoiceComparison(row, docs) {
   };
 }
 
+// Plain-text version of the colli/value badges, for the "Save audit" export
+// -- "ok" when it matches, otherwise the actual mismatch numbers so the
+// backup export table stands on its own without needing the app open.
+function financeAuditFactuurCheckLabels(row, invoiceDocuments) {
+  const docs = (Array.isArray(invoiceDocuments) ? invoiceDocuments : [])
+    .filter((doc) => doc.shipment_id === row.shipment_id && doc.category === row.category);
+  const comparison = financeAuditInvoiceComparison(row, docs);
+  if (!comparison) {
+    return { colli: "-", value: "-" };
+  }
+  return {
+    colli: comparison.colliMatch ? "Colli ok" : `Factuur ${comparison.colli} vs Export ${comparison.expectedColli || "?"} MISMATCH`,
+    value: comparison.amountMatch ? "Value ok" : `Factuur ${comparison.amount.toFixed(2)} vs Export ${comparison.expectedAmount ? comparison.expectedAmount.toFixed(2) : "?"} MISMATCH`,
+  };
+}
+
 function financeAuditGroupInvoiceStatus(group, invoiceDocuments) {
   const docs = Array.isArray(invoiceDocuments) ? invoiceDocuments : [];
   let anyChecked = false;
@@ -3787,6 +3803,37 @@ function UkdocsPage({ currentUser, onNavigate }) {
     onNavigate?.("ukdocsprint");
   }
 
+  function exportFinanceAuditActiveTable() {
+    downloadExcelFriendlyTable(
+      "finance-audit-ukdocs.xls",
+      [
+        "Week", "Datum", "Truck", "Rit", "Omschrijving", "Type", "Customer Connect", "Customer", "Transporteur",
+        "Grensovergang", "Expediteur", "Kenteken", "Factuur nummer", "Location Connect", "Opmerking",
+        "Waarde als GBP", "Waarde als EU", "Volume(colli)", "Phyto number", "Factuur colli check", "Factuur value check",
+      ],
+      financeAuditVisibleRows.map((row) => {
+        const factuurChecks = financeAuditFactuurCheckLabels(row, state?.finance_audit_invoice_documents);
+        return [
+          row.week, row.datum, row.truck, row.rit, row.omschrijving, row.type, row.customer_connect, row.customer_name,
+          row.transporteur, row.grensovergang, row.expediteur, row.kenteken, row.factuur_nummer,
+          row.location_connect, financeAuditFieldValue(row, "opmerking"), row.waarde_gbp, row.waarde_eu,
+          financeAuditFieldValue(row, "volume_override"), row.phyto_marston, factuurChecks.colli, factuurChecks.value,
+        ];
+      }),
+    );
+  }
+
+  // "Save audit": the export table above (with the factuur check columns)
+  // plus a .zip backup of every document collected for each audited sending
+  // in the same date range -- one folder per sending, named truck + customer.
+  function saveAudit() {
+    exportFinanceAuditActiveTable();
+    const params = new URLSearchParams();
+    if (financeAuditFromDate) params.set("from", financeAuditFromDate);
+    if (financeAuditToDate) params.set("to", financeAuditToDate);
+    window.location.href = `/api/finance-audit/save-audit-zip?${params.toString()}`;
+  }
+
   function currentShipmentPayload() {
     return {
       ...shipmentDraft,
@@ -4437,19 +4484,19 @@ function UkdocsPage({ currentUser, onNavigate }) {
           <div className="row-actions spread-actions">
             <button
               type="button"
-              onClick={() => downloadExcelFriendlyTable(
-                "finance-audit-ukdocs.xls",
-                ["Week", "Datum", "Truck", "Rit", "Omschrijving", "Type", "Customer Connect", "Customer", "Transporteur", "Grensovergang", "Expediteur", "Kenteken", "Factuur nummer", "Location Connect", "Opmerking", "Waarde als GBP", "Waarde als EU", "Volume(colli)", "Phyto number"],
-                financeAuditVisibleRows.map((row) => [
-                  row.week, row.datum, row.truck, row.rit, row.omschrijving, row.type, row.customer_connect, row.customer_name,
-                  row.transporteur, row.grensovergang, row.expediteur, row.kenteken, row.factuur_nummer,
-                  row.location_connect, financeAuditFieldValue(row, "opmerking"), row.waarde_gbp, row.waarde_eu,
-                  financeAuditFieldValue(row, "volume_override"), row.phyto_marston,
-                ]),
-              )}
+              onClick={exportFinanceAuditActiveTable}
               disabled={!financeAuditVisibleRows.length}
             >
               Export active table
+            </button>
+            <button
+              type="button"
+              className="primary"
+              onClick={saveAudit}
+              disabled={!financeAuditVisibleRows.length}
+              title="Downloads the export table above (with factuur check columns) and a .zip backup of every collected document for each audited sending in this date range, one folder per sending"
+            >
+              Save audit
             </button>
             <button
               type="button"
@@ -7611,7 +7658,7 @@ function PdKeuringPage({ currentUser }) {
     }
   }
 
-  const INLINE_EDIT_FIELDS = ["reference_connect", "expected_boxes", "expected_pieces"];
+  const INLINE_EDIT_FIELDS = ["reference_connect", "expected_boxes", "expected_pieces", "truck_number", "trailer_number"];
 
   function inlineFieldValue(row, field) {
     const edits = inlineEdits[row.id];
@@ -7940,16 +7987,11 @@ function PdKeuringPage({ currentUser }) {
                   <th>Truck / trailer licence plate</th>
                   <th>Boxes</th>
                   <th>Pieces</th>
-                  <th>Sheet sync</th>
                   <th>Actions</th>
                 </tr>
               </thead>
               <tbody>
                 {dayRows.map((row) => {
-                  const conflictCount = Array.isArray(row.pd_sheet_conflicts) ? row.pd_sheet_conflicts.length : 0;
-                  const conflictTitle = conflictCount
-                    ? row.pd_sheet_conflicts.map((conflict) => `${conflict.field}: app="${conflict.app_value}" vs sheet="${conflict.sheet_value}"`).join("\n")
-                    : "";
                   const dirty = isRowDirty(row);
                   return (
                     <tr key={row.id}>
@@ -7962,19 +8004,10 @@ function PdKeuringPage({ currentUser }) {
                       <td>{row.pd_code || "-"}</td>
                       <td><input value={inlineFieldValue(row, "reference_connect")} onChange={(event) => updateInlineField(row.id, "reference_connect", event.target.value)} /></td>
                       <td>{row.customer_name || "-"}</td>
-                      <td>{row.truck_number || "-"}</td>
-                      <td>{row.trailer_number || "-"}</td>
+                      <td><input value={inlineFieldValue(row, "truck_number")} onChange={(event) => updateInlineField(row.id, "truck_number", event.target.value)} placeholder="Truck number" /></td>
+                      <td><input value={inlineFieldValue(row, "trailer_number")} onChange={(event) => updateInlineField(row.id, "trailer_number", event.target.value)} placeholder="Licence plate" /></td>
                       <td><input value={inlineFieldValue(row, "expected_boxes")} onChange={(event) => updateInlineField(row.id, "expected_boxes", event.target.value)} placeholder="Boxes" /></td>
                       <td><input value={inlineFieldValue(row, "expected_pieces")} onChange={(event) => updateInlineField(row.id, "expected_pieces", event.target.value)} placeholder="Pieces" /></td>
-                      <td title={conflictTitle}>
-                        {conflictCount
-                          ? `${conflictCount} conflict${conflictCount === 1 ? "" : "s"}`
-                          : row.pd_sheet_sync?.ok
-                            ? "Synced"
-                            : row.pd_sheet_sync?.error
-                              ? "Not synced"
-                              : "-"}
-                      </td>
                       <td className="row-actions">
                         {dirty && <button type="button" className="primary" onClick={() => saveInlineEdits(row)} disabled={saving}>Save</button>}
                         <button type="button" onClick={() => setRowDraft({ ...row })}>Edit</button>
@@ -7983,7 +8016,7 @@ function PdKeuringPage({ currentUser }) {
                     </tr>
                   );
                 })}
-                {!dayRows.length && <tr><td colSpan="15">No PD Keuring rows for {selectedDate} yet.</td></tr>}
+                {!dayRows.length && <tr><td colSpan="14">No PD Keuring rows for {selectedDate} yet.</td></tr>}
               </tbody>
             </table>
           </div>
