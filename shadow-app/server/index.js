@@ -15096,8 +15096,13 @@ async function handleApi(req, res, url) {
       sendJson(res, 400, { error: "country is required" });
       return;
     }
+    const fromWeek = Number(url.searchParams.get("from_week") || 0);
+    const toWeek = Number(url.searchParams.get("to_week") || 0);
     const { actions } = await loadCurrentFustActionsSnapshot();
-    const countryActions = actions.filter((action) => action.country === country);
+    const countryActions = actions
+      .filter((action) => action.country === country)
+      .filter((action) => !fromWeek || Number(action.week || 0) >= fromWeek)
+      .filter((action) => !toWeek || Number(action.week || 0) <= toWeek);
     const overview = buildOverview(countryActions);
     if (!overview.length) {
       sendJson(res, 404, { error: `No Fust actions found for country "${country}"` });

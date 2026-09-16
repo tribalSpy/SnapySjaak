@@ -3274,14 +3274,25 @@ async function downloadUkdocsFilesWithPrompt(files, folderName = "") {
 // Writes a "Save audit" manifest (one folder per sending, each with its own
 // list of already-uploaded document URLs) to a picked folder as loose files
 // -- deliberately not zipped, so the result stays searchable/openable
-// directly from disk. Falls back to flat per-file downloads (folder name
-// baked into the filename) when the File System Access API isn't available.
-async function downloadFinanceAuditManifestFiles(folders) {
-  if (!Array.isArray(folders) || !folders.length) {
-    return;
-  }
+// directly from disk. The summary export table (already built in memory,
+// see saveAudit) is written into the same picked folder's root so the
+// overview and its source documents land together. Falls back to flat
+// per-file downloads (folder name baked into the filename) when the File
+// System Access API isn't available.
+async function downloadFinanceAuditManifestFiles(folders, summaryFile = null) {
+  const folderList = Array.isArray(folders) ? folders : [];
   if (typeof window.showDirectoryPicker !== "function") {
-    for (const folderEntry of folders) {
+    if (summaryFile) {
+      const objectUrl = window.URL.createObjectURL(summaryFile.blob);
+      const link = document.createElement("a");
+      link.href = objectUrl;
+      link.download = safeDownloadFilename(summaryFile.name);
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      window.URL.revokeObjectURL(objectUrl);
+    }
+    for (const folderEntry of folderList) {
       for (const file of folderEntry.files) {
         const response = await fetch(file.url, { credentials: "include" });
         if (!response.ok) {
@@ -3302,7 +3313,13 @@ async function downloadFinanceAuditManifestFiles(folders) {
   }
 
   const rootDirectoryHandle = await window.showDirectoryPicker();
-  for (const folderEntry of folders) {
+  if (summaryFile) {
+    const summaryFileHandle = await rootDirectoryHandle.getFileHandle(safeDownloadFilename(summaryFile.name), { create: true });
+    const summaryWritable = await summaryFileHandle.createWritable();
+    await summaryWritable.write(summaryFile.blob);
+    await summaryWritable.close();
+  }
+  for (const folderEntry of folderList) {
     const targetDirectoryHandle = await rootDirectoryHandle.getDirectoryHandle(safeDownloadFilename(folderEntry.folder), { create: true });
     for (const file of folderEntry.files) {
       const response = await fetch(file.url, { credentials: "include" });
@@ -3850,15 +3867,14 @@ function UkdocsPage({ currentUser, onNavigate }) {
     onNavigate?.("ukdocsprint");
   }
 
-  function exportFinanceAuditActiveTable() {
-    downloadExcelFriendlyTable(
-      "finance-audit-ukdocs.xls",
-      [
+  function buildFinanceAuditExportData() {
+    return {
+      headers: [
         "Week", "Datum", "Truck", "Rit", "Omschrijving", "Type", "Customer Connect", "Customer", "Transporteur",
         "Grensovergang", "Expediteur", "Kenteken", "Factuur nummer", "Location Connect", "Opmerking",
         "Waarde als GBP", "Waarde als EU", "Volume(colli)", "Phyto number", "Factuur colli check", "Factuur value check",
       ],
-      financeAuditVisibleRows.map((row) => {
+      rows: financeAuditVisibleRows.map((row) => {
         const factuurChecks = financeAuditFactuurCheckLabels(row, state?.finance_audit_invoice_documents);
         return [
           row.week, row.datum, row.truck, row.rit, row.omschrijving, row.type, row.customer_connect, row.customer_name,
@@ -3867,30 +3883,41 @@ function UkdocsPage({ currentUser, onNavigate }) {
           financeAuditFieldValue(row, "volume_override"), row.phyto_marston, factuurChecks.colli, factuurChecks.value,
         ];
       }),
-    );
+    };
+  }
+
+  function exportFinanceAuditActiveTable() {
+    const { headers, rows } = buildFinanceAuditExportData();
+    downloadExcelFriendlyTable("finance-audit-ukdocs.xls", headers, rows);
   }
 
   // "Save audit": the export table above (with the factuur check columns)
   // plus a loose-file backup (not zipped, so it stays searchable) of every
   // document collected for each audited sending in the same date range --
-  // one folder per sending, named truck + customer.
+  // one folder per sending, named truck + customer. Both the summary export
+  // and the per-sending folders land in the same picked folder, so the
+  // overview and its source documents stay together.
   async function saveAudit() {
-    exportFinanceAuditActiveTable();
     setSaving(true);
     setError("");
     setMessage("");
     try {
+      const rangeLabel = `${financeAuditFromDate || "all"} to ${financeAuditToDate || "all"}`;
+      const { headers, rows } = buildFinanceAuditExportData();
+      const summaryFile = {
+        name: `overzicht finance Docs UK (${rangeLabel}).xls`,
+        blob: buildExcelFriendlyTableBlob(headers, rows),
+      };
+
       const params = new URLSearchParams();
       if (financeAuditFromDate) params.set("from", financeAuditFromDate);
       if (financeAuditToDate) params.set("to", financeAuditToDate);
       const payload = await apiJson(`/api/finance-audit/save-audit-manifest?${params.toString()}`);
       const folders = payload.folders || [];
-      if (!folders.length) {
-        setError("No audited sendings with documents found for that date range.");
-        return;
-      }
-      await downloadFinanceAuditManifestFiles(folders);
-      setMessage(`Saved documents for ${folders.length} sending(s).`);
+      await downloadFinanceAuditManifestFiles(folders, summaryFile);
+      setMessage(folders.length
+        ? `Saved the overview and documents for ${folders.length} sending(s).`
+        : "Saved the overview (no audited sendings with documents found for that date range).");
     } catch (saveError) {
       if (saveError?.name !== "AbortError") {
         setError(saveError instanceof Error ? saveError.message : String(saveError));
@@ -10068,7 +10095,7 @@ function FustActionForm({ type, metaData, loading, onSaved, onOpenFustList = nul
   );
 }
 
-function downloadExcelFriendlyTable(filename, headers, rows) {
+function buildExcelFriendlyTableBlob(headers, rows) {
   const safeHeaders = headers.map((value) => String(value ?? "")
     .replaceAll("&", "&amp;")
     .replaceAll("<", "&lt;")
@@ -10100,7 +10127,11 @@ function downloadExcelFriendlyTable(filename, headers, rows) {
     </table>
   </body>
 </html>`;
-  const blob = new Blob([html], { type: "application/vnd.ms-excel;charset=utf-8;" });
+  return new Blob([html], { type: "application/vnd.ms-excel;charset=utf-8;" });
+}
+
+function downloadExcelFriendlyTable(filename, headers, rows) {
+  const blob = buildExcelFriendlyTableBlob(headers, rows);
   const url = window.URL.createObjectURL(blob);
   const link = document.createElement("a");
   link.href = url;
@@ -10689,6 +10720,8 @@ function FustShareOverview({ loading, actions }) {
   const countryOptions = [...new Set(actions.map((action) => action.country).filter(Boolean))]
     .sort((left, right) => left.localeCompare(right));
   const [selectedCountry, setSelectedCountry] = useState("");
+  const [fromWeek, setFromWeek] = useState("");
+  const [toWeek, setToWeek] = useState("");
 
   useEffect(() => {
     if (!selectedCountry && countryOptions.length) {
@@ -10696,9 +10729,15 @@ function FustShareOverview({ loading, actions }) {
     }
   }, [countryOptions, selectedCountry]);
 
-  const customerNames = [...new Set(
-    actions.filter((action) => action.country === selectedCountry).map((action) => action.customer_name),
-  )].filter(Boolean).sort((left, right) => left.localeCompare(right));
+  const weekOptions = [...new Set(actions.map((action) => String(action.week || "")).filter(Boolean))]
+    .sort((left, right) => Number(right) - Number(left));
+
+  const scopedActions = actions
+    .filter((action) => action.country === selectedCountry)
+    .filter((action) => !fromWeek || Number(action.week || 0) >= Number(fromWeek))
+    .filter((action) => !toWeek || Number(action.week || 0) <= Number(toWeek));
+  const customerNames = [...new Set(scopedActions.map((action) => action.customer_name))]
+    .filter(Boolean).sort((left, right) => left.localeCompare(right));
 
   if (loading) {
     return <div className="notice">Loading Fust overview...</div>;
@@ -10720,6 +10759,20 @@ function FustShareOverview({ loading, actions }) {
               {countryOptions.map((country) => <option key={country} value={country}>{country}</option>)}
             </select>
           </label>
+          <label>
+            <span>From week</span>
+            <select value={fromWeek} onChange={(event) => setFromWeek(event.target.value)}>
+              <option value="">All weeks</option>
+              {weekOptions.map((week) => <option key={`from-${week}`} value={week}>{week}</option>)}
+            </select>
+          </label>
+          <label>
+            <span>To week</span>
+            <select value={toWeek} onChange={(event) => setToWeek(event.target.value)}>
+              <option value="">All weeks</option>
+              {weekOptions.map((week) => <option key={`to-${week}`} value={week}>{week}</option>)}
+            </select>
+          </label>
         </div>
         {selectedCountry && (
           <div className="section-header">
@@ -10728,7 +10781,10 @@ function FustShareOverview({ loading, actions }) {
               type="button"
               className="primary"
               onClick={() => {
-                window.location.href = `/api/fust/share-export?country=${encodeURIComponent(selectedCountry)}`;
+                const params = new URLSearchParams({ country: selectedCountry });
+                if (fromWeek) params.set("from_week", fromWeek);
+                if (toWeek) params.set("to_week", toWeek);
+                window.location.href = `/api/fust/share-export?${params.toString()}`;
               }}
             >
               Download share file (.xlsx)
