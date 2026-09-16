@@ -14196,7 +14196,8 @@ async function handleApi(req, res, url) {
 
   // "Save audit": lists every document collected for every audited
   // (CSI-passed) sending in a date range, one folder per sending named
-  // "<truck> <customer>" -- phyto/export/IPAFFS/exit-confirmation/generated
+  // "<date> <truck> <customer>" (the date up front so folders also sort
+  // chronologically) -- phyto/export/IPAFFS/exit-confirmation/generated
   // files plus any matched factuur PDFs. Deliberately not zipped -- kept as
   // loose files on disk so they stay searchable/openable directly, see the
   // client's saveAudit()/downloadFinanceAuditManifestFiles for how this
@@ -14242,7 +14243,8 @@ async function handleApi(req, res, url) {
       const customer = state.customers.find((item) => item.id === shipment.customer_id) || null;
       const truckLabel = shipment.truck_number || collection?.truck_number || "no-truck";
       const customerLabel = customer?.customer_name || shipment.customer_name || "unknown-customer";
-      const baseFolderName = sanitizeAuditEntryName(`${truckLabel} ${customerLabel}`);
+      const dateLabel = String(shipment.shipment_date || "").slice(0, 10) || "no-date";
+      const baseFolderName = sanitizeAuditEntryName(`${dateLabel} ${truckLabel} ${customerLabel}`);
       let folderName = baseFolderName;
       let suffix = 2;
       while (usedFolderNames.has(folderName.toLowerCase())) {
