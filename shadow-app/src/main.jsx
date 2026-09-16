@@ -3049,10 +3049,20 @@ function ukdocsCsiInvoicesReady(collection) {
   return countUkdocsGeneratedInvoiceGroups(collection?.documents?.generated_files) >= invoiceExpected;
 }
 
+function isPdfUkdocsDocument(document) {
+  const fileName = String(document?.original_name || document?.storage_name || "").trim().toLowerCase();
+  const mimeType = String(document?.mime_type || "").trim().toLowerCase();
+  return fileName.endsWith(".pdf") || mimeType === "application/pdf";
+}
+
+// Only the PDF variant of each invoice ever gets attached to the CSI email --
+// counting the XLSX here too let this report "ready" while a PDF conversion
+// was still in flight, which is how a queued send could go out missing one
+// invoice's PDF (see the server-side twin of this function for the full story).
 function countUkdocsGeneratedInvoiceGroups(files) {
   const seen = new Set();
   for (const file of Array.isArray(files) ? files : []) {
-    if (file?.document_kind !== "invoice") {
+    if (file?.document_kind !== "invoice" || !isPdfUkdocsDocument(file)) {
       continue;
     }
     const key = String(file?.category || file?.original_name || file?.storage_name || "").replace(/\.[^.]+$/i, "").trim().toLowerCase();

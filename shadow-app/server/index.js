@@ -5885,10 +5885,17 @@ function ukdocsPrintInvoiceTokens(value) {
     .filter((item) => item.length >= 4);
 }
 
+// Counts invoice groups that actually have their PDF generated -- the CSI
+// send email only ever attaches the PDF variant (see the generated-invoice
+// filter a bit further down), never the XLSX, so counting the XLSX here too
+// let this report "ready" the moment every invoice's XLSX existed, even
+// while a PDF conversion job for one of them was still in flight. That race
+// is what let "Send papers to CSI" (and its deferred queue) fire and email
+// out with an invoice PDF silently missing.
 function countUkdocsGeneratedInvoiceGroups(files) {
   const seen = new Set();
   for (const file of Array.isArray(files) ? files : []) {
-    if (file?.document_kind !== "invoice") {
+    if (file?.document_kind !== "invoice" || !isPdfUkdocsDocument(file)) {
       continue;
     }
     const key = normalizeUkdocsText(file?.category) || String(file?.original_name || file?.storage_name || "").replace(/\.[^.]+$/i, "").trim().toLowerCase();
