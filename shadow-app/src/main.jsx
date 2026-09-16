@@ -10710,7 +10710,7 @@ function FustShareOverview({ loading, actions }) {
         <p>
           Generates one .xlsx file per country: an "All" tab with the country total (same layout your
           boss already shares), plus one tab per cust/transport with the same weeks, DC/DCS/DCO only,
-          and a running cumulative balance column per crate type.
+          a running cumulative balance column per crate type, and DC/DCS trend charts -- on every tab.
         </p>
         <div className="overview-filters">
           <label>

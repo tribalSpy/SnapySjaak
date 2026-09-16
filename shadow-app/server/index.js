@@ -34,6 +34,7 @@ import {
 } from "./db.js";
 import { createBunchesService } from "./bunches.js";
 import ExcelJS from "exceljs";
+import sharp from "sharp";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const appRoot = path.resolve(__dirname, "..");
@@ -4664,12 +4665,84 @@ function buildFustShareSheetRows(entries) {
   });
 }
 
+function escapeSvgText(value) {
+  return String(value ?? "")
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;");
+}
+
+// Renders one "line with markers" trend chart (week on X, a running total on
+// Y) as a PNG, matching the style of the cumulative-balance charts the boss
+// already has in his hand-built version of this file -- ExcelJS itself can't
+// create native Excel charts, so this draws the same shape as a plain SVG
+// and rasterizes it, then gets embedded as a picture via worksheet.addImage.
+async function renderLineChartPng({ title, points, width = 480, height = 300 }) {
+  const marginLeft = 60;
+  const marginRight = 20;
+  const marginTop = 34;
+  const marginBottom = 30;
+  const plotWidth = width - marginLeft - marginRight;
+  const plotHeight = height - marginTop - marginBottom;
+
+  const xValues = points.map((point) => point.x);
+  const yValues = points.map((point) => point.y);
+  const xMin = 0;
+  const xMax = Math.max(40, Math.ceil(Math.max(...xValues, 0) / 5) * 5);
+  const yMinData = Math.min(0, ...yValues);
+  const yMaxData = Math.max(0, ...yValues);
+  const yPad = Math.max(100, (yMaxData - yMinData) * 0.1);
+  const yMin = Math.floor((yMinData - yPad) / 200) * 200;
+  const yMax = Math.ceil((yMaxData + yPad) / 200) * 200;
+
+  const xScale = (x) => marginLeft + ((x - xMin) / (xMax - xMin || 1)) * plotWidth;
+  const yScale = (y) => marginTop + (1 - (y - yMin) / (yMax - yMin || 1)) * plotHeight;
+
+  const xTicks = [];
+  for (let tick = xMin; tick <= xMax; tick += 5) {
+    xTicks.push(tick);
+  }
+  const yTickCount = 6;
+  const yTicks = [];
+  for (let index = 0; index <= yTickCount; index += 1) {
+    yTicks.push(yMin + (index * (yMax - yMin)) / yTickCount);
+  }
+
+  const gridLines = [
+    ...xTicks.map((tick) => `<line x1="${xScale(tick).toFixed(1)}" y1="${marginTop}" x2="${xScale(tick).toFixed(1)}" y2="${marginTop + plotHeight}" stroke="#e2e2e2" stroke-width="1" />`),
+    ...yTicks.map((tick) => `<line x1="${marginLeft}" y1="${yScale(tick).toFixed(1)}" x2="${marginLeft + plotWidth}" y2="${yScale(tick).toFixed(1)}" stroke="#e2e2e2" stroke-width="1" />`),
+  ].join("");
+  const xLabels = xTicks.map((tick) => `<text x="${xScale(tick).toFixed(1)}" y="${marginTop + plotHeight + 16}" font-family="Arial, sans-serif" font-size="10" fill="#666" text-anchor="middle">${tick}</text>`).join("");
+  const yLabels = yTicks.map((tick) => `<text x="${marginLeft - 8}" y="${(yScale(tick) + 3).toFixed(1)}" font-family="Arial, sans-serif" font-size="10" fill="#666" text-anchor="end">${Math.round(tick)}</text>`).join("");
+
+  const pathData = points
+    .map((point, index) => `${index === 0 ? "M" : "L"}${xScale(point.x).toFixed(1)},${yScale(point.y).toFixed(1)}`)
+    .join(" ");
+  const markers = points
+    .map((point) => `<circle cx="${xScale(point.x).toFixed(1)}" cy="${yScale(point.y).toFixed(1)}" r="3.5" fill="#2e6da4" />`)
+    .join("");
+
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}">
+    <rect width="${width}" height="${height}" fill="#ffffff" />
+    <text x="${width / 2}" y="20" font-family="Arial, sans-serif" font-size="14" fill="#404040" text-anchor="middle">${escapeSvgText(title)}</text>
+    ${gridLines}
+    <line x1="${marginLeft}" y1="${marginTop}" x2="${marginLeft}" y2="${marginTop + plotHeight}" stroke="#bfbfbf" />
+    <line x1="${marginLeft}" y1="${marginTop + plotHeight}" x2="${marginLeft + plotWidth}" y2="${marginTop + plotHeight}" stroke="#bfbfbf" />
+    ${xLabels}
+    ${yLabels}
+    ${points.length ? `<path d="${pathData}" fill="none" stroke="#2e6da4" stroke-width="2" />` : ""}
+    ${markers}
+  </svg>`;
+
+  return sharp(Buffer.from(svg)).png().toBuffer();
+}
+
 async function buildFustShareWorkbook(overviewEntries, country) {
   const workbook = new ExcelJS.Workbook();
   const usedSheetNames = new Set();
   const countryUpper = String(country || "").toUpperCase();
 
-  function addSheet(sheetLabel, entries) {
+  async function addSheet(sheetLabel, entries) {
     const sheet = workbook.addWorksheet(sanitizeExcelSheetName(sheetLabel, usedSheetNames));
     const headerRow = sheet.addRow([
       "Week", "Country", "Cust/transport",
@@ -4707,14 +4780,30 @@ async function buildFustShareWorkbook(overviewEntries, country) {
     }
 
     sheet.columns.forEach((column) => { column.width = 14; });
+
+    if (rows.length) {
+      const dcChartPng = await renderLineChartPng({
+        title: `Cumulatieve DC ${countryUpper}`,
+        points: rows.map((row) => ({ x: Number(row.week) || 0, y: row.cumulative.dc })),
+      });
+      const dcsChartPng = await renderLineChartPng({
+        title: `Cumulatieve DCS ${countryUpper}`,
+        points: rows.map((row) => ({ x: Number(row.week) || 0, y: row.cumulative.dcs })),
+      });
+      const dcImageId = workbook.addImage({ buffer: dcChartPng, extension: "png" });
+      const dcsImageId = workbook.addImage({ buffer: dcsChartPng, extension: "png" });
+      const chartRow = sheet.rowCount + 1;
+      sheet.addImage(dcImageId, { tl: { col: 0, row: chartRow }, ext: { width: 480, height: 300 } });
+      sheet.addImage(dcsImageId, { tl: { col: 7, row: chartRow }, ext: { width: 480, height: 300 } });
+    }
   }
 
-  addSheet("All", buildFustShareCountryTotals(overviewEntries));
+  await addSheet("All", buildFustShareCountryTotals(overviewEntries));
 
   const customerNames = [...new Set(overviewEntries.map((entry) => entry.customer_name).filter(Boolean))]
     .sort((left, right) => left.localeCompare(right));
   for (const customerName of customerNames) {
-    addSheet(customerName, overviewEntries.filter((entry) => entry.customer_name === customerName));
+    await addSheet(customerName, overviewEntries.filter((entry) => entry.customer_name === customerName));
   }
 
   return workbook.xlsx.writeBuffer();
