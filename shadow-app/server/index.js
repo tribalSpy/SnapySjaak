@@ -33,6 +33,7 @@ import {
   upsertWarehouseStatus,
 } from "./db.js";
 import { createBunchesService } from "./bunches.js";
+import ExcelJS from "exceljs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const appRoot = path.resolve(__dirname, "..");
@@ -525,6 +526,7 @@ const defaultFustSettings = {
   ukdocs_print_sheet_name: "PD keuringen",
   cmr_default_template_name: "",
   cmr_manage_usernames: [],
+  fust_customer_contacts: [],
 };
 
 const defaultUkdocsState = {
@@ -1437,6 +1439,38 @@ function emailRecipientsForCategory(recipientList, category) {
   );
 }
 
+// One row per (country, cust/transport) pair -- where the compacted share
+// overview for that transporter should be emailed once sending is wired up.
+// Kept as plain data entry for now (see FustCustomerContacts) -- no send
+// logic reads this yet.
+function normalizeFustCustomerContact(entry) {
+  const country = String(entry?.country || "").trim();
+  const customerName = String(entry?.customer_name || "").trim();
+  if (!country || !customerName) {
+    return null;
+  }
+  return {
+    country,
+    customer_name: customerName,
+    email: String(entry?.email || "").trim().toLowerCase(),
+    notes: String(entry?.notes || "").trim(),
+  };
+}
+
+function normalizeFustCustomerContactList(value) {
+  const values = Array.isArray(value) ? value : [];
+  const byKey = new Map();
+  for (const raw of values) {
+    const normalized = normalizeFustCustomerContact(raw);
+    if (normalized) {
+      byKey.set(`${normalized.country}__${normalized.customer_name}`.toLowerCase(), normalized);
+    }
+  }
+  return [...byKey.values()].sort((left, right) => (
+    left.country.localeCompare(right.country) || left.customer_name.localeCompare(right.customer_name)
+  ));
+}
+
 function normalizeFustSettings(settings) {
   const smtpPort = Number(settings?.smtp_port);
   return {
@@ -1472,6 +1506,7 @@ function normalizeFustSettings(settings) {
     ukdocs_print_sheet_name: String(settings?.ukdocs_print_sheet_name || defaultFustSettings.ukdocs_print_sheet_name).trim() || defaultFustSettings.ukdocs_print_sheet_name,
     cmr_default_template_name: String(settings?.cmr_default_template_name || "").trim(),
     cmr_manage_usernames: normalizeCmrManageUsernames(settings?.cmr_manage_usernames),
+    fust_customer_contacts: normalizeFustCustomerContactList(settings?.fust_customer_contacts),
   };
 }
 
@@ -4525,6 +4560,130 @@ function buildOverview(actions) {
       vk: entry.in.vk - entry.out.vk,
     },
   }));
+}
+
+// Excel sheet names: <=31 chars, no : \ / ? * [ ] -- and must be unique
+// within the workbook, since we add one sheet per cust/transport plus "All".
+function sanitizeExcelSheetName(name, usedNames) {
+  const base = String(name || "Sheet").replace(/[:\\/?*[\]]/g, " ").trim().slice(0, 31) || "Sheet";
+  let candidate = base;
+  let suffix = 2;
+  while (usedNames.has(candidate.toLowerCase())) {
+    const suffixText = ` (${suffix})`;
+    candidate = `${base.slice(0, 31 - suffixText.length)}${suffixText}`;
+    suffix += 1;
+  }
+  usedNames.add(candidate.toLowerCase());
+  return candidate;
+}
+
+// The transporter-facing share export only carries DC/DCS/DCO -- CCTag/VK/pal
+// are dropped per the reference file the boss already sends out by hand.
+function buildFustShareCountryTotals(overviewEntries) {
+  const byWeek = new Map();
+  for (const entry of overviewEntries) {
+    const week = String(entry.week ?? "");
+    if (!byWeek.has(week)) {
+      byWeek.set(week, {
+        week: entry.week,
+        country: entry.country,
+        out: { dc: 0, dcs: 0, dco: 0 },
+        in: { dc: 0, dcs: 0, dco: 0 },
+        balance: { dc: 0, dcs: 0, dco: 0 },
+        customer_count: 0,
+      });
+    }
+    const bucket = byWeek.get(week);
+    bucket.customer_count += 1;
+    for (const metric of ["dc", "dcs", "dco"]) {
+      bucket.out[metric] += entry.out[metric];
+      bucket.in[metric] += entry.in[metric];
+      bucket.balance[metric] += entry.balance[metric];
+    }
+  }
+  return [...byWeek.values()].map((bucket) => ({
+    ...bucket,
+    customer_name: `${bucket.customer_count} cust/transports`,
+  }));
+}
+
+// Cumulative balance is a running sum across weeks in ascending order -- the
+// boss's reference file's last week's cumulative always equals that crate
+// type's grand total, which is what confirmed this is a plain running sum
+// rather than, say, a per-week reset.
+function buildFustShareSheetRows(entries) {
+  const sortedEntries = [...entries].sort((left, right) => Number(left.week || 0) - Number(right.week || 0));
+  const cumulative = { dc: 0, dcs: 0, dco: 0 };
+  return sortedEntries.map((entry) => {
+    cumulative.dc += entry.balance.dc;
+    cumulative.dcs += entry.balance.dcs;
+    cumulative.dco += entry.balance.dco;
+    return {
+      week: entry.week,
+      country: entry.country,
+      customer_name: entry.customer_name,
+      out: entry.out,
+      in: entry.in,
+      balance: entry.balance,
+      cumulative: { dc: cumulative.dc, dcs: cumulative.dcs, dco: cumulative.dco },
+    };
+  });
+}
+
+async function buildFustShareWorkbook(overviewEntries, country) {
+  const workbook = new ExcelJS.Workbook();
+  const usedSheetNames = new Set();
+  const countryUpper = String(country || "").toUpperCase();
+
+  function addSheet(sheetLabel, entries) {
+    const sheet = workbook.addWorksheet(sanitizeExcelSheetName(sheetLabel, usedSheetNames));
+    const headerRow = sheet.addRow([
+      "Week", "Country", "Cust/transport",
+      "DC out", "DC in", "DC balance", "Week", `Cumulatieve DC ${countryUpper}`, null,
+      "DCS out", "DCS in", "DCS balance", "Week", `Cumulatieve DCS ${countryUpper}`, null,
+      "DCO out", "DCO in", "DCO balance", "Week", `Cumulatieve DCO ${countryUpper}`,
+    ]);
+    headerRow.font = { bold: true };
+
+    const rows = buildFustShareSheetRows(entries);
+    for (const row of rows) {
+      sheet.addRow([
+        row.week, row.country, row.customer_name,
+        row.out.dc, row.in.dc, row.balance.dc, row.week, row.cumulative.dc, null,
+        row.out.dcs, row.in.dcs, row.balance.dcs, row.week, row.cumulative.dcs, null,
+        row.out.dco, row.in.dco, row.balance.dco, row.week, row.cumulative.dco,
+      ]);
+    }
+
+    if (rows.length) {
+      const totals = rows.reduce((sum, row) => ({
+        out: { dc: sum.out.dc + row.out.dc, dcs: sum.out.dcs + row.out.dcs, dco: sum.out.dco + row.out.dco },
+        in: { dc: sum.in.dc + row.in.dc, dcs: sum.in.dcs + row.in.dcs, dco: sum.in.dco + row.in.dco },
+        balance: { dc: sum.balance.dc + row.balance.dc, dcs: sum.balance.dcs + row.balance.dcs, dco: sum.balance.dco + row.balance.dco },
+      }), { out: { dc: 0, dcs: 0, dco: 0 }, in: { dc: 0, dcs: 0, dco: 0 }, balance: { dc: 0, dcs: 0, dco: 0 } });
+      sheet.addRow([]);
+      sheet.addRow([]);
+      const totalsRow = sheet.addRow([
+        null, null, null,
+        totals.out.dc, totals.in.dc, totals.balance.dc, null, null, null,
+        totals.out.dcs, totals.in.dcs, totals.balance.dcs, null, null, null,
+        totals.out.dco, totals.in.dco, totals.balance.dco, null, null,
+      ]);
+      totalsRow.font = { bold: true };
+    }
+
+    sheet.columns.forEach((column) => { column.width = 14; });
+  }
+
+  addSheet("All", buildFustShareCountryTotals(overviewEntries));
+
+  const customerNames = [...new Set(overviewEntries.map((entry) => entry.customer_name).filter(Boolean))]
+    .sort((left, right) => left.localeCompare(right));
+  for (const customerName of customerNames) {
+    addSheet(customerName, overviewEntries.filter((entry) => entry.customer_name === customerName));
+  }
+
+  return workbook.xlsx.writeBuffer();
 }
 
 function normalizeNumber(value) {
@@ -14711,6 +14870,54 @@ async function handleApi(req, res, url) {
       },
     });
     return;
+  }
+
+  if (url.pathname === "/api/fust/share-export") {
+    if (!requirePermission(res, requestUser, PERMISSIONS.FUST_OVERVIEW)) {
+      return;
+    }
+    const country = String(url.searchParams.get("country") || "").trim();
+    if (!country) {
+      sendJson(res, 400, { error: "country is required" });
+      return;
+    }
+    const { actions } = await loadCurrentFustActionsSnapshot();
+    const countryActions = actions.filter((action) => action.country === country);
+    const overview = buildOverview(countryActions);
+    if (!overview.length) {
+      sendJson(res, 404, { error: `No Fust actions found for country "${country}"` });
+      return;
+    }
+    const buffer = await buildFustShareWorkbook(overview, country);
+    res.writeHead(200, {
+      "content-type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+      "content-disposition": `attachment; filename="fust-share-${country.toLowerCase()}-${localDateIso()}.xlsx"`,
+      "cache-control": "private, no-store",
+    });
+    res.end(buffer);
+    return;
+  }
+
+  if (url.pathname === "/api/fust/customer-contacts") {
+    if (!requirePermission(res, requestUser, PERMISSIONS.FUST_MANAGE)) {
+      return;
+    }
+    if (req.method === "GET") {
+      const settings = await readFustSettings();
+      sendJson(res, 200, { contacts: settings.fust_customer_contacts });
+      return;
+    }
+    if (req.method === "POST") {
+      const body = await readRequestJson(req);
+      const currentSettings = await readFustSettings();
+      const nextSettings = normalizeFustSettings({
+        ...currentSettings,
+        fust_customer_contacts: body?.contacts,
+      });
+      await writeFustSettings(nextSettings);
+      sendJson(res, 200, { contacts: nextSettings.fust_customer_contacts });
+      return;
+    }
   }
 
   if (url.pathname.startsWith("/api/fust/actions/") && req.method === "PATCH") {

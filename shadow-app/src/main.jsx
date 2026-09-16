@@ -9205,6 +9205,8 @@ function fustTileLabel(tab) {
     manage: "Fust Beheer",
     import: "Fust Import",
     analyse: "Fust Analyse",
+    share: "Share Overview",
+    contacts: "Cust/transport info",
   }[tab] || tab.toUpperCase();
 }
 
@@ -9269,8 +9271,10 @@ function FustPage({ currentUser, menuVersion }) {
     hasPermission(currentUser, PERMISSIONS.FUST_OVERVIEW) ? "last-actions" : null,
     hasPermission(currentUser, PERMISSIONS.FUST_OVERVIEW) ? "control" : null,
     hasPermission(currentUser, PERMISSIONS.FUST_OVERVIEW) ? "analyse" : null,
+    hasPermission(currentUser, PERMISSIONS.FUST_OVERVIEW) ? "share" : null,
     canManageFust ? "manage" : null,
     canManageFust ? "import" : null,
+    canManageFust ? "contacts" : null,
   ].filter(Boolean);
   const [activeTab, setActiveTab] = useState("");
   const { loading: metaLoading, data: metaData, error: metaError } = useFustMeta(Boolean(currentUser));
@@ -9389,6 +9393,20 @@ function FustPage({ currentUser, menuVersion }) {
 
       {activeTab === "import" && (
         <FustImportPanel onSaved={refresh} />
+      )}
+
+      {activeTab === "share" && (
+        <FustShareOverview
+          loading={actionsLoading}
+          actions={actionsData?.actions || []}
+        />
+      )}
+
+      {activeTab === "contacts" && (
+        <FustCustomerContacts
+          loading={actionsLoading}
+          actions={actionsData?.actions || []}
+        />
       )}
     </section>
   );
@@ -10558,6 +10576,216 @@ function FustOverview({ loading, actions, overview, sourceDebug, onRefresh }) {
             </div>
           </div>
         )}
+      </div>
+    </div>
+  );
+}
+
+// Compacted, transporter-facing export: DC/DCS/DCO only (drops CCTag/VK/pal),
+// plus a running cumulative balance per crate type, one workbook per country
+// with an "All" tab and one tab per cust/transport. Download-only for now --
+// the actual email send comes later, once the output is signed off, see
+// FustCustomerContacts for the (currently unused) recipient setup.
+function FustShareOverview({ loading, actions }) {
+  const countryOptions = [...new Set(actions.map((action) => action.country).filter(Boolean))]
+    .sort((left, right) => left.localeCompare(right));
+  const [selectedCountry, setSelectedCountry] = useState("");
+
+  useEffect(() => {
+    if (!selectedCountry && countryOptions.length) {
+      setSelectedCountry(countryOptions[0]);
+    }
+  }, [countryOptions, selectedCountry]);
+
+  const customerNames = [...new Set(
+    actions.filter((action) => action.country === selectedCountry).map((action) => action.customer_name),
+  )].filter(Boolean).sort((left, right) => left.localeCompare(right));
+
+  if (loading) {
+    return <div className="notice">Loading Fust overview...</div>;
+  }
+
+  return (
+    <div className="overview-stack">
+      <div className="data-table-card">
+        <p>
+          Generates one .xlsx file per country: an "All" tab with the country total (same layout your
+          boss already shares), plus one tab per cust/transport with the same weeks, DC/DCS/DCO only,
+          and a running cumulative balance column per crate type.
+        </p>
+        <div className="overview-filters">
+          <label>
+            <span>Country</span>
+            <select value={selectedCountry} onChange={(event) => setSelectedCountry(event.target.value)}>
+              <option value="">Choose a country...</option>
+              {countryOptions.map((country) => <option key={country} value={country}>{country}</option>)}
+            </select>
+          </label>
+        </div>
+        {selectedCountry && (
+          <div className="section-header">
+            <h2>{customerNames.length} cust/transport tab{customerNames.length === 1 ? "" : "s"} + All</h2>
+            <button
+              type="button"
+              className="primary"
+              onClick={() => {
+                window.location.href = `/api/fust/share-export?country=${encodeURIComponent(selectedCountry)}`;
+              }}
+            >
+              Download share file (.xlsx)
+            </button>
+          </div>
+        )}
+        {selectedCountry && !!customerNames.length && (
+          <div className="table-wrap">
+            <table className="data-table">
+              <thead><tr><th>Tab</th></tr></thead>
+              <tbody>
+                <tr><td><strong>All</strong> (country total)</td></tr>
+                {customerNames.map((name) => <tr key={name}><td>{name}</td></tr>)}
+              </tbody>
+            </table>
+          </div>
+        )}
+        {selectedCountry && !customerNames.length && (
+          <p className="empty">No Fust actions found for {selectedCountry}.</p>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// Where each cust/transport's share export should be emailed once sending is
+// automated. Data entry only for now -- nothing reads notify_email yet.
+function FustCustomerContacts({ loading, actions }) {
+  const [contacts, setContacts] = useState([]);
+  const [contactsLoading, setContactsLoading] = useState(true);
+  const [contactsError, setContactsError] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [savedAt, setSavedAt] = useState("");
+
+  useEffect(() => {
+    let cancelled = false;
+    setContactsLoading(true);
+    apiJson("/api/fust/customer-contacts")
+      .then((payload) => {
+        if (!cancelled) {
+          setContacts(payload?.contacts || []);
+        }
+      })
+      .catch((error) => {
+        if (!cancelled) {
+          setContactsError(error instanceof Error ? error.message : String(error));
+        }
+      })
+      .finally(() => {
+        if (!cancelled) {
+          setContactsLoading(false);
+        }
+      });
+    return () => { cancelled = true; };
+  }, []);
+
+  const knownPairs = useMemo(() => {
+    const byKey = new Map();
+    for (const action of actions) {
+      const country = String(action.country || "").trim();
+      const customerName = String(action.customer_name || "").trim();
+      if (!country || !customerName) {
+        continue;
+      }
+      byKey.set(`${country}__${customerName}`.toLowerCase(), { country, customer_name: customerName });
+    }
+    for (const contact of contacts) {
+      byKey.set(`${contact.country}__${contact.customer_name}`.toLowerCase(), {
+        country: contact.country,
+        customer_name: contact.customer_name,
+      });
+    }
+    return [...byKey.values()].sort((left, right) => (
+      left.country.localeCompare(right.country) || left.customer_name.localeCompare(right.customer_name)
+    ));
+  }, [actions, contacts]);
+
+  function emailFor(country, customerName) {
+    const match = contacts.find((contact) => contact.country === country && contact.customer_name === customerName);
+    return match?.email || "";
+  }
+
+  function setEmailFor(country, customerName, email) {
+    setContacts((current) => {
+      const others = current.filter((contact) => !(contact.country === country && contact.customer_name === customerName));
+      return email.trim() ? [...others, { country, customer_name: customerName, email: email.trim() }] : others;
+    });
+  }
+
+  async function saveContacts() {
+    setSaving(true);
+    setContactsError("");
+    try {
+      const payload = await apiJson("/api/fust/customer-contacts", {
+        method: "POST",
+        body: JSON.stringify({ contacts }),
+      });
+      setContacts(payload?.contacts || []);
+      setSavedAt(new Date().toLocaleTimeString());
+    } catch (error) {
+      setContactsError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  if (loading || contactsLoading) {
+    return <div className="notice">Loading cust/transport info...</div>;
+  }
+
+  return (
+    <div className="overview-stack">
+      <div className="data-table-card">
+        <p>
+          Set the email address each cust/transport's share overview should go to. This only stores the
+          address for now -- sending isn't automated yet, so use "Share Overview" to download and send
+          manually until that's switched on.
+        </p>
+        {contactsError && <div className="notice danger">{contactsError}</div>}
+        <div className="section-header">
+          <h2>Cust/transport info</h2>
+          <button type="button" className="primary" onClick={saveContacts} disabled={saving}>
+            {saving ? "Saving..." : "Save"}
+          </button>
+        </div>
+        {savedAt && <p>Saved at {savedAt}.</p>}
+        <div className="table-wrap">
+          <table className="data-table">
+            <thead>
+              <tr>
+                <th>Country</th>
+                <th>Cust/transport</th>
+                <th>Email</th>
+              </tr>
+            </thead>
+            <tbody>
+              {knownPairs.map((pair) => (
+                <tr key={`${pair.country}__${pair.customer_name}`}>
+                  <td>{pair.country}</td>
+                  <td>{pair.customer_name}</td>
+                  <td>
+                    <input
+                      type="email"
+                      value={emailFor(pair.country, pair.customer_name)}
+                      placeholder="name@transporter.com"
+                      onChange={(event) => setEmailFor(pair.country, pair.customer_name, event.target.value)}
+                    />
+                  </td>
+                </tr>
+              ))}
+              {!knownPairs.length && (
+                <tr><td colSpan="3">No cust/transport pairs found yet.</td></tr>
+              )}
+            </tbody>
+          </table>
+        </div>
       </div>
     </div>
   );
