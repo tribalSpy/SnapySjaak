@@ -3271,6 +3271,53 @@ async function downloadUkdocsFilesWithPrompt(files, folderName = "") {
   }
 }
 
+// Writes a "Save audit" manifest (one folder per sending, each with its own
+// list of already-uploaded document URLs) to a picked folder as loose files
+// -- deliberately not zipped, so the result stays searchable/openable
+// directly from disk. Falls back to flat per-file downloads (folder name
+// baked into the filename) when the File System Access API isn't available.
+async function downloadFinanceAuditManifestFiles(folders) {
+  if (!Array.isArray(folders) || !folders.length) {
+    return;
+  }
+  if (typeof window.showDirectoryPicker !== "function") {
+    for (const folderEntry of folders) {
+      for (const file of folderEntry.files) {
+        const response = await fetch(file.url, { credentials: "include" });
+        if (!response.ok) {
+          continue;
+        }
+        const blob = await response.blob();
+        const objectUrl = window.URL.createObjectURL(blob);
+        const link = document.createElement("a");
+        link.href = objectUrl;
+        link.download = safeDownloadFilename(`${folderEntry.folder} - ${file.name}`);
+        document.body.appendChild(link);
+        link.click();
+        link.remove();
+        window.URL.revokeObjectURL(objectUrl);
+      }
+    }
+    return;
+  }
+
+  const rootDirectoryHandle = await window.showDirectoryPicker();
+  for (const folderEntry of folders) {
+    const targetDirectoryHandle = await rootDirectoryHandle.getDirectoryHandle(safeDownloadFilename(folderEntry.folder), { create: true });
+    for (const file of folderEntry.files) {
+      const response = await fetch(file.url, { credentials: "include" });
+      if (!response.ok) {
+        continue;
+      }
+      const blob = await response.blob();
+      const fileHandle = await targetDirectoryHandle.getFileHandle(safeDownloadFilename(file.name), { create: true });
+      const writable = await fileHandle.createWritable();
+      await writable.write(blob);
+      await writable.close();
+    }
+  }
+}
+
 async function downloadUkdocsFileWithPrompt(file) {
   if (!file) {
     return;
@@ -3824,14 +3871,33 @@ function UkdocsPage({ currentUser, onNavigate }) {
   }
 
   // "Save audit": the export table above (with the factuur check columns)
-  // plus a .zip backup of every document collected for each audited sending
-  // in the same date range -- one folder per sending, named truck + customer.
-  function saveAudit() {
+  // plus a loose-file backup (not zipped, so it stays searchable) of every
+  // document collected for each audited sending in the same date range --
+  // one folder per sending, named truck + customer.
+  async function saveAudit() {
     exportFinanceAuditActiveTable();
-    const params = new URLSearchParams();
-    if (financeAuditFromDate) params.set("from", financeAuditFromDate);
-    if (financeAuditToDate) params.set("to", financeAuditToDate);
-    window.location.href = `/api/finance-audit/save-audit-zip?${params.toString()}`;
+    setSaving(true);
+    setError("");
+    setMessage("");
+    try {
+      const params = new URLSearchParams();
+      if (financeAuditFromDate) params.set("from", financeAuditFromDate);
+      if (financeAuditToDate) params.set("to", financeAuditToDate);
+      const payload = await apiJson(`/api/finance-audit/save-audit-manifest?${params.toString()}`);
+      const folders = payload.folders || [];
+      if (!folders.length) {
+        setError("No audited sendings with documents found for that date range.");
+        return;
+      }
+      await downloadFinanceAuditManifestFiles(folders);
+      setMessage(`Saved documents for ${folders.length} sending(s).`);
+    } catch (saveError) {
+      if (saveError?.name !== "AbortError") {
+        setError(saveError instanceof Error ? saveError.message : String(saveError));
+      }
+    } finally {
+      setSaving(false);
+    }
   }
 
   function currentShipmentPayload() {
@@ -4493,10 +4559,10 @@ function UkdocsPage({ currentUser, onNavigate }) {
               type="button"
               className="primary"
               onClick={saveAudit}
-              disabled={!financeAuditVisibleRows.length}
-              title="Downloads the export table above (with factuur check columns) and a .zip backup of every collected document for each audited sending in this date range, one folder per sending"
+              disabled={saving || !financeAuditVisibleRows.length}
+              title="Downloads the export table above (with factuur check columns), then prompts for a folder and saves every collected document for each audited sending in this date range as loose files, one folder per sending"
             >
-              Save audit
+              {saving ? "Saving..." : "Save audit"}
             </button>
             <button
               type="button"
