@@ -4744,12 +4744,13 @@ async function buildFustShareWorkbook(overviewEntries, country) {
 
   async function addSheet(sheetLabel, entries) {
     const sheet = workbook.addWorksheet(sanitizeExcelSheetName(sheetLabel, usedSheetNames));
-    const headerRow = sheet.addRow([
+    const headerValues = [
       "Week", "Country", "Cust/transport",
       "DC out", "DC in", "DC balance", "Week", `Cumulatieve DC ${countryUpper}`, null,
       "DCS out", "DCS in", "DCS balance", "Week", `Cumulatieve DCS ${countryUpper}`, null,
       "DCO out", "DCO in", "DCO balance", "Week", `Cumulatieve DCO ${countryUpper}`,
-    ]);
+    ];
+    const headerRow = sheet.addRow(headerValues);
     headerRow.font = { bold: true };
 
     const rows = buildFustShareSheetRows(entries);
@@ -4779,7 +4780,14 @@ async function buildFustShareWorkbook(overviewEntries, country) {
       totalsRow.font = { bold: true };
     }
 
-    sheet.columns.forEach((column) => { column.width = 14; });
+    // The "Cumulatieve DC/DCS/DCO {COUNTRY}" headers are much longer than
+    // every other column's header, so a flat width let them visually bleed
+    // into the next (usually blank spacer) column -- size each column to its
+    // own header text instead, with the same 14 floor the sheet used before.
+    sheet.columns.forEach((column, index) => {
+      const headerText = String(headerValues[index] ?? "");
+      column.width = Math.max(14, headerText.length + 2);
+    });
 
     if (rows.length) {
       const dcChartPng = await renderLineChartPng({
