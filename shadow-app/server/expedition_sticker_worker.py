@@ -122,9 +122,17 @@ def to_positive_int(value: object, fallback: int = 1) -> int:
     return parsed if parsed > 0 else fallback
 
 
-def natural_sort_key(value: object) -> list[object]:
+def natural_sort_key(value: object) -> list[tuple[int, object]]:
+    # Each token is tagged (0, int) or (1, str) so two keys always compare
+    # same-typed values at every position -- plain int/str tokens broke with
+    # "'<' not supported between instances of 'str' and 'int'" whenever one
+    # location/split value started with a digit and another started with a
+    # letter (e.g. "1BHM" vs "A12"), since raw ints and strs aren't comparable.
     text = clean_text(value)
-    return [int(part) if part.isdigit() else part.lower() for part in re.findall(r"[A-Za-z]+|\d+", text)]
+    return [
+        (0, int(part)) if part.isdigit() else (1, part.lower())
+        for part in re.findall(r"[A-Za-z]+|\d+", text)
+    ]
 
 
 def parse_halindeling(input_path: Path) -> dict[str, str]:
