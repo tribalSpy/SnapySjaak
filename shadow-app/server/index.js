@@ -4712,8 +4712,8 @@ async function renderLineChartPng({ title, points, width = 480, height = 300 }) 
     ...xTicks.map((tick) => `<line x1="${xScale(tick).toFixed(1)}" y1="${marginTop}" x2="${xScale(tick).toFixed(1)}" y2="${marginTop + plotHeight}" stroke="#e2e2e2" stroke-width="1" />`),
     ...yTicks.map((tick) => `<line x1="${marginLeft}" y1="${yScale(tick).toFixed(1)}" x2="${marginLeft + plotWidth}" y2="${yScale(tick).toFixed(1)}" stroke="#e2e2e2" stroke-width="1" />`),
   ].join("");
-  const xLabels = xTicks.map((tick) => `<text x="${xScale(tick).toFixed(1)}" y="${marginTop + plotHeight + 16}" font-family="Arial, sans-serif" font-size="10" fill="#666" text-anchor="middle">${tick}</text>`).join("");
-  const yLabels = yTicks.map((tick) => `<text x="${marginLeft - 8}" y="${(yScale(tick) + 3).toFixed(1)}" font-family="Arial, sans-serif" font-size="10" fill="#666" text-anchor="end">${Math.round(tick)}</text>`).join("");
+  const xLabels = xTicks.map((tick) => `<text x="${xScale(tick).toFixed(1)}" y="${marginTop + plotHeight + 16}" font-family="DejaVu Sans, sans-serif" font-size="10" fill="#666" text-anchor="middle">${tick}</text>`).join("");
+  const yLabels = yTicks.map((tick) => `<text x="${marginLeft - 8}" y="${(yScale(tick) + 3).toFixed(1)}" font-family="DejaVu Sans, sans-serif" font-size="10" fill="#666" text-anchor="end">${Math.round(tick)}</text>`).join("");
 
   const pathData = points
     .map((point, index) => `${index === 0 ? "M" : "L"}${xScale(point.x).toFixed(1)},${yScale(point.y).toFixed(1)}`)
@@ -4724,7 +4724,7 @@ async function renderLineChartPng({ title, points, width = 480, height = 300 }) 
 
   const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}">
     <rect width="${width}" height="${height}" fill="#ffffff" />
-    <text x="${width / 2}" y="20" font-family="Arial, sans-serif" font-size="14" fill="#404040" text-anchor="middle">${escapeSvgText(title)}</text>
+    <text x="${width / 2}" y="20" font-family="DejaVu Sans, sans-serif" font-size="14" fill="#404040" text-anchor="middle">${escapeSvgText(title)}</text>
     ${gridLines}
     <line x1="${marginLeft}" y1="${marginTop}" x2="${marginLeft}" y2="${marginTop + plotHeight}" stroke="#bfbfbf" />
     <line x1="${marginLeft}" y1="${marginTop + plotHeight}" x2="${marginLeft + plotWidth}" y2="${marginTop + plotHeight}" stroke="#bfbfbf" />
