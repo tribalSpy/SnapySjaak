@@ -7708,9 +7708,13 @@ function EricDocsPage({ currentUser }) {
     try {
       const payload = await apiJson(`/api/eric-docs/collections/${encodeURIComponent(collectionId)}/send`, { method: "POST" });
       setState((current) => ({ ...current, print_collections: payload.print_collections || current?.print_collections || [] }));
-      setMessage(payload.eric_docs_email?.ok
-        ? `Papers sent to ${payload.eric_docs_email.recipients.join(", ")}.`
-        : (payload.eric_docs_email?.error || "Could not send Eric Docs papers."));
+      if (payload.eric_docs_send_queued) {
+        setMessage(`Queued -- add the missing docs in UKdocs Zendings: ${(payload.missing || []).join(", ")}. Papers will send automatically once ready.`);
+      } else {
+        setMessage(payload.eric_docs_email?.ok
+          ? `Papers sent to ${payload.eric_docs_email.recipients.join(", ")}.`
+          : (payload.eric_docs_email?.error || "Could not send Eric Docs papers."));
+      }
     } catch (sendError) {
       setError(sendError.message);
     } finally {
@@ -7760,7 +7764,7 @@ function EricDocsPage({ currentUser }) {
                       disabled={saving || !tileCheck?.ok || tileCheck?.match !== true}
                       title={tileCheck?.ok && tileCheck?.match ? "Sends the same UKdocs Zendings papers to the Eric Docs mailbox" : "Run the pieces check successfully first"}
                     >
-                      Send papers
+                      {collection.eric_docs_send_queue?.queued ? "Queued" : "Send papers"}
                     </button>
                   </div>
                 </div>
@@ -7829,10 +7833,15 @@ function EricDocsPage({ currentUser }) {
                   disabled={saving || !selectedCheck?.ok || selectedCheck?.match !== true}
                   title={selectedCheck?.ok && selectedCheck?.match ? "Sends the same UKdocs Zendings papers to the Eric Docs mailbox" : "Run the pieces check successfully first"}
                 >
-                  {selectedCollection.eric_docs_email?.ok ? "Resend papers" : "Send papers"}
+                  {selectedCollection.eric_docs_send_queue?.queued
+                    ? "Queued"
+                    : (selectedCollection.eric_docs_email?.ok ? "Resend papers" : "Send papers")}
                 </button>
               </div>
               <div className={`ukdocs-status-badge ${ericDocsCheckStatus(selectedCheck).tone}`}>{ericDocsCheckStatus(selectedCheck).label}</div>
+              {selectedCollection.eric_docs_send_queue?.queued && (
+                <small>Queued -- will send automatically once all UKdocs Zendings papers are uploaded.</small>
+              )}
               {selectedCheck?.checked_at && (
                 <small>
                   Phyto total: {selectedCheck.phyto_total ?? "-"} -- Inspection total: {selectedCheck.inspection_total ?? "-"} -- Checked {formatTimestamp(selectedCheck.checked_at)}

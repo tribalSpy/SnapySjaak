@@ -2269,6 +2269,15 @@ function normalizeUkdocsPrintCollection(collection) {
       sent_at: normalizeUkdocsText(collection?.eric_docs_email?.sent_at),
       error: String(collection?.eric_docs_email?.error || "").trim(),
     },
+    // Set when "Send papers" is pressed on Eric Docs while the UKdocs
+    // Zendings papers it needs to attach aren't all uploaded yet --
+    // runEricDocsSendQueue fires the actual send once they are, same
+    // deferred pattern as csi_send_queue.
+    eric_docs_send_queue: {
+      queued: collection?.eric_docs_send_queue?.queued === true,
+      queued_at: normalizeUkdocsText(collection?.eric_docs_send_queue?.queued_at),
+      queued_by: normalizeUkdocsText(collection?.eric_docs_send_queue?.queued_by),
+    },
     documents: {
       phyto_files: normalizeUkdocsPrintDocumentList(collection?.documents?.phyto_files || (collection?.documents?.phyto ? [collection.documents.phyto] : [])),
       export_extra: normalizeUkdocsPrintDocument(collection?.documents?.export_extra),
@@ -11462,6 +11471,71 @@ async function sendEricDocsSuccessEmail(collection, customers, settings) {
   };
 }
 
+// Fires the Eric Docs "Send papers" email for any collection queued because
+// the UKdocs Zendings papers it needs to attach weren't all uploaded yet --
+// same deferred pattern as runUkdocsCsiSendQueue, just gated on
+// getUkdocsPrintCollectionRequirements() being complete instead of invoices
+// being ready. Runs on the same cadence as the other runIfOnline jobs.
+async function runEricDocsSendQueue() {
+  const state = await readUkdocsState();
+  const queued = state.print_collections.filter((item) => item.eric_docs_send_queue?.queued === true);
+  if (!queued.length) {
+    return { ok: true, checked: 0, sent: 0, errors: [] };
+  }
+
+  const settings = await readFustSettings();
+  let sent = 0;
+  const errors = [];
+  for (const collection of queued) {
+    // Already sent through some other path -- just clear the stale queue flag.
+    if (collection.eric_docs_email?.ok) {
+      state.print_collections = upsertUkdocsPrintCollection(
+        state.print_collections,
+        normalizeUkdocsPrintCollection({ ...collection, eric_docs_send_queue: { queued: false, queued_at: "", queued_by: "" } }),
+      );
+      continue;
+    }
+    if (!collection.eric_docs_check?.ok || collection.eric_docs_check?.match !== true) {
+      continue;
+    }
+    if (!getUkdocsPrintCollectionRequirements(collection, state.customers).complete) {
+      continue;
+    }
+    try {
+      const ericDocsEmail = await sendEricDocsSuccessEmail(collection, state.customers, settings);
+      state.print_collections = upsertUkdocsPrintCollection(
+        state.print_collections,
+        normalizeUkdocsPrintCollection({
+          ...collection,
+          updated_at: new Date().toISOString(),
+          eric_docs_email: ericDocsEmail,
+          eric_docs_send_queue: { queued: false, queued_at: "", queued_by: "" },
+        }),
+      );
+      if (ericDocsEmail.ok) {
+        sent += 1;
+      } else {
+        errors.push(`${collection.shipment_reference || collection.id}: ${ericDocsEmail.error}`);
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      state.print_collections = upsertUkdocsPrintCollection(
+        state.print_collections,
+        normalizeUkdocsPrintCollection({
+          ...collection,
+          updated_at: new Date().toISOString(),
+          eric_docs_email: { ok: false, recipients: collection.eric_docs_email?.recipients || [], sent_at: "", error: message },
+          eric_docs_send_queue: { queued: false, queued_at: "", queued_by: "" },
+        }),
+      );
+      errors.push(`${collection.shipment_reference || collection.id}: ${message}`);
+    }
+  }
+
+  await writeUkdocsState(state);
+  return { ok: errors.length === 0, checked: queued.length, sent, errors };
+}
+
 function googleRunDetailsCachePath(folderId, accountName = "default") {
   return path.join(
     googleRunDetailsCacheDir,
@@ -14153,7 +14227,11 @@ async function handleApi(req, res, url) {
 
   // "Send papers" for Eric Docs -- a separate mailbox from CSI's, configured
   // per customer via eric_docs_email_recipients. Only allowed once the
-  // pieces check has actually passed.
+  // pieces check has actually passed. The attachments are the real UKdocs
+  // Zendings papers (see sendEricDocsSuccessEmail), so this also requires
+  // those to actually be uploaded -- if they aren't yet, this queues the
+  // send instead of firing off an email missing e.g. the Phytosanitary
+  // document; runEricDocsSendQueue fires it automatically once they land.
   if (url.pathname.startsWith("/api/eric-docs/collections/") && url.pathname.endsWith("/send") && req.method === "POST") {
     if (!requirePermission(res, requestUser, PERMISSIONS.ERIC_DOCS_VIEW)) {
       return;
@@ -14169,12 +14247,30 @@ async function handleApi(req, res, url) {
       sendJson(res, 400, { error: "Run the pieces check successfully before sending papers" });
       return;
     }
+    const requirements = getUkdocsPrintCollectionRequirements(existingCollection, state.customers);
+    if (!requirements.complete) {
+      const queuedCollection = normalizeUkdocsPrintCollection({
+        ...existingCollection,
+        updated_at: new Date().toISOString(),
+        eric_docs_send_queue: { queued: true, queued_at: new Date().toISOString(), queued_by: requestUser.username },
+      });
+      state.print_collections = upsertUkdocsPrintCollection(state.print_collections, queuedCollection);
+      await writeUkdocsState(state);
+      sendJson(res, 200, {
+        collection: queuedCollection,
+        print_collections: normalizeUkdocsState(state).print_collections,
+        eric_docs_send_queued: true,
+        missing: requirements.missing,
+      });
+      return;
+    }
     const settings = await readFustSettings();
     const ericDocsEmail = await sendEricDocsSuccessEmail(existingCollection, state.customers, settings);
     const updatedCollection = normalizeUkdocsPrintCollection({
       ...existingCollection,
       updated_at: new Date().toISOString(),
       eric_docs_email: ericDocsEmail,
+      eric_docs_send_queue: { queued: false, queued_at: "", queued_by: "" },
     });
     state.print_collections = upsertUkdocsPrintCollection(state.print_collections, updatedCollection);
     await writeUkdocsState(state);
@@ -16397,6 +16493,7 @@ async function startServer() {
   const serializedAutoSend = serializeUkdocsPrintCollectionsJob(runUkdocsPrintAutoSend);
   const serializedPdKeuringReconcile = serializeUkdocsPrintCollectionsJob(runPdKeuringSheetReconcile);
   const serializedCsiSendQueue = serializeUkdocsPrintCollectionsJob(runUkdocsCsiSendQueue);
+  const serializedEricDocsSendQueue = serializeUkdocsPrintCollectionsJob(runEricDocsSendQueue);
 
   runIfOnline("UKdocs Zendingen Gmail auto-sync", serializedGmailAutoSync).catch(() => {});
   setInterval(() => {
@@ -16416,6 +16513,11 @@ async function startServer() {
   runIfOnline("UKdocs CSI send queue", serializedCsiSendQueue).catch(() => {});
   setInterval(() => {
     runIfOnline("UKdocs CSI send queue", serializedCsiSendQueue).catch(() => {});
+  }, 15 * 60 * 1000);
+
+  runIfOnline("Eric Docs send queue", serializedEricDocsSendQueue).catch(() => {});
+  setInterval(() => {
+    runIfOnline("Eric Docs send queue", serializedEricDocsSendQueue).catch(() => {});
   }, 15 * 60 * 1000);
 
   async function runIfBackup(jobName, jobFn) {
