@@ -8293,7 +8293,13 @@ function buildUkdocsCsiDeterministicReport(collection, extractedDocuments) {
         commodity_code: String(row?.commodity_code || "").trim(),
         mapped_product: rawProduct || comparisonGroup,
         comparison_group: comparisonGroup,
-        product_domain: getUkdocsCsiProductDomain(comparisonGroup),
+        // getUkdocsCsiProductDomain only recognizes a fixed list of canonical
+        // group names -- an unrecognized product falls back to its own raw
+        // text (see mapUkdocsCsiProductName), which is never in that list,
+        // so without this fallback the row's domain comes back "" and it
+        // gets silently dropped from BOTH the plants and flowers tables
+        // (buildUkdocsCsiDomainProducts filters strictly on product_domain).
+        product_domain: getUkdocsCsiProductDomain(comparisonGroup) || strictDomain || "",
         quantity: Number.isFinite(Number(row?.quantity)) ? Number(row.quantity) : null,
       });
     }
@@ -8319,7 +8325,7 @@ function buildUkdocsCsiDeterministicReport(collection, extractedDocuments) {
       commodity_code: String(row?.commodity_code || "").trim(),
       mapped_product: rawProduct || comparisonGroup,
       comparison_group: comparisonGroup,
-      product_domain: getUkdocsCsiProductDomain(comparisonGroup),
+      product_domain: getUkdocsCsiProductDomain(comparisonGroup) || exportStrictDomain || "",
       quantity: Number.isFinite(Number(row?.quantity)) ? Number(row.quantity) : null,
     });
   }
@@ -8347,7 +8353,7 @@ function buildUkdocsCsiDeterministicReport(collection, extractedDocuments) {
       commodity_code: String(row?.commodity_code || "").trim(),
       mapped_product: mappedProduct,
       comparison_group: mappedProduct,
-      product_domain: getUkdocsCsiProductDomain(mappedProduct),
+      product_domain: getUkdocsCsiProductDomain(mappedProduct) || (sourceDoc?.kind === "ipaffs_plants_file" ? "plants" : "flowers"),
       quantity: Number.isFinite(Number(row?.quantity)) ? Number(row.quantity) : null,
     });
   }
@@ -8433,7 +8439,7 @@ function buildUkdocsCsiDeterministicReport(collection, extractedDocuments) {
         commodity_code: "",
         mapped_product: line.mappedProduct,
         comparison_group: line.mappedProduct,
-        product_domain: getUkdocsCsiProductDomain(line.mappedProduct),
+        product_domain: getUkdocsCsiProductDomain(line.mappedProduct) || (line.source === "temp_phyto_plants" ? "plants" : "flowers"),
         quantity: line.quantity,
       });
     }
@@ -8588,7 +8594,15 @@ function buildUkdocsCsiDeterministicReport(collection, extractedDocuments) {
 
     products.push({
       product,
-      product_domain: getUkdocsCsiProductDomain(product),
+      // Each matchingRows entry already carries its own resolved
+      // product_domain (with the same known-context fallback applied when
+      // it was pushed), so reuse that instead of re-deriving from the group
+      // name alone -- an unrecognized raw-text group name would otherwise
+      // come back "" here and silently drop the whole product from both the
+      // plants and flowers tables.
+      product_domain: getUkdocsCsiProductDomain(product)
+        || matchingRows.find((row) => row?.product_domain)?.product_domain
+        || "",
       commodity_codes: commodityCodes.join(", "),
       invoice_quantity: invoiceQty === null ? "" : String(invoiceQty),
       export_quantity: exportQty === null ? "" : String(exportQty),
@@ -9244,7 +9258,7 @@ function buildUkdocsCsiReportFromJobResults(jobResults) {
       raw_product: visualProductText,
       commodity_code: "",
       mapped_product: mappedProduct,
-      product_domain: getUkdocsCsiProductDomain(mappedProduct),
+      product_domain: getUkdocsCsiProductDomain(mappedProduct) || (context?.prefer_plants === true ? "plants" : "flowers"),
       quantity: Number.isFinite(Number(item?.quantity)) ? Number(item.quantity) : null,
     }];
   });
