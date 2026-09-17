@@ -5010,6 +5010,7 @@ function csiPlantReviewItem(row, index) {
     index,
     source: String(row?.source || "").trim(),
     document: String(row?.document_name || row?.document_label || "").trim(),
+    documentLabel: String(row?.document_label || "").trim(),
     name: String(row?.raw_product || row?.mapped_product || "").trim(),
     commodityCode: String(row?.commodity_code || "").trim(),
     group: csiPlantReviewSourceGroup(row),
@@ -5206,6 +5207,146 @@ function isCsiPlantReviewRowResolved(row, acceptedKeys) {
 function parseCsiDisplayQuantity(value) {
   const numeric = Number(value);
   return Number.isFinite(numeric) ? numeric : null;
+}
+
+// Number("") is 0, not NaN, so parseCsiDisplayQuantity("") returns 0 rather
+// than null -- harmless where it's already summed (adding 0 changes
+// nothing), but wrong here, where "no value" must stay distinguishable from
+// "value is zero" for the missing-invoice/export branches below.
+function parseCsiQuantityOrNull(value) {
+  const text = String(value ?? "").trim();
+  return text ? parseCsiDisplayQuantity(text) : null;
+}
+
+// Recomputes a plant product row's status/message the same way the server's
+// buildUkdocsCsiDomainProducts does, for use after a manual correction moves
+// quantity between two rows -- kept intentionally close to (but simpler
+// than) the server version since this only ever needs to reflect the two
+// rows touched by one accepted review, not rebuild the whole report.
+function recomputeCsiPlantRowStatusAndMessage(row) {
+  const invoiceQty = parseCsiQuantityOrNull(row?.invoice_quantity);
+  const exportQty = parseCsiQuantityOrNull(row?.export_quantity);
+  const ipaffsQty = parseCsiQuantityOrNull(row?.ipaffs_quantity) || 0;
+  const tempPhytoQty = parseCsiQuantityOrNull(row?.temp_phyto_quantity) || 0;
+  const expectedQty = exportQty ?? invoiceQty;
+  const messages = [];
+  let status = "pass";
+
+  if (invoiceQty !== null || exportQty !== null) {
+    if (invoiceQty === null || exportQty === null) {
+      status = "warn";
+      messages.push("Missing in invoice or export file.");
+    } else if (invoiceQty !== exportQty) {
+      status = "warn";
+      messages.push(`Invoice/export differ by ${Math.abs(invoiceQty - exportQty)}.`);
+    } else {
+      messages.push("Invoice/export match.");
+    }
+  }
+
+  if (ipaffsQty > 0) {
+    if (expectedQty === null) {
+      status = "warn";
+      messages.push("IPAFFS has quantity but invoice/export is missing.");
+    } else if (ipaffsQty > expectedQty) {
+      status = "warn";
+      messages.push(`IPAFFS quantity ${ipaffsQty} is higher than invoice/export ${expectedQty}.`);
+    } else if (ipaffsQty === expectedQty) {
+      messages.push("IPAFFS matches invoice/export.");
+    } else {
+      messages.push(`IPAFFS subset ${ipaffsQty} is within invoice/export ${expectedQty}.`);
+    }
+  }
+
+  if (tempPhytoQty > 0) {
+    if (expectedQty === null) {
+      status = "warn";
+      messages.push(`Temp phyto quantity ${tempPhytoQty} has no matching invoice/export line.`);
+    } else if (tempPhytoQty > expectedQty) {
+      status = "warn";
+      messages.push(`Temp phyto quantity ${tempPhytoQty} is higher than invoice/export ${expectedQty}.`);
+    } else if (tempPhytoQty === expectedQty) {
+      messages.push(`Temp phyto quantity ${tempPhytoQty} matches invoice/export.`);
+    } else {
+      messages.push(`Temp phyto subset ${tempPhytoQty} is within invoice/export ${expectedQty}.`);
+    }
+  }
+
+  if (ipaffsQty > 0 && tempPhytoQty > 0) {
+    if (ipaffsQty !== tempPhytoQty) {
+      status = "warn";
+      messages.push(ipaffsQty < tempPhytoQty
+        ? `IPAFFS quantity ${ipaffsQty} is lower than temp phyto ${tempPhytoQty}.`
+        : `IPAFFS quantity ${ipaffsQty} is higher than temp phyto ${tempPhytoQty}.`);
+    } else {
+      messages.push(`IPAFFS and temp phyto match at ${ipaffsQty}.`);
+    }
+  }
+
+  return { status, message: messages.join(" ") };
+}
+
+// Applies manually-accepted "Qty match review" corrections (see
+// isCsiPlantReviewRowResolved / the Accept checkbox) to the plants quantity
+// comparison table: moves the temp-phyto quantity out of the row it was
+// independently (and, per the accepted review, wrongly) grouped under and
+// into the row the human confirmed it actually belongs with. Mirrors what
+// the server already does automatically for confident (same quantity +
+// compatible name) matches -- this covers the ambiguous ones a human just
+// signed off on instead.
+function applyManualCsiPlantGroupCorrections(products, corrections) {
+  if (!corrections.length) {
+    return products;
+  }
+  const patchedByProduct = new Map();
+  function getPatchedRow(productName) {
+    if (patchedByProduct.has(productName)) {
+      return patchedByProduct.get(productName);
+    }
+    const existing = products.find((row) => String(row?.product || "").trim() === productName);
+    if (!existing) {
+      return null;
+    }
+    const clone = {
+      ...existing,
+      temp_phyto_quantities: Array.isArray(existing.temp_phyto_quantities)
+        ? existing.temp_phyto_quantities.map((entry) => ({ ...entry }))
+        : [],
+    };
+    patchedByProduct.set(productName, clone);
+    return clone;
+  }
+
+  function adjustRow(row, documentLabel, delta) {
+    if (documentLabel) {
+      const entries = row.temp_phyto_quantities;
+      const index = entries.findIndex((entry) => String(entry?.document_label || "").trim() === documentLabel);
+      if (index >= 0) {
+        const nextQty = (Number(entries[index].quantity) || 0) + delta;
+        entries[index] = { ...entries[index], quantity: nextQty > 0 ? String(nextQty) : "" };
+      } else if (delta > 0) {
+        entries.push({ document_label: documentLabel, quantity: String(delta) });
+      }
+    }
+    const nextTotal = (parseCsiDisplayQuantity(row.temp_phyto_quantity) || 0) + delta;
+    row.temp_phyto_quantity = nextTotal > 0 ? String(nextTotal) : "";
+  }
+
+  for (const correction of corrections) {
+    const fromRow = getPatchedRow(correction.fromGroup);
+    const toRow = getPatchedRow(correction.toGroup);
+    if (!fromRow || !toRow || !correction.quantity) {
+      continue;
+    }
+    adjustRow(fromRow, correction.documentLabel, -correction.quantity);
+    adjustRow(toRow, correction.documentLabel, correction.quantity);
+  }
+
+  for (const row of patchedByProduct.values()) {
+    Object.assign(row, recomputeCsiPlantRowStatusAndMessage(row));
+  }
+
+  return products.map((row) => patchedByProduct.get(String(row?.product || "").trim()) || row);
 }
 
 function mergeCsiDisplayStatuses(items) {
@@ -6626,11 +6767,45 @@ function UkdocsCSIPage({ currentUser }) {
   const selectedCsiPlantAcceptedReviewCount = selectedCsiPlantReviewRows.filter((row) => acceptedCsiPlantReviewKeySet.has(row.key)).length;
   const selectedCsiPlantAutoAcceptedReviewCount = selectedCsiPlantReviewRows.filter((row) => row.autoAccepted).length;
   const selectedCsiPlantExactReviewCount = selectedCsiPlantReviewRows.filter((row) => row.status === "match").length;
+  // Rows the reviewer has manually accepted where IPAFFS and temp phyto
+  // still disagree on group (a "Qty match review" pair -- same quantity,
+  // but the names/groups don't line up on their own). The automatic
+  // reconciliation on the server only ever touches confident matches
+  // (same quantity + compatible name); this covers the ambiguous ones a
+  // human just signed off on, by moving the temp-phyto quantity into the
+  // row the reviewer confirmed it actually belongs with.
+  const selectedManualCsiPlantGroupCorrections = useMemo(() => {
+    const corrections = [];
+    for (const row of selectedCsiPlantReviewRows) {
+      if (!row.canAccept || !acceptedCsiPlantReviewKeySet.has(row.key)) {
+        continue;
+      }
+      if (!row.ipaffs || !row.tempPhyto) {
+        continue;
+      }
+      const fromGroup = String(row.tempPhyto.group || "").trim();
+      const toGroup = String(row.ipaffs.group || "").trim();
+      if (!fromGroup || !toGroup || fromGroup.toLowerCase() === toGroup.toLowerCase()) {
+        continue;
+      }
+      corrections.push({
+        fromGroup,
+        toGroup,
+        documentLabel: row.tempPhyto.documentLabel,
+        quantity: Number(row.tempPhyto.quantity) || 0,
+      });
+    }
+    return corrections;
+  }, [selectedCsiPlantReviewRows, acceptedCsiPlantReviewKeySet]);
+  const selectedCsiPlantCorrectedProducts = useMemo(
+    () => applyManualCsiPlantGroupCorrections(selectedCsiPlantProducts, selectedManualCsiPlantGroupCorrections),
+    [selectedCsiPlantProducts, selectedManualCsiPlantGroupCorrections],
+  );
   const selectedCsiPlantDisplayProducts = useMemo(() => {
     if (!selectedCsiPlantReviewCleared) {
-      return selectedCsiPlantProducts;
+      return selectedCsiPlantCorrectedProducts;
     }
-    return selectedCsiPlantProducts.map((row) => {
+    return selectedCsiPlantCorrectedProducts.map((row) => {
       if (String(row?.status || "").trim().toLowerCase() === "fail") {
         return row;
       }
@@ -6644,7 +6819,7 @@ function UkdocsCSIPage({ currentUser }) {
           : `${existingMessage}${existingMessage ? " " : ""}${acceptedMessage}`,
       };
     });
-  }, [selectedCsiPlantProducts, selectedCsiPlantReviewCleared, selectedCsiPlantReviewTotals.ipaffsQuantity]);
+  }, [selectedCsiPlantCorrectedProducts, selectedCsiPlantReviewCleared, selectedCsiPlantReviewTotals.ipaffsQuantity]);
   const selectedCsiDisplayChecks = useMemo(() => {
     if (!selectedCsiPlantReviewCleared) {
       return selectedCsiRawChecks;
