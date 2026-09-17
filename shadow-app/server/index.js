@@ -2098,9 +2098,27 @@ function ukdocsPrintInspectionMode(collection) {
 }
 
 function ukdocsPrintCollectionCustomer(collection, customers) {
-  return (collection?.customer_id && (Array.isArray(customers) ? customers.find((item) => item.id === collection.customer_id) : null))
-    || matchUkdocsCustomerForPrintCollection(customers || [], collection)
-    || null;
+  const list = Array.isArray(customers) ? customers : [];
+  const byId = collection?.customer_id ? list.find((item) => item.id === collection.customer_id) : null;
+  if (byId) {
+    return byId;
+  }
+  const fuzzyMatch = matchUkdocsCustomerForPrintCollection(list, collection);
+  if (fuzzyMatch) {
+    return fuzzyMatch;
+  }
+  // Last resort: an exact (case-insensitive) match on the collection's own
+  // customer_name snapshot. Without this, an imported/nakeuring collection
+  // that never got a customer_id link, and whose hub_code/remark don't
+  // happen to satisfy a configured match rule, resolves to no customer at
+  // all -- silently skipping every per-customer setting for it (required
+  // documents, gmail_sync_enabled, CSI/Eric Docs recipients, etc.) even
+  // though the collection's own "Customer" field plainly names one.
+  const collectionName = String(collection?.customer_name || "").trim().toLowerCase();
+  if (!collectionName) {
+    return null;
+  }
+  return list.find((item) => String(item?.customer_name || "").trim().toLowerCase() === collectionName) || null;
 }
 
 function ukdocsCollectionNeedsPhyto(collection, customer = null) {
@@ -2353,9 +2371,7 @@ function getUkdocsPrintCollectionRequirements(collection, customers) {
     };
   }
   if (inspectionMode === "reinspection") {
-    const customer = (collection?.customer_id && (Array.isArray(customers) ? customers.find((item) => item.id === collection.customer_id) : null))
-      || matchUkdocsCustomerForPrintCollection(customers || [], collection)
-      || null;
+    const customer = ukdocsPrintCollectionCustomer(collection, customers);
     const phytoCount = (collection?.documents?.phyto_files || []).length;
     const phytoExpected = ukdocsPrintSplitTokens(collection?.reference_connect).length;
     const generatedFiles = collection?.documents?.generated_files || [];
@@ -2388,9 +2404,7 @@ function getUkdocsPrintCollectionRequirements(collection, customers) {
       complete: missing.length === 0,
     };
   }
-  const customer = (collection?.customer_id && (Array.isArray(customers) ? customers.find((item) => item.id === collection.customer_id) : null))
-    || matchUkdocsCustomerForPrintCollection(customers || [], collection)
-    || null;
+  const customer = ukdocsPrintCollectionCustomer(collection, customers);
   const phytoCount = (collection?.documents?.phyto_files || []).length;
   const phytoExpected = ukdocsPrintSplitTokens(collection?.reference_connect).length;
   const generatedFiles = collection?.documents?.generated_files || [];

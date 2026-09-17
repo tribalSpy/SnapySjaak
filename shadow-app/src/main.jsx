@@ -3104,9 +3104,23 @@ function ukdocsPrintInspectionMode(collection) {
 }
 
 function ukdocsPrintCollectionCustomer(collection, customers) {
-  return (collection?.customer_id && (customers || []).find((item) => item.id === collection.customer_id))
-    || findUkdocsCustomerMatch(customers || [], collection)
-    || null;
+  const list = customers || [];
+  const byId = collection?.customer_id ? list.find((item) => item.id === collection.customer_id) : null;
+  if (byId) {
+    return byId;
+  }
+  const fuzzyMatch = findUkdocsCustomerMatch(list, collection);
+  if (fuzzyMatch) {
+    return fuzzyMatch;
+  }
+  // Last resort: an exact (case-insensitive) match on the collection's own
+  // customer_name snapshot -- mirrors the server-side fallback, see there
+  // for why (imported/nakeuring collections without a customer_id link).
+  const collectionName = String(collection?.customer_name || "").trim().toLowerCase();
+  if (!collectionName) {
+    return null;
+  }
+  return list.find((item) => String(item?.customer_name || "").trim().toLowerCase() === collectionName) || null;
 }
 
 function ukdocsInspectionDocumentKeys(collection) {
