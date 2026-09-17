@@ -34,6 +34,7 @@ const PERMISSIONS = {
   UKDOCS_CSI_VIEW: "ukdocs_csi:view",
   PD_KEURING_VIEW: "pd_keuring:view",
   WAREHOUSE_VIEW: "warehouse:view",
+  ERIC_DOCS_VIEW: "eric_docs:view",
 };
 const ALL_PERMISSIONS = Object.values(PERMISSIONS);
 const DEFAULT_PERMISSIONS_BY_ROLE = {
@@ -53,6 +54,7 @@ const PAGE_DEFINITIONS = [
   { key: "ukdocsprint", label: "UKDocs Zendings", permission: PERMISSIONS.UKDOCS_VIEW },
   { key: "ukdocsinspection", label: "Phyto Inspection", permission: PERMISSIONS.UKDOCS_INSPECTION_VIEW },
   { key: "ukdocscsi", label: "UKDocs CSI", permission: PERMISSIONS.UKDOCS_CSI_VIEW },
+  { key: "ericdocs", label: "Eric Docs", permission: PERMISSIONS.ERIC_DOCS_VIEW },
   { key: "pdkeuring", label: "PD Keuring", permission: PERMISSIONS.PD_KEURING_VIEW },
   { key: "clock", label: "Inklokken", permission: PERMISSIONS.CLOCK_VIEW },
   { key: "users", label: "Users", permission: PERMISSIONS.USERS_MANAGE },
@@ -2742,6 +2744,7 @@ const UKDOCS_CUSTOMER_FIELDS = [
   ["csi_email_recipients", "CSI email recipients", "textarea"],
   ["csi_email_subject", "CSI email subject template", "textarea"],
   ["csi_email_body", "CSI email body template", "textarea"],
+  ["eric_docs_email_recipients", "Eric Docs email recipients", "textarea"],
   ["default_invoice_language_text", "Default invoice language / text", "textarea"],
   ["default_document_references", "Default document references", "textarea"],
   ["transporter_name", "Transporteur (Finance Audit default)"],
@@ -2765,6 +2768,7 @@ const UKDOCS_CUSTOMER_REQUIRED_DOCUMENT_FIELDS = [
 
 const UKDOCS_CUSTOMER_MENU_DOCUMENT_FIELDS = [
   ["menu_show_ukdocscsi", "UKDocs CSI - Show shipment in CSI menu"],
+  ["menu_show_ericdocs", "Eric Docs - Show shipment in Eric Docs menu"],
   ["menu_show_ukdocsinspection_inspection_list", "Phyto inspection - Inspection list"],
   ["menu_show_ukdocsinspection_locations_file", "Phyto inspection - Locations file"],
   ["menu_show_ukdocsinspection_phyto", "Phyto inspection - Phytosanitary document"],
@@ -2858,6 +2862,7 @@ function emptyUkdocsCustomer() {
     csi_email_recipients: "",
     csi_email_subject: "",
     csi_email_body: "",
+    eric_docs_email_recipients: "",
     default_invoice_language_text: "",
     default_document_references: "",
     show_invoice_vat_number: true,
@@ -2868,6 +2873,7 @@ function emptyUkdocsCustomer() {
     required_generated_export: true,
     required_generated_invoices: true,
     menu_show_ukdocscsi: true,
+    menu_show_ericdocs: true,
     menu_show_ukdocsinspection_inspection_list: true,
     menu_show_ukdocsinspection_locations_file: true,
     menu_show_ukdocsinspection_phyto: false,
@@ -7520,6 +7526,332 @@ function UkdocsCSIPage({ currentUser }) {
   );
 }
 
+// Eric Docs' one check: does the temporary phyto PDF's printed pieces total
+// match the inspection list's printed pieces total. Deliberately simpler
+// than UKDocs CSI -- no XML/IPAFFS cross-check, just these two PDFs.
+function ericDocsCheckStatus(check) {
+  if (!check?.checked_at) {
+    return { tone: "warn", label: "Not checked yet" };
+  }
+  if (!check.ok) {
+    return { tone: "danger", label: check.error || "Could not run the check" };
+  }
+  return check.match
+    ? { tone: "success", label: `Pieces match (${check.phyto_total})` }
+    : { tone: "danger", label: `MISMATCH: phyto ${check.phyto_total} vs inspection ${check.inspection_total}` };
+}
+
+function EricDocsPage({ currentUser }) {
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [state, setState] = useState(null);
+  const [message, setMessage] = useState("");
+  const [error, setError] = useState("");
+  const [selectedCollectionDate, setSelectedCollectionDate] = useState(() => localDateIso());
+  const [selectedCollectionId, setSelectedCollectionId] = useState("");
+  const [detailDrawerOpen, setDetailDrawerOpen] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    apiJson("/api/ukdocs/state")
+      .then((payload) => {
+        if (!cancelled) {
+          setState(payload.state);
+        }
+      })
+      .catch((loadError) => {
+        if (!cancelled) {
+          setError(loadError.message);
+        }
+      })
+      .finally(() => {
+        if (!cancelled) {
+          setLoading(false);
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [currentUser]);
+
+  const collections = state?.print_collections || [];
+  const customers = state?.customers || [];
+  const shipmentCollections = useMemo(
+    () => collections.filter((item) => {
+      if (item.collection_type === "stock_control") {
+        return false;
+      }
+      const customer = ukdocsPrintCollectionCustomer(item, customers);
+      return customer?.menu_show_ericdocs !== false;
+    }),
+    [collections, customers],
+  );
+  const filteredCollections = useMemo(
+    () => shipmentCollections.filter((item) => String(item.shipment_date || "").slice(0, 10) === selectedCollectionDate),
+    [shipmentCollections, selectedCollectionDate],
+  );
+  const selectedCollection = filteredCollections.find((item) => item.id === selectedCollectionId || item.shipment_id === selectedCollectionId) || null;
+  const selectedTempPhytoFiles = selectedCollection?.documents?.temp_phyto_files || [];
+  const selectedInspectionList = selectedCollection?.documents?.inspection_list || null;
+  const selectedCheck = selectedCollection?.eric_docs_check || null;
+
+  function openCollectionDetail(collectionId) {
+    setSelectedCollectionId(collectionId);
+    setDetailDrawerOpen(true);
+  }
+
+  function closeCollectionDetail() {
+    setDetailDrawerOpen(false);
+  }
+
+  async function refreshState() {
+    setLoading(true);
+    setError("");
+    try {
+      const payload = await apiJson("/api/ukdocs/state");
+      setState(payload.state);
+    } catch (refreshError) {
+      setError(refreshError.message);
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function uploadCollectionFile(kind, fileOrFiles) {
+    if (!selectedCollection || !fileOrFiles) {
+      return;
+    }
+    const files = Array.isArray(fileOrFiles)
+      ? fileOrFiles
+      : fileOrFiles instanceof FileList
+        ? Array.from(fileOrFiles)
+        : [fileOrFiles];
+    if (!files.length) {
+      return;
+    }
+    setSaving(true);
+    setMessage("");
+    setError("");
+    try {
+      let nextCollections = null;
+      for (const file of files) {
+        const contentBase64 = await fileToBase64(file);
+        const payload = await apiJson(`/api/ukdocs-print/collections/${encodeURIComponent(selectedCollection.id)}/upload`, {
+          method: "POST",
+          body: JSON.stringify({
+            kind,
+            file: {
+              file_name: file.name,
+              mime_type: file.type || "application/octet-stream",
+              content_base64: contentBase64,
+            },
+          }),
+        });
+        nextCollections = payload.print_collections || nextCollections;
+      }
+      if (nextCollections) {
+        setState((current) => ({ ...current, print_collections: nextCollections || current?.print_collections || [] }));
+      }
+      setMessage(kind === "temp_phyto" ? "Temporary phyto PDF added." : "Inspection list saved.");
+    } catch (uploadError) {
+      setError(uploadError.message);
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function deleteCollectionDocument(kind, index = null) {
+    if (!selectedCollection) {
+      return;
+    }
+    if (!window.confirm("Delete this uploaded file?")) {
+      return;
+    }
+    setSaving(true);
+    setMessage("");
+    setError("");
+    try {
+      const documentPath = index === null ? kind : `${kind}/${index}`;
+      const payload = await apiJson(`/api/ukdocs-print/collections/${encodeURIComponent(selectedCollection.id)}/documents/${documentPath}`, {
+        method: "DELETE",
+      });
+      setState((current) => ({ ...current, print_collections: payload.print_collections || current?.print_collections || [] }));
+      setMessage("File deleted.");
+    } catch (deleteError) {
+      setError(deleteError.message);
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function runEricDocsCheck(collectionId) {
+    setSaving(true);
+    setMessage("");
+    setError("");
+    try {
+      const payload = await apiJson(`/api/eric-docs/collections/${encodeURIComponent(collectionId)}/check`, { method: "POST" });
+      setState((current) => ({ ...current, print_collections: payload.print_collections || current?.print_collections || [] }));
+      setMessage(payload.collection?.eric_docs_check?.ok
+        ? (payload.collection.eric_docs_check.match ? "Pieces match." : "Pieces MISMATCH -- see detail.")
+        : (payload.collection?.eric_docs_check?.error || "Could not run the check."));
+    } catch (checkError) {
+      setError(checkError.message);
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function sendEricDocsPapers(collectionId) {
+    setSaving(true);
+    setMessage("");
+    setError("");
+    try {
+      const payload = await apiJson(`/api/eric-docs/collections/${encodeURIComponent(collectionId)}/send`, { method: "POST" });
+      setState((current) => ({ ...current, print_collections: payload.print_collections || current?.print_collections || [] }));
+      setMessage(payload.eric_docs_email?.ok
+        ? `Papers sent to ${payload.eric_docs_email.recipients.join(", ")}.`
+        : (payload.eric_docs_email?.error || "Could not send Eric Docs papers."));
+    } catch (sendError) {
+      setError(sendError.message);
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <section className="overview-stack">
+      {message && <div className="notice success">{message}</div>}
+      {error && <div className="notice danger">{error}</div>}
+      {loading && <div className="notice">Loading Eric Docs zendingen...</div>}
+
+      <div className="ukdocs-collection-layout">
+        <div className="data-table-card ukdocs-stack">
+          <div className="section-header">
+            <h2>Eric Docs zendingen</h2>
+            <div className="row-actions spread-actions">
+              <button type="button" onClick={refreshState} disabled={loading || saving}>Refresh</button>
+            </div>
+          </div>
+          <div className="notice">Checks that the temporary phyto PDF's printed pieces total matches the inspection list's printed pieces total -- no XML needed.</div>
+          <div className="form-grid">
+            <label className="wide">
+              <span>Zending date</span>
+              <input type="date" value={selectedCollectionDate} onChange={(event) => setSelectedCollectionDate(event.target.value)} />
+            </label>
+          </div>
+          <div className="ukdocs-cards-grid">
+            {filteredCollections.map((collection) => {
+              const isActive = selectedCollection?.id === collection.id;
+              const tileCheck = isActive ? selectedCheck : collection.eric_docs_check;
+              const status = ericDocsCheckStatus(tileCheck);
+              return (
+                <div key={collection.id} className={`ukdocs-upload-card ukdocs-collection-tile${isActive ? " active" : ""}`}>
+                  <strong>{collection.customer_name || collection.city_name || "Zending"}</strong>
+                  <small>{collection.shipment_date || "-"}</small>
+                  <small>City: {collection.city_name || "-"}</small>
+                  <small>Invoices: {ukdocsCollectionInvoiceText(collection) || "No invoices linked yet"}</small>
+                  <div className={`ukdocs-status-badge ${status.tone}`}>{status.label}</div>
+                  <div className="row-actions spread-actions">
+                    <button type="button" className="primary" onClick={() => openCollectionDetail(collection.id)}>{isActive ? "Opened" : "Open"}</button>
+                    <button type="button" onClick={() => runEricDocsCheck(collection.id)} disabled={saving}>Check pieces</button>
+                    <button
+                      type="button"
+                      onClick={() => sendEricDocsPapers(collection.id)}
+                      disabled={saving || !tileCheck?.ok || tileCheck?.match !== true}
+                      title={tileCheck?.ok && tileCheck?.match ? "" : "Run the pieces check successfully first"}
+                    >
+                      Send papers
+                    </button>
+                  </div>
+                </div>
+              );
+            })}
+            {!filteredCollections.length && !loading && <div className="notice">No zendingen saved for {selectedCollectionDate}.</div>}
+          </div>
+        </div>
+
+        {detailDrawerOpen && <button type="button" className="ukdocs-drawer-backdrop" onClick={closeCollectionDetail} aria-label="Close Eric Docs detail" />}
+        <div className={`data-table-card ukdocs-stack ukdocs-drawer-panel${detailDrawerOpen ? " open" : ""}`}>
+          <div className="section-header">
+            <h2>Eric Docs detail</h2>
+            {selectedCollection && <div className="row-actions"><button type="button" onClick={closeCollectionDetail}>Close</button></div>}
+          </div>
+
+          {!selectedCollection && <div className="notice">Open a zending to upload and check its documents.</div>}
+
+          {selectedCollection && (
+            <>
+              <div className="form-grid">
+                <label><span>Shipment reference</span><input value={selectedCollection.shipment_reference || ""} readOnly /></label>
+                <label><span>Shipment date</span><input value={selectedCollection.shipment_date || ""} readOnly /></label>
+                <label><span>Customer</span><input value={selectedCollection.customer_name || ""} readOnly /></label>
+                <label><span>City</span><input value={selectedCollection.city_name || ""} readOnly /></label>
+              </div>
+
+              <div className="ukdocs-upload-grid">
+                <div className="ukdocs-upload-card">
+                  <strong>Temporary phyto PDF</strong>
+                  <input type="file" accept=".pdf" multiple onChange={(event) => uploadCollectionFile("temp_phyto", event.target.files)} disabled={saving} />
+                  <small>{selectedTempPhytoFiles.length ? `${selectedTempPhytoFiles.length} temporary phyto PDF file(s) saved in Zending.` : "No file saved yet in Zending."}</small>
+                  {!!selectedTempPhytoFiles.length && (
+                    <div className="ukdocs-download-list">
+                      {selectedTempPhytoFiles.map((file, index) => (
+                        <div key={`${file.storage_name}-${index}`} className="row-actions spread-actions">
+                          <a href={`/api/ukdocs-print/collections/${encodeURIComponent(selectedCollection.id)}/documents/temp_phyto/${index}`} target="_blank" rel="noreferrer" className="ukdocs-download-link">
+                            {file.original_name || `Temporary phyto ${index + 1}`}
+                          </a>
+                          <button type="button" onClick={() => deleteCollectionDocument("temp_phyto", index)} disabled={saving}>Delete</button>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+                <div className="ukdocs-upload-card">
+                  <strong>Inspection list</strong>
+                  <input type="file" accept=".pdf" onChange={(event) => uploadCollectionFile("inspection_list", event.target.files?.[0])} disabled={saving} />
+                  <small>{selectedInspectionList?.storage_name ? `${selectedInspectionList.original_name || "Inspection list"} saved in Zending.` : "No file saved yet in Zending."}</small>
+                  {!!selectedInspectionList?.storage_name && (
+                    <div className="row-actions spread-actions">
+                      <a href={`/api/ukdocs-print/collections/${encodeURIComponent(selectedCollection.id)}/documents/inspection_list`} target="_blank" rel="noreferrer" className="ukdocs-download-link">
+                        {selectedInspectionList.original_name || "Inspection list"}
+                      </a>
+                      <button type="button" onClick={() => deleteCollectionDocument("inspection_list")} disabled={saving}>Delete</button>
+                    </div>
+                  )}
+                </div>
+              </div>
+
+              <div className="row-actions spread-actions">
+                <button type="button" className="primary" onClick={() => runEricDocsCheck(selectedCollection.id)} disabled={saving}>Check pieces</button>
+                <button
+                  type="button"
+                  onClick={() => sendEricDocsPapers(selectedCollection.id)}
+                  disabled={saving || !selectedCheck?.ok || selectedCheck?.match !== true}
+                  title={selectedCheck?.ok && selectedCheck?.match ? "" : "Run the pieces check successfully first"}
+                >
+                  {selectedCollection.eric_docs_email?.ok ? "Resend papers" : "Send papers"}
+                </button>
+              </div>
+              <div className={`ukdocs-status-badge ${ericDocsCheckStatus(selectedCheck).tone}`}>{ericDocsCheckStatus(selectedCheck).label}</div>
+              {selectedCheck?.checked_at && (
+                <small>
+                  Phyto total: {selectedCheck.phyto_total ?? "-"} -- Inspection total: {selectedCheck.inspection_total ?? "-"} -- Checked {formatTimestamp(selectedCheck.checked_at)}
+                </small>
+              )}
+              {selectedCollection.eric_docs_email?.sent_at && (
+                <small>
+                  Papers {selectedCollection.eric_docs_email.ok ? "sent" : "not sent"} to {selectedCollection.eric_docs_email.recipients.join(", ") || "-"}
+                  {selectedCollection.eric_docs_email.ok ? ` at ${formatTimestamp(selectedCollection.eric_docs_email.sent_at)}` : `: ${selectedCollection.eric_docs_email.error}`}
+                </small>
+              )}
+            </>
+          )}
+        </div>
+      </div>
+    </section>
+  );
+}
+
 function PdKeuringPage({ currentUser }) {
   const canManageSettings = hasPermission(currentUser, PERMISSIONS.SETTINGS_MANAGE);
   const [activeMenu, setActiveMenu] = useState("planning");
@@ -8937,6 +9269,7 @@ function App() {
         {page === "ukdocsprint" && <UkdocsPrintPage currentUser={auth.user} />}
         {page === "ukdocsinspection" && <UkdocsInspectionPage currentUser={auth.user} />}
         {page === "ukdocscsi" && <UkdocsCSIPage currentUser={auth.user} />}
+        {page === "ericdocs" && <EricDocsPage currentUser={auth.user} />}
         {page === "pdkeuring" && <PdKeuringPage currentUser={auth.user} />}
         {page === "settings" && <SettingsPage currentUser={auth.user} />}
         {page === "ukdocs" && <UkdocsPage currentUser={auth.user} onNavigate={setPage} />}

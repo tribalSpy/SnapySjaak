@@ -75,6 +75,7 @@ const fustListWorkerPath = path.join(appRoot, "server", "fust_list_worker.py");
 const ukdocsWorkerPath = path.join(appRoot, "server", "ukdocs_worker.py");
 const ukdocsCsiWorkerPath = path.join(appRoot, "server", "ukdocs_csi_worker.py");
 const financeAuditInvoiceWorkerPath = path.join(appRoot, "server", "finance_audit_invoice_worker.py");
+const ericDocsWorkerPath = path.join(appRoot, "server", "eric_docs_worker.py");
 const dagFoutjesHtmlPathCandidates = [
   path.join(repoRoot, "foutjeskoelcel", "bledy-chlodnia (1).html"),
   path.join(process.cwd(), "foutjeskoelcel", "bledy-chlodnia (1).html"),
@@ -468,6 +469,7 @@ const allPermissions = [
   "ukdocs_csi:view",
   "pd_keuring:view",
   "warehouse:view",
+  "eric_docs:view",
 ];
 const PERMISSIONS = {
   PHOTOS_VIEW: "photos:view",
@@ -491,6 +493,7 @@ const PERMISSIONS = {
   UKDOCS_CSI_VIEW: "ukdocs_csi:view",
   PD_KEURING_VIEW: "pd_keuring:view",
   WAREHOUSE_VIEW: "warehouse:view",
+  ERIC_DOCS_VIEW: "eric_docs:view",
 };
 const roleDefaultPermissions = {
   admin: allPermissions,
@@ -1734,6 +1737,7 @@ function normalizeUkdocsCustomer(customer) {
     required_generated_invoices: customer?.required_generated_invoices !== false,
     reinspection_uses_email_sync: customer?.reinspection_uses_email_sync === true,
     menu_show_ukdocscsi: customer?.menu_show_ukdocscsi !== false,
+    menu_show_ericdocs: customer?.menu_show_ericdocs !== false,
     menu_show_ukdocsinspection_inspection_list: customer?.menu_show_ukdocsinspection_inspection_list !== false,
     menu_show_ukdocsinspection_locations_file: customer?.menu_show_ukdocsinspection_locations_file !== false,
     menu_show_ukdocsinspection_phyto: customer?.menu_show_ukdocsinspection_phyto === true,
@@ -1761,6 +1765,7 @@ function normalizeUkdocsCustomer(customer) {
     csi_email_recipients: normalizeEmailRecipients(customer?.csi_email_recipients),
     csi_email_subject: String(customer?.csi_email_subject || "").trim(),
     csi_email_body: String(customer?.csi_email_body || "").trim(),
+    eric_docs_email_recipients: normalizeEmailRecipients(customer?.eric_docs_email_recipients),
     default_invoice_language_text: String(customer?.default_invoice_language_text || "").trim(),
     default_document_references: String(customer?.default_document_references || "").trim(),
     show_invoice_vat_number: customer?.show_invoice_vat_number !== false,
@@ -2243,6 +2248,26 @@ function normalizeUkdocsPrintCollection(collection) {
       queued: collection?.csi_send_queue?.queued === true,
       queued_at: normalizeUkdocsText(collection?.csi_send_queue?.queued_at),
       queued_by: normalizeUkdocsText(collection?.csi_send_queue?.queued_by),
+    },
+    // Eric Docs' one and only check: does the temporary phyto PDF's "TOTAL
+    // ... Pieces" line match the inspection list's "TOTAAL ... Stuks" line.
+    // Run on demand via /api/eric-docs/collections/:id/check, cached here so
+    // re-opening the shipment doesn't need to re-run it.
+    eric_docs_check: {
+      ok: collection?.eric_docs_check?.ok === true,
+      phyto_total: Number.isFinite(Number(collection?.eric_docs_check?.phyto_total)) ? Number(collection.eric_docs_check.phyto_total) : null,
+      inspection_total: Number.isFinite(Number(collection?.eric_docs_check?.inspection_total)) ? Number(collection.eric_docs_check.inspection_total) : null,
+      match: collection?.eric_docs_check?.match === true ? true : (collection?.eric_docs_check?.match === false ? false : null),
+      error: String(collection?.eric_docs_check?.error || "").trim(),
+      checked_at: normalizeUkdocsText(collection?.eric_docs_check?.checked_at),
+    },
+    // Set when "Send papers" is pressed on the Eric Docs page -- a separate
+    // mailbox from CSI's, configured per customer via eric_docs_email_recipients.
+    eric_docs_email: {
+      ok: collection?.eric_docs_email?.ok === true,
+      recipients: Array.isArray(collection?.eric_docs_email?.recipients) ? collection.eric_docs_email.recipients.map((item) => String(item || "").trim()).filter(Boolean) : [],
+      sent_at: normalizeUkdocsText(collection?.eric_docs_email?.sent_at),
+      error: String(collection?.eric_docs_email?.error || "").trim(),
     },
     documents: {
       phyto_files: normalizeUkdocsPrintDocumentList(collection?.documents?.phyto_files || (collection?.documents?.phyto ? [collection.documents.phyto] : [])),
@@ -5530,6 +5555,30 @@ function runFinanceAuditInvoiceWorker(args) {
         return;
       }
       reject(new Error(Buffer.concat(stderr).toString("utf8") || `Finance audit invoice worker exited with ${code}`));
+    });
+    child.stdin.end();
+  });
+}
+
+function runEricDocsWorker(args) {
+  return new Promise((resolve, reject) => {
+    const child = spawn(resolvePythonCommand(), [ericDocsWorkerPath, ...args], {
+      cwd: repoRoot,
+      windowsHide: true,
+    });
+
+    const stdout = [];
+    const stderr = [];
+    child.stdout.on("data", (chunk) => stdout.push(chunk));
+    child.stderr.on("data", (chunk) => stderr.push(chunk));
+    child.on("error", reject);
+    child.on("close", (code) => {
+      const output = Buffer.concat(stdout);
+      if (code === 0) {
+        resolve(output);
+        return;
+      }
+      reject(new Error(Buffer.concat(stderr).toString("utf8") || `Eric Docs worker exited with ${code}`));
     });
     child.stdin.end();
   });
@@ -11351,6 +11400,91 @@ async function sendUkdocsCsiSuccessEmail(collection, customers, settings, option
   };
 }
 
+// Eric Docs' own, much shorter attachment list -- just the two documents its
+// check actually compares, unlike UKDocs CSI's full generated-invoice/export
+// bundle. Sent to a separate mailbox (customer.eric_docs_email_recipients),
+// per the request that Eric Docs papers "go to a different email box".
+async function ericDocsCollectionAttachments(collection) {
+  const attachments = [];
+  const documents = [
+    ...(collection?.documents?.temp_phyto_files || []),
+    ...(collection?.documents?.inspection_list ? [collection.documents.inspection_list] : []),
+  ];
+  for (const document of documents) {
+    const resolvedPath = path.resolve(ukdocsPrintDocumentPath(document));
+    if (!resolvedPath.startsWith(path.resolve(ukdocsPrintFilesDir)) || !existsSync(resolvedPath)) {
+      continue;
+    }
+    const contentBase64 = await fs.readFile(resolvedPath, "base64");
+    attachments.push({
+      file_name: path.basename(document.original_name || resolvedPath),
+      mime_type: document.mime_type || guessMimeType(document.original_name || resolvedPath),
+      content_base64: contentBase64,
+    });
+  }
+  return attachments;
+}
+
+function buildEricDocsSuccessEmail(collection, customer = null) {
+  const context = buildUkdocsPrintReadyTemplateContext(collection, { customer });
+  const check = collection?.eric_docs_check || {};
+  return [
+    "Eric Docs pieces check passed.",
+    "",
+    `Customer: ${context.customer_name}`,
+    `Shipment reference: ${context.shipment_reference}`,
+    `Shipment date: ${context.shipment_date}`,
+    `City: ${context.city}`,
+    "",
+    `Phyto total: ${check.phyto_total ?? "-"}`,
+    `Inspection total: ${check.inspection_total ?? "-"}`,
+    "",
+    "Attached files:",
+    "- Temporary phyto PDF",
+    "- Inspection list",
+  ].join("\n");
+}
+
+async function sendEricDocsSuccessEmail(collection, customers, settings) {
+  const customer = ukdocsPrintCollectionCustomer(collection, customers);
+  const recipients = normalizeEmailRecipients(customer?.eric_docs_email_recipients);
+  if (!recipients.length) {
+    return { ok: false, recipients: [], error: "No Eric Docs email recipients configured for this customer" };
+  }
+  if (!settings?.smtp_host || !settings?.smtp_username || !settings?.smtp_password || !settings?.smtp_from) {
+    return { ok: false, recipients, error: "SMTP is not fully configured" };
+  }
+  const attachments = await ericDocsCollectionAttachments(collection);
+  if (!attachments.length) {
+    return { ok: false, recipients, error: "No Eric Docs attachments found to send" };
+  }
+  const context = buildUkdocsPrintReadyTemplateContext(collection, { customer });
+  const subject = `Eric Docs OK | ${context.customer_name} | ${context.shipment_date}`;
+  await runPythonBridge(
+    ["email-send"],
+    JSON.stringify({
+      recipients,
+      subject,
+      body: buildEricDocsSuccessEmail(collection, customer),
+      attachments,
+      smtp: {
+        host: settings.smtp_host,
+        port: settings.smtp_port,
+        username: settings.smtp_username,
+        password: settings.smtp_password,
+        from: settings.smtp_from,
+        starttls: settings.smtp_starttls,
+      },
+    }),
+  );
+  return {
+    ok: true,
+    recipients,
+    error: "",
+    sent_at: new Date().toISOString(),
+  };
+}
+
 function googleRunDetailsCachePath(folderId, accountName = "default") {
   return path.join(
     googleRunDetailsCacheDir,
@@ -13396,7 +13530,7 @@ async function handleApi(req, res, url) {
   }
 
   if (url.pathname === "/api/ukdocs/state") {
-    if (!requireAnyPermission(res, requestUser, [PERMISSIONS.UKDOCS_VIEW, PERMISSIONS.UKDOCS_INSPECTION_VIEW, PERMISSIONS.UKDOCS_CSI_VIEW, PERMISSIONS.PD_KEURING_VIEW])) {
+    if (!requireAnyPermission(res, requestUser, [PERMISSIONS.UKDOCS_VIEW, PERMISSIONS.UKDOCS_INSPECTION_VIEW, PERMISSIONS.UKDOCS_CSI_VIEW, PERMISSIONS.PD_KEURING_VIEW, PERMISSIONS.ERIC_DOCS_VIEW])) {
       return;
     }
 
@@ -13777,7 +13911,7 @@ async function handleApi(req, res, url) {
   }
 
   if (url.pathname.startsWith("/api/ukdocs-print/collections/") && url.pathname.endsWith("/upload") && req.method === "POST") {
-    if (!requireAnyPermission(res, requestUser, [PERMISSIONS.UKDOCS_VIEW, PERMISSIONS.UKDOCS_INSPECTION_VIEW, PERMISSIONS.UKDOCS_CSI_VIEW])) {
+    if (!requireAnyPermission(res, requestUser, [PERMISSIONS.UKDOCS_VIEW, PERMISSIONS.UKDOCS_INSPECTION_VIEW, PERMISSIONS.UKDOCS_CSI_VIEW, PERMISSIONS.ERIC_DOCS_VIEW])) {
       return;
     }
     const basePath = url.pathname.slice("/api/ukdocs-print/collections/".length, -"/upload".length);
@@ -13855,7 +13989,7 @@ async function handleApi(req, res, url) {
   }
 
   if (url.pathname.startsWith("/api/ukdocs-print/collections/") && url.pathname.includes("/documents/") && req.method === "GET") {
-    if (!requireAnyPermission(res, requestUser, [PERMISSIONS.UKDOCS_VIEW, PERMISSIONS.UKDOCS_INSPECTION_VIEW, PERMISSIONS.UKDOCS_CSI_VIEW])) {
+    if (!requireAnyPermission(res, requestUser, [PERMISSIONS.UKDOCS_VIEW, PERMISSIONS.UKDOCS_INSPECTION_VIEW, PERMISSIONS.UKDOCS_CSI_VIEW, PERMISSIONS.ERIC_DOCS_VIEW])) {
       return;
     }
     const suffix = url.pathname.slice("/api/ukdocs-print/collections/".length);
@@ -13896,7 +14030,7 @@ async function handleApi(req, res, url) {
   }
 
   if (url.pathname.startsWith("/api/ukdocs-print/collections/") && url.pathname.includes("/documents/") && req.method === "DELETE") {
-    if (!requireAnyPermission(res, requestUser, [PERMISSIONS.UKDOCS_VIEW, PERMISSIONS.UKDOCS_INSPECTION_VIEW, PERMISSIONS.UKDOCS_CSI_VIEW])) {
+    if (!requireAnyPermission(res, requestUser, [PERMISSIONS.UKDOCS_VIEW, PERMISSIONS.UKDOCS_INSPECTION_VIEW, PERMISSIONS.UKDOCS_CSI_VIEW, PERMISSIONS.ERIC_DOCS_VIEW])) {
       return;
     }
     const suffix = url.pathname.slice("/api/ukdocs-print/collections/".length);
@@ -13992,6 +14126,86 @@ async function handleApi(req, res, url) {
     state.print_collections = upsertUkdocsPrintCollection(state.print_collections, updatedCollection);
     await writeUkdocsState(state);
     sendJson(res, 200, { collection: updatedCollection, print_collections: normalizeUkdocsState(state).print_collections });
+    return;
+  }
+
+  // Eric Docs' one check: does the temporary phyto PDF's printed "TOTAL ...
+  // Pieces" total match the inspection list's "TOTAAL ... Stuks" total. Uses
+  // the same stored documents as UKdocs Print/CSI (temp_phyto, inspection_list)
+  // -- deliberately skips any XML/IPAFFS cross-check, unlike UKDocs CSI.
+  if (url.pathname.startsWith("/api/eric-docs/collections/") && url.pathname.endsWith("/check") && req.method === "POST") {
+    if (!requirePermission(res, requestUser, PERMISSIONS.ERIC_DOCS_VIEW)) {
+      return;
+    }
+    const collectionId = decodeURIComponent(url.pathname.slice("/api/eric-docs/collections/".length, -"/check".length));
+    const state = await readUkdocsState();
+    const existingCollection = state.print_collections.find((item) => item.id === collectionId || item.shipment_id === collectionId);
+    if (!existingCollection) {
+      sendJson(res, 404, { error: "UKdocs Print collection not found" });
+      return;
+    }
+    const phytoDocument = (existingCollection.documents?.temp_phyto_files || [])[0] || null;
+    const inspectionDocument = existingCollection.documents?.inspection_list || null;
+    let checkResult;
+    if (!phytoDocument?.storage_name) {
+      checkResult = { ok: false, phyto_total: null, inspection_total: null, match: null, error: "Upload a temporary phyto PDF first" };
+    } else if (!inspectionDocument?.storage_name) {
+      checkResult = { ok: false, phyto_total: null, inspection_total: null, match: null, error: "Upload an inspection list first" };
+    } else {
+      try {
+        const output = await runEricDocsWorker([
+          "compare",
+          "--phyto", ukdocsPrintDocumentPath(phytoDocument),
+          "--inspection", ukdocsPrintDocumentPath(inspectionDocument),
+        ]);
+        checkResult = JSON.parse(output.toString("utf8"));
+      } catch (error) {
+        checkResult = { ok: false, phyto_total: null, inspection_total: null, match: null, error: error instanceof Error ? error.message : String(error) };
+      }
+    }
+    const updatedCollection = normalizeUkdocsPrintCollection({
+      ...existingCollection,
+      updated_at: new Date().toISOString(),
+      eric_docs_check: { ...checkResult, checked_at: new Date().toISOString() },
+    });
+    state.print_collections = upsertUkdocsPrintCollection(state.print_collections, updatedCollection);
+    await writeUkdocsState(state);
+    sendJson(res, 200, { collection: updatedCollection, print_collections: normalizeUkdocsState(state).print_collections });
+    return;
+  }
+
+  // "Send papers" for Eric Docs -- a separate mailbox from CSI's, configured
+  // per customer via eric_docs_email_recipients. Only allowed once the
+  // pieces check has actually passed.
+  if (url.pathname.startsWith("/api/eric-docs/collections/") && url.pathname.endsWith("/send") && req.method === "POST") {
+    if (!requirePermission(res, requestUser, PERMISSIONS.ERIC_DOCS_VIEW)) {
+      return;
+    }
+    const collectionId = decodeURIComponent(url.pathname.slice("/api/eric-docs/collections/".length, -"/send".length));
+    const state = await readUkdocsState();
+    const existingCollection = state.print_collections.find((item) => item.id === collectionId || item.shipment_id === collectionId);
+    if (!existingCollection) {
+      sendJson(res, 404, { error: "UKdocs Print collection not found" });
+      return;
+    }
+    if (!existingCollection.eric_docs_check?.ok || existingCollection.eric_docs_check?.match !== true) {
+      sendJson(res, 400, { error: "Run the pieces check successfully before sending papers" });
+      return;
+    }
+    const settings = await readFustSettings();
+    const ericDocsEmail = await sendEricDocsSuccessEmail(existingCollection, state.customers, settings);
+    const updatedCollection = normalizeUkdocsPrintCollection({
+      ...existingCollection,
+      updated_at: new Date().toISOString(),
+      eric_docs_email: ericDocsEmail,
+    });
+    state.print_collections = upsertUkdocsPrintCollection(state.print_collections, updatedCollection);
+    await writeUkdocsState(state);
+    sendJson(res, 200, {
+      collection: updatedCollection,
+      print_collections: normalizeUkdocsState(state).print_collections,
+      eric_docs_email: ericDocsEmail,
+    });
     return;
   }
 
