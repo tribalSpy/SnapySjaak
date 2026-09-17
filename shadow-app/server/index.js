@@ -7260,6 +7260,169 @@ function addUkdocsCsiQuantity(map, key, quantity) {
   map.set(key, (map.get(key) || 0) + numeric);
 }
 
+// Ported from the client's plant review pairing (buildCsiPlantIpaffsTempPhytoReviewRows
+// and friends, main.jsx) so the server can reconcile plant groups before building
+// the "Plants quantity comparison" table -- see reconcileUkdocsCsiTempPhytoPlantGroups
+// below for why this is needed.
+const UKDOCS_CSI_PLANT_NAME_STOP_WORDS = new Set([
+  "hybrid", "hybride", "mix", "mixed", "var", "variety", "species", "sp", "spp", "plant", "plants",
+]);
+
+function normalizeUkdocsCsiPlantDisplayName(value) {
+  return String(value || "")
+    .toLowerCase()
+    .replace(/\([^)]*\)/g, " ")
+    .replace(/[^a-z0-9]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function ukdocsCsiPlantNameTokens(value) {
+  return normalizeUkdocsCsiPlantDisplayName(value)
+    .split(" ")
+    .filter((token) => token.length > 1 && !UKDOCS_CSI_PLANT_NAME_STOP_WORDS.has(token));
+}
+
+function ukdocsCsiPlantNamesCompatible(left, right) {
+  const leftName = normalizeUkdocsCsiPlantDisplayName(left);
+  const rightName = normalizeUkdocsCsiPlantDisplayName(right);
+  if (!leftName || !rightName) {
+    return false;
+  }
+  if (leftName === rightName || leftName.includes(rightName) || rightName.includes(leftName)) {
+    return true;
+  }
+  const leftTokens = ukdocsCsiPlantNameTokens(left);
+  const rightTokens = ukdocsCsiPlantNameTokens(right);
+  if (!leftTokens.length || !rightTokens.length) {
+    return false;
+  }
+  if (leftTokens[0] === rightTokens[0]) {
+    return true;
+  }
+  const rightTokenSet = new Set(rightTokens);
+  return leftTokens.some((token) => rightTokenSet.has(token));
+}
+
+function ukdocsCsiPlantReviewSameGroup(left, right) {
+  const leftGroup = String(left?.group || "").trim().toLowerCase();
+  const rightGroup = String(right?.group || "").trim().toLowerCase();
+  return Boolean(leftGroup && rightGroup && leftGroup === rightGroup);
+}
+
+function ukdocsCsiPlantReviewSameQuantity(left, right) {
+  if (left?.quantity === null || left?.quantity === undefined || right?.quantity === null || right?.quantity === undefined) {
+    return false;
+  }
+  return Math.abs(Number(left.quantity) - Number(right.quantity)) < 0.000001;
+}
+
+// Same ranking as the client's csiPlantReviewCandidateRank: 0/3 already agree
+// on group (nothing to reconcile); 1 is "confidently the same item" (same
+// qty + compatible name) even though the group differs -- the one case this
+// reconciliation acts on; 2/4 leave the group alone because the quantity
+// itself doesn't line up, so correcting the group would hide a real
+// quantity discrepancy behind a labeling fix instead of surfacing it.
+function ukdocsCsiPlantReviewCandidateRank(leftItem, rightItem) {
+  const sameGroup = ukdocsCsiPlantReviewSameGroup(leftItem, rightItem);
+  const sameQuantity = ukdocsCsiPlantReviewSameQuantity(leftItem, rightItem);
+  const compatibleName = ukdocsCsiPlantNamesCompatible(leftItem?.name, rightItem?.name);
+  if (sameGroup && sameQuantity && compatibleName) {
+    return 0;
+  }
+  if (sameQuantity && compatibleName) {
+    return 1;
+  }
+  if (sameGroup && compatibleName) {
+    return 2;
+  }
+  if (sameGroup && sameQuantity) {
+    return 3;
+  }
+  if (sameQuantity) {
+    return 4;
+  }
+  return null;
+}
+
+function ukdocsCsiPlantReviewItemFromSourceRow(row) {
+  return {
+    group: getUkdocsCsiComparisonGroup(row),
+    quantity: Number.isFinite(Number(row?.quantity)) ? Number(row.quantity) : null,
+    name: String(row?.raw_product || row?.mapped_product || "").trim(),
+  };
+}
+
+function ukdocsCsiPlantReviewItemFromPendingLine(line) {
+  return {
+    group: String(line?.mappedProduct || "").trim(),
+    quantity: Number.isFinite(Number(line?.quantity)) ? Number(line.quantity) : null,
+    name: String(line?.rawProduct || line?.mappedProduct || "").trim(),
+  };
+}
+
+// IPAFFS and temp phyto each independently guess a "Plant group" label for
+// the same physical item -- IPAFFS from its own commodity code, temp phyto
+// from free-text genus keywords only, since the PDF never carries a
+// commodity code. That means the same stock can land in two different group
+// buckets (one row IPAFFS-heavy with a blank temp-phyto cell, another the
+// mirror image) even though the client's own "IPAFFS vs Temp phyto" review
+// table already shows the two rows as a clean match, just filed under
+// different group labels ("Group mismatch"). This runs the same pairing the
+// client uses for that review table, and for every pair it would auto-accept
+// as the same item (rank 1: same quantity + compatible name, regardless of
+// group), corrects the temp phyto line's group to IPAFFS's -- IPAFFS is the
+// better anchor since it alone can be backed by a real commodity code. Takes
+// the already-built IPAFFS plant sourceRows plus the not-yet-finalized temp
+// phyto plant lines (mutated in place before they're pushed into sourceRows).
+function reconcileUkdocsCsiTempPhytoPlantGroups(ipaffsPlantSourceRows, tempPhytoPlantPendingLines) {
+  if (!ipaffsPlantSourceRows.length || !tempPhytoPlantPendingLines.length) {
+    return;
+  }
+  const candidates = [];
+  ipaffsPlantSourceRows.forEach((ipaffsRow, ipaffsPosition) => {
+    const ipaffsItem = ukdocsCsiPlantReviewItemFromSourceRow(ipaffsRow);
+    tempPhytoPlantPendingLines.forEach((tempPhytoLine, tempPhytoPosition) => {
+      const tempPhytoItem = ukdocsCsiPlantReviewItemFromPendingLine(tempPhytoLine);
+      const rank = ukdocsCsiPlantReviewCandidateRank(ipaffsItem, tempPhytoItem);
+      if (rank === null) {
+        return;
+      }
+      candidates.push({
+        rank,
+        quantityDiff: Math.abs((ipaffsItem.quantity ?? 0) - (tempPhytoItem.quantity ?? 0)),
+        ipaffsPosition,
+        tempPhytoPosition,
+        ipaffsGroup: ipaffsItem.group,
+        tempPhytoLine,
+      });
+    });
+  });
+
+  candidates.sort((left, right) => (
+    left.rank - right.rank
+    || left.quantityDiff - right.quantityDiff
+    || left.ipaffsPosition - right.ipaffsPosition
+    || left.tempPhytoPosition - right.tempPhytoPosition
+  ));
+
+  const usedIpaffs = new Set();
+  const usedTempPhyto = new Set();
+  for (const candidate of candidates) {
+    if (usedIpaffs.has(candidate.ipaffsPosition) || usedTempPhyto.has(candidate.tempPhytoPosition)) {
+      continue;
+    }
+    usedIpaffs.add(candidate.ipaffsPosition);
+    usedTempPhyto.add(candidate.tempPhytoPosition);
+    if (candidate.rank !== 1) {
+      continue;
+    }
+    if (candidate.tempPhytoLine.mappedProduct !== candidate.ipaffsGroup) {
+      candidate.tempPhytoLine.mappedProduct = candidate.ipaffsGroup;
+    }
+  }
+}
+
 function getUkdocsCsiCurrenciesFromText(text) {
   const source = String(text || "");
   const detected = new Set();
@@ -8189,9 +8352,14 @@ function buildUkdocsCsiDeterministicReport(collection, extractedDocuments) {
     });
   }
 
-  const tempPhytoContexts = tempPhytoDocs.map((document, index) => {
+  // Built in two passes: first collect each temp-phyto line's mapped group
+  // without finalizing anything (so reconcileUkdocsCsiTempPhytoPlantGroups
+  // can correct a plant line's group against the already-built IPAFFS
+  // sourceRows before totals/sourceRows/expected_products are computed from
+  // it -- doing that correction after the fact would need three separate
+  // places patched back in sync instead of one).
+  const tempPhytoPendingContexts = tempPhytoDocs.map((document, index) => {
     const parsed = document?.parsed_data && typeof document.parsed_data === "object" ? document.parsed_data : {};
-    const lineProducts = [];
     const documentLabel = `Temp phyto ${String.fromCharCode(65 + index)}`;
     const productLines = Array.isArray(parsed?.product_lines) ? parsed.product_lines : [];
     const validationReport = parsed?.validation_report && typeof parsed.validation_report === "object"
@@ -8204,34 +8372,20 @@ function buildUkdocsCsiDeterministicReport(collection, extractedDocuments) {
       || document?.name
       || "",
     ).trim();
-    for (const line of productLines) {
-      const mappedProduct = mapUkdocsCsiProductName(line?.product || "", "", {
+    const pendingLines = productLines.map((line) => ({
+      mappedProduct: mapUkdocsCsiProductName(line?.product || "", "", {
         document_name: document?.name || "",
         prefer_plants: document?.prefer_plants === true,
         strict_domain: document?.prefer_plants === true ? "plants" : "flowers",
-      });
-      addUkdocsCsiQuantity(tempPhytoTotals, mappedProduct, line?.quantity);
-      lineProducts.push({
-        product: mappedProduct,
-        raw_product: String(line?.product || "").trim(),
-        quantity: Number.isFinite(Number(line?.quantity)) ? Number(line.quantity) : null,
-      });
-      sourceRows.push({
-        source: document?.prefer_plants === true
-          ? "temp_phyto_plants"
-          : document?.kind === "temp_phyto_xml"
-            ? "temp_phyto_xml"
-            : "temp_phyto",
-        document_name: String(document?.name || documentLabel).trim(),
-        document_label: documentLabel,
-        raw_product: String(line?.product || "").trim(),
-        commodity_code: "",
-        mapped_product: mappedProduct,
-        comparison_group: mappedProduct,
-        product_domain: getUkdocsCsiProductDomain(mappedProduct),
-        quantity: Number.isFinite(Number(line?.quantity)) ? Number(line.quantity) : null,
-      });
-    }
+      }),
+      rawProduct: String(line?.product || "").trim(),
+      quantity: Number.isFinite(Number(line?.quantity)) ? Number(line.quantity) : null,
+      source: document?.prefer_plants === true
+        ? "temp_phyto_plants"
+        : document?.kind === "temp_phyto_xml"
+          ? "temp_phyto_xml"
+          : "temp_phyto",
+    }));
     const problems = Array.isArray(parsed?.problems) ? parsed.problems : [];
     if (parsed?.document_state === "not_activated") {
       checks.push({
@@ -8247,27 +8401,64 @@ function buildUkdocsCsiDeterministicReport(collection, extractedDocuments) {
       manualChecks.push(`Review ${document.name || "temporary phyto PDF"}: ${problems.join(", ")}.`);
     }
     return {
-      document_label: documentLabel,
-      name: visualDocumentName || String(document?.name || "").trim(),
-      parsed_document_name: String(document?.name || "").trim(),
-      source_format: String(parsed?.source_format || "").trim().toLowerCase(),
-      parsed_pcnu_number: String(parsed?.pcnu_number || "").trim(),
-      parsed_document_state: String(parsed?.document_state || "").trim() || "unknown",
-      prefer_plants: document?.prefer_plants === true,
-      parsed_total_quantity: Number.isFinite(Number(parsed?.total_quantity)) ? Number(parsed.total_quantity) : null,
-      deterministic_ready: deterministicReady,
-      source_kind: String(document?.kind || "").trim(),
-      content_type: String(document?.content_type || "").trim(),
-      parser_error: String(document?.error || document?.parse_error || "").trim(),
-      parsed_product_count: productLines.length,
-      parsed_validation_report: validationReport,
+      document,
+      documentLabel,
+      visualDocumentName,
+      parsed,
+      validationReport,
+      deterministicReady,
+      problems,
+      pendingLines,
+    };
+  });
+
+  reconcileUkdocsCsiTempPhytoPlantGroups(
+    sourceRows.filter((row) => String(row?.source || "").trim() === "ipaffs_plants"),
+    tempPhytoPendingContexts.flatMap((context) => context.pendingLines.filter((line) => line.source === "temp_phyto_plants")),
+  );
+
+  const tempPhytoContexts = tempPhytoPendingContexts.map((context) => {
+    const lineProducts = context.pendingLines.map((line) => ({
+      product: line.mappedProduct,
+      raw_product: line.rawProduct,
+      quantity: line.quantity,
+    }));
+    for (const line of context.pendingLines) {
+      addUkdocsCsiQuantity(tempPhytoTotals, line.mappedProduct, line.quantity);
+      sourceRows.push({
+        source: line.source,
+        document_name: String(context.document?.name || context.documentLabel).trim(),
+        document_label: context.documentLabel,
+        raw_product: line.rawProduct,
+        commodity_code: "",
+        mapped_product: line.mappedProduct,
+        comparison_group: line.mappedProduct,
+        product_domain: getUkdocsCsiProductDomain(line.mappedProduct),
+        quantity: line.quantity,
+      });
+    }
+    return {
+      document_label: context.documentLabel,
+      name: context.visualDocumentName || String(context.document?.name || "").trim(),
+      parsed_document_name: String(context.document?.name || "").trim(),
+      source_format: String(context.parsed?.source_format || "").trim().toLowerCase(),
+      parsed_pcnu_number: String(context.parsed?.pcnu_number || "").trim(),
+      parsed_document_state: String(context.parsed?.document_state || "").trim() || "unknown",
+      prefer_plants: context.document?.prefer_plants === true,
+      parsed_total_quantity: Number.isFinite(Number(context.parsed?.total_quantity)) ? Number(context.parsed.total_quantity) : null,
+      deterministic_ready: context.deterministicReady,
+      source_kind: String(context.document?.kind || "").trim(),
+      content_type: String(context.document?.content_type || "").trim(),
+      parser_error: String(context.document?.error || context.document?.parse_error || "").trim(),
+      parsed_product_count: context.pendingLines.length,
+      parsed_validation_report: context.validationReport,
       expected_products: lineProducts.map((item) => ({
         product: item.product,
         raw_product: item.raw_product,
         expected_quantity: exportTotals.get(item.product) ?? invoiceTotals.get(item.product) ?? null,
         parsed_quantity: item.quantity,
       })),
-      parsed_problems: problems,
+      parsed_problems: context.problems,
     };
   });
 
