@@ -1732,6 +1732,12 @@ function normalizeUkdocsCustomer(customer) {
     match_hub_code: normalizeUkdocsText(customer?.match_hub_code),
     match_remark: String(customer?.match_remark || "").trim(),
     required_phyto: customer?.required_phyto !== false,
+    // Gmail auto-sync matches attachments by reference/invoice/truck tokens
+    // found anywhere in the email (subject/from/snippet), which can land a
+    // file on the wrong zending when a customer's own documents never
+    // reliably carry those numbers. Lets that customer be excluded from
+    // auto-matching entirely -- manual uploads in UKdocs Print are unaffected.
+    gmail_sync_enabled: customer?.gmail_sync_enabled !== false,
     required_export_extra: customer?.required_export_extra === true,
     required_generated_export: customer?.required_generated_export !== false,
     required_generated_invoices: customer?.required_generated_invoices !== false,
@@ -9407,6 +9413,10 @@ function collectionAcceptsUkdocsPrintDocument(collection, customers, kind) {
   const inspectionMode = ukdocsPrintInspectionMode(collection);
   const customer = ukdocsPrintCollectionCustomer(collection, customers);
   const pdTypeCompact = String(collection?.pd_type || "").trim().toLowerCase().replace(/\s+/g, "");
+
+  if (customer?.gmail_sync_enabled === false) {
+    return false;
+  }
 
   if (kind === "phyto") {
     if (inspectionMode === "stock_control") {

@@ -2764,6 +2764,7 @@ const UKDOCS_CUSTOMER_REQUIRED_DOCUMENT_FIELDS = [
   ["required_export_extra", "Require second export file"],
   ["required_generated_export", "Require generated export workbook"],
   ["required_generated_invoices", "Require generated invoice workbooks"],
+  ["gmail_sync_enabled", "Sync files from Gmail automatically"],
 ];
 
 const UKDOCS_CUSTOMER_MENU_DOCUMENT_FIELDS = [
@@ -2872,6 +2873,7 @@ function emptyUkdocsCustomer() {
     required_export_extra: false,
     required_generated_export: true,
     required_generated_invoices: true,
+    gmail_sync_enabled: true,
     menu_show_ukdocscsi: true,
     menu_show_ericdocs: true,
     menu_show_ukdocsinspection_inspection_list: true,
