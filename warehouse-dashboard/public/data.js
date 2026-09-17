@@ -175,10 +175,16 @@ window.WD = (function () {
     }
 
     for (const item of Object.values(byRef)) {
-      item.status = statusFromCounts(Number(item.scannedCount) || 0, Number(item.trolleyCount) || 0);
+      // A reference needing neither RFID nor photo has nothing expected of
+      // it at all -- overall status should say so directly rather than
+      // falling through to "Pending" just because nothing's been scanned.
+      const nothingRequired = item.requiresRfid === false && item.requiresPhoto === false;
+      item.status = nothingRequired
+        ? 'not_required'
+        : statusFromCounts(Number(item.scannedCount) || 0, Number(item.trolleyCount) || 0);
       item.rfidStatus = statusFromCounts(Number(item.rfidCount) || 0, Number(item.trolleyCount) || 0, item.requiresRfid !== false);
       item.photoStatus = statusFromCounts(Number(item.photoCount) || 0, Number(item.trolleyCount) || 0, item.requiresPhoto !== false);
-      if (!useLiveFallback && !hasHistoricalExpectedList && (Number(item.scannedCount) || 0) === 0) {
+      if (!nothingRequired && !useLiveFallback && !hasHistoricalExpectedList && (Number(item.scannedCount) || 0) === 0) {
         item.status = 'scheduled';
       }
       item.locations = (item.locations && item.locations.length) ? item.locations.slice(-1) : [];
@@ -210,9 +216,14 @@ window.WD = (function () {
       };
     }
     const perRef = dedupeByReference(rows);
-    const scannedRefs = perRef.filter(r => r.scannedCount >= r.trolleyCount);
-    const pendingRefs = perRef.filter(r => r.scannedCount === 0);
-    const pendingTrolleys = perRef.reduce((acc, r) => acc + Math.max(r.trolleyCount - r.scannedCount, 0), 0);
+    // A reference needing neither RFID nor photo has nothing expected of it
+    // at all -- it stays visible in the table (see item.status = 'not_required'
+    // in buildStateForDate) but must not inflate/drag down the expected,
+    // pending, or scanned totals below, since nothing is actually pending on it.
+    const countedRefs = perRef.filter((r) => r.requiresRfid !== false || r.requiresPhoto !== false);
+    const scannedRefs = countedRefs.filter(r => r.scannedCount >= r.trolleyCount);
+    const pendingRefs = countedRefs.filter(r => r.scannedCount === 0);
+    const pendingTrolleys = countedRefs.reduce((acc, r) => acc + Math.max(r.trolleyCount - r.scannedCount, 0), 0);
     const extraRefs = perRef.filter(r => String(r.status || '').toLowerCase() === 'extra');
 
     // Photo and RFID are independent checks -- some references need only one
@@ -228,14 +239,14 @@ window.WD = (function () {
     const photoEffective = needsPhoto.reduce((a, r) => a + Math.min(r.photoCount || 0, r.trolleyCount), 0);
 
     return {
-      expected_refs: perRef.length,
-      expected_trolleys: perRef.reduce((a, r) => a + r.trolleyCount, 0),
+      expected_refs: countedRefs.length,
+      expected_trolleys: countedRefs.reduce((a, r) => a + r.trolleyCount, 0),
       scanned_refs: scannedRefs.length,
-      scanned_trolleys: perRef.reduce((a, r) => a + r.scannedCount, 0),
+      scanned_trolleys: countedRefs.reduce((a, r) => a + r.scannedCount, 0),
       // Per-reference capped at its own trolleyCount, so extra scans on one
       // reference can never offset another reference that's still pending —
       // used for the completion percentage, not the raw "Scanned count" stat.
-      effective_scanned_trolleys: perRef.reduce((a, r) => a + Math.min(r.scannedCount, r.trolleyCount), 0),
+      effective_scanned_trolleys: countedRefs.reduce((a, r) => a + Math.min(r.scannedCount, r.trolleyCount), 0),
       pending_refs: pendingRefs.length,
       pending_trolleys: pendingTrolleys,
       extra_refs: extraRefs.length,
