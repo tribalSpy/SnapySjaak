@@ -11400,36 +11400,11 @@ async function sendUkdocsCsiSuccessEmail(collection, customers, settings, option
   };
 }
 
-// Eric Docs' own, much shorter attachment list -- just the two documents its
-// check actually compares, unlike UKDocs CSI's full generated-invoice/export
-// bundle. Sent to a separate mailbox (customer.eric_docs_email_recipients),
-// per the request that Eric Docs papers "go to a different email box".
-async function ericDocsCollectionAttachments(collection) {
-  const attachments = [];
-  const documents = [
-    ...(collection?.documents?.temp_phyto_files || []),
-    ...(collection?.documents?.inspection_list ? [collection.documents.inspection_list] : []),
-  ];
-  for (const document of documents) {
-    const resolvedPath = path.resolve(ukdocsPrintDocumentPath(document));
-    if (!resolvedPath.startsWith(path.resolve(ukdocsPrintFilesDir)) || !existsSync(resolvedPath)) {
-      continue;
-    }
-    const contentBase64 = await fs.readFile(resolvedPath, "base64");
-    attachments.push({
-      file_name: path.basename(document.original_name || resolvedPath),
-      mime_type: document.mime_type || guessMimeType(document.original_name || resolvedPath),
-      content_base64: contentBase64,
-    });
-  }
-  return attachments;
-}
-
 function buildEricDocsSuccessEmail(collection, customer = null) {
   const context = buildUkdocsPrintReadyTemplateContext(collection, { customer });
   const check = collection?.eric_docs_check || {};
   return [
-    "Eric Docs pieces check passed.",
+    "Eric Docs pieces check passed -- sending the UKdocs Zendings papers.",
     "",
     `Customer: ${context.customer_name}`,
     `Shipment reference: ${context.shipment_reference}`,
@@ -11438,13 +11413,15 @@ function buildEricDocsSuccessEmail(collection, customer = null) {
     "",
     `Phyto total: ${check.phyto_total ?? "-"}`,
     `Inspection total: ${check.inspection_total ?? "-"}`,
-    "",
-    "Attached files:",
-    "- Temporary phyto PDF",
-    "- Inspection list",
   ].join("\n");
 }
 
+// Eric Docs is only a quality gate (the pieces check) in front of the same
+// papers UKdocs Zendings already sends -- so it reuses that exact,
+// customer-configured attachment set (ukdocsPrintCollectionAttachments with
+// menuKey "ukdocsprint") rather than a separate Eric-Docs-only bundle. Only
+// the recipient mailbox differs (customer.eric_docs_email_recipients), per
+// the request that Eric Docs papers "go to a different email box".
 async function sendEricDocsSuccessEmail(collection, customers, settings) {
   const customer = ukdocsPrintCollectionCustomer(collection, customers);
   const recipients = normalizeEmailRecipients(customer?.eric_docs_email_recipients);
@@ -11454,9 +11431,9 @@ async function sendEricDocsSuccessEmail(collection, customers, settings) {
   if (!settings?.smtp_host || !settings?.smtp_username || !settings?.smtp_password || !settings?.smtp_from) {
     return { ok: false, recipients, error: "SMTP is not fully configured" };
   }
-  const attachments = await ericDocsCollectionAttachments(collection);
+  const attachments = await ukdocsPrintCollectionAttachments(collection, customer, "ukdocsprint");
   if (!attachments.length) {
-    return { ok: false, recipients, error: "No Eric Docs attachments found to send" };
+    return { ok: false, recipients, error: "No UKdocs Zendings attachments found to send" };
   }
   const context = buildUkdocsPrintReadyTemplateContext(collection, { customer });
   const subject = `Eric Docs OK | ${context.customer_name} | ${context.shipment_date}`;

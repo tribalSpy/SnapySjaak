@@ -7732,7 +7732,7 @@ function EricDocsPage({ currentUser }) {
               <button type="button" onClick={refreshState} disabled={loading || saving}>Refresh</button>
             </div>
           </div>
-          <div className="notice">Checks that the temporary phyto PDF's printed pieces total matches the inspection list's printed pieces total -- no XML needed.</div>
+          <div className="notice">Checks that the temporary phyto PDF's printed pieces total matches the inspection list's printed pieces total -- no XML needed. Once it passes, "Send papers" sends the same UKdocs Zendings papers to the Eric Docs mailbox configured in customer settings.</div>
           <div className="form-grid">
             <label className="wide">
               <span>Zending date</span>
@@ -7758,7 +7758,7 @@ function EricDocsPage({ currentUser }) {
                       type="button"
                       onClick={() => sendEricDocsPapers(collection.id)}
                       disabled={saving || !tileCheck?.ok || tileCheck?.match !== true}
-                      title={tileCheck?.ok && tileCheck?.match ? "" : "Run the pieces check successfully first"}
+                      title={tileCheck?.ok && tileCheck?.match ? "Sends the same UKdocs Zendings papers to the Eric Docs mailbox" : "Run the pieces check successfully first"}
                     >
                       Send papers
                     </button>
@@ -7827,7 +7827,7 @@ function EricDocsPage({ currentUser }) {
                   type="button"
                   onClick={() => sendEricDocsPapers(selectedCollection.id)}
                   disabled={saving || !selectedCheck?.ok || selectedCheck?.match !== true}
-                  title={selectedCheck?.ok && selectedCheck?.match ? "" : "Run the pieces check successfully first"}
+                  title={selectedCheck?.ok && selectedCheck?.match ? "Sends the same UKdocs Zendings papers to the Eric Docs mailbox" : "Run the pieces check successfully first"}
                 >
                   {selectedCollection.eric_docs_email?.ok ? "Resend papers" : "Send papers"}
                 </button>
