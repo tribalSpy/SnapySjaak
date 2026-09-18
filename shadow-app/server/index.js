@@ -1740,6 +1740,9 @@ function normalizeUkdocsCustomer(customer) {
     // reliably carry those numbers. Lets that customer be excluded from
     // auto-matching entirely -- manual uploads in UKdocs Print are unaffected.
     gmail_sync_enabled: customer?.gmail_sync_enabled !== false,
+    // Some customers don't want the "papers ready" notification at all --
+    // off skips both the automatic send and the manual "Send papers" button.
+    send_ready_email: customer?.send_ready_email !== false,
     required_export_extra: customer?.required_export_extra === true,
     required_generated_export: customer?.required_generated_export !== false,
     required_generated_invoices: customer?.required_generated_invoices !== false,
@@ -1779,6 +1782,8 @@ function normalizeUkdocsCustomer(customer) {
     csi_email_subject: String(customer?.csi_email_subject || "").trim(),
     csi_email_body: String(customer?.csi_email_body || "").trim(),
     eric_docs_email_recipients: normalizeEmailRecipients(customer?.eric_docs_email_recipients),
+    eric_docs_email_subject: String(customer?.eric_docs_email_subject || "").trim(),
+    eric_docs_email_body: String(customer?.eric_docs_email_body || "").trim(),
     default_invoice_language_text: String(customer?.default_invoice_language_text || "").trim(),
     default_document_references: String(customer?.default_document_references || "").trim(),
     show_invoice_vat_number: customer?.show_invoice_vat_number !== false,
@@ -11401,6 +11406,9 @@ async function sendUkdocsPrintReadyEmail(collection, customers, settings) {
     return { ok: false, recipients: [], error: "No email recipients configured" };
   }
   const requirements = getUkdocsPrintCollectionRequirements(collection, customers);
+  if (requirements.customer?.send_ready_email === false) {
+    return { ok: false, recipients: [], error: "Papers ready email is turned off for this customer" };
+  }
   if (!requirements.complete) {
     return { ok: false, recipients, error: `Still missing: ${requirements.missing.join(", ")}` };
   }
@@ -11480,7 +11488,15 @@ async function runUkdocsPrintAutoSend() {
     if (item.delivery_email?.ok) {
       return false;
     }
-    return getUkdocsPrintCollectionRequirements(item, state.customers).complete;
+    const requirements = getUkdocsPrintCollectionRequirements(item, state.customers);
+    // Skip these entirely rather than letting sendUkdocsPrintReadyEmail
+    // refuse them every cycle -- that would leave a permanent (and
+    // misleading) red "delivery failed" banner on a zending that was never
+    // supposed to get this email in the first place.
+    if (requirements.customer?.send_ready_email === false) {
+      return false;
+    }
+    return requirements.complete;
   });
 
   let sent = 0;
@@ -11728,8 +11744,15 @@ async function sendUkdocsCsiSuccessEmail(collection, customers, settings, option
 function buildEricDocsSuccessEmail(collection, customer = null) {
   const context = buildUkdocsPrintReadyTemplateContext(collection, { customer });
   const check = collection?.eric_docs_check || {};
+  if (String(customer?.eric_docs_email_body || "").trim()) {
+    return applyUkdocsReadyTemplate(customer.eric_docs_email_body, {
+      ...context,
+      phyto_total: String(check.phyto_total ?? "-"),
+      inspection_total: String(check.inspection_total ?? "-"),
+    }).trim();
+  }
   return [
-    "Eric Docs pieces check passed -- sending the UKdocs Zendings papers.",
+    "Eric Docs pieces check passed -- sending the shipment papers.",
     "",
     `Customer: ${context.customer_name}`,
     `Shipment reference: ${context.shipment_reference}`,
@@ -11761,7 +11784,9 @@ async function sendEricDocsSuccessEmail(collection, customers, settings) {
     return { ok: false, recipients, error: "No UKdocs Zendings attachments found to send" };
   }
   const context = buildUkdocsPrintReadyTemplateContext(collection, { customer });
-  const subject = `Eric Docs OK | ${context.customer_name} | ${context.shipment_date}`;
+  const subject = String(customer?.eric_docs_email_subject || "").trim()
+    ? applyUkdocsReadyTemplate(customer.eric_docs_email_subject, context).trim()
+    : `Eric Docs OK | ${context.customer_name} | ${context.shipment_date}`;
   await runPythonBridge(
     ["email-send"],
     JSON.stringify({

@@ -2745,6 +2745,8 @@ const UKDOCS_CUSTOMER_FIELDS = [
   ["csi_email_subject", "CSI email subject template", "textarea"],
   ["csi_email_body", "CSI email body template", "textarea"],
   ["eric_docs_email_recipients", "Eric Docs email recipients", "textarea"],
+  ["eric_docs_email_subject", "Eric Docs email subject template", "textarea"],
+  ["eric_docs_email_body", "Eric Docs email body template", "textarea"],
   ["default_invoice_language_text", "Default invoice language / text", "textarea"],
   ["default_document_references", "Default document references", "textarea"],
   ["transporter_name", "Transporteur (Finance Audit default)"],
@@ -2765,6 +2767,7 @@ const UKDOCS_CUSTOMER_REQUIRED_DOCUMENT_FIELDS = [
   ["required_generated_export", "Require generated export workbook"],
   ["required_generated_invoices", "Require generated invoice workbooks"],
   ["gmail_sync_enabled", "Sync files from Gmail automatically"],
+  ["send_ready_email", "Send papers ready email"],
 ];
 
 const UKDOCS_CUSTOMER_MENU_DOCUMENT_FIELDS = [
@@ -2866,6 +2869,8 @@ function emptyUkdocsCustomer() {
     csi_email_subject: "",
     csi_email_body: "",
     eric_docs_email_recipients: "",
+    eric_docs_email_subject: "",
+    eric_docs_email_body: "",
     default_invoice_language_text: "",
     default_document_references: "",
     show_invoice_vat_number: true,
@@ -2876,6 +2881,7 @@ function emptyUkdocsCustomer() {
     required_generated_export: true,
     required_generated_invoices: true,
     gmail_sync_enabled: true,
+    send_ready_email: true,
     menu_show_ukdocscsi: true,
     menu_show_ericdocs: true,
     menu_show_ukdocsinspection_inspection_list: true,
@@ -5967,7 +5973,11 @@ function UkdocsPrintPage({ currentUser }) {
                   {!!collection.delivery_email?.error && !collection.delivery_email?.ok && <small className="ukdocs-status-badge danger">Send failed: {collection.delivery_email.error}</small>}
                   <div className="row-actions spread-actions">
                     <button type="button" className="primary" onClick={() => openCollectionDetail(collection.id)}>{isActive ? "Opened" : "Open"}</button>
-                    {!isStockControl && !progress.missing.length && <button type="button" onClick={() => sendReady(collection.id)} disabled={saving}>Send papers</button>}
+                    {!isStockControl && !progress.missing.length && (
+                      progress.customer?.send_ready_email === false
+                        ? <button type="button" disabled title="Papers ready email is turned off for this customer">Send papers (off)</button>
+                        : <button type="button" onClick={() => sendReady(collection.id)} disabled={saving}>Send papers</button>
+                    )}
                     <button type="button" onClick={() => deleteCollection(collection.id)} disabled={collection.closed} title={collection.closed ? "Closed -- confirmation of exit received" : ""}>Delete</button>
                   </div>
                   {!!downloadEntries.length && (
@@ -5999,7 +6009,7 @@ function UkdocsPrintPage({ currentUser }) {
         <div className={`data-table-card ukdocs-stack ukdocs-drawer-panel ukdocs-sidebar-panel${detailDrawerOpen ? " open" : ""}`}>
           <div className="section-header">
             <h2>Zending detail</h2>
-            {selectedCollection && selectedCollectionProgress && <div className="row-actions"><div className={`ukdocs-status-badge ${ukdocsPrintStatusDefinition(selectedCollectionProgress.status).tone}`}>{ukdocsPrintStatusDefinition(selectedCollectionProgress.status).label}</div>{isSelectedCollectionClosed && <div className="ukdocs-status-badge muted">Closed</div>}{ukdocsPrintInspectionMode(selectedCollection) !== "stock_control" && !selectedCollectionProgress.missing.length && <button type="button" className="primary" onClick={() => sendReady(selectedCollection.id)} disabled={saving}>{saving ? "Sending..." : "Send papers ready"}</button>}<button type="button" onClick={closeCollectionDetail}>Close</button><button type="button" onClick={() => deleteCollection(selectedCollection.id)} disabled={isSelectedCollectionClosed} title={isSelectedCollectionClosed ? "Closed -- confirmation of exit received" : ""}>Delete</button></div>}
+            {selectedCollection && selectedCollectionProgress && <div className="row-actions"><div className={`ukdocs-status-badge ${ukdocsPrintStatusDefinition(selectedCollectionProgress.status).tone}`}>{ukdocsPrintStatusDefinition(selectedCollectionProgress.status).label}</div>{isSelectedCollectionClosed && <div className="ukdocs-status-badge muted">Closed</div>}{ukdocsPrintInspectionMode(selectedCollection) !== "stock_control" && !selectedCollectionProgress.missing.length && (selectedCollectionProgress.customer?.send_ready_email === false ? <button type="button" disabled title="Papers ready email is turned off for this customer">Send papers ready (off)</button> : <button type="button" className="primary" onClick={() => sendReady(selectedCollection.id)} disabled={saving}>{saving ? "Sending..." : "Send papers ready"}</button>)}<button type="button" onClick={closeCollectionDetail}>Close</button><button type="button" onClick={() => deleteCollection(selectedCollection.id)} disabled={isSelectedCollectionClosed} title={isSelectedCollectionClosed ? "Closed -- confirmation of exit received" : ""}>Delete</button></div>}
           </div>
 
           {!selectedCollection && <div className="notice">Open a zending to see the details.</div>}
