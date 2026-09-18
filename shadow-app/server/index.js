@@ -5925,6 +5925,68 @@ async function queueUkdocsInvoicePdfJobs(collection, requestUser) {
   return jobs;
 }
 
+const UKDOCS_INVOICE_PDF_STALE_MINUTES = 5;
+
+// Redoes an "excel_to_pdf" invoice conversion that's been stuck in-flight
+// (claimed by the LLM poller agent but never completed or failed -- e.g. the
+// agent crashed or lost connectivity mid-job) for more than five minutes.
+// Its max_attempts is 1 (see queueUkdocsInvoicePdfJobs), so a job the poller
+// claimed and then never finished can never be reclaimed on its own --
+// without this, that one invoice's PDF just never arrives and blocks CSI
+// forever (ukdocsCsiInvoicesReadyServer needs every invoice's PDF). Safe to
+// redo even if the original attempt eventually does come back late --
+// saveUkdocsGeneratedInvoicePdfResult always replaces whichever PDF already
+// exists for that shipment/category, so whichever attempt finishes last wins.
+async function runUkdocsInvoicePdfRetry() {
+  if (!isDatabaseEnabled() || !llmPollerEnabled()) {
+    return { ok: true, checked: 0, retried: 0 };
+  }
+  const snapshot = await getLlmQueueSnapshot();
+  const staleCutoff = Date.now() - UKDOCS_INVOICE_PDF_STALE_MINUTES * 60 * 1000;
+  const staleJobs = (snapshot.jobs || []).filter((job) => {
+    if (job.job_type !== "excel_to_pdf" || (job.status !== "pending" && job.status !== "claimed")) {
+      return false;
+    }
+    const referenceTime = job.claimed_at || job.created_at;
+    return Boolean(referenceTime) && new Date(referenceTime).getTime() < staleCutoff;
+  });
+  if (!staleJobs.length) {
+    return { ok: true, checked: snapshot.jobs.length, retried: 0 };
+  }
+
+  const state = await readUkdocsState();
+  let retried = 0;
+  for (const job of staleJobs) {
+    const collection = ukdocsPrintCollectionById(state.print_collections, job.collection_id);
+    if (!collection) {
+      continue;
+    }
+    const sourceStorageName = String(job.payload_json?.source_storage_name || "").trim();
+    const category = normalizeUkdocsText(job.payload_json?.category);
+    // Already has a PDF for this category by now -- a slower duplicate
+    // attempt or a manual re-upload beat this retry to it, nothing to redo.
+    const alreadyHasPdf = (collection.documents?.generated_files || []).some((file) => (
+      file?.document_kind === "invoice" && isPdfUkdocsDocument(file) && normalizeUkdocsText(file?.category) === category
+    ));
+    if (alreadyHasPdf) {
+      continue;
+    }
+    const sourceDocument = (collection.documents?.generated_files || []).find((file) => String(file?.storage_name || "").trim() === sourceStorageName);
+    if (!sourceDocument) {
+      continue;
+    }
+    await failLlmJob(job.id, job.agent_name || "stale-invoice-pdf-retry", "Timed out waiting for the excel-to-pdf agent -- redone automatically", false);
+    const requeued = await queueUkdocsInvoicePdfJobs(
+      { ...collection, documents: { ...collection.documents, generated_files: [sourceDocument] } },
+      { username: "invoice-pdf-retry" },
+    );
+    if (requeued.length) {
+      retried += 1;
+    }
+  }
+  return { ok: true, checked: snapshot.jobs.length, retried };
+}
+
 async function saveUkdocsGeneratedInvoicePdfResult(job) {
   const state = await readUkdocsState();
   const existingCollection = ukdocsPrintCollectionById(state.print_collections, job.collection_id);
@@ -16812,6 +16874,7 @@ async function startServer() {
   const serializedPdKeuringReconcile = serializeUkdocsPrintCollectionsJob(runPdKeuringSheetReconcile);
   const serializedCsiSendQueue = serializeUkdocsPrintCollectionsJob(runUkdocsCsiSendQueue);
   const serializedEricDocsSendQueue = serializeUkdocsPrintCollectionsJob(runEricDocsSendQueue);
+  const serializedInvoicePdfRetry = serializeUkdocsPrintCollectionsJob(runUkdocsInvoicePdfRetry);
 
   runIfOnline("UKdocs Zendingen Gmail auto-sync", serializedGmailAutoSync).catch(() => {});
   setInterval(() => {
@@ -16837,6 +16900,14 @@ async function startServer() {
   setInterval(() => {
     runIfOnline("Eric Docs send queue", serializedEricDocsSendQueue).catch(() => {});
   }, 15 * 60 * 1000);
+
+  // Shorter interval than the other jobs above -- this exists specifically
+  // to catch a stuck invoice PDF job within a few minutes of the 5-minute
+  // staleness threshold, not on the same lazy 15-minute cadence.
+  runIfOnline("UKdocs invoice PDF stale retry", serializedInvoicePdfRetry).catch(() => {});
+  setInterval(() => {
+    runIfOnline("UKdocs invoice PDF stale retry", serializedInvoicePdfRetry).catch(() => {});
+  }, 3 * 60 * 1000);
 
   async function runIfBackup(jobName, jobFn) {
     const systemMode = await readSystemMode();
