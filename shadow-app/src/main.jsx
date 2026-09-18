@@ -6968,6 +6968,32 @@ function UkdocsCSIPage({ currentUser }) {
     }
   }
 
+  // Password-gated: someone responsible has looked at a CSI warning,
+  // understands the mistake, and agrees with it, so unlocks "Send papers to
+  // CSI" for this one zending. The password lives in Settings -> UKDocs CSI
+  // overrule, editable only by whoever has access to Settings.
+  async function overruleCsi(collectionId) {
+    const password = window.prompt("Enter the CSI overrule password:");
+    if (password === null) {
+      return;
+    }
+    setSaving(true);
+    setMessage("");
+    setError("");
+    try {
+      const payload = await apiJson(`/api/ukdocs-print/collections/${encodeURIComponent(collectionId)}/csi/overrule`, {
+        method: "POST",
+        body: JSON.stringify({ password }),
+      });
+      setState((current) => ({ ...current, print_collections: payload.print_collections || current?.print_collections || [] }));
+      setMessage("CSI overrule granted -- \"Send papers to CSI\" is now unlocked for this zending.");
+    } catch (overruleError) {
+      setError(overruleError.message);
+    } finally {
+      setSaving(false);
+    }
+  }
+
   async function uploadCollectionFile(kind, fileOrFiles) {
     if (!selectedCollection || !fileOrFiles) {
       return;
@@ -7125,7 +7151,7 @@ function UkdocsCSIPage({ currentUser }) {
                     <button
                       type="button"
                       onClick={() => sendCsiPapers(collection.id)}
-                      disabled={saving || tileCsiReport?.status !== "done" || tileCsiReport?.overall_status !== "pass"}
+                      disabled={saving || tileCsiReport?.status !== "done" || (tileCsiReport?.overall_status !== "pass" && !collection.csi_override?.overridden)}
                       title={ukdocsCsiInvoicesReady(collection) ? "" : "Invoice PDFs aren't ready yet -- will queue and send automatically once they are"}
                     >
                       {collection.csi_send_queue?.queued ? "Queued for CSI" : "Send papers to CSI"}
@@ -7270,12 +7296,25 @@ function UkdocsCSIPage({ currentUser }) {
                 <button
                   type="button"
                   onClick={() => sendCsiPapers(selectedCollection.id)}
-                  disabled={saving || selectedCsiDisplayReport.status !== "done" || selectedCsiDisplayReport.overall_status !== "pass"}
+                  disabled={saving || selectedCsiDisplayReport.status !== "done" || (selectedCsiDisplayReport.overall_status !== "pass" && !selectedCollection.csi_override?.overridden)}
                   title={ukdocsCsiInvoicesReady(selectedCollection) ? "" : "Invoice PDFs aren't ready yet -- will queue and send automatically once they are"}
                 >
                   {selectedCsiSendQueue.queued ? "Queued for CSI" : "Send papers to CSI"}
                 </button>
+                {selectedCsiDisplayReport.status === "done" && selectedCsiDisplayReport.overall_status !== "pass" && (
+                  <button
+                    type="button"
+                    onClick={() => overruleCsi(selectedCollection.id)}
+                    disabled={saving || selectedCollection.csi_override?.overridden}
+                    title="Password-protected -- unlocks Send papers to CSI for this zending despite the warning"
+                  >
+                    {selectedCollection.csi_override?.overridden ? "Overruled" : "Overrule"}
+                  </button>
+                )}
               </div>
+              {selectedCollection.csi_override?.overridden && (
+                <small>Overruled by {selectedCollection.csi_override.overridden_by || "-"} at {formatTimestamp(selectedCollection.csi_override.overridden_at)}</small>
+              )}
 
               <div className="ukdocs-download-box">
                 <div className="row-actions spread-actions">
@@ -14129,6 +14168,23 @@ function SettingsPage({ currentUser }) {
               onChange={(event) => setForm({ ...form, smtp_starttls: event.target.checked })}
             />
             <span>Use STARTTLS</span>
+          </label>
+        </div>
+
+        <div id="settings-csi-override" className="wide data-table-card">
+          <div className="section-header"><h2>UKDocs CSI overrule</h2></div>
+          <p className="sidebar-note">
+            Lets someone who understands a CSI warning and agrees with it unlock "Send papers to CSI" for that one
+            zending, from the CSI detail panel. Leave this blank to disable the overrule entirely.
+          </p>
+          <label className="wide">
+            <span>Overrule password</span>
+            <input
+              type="password"
+              value={form.csi_override_password || ""}
+              onChange={(event) => setForm({ ...form, csi_override_password: event.target.value })}
+              placeholder="Shared password for the CSI overrule button"
+            />
           </label>
         </div>
         {message && <div className="notice">{message}</div>}

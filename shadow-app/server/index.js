@@ -513,6 +513,7 @@ const defaultFustSettings = {
   smtp_password: "",
   smtp_from: "",
   smtp_starttls: true,
+  csi_override_password: "",
   cmr_country_folders: {},
   cmr_fallback_folder_id: "",
   cmr_google_client_id: "",
@@ -1493,6 +1494,7 @@ function normalizeFustSettings(settings) {
     smtp_starttls: settings?.smtp_starttls === false || settings?.smtp_starttls === "0" || settings?.smtp_starttls === "false"
       ? false
       : true,
+    csi_override_password: String(settings?.csi_override_password || ""),
     cmr_country_folders: normalizeCmrCountryFolders(settings?.cmr_country_folders),
     cmr_fallback_folder_id: String(settings?.cmr_fallback_folder_id || "").trim(),
     cmr_google_client_id: String(settings?.cmr_google_client_id || "").trim(),
@@ -2273,6 +2275,16 @@ function normalizeUkdocsPrintCollection(collection) {
       queued_at: normalizeUkdocsText(collection?.csi_send_queue?.queued_at),
       queued_by: normalizeUkdocsText(collection?.csi_send_queue?.queued_by),
     },
+    // Set via /csi/overrule (password-gated, password kept in Fust settings)
+    // when whoever's responsible has looked at a CSI warning, understands
+    // where the mistake is, and agrees with it -- unlocks "Send papers to
+    // CSI" for this one zending despite the audit not passing cleanly.
+    // Cleared automatically the next time CSI is re-run on this zending.
+    csi_override: {
+      overridden: collection?.csi_override?.overridden === true,
+      overridden_at: normalizeUkdocsText(collection?.csi_override?.overridden_at),
+      overridden_by: normalizeUkdocsText(collection?.csi_override?.overridden_by),
+    },
     // Eric Docs' check: does the temporary phyto PDF's "TOTAL ... Pieces"
     // line match the inspection list's "TOTAAL ... Stuks" line -- and, when
     // PD Keuring's own "Pieces" field (expected_pieces) is filled in, that
@@ -2326,9 +2338,14 @@ function normalizeUkdocsPrintCollection(collection) {
   normalized.status = deriveUkdocsPrintCollectionStatus(normalized);
   // Same pass condition the /csi/send route gates on -- computed once here
   // so every consumer (Finance Audit UKDocs included) agrees on what "passed
-  // the CSI check" means without re-deriving the plant-reconciled rule.
+  // the CSI check" means without re-deriving the plant-reconciled rule. A
+  // granted overrule (see /csi/overrule) counts the same as a clean pass --
+  // it exists specifically so a manually-confirmed warning stops blocking
+  // everything downstream of the CSI check, not just the send button.
   normalized.csi_check_passed = normalized.csi_report.status === "done"
-    && (String(normalized.csi_report.overall_status || "").trim().toLowerCase() === "pass" || isUkdocsCsiPlantReconciledPassReport(normalized.csi_report));
+    && (String(normalized.csi_report.overall_status || "").trim().toLowerCase() === "pass"
+      || isUkdocsCsiPlantReconciledPassReport(normalized.csi_report)
+      || normalized.csi_override.overridden === true);
   // A TrackonTrade "confirmation of exit" release means the shipment has
   // already cleared customs -- from that point on the zending is closed:
   // derived purely from whether an exit confirmation file exists, so it
@@ -14534,10 +14551,21 @@ async function handleApi(req, res, url) {
     }
     const collectionId = decodeURIComponent(url.pathname.slice("/api/ukdocs-print/collections/".length, -"/csi/run".length));
     const state = await readUkdocsState();
-    const existingCollection = ukdocsPrintCollectionById(state.print_collections, collectionId);
+    let existingCollection = ukdocsPrintCollectionById(state.print_collections, collectionId);
     if (!existingCollection) {
       sendJson(res, 404, { error: "UKDocs zending not found" });
       return;
+    }
+    // A fresh run replaces the CSI result an earlier overrule was granted
+    // against -- clear it so a stale overrule can't silently carry over to
+    // whatever the new result turns out to be.
+    if (existingCollection.csi_override?.overridden) {
+      existingCollection = normalizeUkdocsPrintCollection({
+        ...existingCollection,
+        csi_override: { overridden: false, overridden_at: "", overridden_by: "" },
+      });
+      state.print_collections = upsertUkdocsPrintCollection(state.print_collections, existingCollection);
+      await writeUkdocsState(state);
     }
     const generatedFiles = existingCollection.documents?.generated_files || [];
     const hasGeneratedExport = generatedFiles.some((file) => file.document_kind === "export");
@@ -14616,6 +14644,47 @@ async function handleApi(req, res, url) {
     return;
   }
 
+  // Password-gated overrule: someone responsible has looked at a CSI
+  // warning, understands the mistake, and agrees with it, so unlocks
+  // "Send papers to CSI" for this one zending despite the audit not
+  // passing cleanly. The password lives in Fust settings, editable only by
+  // whoever has SETTINGS_MANAGE (the Settings page itself is admin-gated).
+  if (url.pathname.startsWith("/api/ukdocs-print/collections/") && url.pathname.endsWith("/csi/overrule") && req.method === "POST") {
+    if (!requirePermission(res, requestUser, PERMISSIONS.UKDOCS_CSI_VIEW)) {
+      return;
+    }
+    const collectionId = decodeURIComponent(url.pathname.slice("/api/ukdocs-print/collections/".length, -"/csi/overrule".length));
+    const body = await readRequestJson(req);
+    const settings = await readFustSettings();
+    if (!settings.csi_override_password) {
+      sendJson(res, 400, { error: "No overrule password configured -- set one in Settings first" });
+      return;
+    }
+    if (String(body?.password || "") !== settings.csi_override_password) {
+      sendJson(res, 400, { error: "Incorrect overrule password" });
+      return;
+    }
+    const state = await readUkdocsState();
+    const existingCollection = ukdocsPrintCollectionById(state.print_collections, collectionId);
+    if (!existingCollection) {
+      sendJson(res, 404, { error: "UKDocs zending not found" });
+      return;
+    }
+    if (String(existingCollection?.csi_report?.status || "").trim() !== "done") {
+      sendJson(res, 400, { error: "Run CSI first before overruling its result" });
+      return;
+    }
+    const updatedCollection = normalizeUkdocsPrintCollection({
+      ...existingCollection,
+      updated_at: new Date().toISOString(),
+      csi_override: { overridden: true, overridden_at: new Date().toISOString(), overridden_by: requestUser.username },
+    });
+    state.print_collections = upsertUkdocsPrintCollection(state.print_collections, updatedCollection);
+    await writeUkdocsState(state);
+    sendJson(res, 200, { collection: updatedCollection, print_collections: normalizeUkdocsState(state).print_collections });
+    return;
+  }
+
   if (url.pathname.startsWith("/api/ukdocs-print/collections/") && url.pathname.endsWith("/csi/send") && req.method === "POST") {
     if (!requirePermission(res, requestUser, PERMISSIONS.UKDOCS_CSI_VIEW)) {
       return;
@@ -14627,9 +14696,7 @@ async function handleApi(req, res, url) {
       sendJson(res, 404, { error: "UKDocs zending not found" });
       return;
     }
-    const overallStatus = String(existingCollection?.csi_report?.overall_status || "").trim().toLowerCase();
-    const plantReconciledPass = isUkdocsCsiPlantReconciledPassReport(existingCollection?.csi_report);
-    if (String(existingCollection?.csi_report?.status || "").trim() !== "done" || (overallStatus !== "pass" && !plantReconciledPass)) {
+    if (!existingCollection.csi_check_passed) {
       sendJson(res, 400, { error: "Run CSI successfully before sending papers to CSI" });
       return;
     }
