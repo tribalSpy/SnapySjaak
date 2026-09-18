@@ -7717,9 +7717,11 @@ function UkdocsCSIPage({ currentUser }) {
   );
 }
 
-// Eric Docs' one check: does the temporary phyto PDF's printed pieces total
-// match the inspection list's printed pieces total. Deliberately simpler
-// than UKDocs CSI -- no XML/IPAFFS cross-check, just these two PDFs.
+// Eric Docs' check: does the temporary phyto PDF's printed pieces total
+// match the inspection list's printed pieces total -- and, when PD Keuring's
+// own "Pieces" field is filled in for this zending, that both also agree
+// with it. Deliberately simpler than UKDocs CSI -- no XML/IPAFFS cross-check,
+// just these two PDFs (plus that one optional manual figure).
 function ericDocsCheckStatus(check) {
   if (!check?.checked_at) {
     return { tone: "warn", label: "Not checked yet" };
@@ -7727,9 +7729,15 @@ function ericDocsCheckStatus(check) {
   if (!check.ok) {
     return { tone: "danger", label: check.error || "Could not run the check" };
   }
-  return check.match
-    ? { tone: "success", label: `Pieces match (${check.phyto_total})` }
-    : { tone: "danger", label: `MISMATCH: phyto ${check.phyto_total} vs inspection ${check.inspection_total}` };
+  if (check.match) {
+    return {
+      tone: "success",
+      label: check.expected_pieces !== null
+        ? `Pieces match (${check.phyto_total}, PD Keuring expects ${check.expected_pieces})`
+        : `Pieces match (${check.phyto_total})`,
+    };
+  }
+  return { tone: "danger", label: check.error || `MISMATCH: phyto ${check.phyto_total} vs inspection ${check.inspection_total}` };
 }
 
 function EricDocsPage({ currentUser }) {
@@ -7927,7 +7935,7 @@ function EricDocsPage({ currentUser }) {
               <button type="button" onClick={refreshState} disabled={loading || saving}>Refresh</button>
             </div>
           </div>
-          <div className="notice">Checks that the temporary phyto PDF's printed pieces total matches the inspection list's printed pieces total -- no XML needed. Once it passes, "Send papers" sends the same UKdocs Zendings papers to the Eric Docs mailbox configured in customer settings.</div>
+          <div className="notice">Checks that the temporary phyto PDF's printed pieces total matches the inspection list's printed pieces total -- no XML needed. When PD Keuring's own "Pieces" field is filled in for the zending, that figure has to agree too. Once it passes, "Send papers" sends the same UKdocs Zendings papers to the Eric Docs mailbox configured in customer settings.</div>
           <div className="form-grid">
             <label className="wide">
               <span>Zending date</span>
@@ -7981,6 +7989,7 @@ function EricDocsPage({ currentUser }) {
                 <label><span>Shipment date</span><input value={selectedCollection.shipment_date || ""} readOnly /></label>
                 <label><span>Customer</span><input value={selectedCollection.customer_name || ""} readOnly /></label>
                 <label><span>City</span><input value={selectedCollection.city_name || ""} readOnly /></label>
+                <label><span>Expected pieces (PD Keuring)</span><input value={selectedCollection.expected_pieces || "Not filled in"} readOnly /></label>
               </div>
 
               <div className="ukdocs-upload-grid">
@@ -8035,7 +8044,9 @@ function EricDocsPage({ currentUser }) {
               )}
               {selectedCheck?.checked_at && (
                 <small>
-                  Phyto total: {selectedCheck.phyto_total ?? "-"} -- Inspection total: {selectedCheck.inspection_total ?? "-"} -- Checked {formatTimestamp(selectedCheck.checked_at)}
+                  Phyto total: {selectedCheck.phyto_total ?? "-"} -- Inspection total: {selectedCheck.inspection_total ?? "-"}
+                  {selectedCheck.expected_pieces !== null && ` -- PD Keuring expected pieces: ${selectedCheck.expected_pieces}`}
+                  {" "}-- Checked {formatTimestamp(selectedCheck.checked_at)}
                 </small>
               )}
               {selectedCollection.eric_docs_email?.sent_at && (

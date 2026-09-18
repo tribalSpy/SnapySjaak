@@ -2273,14 +2273,17 @@ function normalizeUkdocsPrintCollection(collection) {
       queued_at: normalizeUkdocsText(collection?.csi_send_queue?.queued_at),
       queued_by: normalizeUkdocsText(collection?.csi_send_queue?.queued_by),
     },
-    // Eric Docs' one and only check: does the temporary phyto PDF's "TOTAL
-    // ... Pieces" line match the inspection list's "TOTAAL ... Stuks" line.
-    // Run on demand via /api/eric-docs/collections/:id/check, cached here so
-    // re-opening the shipment doesn't need to re-run it.
+    // Eric Docs' check: does the temporary phyto PDF's "TOTAL ... Pieces"
+    // line match the inspection list's "TOTAAL ... Stuks" line -- and, when
+    // PD Keuring's own "Pieces" field (expected_pieces) is filled in, that
+    // both also agree with it. Run on demand via
+    // /api/eric-docs/collections/:id/check, cached here so re-opening the
+    // shipment doesn't need to re-run it.
     eric_docs_check: {
       ok: collection?.eric_docs_check?.ok === true,
       phyto_total: Number.isFinite(Number(collection?.eric_docs_check?.phyto_total)) ? Number(collection.eric_docs_check.phyto_total) : null,
       inspection_total: Number.isFinite(Number(collection?.eric_docs_check?.inspection_total)) ? Number(collection.eric_docs_check.inspection_total) : null,
+      expected_pieces: Number.isFinite(Number(collection?.eric_docs_check?.expected_pieces)) ? Number(collection.eric_docs_check.expected_pieces) : null,
       match: collection?.eric_docs_check?.match === true ? true : (collection?.eric_docs_check?.match === false ? false : null),
       error: String(collection?.eric_docs_check?.error || "").trim(),
       checked_at: normalizeUkdocsText(collection?.eric_docs_check?.checked_at),
@@ -14442,6 +14445,20 @@ async function handleApi(req, res, url) {
       } catch (error) {
         checkResult = { ok: false, phyto_total: null, inspection_total: null, match: null, error: error instanceof Error ? error.message : String(error) };
       }
+    }
+    // PD Keuring's own "Pieces" field (expected_pieces) is filled in by hand
+    // during day planning, separately from either PDF -- when it's present,
+    // fold it into the same check as a third figure that must agree, instead
+    // of only cross-checking the two PDFs against each other.
+    const expectedPiecesRaw = String(existingCollection.expected_pieces || "").trim();
+    const expectedPieces = expectedPiecesRaw && Number.isFinite(Number(expectedPiecesRaw)) ? Number(expectedPiecesRaw) : null;
+    checkResult = { ...checkResult, expected_pieces: expectedPieces };
+    if (checkResult.ok && checkResult.match && expectedPieces !== null && Math.abs((Number(checkResult.phyto_total) || 0) - expectedPieces) > 0.01) {
+      checkResult = {
+        ...checkResult,
+        match: false,
+        error: `Phyto and inspection list agree at ${checkResult.phyto_total}, but PD Keuring's expected pieces is ${expectedPieces}`,
+      };
     }
     const updatedCollection = normalizeUkdocsPrintCollection({
       ...existingCollection,
