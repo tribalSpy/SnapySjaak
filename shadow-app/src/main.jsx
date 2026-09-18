@@ -2776,6 +2776,8 @@ const UKDOCS_CUSTOMER_MENU_DOCUMENT_FIELDS = [
   ["menu_show_ukdocsinspection_export_extra", "Phyto inspection - Second export file"],
   ["menu_show_ukdocsinspection_generated_invoices", "Phyto inspection - Invoices generate"],
   ["menu_show_ukdocsinspection_generated_export", "Phyto inspection - Export file generated"],
+  ["menu_show_ukdocsinspection_temp_phyto_plants", "Phyto inspection - Temporary phyto Plants PDF"],
+  ["menu_show_ukdocsinspection_exit_confirmation", "Phyto inspection - Confirmation of exit"],
   ["menu_show_ukdocsprint_phyto", "UKdocs Print - Phytosanitary document"],
   ["menu_show_ukdocsprint_export_extra", "UKdocs Print - Second export file"],
   ["menu_show_ukdocsprint_generated_invoices", "UKdocs Print - Invoices generate"],
@@ -2882,6 +2884,8 @@ function emptyUkdocsCustomer() {
     menu_show_ukdocsinspection_export_extra: false,
     menu_show_ukdocsinspection_generated_invoices: false,
     menu_show_ukdocsinspection_generated_export: false,
+    menu_show_ukdocsinspection_temp_phyto_plants: true,
+    menu_show_ukdocsinspection_exit_confirmation: true,
     menu_show_ukdocsprint_phyto: true,
     menu_show_ukdocsprint_export_extra: true,
     menu_show_ukdocsprint_generated_invoices: true,
@@ -3143,6 +3147,8 @@ function ukdocsMenuDocumentVisibility(customer, menuKey) {
       locations_file: customer?.menu_show_ukdocsinspection_locations_file !== false,
       generated_invoice: customer?.menu_show_ukdocsinspection_generated_invoices === true,
       generated_export: customer?.menu_show_ukdocsinspection_generated_export === true,
+      temp_phyto_plants_file: customer?.menu_show_ukdocsinspection_temp_phyto_plants !== false,
+      exit_confirmation: customer?.menu_show_ukdocsinspection_exit_confirmation !== false,
     };
   }
   return {
@@ -6496,7 +6502,23 @@ function UkdocsInspectionPage({ currentUser }) {
               <div className="notice">{ukdocsPrintInspectionMode(selectedCollection) === "stock_control" ? (selectedCollectionProgress?.missing?.length ? `Still needed for voorraad / stock control: ${selectedCollectionProgress.missing.join(", ")}` : "All voorraad / stock control papers are collected.") : (selectedCollectionProgress?.missing?.length ? `Still needed for nakeuring: ${selectedCollectionProgress.missing.join(", ")}. Gmail can match nakeuring files automatically when the reference, invoice, or truck/trailer matches.` : "All nakeuring papers are collected. Gmail can match nakeuring files automatically when the reference, invoice, or truck/trailer matches.")}</div>
 
               <div className="ukdocs-upload-grid">
-                {UKDOCS_PRINT_DOCUMENTS.filter((documentDefinition) => ukdocsInspectionDocumentKeys(selectedCollection).includes(documentDefinition.key)).map((documentDefinition) => {
+                {UKDOCS_PRINT_DOCUMENTS.filter((documentDefinition) => {
+                  if (!ukdocsInspectionDocumentKeys(selectedCollection).includes(documentDefinition.key)) {
+                    return false;
+                  }
+                  // temp_phyto_plants_file/exit_confirmation used to show for
+                  // every nakeuring zending unconditionally -- now opt-out per
+                  // customer via Menu document visibility, same as the rest
+                  // of this menu's document toggles.
+                  const visibility = ukdocsMenuDocumentVisibility(selectedCollectionProgress?.customer, "ukdocsinspection");
+                  if (documentDefinition.key === "temp_phyto_plants_file" && visibility.temp_phyto_plants_file === false) {
+                    return false;
+                  }
+                  if (documentDefinition.key === "exit_confirmation" && visibility.exit_confirmation === false) {
+                    return false;
+                  }
+                  return true;
+                }).map((documentDefinition) => {
                   const document = documentDefinition.key === "phyto"
                     ? null
                     : selectedCollection.documents?.[documentDefinition.key] || null;

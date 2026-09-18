@@ -1752,6 +1752,11 @@ function normalizeUkdocsCustomer(customer) {
     menu_show_ukdocsinspection_export_extra: customer?.menu_show_ukdocsinspection_export_extra === true,
     menu_show_ukdocsinspection_generated_invoices: customer?.menu_show_ukdocsinspection_generated_invoices === true,
     menu_show_ukdocsinspection_generated_export: customer?.menu_show_ukdocsinspection_generated_export === true,
+    // These two were previously shown unconditionally for every nakeuring
+    // (reinspection) zending regardless of customer -- now opt-out per
+    // customer like the rest of this menu's document toggles.
+    menu_show_ukdocsinspection_temp_phyto_plants: customer?.menu_show_ukdocsinspection_temp_phyto_plants !== false,
+    menu_show_ukdocsinspection_exit_confirmation: customer?.menu_show_ukdocsinspection_exit_confirmation !== false,
     menu_show_ukdocsprint_phyto: customer?.menu_show_ukdocsprint_phyto !== false,
     menu_show_ukdocsprint_export_extra: customer?.menu_show_ukdocsprint_export_extra !== false,
     menu_show_ukdocsprint_generated_invoices: customer?.menu_show_ukdocsprint_generated_invoices !== false,
