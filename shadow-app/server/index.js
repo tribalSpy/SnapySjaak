@@ -15317,6 +15317,52 @@ async function handleApi(req, res, url) {
     return;
   }
 
+  // One-time migration aid for retiring hub-code/remark customer matching:
+  // bakes today's fuzzy-match result (matchUkdocsCustomerForPrintCollection)
+  // permanently into customer_id/customer_name for every collection that
+  // doesn't already have a valid customer_id, so historical rows that only
+  // ever resolved a customer through that heuristic don't go blank the
+  // moment it's removed from live resolution. Safe to run more than once --
+  // it only ever touches rows that still have no valid customer_id.
+  if (url.pathname === "/api/ukdocs-print/collections/backfill-customer-links" && req.method === "POST") {
+    if (!requirePermission(res, requestUser, PERMISSIONS.SETTINGS_MANAGE)) {
+      return;
+    }
+    const state = await readUkdocsState();
+    let updated = 0;
+    let stillUnresolved = 0;
+    const nextCollections = state.print_collections.map((collection) => {
+      const hasValidCustomer = collection.customer_id && state.customers.some((customer) => customer.id === collection.customer_id);
+      if (hasValidCustomer) {
+        return collection;
+      }
+      const matchedCustomer = matchUkdocsCustomerForPrintCollection(state.customers, collection);
+      if (!matchedCustomer) {
+        stillUnresolved += 1;
+        return collection;
+      }
+      updated += 1;
+      return normalizeUkdocsPrintCollection({
+        ...collection,
+        customer_id: matchedCustomer.id,
+        customer_name: matchedCustomer.customer_name,
+        updated_at: new Date().toISOString(),
+      });
+    });
+    if (updated) {
+      state.print_collections = nextCollections;
+      await writeUkdocsState(state);
+    }
+    sendJson(res, 200, {
+      ok: true,
+      checked: state.print_collections.length,
+      updated,
+      still_unresolved: stillUnresolved,
+      print_collections: normalizeUkdocsState(state).print_collections,
+    });
+    return;
+  }
+
   // Auto-derives city -> hub_code/border_crossing/re_export/pd_type/pd_code
   // templates from every historical PD Keuring row already imported (see
   // backfill-history above), rather than requiring each city's template to

@@ -8145,6 +8145,8 @@ function PdKeuringPage({ currentUser }) {
   const [referenceDraft, setReferenceDraft] = useState(emptyUkdocsPdReferenceEntry());
   const [backfillIncludeOud, setBackfillIncludeOud] = useState(false);
   const [backfillBusy, setBackfillBusy] = useState(false);
+  const [customerLinkBackfillBusy, setCustomerLinkBackfillBusy] = useState(false);
+  const [customerLinkBackfillResult, setCustomerLinkBackfillResult] = useState(null);
   const [buildingReferenceFromHistory, setBuildingReferenceFromHistory] = useState(false);
   const [backfillResult, setBackfillResult] = useState(null);
   const [selectedDate, setSelectedDate] = useState(() => localDateIso());
@@ -8515,6 +8517,26 @@ function PdKeuringPage({ currentUser }) {
     }
   }
 
+  async function runCustomerLinkBackfill() {
+    if (!window.confirm("Bake today's hub code/remark customer match into every row that doesn't already have a customer picked? This is safe to run more than once and is needed once before hub code/remark matching gets removed.")) {
+      return;
+    }
+    setCustomerLinkBackfillBusy(true);
+    setError("");
+    setMessage("");
+    setCustomerLinkBackfillResult(null);
+    try {
+      const payload = await apiJson("/api/ukdocs-print/collections/backfill-customer-links", { method: "POST" });
+      setCustomerLinkBackfillResult(payload);
+      setState((current) => ({ ...current, print_collections: payload.print_collections || current?.print_collections || [] }));
+      setMessage(`Customer link backfill complete: ${payload.updated} row(s) linked, ${payload.still_unresolved} still need a customer picked by hand.`);
+    } catch (backfillError) {
+      setError(backfillError.message);
+    } finally {
+      setCustomerLinkBackfillBusy(false);
+    }
+  }
+
   if (loading) {
     return <div className="notice">Loading PD Keuring workspace...</div>;
   }
@@ -8720,7 +8742,7 @@ function PdKeuringPage({ currentUser }) {
                       <td>{row.pd_type || "-"}</td>
                       <td>{row.pd_code || "-"}</td>
                       <td><input value={inlineFieldValue(row, "reference_connect")} onChange={(event) => updateInlineField(row.id, "reference_connect", event.target.value)} /></td>
-                      <td>{row.customer_name || "-"}</td>
+                      <td>{row.customer_id && customers.some((item) => item.id === row.customer_id) ? (row.customer_name || "-") : <span className="ukdocs-status-badge danger">No customer picked</span>}</td>
                       <td><input value={inlineFieldValue(row, "truck_number")} onChange={(event) => updateInlineField(row.id, "truck_number", event.target.value)} placeholder="Truck number" /></td>
                       <td><input value={inlineFieldValue(row, "trailer_number")} onChange={(event) => updateInlineField(row.id, "trailer_number", event.target.value)} placeholder="Licence plate" /></td>
                       <td><input value={inlineFieldValue(row, "expected_boxes")} onChange={(event) => updateInlineField(row.id, "expected_boxes", event.target.value)} placeholder="Boxes" /></td>
@@ -8762,6 +8784,17 @@ function PdKeuringPage({ currentUser }) {
                     </tbody>
                   </table>
                 </div>
+              )}
+
+              <div className="section-header"><h3>Customer link backfill</h3></div>
+              <div className="notice">
+                One-time step before hub code/remark stop being used to guess a row's customer: bakes today's hub code/remark match permanently into customer_id for every row that doesn't already have a customer picked. Safe to run more than once.
+              </div>
+              <div className="row-actions spread-actions">
+                <button type="button" onClick={runCustomerLinkBackfill} disabled={customerLinkBackfillBusy}>{customerLinkBackfillBusy ? "Running..." : "Backfill customer links"}</button>
+              </div>
+              {customerLinkBackfillResult && (
+                <div className="notice">Checked {customerLinkBackfillResult.checked} rows: linked {customerLinkBackfillResult.updated}, still need a customer picked by hand: {customerLinkBackfillResult.still_unresolved}.</div>
               )}
             </>
           )}
