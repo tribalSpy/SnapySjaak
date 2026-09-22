@@ -2384,7 +2384,46 @@ function ukdocsPrintSplitTokens(value) {
     .filter(Boolean);
 }
 
-function getUkdocsPrintCollectionRequirements(collection, customers) {
+// A reference-connect or invoice number is meant to belong to exactly one
+// sending. If the same number shows up on two sendings for the same day
+// (almost always a typo on one of them, e.g. 19517 instead of 19516), the
+// Gmail auto-sync's scoring can't tell which one a file is actually for and
+// will confidently attach it to the wrong sending -- and if that sending's
+// papers go out automatically before anyone notices, the wrong papers are
+// already sent by the time the typo gets fixed. So this is checked as part
+// of "is this sending ready to send", not just left to the sync's scoring.
+function ukdocsPrintCollectionReferenceTokens(collection) {
+  return new Set([
+    ...ukdocsPrintReferenceTokens(collection?.reference_connect),
+    ...ukdocsPrintInvoiceTokens(collection?.invoice_numbers),
+  ]);
+}
+
+function ukdocsPrintCollectionReferenceCollision(collection, allCollections) {
+  const ownTokens = ukdocsPrintCollectionReferenceTokens(collection);
+  const shipmentDate = String(collection?.shipment_date || "").slice(0, 10);
+  if (!ownTokens.size || !shipmentDate) {
+    return false;
+  }
+  for (const other of Array.isArray(allCollections) ? allCollections : []) {
+    if (!other || other.id === collection?.id) {
+      continue;
+    }
+    if (String(other?.shipment_date || "").slice(0, 10) !== shipmentDate) {
+      continue;
+    }
+    const otherTokens = ukdocsPrintCollectionReferenceTokens(other);
+    for (const token of ownTokens) {
+      if (otherTokens.has(token)) {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
+function getUkdocsPrintCollectionRequirements(collection, customers, sameDayCollections = []) {
+  const referenceCollision = ukdocsPrintCollectionReferenceCollision(collection, sameDayCollections);
   const inspectionMode = ukdocsPrintInspectionMode(collection);
   if (inspectionMode === "stock_control") {
     const missing = [];
@@ -2428,6 +2467,9 @@ function getUkdocsPrintCollectionRequirements(collection, customers) {
     if (!collection?.documents?.inspection_list?.storage_name) {
       missing.push("Inspection list");
     }
+    if (referenceCollision) {
+      missing.push("Reference/invoice number shared with another sending today -- fix before sending");
+    }
     return {
       customer,
       missing,
@@ -2457,6 +2499,9 @@ function getUkdocsPrintCollectionRequirements(collection, customers) {
     } else if (generatedInvoiceCount < invoiceExpected) {
       missing.push(`Invoices ${generatedInvoiceCount}/${invoiceExpected}`);
     }
+  }
+  if (referenceCollision) {
+    missing.push("Reference/invoice number shared with another sending today -- fix before sending");
   }
   return {
     customer,
@@ -11400,12 +11445,12 @@ function buildUkdocsPrintReadyEmail(collection, requirements) {
   ].filter(Boolean).join("\n");
 }
 
-async function sendUkdocsPrintReadyEmail(collection, customers, settings) {
+async function sendUkdocsPrintReadyEmail(collection, customers, settings, allCollections = []) {
   const recipients = emailRecipientsForCategory(settings.email_recipients, "papers_ready");
   if (!recipients.length) {
     return { ok: false, recipients: [], error: "No email recipients configured" };
   }
-  const requirements = getUkdocsPrintCollectionRequirements(collection, customers);
+  const requirements = getUkdocsPrintCollectionRequirements(collection, customers, allCollections);
   if (requirements.customer?.send_ready_email === false) {
     return { ok: false, recipients: [], error: "Papers ready email is turned off for this customer" };
   }
@@ -11488,7 +11533,7 @@ async function runUkdocsPrintAutoSend() {
     if (item.delivery_email?.ok) {
       return false;
     }
-    const requirements = getUkdocsPrintCollectionRequirements(item, state.customers);
+    const requirements = getUkdocsPrintCollectionRequirements(item, state.customers, state.print_collections);
     // Skip these entirely rather than letting sendUkdocsPrintReadyEmail
     // refuse them every cycle -- that would leave a permanent (and
     // misleading) red "delivery failed" banner on a zending that was never
@@ -11503,7 +11548,7 @@ async function runUkdocsPrintAutoSend() {
   const errors = [];
   for (const collection of eligible) {
     try {
-      const deliveryEmail = await sendUkdocsPrintReadyEmail(collection, state.customers, settings);
+      const deliveryEmail = await sendUkdocsPrintReadyEmail(collection, state.customers, settings, state.print_collections);
       const updatedCollection = normalizeUkdocsPrintCollection({
         ...collection,
         updated_at: new Date().toISOString(),
@@ -11839,7 +11884,7 @@ async function runEricDocsSendQueue() {
     if (!collection.eric_docs_check?.ok || collection.eric_docs_check?.match !== true) {
       continue;
     }
-    if (!getUkdocsPrintCollectionRequirements(collection, state.customers).complete) {
+    if (!getUkdocsPrintCollectionRequirements(collection, state.customers, state.print_collections).complete) {
       continue;
     }
     try {
@@ -14260,7 +14305,7 @@ async function handleApi(req, res, url) {
       sendJson(res, 400, { error: "Stock control collections do not send export papers" });
       return;
     }
-    const deliveryEmail = await sendUkdocsPrintReadyEmail(existingCollection, state.customers, settings);
+    const deliveryEmail = await sendUkdocsPrintReadyEmail(existingCollection, state.customers, settings, state.print_collections);
     const updatedCollection = normalizeUkdocsPrintCollection({
       ...existingCollection,
       updated_at: new Date().toISOString(),
@@ -14602,7 +14647,7 @@ async function handleApi(req, res, url) {
       sendJson(res, 400, { error: "Run the pieces check successfully before sending papers" });
       return;
     }
-    const requirements = getUkdocsPrintCollectionRequirements(existingCollection, state.customers);
+    const requirements = getUkdocsPrintCollectionRequirements(existingCollection, state.customers, state.print_collections);
     if (!requirements.complete) {
       const queuedCollection = normalizeUkdocsPrintCollection({
         ...existingCollection,

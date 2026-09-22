@@ -3167,7 +3167,48 @@ function ukdocsMenuDocumentVisibility(customer, menuKey) {
   };
 }
 
-function ukdocsPrintCollectionProgress(collection, customers) {
+function ukdocsPrintReferenceTokens(value) {
+  return String(value || "").split(/[\/,\s;]+/).map(normalizeUkdocsMatchToken).filter((item) => item.length >= 3);
+}
+
+function ukdocsPrintInvoiceTokens(value) {
+  return String(value || "").split(/[\/,\s;]+/).map(normalizeUkdocsMatchToken).filter((item) => item.length >= 4);
+}
+
+function ukdocsPrintCollectionReferenceTokens(collection) {
+  return new Set([...ukdocsPrintReferenceTokens(collection?.reference_connect), ...ukdocsPrintInvoiceTokens(collection?.invoice_numbers)]);
+}
+
+// Mirrors the server-side check of the same name -- a reference/invoice
+// number is meant to belong to exactly one sending, so if the same number
+// shows up on two sendings the same day (almost always a typo on one of
+// them), flag it here too rather than letting the UI show "Complete" while
+// the server refuses the send.
+function ukdocsPrintCollectionReferenceCollision(collection, allCollections) {
+  const ownTokens = ukdocsPrintCollectionReferenceTokens(collection);
+  const shipmentDate = String(collection?.shipment_date || "").slice(0, 10);
+  if (!ownTokens.size || !shipmentDate) {
+    return false;
+  }
+  for (const other of Array.isArray(allCollections) ? allCollections : []) {
+    if (!other || other.id === collection?.id) {
+      continue;
+    }
+    if (String(other?.shipment_date || "").slice(0, 10) !== shipmentDate) {
+      continue;
+    }
+    const otherTokens = ukdocsPrintCollectionReferenceTokens(other);
+    for (const token of ownTokens) {
+      if (otherTokens.has(token)) {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
+function ukdocsPrintCollectionProgress(collection, customers, allCollections = []) {
+  const referenceCollision = ukdocsPrintCollectionReferenceCollision(collection, allCollections);
   const inspectionMode = ukdocsPrintInspectionMode(collection);
   if (inspectionMode === "stock_control") {
     const missing = [];
@@ -3213,6 +3254,9 @@ function ukdocsPrintCollectionProgress(collection, customers) {
     if (!collection?.documents?.inspection_list?.storage_name) {
       missing.push("Inspection list");
     }
+    if (referenceCollision) {
+      missing.push("Reference/invoice number shared with another sending today -- fix before sending");
+    }
 
     return {
       customer,
@@ -3244,6 +3288,9 @@ function ukdocsPrintCollectionProgress(collection, customers) {
     } else if (generatedInvoiceCount < invoiceExpected) {
       missing.push(`Invoices ${generatedInvoiceCount}/${invoiceExpected}`);
     }
+  }
+  if (referenceCollision) {
+    missing.push("Reference/invoice number shared with another sending today -- fix before sending");
   }
 
   const complete = missing.length === 0 && (!!customer || !!collection?.customer_name || !!collection?.city_name);
@@ -5616,7 +5663,7 @@ function UkdocsPrintPage({ currentUser }) {
   const selectedTempPhytoFiles = selectedCollection?.documents?.temp_phyto_files || [];
   const selectedGeneratedFiles = selectedCollection?.documents?.generated_files || [];
   const selectedExitConfirmationFiles = selectedCollection?.documents?.exit_confirmation_files || [];
-  const selectedCollectionProgress = selectedCollection ? ukdocsPrintCollectionProgress(selectedCollection, customers) : null;
+  const selectedCollectionProgress = selectedCollection ? ukdocsPrintCollectionProgress(selectedCollection, customers, filteredCollections) : null;
   // A confirmation of exit already received means this zending is closed --
   // info and documents can no longer be changed (server-enforced too).
   const isSelectedCollectionClosed = Boolean(selectedCollection?.closed);
@@ -5950,7 +5997,7 @@ function UkdocsPrintPage({ currentUser }) {
           </div>
           <div className="ukdocs-upload-grid">
             {filteredCollections.map((collection) => {
-              const progress = ukdocsPrintCollectionProgress(collection, customers);
+              const progress = ukdocsPrintCollectionProgress(collection, customers, filteredCollections);
               const status = ukdocsPrintStatusDefinition(progress.status);
               const isActive = detailDrawerOpen && selectedCollection?.id === collection.id;
               const downloadEntries = ukdocsCollectionDownloadEntries(collection, progress.customer, "ukdocsprint");
@@ -6257,7 +6304,7 @@ function UkdocsInspectionPage({ currentUser }) {
     [inspectionCollections, selectedCollectionDate],
   );
   const selectedCollection = filteredCollections.find((item) => item.id === selectedCollectionId || item.shipment_id === selectedCollectionId) || null;
-  const selectedCollectionProgress = selectedCollection ? ukdocsPrintCollectionProgress(selectedCollection, customers) : null;
+  const selectedCollectionProgress = selectedCollection ? ukdocsPrintCollectionProgress(selectedCollection, customers, filteredCollections) : null;
   const selectedPhytoFiles = selectedCollection?.documents?.phyto_files || [];
   const selectedAllDownloadEntries = selectedCollection ? ukdocsCollectionDownloadEntries(selectedCollection, selectedCollectionProgress?.customer, "all") : [];
 
@@ -6442,7 +6489,7 @@ function UkdocsInspectionPage({ currentUser }) {
           <div className="notice">Showing only today&apos;s inspection shipments from UKdocs Print collections.</div>
           <div className="ukdocs-collection-grid">
             {filteredCollections.map((collection) => {
-              const progress = ukdocsPrintCollectionProgress(collection, customers);
+              const progress = ukdocsPrintCollectionProgress(collection, customers, filteredCollections);
               const status = ukdocsPrintStatusDefinition(progress.status);
               const isActive = detailDrawerOpen && selectedCollection?.id === collection.id;
               const downloadEntries = ukdocsCollectionDownloadEntries(collection, progress.customer, "ukdocsinspection");
