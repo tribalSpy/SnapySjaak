@@ -886,6 +886,24 @@ export async function getLlmQueueSnapshot() {
   };
 }
 
+// getLlmQueueSnapshot() caps at the 50 most recently created jobs across
+// every job type, for the admin UI. That cap makes it useless for finding a
+// specific stale job once enough other jobs (any type) have been created
+// since -- an old excel_to_pdf job can silently fall out of that window
+// while still stuck pending/claimed. This query is scoped to one job_type
+// and only pending/claimed rows, so it stays small and complete regardless
+// of total queue traffic.
+export async function getActiveLlmJobsByType(jobType) {
+  if (!pool) {
+    return [];
+  }
+  const result = await pool.query(
+    "SELECT * FROM llm_jobs WHERE job_type = $1 AND status IN ('pending', 'claimed') ORDER BY created_at ASC",
+    [String(jobType || "").trim()],
+  );
+  return (result.rows || []).map(mapLlmJobRow);
+}
+
 const databaseMigrations = [
   `
     CREATE TABLE IF NOT EXISTS fust_actions (

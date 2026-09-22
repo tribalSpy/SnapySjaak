@@ -20,6 +20,7 @@ import {
   getFustDatabaseStats,
   getDatabaseStatus,
   getLlmQueueSnapshot,
+  getActiveLlmJobsByType,
   getWarehouseActivityLog,
   getWarehouseStatus,
   failLlmJob,
@@ -5991,21 +5992,30 @@ async function runUkdocsInvoicePdfRetry() {
   if (!isDatabaseEnabled() || !llmPollerEnabled()) {
     return { ok: true, checked: 0, retried: 0 };
   }
-  const snapshot = await getLlmQueueSnapshot();
+  // getLlmQueueSnapshot() caps at the 50 most recently created jobs across
+  // every job type in this app (stickers, CSI, Eric Docs, invoices, ...) --
+  // busy enough and a 45-minute-old stale excel_to_pdf job silently falls
+  // out of that window, so this watchdog never sees it. Query this job type
+  // directly instead, with no cap.
+  const activeJobs = await getActiveLlmJobsByType("excel_to_pdf");
   const staleCutoff = Date.now() - UKDOCS_INVOICE_PDF_STALE_MINUTES * 60 * 1000;
-  const staleJobs = (snapshot.jobs || []).filter((job) => {
-    if (job.job_type !== "excel_to_pdf" || (job.status !== "pending" && job.status !== "claimed")) {
-      return false;
-    }
+  const inFlightKeys = new Set();
+  const staleJobs = [];
+  for (const job of activeJobs) {
     const referenceTime = job.claimed_at || job.created_at;
-    return Boolean(referenceTime) && new Date(referenceTime).getTime() < staleCutoff;
-  });
-  if (!staleJobs.length) {
-    return { ok: true, checked: snapshot.jobs.length, retried: 0 };
+    const isStale = Boolean(referenceTime) && new Date(referenceTime).getTime() < staleCutoff;
+    if (isStale) {
+      staleJobs.push(job);
+    } else {
+      inFlightKeys.add(`${job.collection_id}|${String(job.payload_json?.source_storage_name || "").trim()}`);
+    }
   }
 
   const state = await readUkdocsState();
   let retried = 0;
+  const requeuedKeys = new Set();
+
+  // Redo whatever the poller claimed (or left pending) and never finished.
   for (const job of staleJobs) {
     const collection = ukdocsPrintCollectionById(state.print_collections, job.collection_id);
     if (!collection) {
@@ -6025,16 +6035,69 @@ async function runUkdocsInvoicePdfRetry() {
     if (!sourceDocument) {
       continue;
     }
-    await failLlmJob(job.id, job.agent_name || "stale-invoice-pdf-retry", "Timed out waiting for the excel-to-pdf agent -- redone automatically", false);
+    // job.agent_name is "" for a job that was never claimed -- failLlmJob's
+    // WHERE clause requires it to match exactly, so this must be passed as
+    // stored rather than defaulted to a placeholder name (which would never
+    // match and silently update zero rows).
+    await failLlmJob(job.id, job.agent_name, "Timed out waiting for the excel-to-pdf agent -- redone automatically", false);
+    const key = `${job.collection_id}|${sourceStorageName}`;
     const requeued = await queueUkdocsInvoicePdfJobs(
       { ...collection, documents: { ...collection.documents, generated_files: [sourceDocument] } },
       { username: "invoice-pdf-retry" },
     );
     if (requeued.length) {
       retried += 1;
+      requeuedKeys.add(key);
     }
   }
-  return { ok: true, checked: snapshot.jobs.length, retried };
+
+  // Catches anything that never got a job queued for it in the first place
+  // (e.g. the original queueUkdocsInvoicePdfJobs call itself failed or was
+  // skipped) -- any invoice xlsx sitting without a matching PDF, and
+  // nothing currently in flight for it, for at least the stale window.
+  const recentWindowStart = addDaysToIsoDate(localDateIso(), -14);
+  for (const collection of state.print_collections) {
+    const shipmentDate = String(collection.shipment_date || "").slice(0, 10);
+    if (shipmentDate < recentWindowStart) {
+      continue;
+    }
+    const files = collection.documents?.generated_files || [];
+    for (const document of files) {
+      if (document?.document_kind !== "invoice") {
+        continue;
+      }
+      const mimeType = String(document?.mime_type || "").trim().toLowerCase();
+      if (mimeType !== "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet") {
+        continue;
+      }
+      const category = normalizeUkdocsText(document.category);
+      const alreadyHasPdf = files.some((file) => (
+        file?.document_kind === "invoice" && isPdfUkdocsDocument(file) && normalizeUkdocsText(file?.category) === category
+      ));
+      if (alreadyHasPdf) {
+        continue;
+      }
+      const uploadedAt = new Date(document.uploaded_at || 0).getTime();
+      if (!uploadedAt || uploadedAt >= staleCutoff) {
+        continue;
+      }
+      const sourceStorageName = String(document.storage_name || "").trim();
+      const key = `${collection.id}|${sourceStorageName}`;
+      if (inFlightKeys.has(key) || requeuedKeys.has(key)) {
+        continue;
+      }
+      const requeued = await queueUkdocsInvoicePdfJobs(
+        { ...collection, documents: { ...collection.documents, generated_files: [document] } },
+        { username: "invoice-pdf-retry" },
+      );
+      if (requeued.length) {
+        retried += 1;
+        requeuedKeys.add(key);
+      }
+    }
+  }
+
+  return { ok: true, checked: activeJobs.length, retried };
 }
 
 async function saveUkdocsGeneratedInvoicePdfResult(job) {
