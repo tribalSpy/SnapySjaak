@@ -9774,6 +9774,18 @@ function collectionAcceptsUkdocsPrintDocument(collection, customers, kind) {
     return false;
   }
 
+  // Gmail matching only ever works by finding one of the sending's own
+  // reference-connect/invoice numbers inside the email text -- with neither
+  // filled in yet there is nothing to match against, so this sending must
+  // not even be offered as a candidate. Without this, an empty-token
+  // sending scores 0 like it should, but a *different*, wrong sending can
+  // still end up as the best (or only) match by default while the right
+  // one isn't in the running yet -- this makes "no connect/invoice number
+  // yet" mean "cannot receive a phyto/export file automatically", full stop.
+  if (!ukdocsPrintCollectionReferenceTokens(collection).size) {
+    return false;
+  }
+
   if (kind === "phyto") {
     if (inspectionMode === "stock_control") {
       return false;
