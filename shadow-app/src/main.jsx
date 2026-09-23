@@ -11977,9 +11977,6 @@ function FustActionTable({
                 <th>Remark</th>
                 <th>Fustbon</th>
                 <th>Fustfactuur</th>
-                <th>Sheet</th>
-                <th>Email</th>
-                <th>Database</th>
                 <th>Confirmed</th>
                 <th>Import</th>
                 <th>Actions</th>
@@ -12032,9 +12029,6 @@ function FustActionTable({
                     <td>{isEditing ? <input value={editForm.remark} onChange={(event) => setEditForm({ ...editForm, remark: event.target.value })} /> : (action.remark || "-")}</td>
                     <td>{isEditing ? <input value={editForm.fustbon_reference} onChange={(event) => setEditForm({ ...editForm, fustbon_reference: event.target.value })} /> : (action.fustbon_reference || "-")}</td>
                     <td>{isEditing ? <input value={editForm.fustfactuur_reference} onChange={(event) => setEditForm({ ...editForm, fustfactuur_reference: event.target.value })} /> : (action.fustfactuur_reference || "-")}</td>
-                    <td>{action.sheet_sync?.ok ? "ok" : action.sheet_sync?.error || "-"}</td>
-                    <td>{action.email_sync?.ok ? "ok" : action.email_sync?.error || "-"}</td>
-                    <td>{action.db_sync?.ok ? "ok" : action.db_sync?.error || "-"}</td>
                     <td>{confirmed ? `${formatTimestamp(action.confirmed_at)}${action.confirmed_by ? ` by ${action.confirmed_by}` : ""}` : "-"}</td>
                     <td>{action.import_source?.file_name ? `${action.import_source.file_name}${action.import_source.row_number ? ` row ${action.import_source.row_number}` : ""}` : "-"}</td>
                     <td onClick={(event) => event.stopPropagation()}>
