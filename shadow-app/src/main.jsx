@@ -14167,6 +14167,31 @@ function SettingsPage({ currentUser }) {
             />
           </label>
         </div>
+
+        <div id="settings-fust-api" className="wide data-table-card">
+          <div className="section-header"><h2>Fust API import</h2></div>
+          <p className="sidebar-note">
+            Daily pull of DC/DCS/DCO/CCTAG/PAL/VK data from an external Fust API, merged into the same fust_actions
+            used by the sheet and Excel import. Leave the base URL or key blank to disable.
+          </p>
+          <label className="wide">
+            <span>API base URL</span>
+            <input
+              value={form.fust_api_base_url || ""}
+              onChange={(event) => setForm({ ...form, fust_api_base_url: event.target.value })}
+              placeholder="https://svdvyver.fr/api/fust_management.php"
+            />
+          </label>
+          <label className="wide">
+            <span>API key</span>
+            <input
+              type="password"
+              value={form.fust_api_key || ""}
+              onChange={(event) => setForm({ ...form, fust_api_key: event.target.value })}
+              placeholder="X-API-Key header value"
+            />
+          </label>
+        </div>
         {message && <div className="notice">{message}</div>}
         {error && <div className="notice danger">{error}</div>}
         <button className="primary" type="submit" disabled={saving}>
