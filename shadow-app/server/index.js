@@ -1732,8 +1732,6 @@ function normalizeUkdocsCustomer(customer) {
   return {
     id: normalizeUkdocsText(customer?.id) || crypto.randomUUID(),
     customer_name: normalizeUkdocsText(customer?.customer_name),
-    match_hub_code: normalizeUkdocsText(customer?.match_hub_code),
-    match_remark: String(customer?.match_remark || "").trim(),
     required_phyto: customer?.required_phyto !== false,
     // Gmail auto-sync matches attachments by reference/invoice/truck tokens
     // found anywhere in the email (subject/from/snippet), which can land a
@@ -2116,17 +2114,11 @@ function ukdocsPrintCollectionCustomer(collection, customers) {
   if (byId) {
     return byId;
   }
-  const fuzzyMatch = matchUkdocsCustomerForPrintCollection(list, collection);
-  if (fuzzyMatch) {
-    return fuzzyMatch;
-  }
   // Last resort: an exact (case-insensitive) match on the collection's own
-  // customer_name snapshot. Without this, an imported/nakeuring collection
-  // that never got a customer_id link, and whose hub_code/remark don't
-  // happen to satisfy a configured match rule, resolves to no customer at
-  // all -- silently skipping every per-customer setting for it (required
-  // documents, gmail_sync_enabled, CSI/Eric Docs recipients, etc.) even
-  // though the collection's own "Customer" field plainly names one.
+  // customer_name snapshot. A collection is always supposed to carry a real
+  // customer_id (picked explicitly, never guessed from hub code/remark --
+  // see the customer-link backfill history), but this covers older rows or
+  // a stray customer_name text that was never linked up.
   const collectionName = String(collection?.customer_name || "").trim().toLowerCase();
   if (!collectionName) {
     return null;
@@ -5714,48 +5706,6 @@ function upsertUkdocsPrintCollection(collections, nextCollection) {
     return nextCollections;
   }
   return [nextCollection, ...collections];
-}
-
-function ukdocsPrintMatchLines(value) {
-  return String(value || "")
-    .split(/\r?\n+/)
-    .map(normalizeUkdocsPrintToken)
-    .filter(Boolean);
-}
-
-function matchUkdocsCustomerForPrintCollection(customers, collection) {
-  const hubCode = normalizeUkdocsPrintToken(collection?.hub_code);
-  const remark = normalizeUkdocsPrintToken(collection?.remark);
-  let bestMatch = null;
-  let bestScore = 0;
-  for (const customer of Array.isArray(customers) ? customers : []) {
-    if (!normalizeUkdocsText(customer?.customer_name)) {
-      continue;
-    }
-    const customerHubCodes = ukdocsPrintMatchLines(customer?.match_hub_code);
-    const customerRemarks = ukdocsPrintMatchLines(customer?.match_remark);
-    if (!customerHubCodes.length && !customerRemarks.length) {
-      continue;
-    }
-    let score = 0;
-    if (customerHubCodes.length) {
-      if (!hubCode || !customerHubCodes.includes(hubCode)) {
-        continue;
-      }
-      score += 2;
-    }
-    if (customerRemarks.length) {
-      if (!remark || !customerRemarks.some((item) => remark.includes(item))) {
-        continue;
-      }
-      score += 1;
-    }
-    if (score > bestScore) {
-      bestScore = score;
-      bestMatch = customer;
-    }
-  }
-  return bestMatch;
 }
 
 function buildUkdocsPrintCollectionFromShipment(existingCollection, shipment, customerName) {
@@ -10189,7 +10139,6 @@ async function syncUkdocsPrintCollectionsFromSheet(settings, date, options = {})
   let updatedCount = 0;
   for (const sending of sendings) {
     const existingCollection = findMatchingUkdocsPrintCollection(state.print_collections, sending, { allowInvoiceFallback: false });
-    const matchedCustomer = matchUkdocsCustomerForPrintCollection(state.customers, sending);
     const nextCollection = referenceConnectOnly && existingCollection
       ? normalizeUkdocsPrintCollection({
         ...existingCollection,
@@ -10205,8 +10154,8 @@ async function syncUkdocsPrintCollectionsFromSheet(settings, date, options = {})
           shipment_date: sending.shipment_date,
           week: sending.week,
           day_name: sending.day_name,
-          customer_id: existingCollection?.customer_id || matchedCustomer?.id || "",
-          customer_name: matchedCustomer?.customer_name || existingCollection?.customer_name || sending.city_name || "",
+          customer_id: existingCollection?.customer_id || "",
+          customer_name: existingCollection?.customer_name || sending.city_name || "",
           collection_type: existingCollection?.collection_type || sending.collection_type || (isHonselersdijkStockControl(sending) ? "stock_control" : "export"),
           city_name: sending.city_name,
           border_crossing: sending.border_crossing,
@@ -10236,8 +10185,8 @@ async function syncUkdocsPrintCollectionsFromSheet(settings, date, options = {})
           shipment_date: sending.shipment_date,
           week: sending.week,
           day_name: sending.day_name,
-          customer_id: existingCollection?.customer_id || matchedCustomer?.id || "",
-          customer_name: existingCollection?.customer_name || matchedCustomer?.customer_name || sending.city_name || "",
+          customer_id: existingCollection?.customer_id || "",
+          customer_name: existingCollection?.customer_name || sending.city_name || "",
           collection_type: existingCollection?.collection_type || sending.collection_type || (isHonselersdijkStockControl(sending) ? "stock_control" : "export"),
           city_name: sending.city_name,
           border_crossing: sending.border_crossing,
@@ -10354,7 +10303,6 @@ async function backfillPdKeuringHistoryFromSheet(settings, sheetNames = ["PD pla
       }
       touchedDates.add(sending.shipment_date);
       const existingCollection = findMatchingUkdocsPrintCollection(state.print_collections, sending, { allowInvoiceFallback: false });
-      const matchedCustomer = matchUkdocsCustomerForPrintCollection(state.customers, sending);
       if (existingCollection) {
         updatedCount += 1;
       } else {
@@ -10367,8 +10315,8 @@ async function backfillPdKeuringHistoryFromSheet(settings, sheetNames = ["PD pla
         shipment_date: sending.shipment_date,
         week: sending.week,
         day_name: sending.day_name,
-        customer_id: existingCollection?.customer_id || matchedCustomer?.id || "",
-        customer_name: existingCollection?.customer_name || matchedCustomer?.customer_name || sending.city_name || "",
+        customer_id: existingCollection?.customer_id || "",
+        customer_name: existingCollection?.customer_name || sending.city_name || "",
         collection_type: existingCollection?.collection_type || sending.collection_type || (isHonselersdijkStockControl(sending) ? "stock_control" : "export"),
         city_name: sending.city_name,
         border_crossing: sending.border_crossing,
@@ -10451,15 +10399,14 @@ async function runPdKeuringSheetReconcile() {
   for (const sending of sendings) {
     const existingCollection = findMatchingUkdocsPrintCollection(state.print_collections, sending, { allowInvoiceFallback: false });
     if (!existingCollection) {
-      const matchedCustomer = matchUkdocsCustomerForPrintCollection(state.customers, sending);
       const newCollection = normalizeUkdocsPrintCollection({
         id: sending.id,
         source: "sheet",
         shipment_date: sending.shipment_date,
         week: sending.week,
         day_name: sending.day_name,
-        customer_id: matchedCustomer?.id || "",
-        customer_name: matchedCustomer?.customer_name || sending.city_name || "",
+        customer_id: "",
+        customer_name: sending.city_name || "",
         collection_type: sending.collection_type || (isHonselersdijkStockControl(sending) ? "stock_control" : "export"),
         city_name: sending.city_name,
         border_crossing: sending.border_crossing,
@@ -15434,52 +15381,6 @@ async function handleApi(req, res, url) {
     } catch (error) {
       sendJson(res, 400, { error: error instanceof Error ? error.message : String(error) });
     }
-    return;
-  }
-
-  // One-time migration aid for retiring hub-code/remark customer matching:
-  // bakes today's fuzzy-match result (matchUkdocsCustomerForPrintCollection)
-  // permanently into customer_id/customer_name for every collection that
-  // doesn't already have a valid customer_id, so historical rows that only
-  // ever resolved a customer through that heuristic don't go blank the
-  // moment it's removed from live resolution. Safe to run more than once --
-  // it only ever touches rows that still have no valid customer_id.
-  if (url.pathname === "/api/ukdocs-print/collections/backfill-customer-links" && req.method === "POST") {
-    if (!requirePermission(res, requestUser, PERMISSIONS.SETTINGS_MANAGE)) {
-      return;
-    }
-    const state = await readUkdocsState();
-    let updated = 0;
-    let stillUnresolved = 0;
-    const nextCollections = state.print_collections.map((collection) => {
-      const hasValidCustomer = collection.customer_id && state.customers.some((customer) => customer.id === collection.customer_id);
-      if (hasValidCustomer) {
-        return collection;
-      }
-      const matchedCustomer = matchUkdocsCustomerForPrintCollection(state.customers, collection);
-      if (!matchedCustomer) {
-        stillUnresolved += 1;
-        return collection;
-      }
-      updated += 1;
-      return normalizeUkdocsPrintCollection({
-        ...collection,
-        customer_id: matchedCustomer.id,
-        customer_name: matchedCustomer.customer_name,
-        updated_at: new Date().toISOString(),
-      });
-    });
-    if (updated) {
-      state.print_collections = nextCollections;
-      await writeUkdocsState(state);
-    }
-    sendJson(res, 200, {
-      ok: true,
-      checked: state.print_collections.length,
-      updated,
-      still_unresolved: stillUnresolved,
-      print_collections: normalizeUkdocsState(state).print_collections,
-    });
     return;
   }
 

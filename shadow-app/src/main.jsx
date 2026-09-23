@@ -2727,8 +2727,6 @@ const UKDOCS_COMPANY_FIELDS = [
 
 const UKDOCS_CUSTOMER_FIELDS = [
   ["customer_name", "Customer name"],
-  ["match_hub_code", "Hub code match", "textarea"],
-  ["match_remark", "Remark match", "textarea"],
   ["customer_address", "Customer address", "textarea"],
   ["vat_number", "VAT number"],
   ["eori_number", "EORI number"],
@@ -2851,8 +2849,6 @@ function emptyUkdocsCustomer() {
   return {
     id: "",
     customer_name: "",
-    match_hub_code: "",
-    match_remark: "",
     customer_address: "",
     vat_number: "",
     eori_number: "",
@@ -2990,65 +2986,6 @@ function normalizeUkdocsMatchToken(value) {
   return String(value || "").toUpperCase().replace(/[^A-Z0-9]/g, "");
 }
 
-function ukdocsMatchLines(value) {
-  return String(value || "")
-    .split(/\r?\n+/)
-    .map(normalizeUkdocsMatchToken)
-    .filter(Boolean);
-}
-
-// All customers whose hub code list contains this hub code, ignoring remark
-// entirely -- used to detect whether a hub code is shared by more than one
-// customer (remark is then required to disambiguate) and, when it isn't
-// shared, to auto-fill the remark a lone matching customer expects.
-function findUkdocsCustomerCandidatesByHub(customers, hubCode) {
-  const normalizedHub = normalizeUkdocsMatchToken(hubCode);
-  if (!normalizedHub) {
-    return [];
-  }
-  return (customers || []).filter((customer) => {
-    if (!String(customer?.customer_name || "").trim()) {
-      return false;
-    }
-    return ukdocsMatchLines(customer?.match_hub_code).includes(normalizedHub);
-  });
-}
-
-function findUkdocsCustomerMatch(customers, collection) {
-  const hubCode = normalizeUkdocsMatchToken(collection?.hub_code);
-  const remark = normalizeUkdocsMatchToken(collection?.remark);
-  let bestMatch = null;
-  let bestScore = 0;
-  for (const customer of customers || []) {
-    if (!String(customer?.customer_name || "").trim()) {
-      continue;
-    }
-    const customerHubCodes = ukdocsMatchLines(customer?.match_hub_code);
-    const customerRemarks = ukdocsMatchLines(customer?.match_remark);
-    if (!customerHubCodes.length && !customerRemarks.length) {
-      continue;
-    }
-    let score = 0;
-    if (customerHubCodes.length) {
-      if (!hubCode || !customerHubCodes.includes(hubCode)) {
-        continue;
-      }
-      score += 2;
-    }
-    if (customerRemarks.length) {
-      if (!remark || !customerRemarks.some((item) => remark.includes(item))) {
-        continue;
-      }
-      score += 1;
-    }
-    if (score > bestScore) {
-      bestScore = score;
-      bestMatch = customer;
-    }
-  }
-  return bestMatch;
-}
-
 function ukdocsPrintSplitTokens(value) {
   return String(value || "")
     .split(/[\/,\s;]+/)
@@ -3118,10 +3055,6 @@ function ukdocsPrintCollectionCustomer(collection, customers) {
   const byId = collection?.customer_id ? list.find((item) => item.id === collection.customer_id) : null;
   if (byId) {
     return byId;
-  }
-  const fuzzyMatch = findUkdocsCustomerMatch(list, collection);
-  if (fuzzyMatch) {
-    return fuzzyMatch;
   }
   // Last resort: an exact (case-insensitive) match on the collection's own
   // customer_name snapshot -- mirrors the server-side fallback, see there
@@ -3710,7 +3643,7 @@ function UkdocsPage({ currentUser, onNavigate }) {
       return;
     }
     setShipmentLoadDate(String(collection.shipment_date || "").slice(0, 10));
-    const matchedCustomer = (collection?.customer_id && customers.find((item) => item.id === collection.customer_id)) || findUkdocsCustomerMatch(customers, collection);
+    const matchedCustomer = ukdocsPrintCollectionCustomer(collection, customers);
     const savedShipment = shipments.find((item) => item.print_collection_id === collectionId || item.id === collectionId) || null;
     const alreadyDone = Boolean(savedShipment || ukdocsGeneratedShipmentReady(collection));
     if (alreadyDone && !window.confirm("This sending already has saved UKdocs data. Opening or generating it again can replace the saved files and details. Do you want to continue?")) {
@@ -4583,7 +4516,7 @@ function UkdocsPage({ currentUser, onNavigate }) {
               </label>
             ))}
           </div>
-          <div className="table-wrap"><table className="data-table"><thead><tr><th>Name</th><th>Hub match</th><th>Remark match</th><th>Delivery terms</th><th>Ready mail template</th><th>UK port</th><th>Currency</th><th>VAT</th><th>Actions</th></tr></thead><tbody>{customers.map((customer) => <tr key={customer.id}><td>{customer.customer_name}</td><td>{customer.match_hub_code || "-"}</td><td>{customer.match_remark || "-"}</td><td>{customer.default_delivery_terms || customer.export_defaults?.delivery_terms || "-"}</td><td>{customer.ready_email_subject || customer.ready_email_body ? "Custom" : "Default"}</td><td>{customer.default_uk_arrival_port || "-"}</td><td>{customer.default_currency || customer.export_defaults?.currency || "-"}</td><td>{customer.vat_number || "-"}</td><td className="row-actions"><button type="button" onClick={() => startEditCustomer(customer)}>Edit</button></td></tr>)}{!customers.length && <tr><td colSpan="9">No UKdocs customers saved yet.</td></tr>}</tbody></table></div>
+          <div className="table-wrap"><table className="data-table"><thead><tr><th>Name</th><th>Delivery terms</th><th>Ready mail template</th><th>UK port</th><th>Currency</th><th>VAT</th><th>Actions</th></tr></thead><tbody>{customers.map((customer) => <tr key={customer.id}><td>{customer.customer_name}</td><td>{customer.default_delivery_terms || customer.export_defaults?.delivery_terms || "-"}</td><td>{customer.ready_email_subject || customer.ready_email_body ? "Custom" : "Default"}</td><td>{customer.default_uk_arrival_port || "-"}</td><td>{customer.default_currency || customer.export_defaults?.currency || "-"}</td><td>{customer.vat_number || "-"}</td><td className="row-actions"><button type="button" onClick={() => startEditCustomer(customer)}>Edit</button></td></tr>)}{!customers.length && <tr><td colSpan="7">No UKdocs customers saved yet.</td></tr>}</tbody></table></div>
         </div>
       )}
 
@@ -8192,8 +8125,6 @@ function PdKeuringPage({ currentUser }) {
   const [referenceDraft, setReferenceDraft] = useState(emptyUkdocsPdReferenceEntry());
   const [backfillIncludeOud, setBackfillIncludeOud] = useState(false);
   const [backfillBusy, setBackfillBusy] = useState(false);
-  const [customerLinkBackfillBusy, setCustomerLinkBackfillBusy] = useState(false);
-  const [customerLinkBackfillResult, setCustomerLinkBackfillResult] = useState(null);
   const [buildingReferenceFromHistory, setBuildingReferenceFromHistory] = useState(false);
   const [backfillResult, setBackfillResult] = useState(null);
   const [selectedDate, setSelectedDate] = useState(() => localDateIso());
@@ -8326,46 +8257,14 @@ function PdKeuringPage({ currentUser }) {
     };
   }
 
-  // Only fills the remark in when the hub code unambiguously belongs to one
-  // customer with a single expected remark token, and only when the staff
-  // member hasn't already typed something -- never overwrites a manual edit.
-  function autofillRemarkForHub(hubCode, currentRemark) {
-    if (String(currentRemark || "").trim()) {
-      return {};
-    }
-    const candidates = findUkdocsCustomerCandidatesByHub(customers, hubCode);
-    if (candidates.length !== 1) {
-      return {};
-    }
-    const remarkTokens = ukdocsMatchLines(candidates[0]?.match_remark);
-    return remarkTokens.length === 1 ? { remark: remarkTokens[0] } : {};
-  }
-
-  // Re-resolves customer_id/customer_name from the current hub code + remark
-  // every time either one changes, so a stale match from a previous hub code
-  // can never silently survive onto a different row.
-  function resolveCustomerForDraft(draft) {
-    const matched = findUkdocsCustomerMatch(customers, draft);
-    return {
-      customer_id: matched?.id || "",
-      customer_name: matched?.customer_name || "",
-    };
-  }
-
   function updateRowDraftField(key, value) {
     setRowDraft((current) => {
       let next = { ...current, [key]: value };
       if (key === "city_name") {
-        // City can bring its own hub code from the reference table, which
-        // then needs to flow through the same remark/customer resolution as
-        // if the hub code had been typed directly.
+        // City can bring its own hub code/border crossing/etc from the
+        // reference table -- customer is always picked explicitly from the
+        // Customer dropdown below, never guessed from city/hub/remark.
         next = { ...next, ...referenceAutofillForCity(value) };
-      }
-      if (key === "hub_code" || key === "city_name") {
-        next = { ...next, ...autofillRemarkForHub(next.hub_code, next.remark) };
-      }
-      if (key === "hub_code" || key === "remark" || key === "city_name") {
-        next = { ...next, ...resolveCustomerForDraft(next) };
       }
       return next;
     });
@@ -8376,7 +8275,7 @@ function PdKeuringPage({ currentUser }) {
       return;
     }
     if (!rowDraft.customer_id || !customers.some((item) => item.id === rowDraft.customer_id)) {
-      setError("Select a customer before saving -- the hub code/remark didn't resolve to exactly one customer.");
+      setError("Select a customer before saving.");
       return;
     }
     setSaving(true);
@@ -8564,26 +8463,6 @@ function PdKeuringPage({ currentUser }) {
     }
   }
 
-  async function runCustomerLinkBackfill() {
-    if (!window.confirm("Bake today's hub code/remark customer match into every row that doesn't already have a customer picked? This is safe to run more than once and is needed once before hub code/remark matching gets removed.")) {
-      return;
-    }
-    setCustomerLinkBackfillBusy(true);
-    setError("");
-    setMessage("");
-    setCustomerLinkBackfillResult(null);
-    try {
-      const payload = await apiJson("/api/ukdocs-print/collections/backfill-customer-links", { method: "POST" });
-      setCustomerLinkBackfillResult(payload);
-      setState((current) => ({ ...current, print_collections: payload.print_collections || current?.print_collections || [] }));
-      setMessage(`Customer link backfill complete: ${payload.updated} row(s) linked, ${payload.still_unresolved} still need a customer picked by hand.`);
-    } catch (backfillError) {
-      setError(backfillError.message);
-    } finally {
-      setCustomerLinkBackfillBusy(false);
-    }
-  }
-
   if (loading) {
     return <div className="notice">Loading PD Keuring workspace...</div>;
   }
@@ -8703,7 +8582,7 @@ function PdKeuringPage({ currentUser }) {
               {rowDraft.customer_id && customers.some((item) => item.id === rowDraft.customer_id) ? (
                 <span className="ukdocs-status-badge success">Matched customer: {rowDraft.customer_name}</span>
               ) : (
-                <span className="ukdocs-status-badge danger">No customer matched -- fix the hub code/remark above or pick one from the Customer dropdown before saving.</span>
+                <span className="ukdocs-status-badge danger">No customer selected -- pick one from the Customer dropdown before saving.</span>
               )}
               <div className="row-actions spread-actions">
                 <button type="button" className="primary" onClick={saveRow} disabled={saving || !rowDraft.customer_id || !customers.some((item) => item.id === rowDraft.customer_id)}>{rowDraft.id ? "Update row" : "Add row"}</button>
@@ -8831,17 +8710,6 @@ function PdKeuringPage({ currentUser }) {
                     </tbody>
                   </table>
                 </div>
-              )}
-
-              <div className="section-header"><h3>Customer link backfill</h3></div>
-              <div className="notice">
-                One-time step before hub code/remark stop being used to guess a row's customer: bakes today's hub code/remark match permanently into customer_id for every row that doesn't already have a customer picked. Safe to run more than once.
-              </div>
-              <div className="row-actions spread-actions">
-                <button type="button" onClick={runCustomerLinkBackfill} disabled={customerLinkBackfillBusy}>{customerLinkBackfillBusy ? "Running..." : "Backfill customer links"}</button>
-              </div>
-              {customerLinkBackfillResult && (
-                <div className="notice">Checked {customerLinkBackfillResult.checked} rows: linked {customerLinkBackfillResult.updated}, still need a customer picked by hand: {customerLinkBackfillResult.still_unresolved}.</div>
               )}
             </>
           )}
