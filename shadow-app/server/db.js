@@ -172,6 +172,86 @@ function numberOrNull(value) {
   return Number.isFinite(numeric) ? numeric : null;
 }
 
+// Reference-code-level rows from the Fust API import (svdvyver.fr) -- kept
+// separate from fust_actions since a Code isn't a real customer for
+// CMR/Fustbon/confirmation purposes. A null metric here means "no data
+// yet" (the source only fills DC-Actual/DCS/etc. in once a day closes
+// out), so every numeric/boolean column is nullable with no default.
+export async function saveFustReferenceAction(row) {
+  if (!pool || !row?.id) {
+    return;
+  }
+  await pool.query(
+    `
+      INSERT INTO fust_reference_actions (
+        id, action_date, country, code, group_with, carrier1_name, carrier2_name,
+        matched_customer_name, matched_connect_name, matched_customer_code, matched_by,
+        hours, flo, pla, acc, all_flag, boxes,
+        dc_planning, dc_actual, dcs, dco, cctag, vk, pal, raw, updated_at
+      )
+      VALUES (
+        $1, $2, $3, $4, $5, $6, $7,
+        $8, $9, $10, $11,
+        $12, $13, $14, $15, $16, $17,
+        $18, $19, $20, $21, $22, $23, $24, $25::jsonb, now()
+      )
+      ON CONFLICT (id) DO UPDATE SET
+        action_date = EXCLUDED.action_date,
+        country = EXCLUDED.country,
+        code = EXCLUDED.code,
+        group_with = EXCLUDED.group_with,
+        carrier1_name = EXCLUDED.carrier1_name,
+        carrier2_name = EXCLUDED.carrier2_name,
+        matched_customer_name = EXCLUDED.matched_customer_name,
+        matched_connect_name = EXCLUDED.matched_connect_name,
+        matched_customer_code = EXCLUDED.matched_customer_code,
+        matched_by = EXCLUDED.matched_by,
+        hours = EXCLUDED.hours,
+        flo = EXCLUDED.flo,
+        pla = EXCLUDED.pla,
+        acc = EXCLUDED.acc,
+        all_flag = EXCLUDED.all_flag,
+        boxes = EXCLUDED.boxes,
+        dc_planning = EXCLUDED.dc_planning,
+        dc_actual = EXCLUDED.dc_actual,
+        dcs = EXCLUDED.dcs,
+        dco = EXCLUDED.dco,
+        cctag = EXCLUDED.cctag,
+        vk = EXCLUDED.vk,
+        pal = EXCLUDED.pal,
+        raw = EXCLUDED.raw,
+        updated_at = now()
+    `,
+    [
+      row.id,
+      row.action_date,
+      row.country,
+      row.code,
+      row.group_with || "",
+      row.carrier1_name || "",
+      row.carrier2_name || "",
+      row.matched_customer_name || "",
+      row.matched_connect_name || "",
+      row.matched_customer_code || "",
+      row.matched_by || "",
+      row.hours || "",
+      row.flo === null || row.flo === undefined ? null : Boolean(row.flo),
+      row.pla === null || row.pla === undefined ? null : Boolean(row.pla),
+      row.acc === null || row.acc === undefined ? null : Boolean(row.acc),
+      row.all_flag === null || row.all_flag === undefined ? null : Boolean(row.all_flag),
+      numberOrNull(row.boxes),
+      numberOrNull(row.dc_planning),
+      numberOrNull(row.dc_actual),
+      numberOrNull(row.dcs),
+      numberOrNull(row.dco),
+      numberOrNull(row.cctag),
+      numberOrNull(row.vk),
+      numberOrNull(row.pal),
+      JSON.stringify(row.raw || {}),
+    ],
+  );
+}
+
 function mapUkdocsCsiParsedDocumentRow(row) {
   if (!row) {
     return null;
@@ -1123,6 +1203,41 @@ const databaseMigrations = [
   `
     CREATE INDEX IF NOT EXISTS warehouse_activity_log_ts_idx
     ON warehouse_activity_log (ts)
+  `,
+  `
+    CREATE TABLE IF NOT EXISTS fust_reference_actions (
+      id text PRIMARY KEY,
+      action_date date NOT NULL,
+      country text NOT NULL,
+      code text NOT NULL,
+      group_with text,
+      carrier1_name text,
+      carrier2_name text,
+      matched_customer_name text,
+      matched_connect_name text,
+      matched_customer_code text,
+      matched_by text,
+      hours text,
+      flo boolean,
+      pla boolean,
+      acc boolean,
+      all_flag boolean,
+      boxes integer,
+      dc_planning integer,
+      dc_actual integer,
+      dcs integer,
+      dco integer,
+      cctag integer,
+      vk integer,
+      pal integer,
+      raw jsonb NOT NULL,
+      imported_at timestamptz NOT NULL DEFAULT now(),
+      updated_at timestamptz NOT NULL DEFAULT now()
+    )
+  `,
+  `
+    CREATE INDEX IF NOT EXISTS fust_reference_actions_date_idx
+    ON fust_reference_actions (action_date)
   `,
 ];
 

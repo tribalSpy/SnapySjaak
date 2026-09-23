@@ -30,6 +30,7 @@ import {
   markFustActionDeletedInDatabase,
   saveUkdocsCsiParsedDocumentToDatabase,
   saveFustActionToDatabase,
+  saveFustReferenceAction,
   upsertLlmAgentHeartbeat,
   upsertWarehouseStatus,
 } from "./db.js";
@@ -4502,48 +4503,6 @@ function resolveFustImportMeta(metaRecords, record) {
   };
 }
 
-// Sibling of matchFustMetaRecord for lookups where the source system gives a
-// short code (e.g. the Fust API's "Code") instead of a carrier name -- the
-// Data tab's own customer_code/connect_name columns are the match target.
-function matchFustMetaRecordByCode(records, country, code) {
-  const normalizedCode = String(code || "").trim().toLowerCase();
-  if (!normalizedCode) {
-    return null;
-  }
-  return (records || []).find((record) => (
-    String(record.country || "").trim().toUpperCase() === String(country || "").trim().toUpperCase()
-    && (
-      String(record.customer_code || "").trim().toLowerCase() === normalizedCode
-      || String(record.connect_name || "").trim().toLowerCase() === normalizedCode
-    )
-  )) || null;
-}
-
-// Code-based counterpart of resolveFustImportMeta -- returns the same shape
-// so downstream dedupe/action-building code (buildActionBusinessKey,
-// findMatchingFustImportAction, etc.) treats a code-resolved row identically
-// to a name-resolved one, and lands on the exact same customer_name/
-// connect_name as the sheet-driven import for the same real customer.
-function resolveFustApiImportMeta(metaRecords, country, code) {
-  const meta = matchFustMetaRecordByCode(metaRecords, country, code);
-  if (meta) {
-    return {
-      customer_name: meta.customer_name,
-      connect_name: meta.connect_name || meta.customer_code || "",
-      customer_code: meta.customer_code || meta.connect_name || "",
-      matched_by: "code",
-      match_name: code,
-    };
-  }
-  return {
-    customer_name: "",
-    connect_name: "",
-    customer_code: String(code || "").trim(),
-    matched_by: "",
-    match_name: "",
-  };
-}
-
 function findMatchingFustImportAction(actions, candidate) {
   const targetImportKey = buildFustImportKey(candidate);
   const targetBusinessKey = buildActionBusinessKey(candidate);
@@ -4692,17 +4651,24 @@ async function prepareFustImportRows(filePayload, requestUser) {
 }
 
 // Fust API import (svdvyver.fr fust_management.php) -- a daily HTTP pull of
-// the same kind of DC/DCS/DCO/CCTAG/PAL/VK crate data the sheet and manual
-// Excel import already feed into fust_actions, so it goes through the same
-// customer-resolution/dedupe identity (buildActionBusinessKey via
-// findMatchingFustImportAction) rather than a separate parallel pipeline.
+// reference-code-level DC/DCS/DCO/CCTAG/PAL/VK data. A "Code" here is a
+// specific route/reference (many per carrier, e.g. 4CM140/4CM284/... all
+// under carrier "Breewel"), not a customer in its own right, so this is
+// stored in its own fust_reference_actions table rather than merged into
+// fust_actions -- a Code has no CMR/Fustbon/confirmation workflow. Carrier
+// 1/2 are matched against the same Data-tab lookup the Excel importer uses
+// (resolveFustImportMeta, unchanged) since the carrier names are shared
+// between both sources.
 //
-// The API's DC-Planning is a same-day forecast, not a confirmed count, and
-// is never imported. Only DC-Actual (and DCS/DCO/CC/VK/PAL) are written, and
-// only once the source has actually filled them in -- they come back null
-// all day and only get a real value once that day is closed out, so this
-// pulls a trailing window of past days rather than "today".
-const FUST_API_IMPORT_LOOKBACK_DAYS = 3;
+// DC-Planning is a same-day forecast; DC-Actual is the confirmed count that
+// only gets filled in once a day closes out (both null all day otherwise,
+// confirmed against a real sample response). Both are stored as their own
+// columns for reference, but nothing here is treated as authoritative
+// until the source actually fills it in -- storing null-heavy rows now
+// (ahead of the 1 October go-live) is deliberate: it surfaces any Carrier
+// 1/2 name that fails to match a Data-tab customer well before the
+// deadline, instead of on the day.
+const FUST_REFERENCE_IMPORT_WINDOW_DAYS = 2;
 
 function fustApiMetricValue(row, field) {
   const value = row?.[field];
@@ -4724,161 +4690,48 @@ async function fetchFustApiImportRows(settings, date) {
   return Array.isArray(payload?.rows) ? payload.rows : [];
 }
 
-function prepareFustApiImportRows(rows, date, metaRecords, currentActions) {
-  const resolvedRows = (Array.isArray(rows) ? rows : []).map((row) => {
-    const country = String(row?.Country || "").trim().toUpperCase();
-    const code = String(row?.Code || "").trim();
-    const resolvedMeta = resolveFustApiImportMeta(metaRecords, country, code);
-    return {
-      action_date: date,
-      country,
-      code,
-      customer_name: resolvedMeta.customer_name,
-      connect_name: resolvedMeta.connect_name,
-      customer_code: resolvedMeta.customer_code || code,
-      metrics: {
-        dc: fustApiMetricValue(row, "DC-Actual"),
-        cctag: fustApiMetricValue(row, "CC"),
-        dcs: fustApiMetricValue(row, "DCS"),
-        dco: fustApiMetricValue(row, "DCO"),
-        pal: fustApiMetricValue(row, "PAL"),
-        vk: fustApiMetricValue(row, "VK"),
-      },
-    };
-  });
-
-  return resolvedRows
-    // No Data-tab match for this code -- nothing safe to attach this to yet.
-    .filter((record) => record.customer_name)
-    // Every metric is still null for this row (the usual case before the
-    // day closes out) -- nothing to import.
-    .filter((record) => Object.values(record.metrics).some((value) => value !== null))
-    .map((record) => {
-      const candidate = {
-        type: "OUT",
-        action_date: record.action_date,
-        country: record.country,
-        customer_name: record.customer_name,
-        connect_name: record.connect_name,
-        customer_code: record.customer_code,
-      };
-      const importKey = buildFustImportKey(candidate);
-      const matchedAction = findMatchingFustImportAction(currentActions, { ...candidate, import_source: { import_key: importKey } });
-      return {
-        ...record,
-        import_key: importKey,
-        matched_action_id: matchedAction?.id || "",
-      };
-    });
+function fustApiFlagValue(row, field) {
+  const value = row?.[field];
+  return typeof value === "boolean" ? value : null;
 }
 
-async function applyFustApiImportRows(preparedRows, settings) {
-  const summary = { checked: preparedRows.length, created: 0, updated: 0, skipped_confirmed: 0, failed: 0 };
-  let localActions = await readFustActions();
-  for (const row of preparedRows) {
-    try {
-      const existingMatch = row.matched_action_id
-        ? await ensureLocalFustAction(row.matched_action_id, settings)
-        : { actions: localActions, action: null };
-      localActions = existingMatch.actions;
-      const existingAction = existingMatch.action || null;
-
-      // A confirmed action is a human sign-off -- this unattended job never
-      // overwrites one (unlike the manual Excel import, which lets a
-      // FUST_MANAGE user do so deliberately).
-      if (existingAction && isFustActionConfirmed(existingAction)) {
-        summary.skipped_confirmed += 1;
-        continue;
-      }
-
-      const baseAction = existingAction || {};
-      const baseMetrics = baseAction.metrics || emptyFustMetrics();
-      // A null metric from the API means "no data yet", not zero -- only a
-      // metric the API actually provided a number for gets overwritten, so
-      // this can never blank out real dcs/dco/pal/vk/cctag values the sheet
-      // already recorded for the same action.
-      const nextAction = normalizeFustAction({
-        ...baseAction,
-        id: existingAction?.id || createImportedActionId(row.import_key),
-        type: "OUT",
-        action_date: row.action_date,
-        week: weekNumberForDate(row.action_date),
-        day_name: weekdayNameForDate(row.action_date),
-        country: row.country,
-        customer_name: row.customer_name,
-        customer_code: row.customer_code,
-        connect_name: row.connect_name,
-        remark: baseAction.remark || "",
-        fustbon_reference: baseAction.fustbon_reference || "",
-        fustfactuur_reference: baseAction.fustfactuur_reference || "",
-        metrics: {
-          dc: row.metrics.dc !== null ? row.metrics.dc : Number(baseMetrics.dc || 0),
-          cctag: row.metrics.cctag !== null ? row.metrics.cctag : Number(baseMetrics.cctag || 0),
-          dcs: row.metrics.dcs !== null ? row.metrics.dcs : Number(baseMetrics.dcs || 0),
-          dco: row.metrics.dco !== null ? row.metrics.dco : Number(baseMetrics.dco || 0),
-          pal: row.metrics.pal !== null ? row.metrics.pal : Number(baseMetrics.pal || 0),
-          vk: row.metrics.vk !== null ? row.metrics.vk : Number(baseMetrics.vk || 0),
-        },
-        created_by: existingAction?.created_by || "fust-api-import",
-        created_at: existingAction?.created_at || new Date().toISOString(),
-        confirmed_at: existingAction?.confirmed_at || "",
-        confirmed_by: existingAction?.confirmed_by || "",
-        import_source: {
-          import_key: row.import_key,
-          source: "fust_api",
-          source_code: row.code,
-          source_date: row.action_date,
-          imported_at: new Date().toISOString(),
-          imported_by: "fust-api-import",
-        },
-        deleted: false,
-        deleted_at: "",
-        deleted_by: "",
-        sheet_sync: { ok: false, target_sheets: [], error: "Pending import sync" },
-        email_sync: existingAction?.email_sync?.ok
-          ? existingAction.email_sync
-          : { ok: true, recipients: [], error: "Imported without email notification" },
-        cmr: existingAction?.cmr || normalizeCmrInfo(null),
-        fustbon: existingAction?.fustbon || normalizeCmrInfo(null),
-      });
-
-      const localIndex = localActions.findIndex((item) => String(item.id || "").trim() === nextAction.id);
-      if (localIndex >= 0) {
-        localActions[localIndex] = nextAction;
-      } else {
-        localActions.push(nextAction);
-      }
-      await writeFustActions(localActions);
-
-      try {
-        nextAction.sheet_sync = await syncFustActionToSheets(nextAction, settings, { previousAction: existingAction });
-      } catch (sheetError) {
-        nextAction.sheet_sync = {
-          ok: false,
-          target_sheets: [],
-          error: sheetError instanceof Error ? sheetError.message : String(sheetError),
-        };
-      }
-      nextAction.db_sync = await mirrorFustActionToDatabase(nextAction);
-
-      const savedIndex = localActions.findIndex((item) => String(item.id || "").trim() === nextAction.id);
-      if (savedIndex >= 0) {
-        localActions[savedIndex] = nextAction;
-      } else {
-        localActions.push(nextAction);
-      }
-      await writeFustActions(localActions);
-
-      if (existingAction) {
-        summary.updated += 1;
-      } else {
-        summary.created += 1;
-      }
-    } catch (error) {
-      summary.failed += 1;
-    }
-  }
-  return summary;
+// Resolves a reference-code row's carrier via the same Data-tab lookup
+// (resolveFustImportMeta, unchanged) the Excel importer uses for carrier
+// names -- "Carrier 1"/"Carrier 2" here are the same names as that
+// importer's own carrier1_name/carrier2_name.
+function mapFustApiRow(row, date, metaRecords) {
+  const country = String(row?.Country || "").trim().toUpperCase();
+  const code = String(row?.Code || "").trim();
+  const carrier1Name = String(row?.["Carrier 1"] || "").trim();
+  const carrier2Name = String(row?.["Carrier 2"] || "").trim();
+  const resolvedMeta = resolveFustImportMeta(metaRecords, { country, carrier1_name: carrier1Name, carrier2_name: carrier2Name });
+  return {
+    id: `${date}|${code}`,
+    action_date: date,
+    country,
+    code,
+    group_with: String(row?.["Group with"] || "").trim(),
+    carrier1_name: carrier1Name,
+    carrier2_name: carrier2Name,
+    matched_customer_name: resolvedMeta.matched_by ? resolvedMeta.customer_name : "",
+    matched_connect_name: resolvedMeta.matched_by ? resolvedMeta.connect_name : "",
+    matched_customer_code: resolvedMeta.matched_by ? resolvedMeta.customer_code : "",
+    matched_by: resolvedMeta.matched_by,
+    hours: String(row?.Hours || "").trim(),
+    flo: fustApiFlagValue(row, "Flo"),
+    pla: fustApiFlagValue(row, "Pla"),
+    acc: fustApiFlagValue(row, "Acc"),
+    all_flag: fustApiFlagValue(row, "All"),
+    boxes: fustApiMetricValue(row, "Boxes"),
+    dc_planning: fustApiMetricValue(row, "DC-Planning"),
+    dc_actual: fustApiMetricValue(row, "DC-Actual"),
+    dcs: fustApiMetricValue(row, "DCS"),
+    dco: fustApiMetricValue(row, "DCO"),
+    cctag: fustApiMetricValue(row, "CC"),
+    vk: fustApiMetricValue(row, "VK"),
+    pal: fustApiMetricValue(row, "PAL"),
+    raw: row,
+  };
 }
 
 async function runFustApiImportJob() {
@@ -4886,28 +4739,44 @@ async function runFustApiImportJob() {
   if (!settings.fust_api_base_url || !settings.fust_api_key) {
     return { ok: true, skipped: true, reason: "Fust API base URL/key not configured" };
   }
+  if (!isDatabaseEnabled()) {
+    return { ok: true, skipped: true, reason: "Database is not enabled" };
+  }
   const dataRows = await loadFustSheetRows(settings);
   const metaRecords = buildFustMetaFromSheetRows(dataRows).records;
-  const current = await collectCurrentFustActions(settings);
 
   const today = localDateIso();
-  const summary = { ok: true, checked: 0, created: 0, updated: 0, skipped_confirmed: 0, failed: 0, errors: [] };
-  for (let offset = 1; offset <= FUST_API_IMPORT_LOOKBACK_DAYS; offset += 1) {
+  const summary = { ok: true, checked: 0, saved: 0, unmatched: 0, failed: 0, unmatched_carriers: [], errors: [] };
+  const unmatchedCarrierNames = new Set();
+  for (let offset = 0; offset < FUST_REFERENCE_IMPORT_WINDOW_DAYS; offset += 1) {
     const date = addDaysToIsoDate(today, -offset);
     try {
       const rows = await fetchFustApiImportRows(settings, date);
-      const prepared = prepareFustApiImportRows(rows, date, metaRecords, current.activeActions);
-      const dayResult = await applyFustApiImportRows(prepared, settings);
-      summary.checked += dayResult.checked;
-      summary.created += dayResult.created;
-      summary.updated += dayResult.updated;
-      summary.skipped_confirmed += dayResult.skipped_confirmed;
-      summary.failed += dayResult.failed;
+      for (const row of rows) {
+        summary.checked += 1;
+        try {
+          const mapped = mapFustApiRow(row, date, metaRecords);
+          if (!mapped.matched_by) {
+            summary.unmatched += 1;
+            unmatchedCarrierNames.add(mapped.carrier2_name || mapped.carrier1_name);
+          }
+          await saveFustReferenceAction(mapped);
+          summary.saved += 1;
+        } catch (rowError) {
+          summary.failed += 1;
+          summary.errors.push(`${date}/${row?.Code}: ${rowError instanceof Error ? rowError.message : String(rowError)}`);
+        }
+      }
     } catch (error) {
       summary.ok = false;
       summary.errors.push(`${date}: ${error instanceof Error ? error.message : String(error)}`);
     }
   }
+  // The set of carrier names (Carrier 2 if present, else Carrier 1) that
+  // never matched a Data-tab customer -- the actionable list for fixing
+  // spelling mismatches before 1 October, without needing to query the
+  // database directly.
+  summary.unmatched_carriers = [...unmatchedCarrierNames].filter(Boolean).sort();
   return summary;
 }
 
@@ -16047,6 +15916,23 @@ async function handleApi(req, res, url) {
     }
     try {
       const payload = await backfillFustDatabase();
+      sendJson(res, 200, payload);
+    } catch (error) {
+      sendJson(res, 400, { error: error instanceof Error ? error.message : String(error) });
+    }
+    return;
+  }
+
+  // Manual trigger for the Fust API reference-import job (also runs on its
+  // own 15-minute interval) -- lets Carrier 1/2 matching problems against
+  // the Data tab be checked and fixed on demand, ahead of the 1 October
+  // go-live, instead of waiting for the next scheduled tick.
+  if (url.pathname === "/api/fust/reference-import/run" && req.method === "POST") {
+    if (!requirePermission(res, requestUser, PERMISSIONS.SETTINGS_MANAGE)) {
+      return;
+    }
+    try {
+      const payload = await runFustApiImportJob();
       sendJson(res, 200, payload);
     } catch (error) {
       sendJson(res, 400, { error: error instanceof Error ? error.message : String(error) });
