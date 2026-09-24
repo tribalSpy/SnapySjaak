@@ -65,6 +65,7 @@ const fustSettingsPath = path.join(cacheDir, "fust-settings.json");
 const systemModePath = path.join(cacheDir, "system-mode.json");
 const clockRecordsPath = path.join(cacheDir, "clock-records.json");
 const ukdocsStatePath = path.join(cacheDir, "ukdocs-state.json");
+const inkoopStatePath = path.join(cacheDir, "inkoop-state.json");
 const ukdocsPrintFilesDir = path.join(cacheDir, "ukdocs-print-files");
 const fustBackupDir = path.join(cacheDir, "fust-backups");
 const syncScriptPath = path.join(repoRoot, "sync_index.py");
@@ -78,6 +79,7 @@ const ukdocsWorkerPath = path.join(appRoot, "server", "ukdocs_worker.py");
 const ukdocsCsiWorkerPath = path.join(appRoot, "server", "ukdocs_csi_worker.py");
 const financeAuditInvoiceWorkerPath = path.join(appRoot, "server", "finance_audit_invoice_worker.py");
 const ericDocsWorkerPath = path.join(appRoot, "server", "eric_docs_worker.py");
+const inkoopVeilingWorkerPath = path.join(appRoot, "server", "inkoop_veiling_worker.py");
 const dagFoutjesHtmlPathCandidates = [
   path.join(repoRoot, "foutjeskoelcel", "bledy-chlodnia (1).html"),
   path.join(process.cwd(), "foutjeskoelcel", "bledy-chlodnia (1).html"),
@@ -472,6 +474,7 @@ const allPermissions = [
   "pd_keuring:view",
   "warehouse:view",
   "eric_docs:view",
+  "inkoop:view",
 ];
 const PERMISSIONS = {
   PHOTOS_VIEW: "photos:view",
@@ -496,6 +499,7 @@ const PERMISSIONS = {
   PD_KEURING_VIEW: "pd_keuring:view",
   WAREHOUSE_VIEW: "warehouse:view",
   ERIC_DOCS_VIEW: "eric_docs:view",
+  INKOOP_VIEW: "inkoop:view",
 };
 const roleDefaultPermissions = {
   admin: allPermissions,
@@ -5814,6 +5818,195 @@ function runEricDocsWorker(args) {
     });
     child.stdin.end();
   });
+}
+
+function runInkoopVeilingWorker(args) {
+  return new Promise((resolve, reject) => {
+    const child = spawn(resolvePythonCommand(), [inkoopVeilingWorkerPath, ...args], {
+      cwd: repoRoot,
+      windowsHide: true,
+    });
+
+    const stdout = [];
+    const stderr = [];
+    child.stdout.on("data", (chunk) => stdout.push(chunk));
+    child.stderr.on("data", (chunk) => stderr.push(chunk));
+    child.on("error", reject);
+    child.on("close", (code) => {
+      const output = Buffer.concat(stdout);
+      if (code === 0) {
+        resolve(output);
+        return;
+      }
+      reject(new Error(Buffer.concat(stderr).toString("utf8") || `Inkoop veiling worker exited with ${code}`));
+    });
+    child.stdin.end();
+  });
+}
+
+async function writeInkoopUploadToTempFile(filePayload, prefix, defaultExtension) {
+  const originalName = path.basename(String(filePayload?.name || "").trim());
+  const contentBase64 = String(filePayload?.content_base64 || "").trim();
+  if (!originalName || !contentBase64) {
+    throw new Error("Choose a file first");
+  }
+  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), prefix));
+  const extension = path.extname(originalName).toLowerCase() || defaultExtension;
+  const inputPath = path.join(tempDir, `source${extension}`);
+  await fs.writeFile(inputPath, Buffer.from(contentBase64, "base64"));
+  return inputPath;
+}
+
+async function parseInkoopErpUpload(filePayload) {
+  const inputPath = await writeInkoopUploadToTempFile(filePayload, "inkoop-erp-", ".xlsx");
+  const output = await runInkoopVeilingWorker(["parse-erp", "--input", inputPath]);
+  const payload = JSON.parse(output.toString("utf8"));
+  if (payload?.error) {
+    throw new Error(payload.error);
+  }
+  return Array.isArray(payload?.rows) ? payload.rows : [];
+}
+
+async function parseInkoopVeilingUpload(filePayload) {
+  const inputPath = await writeInkoopUploadToTempFile(filePayload, "inkoop-veiling-", ".zip");
+  const output = await runInkoopVeilingWorker(["parse-veiling", "--input", inputPath]);
+  const payload = JSON.parse(output.toString("utf8"));
+  return {
+    invoices: Array.isArray(payload?.invoices) ? payload.invoices : [],
+    skipped: Array.isArray(payload?.skipped) ? payload.skipped : [],
+  };
+}
+
+// Pure matching function -- no I/O, easy to unit-test standalone. Only
+// klokfactuur/connect invoice lines carrying a reference_bt are attempted
+// against the ERP dump's PAV column (the confirmed shared key); handel
+// (trade purchase) lines have no comparable reference in the ERP dump and
+// are reported separately rather than guessed at by date/qty/price.
+const INKOOP_MATCH_TOLERANCE = 0.01;
+
+function normalizeInkoopKey(value) {
+  return String(value || "").trim().toUpperCase();
+}
+
+function inkoopValuesDiffer(left, right) {
+  if (left === null || left === undefined || right === null || right === undefined) {
+    return true;
+  }
+  return Math.abs(Number(left) - Number(right)) > INKOOP_MATCH_TOLERANCE;
+}
+
+function matchInkoopVeilingLines(erpRows, invoices) {
+  const erpByPav = new Map();
+  for (const row of Array.isArray(erpRows) ? erpRows : []) {
+    const pav = normalizeInkoopKey(row?.pav);
+    if (!pav) {
+      continue;
+    }
+    erpByPav.set(pav, row);
+  }
+
+  const matchedOk = [];
+  const matchedMismatch = [];
+  const onlyInInvoice = [];
+  const unmatchedTypeLines = [];
+  const feeLines = [];
+  const claimedPavs = new Set();
+
+  for (const invoice of Array.isArray(invoices) ? invoices : []) {
+    const isMatchable = invoice?.type === "klokfactuur" || invoice?.type === "connect";
+    for (const line of Array.isArray(invoice?.lines) ? invoice.lines : []) {
+      const context = { invoice_number: invoice?.invoice_number || "", invoice_type: invoice?.type || "", ...line };
+      if (!isMatchable) {
+        unmatchedTypeLines.push(context);
+        continue;
+      }
+      const referenceBt = normalizeInkoopKey(line?.reference_bt);
+      if (!referenceBt) {
+        // A fee/deposit/interest line -- has no per-lot reference, so it was
+        // never meant to have an ERP counterpart. Kept for visibility only.
+        feeLines.push(context);
+        continue;
+      }
+      const erpRow = erpByPav.get(referenceBt);
+      if (!erpRow) {
+        onlyInInvoice.push(context);
+        continue;
+      }
+      claimedPavs.add(referenceBt);
+      const diffFields = [];
+      if (inkoopValuesDiffer(erpRow.pieces, line.quantity)) {
+        diffFields.push({ field: "quantity", erp: erpRow.pieces, invoice: line.quantity });
+      }
+      if (inkoopValuesDiffer(parseFloat(erpRow.price), line.unit_price)) {
+        diffFields.push({ field: "unit_price", erp: parseFloat(erpRow.price), invoice: line.unit_price });
+      }
+      if (inkoopValuesDiffer(parseFloat(erpRow.t_price), line.total)) {
+        diffFields.push({ field: "total", erp: parseFloat(erpRow.t_price), invoice: line.total });
+      }
+      const pair = { ...context, pav: referenceBt, erp_row: erpRow };
+      if (diffFields.length) {
+        matchedMismatch.push({ ...pair, diffs: diffFields });
+      } else {
+        matchedOk.push(pair);
+      }
+    }
+  }
+
+  const onlyInErp = [...erpByPav.entries()]
+    .filter(([pav]) => !claimedPavs.has(pav))
+    .map(([, row]) => row);
+
+  return {
+    matched_ok: matchedOk,
+    matched_mismatch: matchedMismatch,
+    only_in_invoice: onlyInInvoice,
+    only_in_erp: onlyInErp,
+    unmatched_type_lines: unmatchedTypeLines,
+    fee_lines: feeLines,
+  };
+}
+
+const defaultInkoopState = { runs: [] };
+
+function normalizeInkoopRun(run) {
+  const listOf = (value) => (Array.isArray(value) ? value : []);
+  return {
+    id: normalizeUkdocsText(run?.id) || crypto.randomUUID(),
+    run_date: normalizeUkdocsText(run?.run_date),
+    created_at: normalizeUkdocsText(run?.created_at) || new Date().toISOString(),
+    created_by: normalizeUkdocsText(run?.created_by),
+    erp_file_name: normalizeUkdocsText(run?.erp_file_name),
+    veiling_file_name: normalizeUkdocsText(run?.veiling_file_name),
+    matched_ok: listOf(run?.matched_ok),
+    matched_mismatch: listOf(run?.matched_mismatch),
+    only_in_invoice: listOf(run?.only_in_invoice),
+    only_in_erp: listOf(run?.only_in_erp),
+    unmatched_type_lines: listOf(run?.unmatched_type_lines),
+    fee_lines: listOf(run?.fee_lines),
+    skipped_files: listOf(run?.skipped_files),
+    summary: {
+      matched: listOf(run?.matched_ok).length,
+      mismatched: listOf(run?.matched_mismatch).length,
+      only_in_invoice: listOf(run?.only_in_invoice).length,
+      only_in_erp: listOf(run?.only_in_erp).length,
+      unmatched_type_count: listOf(run?.unmatched_type_lines).length,
+    },
+  };
+}
+
+function normalizeInkoopState(state) {
+  return {
+    runs: (Array.isArray(state?.runs) ? state.runs : []).map(normalizeInkoopRun),
+  };
+}
+
+async function readInkoopState() {
+  const payload = await readJsonFile(inkoopStatePath, defaultInkoopState);
+  return normalizeInkoopState(payload);
+}
+
+async function writeInkoopState(state) {
+  await writeJsonFile(inkoopStatePath, normalizeInkoopState(state));
 }
 
 function mergeUkdocsStatePatch(currentState, patch) {
@@ -15934,6 +16127,42 @@ async function handleApi(req, res, url) {
     try {
       const payload = await runFustApiImportJob();
       sendJson(res, 200, payload);
+    } catch (error) {
+      sendJson(res, 400, { error: error instanceof Error ? error.message : String(error) });
+    }
+    return;
+  }
+
+  if (url.pathname === "/api/inkoop/veiling/runs" && req.method === "GET") {
+    if (!requirePermission(res, requestUser, PERMISSIONS.INKOOP_VIEW)) {
+      return;
+    }
+    const state = await readInkoopState();
+    sendJson(res, 200, { runs: state.runs });
+    return;
+  }
+
+  if (url.pathname === "/api/inkoop/veiling/compare" && req.method === "POST") {
+    if (!requirePermission(res, requestUser, PERMISSIONS.INKOOP_VIEW)) {
+      return;
+    }
+    const body = await readRequestJson(req);
+    try {
+      const erpRows = await parseInkoopErpUpload(body?.erp_file);
+      const veiling = await parseInkoopVeilingUpload(body?.veiling_zip);
+      const matched = matchInkoopVeilingLines(erpRows, veiling.invoices);
+      const run = normalizeInkoopRun({
+        run_date: body?.run_date || localDateIso(),
+        created_by: requestUser.username,
+        erp_file_name: body?.erp_file?.name || "",
+        veiling_file_name: body?.veiling_zip?.name || "",
+        skipped_files: veiling.skipped,
+        ...matched,
+      });
+      const state = await readInkoopState();
+      state.runs = [run, ...state.runs];
+      await writeInkoopState(state);
+      sendJson(res, 200, { run, runs: state.runs });
     } catch (error) {
       sendJson(res, 400, { error: error instanceof Error ? error.message : String(error) });
     }

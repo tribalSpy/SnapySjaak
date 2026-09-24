@@ -35,6 +35,7 @@ const PERMISSIONS = {
   PD_KEURING_VIEW: "pd_keuring:view",
   WAREHOUSE_VIEW: "warehouse:view",
   ERIC_DOCS_VIEW: "eric_docs:view",
+  INKOOP_VIEW: "inkoop:view",
 };
 const ALL_PERMISSIONS = Object.values(PERMISSIONS);
 const DEFAULT_PERMISSIONS_BY_ROLE = {
@@ -56,6 +57,7 @@ const PAGE_DEFINITIONS = [
   { key: "ukdocscsi", label: "UKDocs CSI", permission: PERMISSIONS.UKDOCS_CSI_VIEW },
   { key: "ericdocs", label: "Eric Docs", permission: PERMISSIONS.ERIC_DOCS_VIEW },
   { key: "pdkeuring", label: "PD Keuring", permission: PERMISSIONS.PD_KEURING_VIEW },
+  { key: "inkoop", label: "Inkoop Controle", permission: PERMISSIONS.INKOOP_VIEW },
   { key: "clock", label: "Inklokken", permission: PERMISSIONS.CLOCK_VIEW },
   { key: "users", label: "Users", permission: PERMISSIONS.USERS_MANAGE },
   { key: "settings", label: "Settings", permission: PERMISSIONS.SETTINGS_MANAGE },
@@ -226,6 +228,11 @@ function pageHeading(page) {
       return {
         title: "PD Keuring",
         caption: "Plan PD keuring shipments, kept in sync with the PD keuringen spreadsheet while both are in use.",
+      };
+    case "inkoop":
+      return {
+        title: "Inkoop Controle",
+        caption: "Match veiling invoices against the ERP purchase records and review price/quantity differences.",
       };
     default:
       return {
@@ -9501,6 +9508,7 @@ function App() {
         {page === "ukdocscsi" && <UkdocsCSIPage currentUser={auth.user} />}
         {page === "ericdocs" && <EricDocsPage currentUser={auth.user} />}
         {page === "pdkeuring" && <PdKeuringPage currentUser={auth.user} />}
+        {page === "inkoop" && <InkoopControlePage currentUser={auth.user} />}
         {page === "settings" && <SettingsPage currentUser={auth.user} />}
         {page === "ukdocs" && <UkdocsPage currentUser={auth.user} onNavigate={setPage} />}
         {page === "dashboard" && canViewPhotos && (
@@ -13417,6 +13425,245 @@ function ClockPage({ currentUser, publicMode = false }) {
             </datalist>
           </div>
         </div>
+      )}
+    </section>
+  );
+}
+
+function inkoopFieldLabel(field) {
+  if (field === "quantity") return "Quantity";
+  if (field === "unit_price") return "Unit price";
+  if (field === "total") return "Total";
+  return field;
+}
+
+function InkoopControlePage() {
+  const [loading, setLoading] = useState(true);
+  const [comparing, setComparing] = useState(false);
+  const [runs, setRuns] = useState([]);
+  const [selectedRunId, setSelectedRunId] = useState("");
+  const [runDate, setRunDate] = useState(() => localDateIso());
+  const [erpFile, setErpFile] = useState(null);
+  const [veilingZip, setVeilingZip] = useState(null);
+  const [message, setMessage] = useState("");
+  const [error, setError] = useState("");
+
+  useEffect(() => {
+    let cancelled = false;
+    apiJson("/api/inkoop/veiling/runs")
+      .then((payload) => {
+        if (cancelled) return;
+        setRuns(payload.runs || []);
+        if (payload.runs?.length) {
+          setSelectedRunId(payload.runs[0].id);
+        }
+      })
+      .catch((loadError) => {
+        if (!cancelled) setError(loadError.message);
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  async function runComparison() {
+    if (!erpFile || !veilingZip) {
+      setError("Choose both the ERP export and the veiling emails zip first.");
+      return;
+    }
+    setComparing(true);
+    setError("");
+    setMessage("");
+    try {
+      const [erpBase64, veilingBase64] = await Promise.all([fileToBase64(erpFile), fileToBase64(veilingZip)]);
+      const payload = await apiJson("/api/inkoop/veiling/compare", {
+        method: "POST",
+        body: JSON.stringify({
+          run_date: runDate,
+          erp_file: { name: erpFile.name, content_base64: erpBase64 },
+          veiling_zip: { name: veilingZip.name, content_base64: veilingBase64 },
+        }),
+      });
+      setRuns(payload.runs || []);
+      setSelectedRunId(payload.run?.id || "");
+      setMessage(`Compared: ${payload.run?.summary?.matched ?? 0} matched, ${payload.run?.summary?.mismatched ?? 0} mismatches, ${payload.run?.summary?.only_in_invoice ?? 0} only in invoice, ${payload.run?.summary?.only_in_erp ?? 0} only in ERP.`);
+    } catch (compareError) {
+      setError(compareError.message);
+    } finally {
+      setComparing(false);
+    }
+  }
+
+  const selectedRun = runs.find((run) => run.id === selectedRunId) || null;
+
+  if (loading) {
+    return <div className="notice">Loading Inkoop Controle...</div>;
+  }
+
+  return (
+    <section className="overview-stack">
+      {message && <div className="notice">{message}</div>}
+      {error && <div className="notice danger">{error}</div>}
+
+      <div className="data-table-card">
+        <div className="section-header"><h2>Compare a day</h2></div>
+        <div className="notice">
+          No live mailbox yet -- for now, save the day's veiling emails (Klokfactuur, Connect factuur, Factuur handel aankopen) as .msg files, zip them, and upload that zip together with the ERP "Screen" export for the same day.
+        </div>
+        <div className="form-grid">
+          <label>
+            <span>Date</span>
+            <input type="date" value={runDate} onChange={(event) => setRunDate(event.target.value)} />
+          </label>
+          <label>
+            <span>ERP export (.xlsx)</span>
+            <input type="file" accept=".xlsx" onChange={(event) => setErpFile(event.target.files?.[0] || null)} />
+          </label>
+          <label>
+            <span>Veiling emails (.zip of .msg files)</span>
+            <input type="file" accept=".zip" onChange={(event) => setVeilingZip(event.target.files?.[0] || null)} />
+          </label>
+        </div>
+        <div className="row-actions spread-actions">
+          <button type="button" className="primary" onClick={runComparison} disabled={comparing}>
+            {comparing ? "Comparing..." : "Compare"}
+          </button>
+        </div>
+      </div>
+
+      {!!runs.length && (
+        <div className="data-table-card">
+          <div className="section-header"><h2>Past runs</h2></div>
+          <div className="table-wrap">
+            <table className="data-table">
+              <thead>
+                <tr><th>Date</th><th>ERP file</th><th>Veiling file</th><th>Matched</th><th>Mismatches</th><th>Only in invoice</th><th>Only in ERP</th><th>Trade (not matched)</th><th>Ran at</th><th></th></tr>
+              </thead>
+              <tbody>
+                {runs.map((run) => (
+                  <tr key={run.id} className={run.id === selectedRunId ? "active-row" : ""}>
+                    <td>{run.run_date}</td>
+                    <td>{run.erp_file_name || "-"}</td>
+                    <td>{run.veiling_file_name || "-"}</td>
+                    <td>{run.summary.matched}</td>
+                    <td>{run.summary.mismatched}</td>
+                    <td>{run.summary.only_in_invoice}</td>
+                    <td>{run.summary.only_in_erp}</td>
+                    <td>{run.summary.unmatched_type_count}</td>
+                    <td>{formatTimestamp(run.created_at)}</td>
+                    <td><button type="button" onClick={() => setSelectedRunId(run.id)}>Open</button></td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+
+      {selectedRun && (
+        <>
+          {!!selectedRun.matched_mismatch.length && (
+            <div className="data-table-card">
+              <div className="section-header"><h2>Mismatches ({selectedRun.matched_mismatch.length})</h2></div>
+              <div className="table-wrap">
+                <table className="data-table">
+                  <thead>
+                    <tr><th>Invoice</th><th>PAV</th><th>Description</th><th>Field</th><th>ERP value</th><th>Invoice value</th></tr>
+                  </thead>
+                  <tbody>
+                    {selectedRun.matched_mismatch.map((row, index) => (
+                      row.diffs.map((diff, diffIndex) => (
+                        <tr key={`${index}-${diffIndex}`}>
+                          {diffIndex === 0 && <td rowSpan={row.diffs.length}>{row.invoice_number}</td>}
+                          {diffIndex === 0 && <td rowSpan={row.diffs.length}>{row.pav}</td>}
+                          {diffIndex === 0 && <td rowSpan={row.diffs.length}>{row.description}</td>}
+                          <td>{inkoopFieldLabel(diff.field)}</td>
+                          <td>{diff.erp}</td>
+                          <td>{diff.invoice}</td>
+                        </tr>
+                      ))
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          )}
+
+          {!!selectedRun.only_in_invoice.length && (
+            <div className="data-table-card">
+              <div className="section-header"><h2>Only in invoice ({selectedRun.only_in_invoice.length})</h2></div>
+              <div className="notice">FloraHolland charged for these but no matching PAV was found in the ERP export.</div>
+              <div className="table-wrap">
+                <table className="data-table">
+                  <thead><tr><th>Invoice</th><th>PAV / reference</th><th>Description</th><th>Quantity</th><th>Unit price</th><th>Total</th></tr></thead>
+                  <tbody>
+                    {selectedRun.only_in_invoice.map((row, index) => (
+                      <tr key={index}><td>{row.invoice_number}</td><td>{row.reference_bt}</td><td>{row.description}</td><td>{row.quantity}</td><td>{row.unit_price}</td><td>{row.total}</td></tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          )}
+
+          {!!selectedRun.only_in_erp.length && (
+            <div className="data-table-card">
+              <div className="section-header"><h2>Only in ERP ({selectedRun.only_in_erp.length})</h2></div>
+              <div className="notice">Recorded as a purchase but no invoice line referenced this PAV -- invoice not received yet, or a data entry mistake.</div>
+              <div className="table-wrap">
+                <table className="data-table">
+                  <thead><tr><th>PAV</th><th>Lot</th><th>Description</th><th>Pieces</th><th>Price</th><th>Total</th><th>Supplier</th></tr></thead>
+                  <tbody>
+                    {selectedRun.only_in_erp.map((row, index) => (
+                      <tr key={index}><td>{row.pav}</td><td>{row.lot}</td><td>{row.description}</td><td>{row.pieces}</td><td>{row.price}</td><td>{row.t_price}</td><td>{row.suppl}</td></tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          )}
+
+          {!!selectedRun.unmatched_type_lines.length && (
+            <div className="data-table-card">
+              <div className="section-header"><h2>Trade purchases -- not auto-matched ({selectedRun.unmatched_type_lines.length})</h2></div>
+              <div className="notice">"Factuur handel aankopen" lines have no shared reference with the ERP export, so they're listed here for manual review rather than matched.</div>
+              <div className="table-wrap">
+                <table className="data-table">
+                  <thead><tr><th>Invoice</th><th>Description</th><th>Quantity</th><th>Unit price</th><th>Total</th></tr></thead>
+                  <tbody>
+                    {selectedRun.unmatched_type_lines.map((row, index) => (
+                      <tr key={index}><td>{row.invoice_number}</td><td>{row.description}</td><td>{row.quantity}</td><td>{row.unit_price}</td><td>{row.total}</td></tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          )}
+
+          <div className="data-table-card">
+            <div className="section-header"><h2>Matched OK</h2></div>
+            <div className="notice">{selectedRun.matched_ok.length} lines matched with no differences.</div>
+          </div>
+
+          {!!selectedRun.skipped_files?.length && (
+            <div className="data-table-card">
+              <div className="section-header"><h2>Skipped files</h2></div>
+              <div className="table-wrap">
+                <table className="data-table">
+                  <thead><tr><th>File</th><th>Reason</th></tr></thead>
+                  <tbody>
+                    {selectedRun.skipped_files.map((row, index) => (
+                      <tr key={index}><td>{row.file_name}</td><td>{row.reason}</td></tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          )}
+        </>
       )}
     </section>
   );
