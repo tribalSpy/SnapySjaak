@@ -2424,7 +2424,8 @@ function ukdocsPrintCollectionReferenceCollision(collection, allCollections) {
   return false;
 }
 
-function getUkdocsPrintCollectionRequirements(collection, customers, sameDayCollections = []) {
+function getUkdocsPrintCollectionRequirements(collection, customers, sameDayCollections = [], options = {}) {
+  const requireInspectionListForReinspection = options.requireInspectionListForReinspection !== false;
   const referenceCollision = ukdocsPrintCollectionReferenceCollision(collection, sameDayCollections);
   const inspectionMode = ukdocsPrintInspectionMode(collection);
   if (inspectionMode === "stock_control") {
@@ -2466,7 +2467,11 @@ function getUkdocsPrintCollectionRequirements(collection, customers, sameDayColl
         missing.push(`Invoices ${generatedInvoiceCount}/${invoiceExpected}`);
       }
     }
-    if (!collection?.documents?.inspection_list?.storage_name) {
+    // UKdocs Zendingen's own "papers ready" gate stops requiring this for
+    // nakeuring shipments -- Eric Docs' pieces check (phyto vs inspection
+    // list) is now the gate for that document, and Eric Docs' own send
+    // route still calls this with the default (true) so it keeps blocking.
+    if (requireInspectionListForReinspection && !collection?.documents?.inspection_list?.storage_name) {
       missing.push("Inspection list");
     }
     if (referenceCollision) {
@@ -11934,7 +11939,7 @@ async function sendUkdocsPrintReadyEmail(collection, customers, settings, allCol
   if (!recipients.length) {
     return { ok: false, recipients: [], error: "No email recipients configured" };
   }
-  const requirements = getUkdocsPrintCollectionRequirements(collection, customers, allCollections);
+  const requirements = getUkdocsPrintCollectionRequirements(collection, customers, allCollections, { requireInspectionListForReinspection: false });
   if (requirements.customer?.send_ready_email === false) {
     return { ok: false, recipients: [], error: "Papers ready email is turned off for this customer" };
   }
@@ -12017,7 +12022,7 @@ async function runUkdocsPrintAutoSend() {
     if (item.delivery_email?.ok) {
       return false;
     }
-    const requirements = getUkdocsPrintCollectionRequirements(item, state.customers, state.print_collections);
+    const requirements = getUkdocsPrintCollectionRequirements(item, state.customers, state.print_collections, { requireInspectionListForReinspection: false });
     // Skip these entirely rather than letting sendUkdocsPrintReadyEmail
     // refuse them every cycle -- that would leave a permanent (and
     // misleading) red "delivery failed" banner on a zending that was never

@@ -3147,7 +3147,8 @@ function ukdocsPrintCollectionReferenceCollision(collection, allCollections) {
   return false;
 }
 
-function ukdocsPrintCollectionProgress(collection, customers, allCollections = []) {
+function ukdocsPrintCollectionProgress(collection, customers, allCollections = [], options = {}) {
+  const requireInspectionListForReinspection = options.requireInspectionListForReinspection !== false;
   const referenceCollision = ukdocsPrintCollectionReferenceCollision(collection, allCollections);
   const inspectionMode = ukdocsPrintInspectionMode(collection);
   if (inspectionMode === "stock_control") {
@@ -3191,7 +3192,11 @@ function ukdocsPrintCollectionProgress(collection, customers, allCollections = [
         missing.push(`Invoices ${generatedInvoiceCount}/${invoiceExpected}`);
       }
     }
-    if (!collection?.documents?.inspection_list?.storage_name) {
+    // UKdocs Zendingen's own tile stops requiring this for nakeuring
+    // shipments -- Eric Docs' pieces check (phyto vs inspection list) is
+    // the gate for that document now; Phyto Inspection's own progress
+    // display still calls this with the default (true).
+    if (requireInspectionListForReinspection && !collection?.documents?.inspection_list?.storage_name) {
       missing.push("Inspection list");
     }
     if (referenceCollision) {
@@ -5603,7 +5608,7 @@ function UkdocsPrintPage({ currentUser }) {
   const selectedTempPhytoFiles = selectedCollection?.documents?.temp_phyto_files || [];
   const selectedGeneratedFiles = selectedCollection?.documents?.generated_files || [];
   const selectedExitConfirmationFiles = selectedCollection?.documents?.exit_confirmation_files || [];
-  const selectedCollectionProgress = selectedCollection ? ukdocsPrintCollectionProgress(selectedCollection, customers, filteredCollections) : null;
+  const selectedCollectionProgress = selectedCollection ? ukdocsPrintCollectionProgress(selectedCollection, customers, filteredCollections, { requireInspectionListForReinspection: false }) : null;
   // A confirmation of exit already received means this zending is closed --
   // info and documents can no longer be changed (server-enforced too).
   const isSelectedCollectionClosed = Boolean(selectedCollection?.closed);
@@ -5937,7 +5942,7 @@ function UkdocsPrintPage({ currentUser }) {
           </div>
           <div className="ukdocs-upload-grid">
             {filteredCollections.map((collection) => {
-              const progress = ukdocsPrintCollectionProgress(collection, customers, filteredCollections);
+              const progress = ukdocsPrintCollectionProgress(collection, customers, filteredCollections, { requireInspectionListForReinspection: false });
               const status = ukdocsPrintStatusDefinition(progress.status);
               const isActive = detailDrawerOpen && selectedCollection?.id === collection.id;
               const downloadEntries = ukdocsCollectionDownloadEntries(collection, progress.customer, "ukdocsprint");
