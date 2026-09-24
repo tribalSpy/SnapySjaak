@@ -6109,6 +6109,37 @@ function matchInkoopVeilingLines(erpRows, invoices, supplierMap = {}, supplierNa
     }
   }
 
+  // Group-level reconciliation: several lines can share one identical
+  // fingerprint on both sides (e.g. 4 purchases of the same size/price the
+  // same day from one supplier) -- there's no safe way to say which
+  // invoice line is which specific lot, but if the whole group's count
+  // matches (N ambiguous lines, the exact same N ERP candidates every
+  // time), the total pieces and total value already reconcile, which is
+  // the actual point of this check: confirming nothing was overpaid.
+  const ambiguousGroups = new Map();
+  for (const entry of ambiguousMatches) {
+    const bucketKey = entry.pav || entry.supplier_code;
+    const candidateKey = entry.candidates.map((row) => row.lot).sort((left, right) => left - right).join(",");
+    const groupKey = `${bucketKey}|${entry.quantity}|${entry.unit_price}|${candidateKey}`;
+    if (!ambiguousGroups.has(groupKey)) {
+      ambiguousGroups.set(groupKey, { entries: [], candidates: entry.candidates });
+    }
+    ambiguousGroups.get(groupKey).entries.push(entry);
+  }
+  const stillAmbiguous = [];
+  for (const group of ambiguousGroups.values()) {
+    if (group.entries.length === group.candidates.length) {
+      for (const candidate of group.candidates) {
+        consumedErpRows.add(candidate);
+      }
+      for (const entry of group.entries) {
+        matchedOk.push({ ...entry, matched_as_group: true });
+      }
+    } else {
+      stillAmbiguous.push(...group.entries);
+    }
+  }
+
   const onlyInErp = [...erpByPav.values()]
     .flat()
     .filter((row) => !consumedErpRows.has(row));
@@ -6119,7 +6150,7 @@ function matchInkoopVeilingLines(erpRows, invoices, supplierMap = {}, supplierNa
     only_in_invoice: onlyInInvoice,
     only_in_erp: onlyInErp,
     supplier_not_linked: supplierNotLinked,
-    ambiguous_matches: ambiguousMatches,
+    ambiguous_matches: stillAmbiguous,
     fee_lines: feeLines,
   };
 }
