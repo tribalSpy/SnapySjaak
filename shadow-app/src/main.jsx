@@ -13678,7 +13678,7 @@ function InkoopControlePage() {
               <div className="table-wrap">
                 <table className="data-table">
                   <thead>
-                    <tr><th>Invoice</th><th>PAV</th><th>Description</th><th>Field</th><th>ERP value</th><th>Invoice value</th></tr>
+                    <tr><th>Invoice</th><th>PAV</th><th>Description</th><th>Field</th><th>Connect value</th><th>FH invoice value</th></tr>
                   </thead>
                   <tbody>
                     {selectedRun.matched_mismatch.map((row, index) => (
