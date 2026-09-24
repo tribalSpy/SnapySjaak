@@ -5981,9 +5981,14 @@ function pickInkoopMatchingErpRow(candidates, quantity, unitPrice, consumedErpRo
     // original single-candidate behaviour).
     return { row: remaining[0], ambiguous: false };
   }
-  if (remaining.length > 1) {
-    return { row: null, ambiguous: true, candidates: remaining };
-  }
+  // Zero or multiple rows remain and none of them actually match this
+  // line's quantity/price -- there's no candidate to safely point to.
+  // "Ambiguous" means multiple candidates that are *equally good* matches
+  // (the exactMatches.length > 1 case above); dumping every unrelated
+  // leftover row under the same key here would be actively misleading
+  // (e.g. a dozen completely different products from the same supplier
+  // that just haven't been claimed by another line yet), so this is
+  // reported as "no match found" instead of a false ambiguity.
   return { row: null, ambiguous: false };
 }
 
