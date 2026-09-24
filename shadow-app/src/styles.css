@@ -2071,3 +2071,42 @@ pre {
     transform: translateX(0);
   }
 }
+
+.inkoop-bar-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.inkoop-bar-row {
+  display: grid;
+  grid-template-columns: minmax(120px, 220px) 1fr minmax(160px, auto);
+  align-items: center;
+  gap: 12px;
+}
+
+.inkoop-bar-label {
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.inkoop-bar-track {
+  background: #eef1f4;
+  border-radius: 6px;
+  height: 14px;
+  overflow: hidden;
+}
+
+.inkoop-bar-fill {
+  background: #1f7a5a;
+  height: 100%;
+  border-radius: 6px 0 0 6px;
+}
+
+.inkoop-bar-value {
+  font-size: 0.85em;
+  color: #4a5561;
+  white-space: nowrap;
+}

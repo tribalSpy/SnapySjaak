@@ -172,6 +172,160 @@ function numberOrNull(value) {
   return Number.isFinite(numeric) ? numeric : null;
 }
 
+function chunkArray(items, size) {
+  const chunks = [];
+  for (let index = 0; index < items.length; index += size) {
+    chunks.push(items.slice(index, index + size));
+  }
+  return chunks;
+}
+
+// The ERP export alone runs ~1600+ rows a day -- one INSERT per row (the
+// fust_reference_actions pattern above, fine at its tens-of-codes daily
+// volume) would mean thousands of sequential round-trips inside the HTTP
+// request the user is waiting on. These batch every chunk into a single
+// multi-row INSERT ... ON CONFLICT instead.
+const INKOOP_UPSERT_CHUNK_SIZE = 500;
+
+export async function saveInkoopErpLines(rows) {
+  if (!pool || !Array.isArray(rows) || !rows.length) {
+    return;
+  }
+  const validRows = rows.filter((row) => numberOrNull(row?.lot) !== null);
+  for (const chunk of chunkArray(validRows, INKOOP_UPSERT_CHUNK_SIZE)) {
+    const values = [];
+    const placeholders = chunk.map((row) => {
+      const base = values.length;
+      values.push(
+        numberOrNull(row.lot),
+        row.date || null,
+        row.pav || "",
+        row.suppl || "",
+        row.transp || "",
+        row.avc || "",
+        row.description || "",
+        numberOrNull(row.pieces),
+        numberOrNull(row.price),
+        numberOrNull(row.t_price),
+        row.deb_no || "",
+        row.inv_no || "",
+        JSON.stringify(row),
+      );
+      return `($${base + 1}, $${base + 2}::date, $${base + 3}, $${base + 4}, $${base + 5}, $${base + 6}, $${base + 7}, $${base + 8}, $${base + 9}, $${base + 10}, $${base + 11}, $${base + 12}, $${base + 13}::jsonb)`;
+    });
+    await pool.query(
+      `
+        INSERT INTO inkoop_erp_lines (
+          lot, erp_date, pav, suppl, transp, avc, description, pieces, price, t_price, deb_no, inv_no, raw
+        )
+        VALUES ${placeholders.join(", ")}
+        ON CONFLICT (lot) DO UPDATE SET
+          erp_date = EXCLUDED.erp_date,
+          pav = EXCLUDED.pav,
+          suppl = EXCLUDED.suppl,
+          transp = EXCLUDED.transp,
+          avc = EXCLUDED.avc,
+          description = EXCLUDED.description,
+          pieces = EXCLUDED.pieces,
+          price = EXCLUDED.price,
+          t_price = EXCLUDED.t_price,
+          deb_no = EXCLUDED.deb_no,
+          inv_no = EXCLUDED.inv_no,
+          raw = EXCLUDED.raw,
+          updated_at = now()
+      `,
+      values,
+    );
+  }
+}
+
+export async function saveInkoopInvoiceLines(lines) {
+  if (!pool || !Array.isArray(lines) || !lines.length) {
+    return;
+  }
+  const validLines = lines.filter((line) => line?.id);
+  for (const chunk of chunkArray(validLines, INKOOP_UPSERT_CHUNK_SIZE)) {
+    const values = [];
+    const placeholders = chunk.map((line) => {
+      const base = values.length;
+      values.push(
+        line.id,
+        line.invoice_number || "",
+        line.invoice_type || "",
+        line.reference_bt || "",
+        line.supplier_gln || "",
+        line.supplier_fh_number || "",
+        line.supplier_name || "",
+        line.description || "",
+        numberOrNull(line.quantity),
+        numberOrNull(line.unit_price),
+        numberOrNull(line.total),
+        JSON.stringify(line),
+        line.source_file_name || "",
+        line.invoice_date || null,
+      );
+      return `($${base + 1}, $${base + 2}, $${base + 3}, $${base + 4}, $${base + 5}, $${base + 6}, $${base + 7}, $${base + 8}, $${base + 9}, $${base + 10}, $${base + 11}, $${base + 12}::jsonb, $${base + 13}, $${base + 14}::date)`;
+    });
+    await pool.query(
+      `
+        INSERT INTO inkoop_invoice_lines (
+          id, invoice_number, invoice_type, reference_bt, supplier_gln, supplier_fh_number, supplier_name,
+          description, quantity, unit_price, total, raw, source_file_name, invoice_date
+        )
+        VALUES ${placeholders.join(", ")}
+        ON CONFLICT (id) DO UPDATE SET
+          invoice_number = EXCLUDED.invoice_number,
+          invoice_type = EXCLUDED.invoice_type,
+          reference_bt = EXCLUDED.reference_bt,
+          supplier_gln = EXCLUDED.supplier_gln,
+          supplier_fh_number = EXCLUDED.supplier_fh_number,
+          supplier_name = EXCLUDED.supplier_name,
+          description = EXCLUDED.description,
+          quantity = EXCLUDED.quantity,
+          unit_price = EXCLUDED.unit_price,
+          total = EXCLUDED.total,
+          raw = EXCLUDED.raw,
+          source_file_name = EXCLUDED.source_file_name,
+          invoice_date = EXCLUDED.invoice_date,
+          updated_at = now()
+      `,
+      values,
+    );
+  }
+}
+
+export async function getInkoopErpLines({ days } = {}) {
+  if (!pool) {
+    return [];
+  }
+  const windowDays = Number(days) > 0 ? Number(days) : 60;
+  const result = await pool.query(
+    `
+      SELECT raw FROM inkoop_erp_lines
+      WHERE erp_date IS NULL OR erp_date >= (now() - ($1 || ' days')::interval)
+      ORDER BY lot
+    `,
+    [windowDays],
+  );
+  return result.rows.map((row) => row.raw);
+}
+
+export async function getInkoopInvoiceLines({ days } = {}) {
+  if (!pool) {
+    return [];
+  }
+  const windowDays = Number(days) > 0 ? Number(days) : 60;
+  const result = await pool.query(
+    `
+      SELECT raw FROM inkoop_invoice_lines
+      WHERE invoice_date IS NULL OR invoice_date >= (now() - ($1 || ' days')::interval)
+      ORDER BY invoice_number
+    `,
+    [windowDays],
+  );
+  return result.rows.map((row) => row.raw);
+}
+
 // Reference-code-level rows from the Fust API import (svdvyver.fr) -- kept
 // separate from fust_actions since a Code isn't a real customer for
 // CMR/Fustbon/confirmation purposes. A null metric here means "no data
@@ -1238,6 +1392,60 @@ const databaseMigrations = [
   `
     CREATE INDEX IF NOT EXISTS fust_reference_actions_date_idx
     ON fust_reference_actions (action_date)
+  `,
+  `
+    CREATE TABLE IF NOT EXISTS inkoop_erp_lines (
+      lot bigint PRIMARY KEY,
+      erp_date date,
+      pav text,
+      suppl text,
+      transp text,
+      avc text,
+      description text,
+      pieces numeric,
+      price numeric,
+      t_price numeric,
+      deb_no text,
+      inv_no text,
+      raw jsonb NOT NULL,
+      imported_at timestamptz NOT NULL DEFAULT now(),
+      updated_at timestamptz NOT NULL DEFAULT now()
+    )
+  `,
+  `
+    CREATE INDEX IF NOT EXISTS inkoop_erp_lines_pav_idx ON inkoop_erp_lines (pav)
+  `,
+  `
+    CREATE INDEX IF NOT EXISTS inkoop_erp_lines_suppl_idx ON inkoop_erp_lines (suppl)
+  `,
+  `
+    CREATE INDEX IF NOT EXISTS inkoop_erp_lines_date_idx ON inkoop_erp_lines (erp_date)
+  `,
+  `
+    CREATE TABLE IF NOT EXISTS inkoop_invoice_lines (
+      id text PRIMARY KEY,
+      invoice_number text NOT NULL,
+      invoice_type text NOT NULL,
+      reference_bt text,
+      supplier_gln text,
+      supplier_fh_number text,
+      supplier_name text,
+      description text,
+      quantity numeric,
+      unit_price numeric,
+      total numeric,
+      raw jsonb NOT NULL,
+      source_file_name text,
+      invoice_date date,
+      imported_at timestamptz NOT NULL DEFAULT now(),
+      updated_at timestamptz NOT NULL DEFAULT now()
+    )
+  `,
+  `
+    CREATE INDEX IF NOT EXISTS inkoop_invoice_lines_reference_bt_idx ON inkoop_invoice_lines (reference_bt)
+  `,
+  `
+    CREATE INDEX IF NOT EXISTS inkoop_invoice_lines_supplier_name_idx ON inkoop_invoice_lines (supplier_name)
   `,
 ];
 
