@@ -5954,6 +5954,39 @@ function resolveInkoopSupplierCode(gln, name, supplierMap, supplierNameMap, manu
   return { code: "", match_type: "" };
 }
 
+// A single Briefnummer/PAV can legitimately cover more than one purchase --
+// a grower's cart offered at the clock can sell across multiple rounds at
+// different prices/quantities as the clock ticks down, and every one of
+// those buys carries the *same* Briefnummer. Picks the one candidate row
+// whose quantity+price actually matches this line; if more than one
+// still ties (or none do and more than one row remains unclaimed), which
+// specific purchase this line corresponds to genuinely can't be told
+// apart, so that's surfaced as ambiguous rather than guessed. Shared by
+// both the PAV-keyed (Klok/Connect) and supplier-code-keyed (Handel)
+// candidate pools -- same shape of problem either way.
+function pickInkoopMatchingErpRow(candidates, quantity, unitPrice, consumedErpRows) {
+  const remaining = (candidates || []).filter((row) => !consumedErpRows.has(row));
+  const exactMatches = remaining.filter((row) => (
+    !inkoopValuesDiffer(row.pieces, quantity) && !inkoopValuesDiffer(parseFloat(row.price), unitPrice)
+  ));
+  if (exactMatches.length === 1) {
+    return { row: exactMatches[0], ambiguous: false };
+  }
+  if (exactMatches.length > 1) {
+    return { row: null, ambiguous: true, candidates: exactMatches };
+  }
+  if (remaining.length === 1) {
+    // Nothing matches on quantity/price, but there's exactly one row left
+    // under this key -- that's the genuine mismatch to report (the
+    // original single-candidate behaviour).
+    return { row: remaining[0], ambiguous: false };
+  }
+  if (remaining.length > 1) {
+    return { row: null, ambiguous: true, candidates: remaining };
+  }
+  return { row: null, ambiguous: false };
+}
+
 function matchInkoopVeilingLines(erpRows, invoices, supplierMap = {}, supplierNameMap = {}, manualLinks = []) {
   const erpByPav = new Map();
   // Handel Aankopen lines have no PAV -- these rows (indexed by internal
@@ -5963,7 +5996,10 @@ function matchInkoopVeilingLines(erpRows, invoices, supplierMap = {}, supplierNa
   for (const row of Array.isArray(erpRows) ? erpRows : []) {
     const pav = normalizeInkoopKey(row?.pav);
     if (pav) {
-      erpByPav.set(pav, row);
+      if (!erpByPav.has(pav)) {
+        erpByPav.set(pav, []);
+      }
+      erpByPav.get(pav).push(row);
       continue;
     }
     const supplierCode = normalizeInkoopKey(row?.suppl) || normalizeInkoopKey(row?.transp);
@@ -5982,7 +6018,6 @@ function matchInkoopVeilingLines(erpRows, invoices, supplierMap = {}, supplierNa
   const supplierNotLinked = [];
   const ambiguousMatches = [];
   const feeLines = [];
-  const claimedPavs = new Set();
   const consumedErpRows = new Set();
 
   for (const invoice of Array.isArray(invoices) ? invoices : []) {
@@ -6004,27 +6039,22 @@ function matchInkoopVeilingLines(erpRows, invoices, supplierMap = {}, supplierNa
           supplierNotLinked.push(context);
           continue;
         }
-        const candidates = (erpBySupplierCode.get(resolved.code) || []).filter((row) => (
-          !consumedErpRows.has(row)
-          && !inkoopValuesDiffer(row.pieces, line.quantity)
-          && !inkoopValuesDiffer(parseFloat(row.price), line.unit_price)
-        ));
-        if (!candidates.length) {
+        const picked = pickInkoopMatchingErpRow(erpBySupplierCode.get(resolved.code), line.quantity, line.unit_price, consumedErpRows);
+        if (picked.ambiguous) {
+          // Handel Aankopen has no unique per-line reference (unlike PAV) --
+          // quantity+price alone can collide across genuinely different
+          // products from the same supplier the same day (e.g. several
+          // spray colours of the same size/price). Picking one anyway
+          // would be an actively wrong "match", so this is flagged instead.
+          ambiguousMatches.push({ ...context, supplier_code: resolved.code, supplier_match_type: resolved.match_type, candidates: picked.candidates });
+          continue;
+        }
+        if (!picked.row) {
           onlyInInvoice.push({ ...context, supplier_code: resolved.code, supplier_match_type: resolved.match_type });
           continue;
         }
-        // Handel Aankopen has no unique per-line reference (unlike PAV) --
-        // quantity+price alone can collide across genuinely different
-        // products from the same supplier the same day (e.g. several spray
-        // colours of the same size/price). Picking one anyway would be an
-        // actively wrong "match", so this is flagged for a human instead.
-        if (candidates.length > 1) {
-          ambiguousMatches.push({ ...context, supplier_code: resolved.code, supplier_match_type: resolved.match_type, candidates });
-          continue;
-        }
-        const erpRow = candidates[0];
-        consumedErpRows.add(erpRow);
-        matchedOk.push({ ...context, supplier_code: resolved.code, supplier_match_type: resolved.match_type, erp_row: erpRow });
+        consumedErpRows.add(picked.row);
+        matchedOk.push({ ...context, supplier_code: resolved.code, supplier_match_type: resolved.match_type, erp_row: picked.row });
         continue;
       }
 
@@ -6040,12 +6070,21 @@ function matchInkoopVeilingLines(erpRows, invoices, supplierMap = {}, supplierNa
         feeLines.push(context);
         continue;
       }
-      const erpRow = erpByPav.get(referenceBt);
-      if (!erpRow) {
+      // A single Briefnummer can cover more than one purchase (a cart sold
+      // across multiple clock rounds at different prices/quantities) -- so
+      // this is picked the same way as Handel's supplier-code candidates,
+      // not assumed to be a single 1:1 row.
+      const picked = pickInkoopMatchingErpRow(erpByPav.get(referenceBt), line.quantity, line.unit_price, consumedErpRows);
+      if (picked.ambiguous) {
+        ambiguousMatches.push({ ...context, pav: referenceBt, candidates: picked.candidates });
+        continue;
+      }
+      if (!picked.row) {
         onlyInInvoice.push(context);
         continue;
       }
-      claimedPavs.add(referenceBt);
+      consumedErpRows.add(picked.row);
+      const erpRow = picked.row;
       const diffFields = [];
       if (inkoopValuesDiffer(erpRow.pieces, line.quantity)) {
         diffFields.push({ field: "quantity", erp: erpRow.pieces, invoice: line.quantity });
@@ -6065,9 +6104,9 @@ function matchInkoopVeilingLines(erpRows, invoices, supplierMap = {}, supplierNa
     }
   }
 
-  const onlyInErp = [...erpByPav.entries()]
-    .filter(([pav]) => !claimedPavs.has(pav))
-    .map(([, row]) => row);
+  const onlyInErp = [...erpByPav.values()]
+    .flat()
+    .filter((row) => !consumedErpRows.has(row));
 
   return {
     matched_ok: matchedOk,
