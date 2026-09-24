@@ -13449,6 +13449,7 @@ function InkoopControlePage() {
   const [leveranciersFile, setLeveranciersFile] = useState(null);
   const [uploadingSuppliers, setUploadingSuppliers] = useState(false);
   const [supplierCount, setSupplierCount] = useState(0);
+  const [supplierNameCount, setSupplierNameCount] = useState(0);
   const [manualLinks, setManualLinks] = useState([]);
   const [manualLinkDrafts, setManualLinkDrafts] = useState({});
   const [message, setMessage] = useState("");
@@ -13458,6 +13459,7 @@ function InkoopControlePage() {
     return apiJson("/api/inkoop/veiling/runs").then((payload) => {
       setRuns(payload.runs || []);
       setSupplierCount(payload.supplier_count || 0);
+      setSupplierNameCount(payload.supplier_name_count || 0);
       setManualLinks(payload.manual_supplier_links || []);
       if (payload.runs?.length) {
         setSelectedRunId((current) => current || payload.runs[0].id);
@@ -13529,7 +13531,8 @@ function InkoopControlePage() {
         }),
       });
       setSupplierCount(payload.supplier_count || 0);
-      setMessage(`Supplier master updated: ${payload.supplier_count} suppliers linked by GLN.`);
+      setSupplierNameCount(payload.supplier_name_count || 0);
+      setMessage(`Supplier master updated: ${payload.supplier_count} linked by GLN, ${payload.supplier_name_count} more by name only.`);
     } catch (uploadError) {
       setError(uploadError.message);
     } finally {
@@ -13571,7 +13574,7 @@ function InkoopControlePage() {
       <div className="data-table-card">
         <div className="section-header"><h2>Supplier master data</h2></div>
         <div className="notice">
-          {supplierCount} suppliers currently linked by GLN (from "kwekers stamgegevens"/"leveranciers stamgegevens").
+          {supplierCount} suppliers currently linked by GLN, {supplierNameCount} more only by name (from "kwekers stamgegevens"/"leveranciers stamgegevens").
           Upload either file again any time it's refreshed -- entries merge in, nothing is removed.
         </div>
         <div className="form-grid">
@@ -13738,7 +13741,7 @@ function InkoopControlePage() {
                     {selectedRun.ambiguous_matches.map((row, index) => (
                       <tr key={index}>
                         <td>{row.invoice_number}</td>
-                        <td>{row.supplier_code}</td>
+                        <td>{row.supplier_code}{row.supplier_match_type === "name" ? " (name match)" : ""}</td>
                         <td>{row.quantity}</td>
                         <td>{row.unit_price}</td>
                         <td>{row.candidates.map((c) => `${c.lot} (${String(c.description || "").trim()})`).join(", ")}</td>
@@ -13759,7 +13762,7 @@ function InkoopControlePage() {
                   <thead><tr><th>Invoice</th><th>PAV / supplier</th><th>Description</th><th>Quantity</th><th>Unit price</th><th>Total</th></tr></thead>
                   <tbody>
                     {selectedRun.only_in_invoice.map((row, index) => (
-                      <tr key={index}><td>{row.invoice_number}</td><td>{row.reference_bt || row.supplier_code || "-"}</td><td>{row.description}</td><td>{row.quantity}</td><td>{row.unit_price}</td><td>{row.total}</td></tr>
+                      <tr key={index}><td>{row.invoice_number}</td><td>{row.reference_bt || row.supplier_code || "-"}{row.supplier_match_type === "name" ? " (name match)" : ""}</td><td>{row.description}</td><td>{row.quantity}</td><td>{row.unit_price}</td><td>{row.total}</td></tr>
                     ))}
                   </tbody>
                 </table>

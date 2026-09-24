@@ -188,13 +188,25 @@ def parse_invoice_xml(xml_bytes):
     return lines
 
 
+def normalize_supplier_name(name: str) -> str:
+    return re.sub(r"[^a-z0-9]+", "", (name or "").lower())
+
+
 # Master data dumps ("stamgegevens") -- semicolon-delimited, ~240 columns,
 # but only Code/Naam/GLN kweke matter here. Growers ("kwekers") and direct-
 # trade partners ("leveranciers") are separate exports with different
 # coverage, so both are read and merged (leveranciers entries win on
 # conflict since they're the more specific, purchase-relevant list).
+#
+# GLN is the primary, exact join key, but not every row has one (some
+# direct-trade partners are only recorded as an internal alias with a name,
+# no GLN at all) -- for those, a normalized-name index is built too, used
+# only as a *suggestion* on the "supplier not linked" screen, never to
+# silently auto-match, since company names can collide or vary in ways a
+# GLN can't.
 def load_supplier_csv(path: Path, source_label: str):
-    entries = {}
+    by_gln = {}
+    by_name = {}
     with open(path, encoding="utf-8-sig", errors="replace", newline="") as handle:
         reader = csv.reader(handle, delimiter=";")
         header = next(reader, [])
@@ -203,26 +215,33 @@ def load_supplier_csv(path: Path, source_label: str):
         naam_idx = idx.get("Naam")
         gln_idx = idx.get("GLN kweke")
         if code_idx is None or naam_idx is None or gln_idx is None:
-            return entries
+            return by_gln, by_name
         for row in reader:
             if len(row) <= max(code_idx, naam_idx, gln_idx):
                 continue
-            gln = row[gln_idx].strip()
             code = row[code_idx].strip()
             name = row[naam_idx].strip()
-            if not gln or not code:
+            if not code:
                 continue
-            entries[gln] = {"code": code, "name": name, "source": source_label}
-    return entries
+            gln = row[gln_idx].strip()
+            if gln:
+                by_gln[gln] = {"code": code, "name": name, "source": source_label}
+            normalized_name = normalize_supplier_name(name)
+            if normalized_name:
+                by_name[normalized_name] = {"code": code, "name": name, "source": source_label}
+    return by_gln, by_name
 
 
 def parse_suppliers(kwekers_path: Path, leveranciers_path: Path):
     by_gln = {}
-    if kwekers_path:
-        by_gln.update(load_supplier_csv(kwekers_path, "kwekers"))
-    if leveranciers_path:
-        by_gln.update(load_supplier_csv(leveranciers_path, "leveranciers"))
-    return {"by_gln": by_gln}
+    by_name = {}
+    for path, label in [(kwekers_path, "kwekers"), (leveranciers_path, "leveranciers")]:
+        if not path:
+            continue
+        gln_entries, name_entries = load_supplier_csv(path, label)
+        by_gln.update(gln_entries)
+        by_name.update(name_entries)
+    return {"by_gln": by_gln, "by_name": by_name}
 
 
 # Only Klokfactuur/Connect/Handel messages carry the CII XML this tool needs

@@ -5892,7 +5892,14 @@ async function parseInkoopSupplierMaster({ kwekers_file: kwekersFile, leverancie
   }
   const output = await runInkoopVeilingWorker(args);
   const payload = JSON.parse(output.toString("utf8"));
-  return payload?.by_gln && typeof payload.by_gln === "object" ? payload.by_gln : {};
+  return {
+    by_gln: payload?.by_gln && typeof payload.by_gln === "object" ? payload.by_gln : {},
+    by_name: payload?.by_name && typeof payload.by_name === "object" ? payload.by_name : {},
+  };
+}
+
+function normalizeInkoopSupplierName(name) {
+  return String(name || "").toLowerCase().replace(/[^a-z0-9]+/g, "");
 }
 
 // Pure matching function -- no I/O, easy to unit-test standalone. Only
@@ -5913,24 +5920,36 @@ function inkoopValuesDiffer(left, right) {
   return Math.abs(Number(left) - Number(right)) > INKOOP_MATCH_TOLERANCE;
 }
 
-// Resolves a Handel Aankopen line's supplier GLN to your internal short
-// code -- checks the manually-completed links first (they exist precisely
-// because the master data didn't have this GLN), then the uploaded
-// kwekers/leveranciers master data.
-function resolveInkoopSupplierCode(gln, supplierMap, manualLinks) {
+// Resolves a Handel Aankopen line's supplier to your internal short code.
+// Tries, in order: manually-completed links (exist precisely because the
+// master data didn't have this GLN), the uploaded master data by GLN (an
+// exact, spelling-proof identifier), and finally by normalized grower name
+// -- for the minority of master-data rows that only ever had a name typed
+// in, no GLN at all. Name matching is inherently weaker than a GLN, but
+// still gated by the same quantity+price check every Handel match needs,
+// so a wrong name-based guess is very unlikely to also happen to line up
+// on quantity and price with something in the ERP export.
+function resolveInkoopSupplierCode(gln, name, supplierMap, supplierNameMap, manualLinks) {
   const normalizedGln = normalizeInkoopKey(gln);
-  if (!normalizedGln) {
-    return "";
+  if (normalizedGln) {
+    const manualMatch = (Array.isArray(manualLinks) ? manualLinks : []).find((link) => normalizeInkoopKey(link?.gln) === normalizedGln);
+    if (manualMatch?.code) {
+      return { code: normalizeInkoopKey(manualMatch.code), match_type: "manual" };
+    }
+    const masterMatch = supplierMap?.[gln] || supplierMap?.[normalizedGln];
+    if (masterMatch?.code) {
+      return { code: normalizeInkoopKey(masterMatch.code), match_type: "gln" };
+    }
   }
-  const manualMatch = (Array.isArray(manualLinks) ? manualLinks : []).find((link) => normalizeInkoopKey(link?.gln) === normalizedGln);
-  if (manualMatch?.code) {
-    return normalizeInkoopKey(manualMatch.code);
+  const normalizedName = normalizeInkoopSupplierName(name);
+  const nameMatch = normalizedName ? supplierNameMap?.[normalizedName] : null;
+  if (nameMatch?.code) {
+    return { code: normalizeInkoopKey(nameMatch.code), match_type: "name" };
   }
-  const masterMatch = supplierMap?.[gln] || supplierMap?.[normalizedGln];
-  return masterMatch?.code ? normalizeInkoopKey(masterMatch.code) : "";
+  return { code: "", match_type: "" };
 }
 
-function matchInkoopVeilingLines(erpRows, invoices, supplierMap = {}, manualLinks = []) {
+function matchInkoopVeilingLines(erpRows, invoices, supplierMap = {}, supplierNameMap = {}, manualLinks = []) {
   const erpByPav = new Map();
   // Handel Aankopen lines have no PAV -- these rows (indexed by internal
   // supplier code instead) are exactly the ones with a blank PAV, so there
@@ -5966,18 +5985,18 @@ function matchInkoopVeilingLines(erpRows, invoices, supplierMap = {}, manualLink
       const context = { invoice_number: invoice?.invoice_number || "", invoice_type: invoice?.type || "", ...line };
 
       if (invoice?.type === "handel") {
-        const supplierCode = resolveInkoopSupplierCode(line?.supplier_gln, supplierMap, manualLinks);
-        if (!supplierCode) {
+        const resolved = resolveInkoopSupplierCode(line?.supplier_gln, line?.supplier_name, supplierMap, supplierNameMap, manualLinks);
+        if (!resolved.code) {
           supplierNotLinked.push(context);
           continue;
         }
-        const candidates = (erpBySupplierCode.get(supplierCode) || []).filter((row) => (
+        const candidates = (erpBySupplierCode.get(resolved.code) || []).filter((row) => (
           !consumedErpRows.has(row)
           && !inkoopValuesDiffer(row.pieces, line.quantity)
           && !inkoopValuesDiffer(parseFloat(row.price), line.unit_price)
         ));
         if (!candidates.length) {
-          onlyInInvoice.push({ ...context, supplier_code: supplierCode });
+          onlyInInvoice.push({ ...context, supplier_code: resolved.code, supplier_match_type: resolved.match_type });
           continue;
         }
         // Handel Aankopen has no unique per-line reference (unlike PAV) --
@@ -5986,12 +6005,12 @@ function matchInkoopVeilingLines(erpRows, invoices, supplierMap = {}, manualLink
         // colours of the same size/price). Picking one anyway would be an
         // actively wrong "match", so this is flagged for a human instead.
         if (candidates.length > 1) {
-          ambiguousMatches.push({ ...context, supplier_code: supplierCode, candidates });
+          ambiguousMatches.push({ ...context, supplier_code: resolved.code, supplier_match_type: resolved.match_type, candidates });
           continue;
         }
         const erpRow = candidates[0];
         consumedErpRows.add(erpRow);
-        matchedOk.push({ ...context, supplier_code: supplierCode, erp_row: erpRow });
+        matchedOk.push({ ...context, supplier_code: resolved.code, supplier_match_type: resolved.match_type, erp_row: erpRow });
         continue;
       }
 
@@ -6047,7 +6066,7 @@ function matchInkoopVeilingLines(erpRows, invoices, supplierMap = {}, manualLink
   };
 }
 
-const defaultInkoopState = { runs: [], supplier_map: {}, manual_supplier_links: [] };
+const defaultInkoopState = { runs: [], supplier_map: {}, supplier_name_map: {}, manual_supplier_links: [] };
 
 function normalizeInkoopRun(run) {
   const listOf = (value) => (Array.isArray(value) ? value : []);
@@ -6088,24 +6107,29 @@ function normalizeInkoopManualSupplierLink(link) {
   };
 }
 
-function normalizeInkoopState(state) {
-  const supplierMap = {};
-  if (state?.supplier_map && typeof state.supplier_map === "object") {
-    for (const [gln, info] of Object.entries(state.supplier_map)) {
-      const normalizedGln = normalizeUkdocsText(gln);
-      if (!normalizedGln || !info?.code) {
+function normalizeInkoopSupplierEntryMap(source) {
+  const result = {};
+  if (source && typeof source === "object") {
+    for (const [key, info] of Object.entries(source)) {
+      const normalizedKey = normalizeUkdocsText(key);
+      if (!normalizedKey || !info?.code) {
         continue;
       }
-      supplierMap[normalizedGln] = {
+      result[normalizedKey] = {
         code: normalizeUkdocsText(info.code).toUpperCase(),
         name: normalizeUkdocsText(info.name),
         source: normalizeUkdocsText(info.source),
       };
     }
   }
+  return result;
+}
+
+function normalizeInkoopState(state) {
   return {
     runs: (Array.isArray(state?.runs) ? state.runs : []).map(normalizeInkoopRun),
-    supplier_map: supplierMap,
+    supplier_map: normalizeInkoopSupplierEntryMap(state?.supplier_map),
+    supplier_name_map: normalizeInkoopSupplierEntryMap(state?.supplier_name_map),
     manual_supplier_links: (Array.isArray(state?.manual_supplier_links) ? state.manual_supplier_links : []).map(normalizeInkoopManualSupplierLink),
   };
 }
@@ -16251,6 +16275,7 @@ async function handleApi(req, res, url) {
     sendJson(res, 200, {
       runs: state.runs,
       supplier_count: Object.keys(state.supplier_map).length,
+      supplier_name_count: Object.keys(state.supplier_name_map).length,
       manual_supplier_links: state.manual_supplier_links,
     });
     return;
@@ -16268,7 +16293,7 @@ async function handleApi(req, res, url) {
       const state = await readInkoopState();
       const erpRows = await parseInkoopErpUpload(body?.erp_file);
       const veiling = await parseInkoopVeilingUpload(body?.veiling_zip);
-      const matched = matchInkoopVeilingLines(erpRows, veiling.invoices, state.supplier_map, state.manual_supplier_links);
+      const matched = matchInkoopVeilingLines(erpRows, veiling.invoices, state.supplier_map, state.supplier_name_map, state.manual_supplier_links);
       const run = normalizeInkoopRun({
         run_date: body?.run_date || localDateIso(),
         created_by: requestUser.username,
@@ -16300,9 +16325,10 @@ async function handleApi(req, res, url) {
     try {
       const parsed = await parseInkoopSupplierMaster(body);
       const state = await readInkoopState();
-      state.supplier_map = { ...state.supplier_map, ...parsed };
+      state.supplier_map = { ...state.supplier_map, ...parsed.by_gln };
+      state.supplier_name_map = { ...state.supplier_name_map, ...parsed.by_name };
       await writeInkoopState(state);
-      sendJson(res, 200, { supplier_count: Object.keys(state.supplier_map).length });
+      sendJson(res, 200, { supplier_count: Object.keys(state.supplier_map).length, supplier_name_count: Object.keys(state.supplier_name_map).length });
     } catch (error) {
       sendJson(res, 400, { error: error instanceof Error ? error.message : String(error) });
     }
