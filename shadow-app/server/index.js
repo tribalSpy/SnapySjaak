@@ -5990,6 +5990,15 @@ function matchInkoopVeilingLines(erpRows, invoices, supplierMap = {}, supplierNa
       const context = { invoice_number: invoice?.invoice_number || "", invoice_type: invoice?.type || "", ...line };
 
       if (invoice?.type === "handel") {
+        // "Product aankopen"/"Emballage ..." are invoice-level roll-up and
+        // overhead lines (storage, packaging deposit/rent/one-time) -- they
+        // carry no quantity and no SupplierParty at all, so they were never
+        // a per-grower purchase to begin with. Kept for visibility only,
+        // same as the fee/interest lines on Klokfactuur/Connect invoices.
+        if (line?.quantity === null || line?.quantity === undefined) {
+          feeLines.push(context);
+          continue;
+        }
         const resolved = resolveInkoopSupplierCode(line?.supplier_gln, line?.supplier_name, supplierMap, supplierNameMap, manualLinks);
         if (!resolved.code) {
           supplierNotLinked.push(context);
