@@ -16260,7 +16260,10 @@ async function handleApi(req, res, url) {
     if (!requirePermission(res, requestUser, PERMISSIONS.INKOOP_VIEW)) {
       return;
     }
-    const body = await readRequestJson(req);
+    // The veiling zip can hold dozens of .msg files (attachments and all)
+    // for a busy day, base64-encoded on top -- the default 1MB body limit
+    // is nowhere near enough.
+    const body = await readRequestJson(req, 60 * 1024 * 1024);
     try {
       const state = await readInkoopState();
       const erpRows = await parseInkoopErpUpload(body?.erp_file);
@@ -16290,7 +16293,10 @@ async function handleApi(req, res, url) {
     if (!requirePermission(res, requestUser, PERMISSIONS.INKOOP_VIEW)) {
       return;
     }
-    const body = await readRequestJson(req);
+    // "kwekers stamgegevens" alone is several MB as a ~240-column CSV,
+    // considerably more once base64-encoded -- same reasoning as the
+    // veiling zip above.
+    const body = await readRequestJson(req, 40 * 1024 * 1024);
     try {
       const parsed = await parseInkoopSupplierMaster(body);
       const state = await readInkoopState();
