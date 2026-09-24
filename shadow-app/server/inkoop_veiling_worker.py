@@ -1,4 +1,5 @@
 import argparse
+import csv
 import io
 import json
 import re
@@ -144,6 +145,24 @@ def parse_number(text):
         return None
 
 
+def find_supplier_info(item):
+    for party in item.iter():
+        if local_tag(party.tag) != "SupplierParty":
+            continue
+        gln = None
+        fh_number = None
+        name = None
+        for child in party.iter():
+            if local_tag(child.tag) == "PrimaryID" and gln is None:
+                gln = (child.text or "").strip()
+            elif local_tag(child.tag) == "AdditionalID" and child.attrib.get("schemeAgencyName") == "FH":
+                fh_number = (child.text or "").strip()
+            elif local_tag(child.tag) == "Name" and name is None:
+                name = (child.text or "").strip()
+        return {"gln": gln or "", "fh_number": fh_number or "", "name": name or ""}
+    return {"gln": "", "fh_number": "", "name": ""}
+
+
 def parse_invoice_xml(xml_bytes):
     root = ET.fromstring(xml_bytes)
     lines = []
@@ -155,14 +174,55 @@ def parse_invoice_xml(xml_bytes):
         unit_price = parse_number(find_child_text(item, "ChargeAmount"))
         total = parse_number(find_child_text(item, "GrandTotalAmount"))
         reference_bt = find_reference(item, "BT") or ""
+        supplier = find_supplier_info(item)
         lines.append({
             "description": description,
             "quantity": quantity,
             "unit_price": unit_price,
             "total": total,
             "reference_bt": reference_bt,
+            "supplier_gln": supplier["gln"],
+            "supplier_fh_number": supplier["fh_number"],
+            "supplier_name": supplier["name"],
         })
     return lines
+
+
+# Master data dumps ("stamgegevens") -- semicolon-delimited, ~240 columns,
+# but only Code/Naam/GLN kweke matter here. Growers ("kwekers") and direct-
+# trade partners ("leveranciers") are separate exports with different
+# coverage, so both are read and merged (leveranciers entries win on
+# conflict since they're the more specific, purchase-relevant list).
+def load_supplier_csv(path: Path, source_label: str):
+    entries = {}
+    with open(path, encoding="utf-8-sig", errors="replace", newline="") as handle:
+        reader = csv.reader(handle, delimiter=";")
+        header = next(reader, [])
+        idx = {name: i for i, name in enumerate(header)}
+        code_idx = idx.get("Code")
+        naam_idx = idx.get("Naam")
+        gln_idx = idx.get("GLN kweke")
+        if code_idx is None or naam_idx is None or gln_idx is None:
+            return entries
+        for row in reader:
+            if len(row) <= max(code_idx, naam_idx, gln_idx):
+                continue
+            gln = row[gln_idx].strip()
+            code = row[code_idx].strip()
+            name = row[naam_idx].strip()
+            if not gln or not code:
+                continue
+            entries[gln] = {"code": code, "name": name, "source": source_label}
+    return entries
+
+
+def parse_suppliers(kwekers_path: Path, leveranciers_path: Path):
+    by_gln = {}
+    if kwekers_path:
+        by_gln.update(load_supplier_csv(kwekers_path, "kwekers"))
+    if leveranciers_path:
+        by_gln.update(load_supplier_csv(leveranciers_path, "leveranciers"))
+    return {"by_gln": by_gln}
 
 
 # Only Klokfactuur/Connect/Handel messages carry the CII XML this tool needs
@@ -218,12 +278,20 @@ def main():
     veiling_parser = subparsers.add_parser("parse-veiling")
     veiling_parser.add_argument("--input", required=True)
 
+    suppliers_parser = subparsers.add_parser("parse-suppliers")
+    suppliers_parser.add_argument("--kwekers", required=False, default="")
+    suppliers_parser.add_argument("--leveranciers", required=False, default="")
+
     args = parser.parse_args()
 
     if args.command == "parse-erp":
         print(json.dumps(parse_erp(Path(args.input))))
     elif args.command == "parse-veiling":
         print(json.dumps(parse_veiling(Path(args.input))))
+    elif args.command == "parse-suppliers":
+        kwekers_path = Path(args.kwekers) if args.kwekers else None
+        leveranciers_path = Path(args.leveranciers) if args.leveranciers else None
+        print(json.dumps(parse_suppliers(kwekers_path, leveranciers_path)))
 
 
 if __name__ == "__main__":

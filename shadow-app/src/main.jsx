@@ -13445,19 +13445,29 @@ function InkoopControlePage() {
   const [runDate, setRunDate] = useState(() => localDateIso());
   const [erpFile, setErpFile] = useState(null);
   const [veilingZip, setVeilingZip] = useState(null);
+  const [kwekersFile, setKwekersFile] = useState(null);
+  const [leveranciersFile, setLeveranciersFile] = useState(null);
+  const [uploadingSuppliers, setUploadingSuppliers] = useState(false);
+  const [supplierCount, setSupplierCount] = useState(0);
+  const [manualLinks, setManualLinks] = useState([]);
+  const [manualLinkDrafts, setManualLinkDrafts] = useState({});
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
 
+  function loadRuns() {
+    return apiJson("/api/inkoop/veiling/runs").then((payload) => {
+      setRuns(payload.runs || []);
+      setSupplierCount(payload.supplier_count || 0);
+      setManualLinks(payload.manual_supplier_links || []);
+      if (payload.runs?.length) {
+        setSelectedRunId((current) => current || payload.runs[0].id);
+      }
+    });
+  }
+
   useEffect(() => {
     let cancelled = false;
-    apiJson("/api/inkoop/veiling/runs")
-      .then((payload) => {
-        if (cancelled) return;
-        setRuns(payload.runs || []);
-        if (payload.runs?.length) {
-          setSelectedRunId(payload.runs[0].id);
-        }
-      })
+    loadRuns()
       .catch((loadError) => {
         if (!cancelled) setError(loadError.message);
       })
@@ -13489,11 +13499,61 @@ function InkoopControlePage() {
       });
       setRuns(payload.runs || []);
       setSelectedRunId(payload.run?.id || "");
-      setMessage(`Compared: ${payload.run?.summary?.matched ?? 0} matched, ${payload.run?.summary?.mismatched ?? 0} mismatches, ${payload.run?.summary?.only_in_invoice ?? 0} only in invoice, ${payload.run?.summary?.only_in_erp ?? 0} only in ERP.`);
+      const s = payload.run?.summary || {};
+      setMessage(`Compared: ${s.matched ?? 0} matched, ${s.mismatched ?? 0} mismatches, ${s.only_in_invoice ?? 0} only in invoice, ${s.only_in_erp ?? 0} only in ERP, ${s.supplier_not_linked_count ?? 0} supplier not linked, ${s.ambiguous_count ?? 0} ambiguous.`);
     } catch (compareError) {
       setError(compareError.message);
     } finally {
       setComparing(false);
+    }
+  }
+
+  async function uploadSupplierMasters() {
+    if (!kwekersFile && !leveranciersFile) {
+      setError("Choose at least one master data file first.");
+      return;
+    }
+    setUploadingSuppliers(true);
+    setError("");
+    setMessage("");
+    try {
+      const [kwekersBase64, leveranciersBase64] = await Promise.all([
+        kwekersFile ? fileToBase64(kwekersFile) : null,
+        leveranciersFile ? fileToBase64(leveranciersFile) : null,
+      ]);
+      const payload = await apiJson("/api/inkoop/suppliers/upload", {
+        method: "POST",
+        body: JSON.stringify({
+          kwekers_file: kwekersFile ? { name: kwekersFile.name, content_base64: kwekersBase64 } : null,
+          leveranciers_file: leveranciersFile ? { name: leveranciersFile.name, content_base64: leveranciersBase64 } : null,
+        }),
+      });
+      setSupplierCount(payload.supplier_count || 0);
+      setMessage(`Supplier master updated: ${payload.supplier_count} suppliers linked by GLN.`);
+    } catch (uploadError) {
+      setError(uploadError.message);
+    } finally {
+      setUploadingSuppliers(false);
+    }
+  }
+
+  async function linkSupplier(row) {
+    const draft = manualLinkDrafts[row.supplier_gln] || {};
+    const code = String(draft.code || "").trim();
+    if (!code) {
+      setError("Enter the internal code before linking.");
+      return;
+    }
+    setError("");
+    try {
+      const payload = await apiJson("/api/inkoop/suppliers/manual", {
+        method: "POST",
+        body: JSON.stringify({ gln: row.supplier_gln, fh_number: row.supplier_fh_number, name: row.supplier_name, code }),
+      });
+      setManualLinks(payload.manual_supplier_links || []);
+      setMessage(`Linked GLN ${row.supplier_gln} (${row.supplier_name}) to ${code.toUpperCase()}. Re-run the compare to apply it.`);
+    } catch (linkError) {
+      setError(linkError.message);
     }
   }
 
@@ -13507,6 +13567,44 @@ function InkoopControlePage() {
     <section className="overview-stack">
       {message && <div className="notice">{message}</div>}
       {error && <div className="notice danger">{error}</div>}
+
+      <div className="data-table-card">
+        <div className="section-header"><h2>Supplier master data</h2></div>
+        <div className="notice">
+          {supplierCount} suppliers currently linked by GLN (from "kwekers stamgegevens"/"leveranciers stamgegevens").
+          Upload either file again any time it's refreshed -- entries merge in, nothing is removed.
+        </div>
+        <div className="form-grid">
+          <label>
+            <span>Kwekers stamgegevens (.csv)</span>
+            <input type="file" accept=".csv" onChange={(event) => setKwekersFile(event.target.files?.[0] || null)} />
+          </label>
+          <label>
+            <span>Leveranciers stamgegevens (.csv)</span>
+            <input type="file" accept=".csv" onChange={(event) => setLeveranciersFile(event.target.files?.[0] || null)} />
+          </label>
+        </div>
+        <div className="row-actions spread-actions">
+          <button type="button" onClick={uploadSupplierMasters} disabled={uploadingSuppliers}>
+            {uploadingSuppliers ? "Uploading..." : "Upload supplier master data"}
+          </button>
+        </div>
+        {!!manualLinks.length && (
+          <>
+            <div className="section-header"><h3>Manually linked suppliers ({manualLinks.length})</h3></div>
+            <div className="table-wrap">
+              <table className="data-table">
+                <thead><tr><th>GLN</th><th>FloraHolland number</th><th>Name</th><th>Code</th></tr></thead>
+                <tbody>
+                  {manualLinks.map((link) => (
+                    <tr key={link.gln}><td>{link.gln}</td><td>{link.fh_number}</td><td>{link.name}</td><td>{link.code}</td></tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </>
+        )}
+      </div>
 
       <div className="data-table-card">
         <div className="section-header"><h2>Compare a day</h2></div>
@@ -13540,7 +13638,7 @@ function InkoopControlePage() {
           <div className="table-wrap">
             <table className="data-table">
               <thead>
-                <tr><th>Date</th><th>ERP file</th><th>Veiling file</th><th>Matched</th><th>Mismatches</th><th>Only in invoice</th><th>Only in ERP</th><th>Trade (not matched)</th><th>Ran at</th><th></th></tr>
+                <tr><th>Date</th><th>ERP file</th><th>Veiling file</th><th>Matched</th><th>Mismatches</th><th>Only in invoice</th><th>Only in ERP</th><th>Supplier not linked</th><th>Ambiguous</th><th>Ran at</th><th></th></tr>
               </thead>
               <tbody>
                 {runs.map((run) => (
@@ -13552,7 +13650,8 @@ function InkoopControlePage() {
                     <td>{run.summary.mismatched}</td>
                     <td>{run.summary.only_in_invoice}</td>
                     <td>{run.summary.only_in_erp}</td>
-                    <td>{run.summary.unmatched_type_count}</td>
+                    <td>{run.summary.supplier_not_linked_count}</td>
+                    <td>{run.summary.ambiguous_count}</td>
                     <td>{formatTimestamp(run.created_at)}</td>
                     <td><button type="button" onClick={() => setSelectedRunId(run.id)}>Open</button></td>
                   </tr>
@@ -13592,16 +13691,75 @@ function InkoopControlePage() {
             </div>
           )}
 
+          {!!selectedRun.supplier_not_linked?.length && (
+            <div className="data-table-card">
+              <div className="section-header"><h2>Supplier not linked ({selectedRun.supplier_not_linked.length})</h2></div>
+              <div className="notice">
+                These Handel Aankopen lines have a real FloraHolland supplier, but no internal code is linked to that GLN yet -- link it once below, then re-run the compare.
+              </div>
+              <div className="table-wrap">
+                <table className="data-table">
+                  <thead><tr><th>Invoice</th><th>FH number</th><th>Grower</th><th>Description</th><th>Quantity</th><th>Unit price</th><th>Your code</th><th></th></tr></thead>
+                  <tbody>
+                    {selectedRun.supplier_not_linked.map((row, index) => (
+                      <tr key={index}>
+                        <td>{row.invoice_number}</td>
+                        <td>{row.supplier_fh_number}</td>
+                        <td>{row.supplier_name}</td>
+                        <td>{row.description}</td>
+                        <td>{row.quantity}</td>
+                        <td>{row.unit_price}</td>
+                        <td>
+                          <input
+                            value={manualLinkDrafts[row.supplier_gln]?.code || ""}
+                            onChange={(event) => setManualLinkDrafts((current) => ({ ...current, [row.supplier_gln]: { code: event.target.value } }))}
+                            placeholder="e.g. KONKOP"
+                          />
+                        </td>
+                        <td><button type="button" onClick={() => linkSupplier(row)}>Link</button></td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          )}
+
+          {!!selectedRun.ambiguous_matches?.length && (
+            <div className="data-table-card">
+              <div className="section-header"><h2>Ambiguous matches ({selectedRun.ambiguous_matches.length})</h2></div>
+              <div className="notice">
+                Handel Aankopen has no unique reference number -- these lines have more than one ERP purchase from the same supplier with the exact same quantity and price, so which one it actually is can't be told apart automatically.
+              </div>
+              <div className="table-wrap">
+                <table className="data-table">
+                  <thead><tr><th>Invoice</th><th>Supplier</th><th>Quantity</th><th>Unit price</th><th>Candidate lots (ERP)</th></tr></thead>
+                  <tbody>
+                    {selectedRun.ambiguous_matches.map((row, index) => (
+                      <tr key={index}>
+                        <td>{row.invoice_number}</td>
+                        <td>{row.supplier_code}</td>
+                        <td>{row.quantity}</td>
+                        <td>{row.unit_price}</td>
+                        <td>{row.candidates.map((c) => `${c.lot} (${String(c.description || "").trim()})`).join(", ")}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          )}
+
           {!!selectedRun.only_in_invoice.length && (
             <div className="data-table-card">
               <div className="section-header"><h2>Only in invoice ({selectedRun.only_in_invoice.length})</h2></div>
-              <div className="notice">FloraHolland charged for these but no matching PAV was found in the ERP export.</div>
+              <div className="notice">FloraHolland charged for these but no matching purchase was found in the ERP export.</div>
               <div className="table-wrap">
                 <table className="data-table">
-                  <thead><tr><th>Invoice</th><th>PAV / reference</th><th>Description</th><th>Quantity</th><th>Unit price</th><th>Total</th></tr></thead>
+                  <thead><tr><th>Invoice</th><th>PAV / supplier</th><th>Description</th><th>Quantity</th><th>Unit price</th><th>Total</th></tr></thead>
                   <tbody>
                     {selectedRun.only_in_invoice.map((row, index) => (
-                      <tr key={index}><td>{row.invoice_number}</td><td>{row.reference_bt}</td><td>{row.description}</td><td>{row.quantity}</td><td>{row.unit_price}</td><td>{row.total}</td></tr>
+                      <tr key={index}><td>{row.invoice_number}</td><td>{row.reference_bt || row.supplier_code || "-"}</td><td>{row.description}</td><td>{row.quantity}</td><td>{row.unit_price}</td><td>{row.total}</td></tr>
                     ))}
                   </tbody>
                 </table>
@@ -13619,23 +13777,6 @@ function InkoopControlePage() {
                   <tbody>
                     {selectedRun.only_in_erp.map((row, index) => (
                       <tr key={index}><td>{row.pav}</td><td>{row.lot}</td><td>{row.description}</td><td>{row.pieces}</td><td>{row.price}</td><td>{row.t_price}</td><td>{row.suppl}</td></tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            </div>
-          )}
-
-          {!!selectedRun.unmatched_type_lines.length && (
-            <div className="data-table-card">
-              <div className="section-header"><h2>Trade purchases -- not auto-matched ({selectedRun.unmatched_type_lines.length})</h2></div>
-              <div className="notice">"Factuur handel aankopen" lines have no shared reference with the ERP export, so they're listed here for manual review rather than matched.</div>
-              <div className="table-wrap">
-                <table className="data-table">
-                  <thead><tr><th>Invoice</th><th>Description</th><th>Quantity</th><th>Unit price</th><th>Total</th></tr></thead>
-                  <tbody>
-                    {selectedRun.unmatched_type_lines.map((row, index) => (
-                      <tr key={index}><td>{row.invoice_number}</td><td>{row.description}</td><td>{row.quantity}</td><td>{row.unit_price}</td><td>{row.total}</td></tr>
                     ))}
                   </tbody>
                 </table>

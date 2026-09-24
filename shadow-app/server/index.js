@@ -5877,6 +5877,24 @@ async function parseInkoopVeilingUpload(filePayload) {
   };
 }
 
+// "kwekers stamgegevens" (growers master) / "leveranciers stamgegevens"
+// (suppliers master) -- semicolon-delimited exports that carry the GLN
+// FloraHolland already puts on every invoice line, next to the internal
+// short code (Suppl./Transp in the ERP dump). Either or both may be
+// uploaded; whichever is provided gets parsed.
+async function parseInkoopSupplierMaster({ kwekers_file: kwekersFile, leveranciers_file: leveranciersFile } = {}) {
+  const args = ["parse-suppliers"];
+  if (kwekersFile) {
+    args.push("--kwekers", await writeInkoopUploadToTempFile(kwekersFile, "inkoop-kwekers-", ".csv"));
+  }
+  if (leveranciersFile) {
+    args.push("--leveranciers", await writeInkoopUploadToTempFile(leveranciersFile, "inkoop-leveranciers-", ".csv"));
+  }
+  const output = await runInkoopVeilingWorker(args);
+  const payload = JSON.parse(output.toString("utf8"));
+  return payload?.by_gln && typeof payload.by_gln === "object" ? payload.by_gln : {};
+}
+
 // Pure matching function -- no I/O, easy to unit-test standalone. Only
 // klokfactuur/connect invoice lines carrying a reference_bt are attempted
 // against the ERP dump's PAV column (the confirmed shared key); handel
@@ -5895,29 +5913,91 @@ function inkoopValuesDiffer(left, right) {
   return Math.abs(Number(left) - Number(right)) > INKOOP_MATCH_TOLERANCE;
 }
 
-function matchInkoopVeilingLines(erpRows, invoices) {
+// Resolves a Handel Aankopen line's supplier GLN to your internal short
+// code -- checks the manually-completed links first (they exist precisely
+// because the master data didn't have this GLN), then the uploaded
+// kwekers/leveranciers master data.
+function resolveInkoopSupplierCode(gln, supplierMap, manualLinks) {
+  const normalizedGln = normalizeInkoopKey(gln);
+  if (!normalizedGln) {
+    return "";
+  }
+  const manualMatch = (Array.isArray(manualLinks) ? manualLinks : []).find((link) => normalizeInkoopKey(link?.gln) === normalizedGln);
+  if (manualMatch?.code) {
+    return normalizeInkoopKey(manualMatch.code);
+  }
+  const masterMatch = supplierMap?.[gln] || supplierMap?.[normalizedGln];
+  return masterMatch?.code ? normalizeInkoopKey(masterMatch.code) : "";
+}
+
+function matchInkoopVeilingLines(erpRows, invoices, supplierMap = {}, manualLinks = []) {
   const erpByPav = new Map();
+  // Handel Aankopen lines have no PAV -- these rows (indexed by internal
+  // supplier code instead) are exactly the ones with a blank PAV, so there
+  // is no overlap with erpByPav to worry about double-claiming.
+  const erpBySupplierCode = new Map();
   for (const row of Array.isArray(erpRows) ? erpRows : []) {
     const pav = normalizeInkoopKey(row?.pav);
-    if (!pav) {
+    if (pav) {
+      erpByPav.set(pav, row);
       continue;
     }
-    erpByPav.set(pav, row);
+    const supplierCode = normalizeInkoopKey(row?.suppl) || normalizeInkoopKey(row?.transp);
+    if (!supplierCode) {
+      continue;
+    }
+    if (!erpBySupplierCode.has(supplierCode)) {
+      erpBySupplierCode.set(supplierCode, []);
+    }
+    erpBySupplierCode.get(supplierCode).push(row);
   }
 
   const matchedOk = [];
   const matchedMismatch = [];
   const onlyInInvoice = [];
-  const unmatchedTypeLines = [];
+  const supplierNotLinked = [];
+  const ambiguousMatches = [];
   const feeLines = [];
   const claimedPavs = new Set();
+  const consumedErpRows = new Set();
 
   for (const invoice of Array.isArray(invoices) ? invoices : []) {
-    const isMatchable = invoice?.type === "klokfactuur" || invoice?.type === "connect";
     for (const line of Array.isArray(invoice?.lines) ? invoice.lines : []) {
       const context = { invoice_number: invoice?.invoice_number || "", invoice_type: invoice?.type || "", ...line };
+
+      if (invoice?.type === "handel") {
+        const supplierCode = resolveInkoopSupplierCode(line?.supplier_gln, supplierMap, manualLinks);
+        if (!supplierCode) {
+          supplierNotLinked.push(context);
+          continue;
+        }
+        const candidates = (erpBySupplierCode.get(supplierCode) || []).filter((row) => (
+          !consumedErpRows.has(row)
+          && !inkoopValuesDiffer(row.pieces, line.quantity)
+          && !inkoopValuesDiffer(parseFloat(row.price), line.unit_price)
+        ));
+        if (!candidates.length) {
+          onlyInInvoice.push({ ...context, supplier_code: supplierCode });
+          continue;
+        }
+        // Handel Aankopen has no unique per-line reference (unlike PAV) --
+        // quantity+price alone can collide across genuinely different
+        // products from the same supplier the same day (e.g. several spray
+        // colours of the same size/price). Picking one anyway would be an
+        // actively wrong "match", so this is flagged for a human instead.
+        if (candidates.length > 1) {
+          ambiguousMatches.push({ ...context, supplier_code: supplierCode, candidates });
+          continue;
+        }
+        const erpRow = candidates[0];
+        consumedErpRows.add(erpRow);
+        matchedOk.push({ ...context, supplier_code: supplierCode, erp_row: erpRow });
+        continue;
+      }
+
+      const isMatchable = invoice?.type === "klokfactuur" || invoice?.type === "connect";
       if (!isMatchable) {
-        unmatchedTypeLines.push(context);
+        feeLines.push(context);
         continue;
       }
       const referenceBt = normalizeInkoopKey(line?.reference_bt);
@@ -5961,12 +6041,13 @@ function matchInkoopVeilingLines(erpRows, invoices) {
     matched_mismatch: matchedMismatch,
     only_in_invoice: onlyInInvoice,
     only_in_erp: onlyInErp,
-    unmatched_type_lines: unmatchedTypeLines,
+    supplier_not_linked: supplierNotLinked,
+    ambiguous_matches: ambiguousMatches,
     fee_lines: feeLines,
   };
 }
 
-const defaultInkoopState = { runs: [] };
+const defaultInkoopState = { runs: [], supplier_map: {}, manual_supplier_links: [] };
 
 function normalizeInkoopRun(run) {
   const listOf = (value) => (Array.isArray(value) ? value : []);
@@ -5981,7 +6062,8 @@ function normalizeInkoopRun(run) {
     matched_mismatch: listOf(run?.matched_mismatch),
     only_in_invoice: listOf(run?.only_in_invoice),
     only_in_erp: listOf(run?.only_in_erp),
-    unmatched_type_lines: listOf(run?.unmatched_type_lines),
+    supplier_not_linked: listOf(run?.supplier_not_linked),
+    ambiguous_matches: listOf(run?.ambiguous_matches),
     fee_lines: listOf(run?.fee_lines),
     skipped_files: listOf(run?.skipped_files),
     summary: {
@@ -5989,14 +6071,42 @@ function normalizeInkoopRun(run) {
       mismatched: listOf(run?.matched_mismatch).length,
       only_in_invoice: listOf(run?.only_in_invoice).length,
       only_in_erp: listOf(run?.only_in_erp).length,
-      unmatched_type_count: listOf(run?.unmatched_type_lines).length,
+      supplier_not_linked_count: listOf(run?.supplier_not_linked).length,
+      ambiguous_count: listOf(run?.ambiguous_matches).length,
     },
   };
 }
 
+function normalizeInkoopManualSupplierLink(link) {
+  return {
+    gln: normalizeUkdocsText(link?.gln),
+    fh_number: normalizeUkdocsText(link?.fh_number),
+    name: normalizeUkdocsText(link?.name),
+    code: normalizeUkdocsText(link?.code).toUpperCase(),
+    added_by: normalizeUkdocsText(link?.added_by),
+    added_at: normalizeUkdocsText(link?.added_at) || new Date().toISOString(),
+  };
+}
+
 function normalizeInkoopState(state) {
+  const supplierMap = {};
+  if (state?.supplier_map && typeof state.supplier_map === "object") {
+    for (const [gln, info] of Object.entries(state.supplier_map)) {
+      const normalizedGln = normalizeUkdocsText(gln);
+      if (!normalizedGln || !info?.code) {
+        continue;
+      }
+      supplierMap[normalizedGln] = {
+        code: normalizeUkdocsText(info.code).toUpperCase(),
+        name: normalizeUkdocsText(info.name),
+        source: normalizeUkdocsText(info.source),
+      };
+    }
+  }
   return {
     runs: (Array.isArray(state?.runs) ? state.runs : []).map(normalizeInkoopRun),
+    supplier_map: supplierMap,
+    manual_supplier_links: (Array.isArray(state?.manual_supplier_links) ? state.manual_supplier_links : []).map(normalizeInkoopManualSupplierLink),
   };
 }
 
@@ -16138,7 +16248,11 @@ async function handleApi(req, res, url) {
       return;
     }
     const state = await readInkoopState();
-    sendJson(res, 200, { runs: state.runs });
+    sendJson(res, 200, {
+      runs: state.runs,
+      supplier_count: Object.keys(state.supplier_map).length,
+      manual_supplier_links: state.manual_supplier_links,
+    });
     return;
   }
 
@@ -16148,9 +16262,10 @@ async function handleApi(req, res, url) {
     }
     const body = await readRequestJson(req);
     try {
+      const state = await readInkoopState();
       const erpRows = await parseInkoopErpUpload(body?.erp_file);
       const veiling = await parseInkoopVeilingUpload(body?.veiling_zip);
-      const matched = matchInkoopVeilingLines(erpRows, veiling.invoices);
+      const matched = matchInkoopVeilingLines(erpRows, veiling.invoices, state.supplier_map, state.manual_supplier_links);
       const run = normalizeInkoopRun({
         run_date: body?.run_date || localDateIso(),
         created_by: requestUser.username,
@@ -16159,13 +16274,56 @@ async function handleApi(req, res, url) {
         skipped_files: veiling.skipped,
         ...matched,
       });
-      const state = await readInkoopState();
       state.runs = [run, ...state.runs];
       await writeInkoopState(state);
       sendJson(res, 200, { run, runs: state.runs });
     } catch (error) {
       sendJson(res, 400, { error: error instanceof Error ? error.message : String(error) });
     }
+    return;
+  }
+
+  // Uploads either or both master data exports and merges the resulting
+  // GLN -> internal code entries into the persisted supplier_map -- reused
+  // by every future compare run, not re-uploaded each time.
+  if (url.pathname === "/api/inkoop/suppliers/upload" && req.method === "POST") {
+    if (!requirePermission(res, requestUser, PERMISSIONS.INKOOP_VIEW)) {
+      return;
+    }
+    const body = await readRequestJson(req);
+    try {
+      const parsed = await parseInkoopSupplierMaster(body);
+      const state = await readInkoopState();
+      state.supplier_map = { ...state.supplier_map, ...parsed };
+      await writeInkoopState(state);
+      sendJson(res, 200, { supplier_count: Object.keys(state.supplier_map).length });
+    } catch (error) {
+      sendJson(res, 400, { error: error instanceof Error ? error.message : String(error) });
+    }
+    return;
+  }
+
+  // Manual completion for a supplier GLN the master data upload didn't
+  // cover (e.g. a Handel Aankopen partner with no GLN on record at all,
+  // like "KONKOP") -- staff fill in the internal code once, using the
+  // FloraHolland number/name shown in a "supplier not linked" result row.
+  if (url.pathname === "/api/inkoop/suppliers/manual" && req.method === "POST") {
+    if (!requirePermission(res, requestUser, PERMISSIONS.INKOOP_VIEW)) {
+      return;
+    }
+    const body = await readRequestJson(req);
+    if (!String(body?.gln || "").trim() || !String(body?.code || "").trim()) {
+      sendJson(res, 400, { error: "Both a GLN and a code are required" });
+      return;
+    }
+    const state = await readInkoopState();
+    const link = normalizeInkoopManualSupplierLink({ ...body, added_by: requestUser.username });
+    state.manual_supplier_links = [
+      link,
+      ...state.manual_supplier_links.filter((item) => item.gln !== link.gln),
+    ];
+    await writeInkoopState(state);
+    sendJson(res, 200, { manual_supplier_links: state.manual_supplier_links });
     return;
   }
 
