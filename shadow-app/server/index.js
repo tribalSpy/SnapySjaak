@@ -5956,6 +5956,7 @@ async function parseInkoopSupplierMaster({ kwekers_file: kwekersFile, leverancie
   return {
     by_gln: payload?.by_gln && typeof payload.by_gln === "object" ? payload.by_gln : {},
     by_name: payload?.by_name && typeof payload.by_name === "object" ? payload.by_name : {},
+    by_fh: payload?.by_fh && typeof payload.by_fh === "object" ? payload.by_fh : {},
   };
 }
 
@@ -6000,16 +6001,36 @@ function inkoopValuesDiffer(left, right) {
   return Math.abs(Number(left) - Number(right)) > INKOOP_MATCH_TOLERANCE;
 }
 
+// The master data's "Kwekercod" column (e.g. "a898") is FloraHolland's own
+// grower reference -- confirmed real: the digits alone, zero-padded to 6,
+// equal the exact same number invoices carry as the grower's own FH
+// AdditionalID (e.g. "000898"). Normalizing both sides through this before
+// comparing means an AI2 line's supplier_fh_number ("898", as printed on
+// the Productnota) and an invoice's zero-padded "000898" resolve to the
+// same key regardless of formatting.
+function normalizeInkoopFhKey(value) {
+  const digits = String(value || "").replace(/[^0-9]/g, "");
+  if (!digits || digits.length > 6) {
+    return "";
+  }
+  return digits.padStart(6, "0");
+}
+
 // Resolves a Handel Aankopen line's supplier to your internal short code.
 // Tries, in order: manually-completed links (exist precisely because the
 // master data didn't have this GLN), the uploaded master data by GLN (an
-// exact, spelling-proof identifier), and finally by normalized grower name
-// -- for the minority of master-data rows that only ever had a name typed
-// in, no GLN at all. Name matching is inherently weaker than a GLN, but
-// still gated by the same quantity+price check every Handel match needs,
-// so a wrong name-based guess is very unlikely to also happen to line up
-// on quantity and price with something in the ERP export.
-function resolveInkoopSupplierCode(gln, fhNumber, name, supplierMap, supplierNameMap, manualLinks) {
+// exact, spelling-proof identifier), the master data's Kwekercod-derived FH
+// number (also exact, but confirmed real: stripping the letter can collide
+// two different growers who share the same digits under a different letter
+// -- parseInkoopSupplierMaster/the worker already drops any such ambiguous
+// key, so anything that survives into supplierFhMap is safe to auto-match
+// on), and finally by normalized grower name -- for the minority of
+// master-data rows that only ever had a name typed in, no GLN or usable
+// Kwekercod at all. Name matching is inherently weaker than either exact
+// key, but still gated by the same quantity+price check every Handel match
+// needs, so a wrong name-based guess is very unlikely to also happen to
+// line up on quantity and price with something in the ERP export.
+function resolveInkoopSupplierCode(gln, fhNumber, name, supplierMap, supplierNameMap, manualLinks, supplierFhMap) {
   const normalizedGln = normalizeInkoopKey(gln);
   const normalizedFh = normalizeInkoopKey(fhNumber);
   // Manual links take priority over both master lookups -- they exist
@@ -6032,6 +6053,13 @@ function resolveInkoopSupplierCode(gln, fhNumber, name, supplierMap, supplierNam
     const masterMatch = supplierMap?.[gln] || supplierMap?.[normalizedGln];
     if (masterMatch?.code) {
       return { code: normalizeInkoopKey(masterMatch.code), match_type: "gln" };
+    }
+  }
+  const fhKey = normalizeInkoopFhKey(fhNumber);
+  if (fhKey) {
+    const fhMatch = supplierFhMap?.[fhKey];
+    if (fhMatch?.code) {
+      return { code: normalizeInkoopKey(fhMatch.code), match_type: "fh_number" };
     }
   }
   const normalizedName = normalizeInkoopSupplierName(name);
@@ -6152,7 +6180,7 @@ function tryInkoopSplitDeliveryMatch(candidates, quantity, unitPrice, total, con
   return null;
 }
 
-function matchInkoopVeilingLines(erpRows, invoices, supplierMap = {}, supplierNameMap = {}, manualLinks = []) {
+function matchInkoopVeilingLines(erpRows, invoices, supplierMap = {}, supplierNameMap = {}, manualLinks = [], supplierFhMap = {}) {
   const erpByPav = new Map();
   const erpByBasePav = new Map();
   // Handel Aankopen/AI2 lines have no real PAV -- these rows (indexed by
@@ -6227,7 +6255,7 @@ function matchInkoopVeilingLines(erpRows, invoices, supplierMap = {}, supplierNa
           feeBucket.push(context);
           continue;
         }
-        const resolved = resolveInkoopSupplierCode(line?.supplier_gln, line?.supplier_fh_number, line?.supplier_name, supplierMap, supplierNameMap, manualLinks);
+        const resolved = resolveInkoopSupplierCode(line?.supplier_gln, line?.supplier_fh_number, line?.supplier_name, supplierMap, supplierNameMap, manualLinks, supplierFhMap);
         if (!resolved.code) {
           supplierNotLinked.push(context);
           continue;
@@ -6370,7 +6398,7 @@ function matchInkoopVeilingLines(erpRows, invoices, supplierMap = {}, supplierNa
   };
 }
 
-const defaultInkoopState = { imports: [], supplier_map: {}, supplier_name_map: {}, manual_supplier_links: [] };
+const defaultInkoopState = { imports: [], supplier_map: {}, supplier_name_map: {}, supplier_fh_map: {}, manual_supplier_links: [] };
 
 // Every compare/upload used to be matched in isolation and its full result
 // (every matched/mismatched/unmatched line) pushed onto this list forever --
@@ -6427,6 +6455,7 @@ function normalizeInkoopState(state) {
     imports: (Array.isArray(state?.imports) ? state.imports : []).map(normalizeInkoopImportRecord),
     supplier_map: normalizeInkoopSupplierEntryMap(state?.supplier_map),
     supplier_name_map: normalizeInkoopSupplierEntryMap(state?.supplier_name_map),
+    supplier_fh_map: normalizeInkoopSupplierEntryMap(state?.supplier_fh_map),
     manual_supplier_links: (Array.isArray(state?.manual_supplier_links) ? state.manual_supplier_links : []).map(normalizeInkoopManualSupplierLink),
   };
 }
@@ -6550,7 +6579,7 @@ async function computeInkoopLiveMatch(state, { from, to }) {
     getInkoopInvoiceLines({ from, to }),
   ]);
   const invoices = groupInkoopInvoiceLinesByInvoice(invoiceLines);
-  return matchInkoopVeilingLines(erpRows, invoices, state.supplier_map, state.supplier_name_map, state.manual_supplier_links);
+  return matchInkoopVeilingLines(erpRows, invoices, state.supplier_map, state.supplier_name_map, state.manual_supplier_links, state.supplier_fh_map);
 }
 
 // Once a company is selected, every category that carries an invoice side
@@ -17085,6 +17114,7 @@ async function handleApi(req, res, url) {
       window_days: INKOOP_MATCH_WINDOW_DAYS,
       supplier_count: Object.keys(state.supplier_map).length,
       supplier_name_count: Object.keys(state.supplier_name_map).length,
+      supplier_fh_count: Object.keys(state.supplier_fh_map).length,
       manual_supplier_links: state.manual_supplier_links,
     });
     return;
@@ -17345,8 +17375,13 @@ async function handleApi(req, res, url) {
       const state = await readInkoopState();
       state.supplier_map = { ...state.supplier_map, ...parsed.by_gln };
       state.supplier_name_map = { ...state.supplier_name_map, ...parsed.by_name };
+      state.supplier_fh_map = { ...state.supplier_fh_map, ...parsed.by_fh };
       await writeInkoopState(state);
-      sendJson(res, 200, { supplier_count: Object.keys(state.supplier_map).length, supplier_name_count: Object.keys(state.supplier_name_map).length });
+      sendJson(res, 200, {
+        supplier_count: Object.keys(state.supplier_map).length,
+        supplier_name_count: Object.keys(state.supplier_name_map).length,
+        supplier_fh_count: Object.keys(state.supplier_fh_map).length,
+      });
     } catch (error) {
       sendJson(res, 400, { error: error instanceof Error ? error.message : String(error) });
     }

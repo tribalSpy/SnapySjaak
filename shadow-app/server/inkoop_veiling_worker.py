@@ -487,21 +487,46 @@ def parse_ai2_productnota(pdf_bytes):
     }
 
 
+# "Kwekercod" (present on both stamgegevens exports) is FloraHolland's own
+# grower reference, one leading letter (a registration-series marker, e.g.
+# "a"/"f"/"w"/"r"/"v"/"t" -- confirmed real, NOT decorative: two different
+# growers can share the same digits under different letters) followed by up
+# to 6 digits, e.g. "a898". Zero-padded, the digits alone equal the exact
+# same 6-digit number invoices carry as the grower's <AdditionalID
+# schemeAgencyName="FH"> (see find_supplier_info) -- confirmed against real
+# invoice data (370/376 real GLN-verified supplier lines matched exactly).
+# Since the letter isn't part of that number, only the digits are kept.
+FH_KWEKERCODE_DIGITS_RE = re.compile(r"[0-9]")
+
+
+def derive_fh_key_from_kwekercode(kwekercode):
+    digits = "".join(FH_KWEKERCODE_DIGITS_RE.findall(kwekercode or ""))
+    if not digits or len(digits) > 6:
+        return None
+    return digits.zfill(6)
+
+
 # Master data dumps ("stamgegevens") -- semicolon-delimited, ~240 columns,
-# but only Code/Naam/GLN kweke matter here. Growers ("kwekers") and direct-
-# trade partners ("leveranciers") are separate exports with different
-# coverage, so both are read and merged (leveranciers entries win on
-# conflict since they're the more specific, purchase-relevant list).
+# but only Code/Naam/GLN kweke/Kwekercod matter here. Growers ("kwekers")
+# and direct-trade partners ("leveranciers") are separate exports with
+# different coverage, so both are read and merged (leveranciers entries win
+# on conflict since they're the more specific, purchase-relevant list).
 #
 # GLN is the primary, exact join key, but not every row has one (some
 # direct-trade partners are only recorded as an internal alias with a name,
 # no GLN at all) -- for those, a normalized-name index is built too, used
 # only as a *suggestion* on the "supplier not linked" screen, never to
 # silently auto-match, since company names can collide or vary in ways a
-# GLN can't.
+# GLN can't. The Kwekercod-derived FH key sits in between: unlike a name, an
+# exact digit match is trustworthy enough to auto-match on -- but confirmed
+# real (see derive_fh_key_from_kwekercode): stripping the letter can still
+# collide two unrelated growers who happen to share the same digits under a
+# different letter (624 of 11038 real codes, ~5.7%), so any key with more
+# than one distinct Code behind it is dropped entirely rather than guessed.
 def load_supplier_csv(path: Path, source_label: str):
     by_gln = {}
     by_name = {}
+    fh_candidates = {}
     with open(path, encoding="utf-8-sig", errors="replace", newline="") as handle:
         reader = csv.reader(handle, delimiter=";")
         header = next(reader, [])
@@ -509,8 +534,9 @@ def load_supplier_csv(path: Path, source_label: str):
         code_idx = idx.get("Code")
         naam_idx = idx.get("Naam")
         gln_idx = idx.get("GLN kweke")
+        kwekercode_idx = idx.get("Kwekercod")
         if code_idx is None or naam_idx is None or gln_idx is None:
-            return by_gln, by_name
+            return by_gln, by_name, fh_candidates
         for row in reader:
             if len(row) <= max(code_idx, naam_idx, gln_idx):
                 continue
@@ -524,19 +550,31 @@ def load_supplier_csv(path: Path, source_label: str):
             normalized_name = normalize_supplier_name(name)
             if normalized_name:
                 by_name[normalized_name] = {"code": code, "name": name, "source": source_label}
-    return by_gln, by_name
+            if kwekercode_idx is not None and len(row) > kwekercode_idx:
+                fh_key = derive_fh_key_from_kwekercode(row[kwekercode_idx].strip())
+                if fh_key:
+                    fh_candidates.setdefault(fh_key, []).append({"code": code, "name": name, "source": source_label})
+    return by_gln, by_name, fh_candidates
 
 
 def parse_suppliers(kwekers_path: Path, leveranciers_path: Path):
     by_gln = {}
     by_name = {}
+    fh_candidates = {}
     for path, label in [(kwekers_path, "kwekers"), (leveranciers_path, "leveranciers")]:
         if not path:
             continue
-        gln_entries, name_entries = load_supplier_csv(path, label)
+        gln_entries, name_entries, fh_entries = load_supplier_csv(path, label)
         by_gln.update(gln_entries)
         by_name.update(name_entries)
-    return {"by_gln": by_gln, "by_name": by_name}
+        for fh_key, entries in fh_entries.items():
+            fh_candidates.setdefault(fh_key, []).extend(entries)
+    by_fh = {
+        fh_key: entries[0]
+        for fh_key, entries in fh_candidates.items()
+        if len({entry["code"] for entry in entries}) == 1
+    }
+    return {"by_gln": by_gln, "by_name": by_name, "by_fh": by_fh}
 
 
 # Klokfactuur/Connect/Handel messages carry the CII XML this tool parses;

@@ -13578,6 +13578,7 @@ function InkoopControlePage() {
   const [uploadingSuppliers, setUploadingSuppliers] = useState(false);
   const [supplierCount, setSupplierCount] = useState(0);
   const [supplierNameCount, setSupplierNameCount] = useState(0);
+  const [supplierFhCount, setSupplierFhCount] = useState(0);
   const [manualLinks, setManualLinks] = useState([]);
   const [manualLinkDrafts, setManualLinkDrafts] = useState({});
   const [message, setMessage] = useState("");
@@ -13592,6 +13593,7 @@ function InkoopControlePage() {
       setWindowDays(payload.window_days || 60);
       setSupplierCount(payload.supplier_count || 0);
       setSupplierNameCount(payload.supplier_name_count || 0);
+      setSupplierFhCount(payload.supplier_fh_count || 0);
       setManualLinks(payload.manual_supplier_links || []);
     });
   }
@@ -13688,7 +13690,8 @@ function InkoopControlePage() {
       });
       setSupplierCount(payload.supplier_count || 0);
       setSupplierNameCount(payload.supplier_name_count || 0);
-      setMessage(`Supplier master updated: ${payload.supplier_count} linked by GLN, ${payload.supplier_name_count} more by name only.`);
+      setSupplierFhCount(payload.supplier_fh_count || 0);
+      setMessage(`Supplier master updated: ${payload.supplier_count} linked by GLN, ${payload.supplier_fh_count} more by grower number, ${payload.supplier_name_count} more by name only.`);
     } catch (uploadError) {
       setError(uploadError.message);
     } finally {
@@ -13769,7 +13772,7 @@ function InkoopControlePage() {
       <div className="data-table-card">
         <div className="section-header"><h2>Supplier master data</h2></div>
         <div className="notice">
-          {supplierCount} suppliers currently linked by GLN, {supplierNameCount} more only by name (from "kwekers stamgegevens"/"leveranciers stamgegevens").
+          {supplierCount} suppliers currently linked by GLN, {supplierFhCount} more by grower number (Kwekercod), {supplierNameCount} more only by name (from "kwekers stamgegevens"/"leveranciers stamgegevens").
           Upload either file again any time it's refreshed -- entries merge in, nothing is removed.
         </div>
         <div className="form-grid">
