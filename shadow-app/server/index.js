@@ -10895,6 +10895,40 @@ function ukdocsPrintHaystackTokens(haystackRaw) {
   );
 }
 
+// NVWA e-CertNL phyto certificate subjects carry their own authoritative
+// reference in a fixed "uw referentie: YYMMDD_NNNNN" format, e.g.
+// "uw referentie: 260924_19547" for the certificate issued against
+// whichever sending is referenced as "19547" and dated 2026-09-24.
+// Confirmed real (a user-reported wrong-match incident): the generic
+// haystack match below (subject + from header + Gmail's snippet preview +
+// attachment filename, scored as "any exact token anywhere in that blob")
+// let a coincidental token elsewhere in that blob win a match against a
+// same-day sending, while the certificate's OWN reference actually
+// belonged to a *different day's* sending -- one entirely outside the
+// same-day candidate pool the phyto sync searches, so it could never win
+// on its own merits. When this structured reference is present, it becomes
+// the sole authoritative signal instead: matched only against sendings
+// dated to the reference's own embedded date, using only the extracted
+// reference value itself -- never influenced by anything else in the email.
+const NVWA_REFERENTIE_RE = /uw\s*referentie:?\s*(\d{2})(\d{2})(\d{2})[_-](\d+)/i;
+
+function extractNvwaReferentie(subject) {
+  const match = NVWA_REFERENTIE_RE.exec(String(subject || ""));
+  if (!match) {
+    return null;
+  }
+  const [, yy, mm, dd, refDigits] = match;
+  const date = `20${yy}-${mm}-${dd}`;
+  if (Number.isNaN(new Date(`${date}T00:00:00`).getTime())) {
+    return null;
+  }
+  const reference = normalizeUkdocsPrintToken(refDigits);
+  if (!reference) {
+    return null;
+  }
+  return { date, reference };
+}
+
 function ukdocsPrintCollectionMatchScore(collection, haystackRaw) {
   const haystackTokens = ukdocsPrintHaystackTokens(haystackRaw);
   if (!haystackTokens.size) {
@@ -11199,15 +11233,51 @@ async function syncUkdocsPrintFromGmail(settings, requestUser, query, date) {
       // silently overwrites (or gets treated as identical to) that file.
       const storedAttachmentName = kind === "exit_confirmation" ? insertExitMarkerIntoFilename(attachmentName) : attachmentName;
       const candidateCollections = kind === "exit_confirmation" ? recentCollections : dayCollections;
-      const eligibleCollections = candidateCollections.filter((collection) => collectionAcceptsUkdocsPrintDocument(collection, state.customers, kind));
-      const ranked = eligibleCollections
-        .map((collection) => ({ collection, score: ukdocsPrintCollectionMatchScore(collection, candidateText) }))
-        .filter((item) => item.score > 0)
-        .sort((a, b) => b.score - a.score);
-      const bestScore = ranked[0]?.score || 0;
-      const bestMatch = bestScore >= 5 && (ranked.length === 1 || ranked[0].score > ranked[1].score)
-        ? ranked[0].collection
-        : null;
+
+      let bestMatch = null;
+      let nvwaUnmatchedReason = null;
+      if (kind === "phyto") {
+        const nvwaRef = extractNvwaReferentie(subject);
+        if (nvwaRef) {
+          // An NVWA e-CertNL subject carries its own authoritative reference
+          // and date -- when present, this is the ONLY signal trusted for a
+          // phyto attachment. It is matched against sendings dated to the
+          // reference's own date (which may not be syncDate/"today"), never
+          // against dayCollections/the generic haystack score, so a
+          // coincidental token match on a same-day-but-wrong sending can
+          // never win once a real reference is available.
+          const nvwaDayCollections = state.print_collections.filter((item) => (
+            String(item.shipment_date || "").slice(0, 10) === nvwaRef.date
+            && ukdocsPrintInspectionMode(item) !== "stock_control"
+          ));
+          const nvwaEligible = nvwaDayCollections.filter((collection) => (
+            collectionAcceptsUkdocsPrintDocument(collection, state.customers, kind)
+            && ukdocsPrintCollectionReferenceTokens(collection).has(nvwaRef.reference)
+          ));
+          if (nvwaEligible.length === 1) {
+            bestMatch = nvwaEligible[0];
+          } else {
+            nvwaUnmatchedReason = nvwaEligible.length === 0
+              ? `NVWA reference ${nvwaRef.reference} (dated ${nvwaRef.date}) not found on any sending that day -- refusing to guess from subject/snippet text alone`
+              : `NVWA reference ${nvwaRef.reference} (dated ${nvwaRef.date}) matched more than one sending -- refusing to guess`;
+          }
+        }
+      }
+      if (nvwaUnmatchedReason) {
+        results.push({ status: "unmatched", file_name: attachmentName, reason: nvwaUnmatchedReason });
+        continue;
+      }
+      if (!bestMatch) {
+        const eligibleCollections = candidateCollections.filter((collection) => collectionAcceptsUkdocsPrintDocument(collection, state.customers, kind));
+        const ranked = eligibleCollections
+          .map((collection) => ({ collection, score: ukdocsPrintCollectionMatchScore(collection, candidateText) }))
+          .filter((item) => item.score > 0)
+          .sort((a, b) => b.score - a.score);
+        const bestScore = ranked[0]?.score || 0;
+        bestMatch = bestScore >= 5 && (ranked.length === 1 || ranked[0].score > ranked[1].score)
+          ? ranked[0].collection
+          : null;
+      }
       if (!bestMatch) {
         results.push({ status: "unmatched", file_name: attachmentName, reason: "No safe match from reference connect, invoice, or truck/trailer" });
         continue;
