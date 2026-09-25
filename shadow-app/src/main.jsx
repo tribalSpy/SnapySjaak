@@ -13716,8 +13716,8 @@ function InkoopControlePage() {
             <input type="date" value={runDate} onChange={(event) => setRunDate(event.target.value)} />
           </label>
           <label>
-            <span>ERP export (.xlsx)</span>
-            <input type="file" accept=".xlsx" onChange={(event) => setErpFile(event.target.files?.[0] || null)} />
+            <span>ERP export (.xlsx or .csv)</span>
+            <input type="file" accept=".xlsx,.csv" onChange={(event) => setErpFile(event.target.files?.[0] || null)} />
           </label>
           <label>
             <span>Veiling emails (.zip of .msg files)</span>

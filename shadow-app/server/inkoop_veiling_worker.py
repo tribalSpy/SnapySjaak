@@ -30,36 +30,72 @@ def cell_value(value):
     return value
 
 
-# The ERP "Screen" export is a legacy fixed-width report: a few decorative
-# divider/title rows before the real header, which we find by looking for
-# the one column every reconciliation needs -- PAV (the shared reference
-# with FloraHolland's invoices).
-def parse_erp(input_path: Path):
-    workbook = load_workbook(filename=str(input_path), data_only=True, read_only=True)
-    worksheet = workbook[workbook.sheetnames[0]]
-    all_rows = [list(row) for row in worksheet.iter_rows(values_only=True)]
+ERP_DASH_DATE_RE = re.compile(r"^(\d{2})-(\d{2})-(\d{2})$")
 
-    header_row_index = None
-    headers = []
+
+# The "Date"/"ITE.date" columns arrive as either a real datetime (the xlsx
+# export) or a "DD-MM-YY" text string (the CSV export, e.g. "13-09-26") --
+# both are normalized to a plain ISO date so erp_date/matching never has to
+# care which export format a given upload happened to be.
+def normalize_erp_date(value):
+    if hasattr(value, "isoformat"):
+        return value.isoformat()
+    text = clean_text(value)
+    match = ERP_DASH_DATE_RE.match(text)
+    if match:
+        day, month, year = match.groups()
+        return f"20{year}-{month}-{day}"
+    return text
+
+
+ERP_DATE_COLUMNS = {"date", "ite_date"}
+
+
+def find_erp_header(all_rows):
     for idx, row in enumerate(all_rows):
         normalized = [normalize_header(value) for value in row]
         if "pav" in normalized:
-            header_row_index = idx
-            headers = normalized
-            break
+            return normalized, all_rows[idx + 1:]
+    return None, []
 
-    if header_row_index is None:
+
+def load_erp_xlsx_rows(input_path: Path):
+    workbook = load_workbook(filename=str(input_path), data_only=True, read_only=True)
+    worksheet = workbook[workbook.sheetnames[0]]
+    return [list(row) for row in worksheet.iter_rows(values_only=True)]
+
+
+def load_erp_csv_rows(input_path: Path):
+    # The export uses ";" as the field delimiter -- values are Dutch-locale
+    # formatted numbers/decimal text, not real comma-separated data.
+    with open(input_path, encoding="utf-8-sig", errors="replace", newline="") as handle:
+        return list(csv.reader(handle, delimiter=";"))
+
+
+# The ERP "Screen" export is a legacy fixed-width report: a few decorative
+# divider/title rows before the real header, which we find by looking for
+# the one column every reconciliation needs -- PAV (the shared reference
+# with FloraHolland's invoices). Exported either as .xlsx or, going forward,
+# as a ";"-delimited .csv -- both a real day's worth of purchases can now
+# span several calendar days per file, not just one.
+def parse_erp(input_path: Path):
+    is_csv = str(input_path).lower().endswith(".csv")
+    all_rows = load_erp_csv_rows(input_path) if is_csv else load_erp_xlsx_rows(input_path)
+    headers, data_rows = find_erp_header(all_rows)
+
+    if headers is None:
         return {"rows": [], "error": "Could not find a header row containing PAV in this file"}
 
     rows = []
-    for row in all_rows[header_row_index + 1:]:
+    for row in data_rows:
         if not any(clean_text(value) for value in row):
             continue
         record = {}
         for col_index, header in enumerate(headers):
             if not header or col_index >= len(row):
                 continue
-            record[header] = cell_value(row[col_index])
+            value = row[col_index]
+            record[header] = normalize_erp_date(value) if header in ERP_DATE_COLUMNS else cell_value(value)
         rows.append(record)
 
     return {"rows": rows}

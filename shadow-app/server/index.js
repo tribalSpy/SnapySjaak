@@ -5971,7 +5971,7 @@ function resolveInkoopSupplierCode(gln, name, supplierMap, supplierNameMap, manu
 // apart, so that's surfaced as ambiguous rather than guessed. Shared by
 // both the PAV-keyed (Klok/Connect) and supplier-code-keyed (Handel)
 // candidate pools -- same shape of problem either way.
-function pickInkoopMatchingErpRow(candidates, quantity, unitPrice, consumedErpRows) {
+function pickInkoopMatchingErpRow(candidates, quantity, unitPrice, consumedErpRows, targetDate) {
   const remaining = (candidates || []).filter((row) => !consumedErpRows.has(row));
   const exactMatches = remaining.filter((row) => (
     !inkoopValuesDiffer(row.pieces, quantity) && !inkoopValuesDiffer(parseFloat(row.price), unitPrice)
@@ -5980,6 +5980,22 @@ function pickInkoopMatchingErpRow(candidates, quantity, unitPrice, consumedErpRo
     return { row: exactMatches[0], ambiguous: false };
   }
   if (exactMatches.length > 1) {
+    // More than one candidate shares this exact quantity+price -- common
+    // for Handel Aankopen (no per-line reference number, unlike PAV) once
+    // the ERP pool spans several days for the same supplier, since the
+    // same size/price can coincidentally recur on a different day. Narrow
+    // to the invoice line's own (real, XML-derived) date before giving up
+    // as ambiguous -- confirmed necessary once a multi-day ERP export
+    // (rather than a single day) is uploaded.
+    if (targetDate) {
+      const sameDate = exactMatches.filter((row) => String(row?.date || "").slice(0, 10) === targetDate);
+      if (sameDate.length === 1) {
+        return { row: sameDate[0], ambiguous: false };
+      }
+      if (sameDate.length > 1) {
+        return { row: null, ambiguous: true, candidates: sameDate };
+      }
+    }
     return { row: null, ambiguous: true, candidates: exactMatches };
   }
   if (remaining.length === 1) {
@@ -6060,7 +6076,7 @@ function matchInkoopVeilingLines(erpRows, invoices, supplierMap = {}, supplierNa
           supplierNotLinked.push(context);
           continue;
         }
-        const picked = pickInkoopMatchingErpRow(erpBySupplierCode.get(resolved.code), line.quantity, line.unit_price, consumedErpRows);
+        const picked = pickInkoopMatchingErpRow(erpBySupplierCode.get(resolved.code), line.quantity, line.unit_price, consumedErpRows, normalizeUkdocsText(line?.invoice_date).slice(0, 10));
         if (picked.ambiguous) {
           // Handel Aankopen has no unique per-line reference (unlike PAV) --
           // quantity+price alone can collide across genuinely different
@@ -6095,7 +6111,7 @@ function matchInkoopVeilingLines(erpRows, invoices, supplierMap = {}, supplierNa
       // across multiple clock rounds at different prices/quantities) -- so
       // this is picked the same way as Handel's supplier-code candidates,
       // not assumed to be a single 1:1 row.
-      const picked = pickInkoopMatchingErpRow(erpByPav.get(referenceBt), line.quantity, line.unit_price, consumedErpRows);
+      const picked = pickInkoopMatchingErpRow(erpByPav.get(referenceBt), line.quantity, line.unit_price, consumedErpRows, normalizeUkdocsText(line?.invoice_date).slice(0, 10));
       if (picked.ambiguous) {
         ambiguousMatches.push({ ...context, pav: referenceBt, candidates: picked.candidates });
         continue;
