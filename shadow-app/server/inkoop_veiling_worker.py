@@ -163,8 +163,33 @@ def find_supplier_info(item):
     return {"gln": "", "fh_number": "", "name": ""}
 
 
+# Header-level element (one per invoice, appears once before any line item)
+# identifying which of our own buying entities this invoice was billed to --
+# e.g. "Juniflor Flower Export BV". Distinct from SupplierParty, which is the
+# grower/seller and is scoped per line item.
+def find_invoicee_info(root):
+    for party in root.iter():
+        if local_tag(party.tag) != "InvoiceeParty":
+            continue
+        gln = None
+        name = None
+        for child in party.iter():
+            if local_tag(child.tag) == "PrimaryID" and gln is None:
+                gln = (child.text or "").strip()
+            elif local_tag(child.tag) == "Name" and name is None:
+                name = (child.text or "").strip()
+        return {"gln": gln or "", "name": name or ""}
+    return {"gln": "", "name": ""}
+
+
 def parse_invoice_xml(xml_bytes):
     root = ET.fromstring(xml_bytes)
+    invoicee = find_invoicee_info(root)
+    # Header-level issue date, used as a fallback when a line has no date of
+    # its own -- real dates from the XML instead of the date manually typed
+    # into the upload form, which is what a calendar/day report needs to be
+    # trustworthy.
+    issue_date = find_child_text(root, "IssueDateTime") or ""
     lines = []
     for item in root.iter():
         if local_tag(item.tag) != "InvoiceTradeLineItem":
@@ -175,6 +200,7 @@ def parse_invoice_xml(xml_bytes):
         total = parse_number(find_child_text(item, "GrandTotalAmount"))
         reference_bt = find_reference(item, "BT") or ""
         supplier = find_supplier_info(item)
+        line_date = find_child_text(item, "LineDateTime") or issue_date
         lines.append({
             "description": description,
             "quantity": quantity,
@@ -184,6 +210,8 @@ def parse_invoice_xml(xml_bytes):
             "supplier_gln": supplier["gln"],
             "supplier_fh_number": supplier["fh_number"],
             "supplier_name": supplier["name"],
+            "company_name": invoicee["name"],
+            "line_date": line_date,
         })
     return lines
 

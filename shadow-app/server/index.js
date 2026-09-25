@@ -19,8 +19,10 @@ import {
   getFustActionsFromDatabase,
   getFustDatabaseStats,
   getDatabaseStatus,
+  getInkoopCompanies,
   getInkoopErpLines,
   getInkoopInvoiceLines,
+  getInkoopIssueStatuses,
   getLlmQueueSnapshot,
   getActiveLlmJobsByType,
   getWarehouseActivityLog,
@@ -35,6 +37,7 @@ import {
   saveFustReferenceAction,
   saveInkoopErpLines,
   saveInkoopInvoiceLines,
+  saveInkoopIssueStatus,
   upsertLlmAgentHeartbeat,
   upsertWarehouseStatus,
 } from "./db.js";
@@ -6027,11 +6030,20 @@ function matchInkoopVeilingLines(erpRows, invoices, supplierMap = {}, supplierNa
   const supplierNotLinked = [];
   const ambiguousMatches = [];
   const feeLines = [];
+  const embalageLines = [];
   const consumedErpRows = new Set();
+
+  // Emballage (packaging deposit/rent/one-time) lines only ever appear on
+  // the invoice, never in the ERP export -- correct and expected, confirmed
+  // with the user, so these are never matched against ERP rows, just
+  // classified into their own bucket for reporting (kept separate from the
+  // much larger pile of other fee/container-charge lines).
+  const isEmbalageLine = (line) => /^emballage/i.test(String(line?.description || "").trim());
 
   for (const invoice of Array.isArray(invoices) ? invoices : []) {
     for (const line of Array.isArray(invoice?.lines) ? invoice.lines : []) {
       const context = { invoice_number: invoice?.invoice_number || "", invoice_type: invoice?.type || "", ...line };
+      const feeBucket = isEmbalageLine(line) ? embalageLines : feeLines;
 
       if (invoice?.type === "handel") {
         // "Product aankopen"/"Emballage ..." are invoice-level roll-up and
@@ -6040,7 +6052,7 @@ function matchInkoopVeilingLines(erpRows, invoices, supplierMap = {}, supplierNa
         // a per-grower purchase to begin with. Kept for visibility only,
         // same as the fee/interest lines on Klokfactuur/Connect invoices.
         if (line?.quantity === null || line?.quantity === undefined) {
-          feeLines.push(context);
+          feeBucket.push(context);
           continue;
         }
         const resolved = resolveInkoopSupplierCode(line?.supplier_gln, line?.supplier_name, supplierMap, supplierNameMap, manualLinks);
@@ -6069,14 +6081,14 @@ function matchInkoopVeilingLines(erpRows, invoices, supplierMap = {}, supplierNa
 
       const isMatchable = invoice?.type === "klokfactuur" || invoice?.type === "connect";
       if (!isMatchable) {
-        feeLines.push(context);
+        feeBucket.push(context);
         continue;
       }
       const referenceBt = normalizeInkoopKey(line?.reference_bt);
       if (!referenceBt) {
         // A fee/deposit/interest line -- has no per-lot reference, so it was
         // never meant to have an ERP counterpart. Kept for visibility only.
-        feeLines.push(context);
+        feeBucket.push(context);
         continue;
       }
       // A single Briefnummer can cover more than one purchase (a cart sold
@@ -6156,6 +6168,7 @@ function matchInkoopVeilingLines(erpRows, invoices, supplierMap = {}, supplierNa
     supplier_not_linked: supplierNotLinked,
     ambiguous_matches: stillAmbiguous,
     fee_lines: feeLines,
+    embalage_lines: embalageLines,
   };
 }
 
@@ -6228,16 +6241,48 @@ function normalizeInkoopState(state) {
 // to fix.
 const INKOOP_MATCH_WINDOW_DAYS = 60;
 const INKOOP_DASHBOARD_DEFAULT_WINDOW_DAYS = 90;
+const INKOOP_PRODUCT_GROUP_LABELS = { B: "Bloemen", P: "Planten", A: "Accessoires" };
+
+function inkoopDefaultWindowRange(days) {
+  const today = localDateIso();
+  return { from: addDaysToIsoDate(today, -Math.abs(Number(days) || 0)), to: addDaysToIsoDate(today, 1) };
+}
+
+function inkoopProductGroupLabel(code) {
+  const key = normalizeUkdocsText(code).toUpperCase();
+  if (!key) {
+    return "";
+  }
+  return INKOOP_PRODUCT_GROUP_LABELS[key] || key;
+}
+
+function inkoopCompanyLabel(row) {
+  const number = normalizeUkdocsText(row?.company_number);
+  const name = normalizeUkdocsText(row?.company_name);
+  if (!number && !name) {
+    return "";
+  }
+  return name ? `${number} - ${name}` : number;
+}
 
 // inkoop_invoice_lines stores one row per invoice line (flattened for the
 // ledger); matchInkoopVeilingLines expects them regrouped back into
 // per-invoice objects the same shape the veiling worker originally produced.
-function flattenInkoopInvoiceLines(invoices, sourceFileName, invoiceDate) {
+function flattenInkoopInvoiceLines(invoices, sourceFileName, fallbackDate) {
   const flattened = [];
   for (const invoice of Array.isArray(invoices) ? invoices : []) {
     const invoiceKey = normalizeUkdocsText(invoice?.invoice_number) || normalizeUkdocsText(invoice?.file_name) || "unknown";
+    // The invoice-number prefix (e.g. "063155") identifying which of our own
+    // buying entities this invoice was billed to -- see server/db.js's
+    // inkoop_invoice_lines migration comment for how this was verified.
+    const companyNumber = normalizeUkdocsText(invoice?.supplier_number);
     const lines = Array.isArray(invoice?.lines) ? invoice.lines : [];
     lines.forEach((line, index) => {
+      // Prefer the real date parsed out of the invoice XML (line_date, set
+      // by inkoop_veiling_worker.py from LineDateTime/IssueDateTime) over
+      // the date manually typed into the upload form -- only falls back to
+      // that when a subject genuinely couldn't be parsed for a date.
+      const parsedDate = normalizeUkdocsText(line?.line_date).slice(0, 10);
       flattened.push({
         id: `${invoiceKey}#${index}`,
         invoice_number: normalizeUkdocsText(invoice?.invoice_number),
@@ -6251,7 +6296,9 @@ function flattenInkoopInvoiceLines(invoices, sourceFileName, invoiceDate) {
         unit_price: line?.unit_price ?? null,
         total: line?.total ?? null,
         source_file_name: sourceFileName || invoice?.file_name || "",
-        invoice_date: invoiceDate || null,
+        invoice_date: parsedDate || fallbackDate || null,
+        company_number: companyNumber,
+        company_name: normalizeUkdocsText(line?.company_name),
       });
     });
   }
@@ -6266,6 +6313,10 @@ function groupInkoopInvoiceLinesByInvoice(flatLines) {
       byInvoice.set(key, { type: line?.invoice_type || "", invoice_number: line?.invoice_number || "", lines: [] });
     }
     byInvoice.get(key).lines.push({
+      // The ledger's stable per-line id -- needed so the follow-up queue
+      // can attach a persistent status to a specific "only in invoice" gap
+      // across recomputes.
+      id: line?.id || "",
       description: line?.description || "",
       quantity: line?.quantity ?? null,
       unit_price: line?.unit_price ?? null,
@@ -6274,23 +6325,49 @@ function groupInkoopInvoiceLinesByInvoice(flatLines) {
       supplier_gln: line?.supplier_gln || "",
       supplier_fh_number: line?.supplier_fh_number || "",
       supplier_name: line?.supplier_name || "",
-      // The date the upload was tagged with (the "Date" field on the compare
-      // form) -- now that results span a rolling window instead of one
-      // day's pair, every line needs its own date so the UI can show which
-      // day each mismatch/gap actually belongs to.
+      // The line's real date (see flattenInkoopInvoiceLines) -- now that
+      // results span a rolling window instead of one day's pair, every line
+      // needs its own date so the UI/calendar can show which day each
+      // mismatch/gap actually belongs to.
       invoice_date: line?.invoice_date || "",
+      company_number: line?.company_number || "",
+      company_name: line?.company_name || "",
     });
   }
   return [...byInvoice.values()];
 }
 
-async function computeInkoopLiveMatch(state, windowDays) {
+async function computeInkoopLiveMatch(state, { from, to }) {
   const [erpRows, invoiceLines] = await Promise.all([
-    getInkoopErpLines({ days: windowDays }),
-    getInkoopInvoiceLines({ days: windowDays }),
+    getInkoopErpLines({ from, to }),
+    getInkoopInvoiceLines({ from, to }),
   ]);
   const invoices = groupInkoopInvoiceLinesByInvoice(invoiceLines);
   return matchInkoopVeilingLines(erpRows, invoices, state.supplier_map, state.supplier_name_map, state.manual_supplier_links);
+}
+
+// Once a company is selected, every category that carries an invoice side
+// (matched/mismatch/only-in-invoice/fee/embalage lines) is narrowed to that
+// company. "only in ERP" gaps have no company field at all -- the ERP side
+// has no such concept -- so they always show in full with the caller
+// responsible for explaining why, rather than being silently hidden or
+// wrongly attributed to whichever company happens to be selected.
+function filterInkoopResultsByCompany(matched, companyNumber) {
+  const normalized = normalizeUkdocsText(companyNumber);
+  if (!normalized) {
+    return matched;
+  }
+  const keep = (row) => normalizeUkdocsText(row?.company_number) === normalized;
+  return {
+    matched_ok: (matched?.matched_ok || []).filter(keep),
+    matched_mismatch: (matched?.matched_mismatch || []).filter(keep),
+    only_in_invoice: (matched?.only_in_invoice || []).filter(keep),
+    only_in_erp: matched?.only_in_erp || [],
+    supplier_not_linked: (matched?.supplier_not_linked || []).filter(keep),
+    ambiguous_matches: (matched?.ambiguous_matches || []).filter(keep),
+    fee_lines: (matched?.fee_lines || []).filter(keep),
+    embalage_lines: (matched?.embalage_lines || []).filter(keep),
+  };
 }
 
 function inkoopInvoiceLineTotal(row) {
@@ -6307,16 +6384,172 @@ function inkoopMismatchValue(row) {
   return Math.abs(inkoopErpRowTotal(row?.erp_row) - inkoopInvoiceLineTotal(row));
 }
 
+function inkoopDateKeyFromErpAnchor(row) {
+  const value = row?.erp_row?.date ?? row?.date;
+  return String(value || "").slice(0, 10);
+}
+
+function inkoopDateKeyFromInvoiceAnchor(row) {
+  return String(row?.invoice_date || "").slice(0, 10);
+}
+
+function inkoopEnsureDateBucket(buckets, dateKey) {
+  if (!dateKey) {
+    return null;
+  }
+  if (!buckets.has(dateKey)) {
+    buckets.set(dateKey, {
+      date: dateKey,
+      purchase_value: 0,
+      invoice_value: 0,
+      mismatch_count: 0,
+      mismatch_value: 0,
+      gap_count: 0,
+      gap_value: 0,
+      embalage_value: 0,
+      product_count: 0,
+    });
+  }
+  return buckets.get(dateKey);
+}
+
+// The single source of truth for "per day, did we match everything and how
+// much is at stake" -- powers the calendar, the day report, and (re-grouped
+// by week) the week report, so all three always agree with each other.
+function bucketInkoopResultsByDate(matched) {
+  const buckets = new Map();
+
+  for (const row of matched?.matched_ok || []) {
+    const bucket = inkoopEnsureDateBucket(buckets, inkoopDateKeyFromErpAnchor(row));
+    if (!bucket) continue;
+    bucket.purchase_value += inkoopErpRowTotal(row.erp_row);
+    bucket.invoice_value += inkoopInvoiceLineTotal(row);
+    bucket.product_count += 1;
+  }
+  for (const row of matched?.matched_mismatch || []) {
+    const bucket = inkoopEnsureDateBucket(buckets, inkoopDateKeyFromErpAnchor(row));
+    if (!bucket) continue;
+    bucket.purchase_value += inkoopErpRowTotal(row.erp_row);
+    bucket.invoice_value += inkoopInvoiceLineTotal(row);
+    bucket.product_count += 1;
+    bucket.mismatch_count += 1;
+    bucket.mismatch_value += inkoopMismatchValue(row);
+  }
+  for (const row of matched?.only_in_erp || []) {
+    const bucket = inkoopEnsureDateBucket(buckets, inkoopDateKeyFromErpAnchor(row));
+    if (!bucket) continue;
+    const value = inkoopErpRowTotal(row);
+    bucket.purchase_value += value;
+    bucket.product_count += 1;
+    bucket.gap_count += 1;
+    bucket.gap_value += value;
+  }
+  for (const row of matched?.only_in_invoice || []) {
+    const bucket = inkoopEnsureDateBucket(buckets, inkoopDateKeyFromInvoiceAnchor(row));
+    if (!bucket) continue;
+    const value = inkoopInvoiceLineTotal(row);
+    bucket.invoice_value += value;
+    bucket.gap_count += 1;
+    bucket.gap_value += value;
+  }
+  for (const row of matched?.embalage_lines || []) {
+    const bucket = inkoopEnsureDateBucket(buckets, inkoopDateKeyFromInvoiceAnchor(row));
+    if (!bucket) continue;
+    bucket.embalage_value += inkoopInvoiceLineTotal(row);
+  }
+
+  return buckets;
+}
+
+function inkoopDateBucketsToSortedArray(buckets) {
+  return [...buckets.values()].sort((left, right) => (left.date < right.date ? 1 : -1));
+}
+
+function inkoopWeekStartIso(dateIso) {
+  const parsed = new Date(`${String(dateIso || "").slice(0, 10)}T00:00:00`);
+  if (Number.isNaN(parsed.getTime())) {
+    return "";
+  }
+  const isoDay = parsed.getDay() || 7;
+  parsed.setDate(parsed.getDate() - (isoDay - 1));
+  return `${parsed.getFullYear()}-${String(parsed.getMonth() + 1).padStart(2, "0")}-${String(parsed.getDate()).padStart(2, "0")}`;
+}
+
+function inkoopBucketDayReportsByWeek(dayBuckets) {
+  const weeks = new Map();
+  for (const day of dayBuckets) {
+    const weekStart = inkoopWeekStartIso(day.date);
+    if (!weekStart) {
+      continue;
+    }
+    if (!weeks.has(weekStart)) {
+      weeks.set(weekStart, {
+        week_start: weekStart,
+        purchase_value: 0,
+        invoice_value: 0,
+        mismatch_count: 0,
+        mismatch_value: 0,
+        gap_count: 0,
+        gap_value: 0,
+        embalage_value: 0,
+        product_count: 0,
+      });
+    }
+    const week = weeks.get(weekStart);
+    week.purchase_value += day.purchase_value;
+    week.invoice_value += day.invoice_value;
+    week.mismatch_count += day.mismatch_count;
+    week.mismatch_value += day.mismatch_value;
+    week.gap_count += day.gap_count;
+    week.gap_value += day.gap_value;
+    week.embalage_value += day.embalage_value;
+    week.product_count += day.product_count;
+  }
+  return [...weeks.values()].sort((left, right) => (left.week_start < right.week_start ? 1 : -1));
+}
+
+function buildInkoopEmbalageSummary(matched) {
+  const lines = matched?.embalage_lines || [];
+  const totalValue = lines.reduce((sum, row) => sum + inkoopInvoiceLineTotal(row), 0);
+  const byDay = inkoopDateBucketsToSortedArray(bucketInkoopResultsByDate({ embalage_lines: lines }))
+    .map((bucket) => ({ date: bucket.date, value: bucket.embalage_value }));
+  const byCompanyMap = new Map();
+  for (const row of lines) {
+    const label = inkoopCompanyLabel(row) || "Unknown";
+    const key = label.toLowerCase();
+    if (!byCompanyMap.has(key)) {
+      byCompanyMap.set(key, { key, label, value: 0 });
+    }
+    byCompanyMap.get(key).value += inkoopInvoiceLineTotal(row);
+  }
+  const byCompany = [...byCompanyMap.values()].sort((left, right) => right.value - left.value);
+  return { total_value: totalValue, by_day: byDay, by_company: byCompany };
+}
+
+function buildInkoopTodaySummary(matched, todayIso) {
+  const bucket = bucketInkoopResultsByDate(matched).get(todayIso) || null;
+  return {
+    date: todayIso,
+    invoice_value: bucket?.invoice_value || 0,
+    purchase_value: bucket?.purchase_value || 0,
+    gap_value: bucket?.gap_value || 0,
+    product_count: bucket?.product_count || 0,
+  };
+}
+
 // Growers only have an identity on the invoice side (supplier_name, parsed
 // off every invoice line regardless of type -- see
-// inkoop_veiling_worker.py's find_supplier_info); AVC only has an identity
-// on the ERP side (the Avc. column). An "only in ERP" gap has no invoice
-// line yet, so it can only ever be attributed to an AVC, never a grower; an
-// "only in invoice" gap has no ERP row yet, so the reverse. Mismatches have
-// both sides and count toward both breakdowns.
+// inkoop_veiling_worker.py's find_supplier_info); AVC and product group (T:
+// B/P/A) only have an identity on the ERP side. An "only in ERP" gap has no
+// invoice line yet, so it can only ever be attributed to an AVC/product
+// group/never a grower or company; an "only in invoice" gap has no ERP row
+// yet, so the reverse. Mismatches have both sides and count toward every
+// breakdown.
 function buildInkoopDashboardSummary(matched) {
   const byGrower = new Map();
   const byAvc = new Map();
+  const byCompany = new Map();
+  const byProductGroup = new Map();
 
   const bump = (map, rawLabel, count, mistakeValue, purchaseValue) => {
     const label = normalizeUkdocsText(rawLabel);
@@ -6336,21 +6569,42 @@ function buildInkoopDashboardSummary(matched) {
   for (const row of matched?.matched_ok || []) {
     bump(byGrower, row.supplier_name, 0, 0, inkoopErpRowTotal(row.erp_row));
     bump(byAvc, row.erp_row?.avc, 0, 0, inkoopErpRowTotal(row.erp_row));
+    bump(byCompany, inkoopCompanyLabel(row), 0, 0, inkoopErpRowTotal(row.erp_row));
+    bump(byProductGroup, inkoopProductGroupLabel(row.erp_row?.t), 0, 0, inkoopErpRowTotal(row.erp_row));
   }
   for (const row of matched?.matched_mismatch || []) {
     const value = inkoopMismatchValue(row);
     bump(byGrower, row.supplier_name, 1, value, inkoopErpRowTotal(row.erp_row));
     bump(byAvc, row.erp_row?.avc, 1, value, inkoopErpRowTotal(row.erp_row));
+    bump(byCompany, inkoopCompanyLabel(row), 1, value, inkoopErpRowTotal(row.erp_row));
+    bump(byProductGroup, inkoopProductGroupLabel(row.erp_row?.t), 1, value, inkoopErpRowTotal(row.erp_row));
   }
   for (const row of matched?.only_in_erp || []) {
     bump(byAvc, row.avc, 1, inkoopErpRowTotal(row), 0);
+    bump(byProductGroup, inkoopProductGroupLabel(row.t), 1, inkoopErpRowTotal(row), 0);
   }
   for (const row of matched?.only_in_invoice || []) {
     bump(byGrower, row.supplier_name, 1, inkoopInvoiceLineTotal(row), 0);
+    bump(byCompany, inkoopCompanyLabel(row), 1, inkoopInvoiceLineTotal(row), 0);
   }
 
   const sortDesc = (map) => [...map.values()].sort((left, right) => right.mistake_value - left.mistake_value);
-  return { by_grower: sortDesc(byGrower), by_avc: sortDesc(byAvc) };
+  return {
+    by_grower: sortDesc(byGrower),
+    by_avc: sortDesc(byAvc),
+    by_company: sortDesc(byCompany),
+    by_product_group: sortDesc(byProductGroup),
+  };
+}
+
+// Stable ids for the follow-up queue -- must survive a recompute (the same
+// mismatch/gap always derives the same id) so a status set on one persists
+// across every future page load until the underlying data actually changes.
+function inkoopIssueId(issueType, row) {
+  if (issueType === "mismatch" || issueType === "gap_erp") {
+    return `${issueType}:${row?.erp_row?.lot ?? row?.lot ?? ""}`;
+  }
+  return `${issueType}:${row?.id || ""}`;
 }
 
 async function readInkoopState() {
@@ -16486,6 +16740,17 @@ async function handleApi(req, res, url) {
     return;
   }
 
+  // Distinct (company_number, company_name) pairs seen on any uploaded
+  // invoice line -- populates the page-level company filter dropdown.
+  if (url.pathname === "/api/inkoop/companies" && req.method === "GET") {
+    if (!requirePermission(res, requestUser, PERMISSIONS.INKOOP_VIEW)) {
+      return;
+    }
+    const companies = await getInkoopCompanies();
+    sendJson(res, 200, { companies });
+    return;
+  }
+
   // Returns the import history log plus a freshly recomputed live
   // reconciliation over the full accumulated ledger (windowed) -- there is
   // no more "per past run" result to browse, since a gap now closes itself
@@ -16495,7 +16760,8 @@ async function handleApi(req, res, url) {
       return;
     }
     const state = await readInkoopState();
-    const result = await computeInkoopLiveMatch(state, INKOOP_MATCH_WINDOW_DAYS);
+    const rawResult = await computeInkoopLiveMatch(state, inkoopDefaultWindowRange(INKOOP_MATCH_WINDOW_DAYS));
+    const result = filterInkoopResultsByCompany(rawResult, url.searchParams.get("company"));
     sendJson(res, 200, {
       imports: state.imports,
       result,
@@ -16527,7 +16793,8 @@ async function handleApi(req, res, url) {
       // is what lets an invoice find a purchase recorded on a different day.
       await saveInkoopErpLines(erpRows);
       await saveInkoopInvoiceLines(flatInvoiceLines);
-      const result = await computeInkoopLiveMatch(state, INKOOP_MATCH_WINDOW_DAYS);
+      const rawResult = await computeInkoopLiveMatch(state, inkoopDefaultWindowRange(INKOOP_MATCH_WINDOW_DAYS));
+      const result = filterInkoopResultsByCompany(rawResult, body?.company);
 
       const importRecord = normalizeInkoopImportRecord({
         run_date: runDate,
@@ -16547,10 +16814,11 @@ async function handleApi(req, res, url) {
     return;
   }
 
-  // Aggregates the live windowed reconciliation by grower (invoice-side
-  // supplier identity) and by AVC (ERP-side location/route code) for the
-  // Inkoop Controle dashboard tab -- pure aggregation of what
-  // matchInkoopVeilingLines already produces, no new matching logic.
+  // Aggregates the live windowed reconciliation by grower, AVC, company, and
+  // product group (B/P/A) for the Inkoop Controle dashboard tab, plus a day
+  // report / week report and a dedicated (never matched) Emballage summary
+  // -- all pure aggregation of what matchInkoopVeilingLines already
+  // produces, no new matching logic.
   if (url.pathname === "/api/inkoop/dashboard/summary" && req.method === "GET") {
     if (!requirePermission(res, requestUser, PERMISSIONS.INKOOP_VIEW)) {
       return;
@@ -16559,9 +16827,182 @@ async function handleApi(req, res, url) {
     const days = Number.isFinite(requestedDays) && requestedDays > 0 ? requestedDays : INKOOP_DASHBOARD_DEFAULT_WINDOW_DAYS;
     try {
       const state = await readInkoopState();
-      const result = await computeInkoopLiveMatch(state, days);
+      const rawResult = await computeInkoopLiveMatch(state, inkoopDefaultWindowRange(days));
+      const result = filterInkoopResultsByCompany(rawResult, url.searchParams.get("company"));
       const summary = buildInkoopDashboardSummary(result);
-      sendJson(res, 200, { days, ...summary });
+      const dayReport = inkoopDateBucketsToSortedArray(bucketInkoopResultsByDate(result));
+      const weekReport = inkoopBucketDayReportsByWeek(dayReport);
+      const embalageSummary = buildInkoopEmbalageSummary(result);
+      const todaySummary = buildInkoopTodaySummary(result, localDateIso());
+      sendJson(res, 200, {
+        days,
+        ...summary,
+        day_report: dayReport,
+        week_report: weekReport,
+        embalage_summary: embalageSummary,
+        today_summary: todaySummary,
+      });
+    } catch (error) {
+      sendJson(res, 400, { error: error instanceof Error ? error.message : String(error) });
+    }
+    return;
+  }
+
+  // Month grid for the Calendar tab -- matches over the month's range plus a
+  // 14-day buffer on each side (so a cross-day mismatch pair right at the
+  // edge of the month still resolves correctly), then buckets by date and
+  // trims to just the requested month.
+  if (url.pathname === "/api/inkoop/calendar" && req.method === "GET") {
+    if (!requirePermission(res, requestUser, PERMISSIONS.INKOOP_VIEW)) {
+      return;
+    }
+    const month = String(url.searchParams.get("month") || "").trim();
+    const monthMatch = /^(\d{4})-(\d{2})$/.exec(month);
+    if (!monthMatch) {
+      sendJson(res, 400, { error: "month must be YYYY-MM" });
+      return;
+    }
+    const [, yearStr, monthStr] = monthMatch;
+    const monthStart = `${yearStr}-${monthStr}-01`;
+    const daysInMonth = new Date(Number(yearStr), Number(monthStr), 0).getDate();
+    const monthEnd = `${yearStr}-${monthStr}-${String(daysInMonth).padStart(2, "0")}`;
+    try {
+      const state = await readInkoopState();
+      const rawResult = await computeInkoopLiveMatch(state, {
+        from: addDaysToIsoDate(monthStart, -14),
+        to: addDaysToIsoDate(monthEnd, 14),
+      });
+      const result = filterInkoopResultsByCompany(rawResult, url.searchParams.get("company"));
+      const buckets = bucketInkoopResultsByDate(result);
+      const days = [];
+      for (let day = 1; day <= daysInMonth; day += 1) {
+        const dateIso = `${yearStr}-${monthStr}-${String(day).padStart(2, "0")}`;
+        const bucket = buckets.get(dateIso);
+        days.push(bucket || {
+          date: dateIso,
+          purchase_value: 0,
+          invoice_value: 0,
+          mismatch_count: 0,
+          mismatch_value: 0,
+          gap_count: 0,
+          gap_value: 0,
+          embalage_value: 0,
+          product_count: 0,
+        });
+      }
+      sendJson(res, 200, { month, days });
+    } catch (error) {
+      sendJson(res, 400, { error: error instanceof Error ? error.message : String(error) });
+    }
+    return;
+  }
+
+  // Click-through detail for one calendar day -- same buffered-match
+  // approach as the calendar, but returns the full line-level result
+  // filtered to that single date, reusing the exact same result shape (and
+  // therefore the exact same table markup) as Compare & Reconcile.
+  if (url.pathname === "/api/inkoop/day-detail" && req.method === "GET") {
+    if (!requirePermission(res, requestUser, PERMISSIONS.INKOOP_VIEW)) {
+      return;
+    }
+    const date = String(url.searchParams.get("date") || "").trim();
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) {
+      sendJson(res, 400, { error: "date must be YYYY-MM-DD" });
+      return;
+    }
+    try {
+      const state = await readInkoopState();
+      const rawResult = await computeInkoopLiveMatch(state, {
+        from: addDaysToIsoDate(date, -14),
+        to: addDaysToIsoDate(date, 14),
+      });
+      const companyFiltered = filterInkoopResultsByCompany(rawResult, url.searchParams.get("company"));
+      const onDate = (row, anchor) => (anchor === "erp" ? inkoopDateKeyFromErpAnchor(row) : inkoopDateKeyFromInvoiceAnchor(row)) === date;
+      const result = {
+        matched_ok: companyFiltered.matched_ok.filter((row) => onDate(row, "erp")),
+        matched_mismatch: companyFiltered.matched_mismatch.filter((row) => onDate(row, "erp")),
+        only_in_invoice: companyFiltered.only_in_invoice.filter((row) => onDate(row, "invoice")),
+        only_in_erp: companyFiltered.only_in_erp.filter((row) => onDate(row, "erp")),
+        supplier_not_linked: companyFiltered.supplier_not_linked.filter((row) => onDate(row, "invoice")),
+        ambiguous_matches: companyFiltered.ambiguous_matches.filter((row) => onDate(row, "invoice")),
+        fee_lines: companyFiltered.fee_lines.filter((row) => onDate(row, "invoice")),
+        embalage_lines: companyFiltered.embalage_lines.filter((row) => onDate(row, "invoice")),
+      };
+      sendJson(res, 200, { date, result });
+    } catch (error) {
+      sendJson(res, 400, { error: error instanceof Error ? error.message : String(error) });
+    }
+    return;
+  }
+
+  // Follow-up queue: genuine financial discrepancies (mismatches, gaps on
+  // either side) worth someone physically going to check. Supplier-not-
+  // linked and ambiguous matches keep their own inline-resolve UI on the
+  // Compare tab instead -- nothing to "investigate" there beyond that.
+  if (url.pathname === "/api/inkoop/issues" && req.method === "GET") {
+    if (!requirePermission(res, requestUser, PERMISSIONS.INKOOP_VIEW)) {
+      return;
+    }
+    try {
+      const state = await readInkoopState();
+      const rawResult = await computeInkoopLiveMatch(state, inkoopDefaultWindowRange(INKOOP_MATCH_WINDOW_DAYS));
+      const result = filterInkoopResultsByCompany(rawResult, url.searchParams.get("company"));
+      const statuses = await getInkoopIssueStatuses();
+      const statusById = new Map(statuses.map((row) => [row.id, row]));
+      const showResolved = url.searchParams.get("show_resolved") === "1";
+
+      const issues = [];
+      for (const row of result.matched_mismatch || []) {
+        issues.push({ id: inkoopIssueId("mismatch", row), issue_type: "mismatch", date: inkoopDateKeyFromErpAnchor(row), description: row.description, value: inkoopMismatchValue(row), detail: row });
+      }
+      for (const row of result.only_in_erp || []) {
+        issues.push({ id: inkoopIssueId("gap_erp", row), issue_type: "gap_erp", date: inkoopDateKeyFromErpAnchor(row), description: row.description, value: inkoopErpRowTotal(row), detail: row });
+      }
+      for (const row of result.only_in_invoice || []) {
+        issues.push({ id: inkoopIssueId("gap_invoice", row), issue_type: "gap_invoice", date: inkoopDateKeyFromInvoiceAnchor(row), description: row.description, value: inkoopInvoiceLineTotal(row), detail: row });
+      }
+
+      const merged = issues.map((issue) => {
+        const stored = statusById.get(issue.id);
+        return {
+          ...issue,
+          status: stored?.status || "open",
+          assigned_to: stored?.assigned_to || "",
+          note: stored?.note || "",
+          updated_by: stored?.updated_by || "",
+          updated_at: stored?.updated_at || "",
+        };
+      });
+      const filtered = showResolved ? merged : merged.filter((issue) => issue.status !== "resolved");
+      filtered.sort((left, right) => right.value - left.value);
+      sendJson(res, 200, { issues: filtered });
+    } catch (error) {
+      sendJson(res, 400, { error: error instanceof Error ? error.message : String(error) });
+    }
+    return;
+  }
+
+  if (url.pathname.startsWith("/api/inkoop/issues/") && req.method === "POST") {
+    if (!requirePermission(res, requestUser, PERMISSIONS.INKOOP_VIEW)) {
+      return;
+    }
+    const issueId = decodeURIComponent(url.pathname.slice("/api/inkoop/issues/".length));
+    if (!issueId) {
+      sendJson(res, 400, { error: "Missing issue id" });
+      return;
+    }
+    const body = await readRequestJson(req);
+    const status = ["open", "investigating", "resolved"].includes(body?.status) ? body.status : "open";
+    try {
+      await saveInkoopIssueStatus({
+        id: issueId,
+        issue_type: String(issueId.split(":")[0] || ""),
+        status,
+        assigned_to: String(body?.assigned_to || "").trim(),
+        note: String(body?.note || "").trim(),
+        updated_by: requestUser.username,
+      });
+      sendJson(res, 200, { ok: true });
     } catch (error) {
       sendJson(res, 400, { error: error instanceof Error ? error.message : String(error) });
     }

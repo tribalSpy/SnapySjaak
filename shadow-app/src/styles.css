@@ -2110,3 +2110,82 @@ pre {
   color: #4a5561;
   white-space: nowrap;
 }
+
+.inkoop-summary-cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  gap: 12px;
+}
+
+.inkoop-summary-card {
+  border: 1px solid #d6dde5;
+  border-radius: 8px;
+  padding: 12px;
+  text-align: center;
+}
+
+.inkoop-summary-value {
+  font-size: 1.4em;
+  font-weight: 700;
+}
+
+.inkoop-summary-label {
+  font-size: 0.85em;
+  color: #4a5561;
+  margin-top: 4px;
+}
+
+.inkoop-calendar-grid {
+  display: grid;
+  grid-template-columns: repeat(7, 1fr);
+  gap: 6px;
+}
+
+.inkoop-calendar-cell {
+  min-height: 64px;
+  border: 1px solid #d6dde5;
+  border-radius: 6px;
+  background: #ffffff;
+  padding: 6px;
+  text-align: left;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  cursor: pointer;
+}
+
+.inkoop-calendar-cell.empty {
+  visibility: hidden;
+  cursor: default;
+}
+
+.inkoop-calendar-cell.ok {
+  background: #eaf6ef;
+  border-color: #bfe3cc;
+}
+
+.inkoop-calendar-cell.warning {
+  background: #fdf3e0;
+  border-color: #f0d49a;
+}
+
+.inkoop-calendar-cell.danger {
+  background: #fbe9e9;
+  border-color: #eeb6b6;
+}
+
+.inkoop-calendar-cell.selected {
+  outline: 2px solid #1f7a5a;
+  outline-offset: -2px;
+}
+
+.inkoop-calendar-date {
+  font-weight: 700;
+}
+
+.inkoop-calendar-summary {
+  display: flex;
+  flex-direction: column;
+  font-size: 0.75em;
+  color: #4a5561;
+}

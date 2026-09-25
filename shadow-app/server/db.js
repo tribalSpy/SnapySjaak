@@ -263,14 +263,16 @@ export async function saveInkoopInvoiceLines(lines) {
         JSON.stringify(line),
         line.source_file_name || "",
         line.invoice_date || null,
+        line.company_number || "",
+        line.company_name || "",
       );
-      return `($${base + 1}, $${base + 2}, $${base + 3}, $${base + 4}, $${base + 5}, $${base + 6}, $${base + 7}, $${base + 8}, $${base + 9}, $${base + 10}, $${base + 11}, $${base + 12}::jsonb, $${base + 13}, $${base + 14}::date)`;
+      return `($${base + 1}, $${base + 2}, $${base + 3}, $${base + 4}, $${base + 5}, $${base + 6}, $${base + 7}, $${base + 8}, $${base + 9}, $${base + 10}, $${base + 11}, $${base + 12}::jsonb, $${base + 13}, $${base + 14}::date, $${base + 15}, $${base + 16})`;
     });
     await pool.query(
       `
         INSERT INTO inkoop_invoice_lines (
           id, invoice_number, invoice_type, reference_bt, supplier_gln, supplier_fh_number, supplier_name,
-          description, quantity, unit_price, total, raw, source_file_name, invoice_date
+          description, quantity, unit_price, total, raw, source_file_name, invoice_date, company_number, company_name
         )
         VALUES ${placeholders.join(", ")}
         ON CONFLICT (id) DO UPDATE SET
@@ -287,6 +289,8 @@ export async function saveInkoopInvoiceLines(lines) {
           raw = EXCLUDED.raw,
           source_file_name = EXCLUDED.source_file_name,
           invoice_date = EXCLUDED.invoice_date,
+          company_number = EXCLUDED.company_number,
+          company_name = EXCLUDED.company_name,
           updated_at = now()
       `,
       values,
@@ -294,36 +298,85 @@ export async function saveInkoopInvoiceLines(lines) {
   }
 }
 
-export async function getInkoopErpLines({ days } = {}) {
+export async function getInkoopErpLines({ from, to } = {}) {
   if (!pool) {
     return [];
   }
-  const windowDays = Number(days) > 0 ? Number(days) : 60;
   const result = await pool.query(
     `
       SELECT raw FROM inkoop_erp_lines
-      WHERE erp_date IS NULL OR erp_date >= (now() - ($1 || ' days')::interval)
+      WHERE erp_date IS NULL OR (erp_date >= $1 AND erp_date <= $2)
       ORDER BY lot
     `,
-    [windowDays],
+    [from, to],
   );
   return result.rows.map((row) => row.raw);
 }
 
-export async function getInkoopInvoiceLines({ days } = {}) {
+export async function getInkoopInvoiceLines({ from, to } = {}) {
   if (!pool) {
     return [];
   }
-  const windowDays = Number(days) > 0 ? Number(days) : 60;
   const result = await pool.query(
     `
       SELECT raw FROM inkoop_invoice_lines
-      WHERE invoice_date IS NULL OR invoice_date >= (now() - ($1 || ' days')::interval)
+      WHERE invoice_date IS NULL OR (invoice_date >= $1 AND invoice_date <= $2)
       ORDER BY invoice_number
     `,
-    [windowDays],
+    [from, to],
   );
   return result.rows.map((row) => row.raw);
+}
+
+export async function getInkoopCompanies() {
+  if (!pool) {
+    return [];
+  }
+  const result = await pool.query(
+    `
+      SELECT company_number, MAX(company_name) AS company_name
+      FROM inkoop_invoice_lines
+      WHERE company_number IS NOT NULL AND company_number <> ''
+      GROUP BY company_number
+      ORDER BY company_number
+    `,
+  );
+  return result.rows;
+}
+
+export async function saveInkoopIssueStatus(issue) {
+  if (!pool || !issue?.id) {
+    return;
+  }
+  await pool.query(
+    `
+      INSERT INTO inkoop_issue_status (id, issue_type, status, assigned_to, note, updated_by, updated_at)
+      VALUES ($1, $2, $3, $4, $5, $6, now())
+      ON CONFLICT (id) DO UPDATE SET
+        issue_type = EXCLUDED.issue_type,
+        status = EXCLUDED.status,
+        assigned_to = EXCLUDED.assigned_to,
+        note = EXCLUDED.note,
+        updated_by = EXCLUDED.updated_by,
+        updated_at = now()
+    `,
+    [
+      issue.id,
+      issue.issue_type || "",
+      issue.status || "open",
+      issue.assigned_to || "",
+      issue.note || "",
+      issue.updated_by || "",
+    ],
+  );
+}
+
+export async function getInkoopIssueStatuses() {
+  if (!pool) {
+    return [];
+  }
+  const result = await pool.query("SELECT * FROM inkoop_issue_status");
+  return result.rows;
 }
 
 // Reference-code-level rows from the Fust API import (svdvyver.fr) -- kept
@@ -1446,6 +1499,30 @@ const databaseMigrations = [
   `,
   `
     CREATE INDEX IF NOT EXISTS inkoop_invoice_lines_supplier_name_idx ON inkoop_invoice_lines (supplier_name)
+  `,
+  // The invoice-number prefix (e.g. "063155") identifying which of our own
+  // buying entities an invoice was billed to -- verified 1:1 against the
+  // real InvoiceeParty name in the XML (company_name), so both ride
+  // together as a single filterable dimension across the whole page.
+  `
+    ALTER TABLE inkoop_invoice_lines ADD COLUMN IF NOT EXISTS company_number text
+  `,
+  `
+    ALTER TABLE inkoop_invoice_lines ADD COLUMN IF NOT EXISTS company_name text
+  `,
+  `
+    CREATE INDEX IF NOT EXISTS inkoop_invoice_lines_company_number_idx ON inkoop_invoice_lines (company_number)
+  `,
+  `
+    CREATE TABLE IF NOT EXISTS inkoop_issue_status (
+      id text PRIMARY KEY,
+      issue_type text NOT NULL,
+      status text NOT NULL DEFAULT 'open',
+      assigned_to text,
+      note text,
+      updated_by text,
+      updated_at timestamptz NOT NULL DEFAULT now()
+    )
   `,
 ];
 

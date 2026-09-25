@@ -13452,6 +13452,18 @@ function inkoopShortDate(value) {
   return text ? text.slice(0, 10) : "-";
 }
 
+function inkoopCompanyLabel(row) {
+  if (!row?.company_number) return "-";
+  return row.company_name ? `${row.company_number} - ${row.company_name}` : row.company_number;
+}
+
+function inkoopIssueTypeLabel(type) {
+  if (type === "mismatch") return "Mismatch";
+  if (type === "gap_erp") return "Missing from invoice";
+  if (type === "gap_invoice") return "Missing from ERP";
+  return type;
+}
+
 function InkoopControlePage() {
   const [loading, setLoading] = useState(true);
   const [comparing, setComparing] = useState(false);
@@ -13460,6 +13472,8 @@ function InkoopControlePage() {
   const [liveResult, setLiveResult] = useState(null);
   const [windowDays, setWindowDays] = useState(60);
   const [lastSkippedFiles, setLastSkippedFiles] = useState([]);
+  const [companies, setCompanies] = useState([]);
+  const [selectedCompany, setSelectedCompany] = useState("");
   const [runDate, setRunDate] = useState(() => localDateIso());
   const [erpFile, setErpFile] = useState(null);
   const [veilingZip, setVeilingZip] = useState(null);
@@ -13474,7 +13488,9 @@ function InkoopControlePage() {
   const [error, setError] = useState("");
 
   function loadInkoopData() {
-    return apiJson("/api/inkoop/veiling/runs").then((payload) => {
+    const params = new URLSearchParams();
+    if (selectedCompany) params.set("company", selectedCompany);
+    return apiJson(`/api/inkoop/veiling/runs${params.toString() ? `?${params}` : ""}`).then((payload) => {
       setImports(payload.imports || []);
       setLiveResult(payload.result || null);
       setWindowDays(payload.window_days || 60);
@@ -13484,9 +13500,15 @@ function InkoopControlePage() {
     });
   }
 
+  function loadCompanies() {
+    return apiJson("/api/inkoop/companies").then((payload) => {
+      setCompanies(payload.companies || []);
+    });
+  }
+
   useEffect(() => {
     let cancelled = false;
-    loadInkoopData()
+    Promise.all([loadInkoopData(), loadCompanies()])
       .catch((loadError) => {
         if (!cancelled) setError(loadError.message);
       })
@@ -13497,6 +13519,18 @@ function InkoopControlePage() {
       cancelled = true;
     };
   }, []);
+
+  useEffect(() => {
+    if (loading) return;
+    let cancelled = false;
+    loadInkoopData().catch((loadError) => {
+      if (!cancelled) setError(loadError.message);
+    });
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedCompany]);
 
   async function runComparison() {
     if (!erpFile || !veilingZip) {
@@ -13514,6 +13548,7 @@ function InkoopControlePage() {
           run_date: runDate,
           erp_file: { name: erpFile.name, content_base64: erpBase64 },
           veiling_zip: { name: veilingZip.name, content_base64: veilingBase64 },
+          company: selectedCompany || undefined,
         }),
       });
       setImports(payload.imports || []);
@@ -13527,6 +13562,7 @@ function InkoopControlePage() {
         + `${r.only_in_invoice?.length ?? 0} only in invoice, ${r.only_in_erp?.length ?? 0} only in ERP, `
         + `${r.supplier_not_linked?.length ?? 0} supplier not linked, ${r.ambiguous_matches?.length ?? 0} ambiguous.`,
       );
+      loadCompanies().catch(() => {});
     } catch (compareError) {
       setError(compareError.message);
     } finally {
@@ -13591,15 +13627,42 @@ function InkoopControlePage() {
 
   return (
     <section className="overview-stack">
+      <div className="row-actions spread-actions">
+        <label>
+          <span>Company</span>
+          <select value={selectedCompany} onChange={(event) => setSelectedCompany(event.target.value)}>
+            <option value="">All companies</option>
+            {companies.map((company) => (
+              <option key={company.company_number} value={company.company_number}>
+                {company.company_number}{company.company_name ? ` - ${company.company_name}` : ""}
+              </option>
+            ))}
+          </select>
+        </label>
+      </div>
+
       <div className="tab-strip">
         <button type="button" className={activeTab === "compare" ? "active" : ""} onClick={() => setActiveTab("compare")}>Compare &amp; Reconcile</button>
+        <button type="button" className={activeTab === "calendar" ? "active" : ""} onClick={() => setActiveTab("calendar")}>Calendar</button>
         <button type="button" className={activeTab === "dashboard" ? "active" : ""} onClick={() => setActiveTab("dashboard")}>Financial Dashboard</button>
+        <button type="button" className={activeTab === "followup" ? "active" : ""} onClick={() => setActiveTab("followup")}>Follow-up</button>
       </div>
 
       {message && <div className="notice">{message}</div>}
       {error && <div className="notice danger">{error}</div>}
 
-      {activeTab === "dashboard" && <InkoopDashboardTab />}
+      {activeTab === "calendar" && (
+        <InkoopCalendarTab
+          company={selectedCompany}
+          manualLinkDrafts={manualLinkDrafts}
+          setManualLinkDrafts={setManualLinkDrafts}
+          onLinkSupplier={linkSupplier}
+        />
+      )}
+
+      {activeTab === "followup" && <InkoopFollowUpTab company={selectedCompany} />}
+
+      {activeTab === "dashboard" && <InkoopDashboardTab company={selectedCompany} />}
 
       {activeTab === "compare" && (
       <>
@@ -13645,6 +13708,7 @@ function InkoopControlePage() {
         <div className="section-header"><h2>Compare a day</h2></div>
         <div className="notice">
           No live mailbox yet -- for now, save the day's veiling emails (Klokfactuur, Connect factuur, Factuur handel aankopen) as .msg files, zip them, and upload that zip together with the ERP "Screen" export for the same day.
+          Every line's real date is read straight from the invoice, so the date below is only used as a fallback and for the import history log.
         </div>
         <div className="form-grid">
           <label>
@@ -13697,151 +13761,14 @@ function InkoopControlePage() {
       )}
 
       {liveResult && (
-        <>
-          {!!liveResult.matched_mismatch.length && (
-            <div className="data-table-card">
-              <div className="section-header"><h2>Mismatches ({liveResult.matched_mismatch.length})</h2></div>
-              <div className="table-wrap">
-                <table className="data-table">
-                  <thead>
-                    <tr><th>Date</th><th>Invoice</th><th>PAV</th><th>Description</th><th>Field</th><th>Connect value</th><th>FH invoice value</th></tr>
-                  </thead>
-                  <tbody>
-                    {liveResult.matched_mismatch.map((row, index) => (
-                      row.diffs.map((diff, diffIndex) => (
-                        <tr key={`${index}-${diffIndex}`}>
-                          {diffIndex === 0 && <td rowSpan={row.diffs.length}>{inkoopShortDate(row.erp_row?.date || row.invoice_date)}</td>}
-                          {diffIndex === 0 && <td rowSpan={row.diffs.length}>{row.invoice_number}</td>}
-                          {diffIndex === 0 && <td rowSpan={row.diffs.length}>{row.pav}</td>}
-                          {diffIndex === 0 && <td rowSpan={row.diffs.length}>{row.description}</td>}
-                          <td>{inkoopFieldLabel(diff.field)}</td>
-                          <td>{diff.erp}</td>
-                          <td>{diff.invoice}</td>
-                        </tr>
-                      ))
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            </div>
-          )}
-
-          {!!liveResult.supplier_not_linked?.length && (
-            <div className="data-table-card">
-              <div className="section-header"><h2>Supplier not linked ({liveResult.supplier_not_linked.length})</h2></div>
-              <div className="notice">
-                These Handel Aankopen lines have a real FloraHolland supplier, but no internal code is linked to that GLN yet -- link it once below, results refresh right away.
-              </div>
-              <div className="table-wrap">
-                <table className="data-table">
-                  <thead><tr><th>Date</th><th>Invoice</th><th>FH number</th><th>Grower</th><th>Description</th><th>Quantity</th><th>Unit price</th><th>Your code</th><th></th></tr></thead>
-                  <tbody>
-                    {liveResult.supplier_not_linked.map((row, index) => (
-                      <tr key={index}>
-                        <td>{inkoopShortDate(row.invoice_date)}</td>
-                        <td>{row.invoice_number}</td>
-                        <td>{row.supplier_fh_number}</td>
-                        <td>{row.supplier_name}</td>
-                        <td>{row.description}</td>
-                        <td>{row.quantity}</td>
-                        <td>{row.unit_price}</td>
-                        <td>
-                          <input
-                            value={manualLinkDrafts[row.supplier_gln]?.code || ""}
-                            onChange={(event) => setManualLinkDrafts((current) => ({ ...current, [row.supplier_gln]: { code: event.target.value } }))}
-                            placeholder="e.g. KONKOP"
-                          />
-                        </td>
-                        <td><button type="button" onClick={() => linkSupplier(row)}>Link</button></td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            </div>
-          )}
-
-          {!!liveResult.ambiguous_matches?.length && (
-            <div className="data-table-card">
-              <div className="section-header"><h2>Ambiguous matches ({liveResult.ambiguous_matches.length})</h2></div>
-              <div className="notice">
-                Handel Aankopen has no unique reference number -- these lines have more than one ERP purchase from the same supplier with the exact same quantity and price, so which one it actually is can't be told apart automatically.
-              </div>
-              <div className="table-wrap">
-                <table className="data-table">
-                  <thead><tr><th>Date</th><th>Invoice</th><th>Supplier</th><th>Quantity</th><th>Unit price</th><th>Candidate lots (ERP)</th></tr></thead>
-                  <tbody>
-                    {liveResult.ambiguous_matches.map((row, index) => (
-                      <tr key={index}>
-                        <td>{inkoopShortDate(row.invoice_date)}</td>
-                        <td>{row.invoice_number}</td>
-                        <td>{row.supplier_code}{row.supplier_match_type === "name" ? " (name match)" : ""}</td>
-                        <td>{row.quantity}</td>
-                        <td>{row.unit_price}</td>
-                        <td>{row.candidates.map((c) => `${c.lot} (${String(c.description || "").trim()})`).join(", ")}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            </div>
-          )}
-
-          {!!liveResult.only_in_invoice.length && (
-            <div className="data-table-card">
-              <div className="section-header"><h2>Only in invoice ({liveResult.only_in_invoice.length})</h2></div>
-              <div className="notice">FloraHolland charged for these but no matching purchase was found in the ERP export within the last {windowDays} days.</div>
-              <div className="table-wrap">
-                <table className="data-table">
-                  <thead><tr><th>Date</th><th>Invoice</th><th>PAV / supplier</th><th>Description</th><th>Quantity</th><th>Unit price</th><th>Total</th></tr></thead>
-                  <tbody>
-                    {liveResult.only_in_invoice.map((row, index) => (
-                      <tr key={index}><td>{inkoopShortDate(row.invoice_date)}</td><td>{row.invoice_number}</td><td>{row.reference_bt || row.supplier_code || "-"}{row.supplier_match_type === "name" ? " (name match)" : ""}</td><td>{row.description}</td><td>{row.quantity}</td><td>{row.unit_price}</td><td>{row.total}</td></tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            </div>
-          )}
-
-          {!!liveResult.only_in_erp.length && (
-            <div className="data-table-card">
-              <div className="section-header"><h2>Only in ERP ({liveResult.only_in_erp.length})</h2></div>
-              <div className="notice">Recorded as a purchase but no invoice line referenced this PAV within the last {windowDays} days -- invoice not received yet, or a data entry mistake.</div>
-              <div className="table-wrap">
-                <table className="data-table">
-                  <thead><tr><th>Date</th><th>PAV</th><th>Lot</th><th>Description</th><th>Pieces</th><th>Price</th><th>Total</th><th>Supplier</th></tr></thead>
-                  <tbody>
-                    {liveResult.only_in_erp.map((row, index) => (
-                      <tr key={index}><td>{inkoopShortDate(row.date)}</td><td>{row.pav}</td><td>{row.lot}</td><td>{row.description}</td><td>{row.pieces}</td><td>{row.price}</td><td>{row.t_price}</td><td>{row.suppl}</td></tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            </div>
-          )}
-
-          <div className="data-table-card">
-            <div className="section-header"><h2>Matched OK</h2></div>
-            <div className="notice">{liveResult.matched_ok.length} lines matched with no differences.</div>
-          </div>
-
-          {!!lastSkippedFiles.length && (
-            <div className="data-table-card">
-              <div className="section-header"><h2>Skipped files (last upload)</h2></div>
-              <div className="table-wrap">
-                <table className="data-table">
-                  <thead><tr><th>File</th><th>Reason</th></tr></thead>
-                  <tbody>
-                    {lastSkippedFiles.map((row, index) => (
-                      <tr key={index}><td>{row.file_name}</td><td>{row.reason}</td></tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            </div>
-          )}
-        </>
+        <InkoopResultTables
+          result={liveResult}
+          windowDays={windowDays}
+          manualLinkDrafts={manualLinkDrafts}
+          setManualLinkDrafts={setManualLinkDrafts}
+          onLinkSupplier={linkSupplier}
+          skippedFiles={lastSkippedFiles}
+        />
       )}
       </>
       )}
@@ -13849,22 +13776,234 @@ function InkoopControlePage() {
   );
 }
 
-function InkoopDashboardTab() {
+// Shared read-only rendering of a match result's tables -- used by both the
+// Compare & Reconcile tab (the live, always-current result) and the
+// Calendar tab's day-detail drill-down (a single day's slice of the same
+// shape), so the two never drift out of sync with each other.
+function InkoopResultTables({ result, windowDays, manualLinkDrafts, setManualLinkDrafts, onLinkSupplier, skippedFiles }) {
+  if (!result) {
+    return null;
+  }
+  const embalageTotal = (result.embalage_lines || []).reduce((sum, row) => sum + (Number(row.total) || 0), 0);
+  return (
+    <>
+      {!!result.matched_mismatch.length && (
+        <div className="data-table-card">
+          <div className="section-header"><h2>Mismatches ({result.matched_mismatch.length})</h2></div>
+          <div className="table-wrap">
+            <table className="data-table">
+              <thead>
+                <tr><th>Date</th><th>Company</th><th>Invoice</th><th>PAV</th><th>Description</th><th>Field</th><th>Connect value</th><th>FH invoice value</th></tr>
+              </thead>
+              <tbody>
+                {result.matched_mismatch.map((row, index) => (
+                  row.diffs.map((diff, diffIndex) => (
+                    <tr key={`${index}-${diffIndex}`}>
+                      {diffIndex === 0 && <td rowSpan={row.diffs.length}>{inkoopShortDate(row.erp_row?.date || row.invoice_date)}</td>}
+                      {diffIndex === 0 && <td rowSpan={row.diffs.length}>{inkoopCompanyLabel(row)}</td>}
+                      {diffIndex === 0 && <td rowSpan={row.diffs.length}>{row.invoice_number}</td>}
+                      {diffIndex === 0 && <td rowSpan={row.diffs.length}>{row.pav}</td>}
+                      {diffIndex === 0 && <td rowSpan={row.diffs.length}>{row.description}</td>}
+                      <td>{inkoopFieldLabel(diff.field)}</td>
+                      <td>{diff.erp}</td>
+                      <td>{diff.invoice}</td>
+                    </tr>
+                  ))
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+
+      {!!result.supplier_not_linked?.length && (
+        <div className="data-table-card">
+          <div className="section-header"><h2>Supplier not linked ({result.supplier_not_linked.length})</h2></div>
+          <div className="notice">
+            These Handel Aankopen lines have a real FloraHolland supplier, but no internal code is linked to that GLN yet -- link it once below, results refresh right away.
+          </div>
+          <div className="table-wrap">
+            <table className="data-table">
+              <thead><tr><th>Date</th><th>Company</th><th>Invoice</th><th>FH number</th><th>Grower</th><th>Description</th><th>Quantity</th><th>Unit price</th><th>Your code</th><th></th></tr></thead>
+              <tbody>
+                {result.supplier_not_linked.map((row, index) => (
+                  <tr key={index}>
+                    <td>{inkoopShortDate(row.invoice_date)}</td>
+                    <td>{inkoopCompanyLabel(row)}</td>
+                    <td>{row.invoice_number}</td>
+                    <td>{row.supplier_fh_number}</td>
+                    <td>{row.supplier_name}</td>
+                    <td>{row.description}</td>
+                    <td>{row.quantity}</td>
+                    <td>{row.unit_price}</td>
+                    <td>
+                      <input
+                        value={manualLinkDrafts[row.supplier_gln]?.code || ""}
+                        onChange={(event) => setManualLinkDrafts((current) => ({ ...current, [row.supplier_gln]: { code: event.target.value } }))}
+                        placeholder="e.g. KONKOP"
+                      />
+                    </td>
+                    <td><button type="button" onClick={() => onLinkSupplier(row)}>Link</button></td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+
+      {!!result.ambiguous_matches?.length && (
+        <div className="data-table-card">
+          <div className="section-header"><h2>Ambiguous matches ({result.ambiguous_matches.length})</h2></div>
+          <div className="notice">
+            Handel Aankopen has no unique reference number -- these lines have more than one ERP purchase from the same supplier with the exact same quantity and price, so which one it actually is can't be told apart automatically.
+          </div>
+          <div className="table-wrap">
+            <table className="data-table">
+              <thead><tr><th>Date</th><th>Company</th><th>Invoice</th><th>Supplier</th><th>Quantity</th><th>Unit price</th><th>Candidate lots (ERP)</th></tr></thead>
+              <tbody>
+                {result.ambiguous_matches.map((row, index) => (
+                  <tr key={index}>
+                    <td>{inkoopShortDate(row.invoice_date)}</td>
+                    <td>{inkoopCompanyLabel(row)}</td>
+                    <td>{row.invoice_number}</td>
+                    <td>{row.supplier_code}{row.supplier_match_type === "name" ? " (name match)" : ""}</td>
+                    <td>{row.quantity}</td>
+                    <td>{row.unit_price}</td>
+                    <td>{row.candidates.map((c) => `${c.lot} (${String(c.description || "").trim()})`).join(", ")}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+
+      {!!result.only_in_invoice.length && (
+        <div className="data-table-card">
+          <div className="section-header"><h2>Only in invoice ({result.only_in_invoice.length})</h2></div>
+          <div className="notice">FloraHolland charged for these but no matching purchase was found in the ERP export{windowDays ? ` within the last ${windowDays} days` : ""}.</div>
+          <div className="table-wrap">
+            <table className="data-table">
+              <thead><tr><th>Date</th><th>Company</th><th>Invoice</th><th>PAV / supplier</th><th>Description</th><th>Quantity</th><th>Unit price</th><th>Total</th></tr></thead>
+              <tbody>
+                {result.only_in_invoice.map((row, index) => (
+                  <tr key={index}><td>{inkoopShortDate(row.invoice_date)}</td><td>{inkoopCompanyLabel(row)}</td><td>{row.invoice_number}</td><td>{row.reference_bt || row.supplier_code || "-"}{row.supplier_match_type === "name" ? " (name match)" : ""}</td><td>{row.description}</td><td>{row.quantity}</td><td>{row.unit_price}</td><td>{row.total}</td></tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+
+      {!!result.only_in_erp.length && (
+        <div className="data-table-card">
+          <div className="section-header"><h2>Only in ERP ({result.only_in_erp.length})</h2></div>
+          <div className="notice">Recorded as a purchase but no invoice line referenced this PAV{windowDays ? ` within the last ${windowDays} days` : ""} -- invoice not received yet, or a data entry mistake. No company can be attributed here -- the ERP export has no such field.</div>
+          <div className="table-wrap">
+            <table className="data-table">
+              <thead><tr><th>Date</th><th>PAV</th><th>Lot</th><th>Description</th><th>Pieces</th><th>Price</th><th>Total</th><th>Supplier</th></tr></thead>
+              <tbody>
+                {result.only_in_erp.map((row, index) => (
+                  <tr key={index}><td>{inkoopShortDate(row.date)}</td><td>{row.pav}</td><td>{row.lot}</td><td>{row.description}</td><td>{row.pieces}</td><td>{row.price}</td><td>{row.t_price}</td><td>{row.suppl}</td></tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+
+      <div className="data-table-card">
+        <div className="section-header"><h2>Matched OK</h2></div>
+        <div className="notice">{result.matched_ok.length} lines matched with no differences.</div>
+      </div>
+
+      {!!result.embalage_lines?.length && (
+        <div className="data-table-card">
+          <div className="section-header"><h2>Emballage (packaging) costs</h2></div>
+          <div className="notice">
+            {result.embalage_lines.length} lines, {formatInkoopEuro(embalageTotal)} total. Only ever appears on the invoice, never in the ERP export -- collected here for visibility, not reconciled against anything. See the Financial Dashboard for a day/company breakdown.
+          </div>
+        </div>
+      )}
+
+      {!!skippedFiles?.length && (
+        <div className="data-table-card">
+          <div className="section-header"><h2>Skipped files (last upload)</h2></div>
+          <div className="table-wrap">
+            <table className="data-table">
+              <thead><tr><th>File</th><th>Reason</th></tr></thead>
+              <tbody>
+                {skippedFiles.map((row, index) => (
+                  <tr key={index}><td>{row.file_name}</td><td>{row.reason}</td></tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+    </>
+  );
+}
+
+function inkoopRenderBarList(entries) {
+  if (!entries.length) {
+    return <div className="notice">No mismatches or gaps in this window.</div>;
+  }
+  const maxValue = Math.max(1, ...entries.map((entry) => entry.mistake_value));
+  return (
+    <div className="inkoop-bar-list">
+      {entries.map((entry) => {
+        const widthPct = Math.max(2, Math.round((entry.mistake_value / maxValue) * 100));
+        const denominator = entry.purchase_value + entry.mistake_value;
+        const mistakeRatePct = denominator > 0 ? (entry.mistake_value / denominator) * 100 : null;
+        return (
+          <div className="inkoop-bar-row" key={entry.key}>
+            <div className="inkoop-bar-label" title={entry.label}>{entry.label}</div>
+            <div className="inkoop-bar-track">
+              <div className="inkoop-bar-fill" style={{ width: `${widthPct}%` }} />
+            </div>
+            <div className="inkoop-bar-value">
+              {formatInkoopEuro(entry.mistake_value)} · {entry.mistake_count} {entry.mistake_count === 1 ? "line" : "lines"}
+              {mistakeRatePct !== null ? ` · ${mistakeRatePct.toFixed(1)}% of purchase value` : ""}
+            </div>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+function InkoopDashboardTab({ company }) {
   const [loading, setLoading] = useState(true);
   const [days, setDays] = useState(90);
   const [byGrower, setByGrower] = useState([]);
   const [byAvc, setByAvc] = useState([]);
+  const [byCompany, setByCompany] = useState([]);
+  const [byProductGroup, setByProductGroup] = useState([]);
+  const [dayReport, setDayReport] = useState([]);
+  const [weekReport, setWeekReport] = useState([]);
+  const [embalageSummary, setEmbalageSummary] = useState(null);
+  const [todaySummary, setTodaySummary] = useState(null);
   const [error, setError] = useState("");
 
   useEffect(() => {
     let cancelled = false;
     setLoading(true);
     setError("");
-    apiJson(`/api/inkoop/dashboard/summary?days=${days}`)
+    const params = new URLSearchParams({ days: String(days) });
+    if (company) params.set("company", company);
+    apiJson(`/api/inkoop/dashboard/summary?${params.toString()}`)
       .then((payload) => {
         if (cancelled) return;
         setByGrower(payload.by_grower || []);
         setByAvc(payload.by_avc || []);
+        setByCompany(payload.by_company || []);
+        setByProductGroup(payload.by_product_group || []);
+        setDayReport((payload.day_report || []).slice(0, 14));
+        setWeekReport((payload.week_report || []).slice(0, 8));
+        setEmbalageSummary(payload.embalage_summary || null);
+        setTodaySummary(payload.today_summary || null);
       })
       .catch((loadError) => {
         if (!cancelled) setError(loadError.message);
@@ -13875,43 +14014,14 @@ function InkoopDashboardTab() {
     return () => {
       cancelled = true;
     };
-  }, [days]);
-
-  function renderBarList(entries) {
-    if (!entries.length) {
-      return <div className="notice">No mismatches or gaps in this window.</div>;
-    }
-    const maxValue = Math.max(1, ...entries.map((entry) => entry.mistake_value));
-    return (
-      <div className="inkoop-bar-list">
-        {entries.map((entry) => {
-          const widthPct = Math.max(2, Math.round((entry.mistake_value / maxValue) * 100));
-          const denominator = entry.purchase_value + entry.mistake_value;
-          const mistakeRatePct = denominator > 0 ? (entry.mistake_value / denominator) * 100 : null;
-          return (
-            <div className="inkoop-bar-row" key={entry.key}>
-              <div className="inkoop-bar-label" title={entry.label}>{entry.label}</div>
-              <div className="inkoop-bar-track">
-                <div className="inkoop-bar-fill" style={{ width: `${widthPct}%` }} />
-              </div>
-              <div className="inkoop-bar-value">
-                {formatInkoopEuro(entry.mistake_value)} · {entry.mistake_count} {entry.mistake_count === 1 ? "line" : "lines"}
-                {mistakeRatePct !== null ? ` · ${mistakeRatePct.toFixed(1)}% of purchase value` : ""}
-              </div>
-            </div>
-          );
-        })}
-      </div>
-    );
-  }
+  }, [days, company]);
 
   return (
     <>
       <div className="data-table-card">
         <div className="section-header"><h2>Financial dashboard</h2></div>
         <div className="notice">
-          How much money is at risk from mismatches and unresolved gaps, ranked by grower (the FloraHolland supplier on the invoice) and by AVC (the ERP's internal location/route code).
-          An "only in ERP" gap has no invoice yet, so it can only be attributed to an AVC; an "only in invoice" gap has no ERP row yet, so it can only be attributed to a grower.
+          How much money is at risk from mismatches and unresolved gaps, and how much is actually being spent -- ranked by grower, AVC, buying company, and product group (Bloemen/Planten/Accessoires).
         </div>
         <div className="form-grid">
           <label>
@@ -13932,17 +14042,363 @@ function InkoopDashboardTab() {
         <div className="notice">Loading dashboard...</div>
       ) : (
         <>
+          {todaySummary && (
+            <div className="data-table-card">
+              <div className="section-header"><h2>Today ({todaySummary.date})</h2></div>
+              <div className="inkoop-summary-cards">
+                <div className="inkoop-summary-card">
+                  <div className="inkoop-summary-value">{formatInkoopEuro(todaySummary.invoice_value)}</div>
+                  <div className="inkoop-summary-label">Invoice value</div>
+                </div>
+                <div className="inkoop-summary-card">
+                  <div className="inkoop-summary-value">{formatInkoopEuro(todaySummary.purchase_value)}</div>
+                  <div className="inkoop-summary-label">ERP purchase value</div>
+                </div>
+                <div className="inkoop-summary-card">
+                  <div className="inkoop-summary-value">{formatInkoopEuro(todaySummary.gap_value)}</div>
+                  <div className="inkoop-summary-label">Missing-match value</div>
+                </div>
+                <div className="inkoop-summary-card">
+                  <div className="inkoop-summary-value">{todaySummary.product_count}</div>
+                  <div className="inkoop-summary-label">Products</div>
+                </div>
+              </div>
+            </div>
+          )}
+
+          <div className="data-table-card">
+            <div className="section-header"><h2>Day report</h2></div>
+            <div className="table-wrap">
+              <table className="data-table">
+                <thead><tr><th>Date</th><th>Purchase value</th><th>Invoice value</th><th>Mismatches</th><th>Mismatch value</th><th>Gaps</th><th>Gap value</th><th>Emballage</th><th>Products</th></tr></thead>
+                <tbody>
+                  {dayReport.map((day) => (
+                    <tr key={day.date}>
+                      <td>{day.date}</td>
+                      <td>{formatInkoopEuro(day.purchase_value)}</td>
+                      <td>{formatInkoopEuro(day.invoice_value)}</td>
+                      <td>{day.mismatch_count}</td>
+                      <td>{formatInkoopEuro(day.mismatch_value)}</td>
+                      <td>{day.gap_count}</td>
+                      <td>{formatInkoopEuro(day.gap_value)}</td>
+                      <td>{formatInkoopEuro(day.embalage_value)}</td>
+                      <td>{day.product_count}</td>
+                    </tr>
+                  ))}
+                  {!dayReport.length && <tr><td colSpan="9">No data in this window.</td></tr>}
+                </tbody>
+              </table>
+            </div>
+          </div>
+
+          <div className="data-table-card">
+            <div className="section-header"><h2>Week report</h2></div>
+            <div className="table-wrap">
+              <table className="data-table">
+                <thead><tr><th>Week of</th><th>Purchase value</th><th>Invoice value</th><th>Mismatches</th><th>Mismatch value</th><th>Gaps</th><th>Gap value</th><th>Emballage</th><th>Products</th></tr></thead>
+                <tbody>
+                  {weekReport.map((week) => (
+                    <tr key={week.week_start}>
+                      <td>{week.week_start}</td>
+                      <td>{formatInkoopEuro(week.purchase_value)}</td>
+                      <td>{formatInkoopEuro(week.invoice_value)}</td>
+                      <td>{week.mismatch_count}</td>
+                      <td>{formatInkoopEuro(week.mismatch_value)}</td>
+                      <td>{week.gap_count}</td>
+                      <td>{formatInkoopEuro(week.gap_value)}</td>
+                      <td>{formatInkoopEuro(week.embalage_value)}</td>
+                      <td>{week.product_count}</td>
+                    </tr>
+                  ))}
+                  {!weekReport.length && <tr><td colSpan="9">No data in this window.</td></tr>}
+                </tbody>
+              </table>
+            </div>
+          </div>
+
           <div className="data-table-card">
             <div className="section-header"><h2>By grower</h2></div>
-            {renderBarList(byGrower)}
+            {inkoopRenderBarList(byGrower)}
           </div>
           <div className="data-table-card">
             <div className="section-header"><h2>By AVC</h2></div>
-            {renderBarList(byAvc)}
+            {inkoopRenderBarList(byAvc)}
           </div>
+          <div className="data-table-card">
+            <div className="section-header"><h2>By company</h2></div>
+            {inkoopRenderBarList(byCompany)}
+          </div>
+          <div className="data-table-card">
+            <div className="section-header"><h2>By product group</h2></div>
+            {inkoopRenderBarList(byProductGroup)}
+          </div>
+
+          {embalageSummary && (
+            <div className="data-table-card">
+              <div className="section-header"><h2>Emballage (packaging) costs</h2></div>
+              <div className="notice">
+                {formatInkoopEuro(embalageSummary.total_value)} total in this window. Only ever appears on the invoice, never in the ERP export -- collected for visibility, never reconciled against anything.
+              </div>
+              <div className="table-wrap">
+                <table className="data-table">
+                  <thead><tr><th>Date</th><th>Value</th></tr></thead>
+                  <tbody>
+                    {embalageSummary.by_day.slice(0, 14).map((day) => (
+                      <tr key={day.date}><td>{day.date}</td><td>{formatInkoopEuro(day.value)}</td></tr>
+                    ))}
+                    {!embalageSummary.by_day.length && <tr><td colSpan="2">No Emballage lines in this window.</td></tr>}
+                  </tbody>
+                </table>
+              </div>
+              <div className="table-wrap">
+                <table className="data-table">
+                  <thead><tr><th>Company</th><th>Value</th></tr></thead>
+                  <tbody>
+                    {embalageSummary.by_company.map((entry) => (
+                      <tr key={entry.key}><td>{entry.label}</td><td>{formatInkoopEuro(entry.value)}</td></tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          )}
         </>
       )}
     </>
+  );
+}
+
+function InkoopCalendarTab({ company, manualLinkDrafts, setManualLinkDrafts, onLinkSupplier }) {
+  const [month, setMonth] = useState(() => localDateIso().slice(0, 7));
+  const [days, setDays] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState("");
+  const [selectedDate, setSelectedDate] = useState("");
+  const [dayResult, setDayResult] = useState(null);
+  const [dayLoading, setDayLoading] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    setLoading(true);
+    setError("");
+    setSelectedDate("");
+    setDayResult(null);
+    const params = new URLSearchParams({ month });
+    if (company) params.set("company", company);
+    apiJson(`/api/inkoop/calendar?${params.toString()}`)
+      .then((payload) => {
+        if (!cancelled) setDays(payload.days || []);
+      })
+      .catch((loadError) => {
+        if (!cancelled) setError(loadError.message);
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [month, company]);
+
+  function openDay(dateIso) {
+    setSelectedDate(dateIso);
+    setDayLoading(true);
+    setDayResult(null);
+    const params = new URLSearchParams({ date: dateIso });
+    if (company) params.set("company", company);
+    apiJson(`/api/inkoop/day-detail?${params.toString()}`)
+      .then((payload) => setDayResult(payload.result || null))
+      .catch((loadError) => setError(loadError.message))
+      .finally(() => setDayLoading(false));
+  }
+
+  function shiftMonth(offset) {
+    const [year, monthNum] = month.split("-").map(Number);
+    const next = new Date(year, monthNum - 1 + offset, 1);
+    setMonth(`${next.getFullYear()}-${String(next.getMonth() + 1).padStart(2, "0")}`);
+  }
+
+  function dayStatus(day) {
+    if (day.mismatch_count > 0) return "danger";
+    if (day.gap_count > 0) return "warning";
+    if (day.product_count > 0 || day.invoice_value > 0 || day.embalage_value > 0) return "ok";
+    return "empty";
+  }
+
+  const [gridYear, gridMonth] = month.split("-").map(Number);
+  const firstWeekday = (new Date(gridYear, gridMonth - 1, 1).getDay() + 6) % 7; // Monday-first
+  const leadingBlanks = Array.from({ length: firstWeekday });
+
+  return (
+    <>
+      <div className="data-table-card">
+        <div className="section-header"><h2>Calendar</h2></div>
+        <div className="row-actions spread-actions">
+          <button type="button" onClick={() => shiftMonth(-1)}>&lt; Previous</button>
+          <strong>{month}</strong>
+          <button type="button" onClick={() => shiftMonth(1)}>Next &gt;</button>
+        </div>
+        {error && <div className="notice danger">{error}</div>}
+        {loading ? (
+          <div className="notice">Loading calendar...</div>
+        ) : (
+          <div className="inkoop-calendar-grid">
+            {leadingBlanks.map((_, index) => <div key={`blank-${index}`} className="inkoop-calendar-cell empty" />)}
+            {days.map((day) => (
+              <button
+                type="button"
+                key={day.date}
+                className={`inkoop-calendar-cell ${dayStatus(day)}${selectedDate === day.date ? " selected" : ""}`}
+                onClick={() => openDay(day.date)}
+              >
+                <div className="inkoop-calendar-date">{Number(day.date.slice(8, 10))}</div>
+                {(day.product_count > 0 || day.invoice_value > 0) && (
+                  <div className="inkoop-calendar-summary">
+                    {day.mismatch_count > 0 && <span>{day.mismatch_count} mismatch</span>}
+                    {day.gap_count > 0 && <span>{day.gap_count} gap</span>}
+                    {(day.mismatch_value + day.gap_value) > 0 && <span>{formatInkoopEuro(day.mismatch_value + day.gap_value)}</span>}
+                  </div>
+                )}
+              </button>
+            ))}
+          </div>
+        )}
+      </div>
+
+      {selectedDate && (
+        <div className="data-table-card">
+          <div className="section-header"><h2>{selectedDate}</h2></div>
+          {dayLoading ? (
+            <div className="notice">Loading...</div>
+          ) : dayResult ? (
+            <InkoopResultTables
+              result={dayResult}
+              windowDays={null}
+              manualLinkDrafts={manualLinkDrafts}
+              setManualLinkDrafts={setManualLinkDrafts}
+              onLinkSupplier={onLinkSupplier}
+            />
+          ) : (
+            <div className="notice">No data for this day.</div>
+          )}
+        </div>
+      )}
+    </>
+  );
+}
+
+function InkoopFollowUpTab({ company }) {
+  const [issues, setIssues] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState("");
+  const [showResolved, setShowResolved] = useState(false);
+  const [drafts, setDrafts] = useState({});
+  const [savingId, setSavingId] = useState("");
+
+  function load() {
+    setLoading(true);
+    setError("");
+    const params = new URLSearchParams();
+    if (company) params.set("company", company);
+    if (showResolved) params.set("show_resolved", "1");
+    return apiJson(`/api/inkoop/issues?${params.toString()}`)
+      .then((payload) => setIssues(payload.issues || []))
+      .catch((loadError) => setError(loadError.message))
+      .finally(() => setLoading(false));
+  }
+
+  useEffect(() => {
+    load().catch(() => {});
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [company, showResolved]);
+
+  function getDraft(issue) {
+    return drafts[issue.id] || { status: issue.status, assigned_to: issue.assigned_to, note: issue.note };
+  }
+
+  function updateDraft(issue, patch) {
+    setDrafts((current) => ({
+      ...current,
+      [issue.id]: { ...(current[issue.id] || { status: issue.status, assigned_to: issue.assigned_to, note: issue.note }), ...patch },
+    }));
+  }
+
+  async function saveIssue(issue) {
+    const draft = getDraft(issue);
+    setSavingId(issue.id);
+    setError("");
+    try {
+      await apiJson(`/api/inkoop/issues/${encodeURIComponent(issue.id)}`, {
+        method: "POST",
+        body: JSON.stringify(draft),
+      });
+      await load();
+      setDrafts((current) => {
+        const next = { ...current };
+        delete next[issue.id];
+        return next;
+      });
+    } catch (saveError) {
+      setError(saveError.message);
+    } finally {
+      setSavingId("");
+    }
+  }
+
+  return (
+    <div className="data-table-card">
+      <div className="section-header"><h2>Follow-up</h2></div>
+      <div className="notice">
+        Genuine financial discrepancies worth physically checking -- mismatches, and purchases/invoice lines with no counterpart yet. Mark progress here so nothing gets checked twice or forgotten.
+      </div>
+      <div className="row-actions spread-actions">
+        <label className="inline-checkbox">
+          <input type="checkbox" checked={showResolved} onChange={(event) => setShowResolved(event.target.checked)} />
+          <span>Show resolved</span>
+        </label>
+      </div>
+      {error && <div className="notice danger">{error}</div>}
+      {loading ? (
+        <div className="notice">Loading...</div>
+      ) : !issues.length ? (
+        <div className="notice">Nothing open{showResolved ? "" : " -- or everything's resolved"}.</div>
+      ) : (
+        <div className="table-wrap">
+          <table className="data-table">
+            <thead>
+              <tr><th>Date</th><th>Type</th><th>Description</th><th>Value</th><th>Status</th><th>Assigned to</th><th>Note</th><th></th></tr>
+            </thead>
+            <tbody>
+              {issues.map((issue) => {
+                const draft = getDraft(issue);
+                return (
+                  <tr key={issue.id}>
+                    <td>{inkoopShortDate(issue.date)}</td>
+                    <td>{inkoopIssueTypeLabel(issue.issue_type)}</td>
+                    <td>{issue.description}</td>
+                    <td>{formatInkoopEuro(issue.value)}</td>
+                    <td>
+                      <select value={draft.status} onChange={(event) => updateDraft(issue, { status: event.target.value })}>
+                        <option value="open">Open</option>
+                        <option value="investigating">Investigating</option>
+                        <option value="resolved">Resolved</option>
+                      </select>
+                    </td>
+                    <td>
+                      <input value={draft.assigned_to} onChange={(event) => updateDraft(issue, { assigned_to: event.target.value })} placeholder="Who's checking" />
+                    </td>
+                    <td>
+                      <input value={draft.note} onChange={(event) => updateDraft(issue, { note: event.target.value })} placeholder="Note" />
+                    </td>
+                    <td><button type="button" onClick={() => saveIssue(issue)} disabled={savingId === issue.id}>{savingId === issue.id ? "Saving..." : "Save"}</button></td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
   );
 }
 
