@@ -6031,7 +6031,7 @@ function resolveInkoopSupplierCode(gln, fhNumber, name, supplierMap, supplierNam
 // apart, so that's surfaced as ambiguous rather than guessed. Shared by
 // both the PAV-keyed (Klok/Connect) and supplier-code-keyed (Handel)
 // candidate pools -- same shape of problem either way.
-function pickInkoopMatchingErpRow(candidates, quantity, unitPrice, consumedErpRows, targetDate) {
+function pickInkoopMatchingErpRow(candidates, quantity, unitPrice, consumedErpRows, targetDate, trySplitDelivery) {
   const remaining = (candidates || []).filter((row) => !consumedErpRows.has(row));
   const exactMatches = remaining.filter((row) => (
     !inkoopValuesDiffer(row.pieces, quantity) && !inkoopValuesDiffer(parseFloat(row.price), unitPrice)
@@ -6057,6 +6057,19 @@ function pickInkoopMatchingErpRow(candidates, quantity, unitPrice, consumedErpRo
       }
     }
     return { row: null, ambiguous: true, candidates: exactMatches };
+  }
+  // No single row exactly matches -- before assuming this is a genuine
+  // discrepancy (the remaining.length === 1 fallback below), check whether
+  // a split delivery under a sibling Briefnummer letter reconstructs it.
+  // Must happen here, before that fallback, or a real split's own
+  // single-remaining row (e.g. "F9B5DWA" with just 2 of an 18-piece buy)
+  // would get misreported as a quantity mismatch instead of recognized as
+  // one part of a split.
+  if (trySplitDelivery) {
+    const splitRows = trySplitDelivery();
+    if (splitRows) {
+      return { row: null, ambiguous: false, splitRows };
+    }
   }
   if (remaining.length === 1) {
     // Nothing matches on quantity/price, but there's exactly one row left
@@ -6085,8 +6098,42 @@ function isRealInkoopPav(normalizedPav) {
   return Boolean(normalizedPav) && !/^0+[A-Z]?$/.test(normalizedPav);
 }
 
+// FloraHolland Briefnummers always end in one letter (e.g. "F9B5DWA"). When
+// a purchase's physical delivery gets split, the ERP records each portion
+// as its own lot under the SAME base with the letter incremented (e.g.
+// "F9B5DWA" + "F9B5DWB" for one 18-piece buy split 2+16) -- confirmed
+// real, and confirmed the letter is NOT always a delivery split: the same
+// base far more often (120 vs 46 cases in the real multi-day export) marks
+// entirely different clock rounds at different prices, which must never be
+// merged. The price match required below is exactly what tells the two
+// apart.
+function inkoopBasePav(pav) {
+  return String(pav || "").replace(/[A-Z]$/, "");
+}
+
+// Only called once the exact-PAV lookup found no candidate at all -- sums
+// every unclaimed sibling-letter row sharing the invoice line's own price
+// (never a different price -- that's a different clock round, not a
+// split) and accepts the match only if the whole remaining set adds up
+// exactly. A partial subset is never guessed at.
+function tryInkoopSplitDeliveryMatch(candidates, quantity, unitPrice, total, consumedErpRows) {
+  const remaining = (candidates || []).filter((row) => (
+    !consumedErpRows.has(row) && !inkoopValuesDiffer(parseFloat(row.price), unitPrice)
+  ));
+  if (remaining.length < 2) {
+    return null;
+  }
+  const sumPieces = remaining.reduce((sum, row) => sum + (Number(row.pieces) || 0), 0);
+  const sumTotal = remaining.reduce((sum, row) => sum + (parseFloat(row.t_price) || 0), 0);
+  if (!inkoopValuesDiffer(sumPieces, quantity) && !inkoopValuesDiffer(sumTotal, total)) {
+    return remaining;
+  }
+  return null;
+}
+
 function matchInkoopVeilingLines(erpRows, invoices, supplierMap = {}, supplierNameMap = {}, manualLinks = []) {
   const erpByPav = new Map();
+  const erpByBasePav = new Map();
   // Handel Aankopen/AI2 lines have no real PAV -- these rows (indexed by
   // internal supplier code instead) are exactly the ones with a blank or
   // placeholder PAV, so there is no overlap with erpByPav to worry about
@@ -6099,6 +6146,11 @@ function matchInkoopVeilingLines(erpRows, invoices, supplierMap = {}, supplierNa
         erpByPav.set(pav, []);
       }
       erpByPav.get(pav).push(row);
+      const basePav = inkoopBasePav(pav);
+      if (!erpByBasePav.has(basePav)) {
+        erpByBasePav.set(basePav, []);
+      }
+      erpByBasePav.get(basePav).push(row);
       continue;
     }
     const supplierCode = normalizeInkoopKey(row?.suppl) || normalizeInkoopKey(row?.transp);
@@ -6194,9 +6246,31 @@ function matchInkoopVeilingLines(erpRows, invoices, supplierMap = {}, supplierNa
       // across multiple clock rounds at different prices/quantities) -- so
       // this is picked the same way as Handel's supplier-code candidates,
       // not assumed to be a single 1:1 row.
-      const picked = pickInkoopMatchingErpRow(erpByPav.get(referenceBt), line.quantity, line.unit_price, consumedErpRows, normalizeUkdocsText(line?.invoice_date).slice(0, 10));
+      const picked = pickInkoopMatchingErpRow(
+        erpByPav.get(referenceBt),
+        line.quantity,
+        line.unit_price,
+        consumedErpRows,
+        normalizeUkdocsText(line?.invoice_date).slice(0, 10),
+        () => tryInkoopSplitDeliveryMatch(erpByBasePav.get(inkoopBasePav(referenceBt)), line.quantity, line.unit_price, line.total, consumedErpRows),
+      );
       if (picked.ambiguous) {
         ambiguousMatches.push({ ...context, pav: referenceBt, candidates: picked.candidates });
+        continue;
+      }
+      if (picked.splitRows) {
+        for (const row of picked.splitRows) {
+          consumedErpRows.add(row);
+        }
+        const sortedByLot = [...picked.splitRows].sort((left, right) => Number(left.lot) - Number(right.lot));
+        const combinedErpRow = {
+          ...sortedByLot[0],
+          lot: sortedByLot.map((row) => row.lot).join("+"),
+          pav: sortedByLot.map((row) => normalizeInkoopKey(row.pav)).join("+"),
+          pieces: line.quantity,
+          t_price: line.total,
+        };
+        matchedOk.push({ ...context, pav: referenceBt, erp_row: combinedErpRow, matched_as_split_delivery: true, split_lots: sortedByLot.map((row) => row.lot) });
         continue;
       }
       if (!picked.row) {
