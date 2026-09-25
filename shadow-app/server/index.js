@@ -5011,6 +5011,27 @@ async function renderLineChartPng({ title, points, width = 480, height = 300 }) 
   return sharp(Buffer.from(svg)).png().toBuffer();
 }
 
+// A plain "array of flat row objects -> one-sheet workbook" utility --
+// column headers come straight from the first row's own keys, so the
+// caller (already holding exactly what it wants exported, formatted the
+// same way it's displayed) never has to keep a server-side column mapping
+// in sync with the table.
+async function buildRowsExcelWorkbook(sheetName, rows) {
+  const workbook = new ExcelJS.Workbook();
+  const sheet = workbook.addWorksheet(sanitizeExcelSheetName(sheetName, new Set()));
+  const headers = Object.keys(rows[0] || {});
+  const headerRow = sheet.addRow(headers);
+  headerRow.font = { bold: true };
+  for (const row of rows) {
+    sheet.addRow(headers.map((header) => row?.[header] ?? ""));
+  }
+  sheet.columns.forEach((column) => {
+    column.width = 18;
+  });
+  sheet.views = [{ state: "frozen", ySplit: 1 }];
+  return workbook.xlsx.writeBuffer();
+}
+
 async function buildFustShareWorkbook(overviewEntries, country) {
   const workbook = new ExcelJS.Workbook();
   const usedSheetNames = new Set();
@@ -17360,6 +17381,32 @@ async function handleApi(req, res, url) {
         filtered_action_count: filteredActions.length,
       },
     });
+    return;
+  }
+
+  // Exports whatever rows the client currently has on screen (after its own
+  // search/date/week/country/customer filters) -- the client sends the
+  // already-filtered, already-formatted row objects, so this stays a plain
+  // "rows in, workbook out" utility with no Fust-specific filtering logic
+  // of its own to drift out of sync with the table.
+  if (url.pathname === "/api/fust/actions/export" && req.method === "POST") {
+    if (!requirePermission(res, requestUser, PERMISSIONS.FUST_VIEW)) {
+      return;
+    }
+    const body = await readRequestJson(req, 10 * 1024 * 1024);
+    const rows = Array.isArray(body?.rows) ? body.rows : [];
+    if (!rows.length) {
+      sendJson(res, 400, { error: "No rows to export" });
+      return;
+    }
+    const sheetName = String(body?.sheet_name || "Export").trim() || "Export";
+    const buffer = await buildRowsExcelWorkbook(sheetName, rows);
+    res.writeHead(200, {
+      "content-type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+      "content-disposition": `attachment; filename="${sanitizeExcelSheetName(sheetName, new Set()).toLowerCase().replace(/[^a-z0-9]+/g, "-")}-${localDateIso()}.xlsx"`,
+      "cache-control": "private, no-store",
+    });
+    res.end(buffer);
     return;
   }
 

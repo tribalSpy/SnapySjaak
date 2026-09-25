@@ -11608,6 +11608,7 @@ function FustActionTable({
   const [countryFilter, setCountryFilter] = useState("");
   const [customerFilter, setCustomerFilter] = useState("");
   const [searchText, setSearchText] = useState("");
+  const [exporting, setExporting] = useState(false);
 
   useEffect(() => {
     setDateFilter(defaultDate);
@@ -11798,6 +11799,64 @@ function FustActionTable({
     }
   }
 
+  async function exportVisibleToExcel() {
+    const rows = visibleActions.map((action) => {
+      const confirmed = isFustActionConfirmed(action);
+      const doc = action.type === "IN" ? action.fustbon || {} : action.cmr || {};
+      const documentLabel = doc.status === "uploaded" ? "Uploaded" : doc.status === "skipped" ? "Skipped" : doc.status === "failed" ? "Not available" : "-";
+      return {
+        Type: action.type || "",
+        Date: action.action_date || "",
+        Country: action.country || "",
+        Klantnaam: action.customer_name || "",
+        Connect: action.connect_name || "",
+        DC: action.metrics?.dc || 0,
+        DCS: action.metrics?.dcs || 0,
+        DCO: action.metrics?.dco || 0,
+        CCTag: action.metrics?.cctag || 0,
+        PAL: action.metrics?.pal || 0,
+        VK: action.metrics?.vk || 0,
+        Document: documentLabel,
+        Remark: action.remark || "",
+        Fustbon: action.fustbon_reference || "",
+        Fustfactuur: action.fustfactuur_reference || "",
+        Confirmed: confirmed ? `${formatTimestamp(action.confirmed_at)}${action.confirmed_by ? ` by ${action.confirmed_by}` : ""}` : "",
+        Import: action.import_source?.file_name ? `${action.import_source.file_name}${action.import_source.row_number ? ` row ${action.import_source.row_number}` : ""}` : "",
+      };
+    });
+    if (!rows.length) {
+      setError("Nothing to export -- no rows are shown for the current filters.");
+      return;
+    }
+    setExporting(true);
+    setError("");
+    try {
+      const response = await fetch("/api/fust/actions/export", {
+        method: "POST",
+        credentials: "include",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ sheet_name: title, rows }),
+      });
+      if (!response.ok) {
+        const payload = await response.json().catch(() => ({}));
+        throw new Error(payload.error || `Export failed (${response.status})`);
+      }
+      const blob = await response.blob();
+      const objectUrl = URL.createObjectURL(blob);
+      const link = window.document.createElement("a");
+      link.href = objectUrl;
+      link.download = `${String(title || "export").toLowerCase().replace(/[^a-z0-9]+/g, "-")}-${localDateIso()}.xlsx`;
+      window.document.body.appendChild(link);
+      link.click();
+      link.remove();
+      URL.revokeObjectURL(objectUrl);
+    } catch (exportError) {
+      setError(exportError.message);
+    } finally {
+      setExporting(false);
+    }
+  }
+
   const typeOptions = [...new Set(actions.map((action) => action.type).filter(Boolean))].sort((left, right) => left.localeCompare(right));
   const weekOptions = [...new Set(actions.map((action) => String(action.week || "")).filter(Boolean))]
     .sort((left, right) => Number(left) - Number(right));
@@ -11905,6 +11964,9 @@ function FustActionTable({
       <div className="data-table-card">
         <div className="section-header">
           <h2>{title}</h2>
+          <button type="button" onClick={exportVisibleToExcel} disabled={exporting}>
+            {exporting ? "Exporting..." : "Export to Excel"}
+          </button>
         </div>
         <div className="overview-filters">
           <label>
