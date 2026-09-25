@@ -6220,6 +6220,9 @@ function matchInkoopVeilingLines(erpRows, invoices, supplierMap = {}, supplierNa
   const feeLines = [];
   const embalageLines = [];
   const consumedErpRows = new Set();
+  // Klok/Connect lines with a real PAV are matched in a second pass, after
+  // grouping/netting any FH correction (see below) -- collected here first.
+  const pavLineContexts = [];
 
   // Emballage (packaging deposit/rent/one-time) lines only ever appear on
   // the invoice, never in the ERP export -- correct and expected, confirmed
@@ -6291,59 +6294,129 @@ function matchInkoopVeilingLines(erpRows, invoices, supplierMap = {}, supplierNa
         feeBucket.push(context);
         continue;
       }
-      // A single Briefnummer can cover more than one purchase (a cart sold
-      // across multiple clock rounds at different prices/quantities) -- so
-      // this is picked the same way as Handel's supplier-code candidates,
-      // not assumed to be a single 1:1 row.
-      const picked = pickInkoopMatchingErpRow(
-        erpByPav.get(referenceBt),
-        line.quantity,
-        line.unit_price,
-        consumedErpRows,
-        normalizeUkdocsText(line?.invoice_date).slice(0, 10),
-        () => tryInkoopSplitDeliveryMatch(erpByBasePav.get(inkoopBasePav(referenceBt)), line.quantity, line.unit_price, line.total, consumedErpRows),
-      );
-      if (picked.ambiguous) {
-        ambiguousMatches.push({ ...context, pav: referenceBt, candidates: picked.candidates });
-        continue;
+      // Matching itself happens in a second pass below, after grouping by
+      // PAV -- a Klokfactuur/Connect correction needs to see every line
+      // sharing this PAV before it can tell a genuine multi-round purchase
+      // apart from a reversal/reissue pair.
+      pavLineContexts.push({ ...context, pav: referenceBt });
+    }
+  }
+
+  // FloraHolland "corrects" an already-invoiced clock purchase by issuing a
+  // negative line that reverses it, then (usually) a positive line that
+  // reissues it (sometimes at a different Fust/embalage code, sometimes
+  // identical) -- both under the SAME Briefnummer. Confirmed real: the
+  // correction is not always in the same invoice as the purchase it
+  // corrects, so this groups by PAV across every invoice in the whole
+  // matching window, not just within one. Matched one raw line at a time,
+  // the reversal alone would get compared directly against the ERP's
+  // untouched original row (a false mismatch, wrong sign), and the reissue
+  // would then find that row already claimed by the reversal (a false
+  // "only in invoice" gap) -- so any PAV group containing a negative-
+  // quantity line is netted (summed quantity/total) into one combined line
+  // before matching. A PAV group with no negative-quantity line is left
+  // completely untouched -- a real, unrelated same-PAV multi-round
+  // purchase must still be matched one line at a time against its own
+  // distinct ERP rows, never merged.
+  const pavGroups = new Map();
+  for (const item of pavLineContexts) {
+    if (!pavGroups.has(item.pav)) {
+      pavGroups.set(item.pav, []);
+    }
+    pavGroups.get(item.pav).push(item);
+  }
+  const preparedPavLines = [];
+  for (const group of pavGroups.values()) {
+    const hasCorrection = group.some((item) => Number(item.quantity) < 0);
+    if (!hasCorrection) {
+      preparedPavLines.push(...group);
+      continue;
+    }
+    const netQuantity = group.reduce((sum, item) => sum + (Number(item.quantity) || 0), 0);
+    const netTotal = group.reduce((sum, item) => sum + (Number(item.total) || 0), 0);
+    // A correction that fully cancels a purchase (net back to zero) leaves
+    // nothing on the invoice side to compare against the ERP at all --
+    // reported for visibility rather than silently vanishing.
+    if (Math.abs(netQuantity) < INKOOP_MATCH_TOLERANCE) {
+      const cancelledInvoiceNumbers = [...new Set(group.map((item) => item.invoice_number).filter(Boolean))];
+      feeLines.push({
+        ...group[group.length - 1],
+        invoice_number: cancelledInvoiceNumbers.join(" + "),
+        quantity: netQuantity,
+        total: netTotal,
+        matched_as_correction: true,
+        correction_lines: group,
+      });
+      continue;
+    }
+    const latest = group.reduce((a, b) => (String(b.invoice_date || "") > String(a.invoice_date || "") ? b : a));
+    const invoiceNumbers = [...new Set(group.map((item) => item.invoice_number).filter(Boolean))];
+    preparedPavLines.push({
+      ...latest,
+      invoice_number: invoiceNumbers.join(" + "),
+      quantity: netQuantity,
+      unit_price: netTotal / netQuantity,
+      total: netTotal,
+      matched_as_correction: true,
+      correction_lines: group,
+    });
+  }
+
+  for (const item of preparedPavLines) {
+    const referenceBt = item.pav;
+    const context = item;
+    // A single Briefnummer can cover more than one purchase (a cart sold
+    // across multiple clock rounds at different prices/quantities) -- so
+    // this is picked the same way as Handel's supplier-code candidates,
+    // not assumed to be a single 1:1 row.
+    const picked = pickInkoopMatchingErpRow(
+      erpByPav.get(referenceBt),
+      item.quantity,
+      item.unit_price,
+      consumedErpRows,
+      normalizeUkdocsText(item?.invoice_date).slice(0, 10),
+      () => tryInkoopSplitDeliveryMatch(erpByBasePav.get(inkoopBasePav(referenceBt)), item.quantity, item.unit_price, item.total, consumedErpRows),
+    );
+    if (picked.ambiguous) {
+      ambiguousMatches.push({ ...context, pav: referenceBt, candidates: picked.candidates });
+      continue;
+    }
+    if (picked.splitRows) {
+      for (const row of picked.splitRows) {
+        consumedErpRows.add(row);
       }
-      if (picked.splitRows) {
-        for (const row of picked.splitRows) {
-          consumedErpRows.add(row);
-        }
-        const sortedByLot = [...picked.splitRows].sort((left, right) => Number(left.lot) - Number(right.lot));
-        const combinedErpRow = {
-          ...sortedByLot[0],
-          lot: sortedByLot.map((row) => row.lot).join("+"),
-          pav: sortedByLot.map((row) => normalizeInkoopKey(row.pav)).join("+"),
-          pieces: line.quantity,
-          t_price: line.total,
-        };
-        matchedOk.push({ ...context, pav: referenceBt, erp_row: combinedErpRow, matched_as_split_delivery: true, split_lots: sortedByLot.map((row) => row.lot) });
-        continue;
-      }
-      if (!picked.row) {
-        onlyInInvoice.push(context);
-        continue;
-      }
-      consumedErpRows.add(picked.row);
-      const erpRow = picked.row;
-      const diffFields = [];
-      if (inkoopValuesDiffer(erpRow.pieces, line.quantity)) {
-        diffFields.push({ field: "quantity", erp: erpRow.pieces, invoice: line.quantity });
-      }
-      if (inkoopValuesDiffer(parseFloat(erpRow.price), line.unit_price)) {
-        diffFields.push({ field: "unit_price", erp: parseFloat(erpRow.price), invoice: line.unit_price });
-      }
-      if (inkoopValuesDiffer(parseFloat(erpRow.t_price), line.total)) {
-        diffFields.push({ field: "total", erp: parseFloat(erpRow.t_price), invoice: line.total });
-      }
-      const pair = { ...context, pav: referenceBt, erp_row: erpRow };
-      if (diffFields.length) {
-        matchedMismatch.push({ ...pair, diffs: diffFields });
-      } else {
-        matchedOk.push(pair);
-      }
+      const sortedByLot = [...picked.splitRows].sort((left, right) => Number(left.lot) - Number(right.lot));
+      const combinedErpRow = {
+        ...sortedByLot[0],
+        lot: sortedByLot.map((row) => row.lot).join("+"),
+        pav: sortedByLot.map((row) => normalizeInkoopKey(row.pav)).join("+"),
+        pieces: item.quantity,
+        t_price: item.total,
+      };
+      matchedOk.push({ ...context, pav: referenceBt, erp_row: combinedErpRow, matched_as_split_delivery: true, split_lots: sortedByLot.map((row) => row.lot) });
+      continue;
+    }
+    if (!picked.row) {
+      onlyInInvoice.push(context);
+      continue;
+    }
+    consumedErpRows.add(picked.row);
+    const erpRow = picked.row;
+    const diffFields = [];
+    if (inkoopValuesDiffer(erpRow.pieces, item.quantity)) {
+      diffFields.push({ field: "quantity", erp: erpRow.pieces, invoice: item.quantity });
+    }
+    if (inkoopValuesDiffer(parseFloat(erpRow.price), item.unit_price)) {
+      diffFields.push({ field: "unit_price", erp: parseFloat(erpRow.price), invoice: item.unit_price });
+    }
+    if (inkoopValuesDiffer(parseFloat(erpRow.t_price), item.total)) {
+      diffFields.push({ field: "total", erp: parseFloat(erpRow.t_price), invoice: item.total });
+    }
+    const pair = { ...context, pav: referenceBt, erp_row: erpRow };
+    if (diffFields.length) {
+      matchedMismatch.push({ ...pair, diffs: diffFields });
+    } else {
+      matchedOk.push(pair);
     }
   }
 
