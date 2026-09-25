@@ -2154,9 +2154,27 @@ pre {
   cursor: pointer;
 }
 
-.inkoop-calendar-cell.empty {
+.inkoop-calendar-weekdays {
+  margin-bottom: 6px;
+}
+
+.inkoop-calendar-weekday {
+  text-align: center;
+  font-size: 0.8em;
+  font-weight: 600;
+  color: #4a5561;
+}
+
+/* Leading padding cells only (before the 1st falls on its weekday) -- a
+   real day with zero activity ("quiet") must stay visible with its date
+   number, never use this class, or it silently vanishes from the grid. */
+.inkoop-calendar-cell.blank {
   visibility: hidden;
   cursor: default;
+}
+
+.inkoop-calendar-cell.quiet {
+  background: #ffffff;
 }
 
 .inkoop-calendar-cell.ok {

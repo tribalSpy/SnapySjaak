@@ -1,4 +1,5 @@
 import argparse
+import base64
 import csv
 import io
 import json
@@ -9,6 +10,7 @@ import xml.etree.ElementTree as ET
 from pathlib import Path
 
 import extract_msg
+import pdfplumber
 from openpyxl import load_workbook
 
 
@@ -120,6 +122,8 @@ def classify_subject(subject: str) -> str:
         return "connect"
     if "handel aankopen" in normalized:
         return "handel"
+    if "dagnota" in normalized:
+        return "ai2"
     return "other"
 
 
@@ -151,6 +155,27 @@ def find_xml_bytes(msg):
     return None
 
 
+def find_pdf_bytes(msg):
+    for attachment in msg.attachments:
+        name = (attachment.longFilename or attachment.shortFilename or "").lower()
+        if attachment.data and name.endswith(".pdf"):
+            return attachment.data
+    return None
+
+
+# AI2 sends two PDFs per email ("Dagnota" -- a daily settlement summary,
+# confirmed useless for reconciliation, no quantity/price/GLN -- and
+# "Productnota" -- the itemized purchase list this needs). Picks the
+# specific attachment by name rather than just any PDF.
+def find_named_pdf_bytes(msg, name_prefix: str):
+    prefix = name_prefix.lower()
+    for attachment in msg.attachments:
+        name = (attachment.longFilename or attachment.shortFilename or "").lower()
+        if attachment.data and name.endswith(".pdf") and name.startswith(prefix):
+            return attachment.data
+    return None
+
+
 def local_tag(tag: str) -> str:
     return tag.split("}")[-1] if "}" in tag else tag
 
@@ -179,6 +204,21 @@ def parse_number(text):
         return float(text)
     except ValueError:
         return None
+
+
+# FloraHolland's own VBN product classification, scoped to the line's own
+# Product block (not the unrelated TypeCode inside ExtendedTradePrice) --
+# 57 = a real flower/plant product, 67 = packaging/container/logistics
+# material, 128 = an administrative roll-up (e.g. Transactieheffing).
+# Confirmed against real invoice XML: only 57 lines ever have an ERP
+# counterpart, so this is the reliable signal for what to even attempt to
+# match, rather than inferring it from quantity/reference presence alone.
+def find_product_type_code(item):
+    for product in item.iter():
+        if local_tag(product.tag) != "Product":
+            continue
+        return find_child_text(product, "TypeCode") or ""
+    return ""
 
 
 def find_supplier_info(item):
@@ -248,12 +288,203 @@ def parse_invoice_xml(xml_bytes):
             "supplier_name": supplier["name"],
             "company_name": invoicee["name"],
             "line_date": line_date,
+            "product_type_code": find_product_type_code(item),
         })
     return lines
 
 
+# Master data names are terse ("DUTCH GREEN CENTRE"); names on real
+# invoices/AI2 statements are verbose ("Dutch Green Centre B.V.", "Arie
+# Verschoor B.V. en Zn. (verkoop)") -- strip the trailing sale/purchase
+# parenthetical and common Dutch corporate suffixes before the existing
+# punctuation-stripping, so both sides normalize to the same key. Confirmed
+# against two real AI2 growers this session.
+SUPPLIER_NAME_PARENTHETICAL_RE = re.compile(r"\s*\((?:verkoop|inkoop)\)\s*$", re.IGNORECASE)
+# Allows for optional whitespace between letters (e.g. "B. V.") since
+# _insert_camel_boundaries can split "B.V." that way when de-gluing
+# PDF-extracted text -- without it, "b\.?v\.?" alone would only match a
+# tight "BV"/"B.V." with no space, missing exactly the case it needs to
+# handle here.
+SUPPLIER_NAME_CORP_SUFFIX_RE = re.compile(r"\b(?:b\.?\s*v\.?|n\.?\s*v\.?|en\s+zn\.?|zn\.?)\b", re.IGNORECASE)
+
+
 def normalize_supplier_name(name: str) -> str:
-    return re.sub(r"[^a-z0-9]+", "", (name or "").lower())
+    text = _insert_camel_boundaries(name or "")
+    text = SUPPLIER_NAME_PARENTHETICAL_RE.sub("", text)
+    text = SUPPLIER_NAME_CORP_SUFFIX_RE.sub("", text)
+    return re.sub(r"[^a-z0-9]+", "", text.lower())
+
+
+# pdfplumber glues adjacent words together with no space whenever the PDF
+# itself has none between them (confirmed on real AI2 output, e.g.
+# "DutchGreenCentreB.V." for what prints as "Dutch Green Centre B.V.") --
+# this reconstructs word boundaries wherever a lowercase letter (or a dot)
+# is immediately followed by an uppercase one, a no-op on text that already
+# has real spaces.
+def _insert_camel_boundaries(text):
+    return re.sub(r"(?<=[a-z0-9.])(?=[A-Z])", " ", text or "")
+
+
+def parse_decimal_comma(text):
+    cleaned = (text or "").strip()
+    if not cleaned:
+        return None
+    if "," in cleaned and "." in cleaned:
+        cleaned = cleaned.replace(".", "").replace(",", ".")
+    elif "," in cleaned:
+        cleaned = cleaned.replace(",", ".")
+    try:
+        return float(cleaned)
+    except ValueError:
+        return None
+
+
+AI2_DATE_TOKEN_RE = re.compile(r"^(\d{2})-(\d{2})$")
+AI2_HEADER_TITLE_RE = re.compile(r"Product invoice:\s*\d{1,2}\s+[A-Za-z]+\s+(\d{4})", re.IGNORECASE)
+AI2_KLANTNUMMER_RE = re.compile(r"Klantnummer:\s*(\S+)")
+AI2_KLANTNAAM_RE = re.compile(r"Klantnaam:\s*(.+?)\s*Btwnummer:", re.IGNORECASE)
+# "Nota nummer" (e.g. "90985-4835") is printed inside the PDF body, not the
+# email subject -- a stable, unique-per-statement id, used as the ledger's
+# invoice_number for AI2 lines.
+AI2_NOTANUMMER_RE = re.compile(r"Notanummer:\s*(\S+)")
+
+# Column boundaries observed on the real AI2 "Productnota" PDF -- stable
+# across both the "Debet" and "Credit" tables (identical header layout).
+# Only the columns needed for matching against the ERP are extracted; the
+# size-grade/quality columns and the Emballage/Deposit/Rent/Costs/Reference
+# columns are display-only and not needed here.
+AI2_COL_DATUM_MAX = 45
+AI2_COL_REFERENTIE_MAX = 88
+AI2_COL_DESCRIPTION_MAX = 200
+AI2_COL_IGNORE_MAX = 310
+AI2_COL_NUMNAME_MAX = 470
+AI2_COL_AANTAL_MAX = 500
+AI2_COL_APE_MAX = 525
+AI2_COL_TOTAL_MAX = 560
+AI2_COL_PRIJS_MAX = 585
+AI2_COL_BEDRAG_MAX = 615
+
+
+def parse_ai2_row(row_words, year, is_credit):
+    datum = referentie = vbn_desc = num_name = total_pieces = prijs = bedrag = None
+    for word in sorted(row_words, key=lambda w: w["x0"]):
+        x0 = word["x0"]
+        text = word["text"]
+        if x0 < AI2_COL_DATUM_MAX:
+            datum = text
+        elif x0 < AI2_COL_REFERENTIE_MAX:
+            referentie = text
+        elif x0 < AI2_COL_DESCRIPTION_MAX:
+            vbn_desc = text
+        elif x0 < AI2_COL_IGNORE_MAX:
+            continue
+        elif x0 < AI2_COL_NUMNAME_MAX:
+            num_name = text
+        elif x0 < AI2_COL_AANTAL_MAX:
+            continue
+        elif x0 < AI2_COL_APE_MAX:
+            continue
+        elif x0 < AI2_COL_TOTAL_MAX:
+            total_pieces = text
+        elif x0 < AI2_COL_PRIJS_MAX:
+            prijs = text
+        elif x0 < AI2_COL_BEDRAG_MAX:
+            bedrag = text
+        # else: Emb./Dep/Rent/Costs/Order/Buyer reference columns -- not
+        # needed for matching, intentionally ignored.
+
+    date_match = AI2_DATE_TOKEN_RE.match(datum or "")
+    if not date_match or not year:
+        return None
+    day, month = date_match.groups()
+    iso_date = f"{year}-{month}-{day}"
+
+    code_desc_match = re.match(r"^(\d+)(.*)$", vbn_desc or "")
+    description = _insert_camel_boundaries(code_desc_match.group(2)).strip() if code_desc_match else (vbn_desc or "")
+
+    code_name_match = re.match(r"^(\d+)(.*)$", num_name or "")
+    supplier_fh_number = code_name_match.group(1) if code_name_match else ""
+    supplier_name = _insert_camel_boundaries(code_name_match.group(2)).strip() if code_name_match else (num_name or "")
+    if not supplier_name:
+        return None
+
+    quantity = parse_decimal_comma(total_pieces)
+    unit_price = parse_decimal_comma(prijs)
+    total = parse_decimal_comma(bedrag)
+    if quantity is None or unit_price is None or total is None:
+        return None
+    # Defensive: reject anything that doesn't arithmetically add up rather
+    # than silently including a mis-parsed row as real purchase data.
+    if abs(quantity * unit_price - total) > 0.05:
+        return None
+
+    return {
+        "description": description or (vbn_desc or ""),
+        "quantity": quantity,
+        "unit_price": -unit_price if is_credit else unit_price,
+        "total": -total if is_credit else total,
+        "reference_bt": "",
+        "supplier_gln": "",
+        "supplier_fh_number": supplier_fh_number,
+        "supplier_name": supplier_name,
+        "line_date": iso_date,
+        "product_type_code": "57",
+        "referentie": referentie or "",
+        "is_credit": is_credit,
+    }
+
+
+# AI2's "Productnota" (product statement) PDF -- itemized broker-purchase
+# lines, one row per grower/product, confirmed via real data to correspond
+# exactly (same pieces/price/total, to the cent) to real ERP rows once the
+# placeholder-PAV bug is fixed (see matchInkoopVeilingLines). Genuine
+# selectable text, parsed positionally with pdfplumber since the PDF has no
+# ruling lines for pdfplumber's own table-detection to key off.
+def parse_ai2_productnota(pdf_bytes):
+    with pdfplumber.open(io.BytesIO(pdf_bytes)) as pdf:
+        first_page_text = pdf.pages[0].extract_text() or ""
+        title_match = AI2_HEADER_TITLE_RE.search(first_page_text)
+        year = int(title_match.group(1)) if title_match else None
+        klantnummer_match = AI2_KLANTNUMMER_RE.search(first_page_text)
+        klantnaam_match = AI2_KLANTNAAM_RE.search(first_page_text)
+        notanummer_match = AI2_NOTANUMMER_RE.search(first_page_text)
+
+        lines = []
+        skipped_rows = 0
+        in_table = False
+        is_credit = False
+        for page in pdf.pages:
+            rows = {}
+            for word in page.extract_words():
+                key = round(word["top"])
+                rows.setdefault(key, []).append(word)
+            for key in sorted(rows.keys()):
+                row_words = rows[key]
+                row_text = "".join(w["text"] for w in sorted(row_words, key=lambda w: w["x0"]))
+                if row_text.startswith("DatumReferentie"):
+                    in_table = True
+                    continue
+                if row_text.startswith("Credit") and "Product" in row_text:
+                    is_credit = True
+                    continue
+                if row_text.startswith("Financieeloverzicht") or row_text.startswith("Omschrijving"):
+                    in_table = False
+                    continue
+                if not in_table or row_text.startswith("Total"):
+                    continue
+                parsed = parse_ai2_row(row_words, year, is_credit)
+                if parsed:
+                    lines.append(parsed)
+                elif any(AI2_DATE_TOKEN_RE.match(w["text"]) for w in row_words if w["x0"] < AI2_COL_DATUM_MAX):
+                    skipped_rows += 1
+
+    return {
+        "klantnummer": klantnummer_match.group(1).strip() if klantnummer_match else "",
+        "klantnaam": _insert_camel_boundaries(klantnaam_match.group(1).strip()).strip() if klantnaam_match else "",
+        "notanummer": notanummer_match.group(1).strip() if notanummer_match else "",
+        "lines": lines,
+        "skipped_rows": skipped_rows,
+    }
 
 
 # Master data dumps ("stamgegevens") -- semicolon-delimited, ~240 columns,
@@ -308,10 +539,13 @@ def parse_suppliers(kwekers_path: Path, leveranciers_path: Path):
     return {"by_gln": by_gln, "by_name": by_name}
 
 
-# Only Klokfactuur/Connect/Handel messages carry the CII XML this tool needs
-# -- anything else (e.g. an AI2 Dagnota) is reported as skipped so the
-# caller can show why a file in the upload wasn't used, rather than it
-# silently disappearing.
+# Klokfactuur/Connect/Handel messages carry the CII XML this tool parses;
+# AI2 messages carry a "Productnota" PDF instead (its "Dagnota" zip/XML is a
+# settlement summary with no itemized data, confirmed useless -- see
+# parse_ai2_productnota's docstring-equivalent comment above). The zip you
+# upload also has a second, PDF-only .msg per Klok/Connect/Handel invoice
+# (for opening the original document later) -- that's not an error, so it's
+# captured into `pdfs` rather than reported as a skip.
 def parse_veiling(input_path: Path):
     extract_dir = Path(tempfile.mkdtemp(prefix="inkoop-veiling-"))
     with zipfile.ZipFile(input_path) as archive:
@@ -319,6 +553,7 @@ def parse_veiling(input_path: Path):
 
     invoices = []
     skipped = []
+    pdfs = {}
     for msg_path in sorted(extract_dir.rglob("*.msg")):
         msg = extract_msg.Message(str(msg_path))
         try:
@@ -328,9 +563,36 @@ def parse_veiling(input_path: Path):
                 skipped.append({"file_name": msg_path.name, "reason": f"Unsupported message type (subject: {subject})"})
                 continue
 
+            if kind == "ai2":
+                pdf_bytes = find_named_pdf_bytes(msg, "productnota")
+                if not pdf_bytes:
+                    skipped.append({"file_name": msg_path.name, "reason": "AI2 Dagnota: daily settlement summary, not itemized purchase data"})
+                    continue
+                parsed = parse_ai2_productnota(pdf_bytes)
+                if not parsed["lines"]:
+                    skipped.append({"file_name": msg_path.name, "reason": "AI2 Productnota: could not parse any line items"})
+                    continue
+                invoice_number = f"AI2-{parsed['klantnummer']}-{parsed['notanummer'] or msg_path.stem}"
+                pdfs[invoice_number] = base64.b64encode(pdf_bytes).decode("ascii")
+                invoices.append({
+                    "file_name": msg_path.name,
+                    "type": kind,
+                    "invoice_number": invoice_number,
+                    "supplier_number": f"AI2-{parsed['klantnummer']}",
+                    "subject": subject,
+                    "company_name_override": parsed["klantnaam"],
+                    "lines": parsed["lines"],
+                })
+                continue
+
             xml_bytes = find_xml_bytes(msg)
             if not xml_bytes:
-                skipped.append({"file_name": msg_path.name, "reason": "No invoice XML attachment found"})
+                pdf_bytes = find_pdf_bytes(msg)
+                invoice_number = extract_invoice_number(subject)
+                if pdf_bytes and invoice_number:
+                    pdfs[invoice_number] = base64.b64encode(pdf_bytes).decode("ascii")
+                else:
+                    skipped.append({"file_name": msg_path.name, "reason": "No invoice XML or PDF attachment found"})
                 continue
 
             lines = parse_invoice_xml(xml_bytes)
@@ -348,7 +610,7 @@ def parse_veiling(input_path: Path):
         finally:
             msg.close()
 
-    return {"invoices": invoices, "skipped": skipped}
+    return {"invoices": invoices, "skipped": skipped, "pdfs": pdfs}
 
 
 def main():

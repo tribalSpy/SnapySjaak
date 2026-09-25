@@ -74,6 +74,7 @@ const clockRecordsPath = path.join(cacheDir, "clock-records.json");
 const ukdocsStatePath = path.join(cacheDir, "ukdocs-state.json");
 const inkoopStatePath = path.join(cacheDir, "inkoop-state.json");
 const ukdocsPrintFilesDir = path.join(cacheDir, "ukdocs-print-files");
+const inkoopInvoicePdfFilesDir = path.join(cacheDir, "inkoop-invoice-pdfs");
 const fustBackupDir = path.join(cacheDir, "fust-backups");
 const syncScriptPath = path.join(repoRoot, "sync_index.py");
 const driveBridgePath = path.join(appRoot, "server", "drive_bridge.py");
@@ -5886,7 +5887,34 @@ async function parseInkoopVeilingUpload(filePayload) {
   return {
     invoices: Array.isArray(payload?.invoices) ? payload.invoices : [],
     skipped: Array.isArray(payload?.skipped) ? payload.skipped : [],
+    pdfs: payload?.pdfs && typeof payload.pdfs === "object" ? payload.pdfs : {},
   };
+}
+
+// Deterministic filename keyed by invoice number -- no database table
+// needed just to look one up. Sanitized defensively even though invoice
+// numbers are already safe (digits/dots/dashes) before touching the
+// filesystem.
+function sanitizeInkoopInvoiceNumberForFilename(invoiceNumber) {
+  return String(invoiceNumber || "").replace(/[^A-Za-z0-9_.-]+/g, "_");
+}
+
+function inkoopInvoicePdfPath(invoiceNumber) {
+  return path.join(inkoopInvoicePdfFilesDir, `${sanitizeInkoopInvoiceNumberForFilename(invoiceNumber)}.pdf`);
+}
+
+async function saveInkoopInvoicePdfs(pdfsByInvoiceNumber) {
+  const entries = Object.entries(pdfsByInvoiceNumber || {});
+  if (!entries.length) {
+    return;
+  }
+  await fs.mkdir(inkoopInvoicePdfFilesDir, { recursive: true });
+  for (const [invoiceNumber, base64Data] of entries) {
+    if (!invoiceNumber || !base64Data) {
+      continue;
+    }
+    await fs.writeFile(inkoopInvoicePdfPath(invoiceNumber), Buffer.from(base64Data, "base64"));
+  }
 }
 
 // "kwekers stamgegevens" (growers master) / "leveranciers stamgegevens"
@@ -5910,8 +5938,27 @@ async function parseInkoopSupplierMaster({ kwekers_file: kwekersFile, leverancie
   };
 }
 
+// Mirrors inkoop_veiling_worker.py's normalize_supplier_name exactly (same
+// two sides of the same comparison must normalize the same way). Master
+// data names are terse ("DUTCH GREEN CENTRE"); names on real invoices/AI2
+// statements are verbose ("Dutch Green Centre B.V.", "Arie Verschoor B.V.
+// en Zn. (verkoop)") and PDF-extracted text can glue words together with no
+// space at all -- de-glue camelCase-style boundaries first, then strip the
+// sale/purchase parenthetical and common Dutch corporate suffixes (allowing
+// for the whitespace de-gluing can introduce, e.g. "B. V.") before the
+// final punctuation strip.
+function inkoopInsertCamelBoundaries(text) {
+  return String(text || "").replace(/(?<=[a-z0-9.])(?=[A-Z])/g, " ");
+}
+
+const INKOOP_SUPPLIER_NAME_PARENTHETICAL_RE = /\s*\((?:verkoop|inkoop)\)\s*$/i;
+const INKOOP_SUPPLIER_NAME_CORP_SUFFIX_RE = /\b(?:b\.?\s*v\.?|n\.?\s*v\.?|en\s+zn\.?|zn\.?)\b/gi;
+
 function normalizeInkoopSupplierName(name) {
-  return String(name || "").toLowerCase().replace(/[^a-z0-9]+/g, "");
+  let text = inkoopInsertCamelBoundaries(name);
+  text = text.replace(INKOOP_SUPPLIER_NAME_PARENTHETICAL_RE, "");
+  text = text.replace(INKOOP_SUPPLIER_NAME_CORP_SUFFIX_RE, "");
+  return text.toLowerCase().replace(/[^a-z0-9]+/g, "");
 }
 
 // Pure matching function -- no I/O, easy to unit-test standalone. Only
@@ -5941,13 +5988,26 @@ function inkoopValuesDiffer(left, right) {
 // still gated by the same quantity+price check every Handel match needs,
 // so a wrong name-based guess is very unlikely to also happen to line up
 // on quantity and price with something in the ERP export.
-function resolveInkoopSupplierCode(gln, name, supplierMap, supplierNameMap, manualLinks) {
+function resolveInkoopSupplierCode(gln, fhNumber, name, supplierMap, supplierNameMap, manualLinks) {
   const normalizedGln = normalizeInkoopKey(gln);
-  if (normalizedGln) {
-    const manualMatch = (Array.isArray(manualLinks) ? manualLinks : []).find((link) => normalizeInkoopKey(link?.gln) === normalizedGln);
+  const normalizedFh = normalizeInkoopKey(fhNumber);
+  // Manual links take priority over both master lookups -- they exist
+  // precisely because the master data either didn't have this supplier at
+  // all, or (confirmed real case: master data has multiple near-duplicate
+  // entries for the same grower under different codes, e.g. "DGC"/"DGC2"
+  // both named "DUTCH GREEN CENTRE") resolved to the wrong one of several
+  // look-alikes. AI2 growers never have a GLN, only an FH-style number, so
+  // this checks both keys.
+  if (normalizedGln || normalizedFh) {
+    const manualMatch = (Array.isArray(manualLinks) ? manualLinks : []).find((link) => (
+      (normalizedGln && normalizeInkoopKey(link?.gln) === normalizedGln)
+      || (normalizedFh && normalizeInkoopKey(link?.fh_number) === normalizedFh)
+    ));
     if (manualMatch?.code) {
       return { code: normalizeInkoopKey(manualMatch.code), match_type: "manual" };
     }
+  }
+  if (normalizedGln) {
     const masterMatch = supplierMap?.[gln] || supplierMap?.[normalizedGln];
     if (masterMatch?.code) {
       return { code: normalizeInkoopKey(masterMatch.code), match_type: "gln" };
@@ -6015,15 +6075,26 @@ function pickInkoopMatchingErpRow(candidates, quantity, unitPrice, consumedErpRo
   return { row: null, ambiguous: false };
 }
 
+// A blank PAV is the known signal for "no clock reference, match by
+// supplier code instead" -- but a placeholder pseudo-PAV like "000000" or
+// "000000A" (confirmed on 393 rows across 18 supplier codes in the real
+// multi-day export, notably every AI2-sourced row) means exactly the same
+// thing and needs the same treatment, or it silently pools under a
+// meaningless shared key that no real invoice line will ever reference.
+function isRealInkoopPav(normalizedPav) {
+  return Boolean(normalizedPav) && !/^0+[A-Z]?$/.test(normalizedPav);
+}
+
 function matchInkoopVeilingLines(erpRows, invoices, supplierMap = {}, supplierNameMap = {}, manualLinks = []) {
   const erpByPav = new Map();
-  // Handel Aankopen lines have no PAV -- these rows (indexed by internal
-  // supplier code instead) are exactly the ones with a blank PAV, so there
-  // is no overlap with erpByPav to worry about double-claiming.
+  // Handel Aankopen/AI2 lines have no real PAV -- these rows (indexed by
+  // internal supplier code instead) are exactly the ones with a blank or
+  // placeholder PAV, so there is no overlap with erpByPav to worry about
+  // double-claiming.
   const erpBySupplierCode = new Map();
   for (const row of Array.isArray(erpRows) ? erpRows : []) {
     const pav = normalizeInkoopKey(row?.pav);
-    if (pav) {
+    if (isRealInkoopPav(pav)) {
       if (!erpByPav.has(pav)) {
         erpByPav.set(pav, []);
       }
@@ -6055,23 +6126,35 @@ function matchInkoopVeilingLines(erpRows, invoices, supplierMap = {}, supplierNa
   // classified into their own bucket for reporting (kept separate from the
   // much larger pile of other fee/container-charge lines).
   const isEmbalageLine = (line) => /^emballage/i.test(String(line?.description || "").trim());
+  // FloraHolland's own VBN product classification (see
+  // inkoop_veiling_worker.py's find_product_type_code): 67 = packaging/
+  // container/logistics material, 128 = an administrative roll-up. Neither
+  // is ever tracked in the ERP export as a purchase -- confirmed real data,
+  // this was the actual cause of Handel Aankopen packaging lines (Kleine
+  // container, Paraat doos, etc.) falsely showing up as unmatched
+  // purchases. Only "57" (a real product) ever attempts a match.
+  const isPackagingOrAdminLine = (line) => line?.product_type_code === "67" || line?.product_type_code === "128";
 
   for (const invoice of Array.isArray(invoices) ? invoices : []) {
     for (const line of Array.isArray(invoice?.lines) ? invoice.lines : []) {
       const context = { invoice_number: invoice?.invoice_number || "", invoice_type: invoice?.type || "", ...line };
       const feeBucket = isEmbalageLine(line) ? embalageLines : feeLines;
 
-      if (invoice?.type === "handel") {
+      // AI2 broker purchases are structurally identical to Handel Aankopen:
+      // no per-line reference number, resolved to an internal code by
+      // grower identity, matched by quantity+price -- confirmed end-to-end
+      // against real data (see matchInkoopVeilingLines's plan notes).
+      if (invoice?.type === "handel" || invoice?.type === "ai2") {
         // "Product aankopen"/"Emballage ..." are invoice-level roll-up and
         // overhead lines (storage, packaging deposit/rent/one-time) -- they
         // carry no quantity and no SupplierParty at all, so they were never
         // a per-grower purchase to begin with. Kept for visibility only,
         // same as the fee/interest lines on Klokfactuur/Connect invoices.
-        if (line?.quantity === null || line?.quantity === undefined) {
+        if (line?.quantity === null || line?.quantity === undefined || isPackagingOrAdminLine(line)) {
           feeBucket.push(context);
           continue;
         }
-        const resolved = resolveInkoopSupplierCode(line?.supplier_gln, line?.supplier_name, supplierMap, supplierNameMap, manualLinks);
+        const resolved = resolveInkoopSupplierCode(line?.supplier_gln, line?.supplier_fh_number, line?.supplier_name, supplierMap, supplierNameMap, manualLinks);
         if (!resolved.code) {
           supplierNotLinked.push(context);
           continue;
@@ -6096,7 +6179,7 @@ function matchInkoopVeilingLines(erpRows, invoices, supplierMap = {}, supplierNa
       }
 
       const isMatchable = invoice?.type === "klokfactuur" || invoice?.type === "connect";
-      if (!isMatchable) {
+      if (!isMatchable || isPackagingOrAdminLine(line)) {
         feeBucket.push(context);
         continue;
       }
@@ -6172,7 +6255,11 @@ function matchInkoopVeilingLines(erpRows, invoices, supplierMap = {}, supplierNa
     }
   }
 
-  const onlyInErp = [...erpByPav.values()]
+  // Unconsumed rows from both pools are genuine "recorded but nothing
+  // claimed it" gaps -- a supplier-code-keyed row (Handel/AI2 lines with no
+  // real PAV) that no invoice line ever matched is exactly as real a gap as
+  // an unclaimed PAV row, just previously never surfaced at all.
+  const onlyInErp = [...erpByPav.values(), ...erpBySupplierCode.values()]
     .flat()
     .filter((row) => !consumedErpRows.has(row));
 
@@ -6314,7 +6401,11 @@ function flattenInkoopInvoiceLines(invoices, sourceFileName, fallbackDate) {
         source_file_name: sourceFileName || invoice?.file_name || "",
         invoice_date: parsedDate || fallbackDate || null,
         company_number: companyNumber,
-        company_name: normalizeUkdocsText(line?.company_name),
+        // AI2 lines carry the buyer name at the invoice level (parsed once
+        // from the Productnota header, not per line like the XML's
+        // InvoiceeParty) -- company_name_override covers that case.
+        company_name: normalizeUkdocsText(line?.company_name) || normalizeUkdocsText(invoice?.company_name_override),
+        product_type_code: normalizeUkdocsText(line?.product_type_code),
       });
     });
   }
@@ -6346,8 +6437,13 @@ function groupInkoopInvoiceLinesByInvoice(flatLines) {
       // needs its own date so the UI/calendar can show which day each
       // mismatch/gap actually belongs to.
       invoice_date: line?.invoice_date || "",
-      company_number: line?.company_number || "",
+      // Self-healing for ledger rows saved before company_number existed --
+      // always derivable from the invoice number itself (its six-digit
+      // FloraHolland prefix), so a legacy row never has to show as
+      // unattributed just because it hasn't been re-uploaded since.
+      company_number: line?.company_number || (String(line?.invoice_number || "").match(/^(\d{6})/) || [])[1] || "",
       company_name: line?.company_name || "",
+      product_type_code: line?.product_type_code || "",
     });
   }
   return [...byInvoice.values()];
@@ -6432,20 +6528,25 @@ function inkoopEnsureDateBucket(buckets, dateKey) {
 // The single source of truth for "per day, did we match everything and how
 // much is at stake" -- powers the calendar, the day report, and (re-grouped
 // by week) the week report, so all three always agree with each other.
+// The FH invoice is the master record -- it's what was actually paid,
+// regardless of what the ERP happened to record -- so "purchase_value"
+// (spend) is built from invoice totals wherever an invoice line exists.
+// only_in_erp is the one exception: nothing has been invoiced/paid for it
+// yet, so it only ever counts as a gap, never as spend.
 function bucketInkoopResultsByDate(matched) {
   const buckets = new Map();
 
   for (const row of matched?.matched_ok || []) {
     const bucket = inkoopEnsureDateBucket(buckets, inkoopDateKeyFromErpAnchor(row));
     if (!bucket) continue;
-    bucket.purchase_value += inkoopErpRowTotal(row.erp_row);
+    bucket.purchase_value += inkoopInvoiceLineTotal(row);
     bucket.invoice_value += inkoopInvoiceLineTotal(row);
     bucket.product_count += 1;
   }
   for (const row of matched?.matched_mismatch || []) {
     const bucket = inkoopEnsureDateBucket(buckets, inkoopDateKeyFromErpAnchor(row));
     if (!bucket) continue;
-    bucket.purchase_value += inkoopErpRowTotal(row.erp_row);
+    bucket.purchase_value += inkoopInvoiceLineTotal(row);
     bucket.invoice_value += inkoopInvoiceLineTotal(row);
     bucket.product_count += 1;
     bucket.mismatch_count += 1;
@@ -6455,7 +6556,6 @@ function bucketInkoopResultsByDate(matched) {
     const bucket = inkoopEnsureDateBucket(buckets, inkoopDateKeyFromErpAnchor(row));
     if (!bucket) continue;
     const value = inkoopErpRowTotal(row);
-    bucket.purchase_value += value;
     bucket.product_count += 1;
     bucket.gap_count += 1;
     bucket.gap_value += value;
@@ -6464,6 +6564,10 @@ function bucketInkoopResultsByDate(matched) {
     const bucket = inkoopEnsureDateBucket(buckets, inkoopDateKeyFromInvoiceAnchor(row));
     if (!bucket) continue;
     const value = inkoopInvoiceLineTotal(row);
+    // FloraHolland charged for it, so it was paid, whether or not the ERP
+    // ever recorded the matching purchase -- counts toward both spend and
+    // the gap that still needs investigating.
+    bucket.purchase_value += value;
     bucket.invoice_value += value;
     bucket.gap_count += 1;
     bucket.gap_value += value;
@@ -6582,18 +6686,21 @@ function buildInkoopDashboardSummary(matched) {
     entry.purchase_value += purchaseValue;
   };
 
+  // Purchase-value context uses the invoice total (the master record, what
+  // was actually paid) rather than the ERP's recorded total -- same "invoice
+  // is master" principle as bucketInkoopResultsByDate.
   for (const row of matched?.matched_ok || []) {
-    bump(byGrower, row.supplier_name, 0, 0, inkoopErpRowTotal(row.erp_row));
-    bump(byAvc, row.erp_row?.avc, 0, 0, inkoopErpRowTotal(row.erp_row));
-    bump(byCompany, inkoopCompanyLabel(row), 0, 0, inkoopErpRowTotal(row.erp_row));
-    bump(byProductGroup, inkoopProductGroupLabel(row.erp_row?.t), 0, 0, inkoopErpRowTotal(row.erp_row));
+    bump(byGrower, row.supplier_name, 0, 0, inkoopInvoiceLineTotal(row));
+    bump(byAvc, row.erp_row?.avc, 0, 0, inkoopInvoiceLineTotal(row));
+    bump(byCompany, inkoopCompanyLabel(row), 0, 0, inkoopInvoiceLineTotal(row));
+    bump(byProductGroup, inkoopProductGroupLabel(row.erp_row?.t), 0, 0, inkoopInvoiceLineTotal(row));
   }
   for (const row of matched?.matched_mismatch || []) {
     const value = inkoopMismatchValue(row);
-    bump(byGrower, row.supplier_name, 1, value, inkoopErpRowTotal(row.erp_row));
-    bump(byAvc, row.erp_row?.avc, 1, value, inkoopErpRowTotal(row.erp_row));
-    bump(byCompany, inkoopCompanyLabel(row), 1, value, inkoopErpRowTotal(row.erp_row));
-    bump(byProductGroup, inkoopProductGroupLabel(row.erp_row?.t), 1, value, inkoopErpRowTotal(row.erp_row));
+    bump(byGrower, row.supplier_name, 1, value, inkoopInvoiceLineTotal(row));
+    bump(byAvc, row.erp_row?.avc, 1, value, inkoopInvoiceLineTotal(row));
+    bump(byCompany, inkoopCompanyLabel(row), 1, value, inkoopInvoiceLineTotal(row));
+    bump(byProductGroup, inkoopProductGroupLabel(row.erp_row?.t), 1, value, inkoopInvoiceLineTotal(row));
   }
   for (const row of matched?.only_in_erp || []) {
     bump(byAvc, row.avc, 1, inkoopErpRowTotal(row), 0);
@@ -6604,12 +6711,18 @@ function buildInkoopDashboardSummary(matched) {
     bump(byCompany, inkoopCompanyLabel(row), 1, inkoopInvoiceLineTotal(row), 0);
   }
 
-  const sortDesc = (map) => [...map.values()].sort((left, right) => right.mistake_value - left.mistake_value);
+  // Purchase-value context is tracked for every grower/AVC/company/product
+  // group so the mistake-rate % is accurate the moment one does show a
+  // mistake -- but a dashboard meant to rank problems shouldn't list
+  // everyone who ever bought anything, just the ones with a real mistake.
+  const sortDescNonZero = (map) => [...map.values()]
+    .filter((entry) => entry.mistake_count > 0)
+    .sort((left, right) => right.mistake_value - left.mistake_value);
   return {
-    by_grower: sortDesc(byGrower),
-    by_avc: sortDesc(byAvc),
-    by_company: sortDesc(byCompany),
-    by_product_group: sortDesc(byProductGroup),
+    by_grower: sortDescNonZero(byGrower),
+    by_avc: sortDescNonZero(byAvc),
+    by_company: sortDescNonZero(byCompany),
+    by_product_group: sortDescNonZero(byProductGroup),
   };
 }
 
@@ -16767,6 +16880,29 @@ async function handleApi(req, res, url) {
     return;
   }
 
+  // Opens the original invoice straight from a mismatch/follow-up row --
+  // captured from the veiling zip's PDF-only .msg companion (Klok/Connect/
+  // Handel) or the AI2 Productnota itself, stored under a deterministic
+  // filename keyed by invoice number (see saveInkoopInvoicePdfs).
+  if (url.pathname.startsWith("/api/inkoop/invoice-pdf/") && req.method === "GET") {
+    if (!requirePermission(res, requestUser, PERMISSIONS.INKOOP_VIEW)) {
+      return;
+    }
+    const invoiceNumber = decodeURIComponent(url.pathname.slice("/api/inkoop/invoice-pdf/".length));
+    const resolvedPath = path.resolve(inkoopInvoicePdfPath(invoiceNumber));
+    if (!resolvedPath.startsWith(path.resolve(inkoopInvoicePdfFilesDir)) || !existsSync(resolvedPath)) {
+      sendText(res, 404, "Invoice PDF not found -- not captured yet, or this invoice has no PDF companion");
+      return;
+    }
+    res.writeHead(200, {
+      "content-type": "application/pdf",
+      "content-disposition": `inline; filename="${sanitizeInkoopInvoiceNumberForFilename(invoiceNumber)}.pdf"`,
+      "cache-control": "no-store",
+    });
+    createReadStream(resolvedPath).pipe(res);
+    return;
+  }
+
   // Returns the import history log plus a freshly recomputed live
   // reconciliation over the full accumulated ledger (windowed) -- there is
   // no more "per past run" result to browse, since a gap now closes itself
@@ -16809,6 +16945,7 @@ async function handleApi(req, res, url) {
       // is what lets an invoice find a purchase recorded on a different day.
       await saveInkoopErpLines(erpRows);
       await saveInkoopInvoiceLines(flatInvoiceLines);
+      await saveInkoopInvoicePdfs(veiling.pdfs);
       const rawResult = await computeInkoopLiveMatch(state, inkoopDefaultWindowRange(INKOOP_MATCH_WINDOW_DAYS));
       const result = filterInkoopResultsByCompany(rawResult, body?.company);
 
@@ -16969,13 +17106,15 @@ async function handleApi(req, res, url) {
 
       const issues = [];
       for (const row of result.matched_mismatch || []) {
-        issues.push({ id: inkoopIssueId("mismatch", row), issue_type: "mismatch", date: inkoopDateKeyFromErpAnchor(row), description: row.description, value: inkoopMismatchValue(row), detail: row });
+        issues.push({ id: inkoopIssueId("mismatch", row), issue_type: "mismatch", date: inkoopDateKeyFromErpAnchor(row), description: row.description, value: inkoopMismatchValue(row), invoice_number: row.invoice_number || "", erp_row: row.erp_row || null, detail: row });
       }
       for (const row of result.only_in_erp || []) {
-        issues.push({ id: inkoopIssueId("gap_erp", row), issue_type: "gap_erp", date: inkoopDateKeyFromErpAnchor(row), description: row.description, value: inkoopErpRowTotal(row), detail: row });
+        // No invoice side exists for a "missing from invoice" gap -- no
+        // invoice_number to link a PDF from, same asymmetry as AVC/company.
+        issues.push({ id: inkoopIssueId("gap_erp", row), issue_type: "gap_erp", date: inkoopDateKeyFromErpAnchor(row), description: row.description, value: inkoopErpRowTotal(row), invoice_number: "", erp_row: row, detail: row });
       }
       for (const row of result.only_in_invoice || []) {
-        issues.push({ id: inkoopIssueId("gap_invoice", row), issue_type: "gap_invoice", date: inkoopDateKeyFromInvoiceAnchor(row), description: row.description, value: inkoopInvoiceLineTotal(row), detail: row });
+        issues.push({ id: inkoopIssueId("gap_invoice", row), issue_type: "gap_invoice", date: inkoopDateKeyFromInvoiceAnchor(row), description: row.description, value: inkoopInvoiceLineTotal(row), invoice_number: row.invoice_number || "", erp_row: null, detail: row });
       }
 
       const merged = issues.map((issue) => {
@@ -17058,15 +17197,19 @@ async function handleApi(req, res, url) {
       return;
     }
     const body = await readRequestJson(req);
-    if (!String(body?.gln || "").trim() || !String(body?.code || "").trim()) {
-      sendJson(res, 400, { error: "Both a GLN and a code are required" });
+    // AI2 growers never have a GLN, only an FH-style number -- either is an
+    // acceptable link key, but a code always needs one of them.
+    if ((!String(body?.gln || "").trim() && !String(body?.fh_number || "").trim()) || !String(body?.code || "").trim()) {
+      sendJson(res, 400, { error: "A GLN or an FH number, plus a code, are required" });
       return;
     }
     const state = await readInkoopState();
     const link = normalizeInkoopManualSupplierLink({ ...body, added_by: requestUser.username });
     state.manual_supplier_links = [
       link,
-      ...state.manual_supplier_links.filter((item) => item.gln !== link.gln),
+      ...state.manual_supplier_links.filter((item) => (
+        (!link.gln || item.gln !== link.gln) && (!link.fh_number || item.fh_number !== link.fh_number)
+      )),
     ];
     await writeInkoopState(state);
     sendJson(res, 200, { manual_supplier_links: state.manual_supplier_links });

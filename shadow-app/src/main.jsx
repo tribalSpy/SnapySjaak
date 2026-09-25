@@ -13464,6 +13464,40 @@ function inkoopIssueTypeLabel(type) {
   return type;
 }
 
+function inkoopPdfHref(invoiceNumber) {
+  return `/api/inkoop/invoice-pdf/${encodeURIComponent(invoiceNumber || "")}`;
+}
+
+function InkoopInvoiceLink({ invoiceNumber }) {
+  if (!invoiceNumber) {
+    return "-";
+  }
+  return (
+    <a href={inkoopPdfHref(invoiceNumber)} target="_blank" rel="noreferrer">
+      {invoiceNumber}
+    </a>
+  );
+}
+
+// A compact, readable transcript of the matched ERP line -- so someone
+// checking a mismatch/follow-up item can see the full original record, not
+// just whichever field(s) differed.
+function inkoopErpTranscript(erpRow) {
+  if (!erpRow) {
+    return "-";
+  }
+  const parts = [
+    inkoopShortDate(erpRow.date),
+    String(erpRow.suppl || erpRow.transp || "").trim(),
+    erpRow.lot ? `Lot ${erpRow.lot}` : "",
+    (erpRow.pieces !== undefined && erpRow.pieces !== null) ? `${erpRow.pieces} pcs @ ${formatInkoopEuro(erpRow.price)}` : "",
+    erpRow.t_price !== undefined ? `= ${formatInkoopEuro(erpRow.t_price)}` : "",
+    erpRow.fust ? `Fust ${String(erpRow.fust).trim()}` : "",
+    erpRow.avc ? `Avc ${String(erpRow.avc).trim()}` : "",
+  ].filter(Boolean);
+  return parts.join(" · ");
+}
+
 function InkoopControlePage() {
   const [loading, setLoading] = useState(true);
   const [comparing, setComparing] = useState(false);
@@ -13601,7 +13635,11 @@ function InkoopControlePage() {
   }
 
   async function linkSupplier(row) {
-    const draft = manualLinkDrafts[row.supplier_gln] || {};
+    // AI2 growers never have a GLN, only an FH-style number -- fall back to
+    // that as the draft/link key so multiple no-GLN growers don't collide
+    // on the same empty-string key.
+    const draftKey = row.supplier_gln || row.supplier_fh_number;
+    const draft = manualLinkDrafts[draftKey] || {};
     const code = String(draft.code || "").trim();
     if (!code) {
       setError("Enter the internal code before linking.");
@@ -13614,7 +13652,7 @@ function InkoopControlePage() {
         body: JSON.stringify({ gln: row.supplier_gln, fh_number: row.supplier_fh_number, name: row.supplier_name, code }),
       });
       setManualLinks(payload.manual_supplier_links || []);
-      setMessage(`Linked GLN ${row.supplier_gln} (${row.supplier_name}) to ${code.toUpperCase()}. Refreshing results...`);
+      setMessage(`Linked ${row.supplier_gln ? `GLN ${row.supplier_gln}` : `FH number ${row.supplier_fh_number}`} (${row.supplier_name}) to ${code.toUpperCase()}. Refreshing results...`);
       await loadInkoopData();
     } catch (linkError) {
       setError(linkError.message);
@@ -13695,7 +13733,7 @@ function InkoopControlePage() {
                 <thead><tr><th>GLN</th><th>FloraHolland number</th><th>Name</th><th>Code</th></tr></thead>
                 <tbody>
                   {manualLinks.map((link) => (
-                    <tr key={link.gln}><td>{link.gln}</td><td>{link.fh_number}</td><td>{link.name}</td><td>{link.code}</td></tr>
+                    <tr key={link.gln || link.fh_number}><td>{link.gln}</td><td>{link.fh_number}</td><td>{link.name}</td><td>{link.code}</td></tr>
                   ))}
                 </tbody>
               </table>
@@ -13707,7 +13745,7 @@ function InkoopControlePage() {
       <div className="data-table-card">
         <div className="section-header"><h2>Compare a day</h2></div>
         <div className="notice">
-          No live mailbox yet -- for now, save the day's veiling emails (Klokfactuur, Connect factuur, Factuur handel aankopen) as .msg files, zip them, and upload that zip together with the ERP "Screen" export for the same day.
+          No live mailbox yet -- for now, save the day's veiling emails (Klokfactuur, Connect factuur, Factuur handel aankopen, AI2 Dagnota) as .msg files -- both the XML and PDF version of each -- zip them all together, and upload that zip with the ERP "Screen" export (.xlsx or .csv) for the same period. The PDF companions are what let you open the original invoice from a mismatch later.
           Every line's real date is read straight from the invoice, so the date below is only used as a fallback and for the import history log.
         </div>
         <div className="form-grid">
@@ -13793,7 +13831,7 @@ function InkoopResultTables({ result, windowDays, manualLinkDrafts, setManualLin
           <div className="table-wrap">
             <table className="data-table">
               <thead>
-                <tr><th>Date</th><th>Company</th><th>Invoice</th><th>PAV</th><th>Description</th><th>Field</th><th>Connect value</th><th>FH invoice value</th></tr>
+                <tr><th>Date</th><th>Company</th><th>Invoice</th><th>PAV</th><th>Description</th><th>ERP line</th><th>Field</th><th>Connect value</th><th>FH invoice value</th></tr>
               </thead>
               <tbody>
                 {result.matched_mismatch.map((row, index) => (
@@ -13801,9 +13839,10 @@ function InkoopResultTables({ result, windowDays, manualLinkDrafts, setManualLin
                     <tr key={`${index}-${diffIndex}`}>
                       {diffIndex === 0 && <td rowSpan={row.diffs.length}>{inkoopShortDate(row.erp_row?.date || row.invoice_date)}</td>}
                       {diffIndex === 0 && <td rowSpan={row.diffs.length}>{inkoopCompanyLabel(row)}</td>}
-                      {diffIndex === 0 && <td rowSpan={row.diffs.length}>{row.invoice_number}</td>}
+                      {diffIndex === 0 && <td rowSpan={row.diffs.length}><InkoopInvoiceLink invoiceNumber={row.invoice_number} /></td>}
                       {diffIndex === 0 && <td rowSpan={row.diffs.length}>{row.pav}</td>}
                       {diffIndex === 0 && <td rowSpan={row.diffs.length}>{row.description}</td>}
+                      {diffIndex === 0 && <td rowSpan={row.diffs.length}>{inkoopErpTranscript(row.erp_row)}</td>}
                       <td>{inkoopFieldLabel(diff.field)}</td>
                       <td>{diff.erp}</td>
                       <td>{diff.invoice}</td>
@@ -13830,7 +13869,7 @@ function InkoopResultTables({ result, windowDays, manualLinkDrafts, setManualLin
                   <tr key={index}>
                     <td>{inkoopShortDate(row.invoice_date)}</td>
                     <td>{inkoopCompanyLabel(row)}</td>
-                    <td>{row.invoice_number}</td>
+                    <td><InkoopInvoiceLink invoiceNumber={row.invoice_number} /></td>
                     <td>{row.supplier_fh_number}</td>
                     <td>{row.supplier_name}</td>
                     <td>{row.description}</td>
@@ -13838,8 +13877,8 @@ function InkoopResultTables({ result, windowDays, manualLinkDrafts, setManualLin
                     <td>{row.unit_price}</td>
                     <td>
                       <input
-                        value={manualLinkDrafts[row.supplier_gln]?.code || ""}
-                        onChange={(event) => setManualLinkDrafts((current) => ({ ...current, [row.supplier_gln]: { code: event.target.value } }))}
+                        value={manualLinkDrafts[row.supplier_gln || row.supplier_fh_number]?.code || ""}
+                        onChange={(event) => setManualLinkDrafts((current) => ({ ...current, [row.supplier_gln || row.supplier_fh_number]: { code: event.target.value } }))}
                         placeholder="e.g. KONKOP"
                       />
                     </td>
@@ -13866,7 +13905,7 @@ function InkoopResultTables({ result, windowDays, manualLinkDrafts, setManualLin
                   <tr key={index}>
                     <td>{inkoopShortDate(row.invoice_date)}</td>
                     <td>{inkoopCompanyLabel(row)}</td>
-                    <td>{row.invoice_number}</td>
+                    <td><InkoopInvoiceLink invoiceNumber={row.invoice_number} /></td>
                     <td>{row.supplier_code}{row.supplier_match_type === "name" ? " (name match)" : ""}</td>
                     <td>{row.quantity}</td>
                     <td>{row.unit_price}</td>
@@ -13882,14 +13921,40 @@ function InkoopResultTables({ result, windowDays, manualLinkDrafts, setManualLin
       {!!result.only_in_invoice.length && (
         <div className="data-table-card">
           <div className="section-header"><h2>Only in invoice ({result.only_in_invoice.length})</h2></div>
-          <div className="notice">FloraHolland charged for these but no matching purchase was found in the ERP export{windowDays ? ` within the last ${windowDays} days` : ""}.</div>
+          <div className="notice">
+            FloraHolland charged for these but no matching purchase was found in the ERP export{windowDays ? ` within the last ${windowDays} days` : ""}.
+            A Handel Aankopen/AI2 row here sometimes means the grower resolved to the wrong of several look-alike codes in the master data (confirmed real case: "DUTCH GREEN CENTRE" exists twice, under different codes) -- link the correct code below if so.
+          </div>
           <div className="table-wrap">
             <table className="data-table">
-              <thead><tr><th>Date</th><th>Company</th><th>Invoice</th><th>PAV / supplier</th><th>Description</th><th>Quantity</th><th>Unit price</th><th>Total</th></tr></thead>
+              <thead><tr><th>Date</th><th>Company</th><th>Invoice</th><th>PAV / supplier</th><th>Description</th><th>Quantity</th><th>Unit price</th><th>Total</th><th>Your code</th><th></th></tr></thead>
               <tbody>
-                {result.only_in_invoice.map((row, index) => (
-                  <tr key={index}><td>{inkoopShortDate(row.invoice_date)}</td><td>{inkoopCompanyLabel(row)}</td><td>{row.invoice_number}</td><td>{row.reference_bt || row.supplier_code || "-"}{row.supplier_match_type === "name" ? " (name match)" : ""}</td><td>{row.description}</td><td>{row.quantity}</td><td>{row.unit_price}</td><td>{row.total}</td></tr>
-                ))}
+                {result.only_in_invoice.map((row, index) => {
+                  const canLink = (row.invoice_type === "handel" || row.invoice_type === "ai2") && (row.supplier_gln || row.supplier_fh_number);
+                  const draftKey = row.supplier_gln || row.supplier_fh_number;
+                  return (
+                    <tr key={index}>
+                      <td>{inkoopShortDate(row.invoice_date)}</td>
+                      <td>{inkoopCompanyLabel(row)}</td>
+                      <td><InkoopInvoiceLink invoiceNumber={row.invoice_number} /></td>
+                      <td>{row.reference_bt || row.supplier_code || "-"}{row.supplier_match_type === "name" ? " (name match)" : ""}</td>
+                      <td>{row.description}</td>
+                      <td>{row.quantity}</td>
+                      <td>{row.unit_price}</td>
+                      <td>{row.total}</td>
+                      <td>
+                        {canLink && (
+                          <input
+                            value={manualLinkDrafts[draftKey]?.code || ""}
+                            onChange={(event) => setManualLinkDrafts((current) => ({ ...current, [draftKey]: { code: event.target.value } }))}
+                            placeholder="e.g. DGC"
+                          />
+                        )}
+                      </td>
+                      <td>{canLink && <button type="button" onClick={() => onLinkSupplier(row)}>Link</button>}</td>
+                    </tr>
+                  );
+                })}
               </tbody>
             </table>
           </div>
@@ -14047,12 +14112,8 @@ function InkoopDashboardTab({ company }) {
               <div className="section-header"><h2>Today ({todaySummary.date})</h2></div>
               <div className="inkoop-summary-cards">
                 <div className="inkoop-summary-card">
-                  <div className="inkoop-summary-value">{formatInkoopEuro(todaySummary.invoice_value)}</div>
-                  <div className="inkoop-summary-label">Invoice value</div>
-                </div>
-                <div className="inkoop-summary-card">
                   <div className="inkoop-summary-value">{formatInkoopEuro(todaySummary.purchase_value)}</div>
-                  <div className="inkoop-summary-label">ERP purchase value</div>
+                  <div className="inkoop-summary-label">Spend (per invoice)</div>
                 </div>
                 <div className="inkoop-summary-card">
                   <div className="inkoop-summary-value">{formatInkoopEuro(todaySummary.gap_value)}</div>
@@ -14070,13 +14131,12 @@ function InkoopDashboardTab({ company }) {
             <div className="section-header"><h2>Day report</h2></div>
             <div className="table-wrap">
               <table className="data-table">
-                <thead><tr><th>Date</th><th>Purchase value</th><th>Invoice value</th><th>Mismatches</th><th>Mismatch value</th><th>Gaps</th><th>Gap value</th><th>Emballage</th><th>Products</th></tr></thead>
+                <thead><tr><th>Date</th><th>Spend (per invoice)</th><th>Mismatches</th><th>Mismatch value</th><th>Gaps</th><th>Gap value</th><th>Emballage</th><th>Products</th></tr></thead>
                 <tbody>
                   {dayReport.map((day) => (
                     <tr key={day.date}>
                       <td>{day.date}</td>
                       <td>{formatInkoopEuro(day.purchase_value)}</td>
-                      <td>{formatInkoopEuro(day.invoice_value)}</td>
                       <td>{day.mismatch_count}</td>
                       <td>{formatInkoopEuro(day.mismatch_value)}</td>
                       <td>{day.gap_count}</td>
@@ -14085,7 +14145,7 @@ function InkoopDashboardTab({ company }) {
                       <td>{day.product_count}</td>
                     </tr>
                   ))}
-                  {!dayReport.length && <tr><td colSpan="9">No data in this window.</td></tr>}
+                  {!dayReport.length && <tr><td colSpan="8">No data in this window.</td></tr>}
                 </tbody>
               </table>
             </div>
@@ -14095,13 +14155,12 @@ function InkoopDashboardTab({ company }) {
             <div className="section-header"><h2>Week report</h2></div>
             <div className="table-wrap">
               <table className="data-table">
-                <thead><tr><th>Week of</th><th>Purchase value</th><th>Invoice value</th><th>Mismatches</th><th>Mismatch value</th><th>Gaps</th><th>Gap value</th><th>Emballage</th><th>Products</th></tr></thead>
+                <thead><tr><th>Week of</th><th>Spend (per invoice)</th><th>Mismatches</th><th>Mismatch value</th><th>Gaps</th><th>Gap value</th><th>Emballage</th><th>Products</th></tr></thead>
                 <tbody>
                   {weekReport.map((week) => (
                     <tr key={week.week_start}>
                       <td>{week.week_start}</td>
                       <td>{formatInkoopEuro(week.purchase_value)}</td>
-                      <td>{formatInkoopEuro(week.invoice_value)}</td>
                       <td>{week.mismatch_count}</td>
                       <td>{formatInkoopEuro(week.mismatch_value)}</td>
                       <td>{week.gap_count}</td>
@@ -14110,7 +14169,7 @@ function InkoopDashboardTab({ company }) {
                       <td>{week.product_count}</td>
                     </tr>
                   ))}
-                  {!weekReport.length && <tr><td colSpan="9">No data in this window.</td></tr>}
+                  {!weekReport.length && <tr><td colSpan="8">No data in this window.</td></tr>}
                 </tbody>
               </table>
             </div>
@@ -14218,16 +14277,20 @@ function InkoopCalendarTab({ company, manualLinkDrafts, setManualLinkDrafts, onL
     setMonth(`${next.getFullYear()}-${String(next.getMonth() + 1).padStart(2, "0")}`);
   }
 
+  // "quiet" (a real day with nothing recorded) must stay visually distinct
+  // from the leading padding cells (which have no day number at all) -- a
+  // quiet day still needs to show its date, just with no color/summary.
   function dayStatus(day) {
     if (day.mismatch_count > 0) return "danger";
     if (day.gap_count > 0) return "warning";
     if (day.product_count > 0 || day.invoice_value > 0 || day.embalage_value > 0) return "ok";
-    return "empty";
+    return "quiet";
   }
 
   const [gridYear, gridMonth] = month.split("-").map(Number);
   const firstWeekday = (new Date(gridYear, gridMonth - 1, 1).getDay() + 6) % 7; // Monday-first
   const leadingBlanks = Array.from({ length: firstWeekday });
+  const weekdayLabels = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
 
   return (
     <>
@@ -14242,26 +14305,31 @@ function InkoopCalendarTab({ company, manualLinkDrafts, setManualLinkDrafts, onL
         {loading ? (
           <div className="notice">Loading calendar...</div>
         ) : (
-          <div className="inkoop-calendar-grid">
-            {leadingBlanks.map((_, index) => <div key={`blank-${index}`} className="inkoop-calendar-cell empty" />)}
-            {days.map((day) => (
-              <button
-                type="button"
-                key={day.date}
-                className={`inkoop-calendar-cell ${dayStatus(day)}${selectedDate === day.date ? " selected" : ""}`}
-                onClick={() => openDay(day.date)}
-              >
-                <div className="inkoop-calendar-date">{Number(day.date.slice(8, 10))}</div>
-                {(day.product_count > 0 || day.invoice_value > 0) && (
+          <>
+            <div className="inkoop-calendar-grid inkoop-calendar-weekdays">
+              {weekdayLabels.map((label) => <div key={label} className="inkoop-calendar-weekday">{label}</div>)}
+            </div>
+            <div className="inkoop-calendar-grid">
+              {leadingBlanks.map((_, index) => <div key={`blank-${index}`} className="inkoop-calendar-cell blank" />)}
+              {days.map((day) => (
+                <button
+                  type="button"
+                  key={day.date}
+                  className={`inkoop-calendar-cell ${dayStatus(day)}${selectedDate === day.date ? " selected" : ""}`}
+                  onClick={() => openDay(day.date)}
+                >
+                  <div className="inkoop-calendar-date">{Number(day.date.slice(8, 10))}</div>
                   <div className="inkoop-calendar-summary">
                     {day.mismatch_count > 0 && <span>{day.mismatch_count} mismatch</span>}
                     {day.gap_count > 0 && <span>{day.gap_count} gap</span>}
-                    {(day.mismatch_value + day.gap_value) > 0 && <span>{formatInkoopEuro(day.mismatch_value + day.gap_value)}</span>}
+                    {(day.mismatch_value + day.gap_value) > 0
+                      ? <span>{formatInkoopEuro(day.mismatch_value + day.gap_value)} at risk</span>
+                      : day.invoice_value > 0 && <span>{formatInkoopEuro(day.invoice_value)}</span>}
                   </div>
-                )}
-              </button>
-            ))}
-          </div>
+                </button>
+              ))}
+            </div>
+          </>
         )}
       </div>
 
@@ -14366,7 +14434,7 @@ function InkoopFollowUpTab({ company }) {
         <div className="table-wrap">
           <table className="data-table">
             <thead>
-              <tr><th>Date</th><th>Type</th><th>Description</th><th>Value</th><th>Status</th><th>Assigned to</th><th>Note</th><th></th></tr>
+              <tr><th>Date</th><th>Type</th><th>Invoice</th><th>Description</th><th>ERP line</th><th>Value</th><th>Status</th><th>Assigned to</th><th>Note</th><th></th></tr>
             </thead>
             <tbody>
               {issues.map((issue) => {
@@ -14375,7 +14443,9 @@ function InkoopFollowUpTab({ company }) {
                   <tr key={issue.id}>
                     <td>{inkoopShortDate(issue.date)}</td>
                     <td>{inkoopIssueTypeLabel(issue.issue_type)}</td>
+                    <td><InkoopInvoiceLink invoiceNumber={issue.invoice_number} /></td>
                     <td>{issue.description}</td>
+                    <td>{inkoopErpTranscript(issue.erp_row)}</td>
                     <td>{formatInkoopEuro(issue.value)}</td>
                     <td>
                       <select value={draft.status} onChange={(event) => updateDraft(issue, { status: event.target.value })}>
