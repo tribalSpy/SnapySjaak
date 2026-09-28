@@ -6717,7 +6717,8 @@ async function computeInkoopLiveMatch(state, { from, to }) {
     getInkoopInvoiceLines({ from, to }),
   ]);
   const invoices = groupInkoopInvoiceLinesByInvoice(invoiceLines);
-  return matchInkoopVeilingLines(erpRows, invoices, state.supplier_map, state.supplier_name_map, state.manual_supplier_links, state.supplier_fh_map);
+  const result = matchInkoopVeilingLines(erpRows, invoices, state.supplier_map, state.supplier_name_map, state.manual_supplier_links, state.supplier_fh_map);
+  return reclassifyInkoopConfirmedReturns(result, state.customer_map);
 }
 
 // A dispatch's share of its lot's own value, apportioned by piece count --
@@ -6841,10 +6842,77 @@ const INKOOP_RETOUR_STATUS_RANK = {
   not_return: 3,
 };
 
+// Shared by computeInkoopCorrectionRetourChecks and
+// reclassifyInkoopConfirmedReturns -- every lot a correction resolved to
+// (several, for a split-delivery correction), each checked against the
+// dispatch dump, combined worst-outcome-wins: a split-delivery correction
+// where even one of its lots did NOT confirm a return is exactly the case
+// worth surfacing, never letting one clean lot mask a real discrepancy on
+// another.
+function inkoopOverallCorrectionRetourStatus(erpRow, dispatchByLot, customerMap) {
+  const lotNumbers = inkoopCorrectionLotNumbers(erpRow);
+  const lots = lotNumbers.length
+    ? lotNumbers.map((lotNumber) => ({ lot: lotNumber, ...inkoopCorrectionRetourStatusForLot(dispatchByLot.get(lotNumber), customerMap) }))
+    : [{ lot: "", status: "no_dispatch_data", destinations: [] }];
+  const status = lots.map((entry) => entry.status).sort((left, right) => INKOOP_RETOUR_STATUS_RANK[right] - INKOOP_RETOUR_STATUS_RANK[left])[0];
+  return { status, lots };
+}
+
+// Once matchInkoopVeilingLines nets a Klokfactuur/Connect correction, its
+// invoice-side total often still won't equal the ERP row it matched
+// against -- a straight return leaves the ERP showing the original
+// purchase (e.g. +120pcs) against the invoice's -120pcs credit, a real
+// "mismatch" only until the dispatch dump confirms where that lot's stock
+// actually went. Confirmed real (user-reported): once every one of its
+// lots' pieces were confirmed dispatched to one of FloraHolland's own
+// retour accounts, this is no longer an unexplained discrepancy, so it's
+// reclassified out of matched_mismatch/only_in_invoice into matched_ok
+// (tagged confirmed_return so the UI can still show why) -- run inside
+// computeInkoopLiveMatch itself so every consumer of a match result
+// (dashboards, follow-up, calendar) sees the same, already-resolved state,
+// not just the Destinations tab's own corrections check. A partial return
+// is deliberately left as a mismatch -- part of it still isn't explained.
+async function reclassifyInkoopConfirmedReturns(result, customerMap) {
+  const candidates = [
+    ...(result.matched_mismatch || []).map((item) => ({ item, bucket: "matched_mismatch" })),
+    ...(result.only_in_invoice || []).map((item) => ({ item, bucket: "only_in_invoice" })),
+  ].filter(({ item }) => item?.matched_as_correction && item?.erp_row);
+  if (!candidates.length) {
+    return result;
+  }
+  const allLotNumbers = new Set();
+  for (const { item } of candidates) {
+    for (const lotNumber of inkoopCorrectionLotNumbers(item.erp_row)) {
+      allLotNumbers.add(lotNumber);
+    }
+  }
+  const dispatchLots = await getInkoopDispatchLotsByLots([...allLotNumbers]);
+  const dispatchByLot = new Map(dispatchLots.map((lot) => [String(lot.lot), lot]));
+  const toPromote = new Set();
+  for (const { item } of candidates) {
+    const { status } = inkoopOverallCorrectionRetourStatus(item.erp_row, dispatchByLot, customerMap);
+    if (status === "confirmed_return") {
+      toPromote.add(item);
+    }
+  }
+  if (!toPromote.size) {
+    return result;
+  }
+  return {
+    ...result,
+    matched_ok: [...result.matched_ok, ...[...toPromote].map((item) => ({ ...item, confirmed_return: true }))],
+    matched_mismatch: (result.matched_mismatch || []).filter((item) => !toPromote.has(item)),
+    only_in_invoice: (result.only_in_invoice || []).filter((item) => !toPromote.has(item)),
+  };
+}
+
 // Cross-checks every correction matchInkoopVeilingLines already netted
 // (see the PAV-grouping fix) against the dispatch dump: did it actually get
 // sent back, per FloraHolland's own retour-account data? Only meaningful
-// once a dispatch dump has been uploaded for the relevant dates.
+// once a dispatch dump has been uploaded for the relevant dates. By the
+// time this runs, computeInkoopLiveMatch has already reclassified any
+// confirmed_return correction into matched_ok -- this still finds it there
+// (it stays tagged matched_as_correction) and reports it the same way.
 async function computeInkoopCorrectionRetourChecks(state, { from, to }) {
   const result = await computeInkoopLiveMatch(state, { from, to });
   const corrections = [];
@@ -6864,14 +6932,7 @@ async function computeInkoopCorrectionRetourChecks(state, { from, to }) {
   const dispatchLots = await getInkoopDispatchLotsByLots([...allLotNumbers]);
   const dispatchByLot = new Map(dispatchLots.map((lot) => [String(lot.lot), lot]));
   return corrections.map((item) => {
-    const lotNumbers = inkoopCorrectionLotNumbers(item?.erp_row);
-    const lots = lotNumbers.length
-      ? lotNumbers.map((lotNumber) => ({ lot: lotNumber, ...inkoopCorrectionRetourStatusForLot(dispatchByLot.get(lotNumber), state.customer_map) }))
-      : [{ lot: "", status: "no_dispatch_data", destinations: [] }];
-    // Worst-outcome-wins: a split-delivery correction where even one of its
-    // lots did NOT confirm a return is exactly the case worth surfacing --
-    // never letting one clean lot mask a real discrepancy on another.
-    const status = lots.map((entry) => entry.status).sort((left, right) => INKOOP_RETOUR_STATUS_RANK[right] - INKOOP_RETOUR_STATUS_RANK[left])[0];
+    const { status, lots } = inkoopOverallCorrectionRetourStatus(item?.erp_row, dispatchByLot, state.customer_map);
     return {
       bucket: item.bucket,
       invoice_number: item.invoice_number,
