@@ -6278,6 +6278,35 @@ function matchInkoopVeilingLines(erpRows, invoices, supplierMap = {}, supplierNa
   // purchases. Only "57" (a real product) ever attempts a match.
   const isPackagingOrAdminLine = (line) => line?.product_type_code === "67" || line?.product_type_code === "128";
 
+  // Shared by Handel/AI2 (no per-line reference at all) and a Connect line
+  // negotiated directly with no clock round (see the reference_bt check
+  // below) -- both are resolved to an internal code by grower identity
+  // (GLN/FH number/name) and matched by quantity+price, since neither has
+  // anything more specific than that to go on.
+  function matchInkoopLineBySupplierCode(context, line) {
+    const resolved = resolveInkoopSupplierCode(line?.supplier_gln, line?.supplier_fh_number, line?.supplier_name, supplierMap, supplierNameMap, manualLinks, supplierFhMap);
+    if (!resolved.code) {
+      supplierNotLinked.push(context);
+      return;
+    }
+    const picked = pickInkoopMatchingErpRow(erpBySupplierCode.get(resolved.code), line.quantity, line.unit_price, consumedErpRows, normalizeUkdocsText(line?.invoice_date).slice(0, 10));
+    if (picked.ambiguous) {
+      // No unique per-line reference (unlike PAV) -- quantity+price alone
+      // can collide across genuinely different products from the same
+      // supplier the same day (e.g. several spray colours of the same size/
+      // price). Picking one anyway would be an actively wrong "match", so
+      // this is flagged instead.
+      ambiguousMatches.push({ ...context, supplier_code: resolved.code, supplier_match_type: resolved.match_type, candidates: picked.candidates });
+      return;
+    }
+    if (!picked.row) {
+      onlyInInvoice.push({ ...context, supplier_code: resolved.code, supplier_match_type: resolved.match_type });
+      return;
+    }
+    consumedErpRows.add(picked.row);
+    matchedOk.push({ ...context, supplier_code: resolved.code, supplier_match_type: resolved.match_type, erp_row: picked.row });
+  }
+
   for (const invoice of Array.isArray(invoices) ? invoices : []) {
     for (const line of Array.isArray(invoice?.lines) ? invoice.lines : []) {
       const context = { invoice_number: invoice?.invoice_number || "", invoice_type: invoice?.type || "", ...line };
@@ -6297,27 +6326,7 @@ function matchInkoopVeilingLines(erpRows, invoices, supplierMap = {}, supplierNa
           feeBucket.push(context);
           continue;
         }
-        const resolved = resolveInkoopSupplierCode(line?.supplier_gln, line?.supplier_fh_number, line?.supplier_name, supplierMap, supplierNameMap, manualLinks, supplierFhMap);
-        if (!resolved.code) {
-          supplierNotLinked.push(context);
-          continue;
-        }
-        const picked = pickInkoopMatchingErpRow(erpBySupplierCode.get(resolved.code), line.quantity, line.unit_price, consumedErpRows, normalizeUkdocsText(line?.invoice_date).slice(0, 10));
-        if (picked.ambiguous) {
-          // Handel Aankopen has no unique per-line reference (unlike PAV) --
-          // quantity+price alone can collide across genuinely different
-          // products from the same supplier the same day (e.g. several
-          // spray colours of the same size/price). Picking one anyway
-          // would be an actively wrong "match", so this is flagged instead.
-          ambiguousMatches.push({ ...context, supplier_code: resolved.code, supplier_match_type: resolved.match_type, candidates: picked.candidates });
-          continue;
-        }
-        if (!picked.row) {
-          onlyInInvoice.push({ ...context, supplier_code: resolved.code, supplier_match_type: resolved.match_type });
-          continue;
-        }
-        consumedErpRows.add(picked.row);
-        matchedOk.push({ ...context, supplier_code: resolved.code, supplier_match_type: resolved.match_type, erp_row: picked.row });
+        matchInkoopLineBySupplierCode(context, line);
         continue;
       }
 
@@ -6328,8 +6337,22 @@ function matchInkoopVeilingLines(erpRows, invoices, supplierMap = {}, supplierNa
       }
       const referenceBt = normalizeInkoopKey(line?.reference_bt);
       if (!referenceBt) {
-        // A fee/deposit/interest line -- has no per-lot reference, so it was
-        // never meant to have an ERP counterpart. Kept for visibility only.
+        // Some Connect trades are negotiated directly (no clock round) and
+        // structurally carry no PAV at all -- confirmed real (Zentoo/"CHR T
+        // ALTAJ", GLN 8713783478363, FH 020060): a genuine purchase, not a
+        // fee/deposit line, so it's resolved by supplier identity instead,
+        // exactly like Handel/AI2. Previously this silently landed in
+        // feeBucket -- a real purchase, permanently invisible from every
+        // reconciliation report, mismatch table, and Follow-up issue.
+        // Klokfactuur never legitimately lacks a PAV for a real product
+        // line, so this fallback is scoped to Connect specifically.
+        if (invoice?.type === "connect" && line?.quantity !== null && line?.quantity !== undefined) {
+          matchInkoopLineBySupplierCode(context, line);
+          continue;
+        }
+        // A genuine fee/deposit/interest line -- has no per-lot reference
+        // and no quantity, so it was never meant to have an ERP counterpart.
+        // Kept for visibility only.
         feeBucket.push(context);
         continue;
       }
