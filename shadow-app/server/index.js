@@ -7681,6 +7681,107 @@ async function runUkdocsCsiAuditRetry() {
   return { ok: true, checked: activeJobs.length, retried };
 }
 
+// A single, honest answer to "what still needs to happen today, what's
+// actually in flight right now, and what's stuck" across the whole
+// invoice-generate -> PDF-convert -> CSI-audit -> papers-sent pipeline --
+// built directly requested after the invoice-PDF/CSI stuck-job bugs above,
+// so a silently stuck step is visible immediately instead of only being
+// discovered when a shipment fails to go out. Reuses
+// getUkdocsPrintCollectionRequirements (the same "what's missing" logic
+// already shown on every shipment card) rather than re-deriving it, and
+// cross-references the exact same job types/staleness thresholds the two
+// retry watchdogs above use, so "needs attention" here means the same
+// thing it means to them.
+async function buildUkdocsPipelineMonitor(state, targetDate) {
+  const collections = (state.print_collections || []).filter((item) => (
+    item?.collection_type !== "stock_control"
+    && String(item?.shipment_date || "").slice(0, 10) === targetDate
+  ));
+  const [invoicePdfJobs, csiJobs] = isDatabaseEnabled()
+    ? await Promise.all([getActiveLlmJobsByType("excel_to_pdf"), getActiveLlmJobsByType("ukdocs_csi_audit")])
+    : [[], []];
+  const jobsByCollection = new Map();
+  for (const job of [...invoicePdfJobs, ...csiJobs]) {
+    if (!job?.collection_id) {
+      continue;
+    }
+    if (!jobsByCollection.has(job.collection_id)) {
+      jobsByCollection.set(job.collection_id, []);
+    }
+    jobsByCollection.get(job.collection_id).push(job);
+  }
+
+  const now = Date.now();
+  const rows = collections.map((collection) => {
+    const requirements = getUkdocsPrintCollectionRequirements(collection, state.customers, collections);
+    const activeJobs = (jobsByCollection.get(collection.id) || []).map((job) => {
+      const referenceTime = job.claimed_at || job.created_at;
+      const elapsedMinutes = referenceTime ? Math.round((now - new Date(referenceTime).getTime()) / 60000) : null;
+      const staleThreshold = job.job_type === "excel_to_pdf" ? UKDOCS_INVOICE_PDF_STALE_MINUTES : UKDOCS_CSI_AUDIT_STALE_MINUTES;
+      return {
+        job_type: job.job_type,
+        status: job.status,
+        elapsed_minutes: elapsedMinutes,
+        stale: elapsedMinutes !== null && elapsedMinutes > staleThreshold,
+      };
+    });
+
+    const csiReport = collection.csi_report || {};
+    const csiStatus = normalizeUkdocsText(csiReport.status);
+    const csiReferenceTime = csiReport.started_at || csiReport.queued_at || "";
+    const csiElapsedMinutes = csiReferenceTime ? Math.round((now - new Date(csiReferenceTime).getTime()) / 60000) : null;
+    // The report claims "queued"/"running" but there's no active job backing
+    // it up at all -- the group finished or died without ever writing a
+    // final report. A real anomaly worth flagging outright, distinct from a
+    // job that's simply still (legitimately) in flight.
+    const csiOrphaned = ["queued", "running"].includes(csiStatus) && !activeJobs.some((job) => job.job_type === "ukdocs_csi_audit");
+
+    const attentionReasons = [];
+    for (const job of activeJobs) {
+      if (job.stale) {
+        attentionReasons.push(`${job.job_type === "excel_to_pdf" ? "Invoice PDF conversion" : "CSI audit"} stuck for ${job.elapsed_minutes}+ min (auto-retry runs every 3 min)`);
+      }
+    }
+    if (csiOrphaned) {
+      attentionReasons.push(`CSI report stuck at "${csiStatus}" with no active job behind it`);
+    }
+    if (!requirements.complete) {
+      attentionReasons.push(...requirements.missing);
+    }
+
+    return {
+      collection_id: collection.id,
+      shipment_reference: collection.shipment_reference || "",
+      customer_name: requirements.customer?.customer_name || collection.customer_name || collection.city_name || "-",
+      city_name: collection.city_name || "",
+      reference_connect: collection.reference_connect || "",
+      invoice_numbers: collection.invoice_numbers || "",
+      missing: requirements.missing,
+      complete: requirements.complete,
+      csi_status: csiStatus,
+      csi_elapsed_minutes: csiElapsedMinutes,
+      csi_orphaned: csiOrphaned,
+      papers_sent: collection.delivery_email?.ok === true,
+      papers_sent_at: collection.delivery_email?.sent_at || "",
+      active_jobs: activeJobs,
+      needs_attention: attentionReasons.length > 0,
+      attention_reasons: attentionReasons,
+    };
+  });
+
+  rows.sort((left, right) => Number(right.needs_attention) - Number(left.needs_attention));
+
+  return {
+    date: targetDate,
+    rows,
+    summary: {
+      total: rows.length,
+      needs_attention: rows.filter((row) => row.needs_attention).length,
+      stale_jobs: rows.reduce((sum, row) => sum + row.active_jobs.filter((job) => job.stale).length, 0),
+    },
+  };
+}
+
 async function saveUkdocsGeneratedInvoicePdfResult(job) {
   const state = await readUkdocsState();
   const existingCollection = ukdocsPrintCollectionById(state.print_collections, job.collection_id);
@@ -15709,6 +15810,17 @@ async function handleApi(req, res, url) {
       sendJson(res, 200, { state: nextState });
       return;
     }
+  }
+
+  if (url.pathname === "/api/ukdocs-print/pipeline-monitor" && req.method === "GET") {
+    if (!requireAnyPermission(res, requestUser, [PERMISSIONS.UKDOCS_VIEW, PERMISSIONS.UKDOCS_CSI_VIEW])) {
+      return;
+    }
+    const targetDate = String(url.searchParams.get("date") || "").slice(0, 10) || localDateIso();
+    const state = await readUkdocsState();
+    const monitor = await buildUkdocsPipelineMonitor(state, targetDate);
+    sendJson(res, 200, monitor);
+    return;
   }
 
   if (url.pathname === "/api/ukdocs/import-examples" && req.method === "POST") {

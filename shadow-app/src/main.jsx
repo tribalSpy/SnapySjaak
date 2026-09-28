@@ -55,6 +55,7 @@ const PAGE_DEFINITIONS = [
   { key: "ukdocsprint", label: "UKDocs Zendings", permission: PERMISSIONS.UKDOCS_VIEW },
   { key: "ukdocsinspection", label: "Phyto Inspection", permission: PERMISSIONS.UKDOCS_INSPECTION_VIEW },
   { key: "ukdocscsi", label: "UKDocs CSI", permission: PERMISSIONS.UKDOCS_CSI_VIEW },
+  { key: "pipelinemonitor", label: "Pipeline Monitor", permission: PERMISSIONS.UKDOCS_VIEW },
   { key: "ericdocs", label: "Eric Docs", permission: PERMISSIONS.ERIC_DOCS_VIEW },
   { key: "pdkeuring", label: "PD Keuring", permission: PERMISSIONS.PD_KEURING_VIEW },
   { key: "inkoop", label: "Inkoop Controle", permission: PERMISSIONS.INKOOP_VIEW },
@@ -223,6 +224,11 @@ function pageHeading(page) {
       return {
         title: "UKDocs CSI",
         caption: "",
+      };
+    case "pipelinemonitor":
+      return {
+        title: "Pipeline Monitor",
+        caption: "What still needs to happen today, what's in flight right now, and what's stuck -- across invoice generation, PDF conversion, CSI audit, and papers sent.",
       };
     case "pdkeuring":
       return {
@@ -7803,6 +7809,144 @@ function ericDocsCheckStatus(check) {
   return { tone: "danger", label: check.error || `MISMATCH: phyto ${check.phyto_total} vs inspection ${check.inspection_total}` };
 }
 
+// One honest view over the invoice-generate -> PDF-convert -> CSI-audit ->
+// papers-sent pipeline for a day's shipments -- built after two confirmed
+// stuck-job bugs (invoice PDFs and CSI audits both silently never retrying)
+// so a stuck step is visible immediately here instead of only being
+// discovered when a shipment fails to actually go out. Polls every 30s
+// while open; the server-side watchdogs (every 3 min) do the actual fixing,
+// this just makes sure nobody has to find out by accident.
+function UkdocsPipelineMonitorPage({ onNavigate }) {
+  const [date, setDate] = useState(() => localDateIso());
+  const [data, setData] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState("");
+  const [onlyAttention, setOnlyAttention] = useState(false);
+
+  function load() {
+    setError("");
+    const params = new URLSearchParams({ date });
+    return apiJson(`/api/ukdocs-print/pipeline-monitor?${params.toString()}`)
+      .then((payload) => setData(payload))
+      .catch((loadError) => setError(loadError.message))
+      .finally(() => setLoading(false));
+  }
+
+  useEffect(() => {
+    setLoading(true);
+    load().catch(() => {});
+    const interval = setInterval(() => {
+      load().catch(() => {});
+    }, 30000);
+    return () => clearInterval(interval);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [date]);
+
+  function openShipment(row) {
+    requestUkdocsPrintOpen(row.collection_id, date);
+    onNavigate?.("ukdocsprint");
+  }
+
+  if (loading && !data) {
+    return <div className="notice">Loading pipeline monitor...</div>;
+  }
+
+  const rows = (data?.rows || []).filter((row) => !onlyAttention || row.needs_attention);
+
+  return (
+    <section className="overview-stack">
+      <div className="row-actions spread-actions">
+        <label>
+          <span>Date</span>
+          <input type="date" value={date} onChange={(event) => setDate(event.target.value)} />
+        </label>
+        <label>
+          <input type="checkbox" checked={onlyAttention} onChange={(event) => setOnlyAttention(event.target.checked)} />
+          <span> Only show what needs attention</span>
+        </label>
+        <button type="button" onClick={() => load()}>Refresh now</button>
+      </div>
+
+      {error && <div className="notice danger">{error}</div>}
+
+      {data && (
+        <div className="notice">
+          {data.summary.total} shipments for {data.date} -- {data.summary.needs_attention} need attention, {data.summary.stale_jobs} job(s) stuck past their retry threshold (auto-retried every 3 minutes). Refreshes automatically every 30 seconds.
+        </div>
+      )}
+
+      <div className="data-table-card">
+        <div className="table-wrap">
+          <table className="data-table">
+            <thead>
+              <tr>
+                <th>Shipment</th>
+                <th>What's left</th>
+                <th>CSI</th>
+                <th>Active jobs</th>
+                <th>Papers sent</th>
+                <th>Status</th>
+                <th></th>
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map((row) => (
+                <tr key={row.collection_id}>
+                  <td>
+                    <strong>{row.customer_name}</strong>
+                    <br />
+                    <small>{row.city_name}{row.reference_connect ? ` · Connect ${row.reference_connect}` : ""}{row.invoice_numbers ? ` · Invoices ${row.invoice_numbers}` : ""}</small>
+                  </td>
+                  <td>
+                    {row.complete
+                      ? <span className="ukdocs-status-badge success">Complete</span>
+                      : row.missing.map((item, index) => <div key={index}><small>{item}</small></div>)}
+                  </td>
+                  <td>
+                    {row.csi_status
+                      ? (
+                        <span className={`ukdocs-status-badge ${row.csi_status === "done" ? "success" : (row.csi_status === "failed" || row.csi_orphaned) ? "danger" : "info"}`}>
+                          {row.csi_status}{row.csi_elapsed_minutes !== null ? ` (${row.csi_elapsed_minutes}m)` : ""}
+                        </span>
+                      )
+                      : "-"}
+                  </td>
+                  <td>
+                    {row.active_jobs.length
+                      ? row.active_jobs.map((job, index) => (
+                        <div key={index}>
+                          <small>
+                            {job.job_type === "excel_to_pdf" ? "Invoice PDF" : "CSI audit"} · {job.status} · {job.elapsed_minutes}m
+                            {job.stale ? " -- stuck" : ""}
+                          </small>
+                        </div>
+                      ))
+                      : "-"}
+                  </td>
+                  <td>
+                    {row.papers_sent
+                      ? <span className="ukdocs-status-badge success">Sent</span>
+                      : <span className="ukdocs-status-badge muted">Not sent</span>}
+                  </td>
+                  <td>
+                    {row.needs_attention
+                      ? <span className="ukdocs-status-badge danger" title={row.attention_reasons.join("; ")}>Needs attention</span>
+                      : <span className="ukdocs-status-badge success">OK</span>}
+                  </td>
+                  <td><button type="button" onClick={() => openShipment(row)}>Open</button></td>
+                </tr>
+              ))}
+              {!rows.length && (
+                <tr><td colSpan={7}>{onlyAttention ? "Nothing needs attention right now." : "No shipments for this date."}</td></tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+  );
+}
+
 function EricDocsPage({ currentUser }) {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -9511,6 +9655,7 @@ function App() {
         {page === "ukdocsprint" && <UkdocsPrintPage currentUser={auth.user} />}
         {page === "ukdocsinspection" && <UkdocsInspectionPage currentUser={auth.user} />}
         {page === "ukdocscsi" && <UkdocsCSIPage currentUser={auth.user} />}
+        {page === "pipelinemonitor" && <UkdocsPipelineMonitorPage currentUser={auth.user} onNavigate={setPage} />}
         {page === "ericdocs" && <EricDocsPage currentUser={auth.user} />}
         {page === "pdkeuring" && <PdKeuringPage currentUser={auth.user} />}
         {page === "inkoop" && <InkoopControlePage currentUser={auth.user} />}
