@@ -7581,8 +7581,16 @@ async function runUkdocsInvoicePdfRetry() {
       if (alreadyHasPdf) {
         continue;
       }
-      const uploadedAt = new Date(document.uploaded_at || 0).getTime();
-      if (!uploadedAt || uploadedAt >= staleCutoff) {
+      // Generated files are written by saveUkdocsPrintBuffer, which stamps
+      // "saved_at" -- "uploaded_at" doesn't exist on these documents, so
+      // this always resolved to 0 and every document was skipped before it
+      // could ever be checked for staleness. Confirmed real: this is
+      // exactly why a job the poller reports as "succeeded" but whose PDF
+      // silently never got attached (see saveUkdocsGeneratedInvoicePdfResult's
+      // no-op paths) stayed stuck at "Invoices 0/1" forever -- this loop
+      // existed specifically to catch that case and never actually ran.
+      const savedAt = new Date(document.saved_at || 0).getTime();
+      if (!savedAt || savedAt >= staleCutoff) {
         continue;
       }
       const sourceStorageName = String(document.storage_name || "").trim();
@@ -7601,6 +7609,75 @@ async function runUkdocsInvoicePdfRetry() {
     }
   }
 
+  return { ok: true, checked: activeJobs.length, retried };
+}
+
+// A ukdocs_csi_audit job's max_attempts is 1 (see queueUkdocsCsiAudit), same
+// structural problem as excel_to_pdf above: claimNextLlmJob only ever picks
+// up status='pending' AND attempt_count < max_attempts, and a claimed job's
+// attempt_count already equals max_attempts the moment it's claimed, so it
+// can never be reclaimed on its own if the agent that took it crashes or
+// times out before calling back. Confirmed real (user-reported): the UI is
+// left showing "Queued for CSI" indefinitely, recoverable only by pressing
+// "Run CSI" again by hand -- unlike excel_to_pdf, there was no watchdog at
+// all for this job type. This does automatically what that button does.
+const UKDOCS_CSI_AUDIT_STALE_MINUTES = 10;
+
+async function runUkdocsCsiAuditRetry() {
+  if (!isDatabaseEnabled() || !llmPollerEnabled()) {
+    return { ok: true, checked: 0, retried: 0 };
+  }
+  const activeJobs = await getActiveLlmJobsByType("ukdocs_csi_audit");
+  const staleCutoff = Date.now() - UKDOCS_CSI_AUDIT_STALE_MINUTES * 60 * 1000;
+  const staleCollectionIds = new Set();
+  const staleGroupIds = new Set();
+  for (const job of activeJobs) {
+    const referenceTime = job.claimed_at || job.created_at;
+    const isStale = Boolean(referenceTime) && new Date(referenceTime).getTime() < staleCutoff;
+    if (isStale && job.collection_id) {
+      staleCollectionIds.add(job.collection_id);
+      const groupId = String(job.payload_json?.csi_group_id || "").trim();
+      if (groupId) {
+        staleGroupIds.add(groupId);
+      }
+    }
+  }
+  if (!staleCollectionIds.size) {
+    return { ok: true, checked: activeJobs.length, retried: 0 };
+  }
+
+  const state = await readUkdocsState();
+  let retried = 0;
+  for (const collectionId of staleCollectionIds) {
+    const collection = ukdocsPrintCollectionById(state.print_collections, collectionId);
+    if (!collection) {
+      continue;
+    }
+    // Every sibling job in the SAME stuck group -- not just the one this
+    // loop happened to find it through -- must be retired first, so a
+    // slower sibling can never finalize the old group after a fresh one has
+    // already started.
+    const groupJobs = activeJobs.filter((job) => (
+      job.collection_id === collectionId
+      && staleGroupIds.has(String(job.payload_json?.csi_group_id || "").trim())
+    ));
+    for (const job of groupJobs) {
+      // job.agent_name is "" for a job that was never claimed -- failLlmJob's
+      // WHERE clause requires it to match exactly, so this must be passed as
+      // stored rather than defaulted to a placeholder name.
+      await failLlmJob(job.id, job.agent_name, "Timed out waiting for the CSI audit agent -- redone automatically", false);
+    }
+    try {
+      const requeued = await queueUkdocsCsiAudit(collection, { username: "csi-audit-retry" });
+      if (Array.isArray(requeued) ? requeued.length : requeued) {
+        retried += 1;
+      }
+    } catch {
+      // Same as a human pressing "Run CSI" and it failing (e.g. a required
+      // document was removed since) -- nothing more to do automatically;
+      // the next scan tries again if it's still stuck.
+    }
+  }
   return { ok: true, checked: activeJobs.length, retried };
 }
 
@@ -19044,6 +19121,7 @@ async function startServer() {
   const serializedCsiSendQueue = serializeUkdocsPrintCollectionsJob(runUkdocsCsiSendQueue);
   const serializedEricDocsSendQueue = serializeUkdocsPrintCollectionsJob(runEricDocsSendQueue);
   const serializedInvoicePdfRetry = serializeUkdocsPrintCollectionsJob(runUkdocsInvoicePdfRetry);
+  const serializedCsiAuditRetry = serializeUkdocsPrintCollectionsJob(runUkdocsCsiAuditRetry);
 
   runIfOnline("UKdocs Zendingen Gmail auto-sync", serializedGmailAutoSync).catch(() => {});
   setInterval(() => {
@@ -19076,6 +19154,13 @@ async function startServer() {
   runIfOnline("UKdocs invoice PDF stale retry", serializedInvoicePdfRetry).catch(() => {});
   setInterval(() => {
     runIfOnline("UKdocs invoice PDF stale retry", serializedInvoicePdfRetry).catch(() => {});
+  }, 3 * 60 * 1000);
+
+  // Same reasoning as the invoice PDF retry above, for CSI audit jobs --
+  // no watchdog previously existed for this job type at all.
+  runIfOnline("UKdocs CSI audit stale retry", serializedCsiAuditRetry).catch(() => {});
+  setInterval(() => {
+    runIfOnline("UKdocs CSI audit stale retry", serializedCsiAuditRetry).catch(() => {});
   }, 3 * 60 * 1000);
 
   runIfOnline("Fust API import", runFustApiImportJob).catch(() => {});
