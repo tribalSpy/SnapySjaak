@@ -13658,7 +13658,8 @@ function InkoopControlePage() {
       setLastSkippedFiles(payload.import?.skipped_files || []);
       const r = payload.result || {};
       setMessage(
-        `Imported ${payload.import?.erp_row_count ?? 0} ERP rows and ${payload.import?.invoice_line_count ?? 0} invoice lines. `
+        `Imported ${payload.import?.erp_row_count ?? 0} ERP rows and ${payload.import?.invoice_line_count ?? 0} invoice lines`
+        + `${payload.dispatch_lot_count ? ` (${payload.dispatch_lot_count} of them with dispatch destinations, see the Destinations tab)` : ""}. `
         + `Live totals (last ${payload.window_days ?? windowDays} days): ${r.matched_ok?.length ?? 0} matched, ${r.matched_mismatch?.length ?? 0} mismatches, `
         + `${r.only_in_invoice?.length ?? 0} only in invoice, ${r.only_in_erp?.length ?? 0} only in ERP, `
         + `${r.supplier_not_linked?.length ?? 0} supplier not linked, ${r.ambiguous_matches?.length ?? 0} ambiguous.`,
@@ -13829,6 +13830,7 @@ function InkoopControlePage() {
         <div className="notice">
           No live mailbox yet -- for now, save the day's veiling emails (Klokfactuur, Connect factuur, Factuur handel aankopen, AI2 Dagnota) as .msg files -- both the XML and PDF version of each -- zip them all together, and upload that zip with the ERP "Screen" export (.xlsx or .csv) for the same period. The PDF companions are what let you open the original invoice from a mismatch later.
           Every line's real date is read straight from the invoice, so the date below is only used as a fallback and for the import history log.
+          If the ERP export includes "Dispatched to" rows, they're read from this same file too -- see the Destinations tab.
         </div>
         <div className="form-grid">
           <label>
@@ -14576,12 +14578,9 @@ function InkoopRetourStatusBadge({ status }) {
 // matchInkoopVeilingLines already netted against whether it actually went
 // to one of FloraHolland's own "retour" (return) accounts.
 function InkoopDestinationsTab() {
-  const [dispatchFile, setDispatchFile] = useState(null);
-  const [uploading, setUploading] = useState(false);
   const [summary, setSummary] = useState(null);
   const [corrections, setCorrections] = useState([]);
   const [loading, setLoading] = useState(true);
-  const [message, setMessage] = useState("");
   const [error, setError] = useState("");
 
   function load() {
@@ -14604,54 +14603,16 @@ function InkoopDestinationsTab() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  async function uploadDispatchDump() {
-    if (!dispatchFile) {
-      setError("Choose the dispatch dump export first.");
-      return;
-    }
-    setUploading(true);
-    setError("");
-    setMessage("");
-    try {
-      const contentBase64 = await fileToBase64(dispatchFile);
-      const payload = await apiJson("/api/inkoop/dispatch/upload", {
-        method: "POST",
-        body: JSON.stringify({ dispatch_file: { name: dispatchFile.name, content_base64: contentBase64 } }),
-      });
-      setMessage(`Loaded ${payload.lot_count} purchase lots and their dispatch destinations.`);
-      await load();
-    } catch (uploadError) {
-      setError(uploadError.message);
-    } finally {
-      setUploading(false);
-    }
-  }
-
   if (loading && !summary) {
     return <div className="notice">Loading destinations...</div>;
   }
 
   return (
     <>
-      <div className="data-table-card">
-        <div className="section-header"><h2>Dispatch dump</h2></div>
-        <div className="notice">
-          A separate, independently-scheduled upload -- the ERP "Screen" export, now carrying a "Dispatched to : &lt;code&gt;" row after every purchase lot, showing where that lot's stock actually went. Re-upload any time a newer export is available; lots merge in by their own number, nothing is lost.
-        </div>
-        <div className="form-grid">
-          <label>
-            <span>Dispatch dump (.csv)</span>
-            <input type="file" accept=".csv" onChange={(event) => setDispatchFile(event.target.files?.[0] || null)} />
-          </label>
-        </div>
-        <div className="row-actions spread-actions">
-          <button type="button" onClick={uploadDispatchDump} disabled={uploading}>
-            {uploading ? "Uploading..." : "Upload dispatch dump"}
-          </button>
-        </div>
+      <div className="notice">
+        No separate upload here -- the same ERP export you upload on Compare &amp; Reconcile now also carries a "Dispatched to : &lt;code&gt;" row after every purchase lot, showing where that lot's stock actually went. It's read from that one upload automatically; nothing extra to do.
       </div>
 
-      {message && <div className="notice">{message}</div>}
       {error && <div className="notice danger">{error}</div>}
 
       {summary && (

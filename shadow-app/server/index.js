@@ -17445,6 +17445,21 @@ async function handleApi(req, res, url) {
       // everything accumulated so far (not just this upload's pair) -- this
       // is what lets an invoice find a purchase recorded on a different day.
       await saveInkoopErpLines(erpRows);
+      // The exact same ERP export now also carries "Dispatched to : <code>"
+      // rows after each purchase lot (confirmed real: byte-for-byte the same
+      // column format as the ERP file itself, just with these extra rows
+      // interleaved) -- extracted from this one upload too, so there's
+      // nothing separate to keep in sync. Best-effort: an older export with
+      // no such rows just yields lots with no dispatches yet, and any
+      // parsing hiccup here must never block the invoice reconciliation.
+      let dispatchLotCount = 0;
+      try {
+        const dispatchLots = await parseInkoopDispatchDump(body?.erp_file);
+        await saveInkoopDispatchLots(dispatchLots);
+        dispatchLotCount = dispatchLots.length;
+      } catch {
+        dispatchLotCount = 0;
+      }
       await saveInkoopInvoiceLines(flatInvoiceLines);
       await saveInkoopInvoicePdfs(veiling.pdfs);
       const rawResult = await computeInkoopLiveMatch(state, inkoopDefaultWindowRange(INKOOP_MATCH_WINDOW_DAYS));
@@ -17461,7 +17476,7 @@ async function handleApi(req, res, url) {
       });
       state.imports = [importRecord, ...state.imports].slice(0, 200);
       await writeInkoopState(state);
-      sendJson(res, 200, { import: importRecord, imports: state.imports, result, window_days: INKOOP_MATCH_WINDOW_DAYS });
+      sendJson(res, 200, { import: importRecord, imports: state.imports, result, window_days: INKOOP_MATCH_WINDOW_DAYS, dispatch_lot_count: dispatchLotCount });
     } catch (error) {
       sendJson(res, 400, { error: error instanceof Error ? error.message : String(error) });
     }
@@ -17725,26 +17740,6 @@ async function handleApi(req, res, url) {
     ];
     await writeInkoopState(state);
     sendJson(res, 200, { manual_supplier_links: state.manual_supplier_links });
-    return;
-  }
-
-  // The dispatch dump -- separate from, and much larger than, the master-
-  // data files (a running month can be 30MB+), so uploaded on its own
-  // schedule rather than tied to a specific compare run. Upserted by lot
-  // number, so re-uploading a later, more complete export just fills in/
-  // refreshes lots, never loses earlier ones.
-  if (url.pathname === "/api/inkoop/dispatch/upload" && req.method === "POST") {
-    if (!requirePermission(res, requestUser, PERMISSIONS.INKOOP_VIEW)) {
-      return;
-    }
-    const body = await readRequestJson(req, 60 * 1024 * 1024);
-    try {
-      const lots = await parseInkoopDispatchDump(body?.dispatch_file);
-      await saveInkoopDispatchLots(lots);
-      sendJson(res, 200, { lot_count: lots.length });
-    } catch (error) {
-      sendJson(res, 400, { error: error instanceof Error ? error.message : String(error) });
-    }
     return;
   }
 
