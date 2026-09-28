@@ -13575,10 +13575,12 @@ function InkoopControlePage() {
   const [veilingZip, setVeilingZip] = useState(null);
   const [kwekersFile, setKwekersFile] = useState(null);
   const [leveranciersFile, setLeveranciersFile] = useState(null);
+  const [klantFile, setKlantFile] = useState(null);
   const [uploadingSuppliers, setUploadingSuppliers] = useState(false);
   const [supplierCount, setSupplierCount] = useState(0);
   const [supplierNameCount, setSupplierNameCount] = useState(0);
   const [supplierFhCount, setSupplierFhCount] = useState(0);
+  const [customerCount, setCustomerCount] = useState(0);
   const [manualLinks, setManualLinks] = useState([]);
   const [manualLinkDrafts, setManualLinkDrafts] = useState({});
   const [message, setMessage] = useState("");
@@ -13594,6 +13596,7 @@ function InkoopControlePage() {
       setSupplierCount(payload.supplier_count || 0);
       setSupplierNameCount(payload.supplier_name_count || 0);
       setSupplierFhCount(payload.supplier_fh_count || 0);
+      setCustomerCount(payload.customer_count || 0);
       setManualLinks(payload.manual_supplier_links || []);
     });
   }
@@ -13669,7 +13672,7 @@ function InkoopControlePage() {
   }
 
   async function uploadSupplierMasters() {
-    if (!kwekersFile && !leveranciersFile) {
+    if (!kwekersFile && !leveranciersFile && !klantFile) {
       setError("Choose at least one master data file first.");
       return;
     }
@@ -13677,21 +13680,24 @@ function InkoopControlePage() {
     setError("");
     setMessage("");
     try {
-      const [kwekersBase64, leveranciersBase64] = await Promise.all([
+      const [kwekersBase64, leveranciersBase64, klantBase64] = await Promise.all([
         kwekersFile ? fileToBase64(kwekersFile) : null,
         leveranciersFile ? fileToBase64(leveranciersFile) : null,
+        klantFile ? fileToBase64(klantFile) : null,
       ]);
       const payload = await apiJson("/api/inkoop/suppliers/upload", {
         method: "POST",
         body: JSON.stringify({
           kwekers_file: kwekersFile ? { name: kwekersFile.name, content_base64: kwekersBase64 } : null,
           leveranciers_file: leveranciersFile ? { name: leveranciersFile.name, content_base64: leveranciersBase64 } : null,
+          klant_file: klantFile ? { name: klantFile.name, content_base64: klantBase64 } : null,
         }),
       });
       setSupplierCount(payload.supplier_count || 0);
       setSupplierNameCount(payload.supplier_name_count || 0);
       setSupplierFhCount(payload.supplier_fh_count || 0);
-      setMessage(`Supplier master updated: ${payload.supplier_count} linked by GLN, ${payload.supplier_fh_count} more by grower number, ${payload.supplier_name_count} more by name only.`);
+      setCustomerCount(payload.customer_count || 0);
+      setMessage(`Master data updated: ${payload.supplier_count} suppliers linked by GLN, ${payload.supplier_fh_count} more by grower number, ${payload.supplier_name_count} more by name only, ${payload.customer_count} customers loaded from klant gegevens.`);
     } catch (uploadError) {
       setError(uploadError.message);
     } finally {
@@ -13749,6 +13755,8 @@ function InkoopControlePage() {
         <button type="button" className={activeTab === "calendar" ? "active" : ""} onClick={() => setActiveTab("calendar")}>Calendar</button>
         <button type="button" className={activeTab === "dashboard" ? "active" : ""} onClick={() => setActiveTab("dashboard")}>Financial Dashboard</button>
         <button type="button" className={activeTab === "followup" ? "active" : ""} onClick={() => setActiveTab("followup")}>Follow-up</button>
+        <button type="button" className={activeTab === "destinations" ? "active" : ""} onClick={() => setActiveTab("destinations")}>Destinations</button>
+        <button type="button" className={activeTab === "settings" ? "active" : ""} onClick={() => setActiveTab("settings")}>Settings</button>
       </div>
 
       {message && <div className="notice">{message}</div>}
@@ -13767,13 +13775,15 @@ function InkoopControlePage() {
 
       {activeTab === "dashboard" && <InkoopDashboardTab company={selectedCompany} />}
 
-      {activeTab === "compare" && (
-      <>
+      {activeTab === "destinations" && <InkoopDestinationsTab />}
+
+      {activeTab === "settings" && (
       <div className="data-table-card">
-        <div className="section-header"><h2>Supplier master data</h2></div>
+        <div className="section-header"><h2>Master data</h2></div>
         <div className="notice">
-          {supplierCount} suppliers currently linked by GLN, {supplierFhCount} more by grower number (Kwekercod), {supplierNameCount} more only by name (from "kwekers stamgegevens"/"leveranciers stamgegevens").
-          Upload either file again any time it's refreshed -- entries merge in, nothing is removed.
+          Upload each file once here -- it's remembered from then on. Re-upload any of them any time it's refreshed; entries merge in, nothing is removed.
+          {" "}{supplierCount} suppliers linked by GLN, {supplierFhCount} more by grower number (Kwekercod), {supplierNameCount} more only by name (from "kwekers stamgegevens"/"leveranciers stamgegevens").
+          {" "}{customerCount} customers loaded from "klant gegevens" (used to resolve dispatch destinations on the Destinations tab).
         </div>
         <div className="form-grid">
           <label>
@@ -13784,10 +13794,14 @@ function InkoopControlePage() {
             <span>Leveranciers stamgegevens (.csv)</span>
             <input type="file" accept=".csv" onChange={(event) => setLeveranciersFile(event.target.files?.[0] || null)} />
           </label>
+          <label>
+            <span>Klant gegevens (.csv)</span>
+            <input type="file" accept=".csv" onChange={(event) => setKlantFile(event.target.files?.[0] || null)} />
+          </label>
         </div>
         <div className="row-actions spread-actions">
           <button type="button" onClick={uploadSupplierMasters} disabled={uploadingSuppliers}>
-            {uploadingSuppliers ? "Uploading..." : "Upload supplier master data"}
+            {uploadingSuppliers ? "Uploading..." : "Upload master data"}
           </button>
         </div>
         {!!manualLinks.length && (
@@ -13806,7 +13820,10 @@ function InkoopControlePage() {
           </>
         )}
       </div>
+      )}
 
+      {activeTab === "compare" && (
+      <>
       <div className="data-table-card">
         <div className="section-header"><h2>Compare a day</h2></div>
         <div className="notice">
@@ -14534,6 +14551,196 @@ function InkoopFollowUpTab({ company }) {
         </div>
       )}
     </div>
+  );
+}
+
+const INKOOP_RETOUR_STATUS_LABELS = {
+  confirmed_return: "Confirmed return",
+  partial_return: "Partially returned",
+  not_return: "Not returned - investigate",
+  no_dispatch_data: "No dispatch data yet",
+};
+
+function InkoopRetourStatusBadge({ status }) {
+  const tone = status === "confirmed_return" ? "success"
+    : status === "no_dispatch_data" ? "muted"
+    : "danger";
+  return <span className={`ukdocs-status-badge ${tone}`}>{INKOOP_RETOUR_STATUS_LABELS[status] || status}</span>;
+}
+
+// The dispatch dump -- who each purchase lot's stock actually got sent to
+// (klant gegevens' "Vkn" code) -- is a separate, independently-scheduled
+// upload from the day-to-day Klokfactuur/Connect/Handel reconciliation, so
+// this tab has its own upload, and two views over the same joined data:
+// a sold-per-country overview, and a check of every correction
+// matchInkoopVeilingLines already netted against whether it actually went
+// to one of FloraHolland's own "retour" (return) accounts.
+function InkoopDestinationsTab() {
+  const [dispatchFile, setDispatchFile] = useState(null);
+  const [uploading, setUploading] = useState(false);
+  const [summary, setSummary] = useState(null);
+  const [corrections, setCorrections] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [message, setMessage] = useState("");
+  const [error, setError] = useState("");
+
+  function load() {
+    setLoading(true);
+    setError("");
+    return Promise.all([
+      apiJson("/api/inkoop/destinations/summary"),
+      apiJson("/api/inkoop/destinations/corrections"),
+    ])
+      .then(([summaryPayload, correctionsPayload]) => {
+        setSummary(summaryPayload);
+        setCorrections(correctionsPayload.checks || []);
+      })
+      .catch((loadError) => setError(loadError.message))
+      .finally(() => setLoading(false));
+  }
+
+  useEffect(() => {
+    load().catch(() => {});
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  async function uploadDispatchDump() {
+    if (!dispatchFile) {
+      setError("Choose the dispatch dump export first.");
+      return;
+    }
+    setUploading(true);
+    setError("");
+    setMessage("");
+    try {
+      const contentBase64 = await fileToBase64(dispatchFile);
+      const payload = await apiJson("/api/inkoop/dispatch/upload", {
+        method: "POST",
+        body: JSON.stringify({ dispatch_file: { name: dispatchFile.name, content_base64: contentBase64 } }),
+      });
+      setMessage(`Loaded ${payload.lot_count} purchase lots and their dispatch destinations.`);
+      await load();
+    } catch (uploadError) {
+      setError(uploadError.message);
+    } finally {
+      setUploading(false);
+    }
+  }
+
+  if (loading && !summary) {
+    return <div className="notice">Loading destinations...</div>;
+  }
+
+  return (
+    <>
+      <div className="data-table-card">
+        <div className="section-header"><h2>Dispatch dump</h2></div>
+        <div className="notice">
+          A separate, independently-scheduled upload -- the ERP "Screen" export, now carrying a "Dispatched to : &lt;code&gt;" row after every purchase lot, showing where that lot's stock actually went. Re-upload any time a newer export is available; lots merge in by their own number, nothing is lost.
+        </div>
+        <div className="form-grid">
+          <label>
+            <span>Dispatch dump (.csv)</span>
+            <input type="file" accept=".csv" onChange={(event) => setDispatchFile(event.target.files?.[0] || null)} />
+          </label>
+        </div>
+        <div className="row-actions spread-actions">
+          <button type="button" onClick={uploadDispatchDump} disabled={uploading}>
+            {uploading ? "Uploading..." : "Upload dispatch dump"}
+          </button>
+        </div>
+      </div>
+
+      {message && <div className="notice">{message}</div>}
+      {error && <div className="notice danger">{error}</div>}
+
+      {summary && (
+        <div className="data-table-card">
+          <div className="section-header"><h2>Sold per country</h2></div>
+          <div className="notice">
+            {summary.lot_count} purchase lots, {summary.total_pieces.toLocaleString()} pieces dispatched, {formatInkoopEuro(summary.total_value)} (apportioned from each lot's own value by dispatched piece share) -- {summary.from} to {summary.to}.
+          </div>
+          <div className="table-wrap">
+            <table className="data-table">
+              <thead>
+                <tr><th>Country</th><th>Pieces</th><th>Value</th><th>Retour pieces</th><th>Customers</th></tr>
+              </thead>
+              <tbody>
+                {summary.countries.map((row) => (
+                  <tr key={row.country}>
+                    <td>{row.country}</td>
+                    <td>{row.pieces.toLocaleString()}</td>
+                    <td>{formatInkoopEuro(row.value)}</td>
+                    <td>{row.retour_pieces ? row.retour_pieces.toLocaleString() : "-"}</td>
+                    <td>{row.customer_count}</td>
+                  </tr>
+                ))}
+                {!summary.countries.length && (
+                  <tr><td colSpan={5}>No dispatch data uploaded yet.</td></tr>
+                )}
+              </tbody>
+            </table>
+          </div>
+          {!!summary.unresolved_codes.length && (
+            <>
+              <div className="section-header"><h3>Unresolved destination codes ({summary.unresolved_codes.length})</h3></div>
+              <div className="notice">
+                These "Dispatched to" codes weren't found in the uploaded "klant gegevens" -- re-upload a newer export on the Settings tab once they're added there.
+              </div>
+              <div className="table-wrap">
+                <table className="data-table">
+                  <thead><tr><th>Code</th><th>Pieces</th></tr></thead>
+                  <tbody>
+                    {summary.unresolved_codes.map((row) => (
+                      <tr key={row.code}><td>{row.code}</td><td>{row.pieces.toLocaleString()}</td></tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </>
+          )}
+        </div>
+      )}
+
+      <div className="data-table-card">
+        <div className="section-header"><h2>Corrections check ({corrections.length})</h2></div>
+        <div className="notice">
+          Every Klokfactuur/Connect correction already reconciled against the ERP (see Compare &amp; Reconcile) -- cross-checked here against the dispatch dump to confirm it actually went back to one of FloraHolland's own "retour" accounts, not somewhere else.
+        </div>
+        <div className="table-wrap">
+          <table className="data-table">
+            <thead>
+              <tr><th>Date</th><th>Invoice</th><th>PAV</th><th>Description</th><th>Quantity</th><th>Value</th><th>Status</th><th>Destination(s)</th></tr>
+            </thead>
+            <tbody>
+              {corrections.map((item, index) => (
+                <tr key={`${item.invoice_number}-${item.pav}-${index}`}>
+                  <td>{inkoopShortDate(item.invoice_date)}</td>
+                  <td><InkoopInvoiceLink invoiceNumber={item.invoice_number} /></td>
+                  <td>{item.pav}</td>
+                  <td>{item.description}</td>
+                  <td>{item.quantity}</td>
+                  <td>{formatInkoopEuro(item.total)}</td>
+                  <td><InkoopRetourStatusBadge status={item.status} /></td>
+                  <td>
+                    {item.lots.flatMap((lot) => lot.destinations).length
+                      ? item.lots.flatMap((lot) => lot.destinations).map((dest, destIndex) => (
+                        <div key={`${dest.code}-${destIndex}`}>
+                          {dest.pieces} &rarr; {dest.code}{dest.name ? ` (${dest.name}${dest.land ? `, ${dest.land}` : ""})` : ""}{dest.is_retour ? " [retour]" : ""}
+                        </div>
+                      ))
+                      : "-"}
+                  </td>
+                </tr>
+              ))}
+              {!corrections.length && (
+                <tr><td colSpan={8}>No open corrections in the current matching window.</td></tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </>
   );
 }
 

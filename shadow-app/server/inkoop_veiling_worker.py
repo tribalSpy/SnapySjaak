@@ -577,6 +577,126 @@ def parse_suppliers(kwekers_path: Path, leveranciers_path: Path):
     return {"by_gln": by_gln, "by_name": by_name, "by_fh": by_fh}
 
 
+def find_header_row_by_column(all_rows, column_name):
+    target = normalize_header(column_name)
+    for idx, row in enumerate(all_rows):
+        normalized = [normalize_header(value) for value in row]
+        if target in normalized:
+            return normalized, all_rows[idx + 1:]
+    return None, []
+
+
+# "klant gegevens" (customer master data) is the same fixed-width "Screen"
+# export shape as the ERP/supplier dumps, keyed by "Vkn" -- the customer
+# code that appears verbatim as the destination on a dispatch dump's
+# "Dispatched to : <code>" rows (see parse_dispatch_dump), confirmed real by
+# cross-referencing both files. "Tgrp B"/"Tgrp P" (bloemen/planten trade
+# group) both being "119" is FloraHolland's own signal for a "retour"
+# (return) account -- confirmed real: every one of the 12 customers
+# carrying it is literally named "retour bloemen/planten ...".
+KLANT_RETOUR_TGRP = "119"
+
+
+def parse_klant_gegevens(input_path: Path):
+    is_csv = str(input_path).lower().endswith(".csv")
+    all_rows = load_erp_csv_rows(input_path) if is_csv else load_erp_xlsx_rows(input_path)
+    headers, data_rows = find_header_row_by_column(all_rows, "Vkn")
+    if headers is None:
+        return {"by_code": {}, "error": "Could not find a header row containing Vkn in this file"}
+
+    idx = {name: i for i, name in enumerate(headers)}
+
+    def get(row, key):
+        col = idx.get(key)
+        if col is None or col >= len(row):
+            return ""
+        return clean_text(row[col])
+
+    by_code = {}
+    for row in data_rows:
+        if not any(clean_text(value) for value in row):
+            continue
+        code = get(row, "vkn")
+        if not code:
+            continue
+        tgrp_b = get(row, "tgrp_b")
+        tgrp_p = get(row, "tgrp_p")
+        by_code[code] = {
+            "name": get(row, "naam"),
+            "land": get(row, "lan"),
+            "gebied": get(row, "gebi"),
+            "tgrp_b": tgrp_b,
+            "tgrp_p": tgrp_p,
+            "type": get(row, "type"),
+            "is_retour": tgrp_b == KLANT_RETOUR_TGRP or tgrp_p == KLANT_RETOUR_TGRP,
+        }
+    return {"by_code": by_code}
+
+
+DISPATCHED_TO_RE = re.compile(r"^Dispatched to\s*:\s*(.+)$", re.IGNORECASE)
+
+
+# The ERP "Screen" export can now include, immediately after each purchase
+# lot's own row, one or more extra rows recording where that lot's stock
+# actually went -- Description reads "Dispatched to : <customer code>",
+# every other purchase-only field left blank, only Deb.no./Inv.no./Pieces
+# filled in. Confirmed real: summing a lot's dispatched pieces recovers its
+# own Pieces value (with a small, expected shortfall for stock not yet
+# fully distributed at export time); a lot with no dispatch rows at all is
+# always an Accessoires (T=A) packaging/material row, never tracked to an
+# individual customer. Paired purely by file order -- a dispatch row always
+# immediately follows the lot row it belongs to.
+def parse_dispatch_dump(input_path: Path):
+    is_csv = str(input_path).lower().endswith(".csv")
+    all_rows = load_erp_csv_rows(input_path) if is_csv else load_erp_xlsx_rows(input_path)
+    headers, data_rows = find_erp_header(all_rows)
+    if headers is None:
+        return {"lots": [], "error": "Could not find a header row containing PAV in this file"}
+
+    idx = {name: i for i, name in enumerate(headers)}
+
+    def get(row, key):
+        col = idx.get(key)
+        if col is None or col >= len(row):
+            return ""
+        return clean_text(row[col])
+
+    lots = []
+    current = None
+    for row in data_rows:
+        if not any(clean_text(value) for value in row):
+            continue
+        description = get(row, "description")
+        dispatch_match = DISPATCHED_TO_RE.match(description)
+        if dispatch_match:
+            if current is not None:
+                current["dispatches"].append({
+                    "code": dispatch_match.group(1).strip(),
+                    "pieces": parse_number(get(row, "pieces")),
+                    "deb_no": get(row, "deb_no"),
+                    "inv_no": get(row, "inv_no"),
+                })
+            continue
+        lot = get(row, "lot")
+        date_text = get(row, "date")
+        if not lot or not date_text:
+            current = None
+            continue
+        current = {
+            "lot": lot,
+            "pav": get(row, "pav"),
+            "date": normalize_erp_date(date_text),
+            "suppl": get(row, "suppl"),
+            "description": description,
+            "pieces": parse_number(get(row, "pieces")),
+            "price": parse_number(get(row, "price")),
+            "t_price": parse_number(get(row, "t_price")),
+            "dispatches": [],
+        }
+        lots.append(current)
+    return {"lots": lots}
+
+
 # Klokfactuur/Connect/Handel messages carry the CII XML this tool parses;
 # AI2 messages carry a "Productnota" PDF instead (its "Dagnota" zip/XML is a
 # settlement summary with no itemized data, confirmed useless -- see
@@ -665,6 +785,12 @@ def main():
     suppliers_parser.add_argument("--kwekers", required=False, default="")
     suppliers_parser.add_argument("--leveranciers", required=False, default="")
 
+    klant_parser = subparsers.add_parser("parse-klant-gegevens")
+    klant_parser.add_argument("--input", required=True)
+
+    dispatch_parser = subparsers.add_parser("parse-dispatch-dump")
+    dispatch_parser.add_argument("--input", required=True)
+
     args = parser.parse_args()
 
     if args.command == "parse-erp":
@@ -675,6 +801,10 @@ def main():
         kwekers_path = Path(args.kwekers) if args.kwekers else None
         leveranciers_path = Path(args.leveranciers) if args.leveranciers else None
         print(json.dumps(parse_suppliers(kwekers_path, leveranciers_path)))
+    elif args.command == "parse-klant-gegevens":
+        print(json.dumps(parse_klant_gegevens(Path(args.input))))
+    elif args.command == "parse-dispatch-dump":
+        print(json.dumps(parse_dispatch_dump(Path(args.input))))
 
 
 if __name__ == "__main__":

@@ -298,6 +298,85 @@ export async function saveInkoopInvoiceLines(lines) {
   }
 }
 
+export async function saveInkoopDispatchLots(lots) {
+  if (!pool || !Array.isArray(lots) || !lots.length) {
+    return;
+  }
+  const validLots = lots.filter((lot) => numberOrNull(lot?.lot) !== null);
+  for (const chunk of chunkArray(validLots, INKOOP_UPSERT_CHUNK_SIZE)) {
+    const values = [];
+    const placeholders = chunk.map((lot) => {
+      const base = values.length;
+      values.push(
+        numberOrNull(lot.lot),
+        lot.date || null,
+        lot.pav || "",
+        lot.suppl || "",
+        lot.description || "",
+        numberOrNull(lot.pieces),
+        numberOrNull(lot.price),
+        numberOrNull(lot.t_price),
+        JSON.stringify(Array.isArray(lot.dispatches) ? lot.dispatches : []),
+      );
+      return `($${base + 1}, $${base + 2}::date, $${base + 3}, $${base + 4}, $${base + 5}, $${base + 6}, $${base + 7}, $${base + 8}, $${base + 9}::jsonb)`;
+    });
+    await pool.query(
+      `
+        INSERT INTO inkoop_dispatch_lots (
+          lot, erp_date, pav, suppl, description, pieces, price, t_price, dispatches
+        )
+        VALUES ${placeholders.join(", ")}
+        ON CONFLICT (lot) DO UPDATE SET
+          erp_date = EXCLUDED.erp_date,
+          pav = EXCLUDED.pav,
+          suppl = EXCLUDED.suppl,
+          description = EXCLUDED.description,
+          pieces = EXCLUDED.pieces,
+          price = EXCLUDED.price,
+          t_price = EXCLUDED.t_price,
+          dispatches = EXCLUDED.dispatches,
+          updated_at = now()
+      `,
+      values,
+    );
+  }
+}
+
+export async function getInkoopDispatchLots({ from, to } = {}) {
+  if (!pool) {
+    return [];
+  }
+  const result = await pool.query(
+    `
+      SELECT lot, erp_date, pav, suppl, description, pieces, price, t_price, dispatches
+      FROM inkoop_dispatch_lots
+      WHERE erp_date IS NULL OR (erp_date >= $1 AND erp_date <= $2)
+      ORDER BY lot
+    `,
+    [from, to],
+  );
+  return result.rows;
+}
+
+export async function getInkoopDispatchLotsByLots(lotNumbers) {
+  if (!pool || !Array.isArray(lotNumbers) || !lotNumbers.length) {
+    return [];
+  }
+  const validLots = [...new Set(lotNumbers.map((lot) => numberOrNull(lot)).filter((lot) => lot !== null))];
+  if (!validLots.length) {
+    return [];
+  }
+  const result = await pool.query(
+    `
+      SELECT lot, erp_date, pav, suppl, description, pieces, price, t_price, dispatches
+      FROM inkoop_dispatch_lots
+      WHERE lot = ANY($1::bigint[])
+    `,
+    [validLots],
+  );
+  return result.rows;
+}
+
 export async function getInkoopErpLines({ from, to } = {}) {
   if (!pool) {
     return [];
@@ -1523,6 +1602,31 @@ const databaseMigrations = [
       updated_by text,
       updated_at timestamptz NOT NULL DEFAULT now()
     )
+  `,
+  // One row per ERP purchase lot, carrying the "Dispatched to : <customer
+  // code>" rows the ERP "Screen" export now interleaves after each lot --
+  // where that lot's stock actually went. A separate, independently
+  // scheduled upload from the day-to-day Klokfactuur/Connect/Handel
+  // reconciliation ledger (inkoop_erp_lines) -- keyed the same way (lot) but
+  // deliberately its own table, since it's sourced from its own dump file on
+  // its own cadence, not tied to a specific invoice-compare run.
+  `
+    CREATE TABLE IF NOT EXISTS inkoop_dispatch_lots (
+      lot bigint PRIMARY KEY,
+      erp_date date,
+      pav text,
+      suppl text,
+      description text,
+      pieces numeric,
+      price numeric,
+      t_price numeric,
+      dispatches jsonb NOT NULL DEFAULT '[]'::jsonb,
+      imported_at timestamptz NOT NULL DEFAULT now(),
+      updated_at timestamptz NOT NULL DEFAULT now()
+    )
+  `,
+  `
+    CREATE INDEX IF NOT EXISTS inkoop_dispatch_lots_date_idx ON inkoop_dispatch_lots (erp_date)
   `,
 ];
 

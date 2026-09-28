@@ -20,6 +20,8 @@ import {
   getFustDatabaseStats,
   getDatabaseStatus,
   getInkoopCompanies,
+  getInkoopDispatchLots,
+  getInkoopDispatchLotsByLots,
   getInkoopErpLines,
   getInkoopInvoiceLines,
   getInkoopIssueStatuses,
@@ -35,6 +37,7 @@ import {
   saveUkdocsCsiParsedDocumentToDatabase,
   saveFustActionToDatabase,
   saveFustReferenceAction,
+  saveInkoopDispatchLots,
   saveInkoopErpLines,
   saveInkoopInvoiceLines,
   saveInkoopIssueStatus,
@@ -5960,6 +5963,42 @@ async function parseInkoopSupplierMaster({ kwekers_file: kwekersFile, leverancie
   };
 }
 
+// "klant gegevens" (customer master) -- keyed by "Vkn", the exact code a
+// dispatch dump's "Dispatched to : <code>" rows carry (see
+// parseInkoopDispatchDump). Confirmed real: 12 customer codes carry Tgrp
+// B/Tgrp P "119" and are literally named "retour bloemen/planten ..." --
+// FloraHolland's own signal for a return-to-grower/auction/supplier
+// account, used to tell a genuine correction/return apart from stock that
+// was actually resold elsewhere. Uploaded once alongside the kwekers/
+// leveranciers master data (same settings screen), remembered from then on.
+async function parseInkoopKlantGegevens(filePayload) {
+  const inputPath = await writeInkoopUploadToTempFile(filePayload, "inkoop-klant-", ".csv");
+  const output = await runInkoopVeilingWorker(["parse-klant-gegevens", "--input", inputPath]);
+  const payload = JSON.parse(output.toString("utf8"));
+  if (payload?.error) {
+    throw new Error(payload.error);
+  }
+  return payload?.by_code && typeof payload.by_code === "object" ? payload.by_code : {};
+}
+
+// The dispatch dump -- a separate, independently-scheduled upload (not tied
+// to a specific Klokfactuur/Connect/Handel compare run, and considerably
+// larger than the master-data files): every purchase lot's own row,
+// immediately followed by one or more "Dispatched to : <code>" rows
+// recording where that lot's stock actually went. Confirmed real against a
+// 130k-row sample: summing a lot's dispatched pieces recovers its own
+// Pieces value; a lot with no dispatch rows at all is always Accessoires
+// (T=A) packaging/material, never tracked to an individual customer.
+async function parseInkoopDispatchDump(filePayload) {
+  const inputPath = await writeInkoopUploadToTempFile(filePayload, "inkoop-dispatch-", ".csv");
+  const output = await runInkoopVeilingWorker(["parse-dispatch-dump", "--input", inputPath]);
+  const payload = JSON.parse(output.toString("utf8"));
+  if (payload?.error) {
+    throw new Error(payload.error);
+  }
+  return Array.isArray(payload?.lots) ? payload.lots : [];
+}
+
 // Mirrors inkoop_veiling_worker.py's normalize_supplier_name exactly (same
 // two sides of the same comparison must normalize the same way). Master
 // data names are terse ("DUTCH GREEN CENTRE"); names on real invoices/AI2
@@ -6471,7 +6510,7 @@ function matchInkoopVeilingLines(erpRows, invoices, supplierMap = {}, supplierNa
   };
 }
 
-const defaultInkoopState = { imports: [], supplier_map: {}, supplier_name_map: {}, supplier_fh_map: {}, manual_supplier_links: [] };
+const defaultInkoopState = { imports: [], supplier_map: {}, supplier_name_map: {}, supplier_fh_map: {}, customer_map: {}, manual_supplier_links: [] };
 
 // Every compare/upload used to be matched in isolation and its full result
 // (every matched/mismatched/unmatched line) pushed onto this list forever --
@@ -6523,11 +6562,37 @@ function normalizeInkoopSupplierEntryMap(source) {
   return result;
 }
 
+// "klant gegevens" (customer master) entries -- keyed by Vkn code, carrying
+// country/region/trade-group info instead of an internal short code, so
+// this is a different shape than normalizeInkoopSupplierEntryMap.
+function normalizeInkoopCustomerEntryMap(source) {
+  const result = {};
+  if (source && typeof source === "object") {
+    for (const [key, info] of Object.entries(source)) {
+      const normalizedKey = normalizeUkdocsText(key).toUpperCase();
+      if (!normalizedKey) {
+        continue;
+      }
+      result[normalizedKey] = {
+        name: normalizeUkdocsText(info?.name),
+        land: normalizeUkdocsText(info?.land),
+        gebied: normalizeUkdocsText(info?.gebied),
+        tgrp_b: normalizeUkdocsText(info?.tgrp_b),
+        tgrp_p: normalizeUkdocsText(info?.tgrp_p),
+        type: normalizeUkdocsText(info?.type),
+        is_retour: info?.is_retour === true,
+      };
+    }
+  }
+  return result;
+}
+
 function normalizeInkoopState(state) {
   return {
     imports: (Array.isArray(state?.imports) ? state.imports : []).map(normalizeInkoopImportRecord),
     supplier_map: normalizeInkoopSupplierEntryMap(state?.supplier_map),
     supplier_name_map: normalizeInkoopSupplierEntryMap(state?.supplier_name_map),
+    customer_map: normalizeInkoopCustomerEntryMap(state?.customer_map),
     supplier_fh_map: normalizeInkoopSupplierEntryMap(state?.supplier_fh_map),
     manual_supplier_links: (Array.isArray(state?.manual_supplier_links) ? state.manual_supplier_links : []).map(normalizeInkoopManualSupplierLink),
   };
@@ -6653,6 +6718,173 @@ async function computeInkoopLiveMatch(state, { from, to }) {
   ]);
   const invoices = groupInkoopInvoiceLinesByInvoice(invoiceLines);
   return matchInkoopVeilingLines(erpRows, invoices, state.supplier_map, state.supplier_name_map, state.manual_supplier_links, state.supplier_fh_map);
+}
+
+// A dispatch's share of its lot's own value, apportioned by piece count --
+// the dispatch dump carries no price of its own, only the lot it came from
+// does.
+function inkoopDispatchValueShare(lot, dispatchPieces) {
+  const totalPieces = Number(lot?.pieces) || 0;
+  if (!totalPieces) {
+    return 0;
+  }
+  const totalValue = Number(lot?.t_price) || 0;
+  return ((Number(dispatchPieces) || 0) / totalPieces) * totalValue;
+}
+
+function resolveInkoopCustomer(code, customerMap) {
+  const key = normalizeUkdocsText(code).toUpperCase();
+  return key ? customerMap?.[key] || null : null;
+}
+
+// "Sold per country" -- every dispatch resolved to its destination
+// customer's country via the uploaded klant gegevens map. A code with no
+// master-data match is kept separately (unresolved_codes) rather than
+// silently dropped, since that's a real data-quality signal (a customer
+// added on the ERP side but not yet in the latest klant gegevens export).
+function computeInkoopDestinationsSummary(dispatchLots, customerMap) {
+  const byCountry = new Map();
+  const unresolved = new Map();
+  let totalPieces = 0;
+  let totalValue = 0;
+  for (const lot of Array.isArray(dispatchLots) ? dispatchLots : []) {
+    for (const dispatch of Array.isArray(lot?.dispatches) ? lot.dispatches : []) {
+      const pieces = Number(dispatch?.pieces) || 0;
+      const value = inkoopDispatchValueShare(lot, pieces);
+      totalPieces += pieces;
+      totalValue += value;
+      const code = normalizeUkdocsText(dispatch?.code).toUpperCase();
+      const customer = resolveInkoopCustomer(code, customerMap);
+      if (!customer) {
+        unresolved.set(code, (unresolved.get(code) || 0) + pieces);
+        continue;
+      }
+      const country = customer.land || "?";
+      if (!byCountry.has(country)) {
+        byCountry.set(country, { country, pieces: 0, value: 0, retourPieces: 0, customers: new Set() });
+      }
+      const bucket = byCountry.get(country);
+      bucket.pieces += pieces;
+      bucket.value += value;
+      bucket.customers.add(code);
+      if (customer.is_retour) {
+        bucket.retourPieces += pieces;
+      }
+    }
+  }
+  const countries = [...byCountry.values()]
+    .map((bucket) => ({
+      country: bucket.country,
+      pieces: Math.round(bucket.pieces * 100) / 100,
+      value: Math.round(bucket.value * 100) / 100,
+      retour_pieces: Math.round(bucket.retourPieces * 100) / 100,
+      customer_count: bucket.customers.size,
+    }))
+    .sort((left, right) => right.pieces - left.pieces);
+  const unresolvedCodes = [...unresolved.entries()]
+    .map(([code, pieces]) => ({ code, pieces: Math.round(pieces * 100) / 100 }))
+    .sort((left, right) => right.pieces - left.pieces);
+  return {
+    countries,
+    total_pieces: Math.round(totalPieces * 100) / 100,
+    total_value: Math.round(totalValue * 100) / 100,
+    unresolved_codes: unresolvedCodes,
+  };
+}
+
+// The lot(s) a matched Klokfactuur/Connect correction resolved to -- a
+// split-delivery match joins several lots with "+", so this always returns
+// every individual lot number involved, not just the first.
+function inkoopCorrectionLotNumbers(erpRow) {
+  return String(erpRow?.lot || "")
+    .split("+")
+    .map((part) => part.trim())
+    .filter(Boolean);
+}
+
+// Whether a correction's own lot(s) actually got dispatched to one of
+// FloraHolland's "retour" (return) accounts -- the real-world confirmation
+// that a correction net-matched by matchInkoopVeilingLines was a genuine
+// return to grower/auction/supplier, not just a bookkeeping fix that
+// happens to net out. "no_dispatch_data" means the lot hasn't appeared in
+// an uploaded dispatch dump yet, not that it wasn't returned.
+function inkoopCorrectionRetourStatusForLot(dispatchLot, customerMap) {
+  const destinations = (Array.isArray(dispatchLot?.dispatches) ? dispatchLot.dispatches : []).map((dispatch) => {
+    const code = normalizeUkdocsText(dispatch?.code).toUpperCase();
+    const customer = resolveInkoopCustomer(code, customerMap);
+    return {
+      code,
+      pieces: Number(dispatch?.pieces) || 0,
+      name: customer?.name || "",
+      land: customer?.land || "",
+      is_retour: customer?.is_retour === true,
+    };
+  });
+  if (!dispatchLot || !destinations.length) {
+    return { status: "no_dispatch_data", destinations: [] };
+  }
+  const totalPieces = destinations.reduce((sum, item) => sum + item.pieces, 0);
+  const retourPieces = destinations.filter((item) => item.is_retour).reduce((sum, item) => sum + item.pieces, 0);
+  if (retourPieces <= 0) {
+    return { status: "not_return", destinations };
+  }
+  if (!inkoopValuesDiffer(retourPieces, totalPieces)) {
+    return { status: "confirmed_return", destinations };
+  }
+  return { status: "partial_return", destinations };
+}
+
+const INKOOP_RETOUR_STATUS_RANK = {
+  confirmed_return: 0,
+  partial_return: 1,
+  no_dispatch_data: 2,
+  not_return: 3,
+};
+
+// Cross-checks every correction matchInkoopVeilingLines already netted
+// (see the PAV-grouping fix) against the dispatch dump: did it actually get
+// sent back, per FloraHolland's own retour-account data? Only meaningful
+// once a dispatch dump has been uploaded for the relevant dates.
+async function computeInkoopCorrectionRetourChecks(state, { from, to }) {
+  const result = await computeInkoopLiveMatch(state, { from, to });
+  const corrections = [];
+  for (const bucketName of ["matched_ok", "matched_mismatch", "only_in_invoice"]) {
+    for (const item of Array.isArray(result?.[bucketName]) ? result[bucketName] : []) {
+      if (item?.matched_as_correction) {
+        corrections.push({ ...item, bucket: bucketName });
+      }
+    }
+  }
+  const allLotNumbers = new Set();
+  for (const item of corrections) {
+    for (const lotNumber of inkoopCorrectionLotNumbers(item?.erp_row)) {
+      allLotNumbers.add(lotNumber);
+    }
+  }
+  const dispatchLots = await getInkoopDispatchLotsByLots([...allLotNumbers]);
+  const dispatchByLot = new Map(dispatchLots.map((lot) => [String(lot.lot), lot]));
+  return corrections.map((item) => {
+    const lotNumbers = inkoopCorrectionLotNumbers(item?.erp_row);
+    const lots = lotNumbers.length
+      ? lotNumbers.map((lotNumber) => ({ lot: lotNumber, ...inkoopCorrectionRetourStatusForLot(dispatchByLot.get(lotNumber), state.customer_map) }))
+      : [{ lot: "", status: "no_dispatch_data", destinations: [] }];
+    // Worst-outcome-wins: a split-delivery correction where even one of its
+    // lots did NOT confirm a return is exactly the case worth surfacing --
+    // never letting one clean lot mask a real discrepancy on another.
+    const status = lots.map((entry) => entry.status).sort((left, right) => INKOOP_RETOUR_STATUS_RANK[right] - INKOOP_RETOUR_STATUS_RANK[left])[0];
+    return {
+      bucket: item.bucket,
+      invoice_number: item.invoice_number,
+      invoice_date: item.invoice_date,
+      pav: item.pav,
+      description: item.description,
+      quantity: item.quantity,
+      total: item.total,
+      correction_lines: item.correction_lines,
+      lots,
+      status,
+    };
+  });
 }
 
 // Once a company is selected, every category that carries an invoice side
@@ -17188,6 +17420,7 @@ async function handleApi(req, res, url) {
       supplier_count: Object.keys(state.supplier_map).length,
       supplier_name_count: Object.keys(state.supplier_name_map).length,
       supplier_fh_count: Object.keys(state.supplier_fh_map).length,
+      customer_count: Object.keys(state.customer_map).length,
       manual_supplier_links: state.manual_supplier_links,
     });
     return;
@@ -17432,9 +17665,10 @@ async function handleApi(req, res, url) {
     return;
   }
 
-  // Uploads either or both master data exports and merges the resulting
-  // GLN -> internal code entries into the persisted supplier_map -- reused
-  // by every future compare run, not re-uploaded each time.
+  // Uploads any/all of the master data exports (Settings tab: kwekers,
+  // leveranciers, klant gegevens) once and merges them into persisted state
+  // -- reused by every future compare/destinations run, not re-uploaded
+  // each time.
   if (url.pathname === "/api/inkoop/suppliers/upload" && req.method === "POST") {
     if (!requirePermission(res, requestUser, PERMISSIONS.INKOOP_VIEW)) {
       return;
@@ -17449,11 +17683,16 @@ async function handleApi(req, res, url) {
       state.supplier_map = { ...state.supplier_map, ...parsed.by_gln };
       state.supplier_name_map = { ...state.supplier_name_map, ...parsed.by_name };
       state.supplier_fh_map = { ...state.supplier_fh_map, ...parsed.by_fh };
+      if (body?.klant_file) {
+        const customerEntries = await parseInkoopKlantGegevens(body.klant_file);
+        state.customer_map = { ...state.customer_map, ...customerEntries };
+      }
       await writeInkoopState(state);
       sendJson(res, 200, {
         supplier_count: Object.keys(state.supplier_map).length,
         supplier_name_count: Object.keys(state.supplier_name_map).length,
         supplier_fh_count: Object.keys(state.supplier_fh_map).length,
+        customer_count: Object.keys(state.customer_map).length,
       });
     } catch (error) {
       sendJson(res, 400, { error: error instanceof Error ? error.message : String(error) });
@@ -17486,6 +17725,61 @@ async function handleApi(req, res, url) {
     ];
     await writeInkoopState(state);
     sendJson(res, 200, { manual_supplier_links: state.manual_supplier_links });
+    return;
+  }
+
+  // The dispatch dump -- separate from, and much larger than, the master-
+  // data files (a running month can be 30MB+), so uploaded on its own
+  // schedule rather than tied to a specific compare run. Upserted by lot
+  // number, so re-uploading a later, more complete export just fills in/
+  // refreshes lots, never loses earlier ones.
+  if (url.pathname === "/api/inkoop/dispatch/upload" && req.method === "POST") {
+    if (!requirePermission(res, requestUser, PERMISSIONS.INKOOP_VIEW)) {
+      return;
+    }
+    const body = await readRequestJson(req, 60 * 1024 * 1024);
+    try {
+      const lots = await parseInkoopDispatchDump(body?.dispatch_file);
+      await saveInkoopDispatchLots(lots);
+      sendJson(res, 200, { lot_count: lots.length });
+    } catch (error) {
+      sendJson(res, 400, { error: error instanceof Error ? error.message : String(error) });
+    }
+    return;
+  }
+
+  if (url.pathname === "/api/inkoop/destinations/summary" && req.method === "GET") {
+    if (!requirePermission(res, requestUser, PERMISSIONS.INKOOP_VIEW)) {
+      return;
+    }
+    const from = url.searchParams.get("from");
+    const to = url.searchParams.get("to");
+    const range = from && to ? { from, to } : inkoopDefaultWindowRange(INKOOP_DASHBOARD_DEFAULT_WINDOW_DAYS);
+    const state = await readInkoopState();
+    const dispatchLots = await getInkoopDispatchLots(range);
+    const summary = computeInkoopDestinationsSummary(dispatchLots, state.customer_map);
+    sendJson(res, 200, {
+      ...summary,
+      from: range.from,
+      to: range.to,
+      lot_count: dispatchLots.length,
+      customer_count: Object.keys(state.customer_map).length,
+    });
+    return;
+  }
+
+  // Cross-checks every Klokfactuur/Connect correction (see
+  // matchInkoopVeilingLines' PAV-grouping/netting) against the dispatch
+  // dump: did that lot actually get dispatched to one of FloraHolland's own
+  // "retour" accounts, confirming it was a genuine return -- or did it go
+  // somewhere else, which needs a human look.
+  if (url.pathname === "/api/inkoop/destinations/corrections" && req.method === "GET") {
+    if (!requirePermission(res, requestUser, PERMISSIONS.INKOOP_VIEW)) {
+      return;
+    }
+    const state = await readInkoopState();
+    const checks = await computeInkoopCorrectionRetourChecks(state, inkoopDefaultWindowRange(INKOOP_MATCH_WINDOW_DAYS));
+    sendJson(res, 200, { checks });
     return;
   }
 
