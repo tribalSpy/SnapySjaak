@@ -180,6 +180,22 @@ function chunkArray(items, size) {
   return chunks;
 }
 
+// Postgres refuses "ON CONFLICT DO UPDATE command cannot affect row a
+// second time" the moment two rows in the SAME multi-row INSERT share a
+// conflict target -- confirmed real: a large enough ERP/dispatch export can
+// legitimately repeat the same lot number (e.g. a lot still open across
+// several of the export's covered days). Keeping the LAST occurrence for a
+// given key (consistent with every other re-upload here: newer data wins)
+// guarantees no batch can ever trigger it, regardless of why the source
+// file happened to repeat a key.
+function dedupeByKeyKeepingLast(items, keyFn) {
+  const byKey = new Map();
+  for (const item of items) {
+    byKey.set(keyFn(item), item);
+  }
+  return [...byKey.values()];
+}
+
 // The ERP export alone runs ~1600+ rows a day -- one INSERT per row (the
 // fust_reference_actions pattern above, fine at its tens-of-codes daily
 // volume) would mean thousands of sequential round-trips inside the HTTP
@@ -191,7 +207,10 @@ export async function saveInkoopErpLines(rows) {
   if (!pool || !Array.isArray(rows) || !rows.length) {
     return;
   }
-  const validRows = rows.filter((row) => numberOrNull(row?.lot) !== null);
+  const validRows = dedupeByKeyKeepingLast(
+    rows.filter((row) => numberOrNull(row?.lot) !== null),
+    (row) => numberOrNull(row.lot),
+  );
   for (const chunk of chunkArray(validRows, INKOOP_UPSERT_CHUNK_SIZE)) {
     const values = [];
     const placeholders = chunk.map((row) => {
@@ -302,7 +321,13 @@ export async function saveInkoopDispatchLots(lots) {
   if (!pool || !Array.isArray(lots) || !lots.length) {
     return;
   }
-  const validLots = lots.filter((lot) => numberOrNull(lot?.lot) !== null);
+  // parse_dispatch_dump already merges a recurring lot's dispatches into one
+  // record -- this is only a backstop, so keeping the last occurrence here
+  // (rather than merging again) is fine.
+  const validLots = dedupeByKeyKeepingLast(
+    lots.filter((lot) => numberOrNull(lot?.lot) !== null),
+    (lot) => numberOrNull(lot.lot),
+  );
   for (const chunk of chunkArray(validLots, INKOOP_UPSERT_CHUNK_SIZE)) {
     const values = [];
     const placeholders = chunk.map((lot) => {

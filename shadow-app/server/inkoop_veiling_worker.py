@@ -661,6 +661,14 @@ def parse_dispatch_dump(input_path: Path):
             return ""
         return clean_text(row[col])
 
+    # A large enough export can legitimately repeat the same lot number --
+    # confirmed real: a lot still open across several of the export's
+    # covered days re-appears with a fresh batch of dispatch rows each time.
+    # Merging every occurrence's dispatches into one record (instead of
+    # keeping only the last) is what keeps this correct -- an earlier
+    # occurrence's real destinations must never be silently dropped just
+    # because the lot recurs later in the same file.
+    lots_by_number = {}
     lots = []
     current = None
     for row in data_rows:
@@ -682,6 +690,19 @@ def parse_dispatch_dump(input_path: Path):
         if not lot or not date_text:
             current = None
             continue
+        existing = lots_by_number.get(lot)
+        if existing is not None:
+            existing.update({
+                "pav": get(row, "pav"),
+                "date": normalize_erp_date(date_text),
+                "suppl": get(row, "suppl"),
+                "description": description,
+                "pieces": parse_number(get(row, "pieces")),
+                "price": parse_number(get(row, "price")),
+                "t_price": parse_number(get(row, "t_price")),
+            })
+            current = existing
+            continue
         current = {
             "lot": lot,
             "pav": get(row, "pav"),
@@ -693,6 +714,7 @@ def parse_dispatch_dump(input_path: Path):
             "t_price": parse_number(get(row, "t_price")),
             "dispatches": [],
         }
+        lots_by_number[lot] = current
         lots.append(current)
     return {"lots": lots}
 
