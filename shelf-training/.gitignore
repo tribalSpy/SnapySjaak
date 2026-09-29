@@ -2,5 +2,8 @@ data/config.json
 data/dataset/
 models/*.pt
 models/*.onnx
+labeling/config.json
+labeling/imported_tasks.json
+labeling/exports/
 __pycache__/
 *.pyc

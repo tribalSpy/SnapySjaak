@@ -6,11 +6,15 @@ real trolley photos from Google Drive and real results already recorded by
 
 ## Folder structure
 
-- `data/` -- Step 1: dataset collection (this is the only step built so far).
-- `labeling/` -- Step 2: Label Studio setup + labeling guidelines (not built yet).
+- `data/` -- Step 1: dataset collection.
+- `labeling/` -- Step 2: Label Studio setup + import/export scripts.
 - `training/` -- Step 4: Ultralytics YOLO training scripts (not built yet).
 - `evaluation/` -- Step 5: counting-accuracy reports (not built yet).
 - `models/` -- Step 6: trained model registry (not built yet).
+
+(Step 3, dataset prep -- converting Label Studio's export into YOLO-format
+labels + a train/val split -- is also not built yet; it's the next thing to
+add, sitting between `labeling/` and `training/`.)
 
 Each step is being implemented one at a time, per its own brief.
 
@@ -64,4 +68,10 @@ python data/collect.py --from-date 2026-09-01 --to-date 2026-09-29 --count 200
 Output: `data/dataset/raw/<folder_name>/<photo>.jpg` plus
 `data/dataset/manifest.csv` (file_id, folder_name, customer_reference, date,
 local_path, sha256, priority, status, confidence) -- this manifest is what
-Step 2 (labeling) will read from next.
+`labeling/import_tasks.py` reads from next.
+
+## Step 2: Labeling (`labeling/`)
+
+Local Label Studio instance on the GPU PC. See
+[`labeling/README.md`](labeling/README.md) for setup and the day-to-day
+import → label → export workflow.

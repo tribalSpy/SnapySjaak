@@ -1,0 +1,7 @@
+{
+  "label_studio_url": "http://localhost:8080",
+  "api_token": "paste-your-label-studio-personal-access-token",
+  "project_id": null,
+  "project_title": "Shelf Count - Shelf Levels",
+  "dataset_dir": "../data/dataset"
+}

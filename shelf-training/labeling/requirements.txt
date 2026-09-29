@@ -1,0 +1,2 @@
+label-studio==1.23.1
+requests==2.32.3
