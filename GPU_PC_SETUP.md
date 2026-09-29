@@ -8,10 +8,19 @@ things only a human can verify).
 
 ## 1. Get the code onto the GPU PC
 
-- If that PC already syncs this same Synology Drive folder, it's already
-  there -- just make sure it's fully synced.
-- Otherwise, `git clone https://github.com/tribalSpy/SnapySjaak.git` onto
-  it.
+That PC doesn't sync this Synology Drive folder, so:
+
+1. Copy `pull_code.bat` (repo root, this one file only) onto the GPU PC --
+   USB stick, email, or download it directly from GitHub.
+2. Run it there. First run clones the repo (into `.\SnappySjaak` next to
+   wherever you saved the script, or pass a target folder as an argument);
+   every run after that just pulls the latest changes.
+3. If that PC hasn't cloned this repo before, Git will prompt for GitHub
+   credentials on first clone/pull (a private repo) -- sign in when asked.
+
+Re-run `pull_code.bat` any time to update the code later; it never
+overwrites local changes -- if it can't fast-forward, it tells you to
+`git status`/`git stash` first instead of discarding anything.
 
 ## 2. Send these separately (never through git, never through chat)
 
