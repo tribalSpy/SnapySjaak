@@ -410,9 +410,10 @@ export async function upsertShelfCountRow(row) {
     `
       INSERT INTO shelf_counts (
         customer_reference, nightly_run_date, drive_folder_name, trolley_count, photo_count, shelf_count,
-        level_count, confidence, expected_average, deviation, status, model_version, job_id, error_text, processed_at
+        level_count, confidence, expected_average, deviation, extension_count, extension_expected,
+        extension_deviation, status, model_version, job_id, error_text, processed_at
       )
-      VALUES ($1, $2::date, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15::timestamptz)
+      VALUES ($1, $2::date, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18::timestamptz)
       ON CONFLICT (customer_reference, nightly_run_date) DO UPDATE SET
         drive_folder_name = COALESCE(NULLIF(EXCLUDED.drive_folder_name, ''), shelf_counts.drive_folder_name),
         trolley_count = COALESCE(NULLIF(EXCLUDED.trolley_count, 0), shelf_counts.trolley_count),
@@ -422,6 +423,9 @@ export async function upsertShelfCountRow(row) {
         confidence = COALESCE(EXCLUDED.confidence, shelf_counts.confidence),
         expected_average = COALESCE(EXCLUDED.expected_average, shelf_counts.expected_average),
         deviation = COALESCE(EXCLUDED.deviation, shelf_counts.deviation),
+        extension_count = COALESCE(EXCLUDED.extension_count, shelf_counts.extension_count),
+        extension_expected = COALESCE(EXCLUDED.extension_expected, shelf_counts.extension_expected),
+        extension_deviation = COALESCE(EXCLUDED.extension_deviation, shelf_counts.extension_deviation),
         status = EXCLUDED.status,
         model_version = COALESCE(NULLIF(EXCLUDED.model_version, ''), shelf_counts.model_version),
         job_id = COALESCE(NULLIF(EXCLUDED.job_id, ''), shelf_counts.job_id),
@@ -441,6 +445,9 @@ export async function upsertShelfCountRow(row) {
       numberOrNull(row.confidence),
       numberOrNull(row.expected_average),
       numberOrNull(row.deviation),
+      numberOrNull(row.extension_count),
+      numberOrNull(row.extension_expected),
+      numberOrNull(row.extension_deviation),
       row.status || "pending",
       row.model_version || "",
       row.job_id || "",
@@ -1860,6 +1867,9 @@ const databaseMigrations = [
       confidence numeric,
       expected_average numeric,
       deviation numeric,
+      extension_count integer,
+      extension_expected numeric,
+      extension_deviation numeric,
       status text NOT NULL DEFAULT 'pending',
       model_version text NOT NULL DEFAULT '',
       job_id text,
@@ -1872,6 +1882,19 @@ const databaseMigrations = [
   `,
   `
     CREATE INDEX IF NOT EXISTS shelf_counts_run_date_idx ON shelf_counts (nightly_run_date)
+  `,
+  // Trolley pole extensions (the "DCO" code) -- 0-4 per trolley, added when
+  // a trolley is loaded high enough to need them. Counted by the same LLM
+  // job as shelf_count/level_count, shadowed against Fust Planning's DCO
+  // the same way shelf_count is shadowed against DC.
+  `
+    ALTER TABLE shelf_counts ADD COLUMN IF NOT EXISTS extension_count integer
+  `,
+  `
+    ALTER TABLE shelf_counts ADD COLUMN IF NOT EXISTS extension_expected numeric
+  `,
+  `
+    ALTER TABLE shelf_counts ADD COLUMN IF NOT EXISTS extension_deviation numeric
   `,
   // One row per calendar day the nightly trigger has run for -- its own
   // existence for a given run_date is what makes the trigger idempotent

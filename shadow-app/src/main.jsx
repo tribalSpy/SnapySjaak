@@ -8077,7 +8077,11 @@ function ShelfCountPage() {
         <div className="table-wrap">
           <table className="data-table">
             <thead>
-              <tr><th>Customer reference</th><th>Trolleys</th><th>Photos</th><th>Shelves</th><th>Levels</th><th>Confidence</th><th>Fust expected (DC)</th><th>Deviation</th><th>Status</th></tr>
+              <tr>
+                <th>Customer reference</th><th>Trolleys</th><th>Photos</th><th>Shelves</th><th>Levels</th>
+                <th>Extensions</th><th>Confidence</th><th>Fust expected (DC)</th><th>Deviation</th>
+                <th>Fust expected (DCO)</th><th>Ext. deviation</th><th>Status</th>
+              </tr>
             </thead>
             <tbody>
               {counts.map((row) => (
@@ -8087,13 +8091,16 @@ function ShelfCountPage() {
                   <td>{row.photo_count}</td>
                   <td>{row.shelf_count ?? "-"}</td>
                   <td>{row.level_count ?? "-"}</td>
+                  <td>{row.extension_count ?? "-"}</td>
                   <td>{row.confidence !== null && row.confidence !== undefined ? Number(row.confidence).toFixed(2) : "-"}</td>
                   <td>{row.expected_average ?? "-"}</td>
                   <td>{row.deviation ?? "-"}</td>
+                  <td>{row.extension_expected ?? "-"}</td>
+                  <td>{row.extension_deviation ?? "-"}</td>
                   <td><span className={`ukdocs-status-badge ${SHELF_COUNT_STATUS_TONE[row.status] || "muted"}`}>{row.status}</span></td>
                 </tr>
               ))}
-              {!counts.length && <tr><td colSpan={9}>No completed references for this date.</td></tr>}
+              {!counts.length && <tr><td colSpan={12}>No completed references for this date.</td></tr>}
             </tbody>
           </table>
         </div>

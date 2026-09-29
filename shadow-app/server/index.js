@@ -7907,22 +7907,34 @@ const SHELF_COUNT_DEADLINE_HOUR = Number(process.env.SHELF_COUNT_DEADLINE_HOUR |
 const SHELF_COUNT_DRIVE_ROOT_FOLDER_ID = String(process.env.GOOGLE_DRIVE_ROOT_FOLDER_ID || "").trim();
 const SHELF_COUNT_NIGHTLY_CHECK_INTERVAL_MS = 5 * 60 * 1000;
 
-// Fust Planning shadow -- fills in expected_average/deviation above using
-// the daily Code-level Fust API pull (fust_reference_actions) as the
-// "later training/derivation phase" this comment already anticipated. A
-// "Code" there (e.g. "4CM140") turns out to be the exact same reference a
+// Fust Planning shadow -- fills in expected_average/deviation (and, for
+// pole extensions, extension_expected/extension_deviation) above using the
+// daily Code-level Fust API pull (fust_reference_actions) as the "later
+// training/derivation phase" this comment already anticipated. A "Code"
+// there (e.g. "4CM140") turns out to be the exact same reference a
 // trolley's Drive folder is named after here, so once both sides have data
 // for the same reference+date, DC-Actual (or DC-Planning before the day
-// closes out) is a real, independent number to compare the LLM's photo
-// count against. Deliberately observation-only for now, per go-live
+// closes out) and DCO are real, independent numbers to compare the LLM's
+// photo counts against. Deliberately observation-only for now, per go-live
 // starting 2026-10-01 -- this never changes status or triggers anything,
-// it only fills the two columns so the report shows how far off the LLM
-// count is; turning that into an automatic action is a later decision.
+// it only fills these columns so the report shows how far off the LLM
+// counts are; turning that into an automatic action is a later decision.
 const FUST_SHADOW_START_DATE = "2026-10-01";
 const FUST_SHADOW_WINDOW_DAYS = FUST_REFERENCE_IMPORT_WINDOW_DAYS;
 
 function fustShadowExpectedValue(fustRow) {
   const value = fustRow?.dc_actual ?? fustRow?.dc_planning;
+  return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+
+// DCO has no planning/actual split like DC does -- it's a single column,
+// so there's no "before close-out" fallback to consider here.
+function fustShadowExtensionExpectedValue(fustRow) {
+  const value = fustRow?.dco;
+  return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+
+function finiteNumberOrNull(value) {
   return typeof value === "number" && Number.isFinite(value) ? value : null;
 }
 
@@ -7954,13 +7966,16 @@ async function applyFustShadowForDate(date) {
     }
     summary.matched += 1;
     const expected = fustShadowExpectedValue(fustRow);
-    if (expected === null) {
+    const extensionExpected = fustShadowExtensionExpectedValue(fustRow);
+    if (expected === null && extensionExpected === null) {
       continue;
     }
-    const shelfCount = typeof shelfRow.shelf_count === "number" && Number.isFinite(shelfRow.shelf_count)
-      ? shelfRow.shelf_count
-      : null;
-    const deviation = shelfCount === null ? null : shelfCount - expected;
+    const shelfCount = finiteNumberOrNull(shelfRow.shelf_count);
+    const deviation = expected === null || shelfCount === null ? null : shelfCount - expected;
+    const extensionCount = finiteNumberOrNull(shelfRow.extension_count);
+    const extensionDeviation = extensionExpected === null || extensionCount === null
+      ? null
+      : extensionCount - extensionExpected;
     // status/error_text passed through explicitly -- upsertShelfCountRow
     // overwrites both unconditionally rather than coalescing, unlike the
     // count/confidence columns this call actually intends to change.
@@ -7971,6 +7986,8 @@ async function applyFustShadowForDate(date) {
       error_text: shelfRow.error_text,
       expected_average: expected,
       deviation,
+      extension_expected: extensionExpected,
+      extension_deviation: extensionDeviation,
     });
     summary.updated += 1;
   }
@@ -8021,10 +8038,12 @@ function parseShelfCountJobResult(job) {
   const parsed = extractJsonObjectFromText(contentText) || {};
   const shelves = Number(parsed?.shelves);
   const levels = Number(parsed?.levels);
+  const extensions = Number(parsed?.extensions);
   const confidence = Number(parsed?.confidence);
   return {
     shelves: Number.isFinite(shelves) ? shelves : null,
     levels: Number.isFinite(levels) ? levels : null,
+    extensions: Number.isFinite(extensions) ? extensions : null,
     confidence: Number.isFinite(confidence) ? confidence : null,
   };
 }
@@ -8034,17 +8053,24 @@ function parseShelfCountJobResult(job) {
 // poller handles.
 function buildShelfCountJobPayload({ photoCount }) {
   const prompt = {
-    task: "Count the shelves and shelf levels visible across these photos of one warehouse trolley/reference.",
+    task: "Count the shelves, shelf levels, and pole extensions visible across these photos of one warehouse trolley/reference.",
     instructions: [
       "These photos all show the same trolley(s) for one shipment reference, taken from a fixed camera angle.",
       "Shelves are mostly silver-grey.",
       "Count the total number of distinct shelves, and the number of levels (vertical tiers) visible.",
       "If photos overlap or show the same shelves from slightly different angles, do not double-count them.",
+      "Each trolley has a vertical pole at each corner. An 'extension' is an added segment that makes a pole",
+      "taller so the trolley can carry more levels -- there can be 0 to 4 extensions per trolley, one per pole.",
+      "A trolley loaded with only a few levels (e.g. 1) usually has no extensions at all; a trolley loaded much",
+      "higher, with visibly extended poles above the normal frame height, usually has them on all 4 corners.",
+      "Use the trolley's overall height together with the level count as corroborating signals -- a tall trolley",
+      "with many levels but reported 0 extensions, or a short one-level trolley reported with 4, is suspicious",
+      "and should lower your confidence rather than being reported as-is.",
       "Return your best count even if partially obscured, and lower confidence accordingly rather than guessing wildly.",
       "Return JSON only, no markdown, no explanation.",
     ],
     photo_count: photoCount,
-    output_schema: { shelves: 0, levels: 0, confidence: "0.0-1.0" },
+    output_schema: { shelves: 0, levels: 0, extensions: 0, confidence: "0.0-1.0" },
   };
   return {
     model: "",
@@ -15049,6 +15075,7 @@ async function handleApi(req, res, url) {
         nightly_run_date: job.payload_json.nightly_run_date,
         shelf_count: parsed.shelves,
         level_count: parsed.levels,
+        extension_count: parsed.extensions,
         confidence: parsed.confidence,
         status,
         model_version: agentName,
