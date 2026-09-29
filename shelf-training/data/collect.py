@@ -22,6 +22,7 @@ import argparse
 import csv
 import hashlib
 import json
+import os
 import random
 import sys
 import urllib.error
@@ -39,6 +40,17 @@ if str(REPO_ROOT) not in sys.path:
 from dotenv import load_dotenv  # noqa: E402
 
 load_dotenv(REPO_ROOT / ".env")  # GOOGLE_SERVICE_ACCOUNT_JSON / GOOGLE_DRIVE_ROOT_FOLDER_ID, same as drive_bridge.py
+
+# .env documents GOOGLE_APPLICATION_CREDENTIALS as a path relative to the repo
+# root (e.g. "credentials/service_account.json"), which is correct for
+# shadow-app's own server (always started from the repo root) but not for
+# this script -- collect.bat cd's into shelf-training/data first, so a
+# relative path here would otherwise resolve against the wrong directory.
+for _env_name in list(os.environ):
+    if _env_name.startswith("GOOGLE_APPLICATION_CREDENTIALS"):
+        _path = os.environ[_env_name]
+        if _path and not Path(_path).is_absolute():
+            os.environ[_env_name] = str((REPO_ROOT / _path).resolve())
 
 from src.drive_service import DriveService, DEFAULT_DRIVE_ACCOUNT  # noqa: E402
 from src.parser import parse_run_folder_name  # noqa: E402
