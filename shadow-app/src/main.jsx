@@ -7973,10 +7973,11 @@ const SHELF_COUNT_STATUS_TONE = {
   missing_photos: "muted",
 };
 
-// Phase 1: expected_average/deviation are always null here -- there is no
-// manual "expected count" config, a later training/derivation phase fills
-// them in from accumulated real counts. This just shows the raw counted
-// result per trolley for last night's run.
+// expected_average/deviation are filled in by the Fust shadow job (server
+// side, see applyFustShadowForDate) wherever a reference's Fust Planning
+// Code data is also available for the same date -- shadow/observation only,
+// starting 2026-10-01, so these stay blank for anything before that or with
+// no Fust match.
 function ShelfCountPage() {
   const [date, setDate] = useState(() => shelfCountYesterdayIso());
   const [data, setData] = useState(null);
@@ -8076,7 +8077,7 @@ function ShelfCountPage() {
         <div className="table-wrap">
           <table className="data-table">
             <thead>
-              <tr><th>Customer reference</th><th>Trolleys</th><th>Photos</th><th>Shelves</th><th>Levels</th><th>Confidence</th><th>Status</th></tr>
+              <tr><th>Customer reference</th><th>Trolleys</th><th>Photos</th><th>Shelves</th><th>Levels</th><th>Confidence</th><th>Fust expected (DC)</th><th>Deviation</th><th>Status</th></tr>
             </thead>
             <tbody>
               {counts.map((row) => (
@@ -8087,10 +8088,12 @@ function ShelfCountPage() {
                   <td>{row.shelf_count ?? "-"}</td>
                   <td>{row.level_count ?? "-"}</td>
                   <td>{row.confidence !== null && row.confidence !== undefined ? Number(row.confidence).toFixed(2) : "-"}</td>
+                  <td>{row.expected_average ?? "-"}</td>
+                  <td>{row.deviation ?? "-"}</td>
                   <td><span className={`ukdocs-status-badge ${SHELF_COUNT_STATUS_TONE[row.status] || "muted"}`}>{row.status}</span></td>
                 </tr>
               ))}
-              {!counts.length && <tr><td colSpan={7}>No completed references for this date.</td></tr>}
+              {!counts.length && <tr><td colSpan={9}>No completed references for this date.</td></tr>}
             </tbody>
           </table>
         </div>

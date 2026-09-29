@@ -7907,6 +7907,92 @@ const SHELF_COUNT_DEADLINE_HOUR = Number(process.env.SHELF_COUNT_DEADLINE_HOUR |
 const SHELF_COUNT_DRIVE_ROOT_FOLDER_ID = String(process.env.GOOGLE_DRIVE_ROOT_FOLDER_ID || "").trim();
 const SHELF_COUNT_NIGHTLY_CHECK_INTERVAL_MS = 5 * 60 * 1000;
 
+// Fust Planning shadow -- fills in expected_average/deviation above using
+// the daily Code-level Fust API pull (fust_reference_actions) as the
+// "later training/derivation phase" this comment already anticipated. A
+// "Code" there (e.g. "4CM140") turns out to be the exact same reference a
+// trolley's Drive folder is named after here, so once both sides have data
+// for the same reference+date, DC-Actual (or DC-Planning before the day
+// closes out) is a real, independent number to compare the LLM's photo
+// count against. Deliberately observation-only for now, per go-live
+// starting 2026-10-01 -- this never changes status or triggers anything,
+// it only fills the two columns so the report shows how far off the LLM
+// count is; turning that into an automatic action is a later decision.
+const FUST_SHADOW_START_DATE = "2026-10-01";
+const FUST_SHADOW_WINDOW_DAYS = FUST_REFERENCE_IMPORT_WINDOW_DAYS;
+
+function fustShadowExpectedValue(fustRow) {
+  const value = fustRow?.dc_actual ?? fustRow?.dc_planning;
+  return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+
+async function applyFustShadowForDate(date) {
+  if (date < FUST_SHADOW_START_DATE) {
+    return { date, skipped: true, reason: `Fust shadow starts ${FUST_SHADOW_START_DATE}` };
+  }
+  if (!isDatabaseEnabled()) {
+    return { date, skipped: true, reason: "Database is not enabled" };
+  }
+  const [shelfRows, fustRows] = await Promise.all([
+    getShelfCountsForDate(date),
+    getFustReferenceActions({ from: date, to: date }),
+  ]);
+  const fustByCode = new Map();
+  for (const row of fustRows) {
+    const code = String(row.code || "").trim().toUpperCase();
+    if (code) {
+      fustByCode.set(code, row);
+    }
+  }
+
+  const summary = { date, checked: shelfRows.length, matched: 0, updated: 0 };
+  for (const shelfRow of shelfRows) {
+    const code = String(shelfRow.customer_reference || "").trim().toUpperCase();
+    const fustRow = fustByCode.get(code);
+    if (!fustRow) {
+      continue;
+    }
+    summary.matched += 1;
+    const expected = fustShadowExpectedValue(fustRow);
+    if (expected === null) {
+      continue;
+    }
+    const shelfCount = typeof shelfRow.shelf_count === "number" && Number.isFinite(shelfRow.shelf_count)
+      ? shelfRow.shelf_count
+      : null;
+    const deviation = shelfCount === null ? null : shelfCount - expected;
+    // status/error_text passed through explicitly -- upsertShelfCountRow
+    // overwrites both unconditionally rather than coalescing, unlike the
+    // count/confidence columns this call actually intends to change.
+    await upsertShelfCountRow({
+      customer_reference: shelfRow.customer_reference,
+      nightly_run_date: date,
+      status: shelfRow.status,
+      error_text: shelfRow.error_text,
+      expected_average: expected,
+      deviation,
+    });
+    summary.updated += 1;
+  }
+  return summary;
+}
+
+async function runFustShadowJob() {
+  if (!isDatabaseEnabled()) {
+    return { ok: true, skipped: true, reason: "Database is not enabled" };
+  }
+  const today = localDateIso();
+  const summaries = [];
+  for (let offset = 0; offset < FUST_SHADOW_WINDOW_DAYS; offset += 1) {
+    const date = addDaysToIsoDate(today, -offset);
+    if (date < FUST_SHADOW_START_DATE) {
+      continue;
+    }
+    summaries.push(await applyFustShadowForDate(date));
+  }
+  return { ok: true, summaries };
+}
+
 // Matches src/parser.py's "customer_YYYYMMDD[_runid]" convention already
 // used for these same Drive folders elsewhere in this app (a manual photo
 // viewer today). customer_reference must not itself contain an underscore
@@ -16411,6 +16497,25 @@ async function handleApi(req, res, url) {
     return;
   }
 
+  // Manual trigger for the Fust shadow comparison (also runs on its own
+  // 15-minute interval alongside Fust API import) -- lets the match rate
+  // and deviations be checked on demand instead of waiting for the next
+  // scheduled tick.
+  if (url.pathname === "/api/shelf-count/fust-shadow/run" && req.method === "POST") {
+    if (!requirePermission(res, requestUser, PERMISSIONS.SHELF_COUNT_VIEW)) {
+      return;
+    }
+    const body = await readRequestJson(req).catch(() => ({}));
+    const targetDate = String(body?.date || "").slice(0, 10);
+    try {
+      const result = targetDate ? { date: targetDate, summaries: [await applyFustShadowForDate(targetDate)] } : await runFustShadowJob();
+      sendJson(res, 200, result);
+    } catch (error) {
+      sendJson(res, 400, { error: error instanceof Error ? error.message : String(error) });
+    }
+    return;
+  }
+
   if (url.pathname === "/api/ukdocs/import-examples" && req.method === "POST") {
     if (!requirePermission(res, requestUser, PERMISSIONS.UKDOCS_VIEW)) {
       return;
@@ -19921,6 +20026,15 @@ async function startServer() {
   runIfOnline("Fust API import", runFustApiImportJob).catch(() => {});
   setInterval(() => {
     runIfOnline("Fust API import", runFustApiImportJob).catch(() => {});
+  }, 15 * 60 * 1000);
+
+  // Runs right after Fust API import on the same cadence -- fills in
+  // expected_average/deviation on shelf_counts wherever both sides now have
+  // data for the same reference+date, observation-only (see
+  // applyFustShadowForDate's own comment).
+  runIfOnline("Fust shadow (photo controle vs Fust planning)", runFustShadowJob).catch(() => {});
+  setInterval(() => {
+    runIfOnline("Fust shadow (photo controle vs Fust planning)", runFustShadowJob).catch(() => {});
   }, 15 * 60 * 1000);
 
   // No "run once at a specific wall-clock time" scheduler exists in this
