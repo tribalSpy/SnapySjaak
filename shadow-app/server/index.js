@@ -27,11 +27,17 @@ import {
   getInkoopIssueStatuses,
   getLlmQueueSnapshot,
   getActiveLlmJobsByType,
+  getShelfCountNightlyRun,
+  getShelfCountRow,
+  getShelfCountsForDate,
   getWarehouseActivityLog,
   getWarehouseStatus,
+  getWarehouseTrolleyScansForDate,
   failLlmJob,
+  incrementShelfCountNightlyRunTotal,
   initializeDatabase,
   insertWarehouseActivityEvents,
+  insertWarehouseTrolleyScans,
   isDatabaseEnabled,
   markFustActionDeletedInDatabase,
   saveUkdocsCsiParsedDocumentToDatabase,
@@ -42,6 +48,8 @@ import {
   saveInkoopInvoiceLines,
   saveInkoopIssueStatus,
   upsertLlmAgentHeartbeat,
+  upsertShelfCountNightlyRun,
+  upsertShelfCountRow,
   upsertWarehouseStatus,
 } from "./db.js";
 import { createBunchesService } from "./bunches.js";
@@ -486,6 +494,7 @@ const allPermissions = [
   "warehouse:view",
   "eric_docs:view",
   "inkoop:view",
+  "shelf_count:view",
 ];
 const PERMISSIONS = {
   PHOTOS_VIEW: "photos:view",
@@ -511,6 +520,7 @@ const PERMISSIONS = {
   WAREHOUSE_VIEW: "warehouse:view",
   ERIC_DOCS_VIEW: "eric_docs:view",
   INKOOP_VIEW: "inkoop:view",
+  SHELF_COUNT_VIEW: "shelf_count:view",
 };
 const roleDefaultPermissions = {
   admin: allPermissions,
@@ -7742,6 +7752,239 @@ async function runUkdocsCsiAuditRetry() {
   return { ok: true, checked: activeJobs.length, retried };
 }
 
+// --- Nightly shelf-counting (Phase 1) -------------------------------------
+//
+// RFID-scanned trolley photos land on Google Drive; nobody currently checks
+// whether a trolley's shelf count matches what's expected. This counts
+// shelves/levels in each night's completed trolleys' photos via the same
+// llm_jobs poller already used for excel_to_pdf/ukdocs_csi_audit -- a new
+// job_type, not a new queue. expected_average/deviation are deliberately
+// left null here: there is no manual "expected count" config in Phase 1, a
+// later training/derivation phase fills them in from accumulated real
+// counts.
+const SHELF_COUNT_CONFIDENCE_THRESHOLD = Number(process.env.SHELF_COUNT_CONFIDENCE_THRESHOLD || 0.6);
+const SHELF_COUNT_DEADLINE_HOUR = Number(process.env.SHELF_COUNT_DEADLINE_HOUR || 6);
+const SHELF_COUNT_DRIVE_ROOT_FOLDER_ID = String(process.env.GOOGLE_DRIVE_ROOT_FOLDER_ID || "").trim();
+const SHELF_COUNT_NIGHTLY_CHECK_INTERVAL_MS = 5 * 60 * 1000;
+
+// Matches src/parser.py's "customer_YYYYMMDD[_runid]" convention already
+// used for these same Drive folders elsewhere in this app (a manual photo
+// viewer today). customer_reference must not itself contain an underscore
+// in a way that would be ambiguous with this separator -- the RFID portal
+// ingest contract (see /warehouse/ingest/trolley-scan) is being defined
+// fresh here, so this is enforced at the source, not worked around here.
+function shelfCountFolderName(customerReference, shipmentDate) {
+  const compactDate = String(shipmentDate || "").slice(0, 10).replace(/-/g, "");
+  return `${String(customerReference || "").trim()}_${compactDate}`;
+}
+
+async function runShelfCountDriveListFolder(query) {
+  const output = await runPythonBridge(["drive-list-folder"], JSON.stringify(query || {}));
+  return JSON.parse(output.toString("utf8"));
+}
+
+// job.result_json is the poller's raw ollama_chat wrapper, not the model's
+// answer directly -- same shape parseUkdocsCsiAuditJobResult already
+// unwraps: the model's actual JSON lives as a string inside
+// ollama_response.message.content (format: "json" was requested, but a
+// vision model can still wrap it in stray text), so this reuses the same
+// extractJsonObjectFromText helper rather than assuming result_json IS the
+// parsed object.
+function parseShelfCountJobResult(job) {
+  const contentText = String(job?.result_json?.ollama_response?.message?.content || job?.result_json?.response || "").trim();
+  const parsed = extractJsonObjectFromText(contentText) || {};
+  const shelves = Number(parsed?.shelves);
+  const levels = Number(parsed?.levels);
+  const confidence = Number(parsed?.confidence);
+  return {
+    shelves: Number.isFinite(shelves) ? shelves : null,
+    levels: Number.isFinite(levels) ? levels : null,
+    confidence: Number.isFinite(confidence) ? confidence : null,
+  };
+}
+
+// Mirrors buildUkdocsCsiAuditPayload's exact shape (model/messages/format/
+// think/options) -- the same ollama_chat job_type the poller already
+// handles, just a different prompt, so the poller needs zero new branches
+// for this, only the job_type added to its existing ollama_chat set.
+function buildShelfCountJobPayload({ trolleyType, photoCount }) {
+  const prompt = {
+    task: "Count the shelves and shelf levels visible across these photos of one warehouse trolley.",
+    instructions: [
+      "These photos all show the SAME single trolley, taken from a fixed camera angle.",
+      "Shelves are mostly silver-grey.",
+      "Count the total number of distinct shelves, and the number of levels (vertical tiers) the trolley is divided into.",
+      "If photos overlap or show the same shelves from slightly different angles, do not double-count them.",
+      "Return your best count even if partially obscured, and lower confidence accordingly rather than guessing wildly.",
+      "Return JSON only, no markdown, no explanation.",
+    ],
+    trolley_type: trolleyType || "",
+    photo_count: photoCount,
+    output_schema: { shelves: 0, levels: 0, confidence: "0.0-1.0" },
+  };
+  return {
+    model: "",
+    messages: [
+      {
+        role: "system",
+        content: "You visually count shelves and shelf levels in warehouse trolley photos. Return JSON only and never add markdown.",
+      },
+      {
+        role: "user",
+        content: JSON.stringify(prompt),
+      },
+    ],
+    format: "json",
+    think: false,
+    options: {
+      temperature: 0,
+      num_predict: 200,
+    },
+  };
+}
+
+// Creates one shelf_count job per trolley scanned that day, after matching
+// each to its Drive photo folder. Idempotent by design (skips if a run
+// already exists for runDate) so the periodic scheduler below can check
+// every few minutes without double-firing, while still being explicitly
+// re-runnable via an exact date (bypassing that skip) per the requirement
+// that a nightly run must be re-runnable for any given date.
+async function runShelfCountNightlyTrigger(explicitDate) {
+  if (!isDatabaseEnabled()) {
+    return { ok: true, skipped: "database_disabled" };
+  }
+  const runDate = explicitDate || addDaysToIsoDate(localDateIso(), -1);
+  if (!explicitDate) {
+    const existing = await getShelfCountNightlyRun(runDate);
+    if (existing) {
+      return { ok: true, skipped: "already_run", run_date: runDate };
+    }
+  }
+
+  const totals = { checked: 0, ok: 0, deviation: 0, needs_review: 0, failed: 0, missing_photos: 0, unmatched_folder: 0 };
+  const issues = [];
+  await upsertShelfCountNightlyRun({ run_date: runDate, status: "running", totals, issues, started_at: new Date().toISOString() });
+
+  try {
+    const scans = await getWarehouseTrolleyScansForDate(runDate);
+    const expectedFolderNames = new Set();
+
+    for (const scan of scans) {
+      totals.checked += 1;
+      const folderName = shelfCountFolderName(scan.customer_reference, runDate);
+      expectedFolderNames.add(folderName);
+
+      let listing;
+      try {
+        listing = await runShelfCountDriveListFolder({ parent_folder_id: SHELF_COUNT_DRIVE_ROOT_FOLDER_ID, child_name: folderName });
+      } catch {
+        listing = { folder_id: null, files: [] };
+      }
+      const photoFiles = (listing.files || []).filter((file) => String(file.mime_type || "").startsWith("image/"));
+
+      if (!listing.folder_id || !photoFiles.length) {
+        totals.missing_photos += 1;
+        issues.push({ type: "missing_photos", customer_reference: scan.customer_reference, trolley_id: scan.trolley_id, folder_name: folderName });
+        await upsertShelfCountRow({
+          trolley_scan_id: scan.id,
+          nightly_run_date: runDate,
+          drive_folder_name: folderName,
+          photo_count: 0,
+          status: "missing_photos",
+        });
+        continue;
+      }
+
+      // Photos are fetched here (server-side, service-account credentials)
+      // and embedded in the job payload -- the poller never touches Drive
+      // credentials directly, the same way excel_to_pdf jobs already embed
+      // their source file rather than having the poller fetch it itself.
+      const visionDocuments = [];
+      for (const file of photoFiles) {
+        const bytes = await runPythonBridge(["drive-download-file"], JSON.stringify({ file_id: file.id, oauth: null }));
+        visionDocuments.push({ name: file.name, mime_type: file.mime_type, content_base64: bytes.toString("base64") });
+      }
+
+      await upsertShelfCountRow({
+        trolley_scan_id: scan.id,
+        nightly_run_date: runDate,
+        drive_folder_name: folderName,
+        photo_count: visionDocuments.length,
+        status: "pending",
+      });
+      await createLlmJob({
+        job_type: "shelf_count",
+        priority: 40,
+        max_attempts: 1,
+        payload_json: {
+          ...buildShelfCountJobPayload({ trolleyType: scan.trolley_type, photoCount: visionDocuments.length }),
+          trolley_scan_id: scan.id,
+          nightly_run_date: runDate,
+          trolley_id: scan.trolley_id,
+          trolley_type: scan.trolley_type,
+          customer_reference: scan.customer_reference,
+          vision_documents: visionDocuments,
+        },
+      });
+    }
+
+    // Any Drive folder for this date with no matching scan row at all --
+    // confirmed real risk: the RFID scan was missed/failed but photos were
+    // still taken. Reuses the same drive-list-folder subcommand, this time
+    // enumerating the root's own children instead of resolving one by name.
+    const compactDate = String(runDate || "").replace(/-/g, "");
+    let rootListing;
+    try {
+      rootListing = await runShelfCountDriveListFolder({ folder_id: SHELF_COUNT_DRIVE_ROOT_FOLDER_ID });
+    } catch {
+      rootListing = { files: [] };
+    }
+    for (const entry of rootListing.files || []) {
+      const name = String(entry.name || "").trim();
+      if (!name.endsWith(`_${compactDate}`) || expectedFolderNames.has(name)) {
+        continue;
+      }
+      totals.unmatched_folder += 1;
+      issues.push({ type: "unmatched_folder", folder_name: name });
+    }
+
+    await upsertShelfCountNightlyRun({ run_date: runDate, status: "done", totals, issues, completed_at: new Date().toISOString() });
+    return { ok: true, run_date: runDate, totals, issues };
+  } catch (error) {
+    await upsertShelfCountNightlyRun({
+      run_date: runDate,
+      status: "failed",
+      totals,
+      issues: [...issues, { type: "error", message: error instanceof Error ? error.message : String(error) }],
+      completed_at: new Date().toISOString(),
+    });
+    throw error;
+  }
+}
+
+async function runShelfCountNightlyScheduledCheck() {
+  try {
+    const result = await runShelfCountNightlyTrigger();
+    if (result?.ok && !result.skipped) {
+      console.log(`Shelf count nightly run completed for ${result.run_date}:`, result.totals);
+    }
+  } catch (error) {
+    console.error("Shelf count nightly trigger failed:", error instanceof Error ? error.message : error);
+  }
+  // "Alert if not finished by a configurable deadline" -- a basic, log-level
+  // version of that for Phase 1; the report page also surfaces a stuck/
+  // unfinished run visually once someone looks at it in the morning.
+  try {
+    const yesterday = addDaysToIsoDate(localDateIso(), -1);
+    const run = await getShelfCountNightlyRun(yesterday);
+    if (new Date().getHours() >= SHELF_COUNT_DEADLINE_HOUR && (!run || run.status === "running")) {
+      console.error(`Shelf count nightly run for ${yesterday} has not finished by the ${SHELF_COUNT_DEADLINE_HOUR}:00 deadline (status: ${run?.status || "not started"}).`);
+    }
+  } catch {
+    // Best-effort logging only.
+  }
+}
+
 // A single, honest answer to "what still needs to happen today, what's
 // actually in flight right now, and what's stuck" across the whole
 // invoice-generate -> PDF-convert -> CSI-audit -> papers-sent pipeline --
@@ -14529,6 +14772,28 @@ async function handleApi(req, res, url) {
         error: "",
       });
     }
+    if (job.job_type === "shelf_count" && job.payload_json?.trolley_scan_id) {
+      const parsed = parseShelfCountJobResult(job);
+      const status = parsed.shelves === null || parsed.confidence === null || parsed.confidence < SHELF_COUNT_CONFIDENCE_THRESHOLD
+        ? "needs_review"
+        : "done";
+      await upsertShelfCountRow({
+        trolley_scan_id: job.payload_json.trolley_scan_id,
+        nightly_run_date: job.payload_json.nightly_run_date,
+        shelf_count: parsed.shelves,
+        level_count: parsed.levels,
+        confidence: parsed.confidence,
+        status,
+        model_version: agentName,
+        job_id: job.id,
+        processed_at: new Date().toISOString(),
+      });
+      // "done" here means "counted successfully" -- there is no
+      // expected_average in Phase 1 to compare against, so a clean count
+      // increments "ok", never "deviation" (that category stays at 0 until
+      // a later phase actually has something to deviate from).
+      await incrementShelfCountNightlyRunTotal(job.payload_json.nightly_run_date, status === "done" ? "ok" : status);
+    }
     await upsertLlmAgentHeartbeat({
       agent_name: agentName,
       pc_name: body.pc_name,
@@ -14578,6 +14843,17 @@ async function handleApi(req, res, url) {
         summary: "CSI audit failed.",
         notes: label ? [`Failed while processing ${label}.`] : [],
       });
+    }
+    if (job.job_type === "shelf_count" && job.payload_json?.trolley_scan_id) {
+      await upsertShelfCountRow({
+        trolley_scan_id: job.payload_json.trolley_scan_id,
+        nightly_run_date: job.payload_json.nightly_run_date,
+        status: "failed",
+        error_text: String(body.error_text || job.error_text || "Shelf count job failed").trim(),
+        job_id: job.id,
+        processed_at: new Date().toISOString(),
+      });
+      await incrementShelfCountNightlyRunTotal(job.payload_json.nightly_run_date, "failed");
     }
     await upsertLlmAgentHeartbeat({
       agent_name: agentName,
@@ -14779,6 +15055,44 @@ async function handleApi(req, res, url) {
       timestamp: new Date().toISOString(),
     }]);
     sendJson(res, 200, { ok: true, reference, photoCount: updatedPhotoCount });
+    return;
+  }
+
+  // Machine-to-machine push from the RFID scan portal -- individual trolley
+  // identity (RFID tag + type) doesn't exist anywhere else in this app
+  // (warehouse_status/warehouse_activity_log only ever carried per-shipment
+  // aggregate counts), so this is the first time it's captured at all. Gated
+  // the same way as /warehouse/ingest above -- shared secret, no session.
+  if (url.pathname === "/warehouse/ingest/trolley-scan" && req.method === "POST") {
+    const expectedSecret = String(process.env.RENDER_INGEST_SECRET || "").trim();
+    if (!expectedSecret || req.headers["x-ingest-secret"] !== expectedSecret) {
+      sendJson(res, 401, { ok: false });
+      return;
+    }
+    if (!isDatabaseEnabled()) {
+      sendJson(res, 503, { ok: false, error: "Database is not configured" });
+      return;
+    }
+    const body = await readRequestJson(req, 2 * 1024 * 1024);
+    const incoming = Array.isArray(body?.scans) ? body.scans : [];
+    const scans = incoming
+      .map((scan) => ({
+        id: String(scan?.id || crypto.randomUUID()).trim(),
+        trolley_id: String(scan?.trolley_id || "").trim(),
+        trolley_type: String(scan?.trolley_type || "").trim(),
+        customer_reference: String(scan?.customer_reference || "").trim(),
+        shipment_date: String(scan?.shipment_date || "").slice(0, 10),
+        scanned_at: scan?.scanned_at ? new Date(scan.scanned_at).toISOString() : new Date().toISOString(),
+        source: String(scan?.source || "rfid_portal").trim(),
+        raw: scan && typeof scan === "object" ? scan : {},
+      }))
+      .filter((scan) => scan.trolley_id && scan.customer_reference && scan.shipment_date);
+    if (!scans.length) {
+      sendJson(res, 400, { ok: false, error: "No valid scans in request (trolley_id, customer_reference, shipment_date are required)" });
+      return;
+    }
+    await insertWarehouseTrolleyScans(scans);
+    sendJson(res, 200, { ok: true, received: scans.length });
     return;
   }
 
@@ -15881,6 +16195,45 @@ async function handleApi(req, res, url) {
     const state = await readUkdocsState();
     const monitor = await buildUkdocsPipelineMonitor(state, targetDate);
     sendJson(res, 200, monitor);
+    return;
+  }
+
+  // Morning report: the previous night's shelf-count run + its per-trolley
+  // results. Defaults to yesterday, since that's what the nightly trigger
+  // itself just processed by the time anyone looks at this in the morning.
+  if (url.pathname === "/api/shelf-count/nightly-run" && req.method === "GET") {
+    if (!requirePermission(res, requestUser, PERMISSIONS.SHELF_COUNT_VIEW)) {
+      return;
+    }
+    const targetDate = String(url.searchParams.get("date") || "").slice(0, 10) || addDaysToIsoDate(localDateIso(), -1);
+    const [run, counts] = await Promise.all([
+      getShelfCountNightlyRun(targetDate),
+      getShelfCountsForDate(targetDate),
+    ]);
+    sendJson(res, 200, { date: targetDate, run, counts });
+    return;
+  }
+
+  // Manual re-run for an explicit date -- bypasses the "already ran" skip
+  // the automatic nightly trigger uses, per the requirement that a run must
+  // be re-runnable for any given date (e.g. after fixing a Drive folder
+  // that was misnamed, or once the RFID portal backfills missed scans).
+  if (url.pathname === "/api/shelf-count/nightly-run" && req.method === "POST") {
+    if (!requirePermission(res, requestUser, PERMISSIONS.SHELF_COUNT_VIEW)) {
+      return;
+    }
+    const body = await readRequestJson(req);
+    const targetDate = String(body?.date || "").slice(0, 10);
+    if (!targetDate) {
+      sendJson(res, 400, { error: "date is required" });
+      return;
+    }
+    try {
+      const result = await runShelfCountNightlyTrigger(targetDate);
+      sendJson(res, 200, result);
+    } catch (error) {
+      sendJson(res, 400, { error: error instanceof Error ? error.message : String(error) });
+    }
     return;
   }
 
@@ -19344,6 +19697,18 @@ async function startServer() {
   setInterval(() => {
     runIfOnline("Fust API import", runFustApiImportJob).catch(() => {});
   }, 15 * 60 * 1000);
+
+  // No "run once at a specific wall-clock time" scheduler exists in this
+  // codebase -- this follows the same setInterval house pattern as
+  // everything else here instead of introducing cron: checked every 5
+  // minutes, and runShelfCountNightlyTrigger's own "already ran for this
+  // date" check (shelf_count_nightly_runs row existence) is what actually
+  // makes it fire only once per day, close enough to midnight for a nightly
+  // batch job.
+  runIfOnline("Shelf count nightly trigger", runShelfCountNightlyScheduledCheck).catch(() => {});
+  setInterval(() => {
+    runIfOnline("Shelf count nightly trigger", runShelfCountNightlyScheduledCheck).catch(() => {});
+  }, SHELF_COUNT_NIGHTLY_CHECK_INTERVAL_MS);
 
   async function runIfBackup(jobName, jobFn) {
     const systemMode = await readSystemMode();

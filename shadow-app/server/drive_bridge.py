@@ -315,6 +315,41 @@ def drive_download_file() -> int:
     return 0
 
 
+def drive_list_folder() -> int:
+    payload = json.loads(sys.stdin.read() or "{}")
+    folder_id = str(payload.get("folder_id") or "").strip()
+    parent_folder_id = str(payload.get("parent_folder_id") or "").strip()
+    child_name = str(payload.get("child_name") or "").strip()
+    account_name = str(payload.get("account") or DEFAULT_DRIVE_ACCOUNT).strip() or DEFAULT_DRIVE_ACCOUNT
+
+    drive_service = DriveService.from_service_account_env(account_name)
+
+    # Resolve a folder by exact name under a parent (e.g. the nightly
+    # shelf-count trigger looking for "customer_YYYYMMDD" under the Drive
+    # root) when a folder_id wasn't already known -- never creates one,
+    # unlike find_or_create_drive_folder above, since a missing folder here
+    # just means "no photos yet", not something to provision.
+    if not folder_id:
+        if not parent_folder_id or not child_name:
+            raise RuntimeError("Either folder_id, or parent_folder_id + child_name, is required")
+        for child in drive_service.list_child_folders(parent_folder_id):
+            if str(child.get("name") or "").strip() == child_name:
+                folder_id = str(child.get("id") or "")
+                break
+
+    if not folder_id:
+        sys.stdout.write(json.dumps({"folder_id": None, "files": []}))
+        return 0
+
+    files = drive_service.list_files(folder_id)
+    result_files = [
+        {"id": f.get("id"), "name": f.get("name"), "mime_type": f.get("mimeType")}
+        for f in files
+    ]
+    sys.stdout.write(json.dumps({"folder_id": folder_id, "files": result_files}, ensure_ascii=True))
+    return 0
+
+
 def sheets_write_first_empty(spreadsheet_id: str, sheet_name: str) -> int:
     payload = json.loads(sys.stdin.read() or "{}")
     row = payload.get("row") if isinstance(payload, dict) else []
@@ -467,6 +502,7 @@ def main() -> int:
     subparsers.add_parser("service-account-info")
     subparsers.add_parser("drive-upload-cmr")
     subparsers.add_parser("drive-download-file")
+    subparsers.add_parser("drive-list-folder")
     args = parser.parse_args()
 
     if args.command == "details":
@@ -489,6 +525,8 @@ def main() -> int:
         return drive_upload_cmr()
     if args.command == "drive-download-file":
         return drive_download_file()
+    if args.command == "drive-list-folder":
+        return drive_list_folder()
 
     return 1
 

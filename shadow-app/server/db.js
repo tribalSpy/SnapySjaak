@@ -402,6 +402,197 @@ export async function getInkoopDispatchLotsByLots(lotNumbers) {
   return result.rows;
 }
 
+export async function insertWarehouseTrolleyScans(scans) {
+  if (!pool || !Array.isArray(scans) || !scans.length) {
+    return;
+  }
+  const validScans = dedupeByKeyKeepingLast(scans.filter((scan) => scan?.id), (scan) => scan.id);
+  for (const chunk of chunkArray(validScans, INKOOP_UPSERT_CHUNK_SIZE)) {
+    const values = [];
+    const placeholders = chunk.map((scan) => {
+      const base = values.length;
+      values.push(
+        scan.id,
+        scan.trolley_id || "",
+        scan.trolley_type || "",
+        scan.customer_reference || "",
+        scan.shipment_date || null,
+        scan.scanned_at || null,
+        scan.source || "rfid_portal",
+        JSON.stringify(scan.raw && typeof scan.raw === "object" ? scan.raw : {}),
+      );
+      return `($${base + 1}, $${base + 2}, $${base + 3}, $${base + 4}, $${base + 5}::date, $${base + 6}::timestamptz, $${base + 7}, $${base + 8}::jsonb)`;
+    });
+    await pool.query(
+      `
+        INSERT INTO warehouse_trolley_scans (
+          id, trolley_id, trolley_type, customer_reference, shipment_date, scanned_at, source, raw
+        )
+        VALUES ${placeholders.join(", ")}
+        ON CONFLICT (id) DO UPDATE SET
+          trolley_id = EXCLUDED.trolley_id,
+          trolley_type = EXCLUDED.trolley_type,
+          customer_reference = EXCLUDED.customer_reference,
+          shipment_date = EXCLUDED.shipment_date,
+          scanned_at = EXCLUDED.scanned_at,
+          source = EXCLUDED.source,
+          raw = EXCLUDED.raw
+      `,
+      values,
+    );
+  }
+}
+
+export async function getWarehouseTrolleyScansForDate(date) {
+  if (!pool || !date) {
+    return [];
+  }
+  const result = await pool.query(
+    `
+      SELECT id, trolley_id, trolley_type, customer_reference, shipment_date, scanned_at, source, raw
+      FROM warehouse_trolley_scans
+      WHERE shipment_date = $1::date
+      ORDER BY customer_reference, scanned_at
+    `,
+    [date],
+  );
+  return result.rows;
+}
+
+export async function upsertShelfCountRow(row) {
+  if (!pool || !row?.trolley_scan_id) {
+    return null;
+  }
+  const result = await pool.query(
+    `
+      INSERT INTO shelf_counts (
+        trolley_scan_id, nightly_run_date, drive_folder_name, photo_count, shelf_count, level_count,
+        confidence, expected_average, deviation, status, model_version, job_id, error_text, processed_at
+      )
+      VALUES ($1, $2::date, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14::timestamptz)
+      ON CONFLICT (trolley_scan_id) DO UPDATE SET
+        nightly_run_date = COALESCE(EXCLUDED.nightly_run_date, shelf_counts.nightly_run_date),
+        drive_folder_name = COALESCE(NULLIF(EXCLUDED.drive_folder_name, ''), shelf_counts.drive_folder_name),
+        photo_count = COALESCE(NULLIF(EXCLUDED.photo_count, 0), shelf_counts.photo_count),
+        shelf_count = COALESCE(EXCLUDED.shelf_count, shelf_counts.shelf_count),
+        level_count = COALESCE(EXCLUDED.level_count, shelf_counts.level_count),
+        confidence = COALESCE(EXCLUDED.confidence, shelf_counts.confidence),
+        expected_average = COALESCE(EXCLUDED.expected_average, shelf_counts.expected_average),
+        deviation = COALESCE(EXCLUDED.deviation, shelf_counts.deviation),
+        status = EXCLUDED.status,
+        model_version = COALESCE(NULLIF(EXCLUDED.model_version, ''), shelf_counts.model_version),
+        job_id = COALESCE(NULLIF(EXCLUDED.job_id, ''), shelf_counts.job_id),
+        error_text = EXCLUDED.error_text,
+        processed_at = COALESCE(EXCLUDED.processed_at, shelf_counts.processed_at),
+        updated_at = now()
+      RETURNING *
+    `,
+    [
+      row.trolley_scan_id,
+      row.nightly_run_date || null,
+      row.drive_folder_name || "",
+      numberOrNull(row.photo_count) || 0,
+      numberOrNull(row.shelf_count),
+      numberOrNull(row.level_count),
+      numberOrNull(row.confidence),
+      numberOrNull(row.expected_average),
+      numberOrNull(row.deviation),
+      row.status || "pending",
+      row.model_version || "",
+      row.job_id || "",
+      row.error_text || "",
+      row.processed_at || null,
+    ],
+  );
+  return result.rows?.[0] || null;
+}
+
+export async function getShelfCountRow(trolleyScanId) {
+  if (!pool || !trolleyScanId) {
+    return null;
+  }
+  const result = await pool.query("SELECT * FROM shelf_counts WHERE trolley_scan_id = $1", [trolleyScanId]);
+  return result.rows?.[0] || null;
+}
+
+export async function getShelfCountsForDate(date) {
+  if (!pool || !date) {
+    return [];
+  }
+  const result = await pool.query(
+    `
+      SELECT sc.*, wts.trolley_id, wts.trolley_type, wts.customer_reference
+      FROM shelf_counts sc
+      JOIN warehouse_trolley_scans wts ON wts.id = sc.trolley_scan_id
+      WHERE sc.nightly_run_date = $1::date
+      ORDER BY wts.customer_reference, wts.trolley_id
+    `,
+    [date],
+  );
+  return result.rows;
+}
+
+export async function upsertShelfCountNightlyRun(run) {
+  if (!pool || !run?.run_date) {
+    return null;
+  }
+  const result = await pool.query(
+    `
+      INSERT INTO shelf_count_nightly_runs (run_date, status, totals, issues, started_at, completed_at)
+      VALUES ($1::date, $2, $3::jsonb, $4::jsonb, COALESCE($5::timestamptz, now()), $6::timestamptz)
+      ON CONFLICT (run_date) DO UPDATE SET
+        status = EXCLUDED.status,
+        totals = EXCLUDED.totals,
+        issues = EXCLUDED.issues,
+        completed_at = COALESCE(EXCLUDED.completed_at, shelf_count_nightly_runs.completed_at),
+        updated_at = now()
+      RETURNING *
+    `,
+    [
+      run.run_date,
+      run.status || "running",
+      JSON.stringify(run.totals && typeof run.totals === "object" ? run.totals : {}),
+      JSON.stringify(Array.isArray(run.issues) ? run.issues : []),
+      run.started_at || null,
+      run.completed_at || null,
+    ],
+  );
+  return result.rows?.[0] || null;
+}
+
+export async function getShelfCountNightlyRun(date) {
+  if (!pool || !date) {
+    return null;
+  }
+  const result = await pool.query("SELECT * FROM shelf_count_nightly_runs WHERE run_date = $1::date", [date]);
+  return result.rows?.[0] || null;
+}
+
+// Atomic increment via jsonb_set/a computed expression, not a JS read-
+// modify-write -- multiple shelf_count jobs for the same night can complete
+// concurrently (once more than one poller exists), and a read-modify-write
+// here would silently drop whichever completion's write lost the race.
+export async function incrementShelfCountNightlyRunTotal(runDate, statusKey) {
+  if (!pool || !runDate || !statusKey) {
+    return null;
+  }
+  const result = await pool.query(
+    `
+      UPDATE shelf_count_nightly_runs
+      SET totals = jsonb_set(
+            COALESCE(totals, '{}'::jsonb),
+            ARRAY[$2],
+            to_jsonb(COALESCE((totals->>$2)::int, 0) + 1)
+          ),
+          updated_at = now()
+      WHERE run_date = $1::date
+      RETURNING *
+    `,
+    [runDate, statusKey],
+  );
+  return result.rows?.[0] || null;
+}
+
 export async function getInkoopErpLines({ from, to } = {}) {
   if (!pool) {
     return [];
@@ -1652,6 +1843,78 @@ const databaseMigrations = [
   `,
   `
     CREATE INDEX IF NOT EXISTS inkoop_dispatch_lots_date_idx ON inkoop_dispatch_lots (erp_date)
+  `,
+  // Individual trolley identity (RFID tag + type) doesn't exist anywhere
+  // else in this app -- warehouse_status/warehouse_activity_log are
+  // schema-less JSONB blobs with only per-shipment aggregate counts
+  // (trolleyCount), no per-trolley ID. Fed by a new machine-to-machine
+  // ingest route from the RFID scan portal (see /warehouse/ingest/trolley-
+  // scan), the same way warehouse_activity_log is fed by the LAN warehouse
+  // backend's own push.
+  `
+    CREATE TABLE IF NOT EXISTS warehouse_trolley_scans (
+      id text PRIMARY KEY,
+      trolley_id text NOT NULL,
+      trolley_type text NOT NULL DEFAULT '',
+      customer_reference text NOT NULL,
+      shipment_date date NOT NULL,
+      scanned_at timestamptz NOT NULL DEFAULT now(),
+      source text NOT NULL DEFAULT 'rfid_portal',
+      raw jsonb NOT NULL DEFAULT '{}'::jsonb,
+      created_at timestamptz NOT NULL DEFAULT now()
+    )
+  `,
+  `
+    CREATE INDEX IF NOT EXISTS warehouse_trolley_scans_ref_date_idx ON warehouse_trolley_scans (customer_reference, shipment_date)
+  `,
+  `
+    CREATE INDEX IF NOT EXISTS warehouse_trolley_scans_date_idx ON warehouse_trolley_scans (shipment_date)
+  `,
+  // One row per trolley scan event -- the nightly shelf-count job's result.
+  // Deliberately keyed 1:1 on the scan (not the reusable trolley_id itself,
+  // which a physical trolley carries across many different nights) so each
+  // night's specific use of a trolley gets its own count. expected_average/
+  // deviation stay null in Phase 1 -- there is no manual "expected count"
+  // config; a later training/derivation phase fills these in from
+  // accumulated real counts, not a config screen.
+  `
+    CREATE TABLE IF NOT EXISTS shelf_counts (
+      trolley_scan_id text PRIMARY KEY REFERENCES warehouse_trolley_scans(id),
+      nightly_run_date date NOT NULL,
+      drive_folder_name text NOT NULL DEFAULT '',
+      photo_count integer NOT NULL DEFAULT 0,
+      shelf_count integer,
+      level_count integer,
+      confidence numeric,
+      expected_average numeric,
+      deviation numeric,
+      status text NOT NULL DEFAULT 'pending',
+      model_version text NOT NULL DEFAULT '',
+      job_id text,
+      error_text text NOT NULL DEFAULT '',
+      processed_at timestamptz,
+      created_at timestamptz NOT NULL DEFAULT now(),
+      updated_at timestamptz NOT NULL DEFAULT now()
+    )
+  `,
+  `
+    CREATE INDEX IF NOT EXISTS shelf_counts_run_date_idx ON shelf_counts (nightly_run_date)
+  `,
+  // One row per calendar day the nightly trigger has run for -- its own
+  // existence for a given run_date is what makes the trigger idempotent
+  // (skip if already run) while still being explicitly re-runnable (a
+  // manual re-run for a specific date just calls the same function again).
+  `
+    CREATE TABLE IF NOT EXISTS shelf_count_nightly_runs (
+      run_date date PRIMARY KEY,
+      status text NOT NULL DEFAULT 'running',
+      totals jsonb NOT NULL DEFAULT '{}'::jsonb,
+      issues jsonb NOT NULL DEFAULT '[]'::jsonb,
+      started_at timestamptz NOT NULL DEFAULT now(),
+      completed_at timestamptz,
+      created_at timestamptz NOT NULL DEFAULT now(),
+      updated_at timestamptz NOT NULL DEFAULT now()
+    )
   `,
 ];
 

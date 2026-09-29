@@ -56,6 +56,7 @@ const PAGE_DEFINITIONS = [
   { key: "ukdocsinspection", label: "Phyto Inspection", permission: PERMISSIONS.UKDOCS_INSPECTION_VIEW },
   { key: "ukdocscsi", label: "UKDocs CSI", permission: PERMISSIONS.UKDOCS_CSI_VIEW },
   { key: "pipelinemonitor", label: "Pipeline Monitor", permission: PERMISSIONS.UKDOCS_VIEW },
+  { key: "shelfcount", label: "Shelf Count", permission: PERMISSIONS.SHELF_COUNT_VIEW },
   { key: "ericdocs", label: "Eric Docs", permission: PERMISSIONS.ERIC_DOCS_VIEW },
   { key: "pdkeuring", label: "PD Keuring", permission: PERMISSIONS.PD_KEURING_VIEW },
   { key: "inkoop", label: "Inkoop Controle", permission: PERMISSIONS.INKOOP_VIEW },
@@ -229,6 +230,11 @@ function pageHeading(page) {
       return {
         title: "Pipeline Monitor",
         caption: "What still needs to happen today, what's in flight right now, and what's stuck -- across invoice generation, PDF conversion, CSI audit, and papers sent.",
+      };
+    case "shelfcount":
+      return {
+        title: "Shelf Count",
+        caption: "Last night's shelf/level counts per trolley, counted automatically from RFID scan portal photos.",
       };
     case "pdkeuring":
       return {
@@ -7947,6 +7953,154 @@ function UkdocsPipelineMonitorPage({ onNavigate }) {
   );
 }
 
+// Mirrors localDateIso()'s own offset trick rather than re-parsing its
+// "YYYY-MM-DD" string output as a Date (which parses as UTC midnight and
+// would drift a day off in negative-UTC-offset timezones).
+function shelfCountYesterdayIso() {
+  const now = new Date();
+  const offsetMinutes = now.getTimezoneOffset();
+  const localNow = new Date(now.getTime() - offsetMinutes * 60 * 1000);
+  localNow.setUTCDate(localNow.getUTCDate() - 1);
+  return localNow.toISOString().slice(0, 10);
+}
+
+const SHELF_COUNT_STATUS_TONE = {
+  done: "success",
+  pending: "info",
+  processing: "info",
+  needs_review: "danger",
+  failed: "danger",
+  missing_photos: "muted",
+};
+
+// Phase 1: expected_average/deviation are always null here -- there is no
+// manual "expected count" config, a later training/derivation phase fills
+// them in from accumulated real counts. This just shows the raw counted
+// result per trolley for last night's run.
+function ShelfCountPage() {
+  const [date, setDate] = useState(() => shelfCountYesterdayIso());
+  const [data, setData] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [rerunning, setRerunning] = useState(false);
+  const [error, setError] = useState("");
+  const [message, setMessage] = useState("");
+
+  function load() {
+    setError("");
+    return apiJson(`/api/shelf-count/nightly-run?date=${encodeURIComponent(date)}`)
+      .then((payload) => setData(payload))
+      .catch((loadError) => setError(loadError.message))
+      .finally(() => setLoading(false));
+  }
+
+  useEffect(() => {
+    setLoading(true);
+    load().catch(() => {});
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [date]);
+
+  async function rerunForDate() {
+    setRerunning(true);
+    setError("");
+    setMessage("");
+    try {
+      const result = await apiJson("/api/shelf-count/nightly-run", {
+        method: "POST",
+        body: JSON.stringify({ date }),
+      });
+      setMessage(result.skipped ? `Already run for ${date} (${result.skipped}).` : `Re-ran ${date}: ${JSON.stringify(result.totals)}`);
+      await load();
+    } catch (rerunError) {
+      setError(rerunError.message);
+    } finally {
+      setRerunning(false);
+    }
+  }
+
+  const run = data?.run;
+  const counts = data?.counts || [];
+
+  if (loading && !data) {
+    return <div className="notice">Loading shelf count...</div>;
+  }
+
+  return (
+    <section className="overview-stack">
+      <div className="row-actions spread-actions">
+        <label>
+          <span>Date</span>
+          <input type="date" value={date} onChange={(event) => setDate(event.target.value)} />
+        </label>
+        <button type="button" onClick={rerunForDate} disabled={rerunning}>
+          {rerunning ? "Running..." : "Re-run for this date"}
+        </button>
+      </div>
+
+      {message && <div className="notice">{message}</div>}
+      {error && <div className="notice danger">{error}</div>}
+
+      <div className="notice">
+        {run
+          ? (
+            <>
+              Run status: <span className={`ukdocs-status-badge ${run.status === "done" ? "success" : run.status === "failed" ? "danger" : "info"}`}>{run.status}</span>
+              {" -- "}{(run.totals?.checked ?? 0)} checked, {(run.totals?.ok ?? 0)} ok, {(run.totals?.needs_review ?? 0)} needs review,{" "}
+              {(run.totals?.failed ?? 0)} failed, {(run.totals?.missing_photos ?? 0)} missing photos, {(run.totals?.unmatched_folder ?? 0)} unmatched folders.
+            </>
+          )
+          : "No nightly run recorded for this date yet."}
+      </div>
+
+      {!!run?.issues?.length && (
+        <div className="data-table-card">
+          <div className="section-header"><h3>Issues ({run.issues.length})</h3></div>
+          <div className="table-wrap">
+            <table className="data-table">
+              <thead><tr><th>Type</th><th>Customer reference</th><th>Trolley</th><th>Folder</th></tr></thead>
+              <tbody>
+                {run.issues.map((issue, index) => (
+                  <tr key={index}>
+                    <td>{issue.type}</td>
+                    <td>{issue.customer_reference || "-"}</td>
+                    <td>{issue.trolley_id || "-"}</td>
+                    <td>{issue.folder_name || "-"}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+
+      <div className="data-table-card">
+        <div className="section-header"><h2>Trolleys ({counts.length})</h2></div>
+        <div className="table-wrap">
+          <table className="data-table">
+            <thead>
+              <tr><th>Customer reference</th><th>Trolley</th><th>Type</th><th>Photos</th><th>Shelves</th><th>Levels</th><th>Confidence</th><th>Status</th></tr>
+            </thead>
+            <tbody>
+              {counts.map((row) => (
+                <tr key={row.trolley_scan_id}>
+                  <td>{row.customer_reference}</td>
+                  <td>{row.trolley_id}</td>
+                  <td>{row.trolley_type || "-"}</td>
+                  <td>{row.photo_count}</td>
+                  <td>{row.shelf_count ?? "-"}</td>
+                  <td>{row.level_count ?? "-"}</td>
+                  <td>{row.confidence !== null && row.confidence !== undefined ? Number(row.confidence).toFixed(2) : "-"}</td>
+                  <td><span className={`ukdocs-status-badge ${SHELF_COUNT_STATUS_TONE[row.status] || "muted"}`}>{row.status}</span></td>
+                </tr>
+              ))}
+              {!counts.length && <tr><td colSpan={8}>No trolleys for this date.</td></tr>}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+  );
+}
+
 function EricDocsPage({ currentUser }) {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -9656,6 +9810,7 @@ function App() {
         {page === "ukdocsinspection" && <UkdocsInspectionPage currentUser={auth.user} />}
         {page === "ukdocscsi" && <UkdocsCSIPage currentUser={auth.user} />}
         {page === "pipelinemonitor" && <UkdocsPipelineMonitorPage currentUser={auth.user} onNavigate={setPage} />}
+        {page === "shelfcount" && <ShelfCountPage currentUser={auth.user} />}
         {page === "ericdocs" && <EricDocsPage currentUser={auth.user} />}
         {page === "pdkeuring" && <PdKeuringPage currentUser={auth.user} />}
         {page === "inkoop" && <InkoopControlePage currentUser={auth.user} />}
