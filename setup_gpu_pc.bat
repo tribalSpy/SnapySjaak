@@ -7,19 +7,50 @@ echo  Shelf Count GPU PC setup
 echo ============================================
 echo.
 
-where python >nul 2>nul
-if errorlevel 1 (
-    echo [ERROR] Python was not found on PATH.
-    echo Install Python 3.11+ from https://www.python.org/downloads/windows/
-    echo and make sure to check "Add python.exe to PATH" during install.
-    echo Then re-run this script.
-    pause
-    exit /b 1
+rem label-studio's Django dependency chain (django-environ in particular)
+rem breaks on very new Python releases -- confirmed on 3.14 with a
+rem "cannot import name 'find_loader' from pkgutil" ImportError (that name
+rem was removed in 3.14). Prefer 3.12 via the py launcher when available so
+rem a PC with only a bleeding-edge Python on PATH doesn't hit this blind.
+set "PYTHON_CMD="
+where py >nul 2>nul
+if not errorlevel 1 (
+    py -3.12 --version >nul 2>nul
+    if not errorlevel 1 (
+        set "PYTHON_CMD=py -3.12"
+    ) else (
+        py -3.11 --version >nul 2>nul
+        if not errorlevel 1 (
+            set "PYTHON_CMD=py -3.11"
+        )
+    )
+)
+
+if not defined PYTHON_CMD (
+    where python >nul 2>nul
+    if errorlevel 1 (
+        echo [ERROR] Python was not found on PATH.
+        echo Install Python 3.12 from https://www.python.org/downloads/windows/
+        echo and make sure to check "Add python.exe to PATH" during install.
+        echo Then re-run this script.
+        pause
+        exit /b 1
+    )
+    set "PYTHON_CMD=python"
+    echo   Using system "python" -- no py launcher with 3.11/3.12 found.
+    echo   label-studio is known to break on very new Python versions
+    echo   -- confirmed on 3.14. If setup fails later with a pkgutil/environ
+    echo   ImportError, install Python 3.12 via:
+    echo     winget install --id Python.Python.3.12 -e
+    echo   then delete shelf-training\.venv and re-run this script -- it
+    echo   will pick 3.12 automatically via the py launcher next time.
+) else (
+    echo   Using "!PYTHON_CMD!" for the virtual environment.
 )
 
 echo [1/6] Creating shared virtual environment at shelf-training\.venv ...
 if not exist "shelf-training\.venv" (
-    python -m venv shelf-training\.venv
+    !PYTHON_CMD! -m venv shelf-training\.venv
 ) else (
     echo   already exists, skipping.
 )
