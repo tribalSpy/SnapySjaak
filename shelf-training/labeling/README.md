@@ -50,8 +50,13 @@ What's left is the part that needs a human:
 
 - `imported_tasks.json` and `exports/` are local working state, not meant
   to be committed (see `.gitignore`).
+- The token from **Account & Settings > Personal Access Token** is a JWT
+  *refresh* token on current Label Studio versions, not a static API key --
+  `_auth.py` exchanges it for a short-lived access token (`/api/token/refresh`)
+  before every run of `import_tasks.py`/`export_annotations.py`. If that
+  exchange 404s, this Label Studio instance is old enough to still expect a
+  static `Authorization: Token <token>` header instead; open an issue/ask
+  before reverting, since which one applies depends on the installed version.
 - If a Label Studio upgrade changes the export API shape,
   `export_annotations.py` prints instructions to use the UI's Export button
-  as a fallback -- this script was written against Label Studio 1.23.1's
-  documented `/api/projects/{id}/export` endpoint but hasn't been run
-  against a live instance yet, since none exists in this environment.
+  as a fallback.

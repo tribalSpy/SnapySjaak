@@ -20,6 +20,8 @@ from pathlib import Path
 
 import requests
 
+from _auth import get_access_token
+
 SCRIPT_DIR = Path(__file__).resolve().parent
 EXPORTS_DIR = SCRIPT_DIR / "exports"
 
@@ -39,10 +41,11 @@ def main():
     if not project_id:
         raise SystemExit("config.json has no project_id yet -- run import_tasks.py first.")
 
+    access_token = get_access_token(config)
     url = f'{config["label_studio_url"].rstrip("/")}/api/projects/{project_id}/export'
     response = requests.get(
         url,
-        headers={"Authorization": f'Token {config["api_token"]}'},
+        headers={"Authorization": f"Bearer {access_token}"},
         params={"exportType": "JSON", "download_all_tasks": "false"},
         timeout=300,
     )
