@@ -7,11 +7,11 @@ rem GitHub directly), then run it there. First run clones the repo; every
 rem run after that just pulls the latest changes.
 rem
 rem Usage:
-rem   pull_code.bat                  clones/pulls into .\SnappySjaak
+rem   pull_code.bat                  clones/pulls into .\SnapySjaak
 rem   pull_code.bat C:\some\path     clones/pulls into that folder instead
 
 set REPO_URL=https://github.com/tribalSpy/SnapySjaak.git
-set REPO_DIR=%~dp0SnappySjaak
+set REPO_DIR=%~dp0SnapySjaak
 if not "%~1"=="" set REPO_DIR=%~1
 
 where git >nul 2>nul
