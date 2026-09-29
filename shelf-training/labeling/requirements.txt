@@ -1,2 +1,2 @@
 label-studio==1.23.1
-requests==2.32.3
+requests>=2.33.0,<3.0.0
