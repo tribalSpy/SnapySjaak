@@ -6961,6 +6961,204 @@ function groupInkoopInvoiceLinesByInvoice(flatLines) {
   return [...byInvoice.values()];
 }
 
+// Connect/Klokfactuur invoice descriptions carry a leading crop/type code
+// the ERP export's own Description never has (e.g. invoice "CHR T ALTAJ"
+// vs ERP "Altaj") -- confirmed real and necessary: without stripping it,
+// not one Connect-invoice product name would ever line up with its ERP
+// counterpart at Tier 2, verified against a real invoice+dump pair where
+// this exact stripping made "CHR T ALTAJ"/"Altaj" reconcile to the cent.
+// Two short (1-5 letter) all-caps tokens are used as the signal since real
+// ERP descriptions are never title-cased like that at the start (checked
+// against the real dump).
+const INKOOP_PRODUCT_PREFIX_RE = /^[A-Z]{1,5}\s+[A-Z]{1,5}\s+/;
+
+function normalizeInkoopProductName(name) {
+  const withoutPrefix = String(name || "").replace(INKOOP_PRODUCT_PREFIX_RE, "");
+  const text = inkoopInsertCamelBoundaries(withoutPrefix);
+  return text.toLowerCase().replace(/[^a-z0-9]+/g, "");
+}
+
+// Maps every code the master data knows about back to its own grower name,
+// normalized the same way the invoice side's own name matching already is
+// -- lets an ERP row (identified by a resolved code) and an invoice line
+// (identified by its own supplier_name) converge on the same aggregation
+// key regardless of which of a grower's several internal codes (see
+// resolveInkoopSupplierCode's own comment -- Zentoo alone has 23) a
+// specific ERP row happens to carry.
+function buildInkoopCodeNameMap(supplierMap, supplierNameMap, supplierFhMap) {
+  const codeToName = new Map();
+  for (const entry of [...Object.values(supplierMap || {}), ...Object.values(supplierNameMap || {}), ...Object.values(supplierFhMap || {})]) {
+    const code = normalizeInkoopKey(entry?.code);
+    const name = normalizeInkoopSupplierName(entry?.name);
+    if (code && name && !codeToName.has(code)) {
+      codeToName.set(code, name);
+    }
+  }
+  return codeToName;
+}
+
+function inkoopAggregateKey(growerName, dateKey, productName) {
+  return productName === undefined ? `${growerName}|${dateKey}` : `${growerName}|${dateKey}|${productName}`;
+}
+
+function inkoopBumpAggregate(map, key, pieces, value) {
+  if (!map.has(key)) {
+    map.set(key, { pieces: 0, value: 0 });
+  }
+  const entry = map.get(key);
+  entry.pieces += pieces;
+  entry.value += value;
+}
+
+// Independent of line-level matching entirely -- totals every raw ERP row
+// and every raw invoice line by (grower, day) and by (grower, day,
+// product), so a "missing from ERP"/"missing from invoice" line-level gap
+// can be checked against whether the money and piece count for that whole
+// grower's day actually reconciles, before treating it as a real problem.
+// A grower whose purchases got split across several small ERP lots (the
+// CHR T ALTAJ case: ~17 lots of 25-30 pieces each, re-aggregated by
+// FloraHolland into two differently-sized invoice lines) totals correctly
+// here even when no single ERP row lines up with any single invoice line.
+function computeInkoopGrowerDayTotals(erpRows, invoiceLines, supplierMap, supplierNameMap, manualLinks, supplierFhMap) {
+  const validSupplierCodes = new Set(
+    [...Object.values(supplierMap || {}), ...Object.values(supplierNameMap || {}), ...Object.values(supplierFhMap || {})]
+      .map((entry) => normalizeInkoopKey(entry?.code))
+      .filter(Boolean),
+  );
+  const codeToName = buildInkoopCodeNameMap(supplierMap, supplierNameMap, supplierFhMap);
+
+  const erpByGrowerDay = new Map();
+  const erpByGrowerDayProduct = new Map();
+  for (const row of Array.isArray(erpRows) ? erpRows : []) {
+    const code = resolveErpRowSupplierCode(row, validSupplierCodes);
+    const growerName = codeToName.get(code);
+    const dateKey = String(row?.date || "").slice(0, 10);
+    if (!growerName || !dateKey) {
+      continue;
+    }
+    const pieces = Number(row?.pieces) || 0;
+    const value = parseFloat(row?.t_price) || 0;
+    inkoopBumpAggregate(erpByGrowerDay, inkoopAggregateKey(growerName, dateKey), pieces, value);
+    const productName = normalizeInkoopProductName(row?.description);
+    if (productName) {
+      inkoopBumpAggregate(erpByGrowerDayProduct, inkoopAggregateKey(growerName, dateKey, productName), pieces, value);
+    }
+  }
+
+  const invoiceByGrowerDay = new Map();
+  const invoiceByGrowerDayProduct = new Map();
+  for (const line of Array.isArray(invoiceLines) ? invoiceLines : []) {
+    const growerName = normalizeInkoopSupplierName(line?.supplier_name);
+    const dateKey = String(line?.invoice_date || "").slice(0, 10);
+    if (!growerName || !dateKey) {
+      continue;
+    }
+    const pieces = Number(line?.quantity) || 0;
+    const value = Number(line?.total) || 0;
+    inkoopBumpAggregate(invoiceByGrowerDay, inkoopAggregateKey(growerName, dateKey), pieces, value);
+    const productName = normalizeInkoopProductName(line?.description);
+    if (productName) {
+      inkoopBumpAggregate(invoiceByGrowerDayProduct, inkoopAggregateKey(growerName, dateKey, productName), pieces, value);
+    }
+  }
+
+  return { erpByGrowerDay, erpByGrowerDayProduct, invoiceByGrowerDay, invoiceByGrowerDayProduct };
+}
+
+const INKOOP_AGGREGATE_VALUE_TOLERANCE = 0.05;
+
+function inkoopAggregateReconciles(erpEntry, invoiceEntry) {
+  const erpPieces = erpEntry?.pieces || 0;
+  const invoicePieces = invoiceEntry?.pieces || 0;
+  const erpValue = erpEntry?.value || 0;
+  const invoiceValue = invoiceEntry?.value || 0;
+  return erpPieces === invoicePieces && Math.abs(erpValue - invoiceValue) <= INKOOP_AGGREGATE_VALUE_TOLERANCE;
+}
+
+// Tier 1 (grower+day) first; only drills into Tier 2 (grower+day+product)
+// for a grower/day that doesn't already reconcile as a whole -- the "check
+// the total first, only chase line items if it's off" reconciliation
+// pattern this was designed around, not an attempt to line-match
+// everything perfectly. reconciledGrowerDays/reconciledProducts are what
+// the Follow-up queue uses to suppress a line-level gap that's actually
+// just matching noise (money's all there, just split differently), even
+// when only that grower/product -- not the whole day -- reconciles.
+function computeInkoopAggregateMismatches(erpRows, invoiceLines, supplierMap, supplierNameMap, manualLinks, supplierFhMap) {
+  const totals = computeInkoopGrowerDayTotals(erpRows, invoiceLines, supplierMap, supplierNameMap, manualLinks, supplierFhMap);
+  const growerDayKeys = new Set([...totals.erpByGrowerDay.keys(), ...totals.invoiceByGrowerDay.keys()]);
+  const reconciledGrowerDays = new Set();
+  const reconciledProducts = new Set();
+  const mismatches = [];
+
+  for (const key of growerDayKeys) {
+    if (inkoopAggregateReconciles(totals.erpByGrowerDay.get(key), totals.invoiceByGrowerDay.get(key))) {
+      reconciledGrowerDays.add(key);
+      continue;
+    }
+    const [growerName, dateKey] = key.split("|");
+    const prefix = `${key}|`;
+    const productKeys = new Set(
+      [...totals.erpByGrowerDayProduct.keys(), ...totals.invoiceByGrowerDayProduct.keys()]
+        .filter((productKey) => productKey.startsWith(prefix)),
+    );
+    for (const productKey of productKeys) {
+      const erpProductEntry = totals.erpByGrowerDayProduct.get(productKey);
+      const invoiceProductEntry = totals.invoiceByGrowerDayProduct.get(productKey);
+      if (inkoopAggregateReconciles(erpProductEntry, invoiceProductEntry)) {
+        reconciledProducts.add(productKey);
+        continue;
+      }
+      mismatches.push({
+        grower_name: growerName,
+        date: dateKey,
+        product_name: productKey.slice(prefix.length),
+        erp_pieces: erpProductEntry?.pieces || 0,
+        invoice_pieces: invoiceProductEntry?.pieces || 0,
+        erp_value: erpProductEntry?.value || 0,
+        invoice_value: invoiceProductEntry?.value || 0,
+      });
+    }
+    if (!productKeys.size) {
+      // No product-level breakdown available on either side to drill into
+      // -- report the grower/day mismatch itself rather than silently
+      // dropping it.
+      mismatches.push({
+        grower_name: growerName,
+        date: dateKey,
+        product_name: "",
+        erp_pieces: totals.erpByGrowerDay.get(key)?.pieces || 0,
+        invoice_pieces: totals.invoiceByGrowerDay.get(key)?.pieces || 0,
+        erp_value: totals.erpByGrowerDay.get(key)?.value || 0,
+        invoice_value: totals.invoiceByGrowerDay.get(key)?.value || 0,
+      });
+    }
+  }
+
+  return { reconciledGrowerDays, reconciledProducts, mismatches };
+}
+
+// A line-level-gap row (only_in_erp/only_in_invoice) is noise, not a real
+// problem, once its grower+day already reconciles as a whole, or (for a
+// grower/day that doesn't) once its own specific product does. Used to
+// suppress exactly that noise from the Follow-up queue -- see
+// computeInkoopAggregateMismatches's own comment for why grower+day is
+// checked before product.
+function inkoopGapIsExplainedByAggregate(row, growerName, aggregateResult) {
+  const dateKey = String(row?.date || row?.invoice_date || "").slice(0, 10);
+  if (!growerName || !dateKey) {
+    return false;
+  }
+  const growerDayKey = inkoopAggregateKey(growerName, dateKey);
+  if (aggregateResult.reconciledGrowerDays.has(growerDayKey)) {
+    return true;
+  }
+  const productName = normalizeInkoopProductName(row?.description);
+  if (!productName) {
+    return false;
+  }
+  return aggregateResult.reconciledProducts.has(inkoopAggregateKey(growerName, dateKey, productName));
+}
+
 async function computeInkoopLiveMatch(state, { from, to }) {
   const [erpRows, invoiceLines] = await Promise.all([
     getInkoopErpLines({ from, to }),
@@ -7473,7 +7671,19 @@ function inkoopIssueId(issueType, row) {
   if (issueType === "mismatch" || issueType === "gap_erp") {
     return `${issueType}:${row?.erp_row?.lot ?? row?.lot ?? ""}`;
   }
+  if (issueType === "aggregate_mismatch") {
+    return `${issueType}:${row?.grower_name}|${row?.date}|${row?.product_name}`;
+  }
   return `${issueType}:${row?.id || ""}`;
+}
+
+function inkoopGrowerNameForErpRow(row, codeToName, validSupplierCodes) {
+  const code = resolveErpRowSupplierCode(row, validSupplierCodes);
+  return codeToName.get(code) || "";
+}
+
+function inkoopGrowerNameForInvoiceLine(line) {
+  return normalizeInkoopSupplierName(line?.supplier_name);
 }
 
 async function readInkoopState() {
@@ -18674,23 +18884,67 @@ async function handleApi(req, res, url) {
     }
     try {
       const state = await readInkoopState();
-      const rawResult = await computeInkoopLiveMatch(state, inkoopDefaultWindowRange(INKOOP_MATCH_WINDOW_DAYS));
+      const range = inkoopDefaultWindowRange(INKOOP_MATCH_WINDOW_DAYS);
+      const rawResult = await computeInkoopLiveMatch(state, range);
       const result = filterInkoopResultsByCompany(rawResult, url.searchParams.get("company"));
       const statuses = await getInkoopIssueStatuses();
       const statusById = new Map(statuses.map((row) => [row.id, row]));
       const showResolved = url.searchParams.get("show_resolved") === "1";
+
+      // Grower+day (then grower+day+product) totals, computed independently
+      // of line-level matching -- lets a "missing from ERP"/"missing from
+      // invoice" gap be checked against whether the money and piece count
+      // for that whole grower's day actually reconciles before treating it
+      // as a real problem, instead of flooding this queue with routine
+      // split-lot noise (see computeInkoopAggregateMismatches).
+      const [erpRowsForAggregate, invoiceLinesForAggregate] = await Promise.all([
+        getInkoopErpLines(range),
+        getInkoopInvoiceLines(range),
+      ]);
+      const aggregateResult = computeInkoopAggregateMismatches(
+        erpRowsForAggregate, invoiceLinesForAggregate,
+        state.supplier_map, state.supplier_name_map, state.manual_supplier_links, state.supplier_fh_map,
+      );
+      const validSupplierCodes = new Set(
+        [...Object.values(state.supplier_map || {}), ...Object.values(state.supplier_name_map || {}), ...Object.values(state.supplier_fh_map || {})]
+          .map((entry) => normalizeInkoopKey(entry?.code))
+          .filter(Boolean),
+      );
+      const codeToName = buildInkoopCodeNameMap(state.supplier_map, state.supplier_name_map, state.supplier_fh_map);
 
       const issues = [];
       for (const row of result.matched_mismatch || []) {
         issues.push({ id: inkoopIssueId("mismatch", row), issue_type: "mismatch", date: inkoopDateKeyFromErpAnchor(row), description: row.description, value: inkoopMismatchValue(row), invoice_number: row.invoice_number || "", erp_row: row.erp_row || null, detail: row });
       }
       for (const row of result.only_in_erp || []) {
+        if (inkoopGapIsExplainedByAggregate(row, inkoopGrowerNameForErpRow(row, codeToName, validSupplierCodes), aggregateResult)) {
+          continue;
+        }
         // No invoice side exists for a "missing from invoice" gap -- no
         // invoice_number to link a PDF from, same asymmetry as AVC/company.
         issues.push({ id: inkoopIssueId("gap_erp", row), issue_type: "gap_erp", date: inkoopDateKeyFromErpAnchor(row), description: row.description, value: inkoopErpRowTotal(row), invoice_number: "", erp_row: row, detail: row });
       }
       for (const row of result.only_in_invoice || []) {
+        if (inkoopGapIsExplainedByAggregate(row, inkoopGrowerNameForInvoiceLine(row), aggregateResult)) {
+          continue;
+        }
         issues.push({ id: inkoopIssueId("gap_invoice", row), issue_type: "gap_invoice", date: inkoopDateKeyFromInvoiceAnchor(row), description: row.description, value: inkoopInvoiceLineTotal(row), invoice_number: row.invoice_number || "", erp_row: null, detail: row });
+      }
+      for (const mismatch of aggregateResult.mismatches) {
+        const pieceDiff = mismatch.invoice_pieces - mismatch.erp_pieces;
+        const valueDiff = mismatch.invoice_value - mismatch.erp_value;
+        issues.push({
+          id: inkoopIssueId("aggregate_mismatch", mismatch),
+          issue_type: "aggregate_mismatch",
+          date: mismatch.date,
+          description: mismatch.product_name
+            ? `${mismatch.grower_name} -- ${mismatch.product_name}`
+            : `${mismatch.grower_name} (whole day)`,
+          value: Math.abs(valueDiff),
+          invoice_number: "",
+          erp_row: null,
+          detail: { ...mismatch, piece_diff: pieceDiff, value_diff: valueDiff },
+        });
       }
 
       const merged = issues.map((issue) => {

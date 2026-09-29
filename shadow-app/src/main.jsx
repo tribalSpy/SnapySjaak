@@ -14317,10 +14317,19 @@ function inkoopExistingManualCodes(manualLinks, gln, fhNumber) {
   return match?.codes?.join(", ") || "";
 }
 
+function inkoopAggregateMismatchTranscript(detail) {
+  if (!detail) {
+    return "-";
+  }
+  const pieceDiff = detail.piece_diff > 0 ? `+${detail.piece_diff}` : String(detail.piece_diff);
+  return `ERP ${detail.erp_pieces} pcs / ${formatInkoopEuro(detail.erp_value)}  vs  Invoice ${detail.invoice_pieces} pcs / ${formatInkoopEuro(detail.invoice_value)}  (${pieceDiff} pcs)`;
+}
+
 function inkoopIssueTypeLabel(type) {
   if (type === "mismatch") return "Mismatch";
   if (type === "gap_erp") return "Missing from invoice";
   if (type === "gap_invoice") return "Missing from ERP";
+  if (type === "aggregate_mismatch") return "Grower total off";
   return type;
 }
 
@@ -15330,7 +15339,7 @@ function InkoopFollowUpTab({ company }) {
                     <td>{inkoopIssueTypeLabel(issue.issue_type)}</td>
                     <td><InkoopInvoiceLink invoiceNumber={issue.invoice_number} /></td>
                     <td>{issue.description}</td>
-                    <td>{inkoopErpTranscript(issue.erp_row)}</td>
+                    <td>{issue.issue_type === "aggregate_mismatch" ? inkoopAggregateMismatchTranscript(issue.detail) : inkoopErpTranscript(issue.erp_row)}</td>
                     <td>{formatInkoopEuro(issue.value)}</td>
                     <td>
                       <select value={draft.status} onChange={(event) => updateDraft(issue, { status: event.target.value })}>
