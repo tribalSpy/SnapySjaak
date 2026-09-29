@@ -4,19 +4,50 @@ Trains the shelf/level-counting model that `shelf-poller-app/` runs, using
 real trolley photos from Google Drive and real results already recorded by
 `shadow-app`.
 
+All 7 steps are built. Run `setup_gpu_pc.bat` (repo root) on the GPU PC
+first -- see [Setup on the GPU PC](#setup-on-the-gpu-pc) below.
+
 ## Folder structure
 
 - `data/` -- Step 1: dataset collection.
 - `labeling/` -- Step 2: Label Studio setup + import/export scripts.
-- `training/` -- Step 4: Ultralytics YOLO training scripts (not built yet).
-- `evaluation/` -- Step 5: counting-accuracy reports (not built yet).
-- `models/` -- Step 6: trained model registry (not built yet).
+- `training/` -- Steps 3, 4 & 6: dataset prep, training, model registry.
+- `evaluation/` -- Step 5: counting-accuracy reports.
+- `models/` -- registry + inference helper (filled in by Step 6).
+- `feedback/` -- Step 7: pulls newly-flagged needs_review photos back into labeling.
 
-(Step 3, dataset prep -- converting Label Studio's export into YOLO-format
-labels + a train/val split -- is also not built yet; it's the next thing to
-add, sitting between `labeling/` and `training/`.)
+## Pipeline, end to end
 
-Each step is being implemented one at a time, per its own brief.
+```
+data/collect.py            Step 1  -- download photos (priority + general sample)
+labeling/import_tasks.py   Step 2  -- push them into Label Studio
+   (label in the browser)
+labeling/export_annotations.py     -- pull finished boxes back out
+training/prepare_dataset.py Step 3 -- convert to a YOLO dataset (train/val split)
+training/train.py          Step 4  -- train
+evaluation/evaluate.py     Step 5  -- counting-accuracy report on the val set
+training/promote_model.py  Step 6  -- register the model as active
+feedback/run_feedback_cycle.py  Step 7  -- (recurring) queue new needs_review photos for labeling
+```
+
+Each script's own README covers its details. Retraining is always a manual
+decision (run Step 3 → 6 again) once enough new labels exist -- nothing in
+this pipeline retrains or redeploys automatically.
+
+**The trained model is not wired into the live nightly pipeline.**
+`shelf-poller-app/` still counts via the Ollama vision-language model,
+unchanged. See [`models/README.md`](models/README.md) for why that's a
+deliberate, separate decision.
+
+## Setup on the GPU PC
+
+Run `setup_gpu_pc.bat` from the repo root (see the repo root's
+`GPU_PC_SETUP.md` for the full plan and what to send). It creates a shared
+virtual environment (`shelf-training/.venv`) and installs every step's
+dependencies, and scaffolds `config.json` files from each step's
+`config.example.json` (never overwriting ones that already exist). It does
+**not** fill in secrets (Drive credentials, API keys, the Label Studio
+token) -- those still need a human to type them in once.
 
 ## Step 1: Dataset collection (`data/collect.py`)
 
@@ -40,23 +71,24 @@ what's genuinely new.
 
 ### Setup
 
-1. Install Python 3.11+.
-2. From this folder: `pip install -r requirements.txt`
-3. Copy `data/config.example.json` to `data/config.json` and fill in:
-   - `server_url` / `api_key` -- same value as shadow-app's
-     `SHADOW_LLM_POLLER_API_KEY`.
-   - `drive_root_folder_id` -- same value as shadow-app's
-     `GOOGLE_DRIVE_ROOT_FOLDER_ID`.
-4. Make sure the repo root's `.env` has `GOOGLE_SERVICE_ACCOUNT_JSON` set
-   (the same credential `drive_bridge.py`/`src/drive_service.py` already
-   use) -- this script loads that same `.env` file, no separate credential
-   setup needed.
+After running `setup_gpu_pc.bat` (which creates `data/config.json` from the
+example), fill in:
+- `server_url` / `api_key` -- same value as shadow-app's
+  `SHADOW_LLM_POLLER_API_KEY`.
+- `drive_root_folder_id` -- same value as shadow-app's
+  `GOOGLE_DRIVE_ROOT_FOLDER_ID`.
+
+Also make sure the repo root's `.env` has `GOOGLE_SERVICE_ACCOUNT_JSON` set
+(the same credential `drive_bridge.py`/`src/drive_service.py` already use)
+-- this script loads that same `.env` file, no separate credential setup
+needed.
 
 ### Run it
 
-```bash
-python data/collect.py --from-date 2026-09-01 --to-date 2026-09-29 --count 200
 ```
+data\collect.bat --from-date 2026-09-01 --to-date 2026-09-29 --count 200
+```
+(or `python data/collect.py ...` directly, once the venv is activated)
 
 - `--count` is the GENERAL tier's target; priority (needs_review) photos are
   always collected in full on top of that, since there should never be many
@@ -75,3 +107,22 @@ local_path, sha256, priority, status, confidence) -- this manifest is what
 Local Label Studio instance on the GPU PC. See
 [`labeling/README.md`](labeling/README.md) for setup and the day-to-day
 import → label → export workflow.
+
+## Steps 3, 4 & 6: Dataset prep, training, model registry (`training/`)
+
+See [`training/README.md`](training/README.md). In short:
+`prepare_dataset.py` (Step 3) turns Label Studio's export into a YOLO
+dataset, `train.py` (Step 4) trains on it, `promote_model.py` (Step 6)
+registers a run you're happy with into `models/`.
+
+## Step 5: Evaluation (`evaluation/`)
+
+See [`evaluation/README.md`](evaluation/README.md) -- a counting-accuracy
+report (exact-match rate, mean absolute error) on the trained model's val
+split, run before deciding whether to promote it.
+
+## Step 7: Feedback loop (`feedback/`)
+
+See [`feedback/README.md`](feedback/README.md) -- a recurring job that
+pulls freshly-flagged `needs_review` photos back into the labeling queue,
+so accuracy keeps improving without anyone manually hunting for hard cases.

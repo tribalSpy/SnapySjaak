@@ -10,49 +10,41 @@ is an Ultralytics YOLO **detector**, not a classifier.
 
 ## Setup (one-time, on the GPU PC)
 
-1. Install Label Studio and this folder's scripts' dependencies:
-   ```bash
-   pip install -r requirements.txt
-   ```
-2. Point Label Studio at the dataset folder and turn on local file serving,
-   then start it (PowerShell):
-   ```powershell
-   $env:LABEL_STUDIO_LOCAL_FILES_SERVING_ENABLED = "true"
-   $env:LOCAL_FILES_DOCUMENT_ROOT = (Resolve-Path ..\data\dataset).Path
-   label-studio start
-   ```
-   (bash equivalent: `export LABEL_STUDIO_LOCAL_FILES_SERVING_ENABLED=true; export LOCAL_FILES_DOCUMENT_ROOT=$(realpath ../data/dataset); label-studio start`)
-3. Open `http://localhost:8080`, create your account, then go to
-   **Account & Settings > Personal Access Token** and copy it.
-4. Copy `config.example.json` to `config.json` and fill in `api_token`.
-   Leave `project_id` as `null` the first time -- `import_tasks.py` creates
-   the project for you and fills it in.
+`setup_gpu_pc.bat` (repo root) already installed Label Studio into the
+shared venv and copied `config.example.json` to `config.json` for you.
+What's left is the part that needs a human:
 
-`dataset_dir` in `config.json` must point at the same folder as
-`LOCAL_FILES_DOCUMENT_ROOT` above (default `../data/dataset`, i.e.
-`shelf-training/data/dataset` -- the folder `data/collect.py` fills).
+1. Start Label Studio: double-click `start_label_studio.bat` (it activates
+   the venv, points `LOCAL_FILES_DOCUMENT_ROOT` at `data/dataset`, and runs
+   `label-studio start`).
+2. Open `http://localhost:8080`, create your account, then go to
+   **Account & Settings > Personal Access Token** and copy it.
+3. Paste that token into `config.json`'s `api_token`. Leave `project_id` as
+   `null` the first time -- `import_tasks.py` creates the project for you
+   and fills it in.
 
 ## Day-to-day workflow
 
-1. Collect more photos: `python ../data/collect.py --from-date ... --to-date ...`
-2. Push any newly-collected photos into Label Studio as tasks:
-   ```bash
-   python import_tasks.py
+1. `start_label_studio.bat` (leave it running).
+2. Collect more photos: `..\data\collect.bat --from-date ... --to-date ...`
+3. Push any newly-collected photos into Label Studio as tasks:
+   ```
+   import_tasks.bat
    ```
    Safe to re-run any time -- it only imports rows from `manifest.csv` it
    hasn't sent before (tracked in `imported_tasks.json`).
-3. Label in the browser at `http://localhost:8080` -- open the project,
+4. Label in the browser at `http://localhost:8080` -- open the project,
    draw a `shelf_level` box around every visible shelf level in each photo,
    submit.
-4. Pull finished annotations back out whenever you want a snapshot to hand
+5. Pull finished annotations back out whenever you want a snapshot to hand
    to Step 3 (dataset prep):
-   ```bash
-   python export_annotations.py
+   ```
+   export_annotations.bat
    ```
    Writes a dated file to `exports/export_<timestamp>.json` -- Label
    Studio's native JSON format (image path + one entry per drawn box, in
-   percentage coordinates). Nothing consumes this yet; Step 3 will convert
-   it into YOLO-format label files and a train/val split.
+   percentage coordinates). `../training/prepare_dataset.py` (Step 3)
+   converts this into YOLO-format labels and a train/val split.
 
 ## Notes
 

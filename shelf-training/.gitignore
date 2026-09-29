@@ -5,5 +5,10 @@ models/*.onnx
 labeling/config.json
 labeling/imported_tasks.json
 labeling/exports/
+training/config.json
+training/dataset/
+training/runs/
+evaluation/reports/
+.venv/
 __pycache__/
 *.pyc

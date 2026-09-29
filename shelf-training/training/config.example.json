@@ -1,0 +1,8 @@
+{
+  "base_model": "yolo11n.pt",
+  "epochs": 100,
+  "imgsz": 960,
+  "batch": 8,
+  "device": "0",
+  "seed": 42
+}
