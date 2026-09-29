@@ -1,5 +1,6 @@
 <View>
-  <Text name="context" value="$customer_reference &#8212; $date"/>
+  <Text name="context_customer" value="$customer_reference"/>
+  <Text name="context_date" value="$date"/>
   <Image name="image" value="$image" zoom="true" zoomControl="true" rotateControl="false"/>
   <RectangleLabels name="label" toName="image">
     <Label value="shelf_level" background="#4C7DFF"/>
