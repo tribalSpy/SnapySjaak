@@ -45,7 +45,7 @@ if /i not "!HAS_CUDA_TORCH!"=="y" (
     echo.
     echo   Open https://pytorch.org/get-started/locally/ , pick your CUDA
     echo   version, and run the install command it gives you in THIS window
-    echo   (the venv is already active) before continuing.
+    echo   -- the venv here is already active -- before continuing.
     echo   No GPU on this PC? Just continue -- CPU training works, only slower.
     pause
 )
@@ -67,8 +67,8 @@ if exist ".env" (
 ) else (
     echo   [WARNING] No .env file at repo root. shelf-training\data\collect.py
     echo   needs GOOGLE_SERVICE_ACCOUNT_JSON and GOOGLE_DRIVE_ROOT_FOLDER_ID in it.
-    echo   Copy the repo's .env from the main PC/server (it holds real credentials --
-    echo   never commit it to git, send it directly, not through this repo).
+    echo   Copy the repo's .env from the main PC/server -- it holds real credentials,
+    echo   never commit it to git -- send it directly, not through this repo.
 )
 
 echo.
