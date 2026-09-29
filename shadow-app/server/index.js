@@ -4489,6 +4489,147 @@ function createImportedActionId(importKey) {
   return `fust-import-${digest}`;
 }
 
+// Separate id namespace from createImportedActionId's "fust-import-" so this
+// path can never collide with (and overwrite) an Excel-imported or
+// hand-entered action -- it only ever touches actions it created itself.
+function createFustApiReferenceActionId(matchKey, date) {
+  const digest = crypto.createHash("sha1").update(`${matchKey}|${date}`).digest("hex").slice(0, 16);
+  return `fust-api-${digest}`;
+}
+
+// Turns matched fust_reference_actions rows for one day into real OUT
+// actions -- one per matched customer, codes summed together (a carrier can
+// cover several codes for the same customer). Unlike the Excel import, these
+// are created pre-confirmed (no CMR/Fustbon workflow, no confirmation
+// reminder emails) since the source data is itself already a confirmed/
+// planned figure from the carrier's own system, not something a human needs
+// to review line by line first.
+async function createOutActionsFromFustReferenceActions(date) {
+  const rows = await getFustReferenceActions({ from: date, to: date });
+  const matchedRows = rows.filter((row) => row.matched_by);
+  const unmatchedCount = rows.length - matchedRows.length;
+
+  const grouped = new Map();
+  for (const row of matchedRows) {
+    const matchKey = [
+      String(row.country || "").trim().toUpperCase(),
+      String(row.matched_customer_code || "").trim() || String(row.matched_customer_name || "").trim().toLowerCase(),
+    ].join("|");
+    if (!grouped.has(matchKey)) {
+      grouped.set(matchKey, {
+        match_key: matchKey,
+        country: row.country,
+        customer_name: row.matched_customer_name,
+        connect_name: row.matched_connect_name,
+        customer_code: row.matched_customer_code,
+        metrics: emptyFustMetrics(),
+        codes: [],
+      });
+    }
+    const group = grouped.get(matchKey);
+    group.metrics.dc += Number(row.dc_actual ?? row.dc_planning ?? 0);
+    group.metrics.cctag += Number(row.cctag || 0);
+    group.metrics.dcs += Number(row.dcs || 0);
+    group.metrics.dco += Number(row.dco || 0);
+    group.metrics.pal += Number(row.pal || 0);
+    group.metrics.vk += Number(row.vk || 0);
+    group.codes.push(row.code);
+  }
+
+  const settings = await readFustSettings();
+  let localActions = await readFustActions();
+  const summary = { checked: matchedRows.length, unmatched: unmatchedCount, created: 0, updated: 0, failed: 0 };
+  const results = [];
+
+  for (const group of grouped.values()) {
+    const actionId = createFustApiReferenceActionId(group.match_key, date);
+    try {
+      const existingAction = localActions.find((item) => String(item.id || "").trim() === actionId) || null;
+      const now = new Date().toISOString();
+
+      const nextAction = normalizeFustAction({
+        ...(existingAction || {}),
+        id: actionId,
+        type: "OUT",
+        action_date: date,
+        week: weekNumberForDate(date),
+        day_name: weekdayNameForDate(date),
+        country: group.country,
+        customer_name: group.customer_name,
+        customer_code: group.customer_code,
+        connect_name: group.connect_name,
+        remark: existingAction?.remark || `Auto-created from Fust API reference import (codes: ${group.codes.join(", ")})`,
+        fustbon_reference: existingAction?.fustbon_reference || "",
+        fustfactuur_reference: existingAction?.fustfactuur_reference || "",
+        metrics: group.metrics,
+        created_by: existingAction?.created_by || "fust-api-import",
+        created_at: existingAction?.created_at || now,
+        confirmed_at: existingAction?.confirmed_at || now,
+        confirmed_by: existingAction?.confirmed_by || "fust-api-import",
+        deleted: false,
+        deleted_at: "",
+        deleted_by: "",
+        sheet_sync: { ok: false, target_sheets: [], error: "Pending import sync" },
+        email_sync: { ok: true, recipients: [], error: "Auto-created, no confirmation email sent" },
+        cmr: existingAction?.cmr || normalizeCmrInfo(null),
+        fustbon: existingAction?.fustbon || normalizeCmrInfo(null),
+      });
+
+      const localIndex = localActions.findIndex((item) => String(item.id || "").trim() === actionId);
+      if (localIndex >= 0) {
+        localActions[localIndex] = nextAction;
+      } else {
+        localActions.push(nextAction);
+      }
+      await writeFustActions(localActions);
+
+      try {
+        nextAction.sheet_sync = await syncFustActionToSheets(nextAction, settings, { previousAction: existingAction });
+      } catch (sheetError) {
+        nextAction.sheet_sync = {
+          ok: false,
+          target_sheets: [],
+          error: sheetError instanceof Error ? sheetError.message : String(sheetError),
+        };
+      }
+      nextAction.db_sync = await mirrorFustActionToDatabase(nextAction);
+
+      localActions = await readFustActions();
+      const savedIndex = localActions.findIndex((item) => String(item.id || "").trim() === actionId);
+      if (savedIndex >= 0) {
+        localActions[savedIndex] = nextAction;
+      } else {
+        localActions.push(nextAction);
+      }
+      await writeFustActions(localActions);
+
+      if (existingAction) {
+        summary.updated += 1;
+      } else {
+        summary.created += 1;
+      }
+      results.push({
+        customer_name: group.customer_name,
+        country: group.country,
+        codes: group.codes,
+        action_id: actionId,
+        status: existingAction ? "updated" : "created",
+      });
+    } catch (error) {
+      summary.failed += 1;
+      results.push({
+        customer_name: group.customer_name,
+        country: group.country,
+        codes: group.codes,
+        status: "failed",
+        note: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+
+  return { date, summary, results };
+}
+
 function matchFustMetaRecord(records, country, customerName) {
   return (records || []).find((record) => (
     String(record.country || "").trim().toUpperCase() === String(country || "").trim().toUpperCase()
@@ -18086,6 +18227,33 @@ async function handleApi(req, res, url) {
     }
     const rows = await getFustReferenceActions({ from, to });
     sendJson(res, 200, { from, to, rows, database_enabled: true });
+    return;
+  }
+
+  // Manual conversion of one day's matched reference-import rows into real
+  // OUT actions (one per matched customer, codes summed) -- see
+  // createOutActionsFromFustReferenceActions for why these are created
+  // pre-confirmed rather than going through the normal confirmation flow.
+  if (url.pathname === "/api/fust/reference-import/create-out-actions" && req.method === "POST") {
+    if (!requirePermission(res, requestUser, PERMISSIONS.FUST_MANAGE)) {
+      return;
+    }
+    if (!isDatabaseEnabled()) {
+      sendJson(res, 503, { error: "Database is not enabled" });
+      return;
+    }
+    const body = await readRequestJson(req);
+    const date = String(body?.date || "").slice(0, 10);
+    if (!date) {
+      sendJson(res, 400, { error: "date (YYYY-MM-DD) is required" });
+      return;
+    }
+    try {
+      const payload = await createOutActionsFromFustReferenceActions(date);
+      sendJson(res, 200, payload);
+    } catch (error) {
+      sendJson(res, 400, { error: error instanceof Error ? error.message : String(error) });
+    }
     return;
   }
 

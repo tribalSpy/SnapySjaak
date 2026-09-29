@@ -13089,6 +13089,8 @@ function FustReferenceActions({ canManage }) {
   const [running, setRunning] = useState(false);
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
+  const [createDate, setCreateDate] = useState(() => todayIso());
+  const [creatingActions, setCreatingActions] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -13137,6 +13139,25 @@ function FustReferenceActions({ canManage }) {
     }
   }
 
+  async function createOutActions() {
+    setCreatingActions(true);
+    setMessage("");
+    setError("");
+    try {
+      const payload = await apiJson("/api/fust/reference-import/create-out-actions", {
+        method: "POST",
+        body: JSON.stringify({ date: createDate }),
+      });
+      const { summary } = payload;
+      setMessage(`OUT actions for ${createDate}: created ${summary.created}, updated ${summary.updated}, failed ${summary.failed} (${summary.unmatched} unmatched code row(s) skipped).`);
+      setRefreshKey((current) => current + 1);
+    } catch (createError) {
+      setError(createError.message);
+    } finally {
+      setCreatingActions(false);
+    }
+  }
+
   const visibleRows = onlyUnmatched ? rows.filter((row) => !row.matched_by) : rows;
 
   return (
@@ -13156,6 +13177,16 @@ function FustReferenceActions({ canManage }) {
           </button>
         )}
       </div>
+
+      {canManage && (
+        <div className="overview-filters">
+          <label>Create OUT actions for <input type="date" value={createDate} onChange={(event) => setCreateDate(event.target.value)} /></label>
+          <button type="button" onClick={createOutActions} disabled={creatingActions}>
+            {creatingActions ? "Creating..." : "Create OUT actions"}
+          </button>
+          <span>One action per matched customer, codes summed, created pre-confirmed (no reminder emails).</span>
+        </div>
+      )}
 
       {message && <div className="notice success">{message}</div>}
       {error && <div className="notice danger">{error}</div>}
