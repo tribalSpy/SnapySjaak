@@ -91,7 +91,13 @@ def import_tasks(config: dict, project_id: int, tasks: list[dict], access_token:
         batch = tasks[start:start + batch_size]
         response = requests.post(url, headers=api_headers(access_token), json=batch, timeout=120)
         response.raise_for_status()
-        print(f"  imported {start + len(batch)}/{len(tasks)}")
+        result = response.json()
+        task_count = result.get("task_count")
+        if task_count is not None and task_count != len(batch):
+            print(f"  WARNING: sent {len(batch)} task(s) but Label Studio reports task_count={task_count}")
+            print(f"  Full response: {json.dumps(result, indent=2)[:2000]}")
+        else:
+            print(f"  imported {start + len(batch)}/{len(tasks)} (response: {json.dumps(result)[:300]})")
 
 
 def main():
