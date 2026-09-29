@@ -8056,13 +8056,12 @@ function ShelfCountPage() {
           <div className="section-header"><h3>Issues ({run.issues.length})</h3></div>
           <div className="table-wrap">
             <table className="data-table">
-              <thead><tr><th>Type</th><th>Customer reference</th><th>Trolley</th><th>Folder</th></tr></thead>
+              <thead><tr><th>Type</th><th>Customer reference</th><th>Folder</th></tr></thead>
               <tbody>
                 {run.issues.map((issue, index) => (
                   <tr key={index}>
                     <td>{issue.type}</td>
                     <td>{issue.customer_reference || "-"}</td>
-                    <td>{issue.trolley_id || "-"}</td>
                     <td>{issue.folder_name || "-"}</td>
                   </tr>
                 ))}
@@ -8073,18 +8072,17 @@ function ShelfCountPage() {
       )}
 
       <div className="data-table-card">
-        <div className="section-header"><h2>Trolleys ({counts.length})</h2></div>
+        <div className="section-header"><h2>References ({counts.length})</h2></div>
         <div className="table-wrap">
           <table className="data-table">
             <thead>
-              <tr><th>Customer reference</th><th>Trolley</th><th>Type</th><th>Photos</th><th>Shelves</th><th>Levels</th><th>Confidence</th><th>Status</th></tr>
+              <tr><th>Customer reference</th><th>Trolleys</th><th>Photos</th><th>Shelves</th><th>Levels</th><th>Confidence</th><th>Status</th></tr>
             </thead>
             <tbody>
               {counts.map((row) => (
-                <tr key={row.trolley_scan_id}>
+                <tr key={row.customer_reference}>
                   <td>{row.customer_reference}</td>
-                  <td>{row.trolley_id}</td>
-                  <td>{row.trolley_type || "-"}</td>
+                  <td>{row.trolley_count}</td>
                   <td>{row.photo_count}</td>
                   <td>{row.shelf_count ?? "-"}</td>
                   <td>{row.level_count ?? "-"}</td>
@@ -8092,7 +8090,7 @@ function ShelfCountPage() {
                   <td><span className={`ukdocs-status-badge ${SHELF_COUNT_STATUS_TONE[row.status] || "muted"}`}>{row.status}</span></td>
                 </tr>
               ))}
-              {!counts.length && <tr><td colSpan={8}>No trolleys for this date.</td></tr>}
+              {!counts.length && <tr><td colSpan={7}>No completed references for this date.</td></tr>}
             </tbody>
           </table>
         </div>

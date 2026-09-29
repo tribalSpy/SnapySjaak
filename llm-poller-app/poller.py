@@ -276,11 +276,7 @@ def prepare_ollama_messages(messages, payload: dict):
 def run_job(config: dict, job: dict):
     job_type = str(job.get("job_type") or "").strip()
     payload = job.get("payload_json") or {}
-    # shelf_count is built server-side with the exact same shape as
-    # ukdocs_csi_audit's payload (model/messages/format/think/options, plus
-    # vision_documents) -- it's a different prompt, not a different
-    # mechanism, so it needs no poller-side branch of its own.
-    if job_type in {"ollama_chat", "ukdocs_csi_audit", "shelf_count"}:
+    if job_type in {"ollama_chat", "ukdocs_csi_audit"}:
         ollama_response = ollama_chat(config, payload)
         return {
             "job_type": job_type,

@@ -28,16 +28,13 @@ import {
   getLlmQueueSnapshot,
   getActiveLlmJobsByType,
   getShelfCountNightlyRun,
-  getShelfCountRow,
   getShelfCountsForDate,
   getWarehouseActivityLog,
   getWarehouseStatus,
-  getWarehouseTrolleyScansForDate,
   failLlmJob,
   incrementShelfCountNightlyRunTotal,
   initializeDatabase,
   insertWarehouseActivityEvents,
-  insertWarehouseTrolleyScans,
   isDatabaseEnabled,
   markFustActionDeletedInDatabase,
   saveUkdocsCsiParsedDocumentToDatabase,
@@ -7804,21 +7801,19 @@ function parseShelfCountJobResult(job) {
 }
 
 // Mirrors buildUkdocsCsiAuditPayload's exact shape (model/messages/format/
-// think/options) -- the same ollama_chat job_type the poller already
-// handles, just a different prompt, so the poller needs zero new branches
-// for this, only the job_type added to its existing ollama_chat set.
-function buildShelfCountJobPayload({ trolleyType, photoCount }) {
+// think/options) -- the same ollama_chat job_type the dedicated shelf-count
+// poller handles.
+function buildShelfCountJobPayload({ photoCount }) {
   const prompt = {
-    task: "Count the shelves and shelf levels visible across these photos of one warehouse trolley.",
+    task: "Count the shelves and shelf levels visible across these photos of one warehouse trolley/reference.",
     instructions: [
-      "These photos all show the SAME single trolley, taken from a fixed camera angle.",
+      "These photos all show the same trolley(s) for one shipment reference, taken from a fixed camera angle.",
       "Shelves are mostly silver-grey.",
-      "Count the total number of distinct shelves, and the number of levels (vertical tiers) the trolley is divided into.",
+      "Count the total number of distinct shelves, and the number of levels (vertical tiers) visible.",
       "If photos overlap or show the same shelves from slightly different angles, do not double-count them.",
       "Return your best count even if partially obscured, and lower confidence accordingly rather than guessing wildly.",
       "Return JSON only, no markdown, no explanation.",
     ],
-    trolley_type: trolleyType || "",
     photo_count: photoCount,
     output_schema: { shelves: 0, levels: 0, confidence: "0.0-1.0" },
   };
@@ -7843,12 +7838,48 @@ function buildShelfCountJobPayload({ trolleyType, photoCount }) {
   };
 }
 
-// Creates one shelf_count job per trolley scanned that day, after matching
-// each to its Drive photo folder. Idempotent by design (skips if a run
-// already exists for runDate) so the periodic scheduler below can check
-// every few minutes without double-firing, while still being explicitly
-// re-runnable via an exact date (bypassing that skip) per the requirement
-// that a nightly run must be re-runnable for any given date.
+// Mirrors warehouse-dashboard/public/data.js's own scan_complete reduction
+// (buildStateForDate) closely enough for this purpose: each scan_complete
+// event is a full snapshot for its reference at that moment, not an
+// increment, so only the LATEST event per reference matters (events from
+// getWarehouseActivityLog already come back oldest-first, so a plain
+// last-write-wins loop is correct with no extra sorting). A reference
+// counts as "photos complete" once photoCount reaches trolleyCount and
+// photos were actually required for it -- the exact same signal the
+// dashboard's own "Photo: Scanned" badge already means. There is no
+// separate trolley identity anywhere in this data (confirmed real: a
+// reference's trolleyCount can be more than 1 with no way to tell individual
+// trolleys apart) -- counting operates per REFERENCE, using all of that
+// reference's own Drive folder photos together, not per trolley.
+function computeCompletedWarehouseReferencesForDate(events) {
+  const byReference = new Map();
+  for (const event of Array.isArray(events) ? events : []) {
+    if (event?.type !== "scan_complete") {
+      continue;
+    }
+    const reference = String(event.reference || "").trim().toUpperCase();
+    if (!reference) {
+      continue;
+    }
+    const previous = byReference.get(reference) || {};
+    byReference.set(reference, {
+      customer_reference: reference,
+      trolley_count: Number(event.trolleyCount) || previous.trolley_count || 0,
+      photo_count: Number(event.photoCount) || previous.photo_count || 0,
+      requires_photo: event.requiresPhoto !== undefined ? event.requiresPhoto !== false : previous.requires_photo !== false,
+    });
+  }
+  return [...byReference.values()].filter((row) => (
+    row.requires_photo !== false && row.trolley_count > 0 && row.photo_count >= row.trolley_count
+  ));
+}
+
+// Creates one shelf_count job per fully-photographed reference that day,
+// after matching it to its Drive photo folder. Idempotent by design (skips
+// if a run already exists for runDate) so the periodic scheduler below can
+// check every few minutes without double-firing, while still being
+// explicitly re-runnable via an exact date (bypassing that skip) per the
+// requirement that a nightly run must be re-runnable for any given date.
 async function runShelfCountNightlyTrigger(explicitDate) {
   if (!isDatabaseEnabled()) {
     return { ok: true, skipped: "database_disabled" };
@@ -7866,12 +7897,13 @@ async function runShelfCountNightlyTrigger(explicitDate) {
   await upsertShelfCountNightlyRun({ run_date: runDate, status: "running", totals, issues, started_at: new Date().toISOString() });
 
   try {
-    const scans = await getWarehouseTrolleyScansForDate(runDate);
+    const events = await getWarehouseActivityLog({ date: runDate, limit: 20000 });
+    const completedReferences = computeCompletedWarehouseReferencesForDate(events);
     const expectedFolderNames = new Set();
 
-    for (const scan of scans) {
+    for (const row of completedReferences) {
       totals.checked += 1;
-      const folderName = shelfCountFolderName(scan.customer_reference, runDate);
+      const folderName = shelfCountFolderName(row.customer_reference, runDate);
       expectedFolderNames.add(folderName);
 
       let listing;
@@ -7884,11 +7916,12 @@ async function runShelfCountNightlyTrigger(explicitDate) {
 
       if (!listing.folder_id || !photoFiles.length) {
         totals.missing_photos += 1;
-        issues.push({ type: "missing_photos", customer_reference: scan.customer_reference, trolley_id: scan.trolley_id, folder_name: folderName });
+        issues.push({ type: "missing_photos", customer_reference: row.customer_reference, folder_name: folderName });
         await upsertShelfCountRow({
-          trolley_scan_id: scan.id,
+          customer_reference: row.customer_reference,
           nightly_run_date: runDate,
           drive_folder_name: folderName,
+          trolley_count: row.trolley_count,
           photo_count: 0,
           status: "missing_photos",
         });
@@ -7906,9 +7939,10 @@ async function runShelfCountNightlyTrigger(explicitDate) {
       }
 
       await upsertShelfCountRow({
-        trolley_scan_id: scan.id,
+        customer_reference: row.customer_reference,
         nightly_run_date: runDate,
         drive_folder_name: folderName,
+        trolley_count: row.trolley_count,
         photo_count: visionDocuments.length,
         status: "pending",
       });
@@ -7917,21 +7951,19 @@ async function runShelfCountNightlyTrigger(explicitDate) {
         priority: 40,
         max_attempts: 1,
         payload_json: {
-          ...buildShelfCountJobPayload({ trolleyType: scan.trolley_type, photoCount: visionDocuments.length }),
-          trolley_scan_id: scan.id,
+          ...buildShelfCountJobPayload({ photoCount: visionDocuments.length }),
           nightly_run_date: runDate,
-          trolley_id: scan.trolley_id,
-          trolley_type: scan.trolley_type,
-          customer_reference: scan.customer_reference,
+          customer_reference: row.customer_reference,
           vision_documents: visionDocuments,
         },
       });
     }
 
-    // Any Drive folder for this date with no matching scan row at all --
-    // confirmed real risk: the RFID scan was missed/failed but photos were
-    // still taken. Reuses the same drive-list-folder subcommand, this time
-    // enumerating the root's own children instead of resolving one by name.
+    // Any Drive folder for this date with no matching completed reference at
+    // all -- confirmed real risk: the RFID/photo scan was missed or failed
+    // but photos were still taken. Reuses the same drive-list-folder
+    // subcommand, this time enumerating the root's own children instead of
+    // resolving one by name.
     const compactDate = String(runDate || "").replace(/-/g, "");
     let rootListing;
     try {
@@ -14695,6 +14727,12 @@ async function handleApi(req, res, url) {
     }, apiKey);
     const result = await claimNextLlmJob(agentName, apiKey, {
       agent_status: body.agent_status || "idle",
+      // Explicit opt-in only -- the existing poller never sends this and
+      // its claiming behavior for every job type it already knows is
+      // unaffected; only a poller that names a type here (e.g. the
+      // dedicated shelf-count poller sending ["shelf_count"]) can ever
+      // claim it. See claimNextLlmJob's own comment for why.
+      jobTypes: Array.isArray(body.job_types) ? body.job_types : null,
     });
     sendJson(res, 200, {
       ok: true,
@@ -14772,13 +14810,13 @@ async function handleApi(req, res, url) {
         error: "",
       });
     }
-    if (job.job_type === "shelf_count" && job.payload_json?.trolley_scan_id) {
+    if (job.job_type === "shelf_count" && job.payload_json?.customer_reference) {
       const parsed = parseShelfCountJobResult(job);
       const status = parsed.shelves === null || parsed.confidence === null || parsed.confidence < SHELF_COUNT_CONFIDENCE_THRESHOLD
         ? "needs_review"
         : "done";
       await upsertShelfCountRow({
-        trolley_scan_id: job.payload_json.trolley_scan_id,
+        customer_reference: job.payload_json.customer_reference,
         nightly_run_date: job.payload_json.nightly_run_date,
         shelf_count: parsed.shelves,
         level_count: parsed.levels,
@@ -14844,9 +14882,9 @@ async function handleApi(req, res, url) {
         notes: label ? [`Failed while processing ${label}.`] : [],
       });
     }
-    if (job.job_type === "shelf_count" && job.payload_json?.trolley_scan_id) {
+    if (job.job_type === "shelf_count" && job.payload_json?.customer_reference) {
       await upsertShelfCountRow({
-        trolley_scan_id: job.payload_json.trolley_scan_id,
+        customer_reference: job.payload_json.customer_reference,
         nightly_run_date: job.payload_json.nightly_run_date,
         status: "failed",
         error_text: String(body.error_text || job.error_text || "Shelf count job failed").trim(),
@@ -15055,44 +15093,6 @@ async function handleApi(req, res, url) {
       timestamp: new Date().toISOString(),
     }]);
     sendJson(res, 200, { ok: true, reference, photoCount: updatedPhotoCount });
-    return;
-  }
-
-  // Machine-to-machine push from the RFID scan portal -- individual trolley
-  // identity (RFID tag + type) doesn't exist anywhere else in this app
-  // (warehouse_status/warehouse_activity_log only ever carried per-shipment
-  // aggregate counts), so this is the first time it's captured at all. Gated
-  // the same way as /warehouse/ingest above -- shared secret, no session.
-  if (url.pathname === "/warehouse/ingest/trolley-scan" && req.method === "POST") {
-    const expectedSecret = String(process.env.RENDER_INGEST_SECRET || "").trim();
-    if (!expectedSecret || req.headers["x-ingest-secret"] !== expectedSecret) {
-      sendJson(res, 401, { ok: false });
-      return;
-    }
-    if (!isDatabaseEnabled()) {
-      sendJson(res, 503, { ok: false, error: "Database is not configured" });
-      return;
-    }
-    const body = await readRequestJson(req, 2 * 1024 * 1024);
-    const incoming = Array.isArray(body?.scans) ? body.scans : [];
-    const scans = incoming
-      .map((scan) => ({
-        id: String(scan?.id || crypto.randomUUID()).trim(),
-        trolley_id: String(scan?.trolley_id || "").trim(),
-        trolley_type: String(scan?.trolley_type || "").trim(),
-        customer_reference: String(scan?.customer_reference || "").trim(),
-        shipment_date: String(scan?.shipment_date || "").slice(0, 10),
-        scanned_at: scan?.scanned_at ? new Date(scan.scanned_at).toISOString() : new Date().toISOString(),
-        source: String(scan?.source || "rfid_portal").trim(),
-        raw: scan && typeof scan === "object" ? scan : {},
-      }))
-      .filter((scan) => scan.trolley_id && scan.customer_reference && scan.shipment_date);
-    if (!scans.length) {
-      sendJson(res, 400, { ok: false, error: "No valid scans in request (trolley_id, customer_reference, shipment_date are required)" });
-      return;
-    }
-    await insertWarehouseTrolleyScans(scans);
-    sendJson(res, 200, { ok: true, received: scans.length });
     return;
   }
 

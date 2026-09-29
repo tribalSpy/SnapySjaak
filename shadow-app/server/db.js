@@ -402,77 +402,20 @@ export async function getInkoopDispatchLotsByLots(lotNumbers) {
   return result.rows;
 }
 
-export async function insertWarehouseTrolleyScans(scans) {
-  if (!pool || !Array.isArray(scans) || !scans.length) {
-    return;
-  }
-  const validScans = dedupeByKeyKeepingLast(scans.filter((scan) => scan?.id), (scan) => scan.id);
-  for (const chunk of chunkArray(validScans, INKOOP_UPSERT_CHUNK_SIZE)) {
-    const values = [];
-    const placeholders = chunk.map((scan) => {
-      const base = values.length;
-      values.push(
-        scan.id,
-        scan.trolley_id || "",
-        scan.trolley_type || "",
-        scan.customer_reference || "",
-        scan.shipment_date || null,
-        scan.scanned_at || null,
-        scan.source || "rfid_portal",
-        JSON.stringify(scan.raw && typeof scan.raw === "object" ? scan.raw : {}),
-      );
-      return `($${base + 1}, $${base + 2}, $${base + 3}, $${base + 4}, $${base + 5}::date, $${base + 6}::timestamptz, $${base + 7}, $${base + 8}::jsonb)`;
-    });
-    await pool.query(
-      `
-        INSERT INTO warehouse_trolley_scans (
-          id, trolley_id, trolley_type, customer_reference, shipment_date, scanned_at, source, raw
-        )
-        VALUES ${placeholders.join(", ")}
-        ON CONFLICT (id) DO UPDATE SET
-          trolley_id = EXCLUDED.trolley_id,
-          trolley_type = EXCLUDED.trolley_type,
-          customer_reference = EXCLUDED.customer_reference,
-          shipment_date = EXCLUDED.shipment_date,
-          scanned_at = EXCLUDED.scanned_at,
-          source = EXCLUDED.source,
-          raw = EXCLUDED.raw
-      `,
-      values,
-    );
-  }
-}
-
-export async function getWarehouseTrolleyScansForDate(date) {
-  if (!pool || !date) {
-    return [];
-  }
-  const result = await pool.query(
-    `
-      SELECT id, trolley_id, trolley_type, customer_reference, shipment_date, scanned_at, source, raw
-      FROM warehouse_trolley_scans
-      WHERE shipment_date = $1::date
-      ORDER BY customer_reference, scanned_at
-    `,
-    [date],
-  );
-  return result.rows;
-}
-
 export async function upsertShelfCountRow(row) {
-  if (!pool || !row?.trolley_scan_id) {
+  if (!pool || !row?.customer_reference || !row?.nightly_run_date) {
     return null;
   }
   const result = await pool.query(
     `
       INSERT INTO shelf_counts (
-        trolley_scan_id, nightly_run_date, drive_folder_name, photo_count, shelf_count, level_count,
-        confidence, expected_average, deviation, status, model_version, job_id, error_text, processed_at
+        customer_reference, nightly_run_date, drive_folder_name, trolley_count, photo_count, shelf_count,
+        level_count, confidence, expected_average, deviation, status, model_version, job_id, error_text, processed_at
       )
-      VALUES ($1, $2::date, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14::timestamptz)
-      ON CONFLICT (trolley_scan_id) DO UPDATE SET
-        nightly_run_date = COALESCE(EXCLUDED.nightly_run_date, shelf_counts.nightly_run_date),
+      VALUES ($1, $2::date, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15::timestamptz)
+      ON CONFLICT (customer_reference, nightly_run_date) DO UPDATE SET
         drive_folder_name = COALESCE(NULLIF(EXCLUDED.drive_folder_name, ''), shelf_counts.drive_folder_name),
+        trolley_count = COALESCE(NULLIF(EXCLUDED.trolley_count, 0), shelf_counts.trolley_count),
         photo_count = COALESCE(NULLIF(EXCLUDED.photo_count, 0), shelf_counts.photo_count),
         shelf_count = COALESCE(EXCLUDED.shelf_count, shelf_counts.shelf_count),
         level_count = COALESCE(EXCLUDED.level_count, shelf_counts.level_count),
@@ -488,9 +431,10 @@ export async function upsertShelfCountRow(row) {
       RETURNING *
     `,
     [
-      row.trolley_scan_id,
-      row.nightly_run_date || null,
+      row.customer_reference,
+      row.nightly_run_date,
       row.drive_folder_name || "",
+      numberOrNull(row.trolley_count) || 0,
       numberOrNull(row.photo_count) || 0,
       numberOrNull(row.shelf_count),
       numberOrNull(row.level_count),
@@ -507,26 +451,12 @@ export async function upsertShelfCountRow(row) {
   return result.rows?.[0] || null;
 }
 
-export async function getShelfCountRow(trolleyScanId) {
-  if (!pool || !trolleyScanId) {
-    return null;
-  }
-  const result = await pool.query("SELECT * FROM shelf_counts WHERE trolley_scan_id = $1", [trolleyScanId]);
-  return result.rows?.[0] || null;
-}
-
 export async function getShelfCountsForDate(date) {
   if (!pool || !date) {
     return [];
   }
   const result = await pool.query(
-    `
-      SELECT sc.*, wts.trolley_id, wts.trolley_type, wts.customer_reference
-      FROM shelf_counts sc
-      JOIN warehouse_trolley_scans wts ON wts.id = sc.trolley_scan_id
-      WHERE sc.nightly_run_date = $1::date
-      ORDER BY wts.customer_reference, wts.trolley_id
-    `,
+    "SELECT * FROM shelf_counts WHERE nightly_run_date = $1::date ORDER BY customer_reference",
     [date],
   );
   return result.rows;
@@ -1263,16 +1193,30 @@ export async function claimNextLlmJob(agentName, apiKey, options = {}) {
       return null;
     }
 
+    // job_types is an explicit opt-in allowlist, sent only by a poller that
+    // knows how to handle that specific type (e.g. the dedicated shelf-count
+    // poller sends ["shelf_count"]) -- the existing poller was deliberately
+    // left untouched and never sends this, so its own claiming behavior for
+    // every job type it already knows is completely unaffected. The one
+    // exception: "shelf_count" is never handed to a poller that didn't ask
+    // for it by name, so an unrelated/older poller can never claim (and
+    // wrongly fail) a job type it has no idea how to run.
+    const allowedJobTypes = Array.isArray(options.jobTypes) ? options.jobTypes.filter(Boolean) : null;
     const jobResult = await client.query(
       `
         SELECT *
         FROM llm_jobs
         WHERE status = 'pending'
           AND attempt_count < max_attempts
+          AND (
+            ($1::text[] IS NOT NULL AND job_type = ANY($1::text[]))
+            OR ($1::text[] IS NULL AND job_type <> 'shelf_count')
+          )
         ORDER BY priority DESC, created_at ASC
         LIMIT 1
         FOR UPDATE SKIP LOCKED
       `,
+      [allowedJobTypes],
     );
     const jobRow = jobResult.rows?.[0];
     if (!jobRow) {
@@ -1844,44 +1788,32 @@ const databaseMigrations = [
   `
     CREATE INDEX IF NOT EXISTS inkoop_dispatch_lots_date_idx ON inkoop_dispatch_lots (erp_date)
   `,
-  // Individual trolley identity (RFID tag + type) doesn't exist anywhere
-  // else in this app -- warehouse_status/warehouse_activity_log are
-  // schema-less JSONB blobs with only per-shipment aggregate counts
-  // (trolleyCount), no per-trolley ID. Fed by a new machine-to-machine
-  // ingest route from the RFID scan portal (see /warehouse/ingest/trolley-
-  // scan), the same way warehouse_activity_log is fed by the LAN warehouse
-  // backend's own push.
+  // Corrected design (superseding a first attempt that invented a new
+  // per-trolley identity/ingest pipeline that turned out to be unnecessary):
+  // warehouse_activity_log's own "scan_complete" events already carry
+  // photoCount/rfidCount/trolleyCount per customer reference -- once
+  // photoCount reaches trolleyCount, that reference's photos are complete
+  // and ready to count, no new "trolley" concept or ingest route needed.
+  // shelf_counts is therefore keyed by (customer_reference, date), not a
+  // manufactured trolley id. Dropped first since the original attempt's
+  // shape (trolley_scan_id PRIMARY KEY) never held any real data -- the
+  // RFID-portal-facing ingest route it depended on was never actually wired
+  // up by anything external.
   `
-    CREATE TABLE IF NOT EXISTS warehouse_trolley_scans (
-      id text PRIMARY KEY,
-      trolley_id text NOT NULL,
-      trolley_type text NOT NULL DEFAULT '',
-      customer_reference text NOT NULL,
-      shipment_date date NOT NULL,
-      scanned_at timestamptz NOT NULL DEFAULT now(),
-      source text NOT NULL DEFAULT 'rfid_portal',
-      raw jsonb NOT NULL DEFAULT '{}'::jsonb,
-      created_at timestamptz NOT NULL DEFAULT now()
-    )
+    DROP TABLE IF EXISTS shelf_counts CASCADE
   `,
   `
-    CREATE INDEX IF NOT EXISTS warehouse_trolley_scans_ref_date_idx ON warehouse_trolley_scans (customer_reference, shipment_date)
+    DROP TABLE IF EXISTS warehouse_trolley_scans CASCADE
   `,
-  `
-    CREATE INDEX IF NOT EXISTS warehouse_trolley_scans_date_idx ON warehouse_trolley_scans (shipment_date)
-  `,
-  // One row per trolley scan event -- the nightly shelf-count job's result.
-  // Deliberately keyed 1:1 on the scan (not the reusable trolley_id itself,
-  // which a physical trolley carries across many different nights) so each
-  // night's specific use of a trolley gets its own count. expected_average/
-  // deviation stay null in Phase 1 -- there is no manual "expected count"
-  // config; a later training/derivation phase fills these in from
-  // accumulated real counts, not a config screen.
+  // expected_average/deviation stay null in Phase 1 -- there is no manual
+  // "expected count" config; a later training/derivation phase fills these
+  // in from accumulated real counts, not a config screen.
   `
     CREATE TABLE IF NOT EXISTS shelf_counts (
-      trolley_scan_id text PRIMARY KEY REFERENCES warehouse_trolley_scans(id),
+      customer_reference text NOT NULL,
       nightly_run_date date NOT NULL,
       drive_folder_name text NOT NULL DEFAULT '',
+      trolley_count integer NOT NULL DEFAULT 0,
       photo_count integer NOT NULL DEFAULT 0,
       shelf_count integer,
       level_count integer,
@@ -1894,7 +1826,8 @@ const databaseMigrations = [
       error_text text NOT NULL DEFAULT '',
       processed_at timestamptz,
       created_at timestamptz NOT NULL DEFAULT now(),
-      updated_at timestamptz NOT NULL DEFAULT now()
+      updated_at timestamptz NOT NULL DEFAULT now(),
+      PRIMARY KEY (customer_reference, nightly_run_date)
     )
   `,
   `

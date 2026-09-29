@@ -1,0 +1,10 @@
+{
+  "server_url": "https://your-render-app.onrender.com",
+  "api_key": "set-the-same-value-as-SHADOW_LLM_POLLER_API_KEY",
+  "agent_name": "shelf-count-1",
+  "pc_name": "GPU-PC",
+  "model_name": "gwen32b-vision",
+  "version": "1.0.0",
+  "poll_interval_seconds": 10,
+  "ollama_url": "http://127.0.0.1:11434"
+}
