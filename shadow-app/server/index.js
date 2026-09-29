@@ -6381,7 +6381,46 @@ function tryInkoopSplitDeliveryMatch(candidates, quantity, unitPrice, total, con
   return null;
 }
 
+// The ERP export's Suppl. column usually already IS the internal supplier
+// code (confirmed: equals the master data's own Code column directly for
+// most rows), but for certain trade types it instead holds the auction
+// hall/location ("WEST"/"VBA"/"FLORA"/"F2" -- confirmed real against a real
+// dump, ~33% of rows, not typos or noise). Those rows carry the real
+// grower's code in Avc. instead (confirmed: resolves 73% of the rows that
+// Suppl. alone leaves stranded). Falls back to Transp. last, matching
+// Suppl.'s own historical fallback, before giving up -- unresolved is
+// harmless here: no invoice line ever resolves to a location code as ITS
+// own supplier code, so a row that stays keyed under raw location/transport
+// text just sits in a bucket nothing will ever query, same as it already
+// does today for a genuinely unlinked supplier.
+function resolveErpRowSupplierCode(row, validSupplierCodes) {
+  const suppl = normalizeInkoopKey(row?.suppl);
+  if (suppl && validSupplierCodes.has(suppl)) {
+    return suppl;
+  }
+  const avc = normalizeInkoopKey(row?.avc);
+  if (avc && validSupplierCodes.has(avc)) {
+    return avc;
+  }
+  const transp = normalizeInkoopKey(row?.transp);
+  if (transp && validSupplierCodes.has(transp)) {
+    return transp;
+  }
+  return suppl || avc || transp;
+}
+
 function matchInkoopVeilingLines(erpRows, invoices, supplierMap = {}, supplierNameMap = {}, manualLinks = [], supplierFhMap = {}) {
+  // Every code the uploaded master data actually knows about, regardless of
+  // which lookup (GLN/name/FH) it happened to be reachable through --
+  // needed here since an ERP row's Suppl./Avc./Transp. value has to be
+  // checked against "is this a real code at all", not resolved from an
+  // invoice's own GLN/FH/name the way resolveInkoopSupplierCode is used for.
+  const validSupplierCodes = new Set(
+    [...Object.values(supplierMap), ...Object.values(supplierNameMap), ...Object.values(supplierFhMap)]
+      .map((entry) => normalizeInkoopKey(entry?.code))
+      .filter(Boolean),
+  );
+
   const erpByPav = new Map();
   const erpByBasePav = new Map();
   // Handel Aankopen/AI2 lines have no real PAV -- these rows (indexed by
@@ -6403,7 +6442,7 @@ function matchInkoopVeilingLines(erpRows, invoices, supplierMap = {}, supplierNa
       erpByBasePav.get(basePav).push(row);
       continue;
     }
-    const supplierCode = normalizeInkoopKey(row?.suppl) || normalizeInkoopKey(row?.transp);
+    const supplierCode = resolveErpRowSupplierCode(row, validSupplierCodes);
     if (!supplierCode) {
       continue;
     }
@@ -6479,7 +6518,7 @@ function matchInkoopVeilingLines(erpRows, invoices, supplierMap = {}, supplierNa
     // The ERP row's own code (which one of resolved.codes it actually
     // belonged to) makes a more precise transcript than the whole candidate
     // list once a specific row is picked.
-    const matchedCode = normalizeInkoopKey(picked.row.suppl) || normalizeInkoopKey(picked.row.transp) || codesLabel;
+    const matchedCode = resolveErpRowSupplierCode(picked.row, validSupplierCodes) || codesLabel;
     matchedOk.push({ ...context, supplier_code: matchedCode, supplier_match_type: resolved.match_type, erp_row: picked.row });
   }
 
