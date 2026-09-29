@@ -10210,6 +10210,7 @@ function fustTileLabel(tab) {
     "fust-list": "FustLijst",
     out: "OUT",
     overview: "Overview",
+    "overview-connect": "Overview Connect",
     "last-actions": "Last actions",
     planning: "Fust Planning",
     control: "Fust Controle",
@@ -10279,6 +10280,7 @@ function FustPage({ currentUser, menuVersion }) {
     hasPermission(currentUser, PERMISSIONS.FUST_IN) ? "fust-list" : null,
     hasPermission(currentUser, PERMISSIONS.FUST_OUT) ? "out" : null,
     hasPermission(currentUser, PERMISSIONS.FUST_OVERVIEW) ? "overview" : null,
+    hasPermission(currentUser, PERMISSIONS.FUST_OVERVIEW) ? "overview-connect" : null,
     hasPermission(currentUser, PERMISSIONS.FUST_OVERVIEW) ? "last-actions" : null,
     hasPermission(currentUser, PERMISSIONS.FUST_OVERVIEW) ? "planning" : null,
     hasPermission(currentUser, PERMISSIONS.FUST_OVERVIEW) ? "control" : null,
@@ -10368,6 +10370,8 @@ function FustPage({ currentUser, menuVersion }) {
           onRefresh={refresh}
         />
       )}
+
+      {activeTab === "overview-connect" && <FustOverviewConnect />}
 
       {activeTab === "last-actions" && (
         <FustLastActions
@@ -11881,6 +11885,88 @@ function fustActionControlDate(action) {
   return actionDate;
 }
 
+// Shown when expanding a row created by Fust Planning's "Create OUT
+// actions" button -- reuses the same reference-actions endpoint the
+// Planning tab already fetches from, filtered client-side to just this
+// action's date/customer, since createOutActionsFromFustReferenceActions
+// never stores the per-code breakdown structurally (the codes summed into
+// the action are only in its remark text).
+function FustApiReferenceBreakdown({ action }) {
+  const [rows, setRows] = useState(null);
+  const [error, setError] = useState("");
+
+  useEffect(() => {
+    let cancelled = false;
+    apiJson(`/api/fust/reference-actions?from=${action.action_date}&to=${action.action_date}`)
+      .then((payload) => {
+        if (cancelled) {
+          return;
+        }
+        const matched = (payload.rows || []).filter((row) => (
+          row.country === action.country
+          && (action.customer_code
+            ? row.matched_customer_code === action.customer_code
+            : row.matched_customer_name === action.customer_name)
+        ));
+        setRows(matched);
+      })
+      .catch((loadError) => {
+        if (!cancelled) {
+          setError(loadError.message);
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [action.action_date, action.country, action.customer_code, action.customer_name]);
+
+  if (error) {
+    return <div className="notice danger">Unable to load reference codes: {error}</div>;
+  }
+  if (!rows) {
+    return <div>Loading reference codes...</div>;
+  }
+  if (!rows.length) {
+    return <div>No reference codes found for this action -- they may have been re-imported differently since this action was created.</div>;
+  }
+  return (
+    <div className="table-wrap">
+      <table className="data-table">
+        <thead>
+          <tr>
+            <th>Code</th>
+            <th>Carrier 1</th>
+            <th>Carrier 2</th>
+            <th>DC-Planning</th>
+            <th>DC-Actual</th>
+            <th>DCS</th>
+            <th>DCO</th>
+            <th>CC</th>
+            <th>VK</th>
+            <th>PAL</th>
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((row) => (
+            <tr key={row.id}>
+              <td>{row.code}</td>
+              <td>{row.carrier1_name || "-"}</td>
+              <td>{row.carrier2_name || "-"}</td>
+              <td>{row.dc_planning ?? "-"}</td>
+              <td>{row.dc_actual ?? "-"}</td>
+              <td>{row.dcs ?? "-"}</td>
+              <td>{row.dco ?? "-"}</td>
+              <td>{row.cctag ?? "-"}</td>
+              <td>{row.vk ?? "-"}</td>
+              <td>{row.pal ?? "-"}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
 function FustActionTable({
   loading,
   actions,
@@ -12377,9 +12463,10 @@ function FustActionTable({
                   }
                   return next;
                 });
+                const isFustApiAction = action.created_by === "fust-api-import";
                 return (
+                  <React.Fragment key={action.id}>
                   <tr
-                    key={action.id}
                     className="fust-action-row"
                     onClick={toggleExpanded}
                   >
@@ -12450,6 +12537,14 @@ function FustActionTable({
                       </div>
                     </td>
                   </tr>
+                  {isExpanded && isFustApiAction && (
+                    <tr className="fust-action-detail-row">
+                      <td colSpan="20">
+                        <FustApiReferenceBreakdown action={action} />
+                      </td>
+                    </tr>
+                  )}
+                  </React.Fragment>
                 );
               })}
               {!visibleActions.length && (
@@ -13240,6 +13335,204 @@ function FustReferenceActions({ canManage }) {
               <tr>
                 <td colSpan="15">No reference-import rows found for this range.</td>
               </tr>
+            )}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
+// Companion to the real Fust Overview, but built on the raw Code-level API
+// data instead of confirmed fust_actions -- a Code has no IN/OUT direction
+// (see runFustApiImportJob's own comment on the server), so this shows
+// straight totals over the selected range rather than an IN/OUT/balance
+// split. Defaults to a wide 90-day window since the point is watching how a
+// customer's fust develops over time, not just the last few days.
+function FustOverviewConnect() {
+  const [fromDate, setFromDate] = useState(() => daysAgoIso(90));
+  const [toDate, setToDate] = useState(() => todayIso());
+  const [countryFilter, setCountryFilter] = useState("");
+  const [customerSearch, setCustomerSearch] = useState("");
+  const [refreshKey, setRefreshKey] = useState(0);
+  const [rows, setRows] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState("");
+
+  useEffect(() => {
+    let cancelled = false;
+    setLoading(true);
+    setError("");
+    apiJson(`/api/fust/reference-actions?from=${fromDate}&to=${toDate}`)
+      .then((payload) => {
+        if (!cancelled) {
+          setRows(payload.rows || []);
+        }
+      })
+      .catch((loadError) => {
+        if (!cancelled) {
+          setError(loadError.message);
+        }
+      })
+      .finally(() => {
+        if (!cancelled) {
+          setLoading(false);
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [fromDate, toDate, refreshKey]);
+
+  const countries = useMemo(() => (
+    [...new Set(rows.map((row) => row.country).filter(Boolean))].sort()
+  ), [rows]);
+
+  const searchText = customerSearch.trim().toLowerCase();
+  const filteredRows = rows.filter((row) => (
+    (!countryFilter || row.country === countryFilter)
+    && (!searchText
+      || String(row.matched_customer_name || "").toLowerCase().includes(searchText)
+      || String(row.matched_connect_name || "").toLowerCase().includes(searchText))
+  ));
+
+  const customerTotals = useMemo(() => {
+    const grouped = new Map();
+    for (const row of filteredRows) {
+      if (!row.matched_by) {
+        continue;
+      }
+      const key = [row.country, row.matched_customer_code || row.matched_customer_name].join("|");
+      if (!grouped.has(key)) {
+        grouped.set(key, {
+          country: row.country,
+          customer_name: row.matched_customer_name,
+          connect_name: row.matched_connect_name,
+          dc: 0, dcs: 0, dco: 0, cctag: 0, vk: 0, pal: 0,
+          codes: new Set(),
+          days: new Set(),
+        });
+      }
+      const totals = grouped.get(key);
+      totals.dc += Number(row.dc_actual ?? row.dc_planning ?? 0);
+      totals.dcs += Number(row.dcs || 0);
+      totals.dco += Number(row.dco || 0);
+      totals.cctag += Number(row.cctag || 0);
+      totals.vk += Number(row.vk || 0);
+      totals.pal += Number(row.pal || 0);
+      totals.codes.add(row.code);
+      totals.days.add(row.action_date);
+    }
+    return [...grouped.values()].sort((left, right) => left.customer_name.localeCompare(right.customer_name));
+  }, [filteredRows]);
+
+  return (
+    <div className="fust-overview-connect">
+      <div className="overview-filters">
+        <label>From <input type="date" value={fromDate} onChange={(event) => setFromDate(event.target.value)} /></label>
+        <label>To <input type="date" value={toDate} onChange={(event) => setToDate(event.target.value)} /></label>
+        <label>
+          Country
+          <select value={countryFilter} onChange={(event) => setCountryFilter(event.target.value)}>
+            <option value="">All</option>
+            {countries.map((country) => <option key={country} value={country}>{country}</option>)}
+          </select>
+        </label>
+        <label>Search klantnaam <input value={customerSearch} onChange={(event) => setCustomerSearch(event.target.value)} placeholder="Search klantnaam..." /></label>
+        <button type="button" onClick={() => setRefreshKey((current) => current + 1)} disabled={loading}>
+          {loading ? "Loading..." : "Refresh"}
+        </button>
+      </div>
+
+      {error && <div className="notice danger">{error}</div>}
+
+      <h3>Customer totals</h3>
+      <div className="table-wrap">
+        <table className="data-table">
+          <thead>
+            <tr>
+              <th>Country</th>
+              <th>Klantnaam</th>
+              <th>Connect</th>
+              <th>DC</th>
+              <th>DCS</th>
+              <th>DCO</th>
+              <th>CC</th>
+              <th>VK</th>
+              <th>PAL</th>
+              <th>Codes</th>
+              <th>Days</th>
+            </tr>
+          </thead>
+          <tbody>
+            {customerTotals.map((totals) => (
+              <tr key={`${totals.country}-${totals.customer_name}`}>
+                <td>{totals.country}</td>
+                <td>{totals.customer_name || "-"}</td>
+                <td>{totals.connect_name || "-"}</td>
+                <td>{totals.dc}</td>
+                <td>{totals.dcs}</td>
+                <td>{totals.dco}</td>
+                <td>{totals.cctag}</td>
+                <td>{totals.vk}</td>
+                <td>{totals.pal}</td>
+                <td>{totals.codes.size}</td>
+                <td>{totals.days.size}</td>
+              </tr>
+            ))}
+            {!customerTotals.length && !loading && (
+              <tr><td colSpan="11">No matched reference data for this range/filter.</td></tr>
+            )}
+          </tbody>
+        </table>
+      </div>
+
+      <h3>Transactions</h3>
+      <div className="table-wrap">
+        <table className="data-table">
+          <thead>
+            <tr>
+              <th>Date</th>
+              <th>Country</th>
+              <th>Code</th>
+              <th>Carrier 1</th>
+              <th>Carrier 2</th>
+              <th>Matched customer</th>
+              <th>DC-Planning</th>
+              <th>DC-Actual</th>
+              <th>DCS</th>
+              <th>DCO</th>
+              <th>CC</th>
+              <th>VK</th>
+              <th>PAL</th>
+              <th>Status</th>
+            </tr>
+          </thead>
+          <tbody>
+            {filteredRows.map((row) => (
+              <tr key={row.id}>
+                <td>{row.action_date}</td>
+                <td>{row.country}</td>
+                <td>{row.code}</td>
+                <td>{row.carrier1_name || "-"}</td>
+                <td>{row.carrier2_name || "-"}</td>
+                <td>{row.matched_customer_name || "-"}</td>
+                <td>{row.dc_planning ?? "-"}</td>
+                <td>{row.dc_actual ?? "-"}</td>
+                <td>{row.dcs ?? "-"}</td>
+                <td>{row.dco ?? "-"}</td>
+                <td>{row.cctag ?? "-"}</td>
+                <td>{row.vk ?? "-"}</td>
+                <td>{row.pal ?? "-"}</td>
+                <td>
+                  <span className={`ukdocs-status-badge ${row.matched_by ? "success" : "danger"}`}>
+                    {row.matched_by ? "Matched" : "Unmatched"}
+                  </span>
+                </td>
+              </tr>
+            ))}
+            {!filteredRows.length && !loading && (
+              <tr><td colSpan="14">No reference-import rows found for this range/filter.</td></tr>
             )}
           </tbody>
         </table>
