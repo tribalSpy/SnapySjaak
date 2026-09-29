@@ -29,6 +29,7 @@ import {
   getActiveLlmJobsByType,
   getShelfCountNightlyRun,
   getShelfCountsForDate,
+  getShelfCountsInRange,
   getWarehouseActivityLog,
   getWarehouseStatus,
   failLlmJob,
@@ -15093,6 +15094,37 @@ async function handleApi(req, res, url) {
       timestamp: new Date().toISOString(),
     }]);
     sendJson(res, 200, { ok: true, reference, photoCount: updatedPhotoCount });
+    return;
+  }
+
+  // Read-only feed for the training pipeline's dataset-collection script
+  // (shelf-training/data/collect.py) -- a standalone tool on the GPU PC,
+  // kept as an HTTP client with the same poller API key rather than a
+  // second thing carrying direct Postgres credentials.
+  if (url.pathname === "/api/shelf-count/dataset-candidates" && req.method === "GET") {
+    if (!llmPollerEnabled()) {
+      sendJson(res, 503, { error: "SHADOW_LLM_POLLER_API_KEY is not configured" });
+      return;
+    }
+    const apiKey = readAgentApiKey(req);
+    if (!apiKey || apiKey !== llmPollerApiKey) {
+      sendPollerUnauthorized(res);
+      return;
+    }
+    if (!isDatabaseEnabled()) {
+      sendJson(res, 503, { error: "Database is not enabled" });
+      return;
+    }
+    const from = String(url.searchParams.get("from") || "").slice(0, 10);
+    const to = String(url.searchParams.get("to") || "").slice(0, 10);
+    if (!from || !to) {
+      sendJson(res, 400, { error: "from and to (YYYY-MM-DD) are required" });
+      return;
+    }
+    const statusParam = String(url.searchParams.get("status") || "").trim();
+    const statusFilter = statusParam ? statusParam.split(",").map((item) => item.trim()).filter(Boolean) : null;
+    const rows = await getShelfCountsInRange({ from, to, statusFilter });
+    sendJson(res, 200, { from, to, rows });
     return;
   }
 

@@ -462,6 +462,29 @@ export async function getShelfCountsForDate(date) {
   return result.rows;
 }
 
+// Feeds the training pipeline's dataset-collection script (shelf-training/
+// data/collect.py) -- a standalone tool run on the GPU PC, kept as an HTTP
+// client of shadow-app rather than a second thing with direct Postgres
+// credentials, the same way the pollers never touch the database directly
+// either. statusFilter narrows to specific statuses (e.g. ["needs_review"]
+// for the "hard cases" priority tier); omitted, it returns every status.
+export async function getShelfCountsInRange({ from, to, statusFilter } = {}) {
+  if (!pool || !from || !to) {
+    return [];
+  }
+  const statuses = Array.isArray(statusFilter) && statusFilter.length ? statusFilter : null;
+  const result = await pool.query(
+    `
+      SELECT * FROM shelf_counts
+      WHERE nightly_run_date >= $1::date AND nightly_run_date <= $2::date
+        AND ($3::text[] IS NULL OR status = ANY($3::text[]))
+      ORDER BY nightly_run_date, customer_reference
+    `,
+    [from, to, statuses],
+  );
+  return result.rows;
+}
+
 export async function upsertShelfCountNightlyRun(run) {
   if (!pool || !run?.run_date) {
     return null;

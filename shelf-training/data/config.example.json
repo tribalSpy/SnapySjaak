@@ -1,0 +1,7 @@
+{
+  "server_url": "https://your-render-app.onrender.com",
+  "api_key": "set-the-same-value-as-SHADOW_LLM_POLLER_API_KEY",
+  "drive_account": "default",
+  "drive_root_folder_id": "set-to-the-same-value-as-GOOGLE_DRIVE_ROOT_FOLDER_ID",
+  "dataset_dir": "dataset"
+}

@@ -1,0 +1,6 @@
+data/config.json
+data/dataset/
+models/*.pt
+models/*.onnx
+__pycache__/
+*.pyc
