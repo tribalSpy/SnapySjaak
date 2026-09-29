@@ -707,6 +707,23 @@ export async function saveFustReferenceAction(row) {
   );
 }
 
+// Feeds the Fust Planning viewer (the reference-code-level API import had no
+// read path at all until this was added -- see saveFustReferenceAction above).
+export async function getFustReferenceActions({ from, to } = {}) {
+  if (!pool || !from || !to) {
+    return [];
+  }
+  const result = await pool.query(
+    `
+      SELECT * FROM fust_reference_actions
+      WHERE action_date >= $1::date AND action_date <= $2::date
+      ORDER BY action_date DESC, code ASC
+    `,
+    [from, to],
+  );
+  return result.rows;
+}
+
 function mapUkdocsCsiParsedDocumentRow(row) {
   if (!row) {
     return null;

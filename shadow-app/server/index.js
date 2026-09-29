@@ -18,6 +18,7 @@ import {
   getUkdocsCsiParsedDocumentFromDatabase,
   getFustActionsFromDatabase,
   getFustDatabaseStats,
+  getFustReferenceActions,
   getDatabaseStatus,
   getInkoopCompanies,
   getInkoopDispatchLots,
@@ -18050,9 +18051,11 @@ async function handleApi(req, res, url) {
   // Manual trigger for the Fust API reference-import job (also runs on its
   // own 15-minute interval) -- lets Carrier 1/2 matching problems against
   // the Data tab be checked and fixed on demand, ahead of the 1 October
-  // go-live, instead of waiting for the next scheduled tick.
+  // go-live, instead of waiting for the next scheduled tick. Gated by
+  // FUST_MANAGE (not SETTINGS_MANAGE) now that it's a button inside the
+  // Fust module's own Planning tab rather than a Settings-only action.
   if (url.pathname === "/api/fust/reference-import/run" && req.method === "POST") {
-    if (!requirePermission(res, requestUser, PERMISSIONS.SETTINGS_MANAGE)) {
+    if (!requirePermission(res, requestUser, PERMISSIONS.FUST_MANAGE)) {
       return;
     }
     try {
@@ -18061,6 +18064,28 @@ async function handleApi(req, res, url) {
     } catch (error) {
       sendJson(res, 400, { error: error instanceof Error ? error.message : String(error) });
     }
+    return;
+  }
+
+  // Read path for fust_reference_actions -- the reference-import job had no
+  // way to view what it saved at all until this was added (see
+  // saveFustReferenceAction/getFustReferenceActions in db.js).
+  if (url.pathname === "/api/fust/reference-actions" && req.method === "GET") {
+    if (!requireAnyPermission(res, requestUser, [PERMISSIONS.FUST_OVERVIEW, PERMISSIONS.FUST_MANAGE])) {
+      return;
+    }
+    if (!isDatabaseEnabled()) {
+      sendJson(res, 200, { rows: [], database_enabled: false });
+      return;
+    }
+    const from = String(url.searchParams.get("from") || "").slice(0, 10);
+    const to = String(url.searchParams.get("to") || "").slice(0, 10);
+    if (!from || !to) {
+      sendJson(res, 400, { error: "from and to (YYYY-MM-DD) are required" });
+      return;
+    }
+    const rows = await getFustReferenceActions({ from, to });
+    sendJson(res, 200, { from, to, rows, database_enabled: true });
     return;
   }
 

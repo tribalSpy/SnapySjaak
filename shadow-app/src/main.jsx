@@ -10211,6 +10211,7 @@ function fustTileLabel(tab) {
     out: "OUT",
     overview: "Overview",
     "last-actions": "Last actions",
+    planning: "Fust Planning",
     control: "Fust Controle",
     manage: "Fust Beheer",
     import: "Fust Import",
@@ -10279,6 +10280,7 @@ function FustPage({ currentUser, menuVersion }) {
     hasPermission(currentUser, PERMISSIONS.FUST_OUT) ? "out" : null,
     hasPermission(currentUser, PERMISSIONS.FUST_OVERVIEW) ? "overview" : null,
     hasPermission(currentUser, PERMISSIONS.FUST_OVERVIEW) ? "last-actions" : null,
+    hasPermission(currentUser, PERMISSIONS.FUST_OVERVIEW) ? "planning" : null,
     hasPermission(currentUser, PERMISSIONS.FUST_OVERVIEW) ? "control" : null,
     hasPermission(currentUser, PERMISSIONS.FUST_OVERVIEW) ? "analyse" : null,
     hasPermission(currentUser, PERMISSIONS.FUST_OVERVIEW) ? "share" : null,
@@ -10373,6 +10375,10 @@ function FustPage({ currentUser, menuVersion }) {
           actions={actionsData?.actions || []}
           onRefresh={refresh}
         />
+      )}
+
+      {activeTab === "planning" && (
+        <FustReferenceActions canManage={canManageFust} />
       )}
 
       {activeTab === "control" && (
@@ -13059,6 +13065,153 @@ function FustImportPanel({ onSaved }) {
             </div>
           </>
         )}
+      </div>
+    </div>
+  );
+}
+
+function daysAgoIso(days) {
+  const now = new Date();
+  const date = new Date(now.getFullYear(), now.getMonth(), now.getDate() - days);
+  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
+}
+
+// Viewer for fust_reference_actions -- the daily Code-level DC/DCS/DCO pull
+// from the svdvyver.fr Fust API had a save path but no way to see what it
+// saved until this was added (GET /api/fust/reference-actions).
+function FustReferenceActions({ canManage }) {
+  const [fromDate, setFromDate] = useState(() => daysAgoIso(6));
+  const [toDate, setToDate] = useState(() => todayIso());
+  const [onlyUnmatched, setOnlyUnmatched] = useState(false);
+  const [refreshKey, setRefreshKey] = useState(0);
+  const [rows, setRows] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [running, setRunning] = useState(false);
+  const [message, setMessage] = useState("");
+  const [error, setError] = useState("");
+
+  useEffect(() => {
+    let cancelled = false;
+    setLoading(true);
+    setError("");
+    apiJson(`/api/fust/reference-actions?from=${fromDate}&to=${toDate}`)
+      .then((payload) => {
+        if (!cancelled) {
+          setRows(payload.rows || []);
+        }
+      })
+      .catch((loadError) => {
+        if (!cancelled) {
+          setError(loadError.message);
+        }
+      })
+      .finally(() => {
+        if (!cancelled) {
+          setLoading(false);
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [fromDate, toDate, refreshKey]);
+
+  async function runImportNow() {
+    setRunning(true);
+    setMessage("");
+    setError("");
+    try {
+      const payload = await apiJson("/api/fust/reference-import/run", { method: "POST" });
+      if (payload.skipped) {
+        setMessage(`Import skipped: ${payload.reason}`);
+      } else {
+        const unmatchedNote = payload.unmatched_carriers?.length
+          ? ` Unmatched carriers: ${payload.unmatched_carriers.join(", ")}.`
+          : "";
+        setMessage(`Import done. Checked ${payload.checked}, saved ${payload.saved}, unmatched ${payload.unmatched}, failed ${payload.failed}.${unmatchedNote}`);
+      }
+      setRefreshKey((current) => current + 1);
+    } catch (runError) {
+      setError(runError.message);
+    } finally {
+      setRunning(false);
+    }
+  }
+
+  const visibleRows = onlyUnmatched ? rows.filter((row) => !row.matched_by) : rows;
+
+  return (
+    <div className="fust-reference-actions">
+      <div className="overview-filters">
+        <label>From <input type="date" value={fromDate} onChange={(event) => setFromDate(event.target.value)} /></label>
+        <label>To <input type="date" value={toDate} onChange={(event) => setToDate(event.target.value)} /></label>
+        <label>
+          <input type="checkbox" checked={onlyUnmatched} onChange={(event) => setOnlyUnmatched(event.target.checked)} /> Unmatched carriers only
+        </label>
+        <button type="button" onClick={() => setRefreshKey((current) => current + 1)} disabled={loading}>
+          {loading ? "Loading..." : "Refresh"}
+        </button>
+        {canManage && (
+          <button type="button" onClick={runImportNow} disabled={running}>
+            {running ? "Running import..." : "Run import now"}
+          </button>
+        )}
+      </div>
+
+      {message && <div className="notice success">{message}</div>}
+      {error && <div className="notice danger">{error}</div>}
+
+      <div className="table-wrap">
+        <table className="data-table">
+          <thead>
+            <tr>
+              <th>Date</th>
+              <th>Country</th>
+              <th>Code</th>
+              <th>Carrier 1</th>
+              <th>Carrier 2</th>
+              <th>Matched customer</th>
+              <th>DC-Planning</th>
+              <th>DC-Actual</th>
+              <th>DCS</th>
+              <th>DCO</th>
+              <th>CC</th>
+              <th>VK</th>
+              <th>PAL</th>
+              <th>Hours</th>
+              <th>Status</th>
+            </tr>
+          </thead>
+          <tbody>
+            {visibleRows.map((row) => (
+              <tr key={row.id}>
+                <td>{row.action_date}</td>
+                <td>{row.country}</td>
+                <td>{row.code}</td>
+                <td>{row.carrier1_name || "-"}</td>
+                <td>{row.carrier2_name || "-"}</td>
+                <td>{row.matched_customer_name || "-"}</td>
+                <td>{row.dc_planning ?? "-"}</td>
+                <td>{row.dc_actual ?? "-"}</td>
+                <td>{row.dcs ?? "-"}</td>
+                <td>{row.dco ?? "-"}</td>
+                <td>{row.cctag ?? "-"}</td>
+                <td>{row.vk ?? "-"}</td>
+                <td>{row.pal ?? "-"}</td>
+                <td>{row.hours || "-"}</td>
+                <td>
+                  <span className={`ukdocs-status-badge ${row.matched_by ? "success" : "danger"}`}>
+                    {row.matched_by ? "Matched" : "Unmatched"}
+                  </span>
+                </td>
+              </tr>
+            ))}
+            {!visibleRows.length && !loading && (
+              <tr>
+                <td colSpan="15">No reference-import rows found for this range.</td>
+              </tr>
+            )}
+          </tbody>
+        </table>
       </div>
     </div>
   );
