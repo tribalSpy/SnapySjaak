@@ -13664,6 +13664,19 @@ function inkoopCompanyLabel(row) {
   return row.company_name ? `${row.company_number} - ${row.company_name}` : row.company_number;
 }
 
+// One GLN/FH number can legitimately need more than one internal code
+// (confirmed real: an umbrella supplier booked under several different
+// codes depending on which member-grower/location fulfilled it) -- editing
+// an existing manual link must start from its current codes, not blank,
+// or retyping just the new one would silently drop the others (the API
+// merges links by gln/fh_number, replacing the whole codes list each time).
+function inkoopExistingManualCodes(manualLinks, gln, fhNumber) {
+  const match = (manualLinks || []).find((link) => (
+    (gln && link.gln === gln) || (fhNumber && link.fh_number === fhNumber)
+  ));
+  return match?.codes?.join(", ") || "";
+}
+
 function inkoopIssueTypeLabel(type) {
   if (type === "mismatch") return "Mismatch";
   if (type === "gap_erp") return "Missing from invoice";
@@ -13914,6 +13927,7 @@ function InkoopControlePage() {
           manualLinkDrafts={manualLinkDrafts}
           setManualLinkDrafts={setManualLinkDrafts}
           onLinkSupplier={linkSupplier}
+          manualLinks={manualLinks}
         />
       )}
 
@@ -13955,10 +13969,10 @@ function InkoopControlePage() {
             <div className="section-header"><h3>Manually linked suppliers ({manualLinks.length})</h3></div>
             <div className="table-wrap">
               <table className="data-table">
-                <thead><tr><th>GLN</th><th>FloraHolland number</th><th>Name</th><th>Code</th></tr></thead>
+                <thead><tr><th>GLN</th><th>FloraHolland number</th><th>Name</th><th>Code(s)</th></tr></thead>
                 <tbody>
                   {manualLinks.map((link) => (
-                    <tr key={link.gln || link.fh_number}><td>{link.gln}</td><td>{link.fh_number}</td><td>{link.name}</td><td>{link.code}</td></tr>
+                    <tr key={link.gln || link.fh_number}><td>{link.gln}</td><td>{link.fh_number}</td><td>{link.name}</td><td>{(link.codes || []).join(", ")}</td></tr>
                   ))}
                 </tbody>
               </table>
@@ -14035,6 +14049,7 @@ function InkoopControlePage() {
           setManualLinkDrafts={setManualLinkDrafts}
           onLinkSupplier={linkSupplier}
           skippedFiles={lastSkippedFiles}
+          manualLinks={manualLinks}
         />
       )}
       </>
@@ -14047,7 +14062,7 @@ function InkoopControlePage() {
 // Compare & Reconcile tab (the live, always-current result) and the
 // Calendar tab's day-detail drill-down (a single day's slice of the same
 // shape), so the two never drift out of sync with each other.
-function InkoopResultTables({ result, windowDays, manualLinkDrafts, setManualLinkDrafts, onLinkSupplier, skippedFiles }) {
+function InkoopResultTables({ result, windowDays, manualLinkDrafts, setManualLinkDrafts, onLinkSupplier, skippedFiles, manualLinks }) {
   if (!result) {
     return null;
   }
@@ -14159,7 +14174,7 @@ function InkoopResultTables({ result, windowDays, manualLinkDrafts, setManualLin
               <thead><tr><th>Date</th><th>Company</th><th>Invoice</th><th>PAV / supplier</th><th>Description</th><th>Quantity</th><th>Unit price</th><th>Total</th><th>Your code</th><th></th></tr></thead>
               <tbody>
                 {result.only_in_invoice.map((row, index) => {
-                  const canLink = (row.invoice_type === "handel" || row.invoice_type === "ai2") && (row.supplier_gln || row.supplier_fh_number);
+                  const canLink = (row.invoice_type === "handel" || row.invoice_type === "ai2" || row.invoice_type === "connect") && (row.supplier_gln || row.supplier_fh_number);
                   const draftKey = row.supplier_gln || row.supplier_fh_number;
                   return (
                     <tr key={index}>
@@ -14174,9 +14189,9 @@ function InkoopResultTables({ result, windowDays, manualLinkDrafts, setManualLin
                       <td>
                         {canLink && (
                           <input
-                            value={manualLinkDrafts[draftKey]?.code || ""}
+                            value={manualLinkDrafts[draftKey]?.code ?? inkoopExistingManualCodes(manualLinks, row.supplier_gln, row.supplier_fh_number)}
                             onChange={(event) => setManualLinkDrafts((current) => ({ ...current, [draftKey]: { code: event.target.value } }))}
-                            placeholder="e.g. DGC"
+                            placeholder="e.g. DGC, or DGC, DGC2 for several"
                           />
                         )}
                       </td>
@@ -14456,7 +14471,7 @@ function InkoopDashboardTab({ company }) {
   );
 }
 
-function InkoopCalendarTab({ company, manualLinkDrafts, setManualLinkDrafts, onLinkSupplier }) {
+function InkoopCalendarTab({ company, manualLinkDrafts, setManualLinkDrafts, onLinkSupplier, manualLinks }) {
   const [month, setMonth] = useState(() => localDateIso().slice(0, 7));
   const [days, setDays] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -14574,6 +14589,7 @@ function InkoopCalendarTab({ company, manualLinkDrafts, setManualLinkDrafts, onL
               manualLinkDrafts={manualLinkDrafts}
               setManualLinkDrafts={setManualLinkDrafts}
               onLinkSupplier={onLinkSupplier}
+              manualLinks={manualLinks}
             />
           ) : (
             <div className="notice">No data for this day.</div>

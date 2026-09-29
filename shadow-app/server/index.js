@@ -6055,20 +6055,32 @@ function normalizeInkoopFhKey(value) {
   return digits.padStart(6, "0");
 }
 
-// Resolves a Handel Aankopen line's supplier to your internal short code.
-// Tries, in order: manually-completed links (exist precisely because the
-// master data didn't have this GLN), the uploaded master data by GLN (an
-// exact, spelling-proof identifier), the master data's Kwekercod-derived FH
-// number (also exact, but confirmed real: stripping the letter can collide
-// two different growers who share the same digits under a different letter
-// -- parseInkoopSupplierMaster/the worker already drops any such ambiguous
-// key, so anything that survives into supplierFhMap is safe to auto-match
-// on), and finally by normalized grower name -- for the minority of
-// master-data rows that only ever had a name typed in, no GLN or usable
-// Kwekercod at all. Name matching is inherently weaker than either exact
-// key, but still gated by the same quantity+price check every Handel match
-// needs, so a wrong name-based guess is very unlikely to also happen to
-// line up on quantity and price with something in the ERP export.
+// Resolves a Handel Aankopen/Connect-no-PAV line's supplier to your internal
+// short code(s). Tries, in order: manually-completed links (exist precisely
+// because the master data didn't have this GLN), the uploaded master data
+// by GLN (an exact, spelling-proof identifier), the master data's
+// Kwekercod-derived FH number (also exact, but confirmed real: stripping
+// the letter can collide two different growers who share the same digits
+// under a different letter -- parseInkoopSupplierMaster/the worker already
+// drops any such ambiguous key, so anything that survives into
+// supplierFhMap is safe to auto-match on), and finally by normalized grower
+// name -- for the minority of master-data rows that only ever had a name
+// typed in, no GLN or usable Kwekercod at all. Name matching is inherently
+// weaker than either exact key, but still gated by the same quantity+price
+// check every Handel match needs, so a wrong name-based guess is very
+// unlikely to also happen to line up on quantity and price with something
+// in the ERP export.
+//
+// Returns a `codes` ARRAY, not a single code -- confirmed real: one
+// supplier (one GLN on the invoice) can legitimately be booked in the ERP
+// under several different internal codes (e.g. one per member-grower/
+// location under a shared umbrella like "Zentoo", which has 23 different
+// codes across its own GLNs, plus growers under it that were never given
+// their own master-data row at all and get booked under a catch-all code
+// by convention) -- a manual link can list more than one code for the same
+// GLN/FH number to cover this, tried together as one pooled candidate set
+// by the caller. Every other path always yields exactly one code; the array
+// shape is just kept uniform so callers don't need two different cases.
 function resolveInkoopSupplierCode(gln, fhNumber, name, supplierMap, supplierNameMap, manualLinks, supplierFhMap) {
   const normalizedGln = normalizeInkoopKey(gln);
   const normalizedFh = normalizeInkoopKey(fhNumber);
@@ -6084,29 +6096,29 @@ function resolveInkoopSupplierCode(gln, fhNumber, name, supplierMap, supplierNam
       (normalizedGln && normalizeInkoopKey(link?.gln) === normalizedGln)
       || (normalizedFh && normalizeInkoopKey(link?.fh_number) === normalizedFh)
     ));
-    if (manualMatch?.code) {
-      return { code: normalizeInkoopKey(manualMatch.code), match_type: "manual" };
+    if (manualMatch?.codes?.length) {
+      return { codes: manualMatch.codes.map(normalizeInkoopKey), match_type: "manual" };
     }
   }
   if (normalizedGln) {
     const masterMatch = supplierMap?.[gln] || supplierMap?.[normalizedGln];
     if (masterMatch?.code) {
-      return { code: normalizeInkoopKey(masterMatch.code), match_type: "gln" };
+      return { codes: [normalizeInkoopKey(masterMatch.code)], match_type: "gln" };
     }
   }
   const fhKey = normalizeInkoopFhKey(fhNumber);
   if (fhKey) {
     const fhMatch = supplierFhMap?.[fhKey];
     if (fhMatch?.code) {
-      return { code: normalizeInkoopKey(fhMatch.code), match_type: "fh_number" };
+      return { codes: [normalizeInkoopKey(fhMatch.code)], match_type: "fh_number" };
     }
   }
   const normalizedName = normalizeInkoopSupplierName(name);
   const nameMatch = normalizedName ? supplierNameMap?.[normalizedName] : null;
   if (nameMatch?.code) {
-    return { code: normalizeInkoopKey(nameMatch.code), match_type: "name" };
+    return { codes: [normalizeInkoopKey(nameMatch.code)], match_type: "name" };
   }
-  return { code: "", match_type: "" };
+  return { codes: [], match_type: "" };
 }
 
 // A single Briefnummer/PAV can legitimately cover more than one purchase --
@@ -6285,26 +6297,40 @@ function matchInkoopVeilingLines(erpRows, invoices, supplierMap = {}, supplierNa
   // anything more specific than that to go on.
   function matchInkoopLineBySupplierCode(context, line) {
     const resolved = resolveInkoopSupplierCode(line?.supplier_gln, line?.supplier_fh_number, line?.supplier_name, supplierMap, supplierNameMap, manualLinks, supplierFhMap);
-    if (!resolved.code) {
+    if (!resolved.codes.length) {
       supplierNotLinked.push(context);
       return;
     }
-    const picked = pickInkoopMatchingErpRow(erpBySupplierCode.get(resolved.code), line.quantity, line.unit_price, consumedErpRows, normalizeUkdocsText(line?.invoice_date).slice(0, 10));
+    // A manual link can list several codes for one GLN/FH number (confirmed
+    // real: one supplier umbrella booked under several different internal
+    // codes depending on which member-grower/location actually fulfilled
+    // it) -- every code's own ERP rows are pooled into one candidate set,
+    // and pickInkoopMatchingErpRow's existing quantity+price disambiguation
+    // decides which specific row (and so which specific code) this line
+    // actually is, exactly as it already does for several rows under one
+    // code.
+    const candidates = resolved.codes.flatMap((code) => erpBySupplierCode.get(code) || []);
+    const picked = pickInkoopMatchingErpRow(candidates, line.quantity, line.unit_price, consumedErpRows, normalizeUkdocsText(line?.invoice_date).slice(0, 10));
+    const codesLabel = resolved.codes.join(" / ");
     if (picked.ambiguous) {
       // No unique per-line reference (unlike PAV) -- quantity+price alone
       // can collide across genuinely different products from the same
       // supplier the same day (e.g. several spray colours of the same size/
       // price). Picking one anyway would be an actively wrong "match", so
       // this is flagged instead.
-      ambiguousMatches.push({ ...context, supplier_code: resolved.code, supplier_match_type: resolved.match_type, candidates: picked.candidates });
+      ambiguousMatches.push({ ...context, supplier_code: codesLabel, supplier_match_type: resolved.match_type, candidates: picked.candidates });
       return;
     }
     if (!picked.row) {
-      onlyInInvoice.push({ ...context, supplier_code: resolved.code, supplier_match_type: resolved.match_type });
+      onlyInInvoice.push({ ...context, supplier_code: codesLabel, supplier_match_type: resolved.match_type });
       return;
     }
     consumedErpRows.add(picked.row);
-    matchedOk.push({ ...context, supplier_code: resolved.code, supplier_match_type: resolved.match_type, erp_row: picked.row });
+    // The ERP row's own code (which one of resolved.codes it actually
+    // belonged to) makes a more precise transcript than the whole candidate
+    // list once a specific row is picked.
+    const matchedCode = normalizeInkoopKey(picked.row.suppl) || normalizeInkoopKey(picked.row.transp) || codesLabel;
+    matchedOk.push({ ...context, supplier_code: matchedCode, supplier_match_type: resolved.match_type, erp_row: picked.row });
   }
 
   for (const invoice of Array.isArray(invoices) ? invoices : []) {
@@ -6556,12 +6582,24 @@ function normalizeInkoopImportRecord(record) {
   };
 }
 
+// Accepts either a `codes` array or a single delimited string (old stored
+// shape's singular `code`, or a fresh comma/semicolon/whitespace-separated
+// list from the Settings form) -- one GLN/FH number can legitimately need
+// more than one code (see resolveInkoopSupplierCode), so this always
+// normalizes to a `codes` array, deduped and uppercased. A link saved
+// before this existed (singular `code`) still reads back correctly as a
+// one-item array, no migration step needed.
+function normalizeInkoopManualSupplierLinkCodes(link) {
+  const raw = Array.isArray(link?.codes) ? link.codes : String(link?.codes ?? link?.code ?? "").split(/[,;\s]+/);
+  return [...new Set(raw.map((code) => normalizeUkdocsText(code).toUpperCase()).filter(Boolean))];
+}
+
 function normalizeInkoopManualSupplierLink(link) {
   return {
     gln: normalizeUkdocsText(link?.gln),
     fh_number: normalizeUkdocsText(link?.fh_number),
     name: normalizeUkdocsText(link?.name),
-    code: normalizeUkdocsText(link?.code).toUpperCase(),
+    codes: normalizeInkoopManualSupplierLinkCodes(link),
     added_by: normalizeUkdocsText(link?.added_by),
     added_at: normalizeUkdocsText(link?.added_at) || new Date().toISOString(),
   };
@@ -17998,13 +18036,17 @@ async function handleApi(req, res, url) {
     }
     const body = await readRequestJson(req);
     // AI2 growers never have a GLN, only an FH-style number -- either is an
-    // acceptable link key, but a code always needs one of them.
-    if ((!String(body?.gln || "").trim() && !String(body?.fh_number || "").trim()) || !String(body?.code || "").trim()) {
-      sendJson(res, 400, { error: "A GLN or an FH number, plus a code, are required" });
+    // acceptable link key, but at least one code always needs one of them.
+    // A GLN/FH number can legitimately need more than one code (see
+    // resolveInkoopSupplierCode) -- codes is a comma/semicolon/whitespace-
+    // separated list, not just a single value.
+    const codes = normalizeInkoopManualSupplierLinkCodes(body);
+    if ((!String(body?.gln || "").trim() && !String(body?.fh_number || "").trim()) || !codes.length) {
+      sendJson(res, 400, { error: "A GLN or an FH number, plus at least one code, are required" });
       return;
     }
     const state = await readInkoopState();
-    const link = normalizeInkoopManualSupplierLink({ ...body, added_by: requestUser.username });
+    const link = normalizeInkoopManualSupplierLink({ ...body, codes, added_by: requestUser.username });
     state.manual_supplier_links = [
       link,
       ...state.manual_supplier_links.filter((item) => (
