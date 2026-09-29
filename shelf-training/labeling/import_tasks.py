@@ -90,7 +90,12 @@ def import_tasks(config: dict, project_id: int, tasks: list[dict], access_token:
     for start in range(0, len(tasks), batch_size):
         batch = tasks[start:start + batch_size]
         response = requests.post(url, headers=api_headers(access_token), json=batch, timeout=120)
-        response.raise_for_status()
+        if response.status_code >= 400:
+            print(f"  First task in this failing batch (for reference): {json.dumps(batch[0], indent=2)}")
+            raise SystemExit(
+                f"Import failed with HTTP {response.status_code} for batch starting at index {start}:\n"
+                f"{response.text[:2000]}"
+            )
         result = response.json()
         task_count = result.get("task_count")
         if task_count is not None and task_count != len(batch):
