@@ -7159,6 +7159,30 @@ function inkoopGapIsExplainedByAggregate(row, growerName, aggregateResult) {
   return aggregateResult.reconciledProducts.has(inkoopAggregateKey(growerName, dateKey, productName));
 }
 
+// Shared by every view that needs to tell a real gap apart from routine
+// split-lot/re-aggregation noise (Follow-up queue, Calendar, day/week
+// report, today's summary) -- computed once per request from the same raw
+// rows, so they all agree with each other, the same way
+// bucketInkoopResultsByDate is already the shared source for the
+// gap/mismatch counts themselves.
+async function buildInkoopAggregateContext(state, range) {
+  const [erpRows, invoiceLines] = await Promise.all([
+    getInkoopErpLines(range),
+    getInkoopInvoiceLines(range),
+  ]);
+  const aggregateResult = computeInkoopAggregateMismatches(
+    erpRows, invoiceLines,
+    state.supplier_map, state.supplier_name_map, state.manual_supplier_links, state.supplier_fh_map,
+  );
+  const validSupplierCodes = new Set(
+    [...Object.values(state.supplier_map || {}), ...Object.values(state.supplier_name_map || {}), ...Object.values(state.supplier_fh_map || {})]
+      .map((entry) => normalizeInkoopKey(entry?.code))
+      .filter(Boolean),
+  );
+  const codeToName = buildInkoopCodeNameMap(state.supplier_map, state.supplier_name_map, state.supplier_fh_map);
+  return { aggregateResult, codeToName, validSupplierCodes };
+}
+
 async function computeInkoopLiveMatch(state, { from, to }) {
   const [erpRows, invoiceLines] = await Promise.all([
     getInkoopErpLines({ from, to }),
@@ -7471,7 +7495,13 @@ function inkoopEnsureDateBucket(buckets, dateKey) {
 // (spend) is built from invoice totals wherever an invoice line exists.
 // only_in_erp is the one exception: nothing has been invoiced/paid for it
 // yet, so it only ever counts as a gap, never as spend.
-function bucketInkoopResultsByDate(matched) {
+//
+// aggregateContext (from buildInkoopAggregateContext) is optional so this
+// still works for embalage-only calls that never touch only_in_erp/
+// only_in_invoice at all -- when given, a gap whose grower+day (or grower+
+// product) total already reconciles still counts as real spend (the money
+// was genuinely paid) but not as a gap, exactly like the Follow-up queue.
+function bucketInkoopResultsByDate(matched, aggregateContext = null) {
   const buckets = new Map();
 
   for (const row of matched?.matched_ok || []) {
@@ -7493,8 +7523,14 @@ function bucketInkoopResultsByDate(matched) {
   for (const row of matched?.only_in_erp || []) {
     const bucket = inkoopEnsureDateBucket(buckets, inkoopDateKeyFromErpAnchor(row));
     if (!bucket) continue;
-    const value = inkoopErpRowTotal(row);
     bucket.product_count += 1;
+    if (aggregateContext) {
+      const growerName = inkoopGrowerNameForErpRow(row, aggregateContext.codeToName, aggregateContext.validSupplierCodes);
+      if (inkoopGapIsExplainedByAggregate(row, growerName, aggregateContext.aggregateResult)) {
+        continue;
+      }
+    }
+    const value = inkoopErpRowTotal(row);
     bucket.gap_count += 1;
     bucket.gap_value += value;
   }
@@ -7503,10 +7539,16 @@ function bucketInkoopResultsByDate(matched) {
     if (!bucket) continue;
     const value = inkoopInvoiceLineTotal(row);
     // FloraHolland charged for it, so it was paid, whether or not the ERP
-    // ever recorded the matching purchase -- counts toward both spend and
-    // the gap that still needs investigating.
+    // ever recorded the matching purchase -- counts toward spend
+    // regardless of whether it also turns out to be a real gap below.
     bucket.purchase_value += value;
     bucket.invoice_value += value;
+    if (aggregateContext) {
+      const growerName = inkoopGrowerNameForInvoiceLine(row);
+      if (inkoopGapIsExplainedByAggregate(row, growerName, aggregateContext.aggregateResult)) {
+        continue;
+      }
+    }
     bucket.gap_count += 1;
     bucket.gap_value += value;
   }
@@ -7584,8 +7626,8 @@ function buildInkoopEmbalageSummary(matched) {
   return { total_value: totalValue, by_day: byDay, by_company: byCompany };
 }
 
-function buildInkoopTodaySummary(matched, todayIso) {
-  const bucket = bucketInkoopResultsByDate(matched).get(todayIso) || null;
+function buildInkoopTodaySummary(matched, todayIso, aggregateContext = null) {
+  const bucket = bucketInkoopResultsByDate(matched, aggregateContext).get(todayIso) || null;
   return {
     date: todayIso,
     invoice_value: bucket?.invoice_value || 0,
@@ -18766,13 +18808,15 @@ async function handleApi(req, res, url) {
     const days = Number.isFinite(requestedDays) && requestedDays > 0 ? requestedDays : INKOOP_DASHBOARD_DEFAULT_WINDOW_DAYS;
     try {
       const state = await readInkoopState();
-      const rawResult = await computeInkoopLiveMatch(state, inkoopDefaultWindowRange(days));
+      const range = inkoopDefaultWindowRange(days);
+      const rawResult = await computeInkoopLiveMatch(state, range);
       const result = filterInkoopResultsByCompany(rawResult, url.searchParams.get("company"));
+      const aggregateContext = await buildInkoopAggregateContext(state, range);
       const summary = buildInkoopDashboardSummary(result);
-      const dayReport = inkoopDateBucketsToSortedArray(bucketInkoopResultsByDate(result));
+      const dayReport = inkoopDateBucketsToSortedArray(bucketInkoopResultsByDate(result, aggregateContext));
       const weekReport = inkoopBucketDayReportsByWeek(dayReport);
       const embalageSummary = buildInkoopEmbalageSummary(result);
-      const todaySummary = buildInkoopTodaySummary(result, localDateIso());
+      const todaySummary = buildInkoopTodaySummary(result, localDateIso(), aggregateContext);
       sendJson(res, 200, {
         days,
         ...summary,
@@ -18807,12 +18851,14 @@ async function handleApi(req, res, url) {
     const monthEnd = `${yearStr}-${monthStr}-${String(daysInMonth).padStart(2, "0")}`;
     try {
       const state = await readInkoopState();
-      const rawResult = await computeInkoopLiveMatch(state, {
+      const range = {
         from: addDaysToIsoDate(monthStart, -14),
         to: addDaysToIsoDate(monthEnd, 14),
-      });
+      };
+      const rawResult = await computeInkoopLiveMatch(state, range);
       const result = filterInkoopResultsByCompany(rawResult, url.searchParams.get("company"));
-      const buckets = bucketInkoopResultsByDate(result);
+      const aggregateContext = await buildInkoopAggregateContext(state, range);
+      const buckets = bucketInkoopResultsByDate(result, aggregateContext);
       const days = [];
       for (let day = 1; day <= daysInMonth; day += 1) {
         const dateIso = `${yearStr}-${monthStr}-${String(day).padStart(2, "0")}`;
@@ -18896,21 +18942,10 @@ async function handleApi(req, res, url) {
       // invoice" gap be checked against whether the money and piece count
       // for that whole grower's day actually reconciles before treating it
       // as a real problem, instead of flooding this queue with routine
-      // split-lot noise (see computeInkoopAggregateMismatches).
-      const [erpRowsForAggregate, invoiceLinesForAggregate] = await Promise.all([
-        getInkoopErpLines(range),
-        getInkoopInvoiceLines(range),
-      ]);
-      const aggregateResult = computeInkoopAggregateMismatches(
-        erpRowsForAggregate, invoiceLinesForAggregate,
-        state.supplier_map, state.supplier_name_map, state.manual_supplier_links, state.supplier_fh_map,
-      );
-      const validSupplierCodes = new Set(
-        [...Object.values(state.supplier_map || {}), ...Object.values(state.supplier_name_map || {}), ...Object.values(state.supplier_fh_map || {})]
-          .map((entry) => normalizeInkoopKey(entry?.code))
-          .filter(Boolean),
-      );
-      const codeToName = buildInkoopCodeNameMap(state.supplier_map, state.supplier_name_map, state.supplier_fh_map);
+      // split-lot noise (see computeInkoopAggregateMismatches). Shared with
+      // the Calendar/day-report/today-summary views via
+      // buildInkoopAggregateContext so all of them agree.
+      const { aggregateResult, codeToName, validSupplierCodes } = await buildInkoopAggregateContext(state, range);
 
       const issues = [];
       for (const row of result.matched_mismatch || []) {
