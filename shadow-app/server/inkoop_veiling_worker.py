@@ -366,32 +366,45 @@ AI2_COL_BEDRAG_MAX = 615
 
 
 def parse_ai2_row(row_words, year, is_credit):
-    datum = referentie = vbn_desc = num_name = total_pieces = prijs = bedrag = None
+    # Lists, not single values -- the tighter x_tolerance above means a
+    # column can now legitimately contain more than one pdfplumber word
+    # (that's the whole point, for Description/Num.Name), so every column
+    # collects every word inside its x-range and joins them with a single
+    # space at the end, rather than the last word silently overwriting the
+    # ones before it.
+    columns = {"datum": [], "referentie": [], "vbn_desc": [], "num_name": [], "total_pieces": [], "prijs": [], "bedrag": []}
     for word in sorted(row_words, key=lambda w: w["x0"]):
         x0 = word["x0"]
         text = word["text"]
         if x0 < AI2_COL_DATUM_MAX:
-            datum = text
+            columns["datum"].append(text)
         elif x0 < AI2_COL_REFERENTIE_MAX:
-            referentie = text
+            columns["referentie"].append(text)
         elif x0 < AI2_COL_DESCRIPTION_MAX:
-            vbn_desc = text
+            columns["vbn_desc"].append(text)
         elif x0 < AI2_COL_IGNORE_MAX:
             continue
         elif x0 < AI2_COL_NUMNAME_MAX:
-            num_name = text
+            columns["num_name"].append(text)
         elif x0 < AI2_COL_AANTAL_MAX:
             continue
         elif x0 < AI2_COL_APE_MAX:
             continue
         elif x0 < AI2_COL_TOTAL_MAX:
-            total_pieces = text
+            columns["total_pieces"].append(text)
         elif x0 < AI2_COL_PRIJS_MAX:
-            prijs = text
+            columns["prijs"].append(text)
         elif x0 < AI2_COL_BEDRAG_MAX:
-            bedrag = text
+            columns["bedrag"].append(text)
         # else: Emb./Dep/Rent/Costs/Order/Buyer reference columns -- not
         # needed for matching, intentionally ignored.
+    datum = " ".join(columns["datum"]) or None
+    referentie = " ".join(columns["referentie"]) or None
+    vbn_desc = " ".join(columns["vbn_desc"]) or None
+    num_name = " ".join(columns["num_name"]) or None
+    total_pieces = " ".join(columns["total_pieces"]) or None
+    prijs = " ".join(columns["prijs"]) or None
+    bedrag = " ".join(columns["bedrag"]) or None
 
     date_match = AI2_DATE_TOKEN_RE.match(datum or "")
     if not date_match or not year:
@@ -455,7 +468,15 @@ def parse_ai2_productnota(pdf_bytes):
         is_credit = False
         for page in pdf.pages:
             rows = {}
-            for word in page.extract_words():
+            # Default x_tolerance (3) merges visually-distinct words in this
+            # PDF's narrow columns into one glued token whenever the real
+            # gap between them is smaller than that threshold (confirmed
+            # real against a live AI2 PDF: "2188Corylusavcontorta100cmx40"
+            # for what prints as "2188 Corylus av contorta 100cm x40") --
+            # 1.0 was verified to split every such case correctly across a
+            # real multi-page invoice with no over-splitting (checked every
+            # resulting word for suspicious single-character fragments).
+            for word in page.extract_words(x_tolerance=1.0):
                 key = round(word["top"])
                 rows.setdefault(key, []).append(word)
             for key in sorted(rows.keys()):
