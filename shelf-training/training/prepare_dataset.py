@@ -7,7 +7,7 @@ positions), keeps only tasks with a real, non-skipped annotation, and
 writes:
 
     training/dataset/images/{train,val}/<photo>.jpg
-    training/dataset/labels/{train,val}/<photo>.txt   (YOLO format, class 0 = shelf_level)
+    training/dataset/labels/{train,val}/<photo>.txt   (YOLO format, see CLASS_NAMES below)
     training/dataset/data.yaml
 
 The train/val split is stratified per customer_reference (same idea as
@@ -32,7 +32,9 @@ from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
 SCRIPT_DIR = Path(__file__).resolve().parent
-CLASS_NAMES = ["shelf_level"]
+# Must match labeling_config.xml's <Label> values exactly -- index here
+# becomes the YOLO class id written into each label file.
+CLASS_NAMES = ["shelf_level", "extension"]
 
 
 def load_exports(exports_dir: Path) -> dict:
@@ -71,13 +73,15 @@ def boxes_from_annotation(annotation: dict) -> list[tuple[int, float, float, flo
             continue
         value = result.get("value", {})
         labels = value.get("rectanglelabels") or []
-        if "shelf_level" not in labels:
+        class_name = next((label for label in labels if label in CLASS_NAMES), None)
+        if class_name is None:
             continue
+        class_id = CLASS_NAMES.index(class_name)
         x = value["x"] / 100.0
         y = value["y"] / 100.0
         width = value["width"] / 100.0
         height = value["height"] / 100.0
-        boxes.append((0, x + width / 2, y + height / 2, width, height))
+        boxes.append((class_id, x + width / 2, y + height / 2, width, height))
     return boxes
 
 

@@ -4,5 +4,6 @@
   <Image name="image" value="$image" zoom="true" zoomControl="true" rotateControl="false"/>
   <RectangleLabels name="label" toName="image">
     <Label value="shelf_level" background="#4C7DFF"/>
+    <Label value="extension" background="#FF6B4C"/>
   </RectangleLabels>
 </View>

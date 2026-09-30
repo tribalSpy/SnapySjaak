@@ -64,6 +64,30 @@ def ensure_project(config: dict, config_path: Path, access_token: str) -> int:
     return project_id
 
 
+def ensure_label_config(project_id: int, access_token: str, base_url: str):
+    """ensure_project only sets label_config on creation -- an existing
+    project (e.g. after adding the "extension" label) needs it pushed
+    explicitly. Only *adding* label options is safe against existing
+    annotations (they keep referencing whichever label they already used);
+    this doesn't try to detect a removed/renamed label, so don't do that by
+    hand without checking existing annotations first."""
+    label_config = (SCRIPT_DIR / "labeling_config.xml").read_text(encoding="utf-8")
+    response = requests.get(f"{base_url}/api/projects/{project_id}", headers=api_headers(access_token), timeout=30)
+    response.raise_for_status()
+    current = response.json().get("label_config", "")
+    if current.strip() == label_config.strip():
+        return
+    response = requests.patch(
+        f"{base_url}/api/projects/{project_id}",
+        headers=api_headers(access_token),
+        json={"label_config": label_config},
+        timeout=30,
+    )
+    if response.status_code >= 400:
+        raise SystemExit(f"Could not update label config ({response.status_code}): {response.text[:1000]}")
+    print(f"Updated labeling interface for project {project_id} (labeling_config.xml changed)")
+
+
 def ensure_local_storage(config: dict, project_id: int, dataset_dir: Path, access_token: str):
     """Registering LOCAL_FILES_DOCUMENT_ROOT/LOCAL_FILES_SERVING_ENABLED alone
     is not enough on this Label Studio version -- confirmed from its own
@@ -159,6 +183,7 @@ def main():
     # existing project created before this storage registration existed
     # would otherwise never get one, and every photo would keep 404ing.
     project_id = ensure_project(config, config_path, access_token)
+    ensure_label_config(project_id, access_token, config["label_studio_url"].rstrip("/"))
     ensure_local_storage(config, project_id, dataset_dir, access_token)
 
     imported = load_state()
