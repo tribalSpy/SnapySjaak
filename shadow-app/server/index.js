@@ -7048,7 +7048,7 @@ function computeInkoopGrowerDayTotals(erpRows, invoiceLines, supplierMap, suppli
   const invoiceByGrowerDay = new Map();
   const invoiceByGrowerDayProduct = new Map();
   for (const line of Array.isArray(invoiceLines) ? invoiceLines : []) {
-    const growerName = normalizeInkoopSupplierName(line?.supplier_name);
+    const growerName = inkoopGrowerNameForInvoiceLine(line, codeToName, supplierMap, supplierNameMap, manualLinks, supplierFhMap);
     const dateKey = String(line?.invoice_date || "").slice(0, 10);
     if (!growerName || !dateKey) {
       continue;
@@ -7180,7 +7180,15 @@ async function buildInkoopAggregateContext(state, range) {
       .filter(Boolean),
   );
   const codeToName = buildInkoopCodeNameMap(state.supplier_map, state.supplier_name_map, state.supplier_fh_map);
-  return { aggregateResult, codeToName, validSupplierCodes };
+  return {
+    aggregateResult,
+    codeToName,
+    validSupplierCodes,
+    supplierMap: state.supplier_map,
+    supplierNameMap: state.supplier_name_map,
+    manualLinks: state.manual_supplier_links,
+    supplierFhMap: state.supplier_fh_map,
+  };
 }
 
 async function computeInkoopLiveMatch(state, { from, to }) {
@@ -7544,7 +7552,10 @@ function bucketInkoopResultsByDate(matched, aggregateContext = null) {
     bucket.purchase_value += value;
     bucket.invoice_value += value;
     if (aggregateContext) {
-      const growerName = inkoopGrowerNameForInvoiceLine(row);
+      const growerName = inkoopGrowerNameForInvoiceLine(
+        row, aggregateContext.codeToName, aggregateContext.supplierMap,
+        aggregateContext.supplierNameMap, aggregateContext.manualLinks, aggregateContext.supplierFhMap,
+      );
       if (inkoopGapIsExplainedByAggregate(row, growerName, aggregateContext.aggregateResult)) {
         continue;
       }
@@ -7724,7 +7735,27 @@ function inkoopGrowerNameForErpRow(row, codeToName, validSupplierCodes) {
   return codeToName.get(code) || "";
 }
 
-function inkoopGrowerNameForInvoiceLine(line) {
+// Resolves through the exact same GLN/FH/manual-link chain line-level
+// matching already uses, then converts the resolved code back to its
+// registered Naam via codeToName -- so the invoice side lands in the same
+// name space as the ERP side (buildInkoopCodeNameMap/
+// resolveErpRowSupplierCode), which is registered spelling, not
+// whatever text the invoice's own SupplierParty/Name happens to carry.
+// Confirmed real: without this, a manual link or a Kwekercod fix would
+// never actually change the aggregate result, since it only ever compared
+// each side's raw wording -- fixing the resolution chain doesn't help if
+// the comparison itself never looks at it.
+function inkoopGrowerNameForInvoiceLine(line, codeToName, supplierMap, supplierNameMap, manualLinks, supplierFhMap) {
+  const resolved = resolveInkoopSupplierCode(
+    line?.supplier_gln, line?.supplier_fh_number, line?.supplier_name,
+    supplierMap, supplierNameMap, manualLinks, supplierFhMap,
+  );
+  for (const code of resolved.codes) {
+    const name = codeToName.get(normalizeInkoopKey(code));
+    if (name) {
+      return name;
+    }
+  }
   return normalizeInkoopSupplierName(line?.supplier_name);
 }
 
@@ -18945,7 +18976,7 @@ async function handleApi(req, res, url) {
       // split-lot noise (see computeInkoopAggregateMismatches). Shared with
       // the Calendar/day-report/today-summary views via
       // buildInkoopAggregateContext so all of them agree.
-      const { aggregateResult, codeToName, validSupplierCodes } = await buildInkoopAggregateContext(state, range);
+      const { aggregateResult, codeToName, validSupplierCodes, supplierMap, supplierNameMap, manualLinks, supplierFhMap } = await buildInkoopAggregateContext(state, range);
 
       const issues = [];
       for (const row of result.matched_mismatch || []) {
@@ -18960,7 +18991,8 @@ async function handleApi(req, res, url) {
         issues.push({ id: inkoopIssueId("gap_erp", row), issue_type: "gap_erp", date: inkoopDateKeyFromErpAnchor(row), description: row.description, value: inkoopErpRowTotal(row), invoice_number: "", erp_row: row, detail: row });
       }
       for (const row of result.only_in_invoice || []) {
-        if (inkoopGapIsExplainedByAggregate(row, inkoopGrowerNameForInvoiceLine(row), aggregateResult)) {
+        const invoiceGrowerName = inkoopGrowerNameForInvoiceLine(row, codeToName, supplierMap, supplierNameMap, manualLinks, supplierFhMap);
+        if (inkoopGapIsExplainedByAggregate(row, invoiceGrowerName, aggregateResult)) {
           continue;
         }
         issues.push({ id: inkoopIssueId("gap_invoice", row), issue_type: "gap_invoice", date: inkoopDateKeyFromInvoiceAnchor(row), description: row.description, value: inkoopInvoiceLineTotal(row), invoice_number: row.invoice_number || "", erp_row: null, detail: row });
