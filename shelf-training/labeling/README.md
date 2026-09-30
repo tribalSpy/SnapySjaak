@@ -50,6 +50,17 @@ What's left is the part that needs a human:
 
 - `imported_tasks.json` and `exports/` are local working state, not meant
   to be committed (see `.gitignore`).
+- Setting `LOCAL_FILES_DOCUMENT_ROOT`/`LABEL_STUDIO_LOCAL_FILES_SERVING_ENABLED`
+  (what `start_label_studio.bat` does) is necessary but **not sufficient** on
+  this Label Studio version -- confirmed from its own source: every
+  `/data/local-files/` request 404s unless a Local Storage connection is
+  also registered for the project. `import_tasks.py` now does this for you
+  automatically (`ensure_local_storage`, registered at `data/dataset/raw`,
+  since Label Studio refuses a storage whose path is the same as
+  `LOCAL_FILES_DOCUMENT_ROOT` itself) -- if photos still don't load after
+  re-running `import_tasks.bat`, check **Settings > Cloud Storage** in the
+  project UI for that entry, or check the server console log for the exact
+  404'd path.
 - The token from **Account & Settings > Personal Access Token** is a JWT
   *refresh* token on current Label Studio versions, not a static API key --
   `_auth.py` exchanges it for a short-lived access token (`/api/token/refresh`)

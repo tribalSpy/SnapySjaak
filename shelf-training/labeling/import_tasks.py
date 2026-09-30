@@ -64,6 +64,40 @@ def ensure_project(config: dict, config_path: Path, access_token: str) -> int:
     return project_id
 
 
+def ensure_local_storage(config: dict, project_id: int, dataset_dir: Path, access_token: str):
+    """Registering LOCAL_FILES_DOCUMENT_ROOT/LOCAL_FILES_SERVING_ENABLED alone
+    is not enough on this Label Studio version -- confirmed from its own
+    source (io_storages/localfiles/views.py): /data/local-files/ 404s for
+    every request unless a LocalFilesImportStorage row also exists for the
+    project, covering the requested path. Label Studio also refuses a
+    storage whose path is DOCUMENT_ROOT itself ("cannot be the same...
+    please add a subdirectory") -- raw/ (where every photo actually lives)
+    is used instead."""
+    storage_path = str(dataset_dir / "raw")
+    base_url = config["label_studio_url"].rstrip("/")
+    response = requests.get(
+        f"{base_url}/api/storages/localfiles",
+        headers=api_headers(access_token),
+        params={"project": project_id},
+        timeout=30,
+    )
+    response.raise_for_status()
+    existing = response.json()
+    if any(storage.get("path") == storage_path for storage in existing):
+        return
+    response = requests.post(
+        f"{base_url}/api/storages/localfiles",
+        headers=api_headers(access_token),
+        json={"project": project_id, "path": storage_path},
+        timeout=30,
+    )
+    if response.status_code >= 400:
+        raise SystemExit(
+            f"Could not register local storage ({response.status_code}): {response.text[:1000]}"
+        )
+    print(f"Registered local storage for project {project_id}: {storage_path}")
+
+
 def load_manifest_rows(dataset_dir: Path) -> list[dict]:
     manifest_path = dataset_dir / "manifest.csv"
     if not manifest_path.exists():
@@ -119,15 +153,20 @@ def main():
         print(f"No rows found in {dataset_dir / 'manifest.csv'} -- run data/collect.py first.")
         return
 
+    access_token = get_access_token(config)
+
+    # Always ensured, even on a rerun with nothing new to import -- an
+    # existing project created before this storage registration existed
+    # would otherwise never get one, and every photo would keep 404ing.
+    project_id = ensure_project(config, config_path, access_token)
+    ensure_local_storage(config, project_id, dataset_dir, access_token)
+
     imported = load_state()
     new_rows = [row for row in rows if row["local_path"] not in imported]
     if not new_rows:
         print("Nothing new to import -- every manifest row has already been sent to Label Studio.")
         return
 
-    access_token = get_access_token(config)
-
-    project_id = ensure_project(config, config_path, access_token)
     print(f"Importing {len(new_rows)} new task(s) into project {project_id}...")
     import_tasks(config, project_id, [build_task(row) for row in new_rows], access_token)
 
