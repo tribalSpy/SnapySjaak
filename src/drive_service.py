@@ -231,7 +231,7 @@ class DriveService:
     def download_file_bytes(self, file_id: str) -> bytes:
         return (
             self._service.files()
-            .get_media(fileId=file_id)
+            .get_media(fileId=file_id, supportsAllDrives=True)
             .execute()
         )
 

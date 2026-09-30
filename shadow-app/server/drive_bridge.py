@@ -24,7 +24,7 @@ if str(REPO_ROOT) not in sys.path:
 
 load_dotenv(REPO_ROOT / ".env")
 
-from src.drive_service import DEFAULT_DRIVE_ACCOUNT, DriveService  # noqa: E402
+from src.drive_service import DEFAULT_DRIVE_ACCOUNT, DriveService, list_drive_configurations  # noqa: E402
 
 SHEETS_SCOPES = ["https://www.googleapis.com/auth/spreadsheets"]
 DRIVE_FILE_SCOPES = ["https://www.googleapis.com/auth/drive"]
@@ -301,17 +301,45 @@ def drive_download_file() -> int:
     payload = json.loads(sys.stdin.read() or "{}")
     file_id = str(payload.get("file_id") or "").strip()
     oauth = payload.get("oauth") if isinstance(payload.get("oauth"), dict) else None
+    account_name = str(payload.get("account") or DEFAULT_DRIVE_ACCOUNT).strip() or DEFAULT_DRIVE_ACCOUNT
     if not file_id:
         raise RuntimeError("Drive file ID is required")
 
-    service = _drive_service(oauth)
-    request = service.files().get_media(fileId=file_id, supportsAllDrives=True)
-    output = io.BytesIO()
-    downloader = MediaIoBaseDownload(output, request)
-    done = False
-    while not done:
-        _, done = downloader.next_chunk()
-    sys.stdout.buffer.write(output.getvalue())
+    # A caller with its own OAuth refresh token (a real end-user's Drive, not
+    # one of this app's registered service accounts) keeps using that -- the
+    # multi-account service-account system below doesn't apply to it. When no
+    # oauth is given this must still route through the same account-aware
+    # DriveService that drive_list_folder already uses (from_service_account_env),
+    # never the bare default-only credentials _drive_service() falls back to --
+    # otherwise a file found under a non-default account (e.g. "second") 403s
+    # here even though listing it worked fine.
+    if oauth:
+        service = _drive_service(oauth)
+        request = service.files().get_media(fileId=file_id, supportsAllDrives=True)
+        output = io.BytesIO()
+        downloader = MediaIoBaseDownload(output, request)
+        done = False
+        while not done:
+            _, done = downloader.next_chunk()
+        sys.stdout.buffer.write(output.getvalue())
+        return 0
+
+    drive_service = DriveService.from_service_account_env(account_name)
+    sys.stdout.buffer.write(drive_service.download_file_bytes(file_id))
+    return 0
+
+
+def drive_list_accounts() -> int:
+    # Every account this app knows about, each with its own root folder --
+    # a folder the nightly shelf-count trigger is looking for by name can
+    # live under any one of them (see sync_index.py's own
+    # list_drive_configurations() loop), never assume it's under whichever
+    # one happens to be "default".
+    configurations = list_drive_configurations()
+    sys.stdout.write(json.dumps(
+        [{"account_name": config.account_name, "root_folder_id": config.root_folder_id} for config in configurations],
+        ensure_ascii=True,
+    ))
     return 0
 
 
@@ -503,6 +531,7 @@ def main() -> int:
     subparsers.add_parser("drive-upload-cmr")
     subparsers.add_parser("drive-download-file")
     subparsers.add_parser("drive-list-folder")
+    subparsers.add_parser("drive-list-accounts")
     args = parser.parse_args()
 
     if args.command == "details":
@@ -527,6 +556,8 @@ def main() -> int:
         return drive_download_file()
     if args.command == "drive-list-folder":
         return drive_list_folder()
+    if args.command == "drive-list-accounts":
+        return drive_list_accounts()
 
     return 1
 

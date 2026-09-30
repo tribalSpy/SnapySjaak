@@ -8226,7 +8226,6 @@ async function runUkdocsCsiAuditRetry() {
 // counts.
 const SHELF_COUNT_CONFIDENCE_THRESHOLD = Number(process.env.SHELF_COUNT_CONFIDENCE_THRESHOLD || 0.6);
 const SHELF_COUNT_DEADLINE_HOUR = Number(process.env.SHELF_COUNT_DEADLINE_HOUR || 6);
-const SHELF_COUNT_DRIVE_ROOT_FOLDER_ID = String(process.env.GOOGLE_DRIVE_ROOT_FOLDER_ID || "").trim();
 const SHELF_COUNT_NIGHTLY_CHECK_INTERVAL_MS = 5 * 60 * 1000;
 
 // Fust Planning shadow -- fills in expected_average/deviation (and, for
@@ -8346,6 +8345,89 @@ function shelfCountFolderName(customerReference, shipmentDate) {
 async function runShelfCountDriveListFolder(query) {
   const output = await runPythonBridge(["drive-list-folder"], JSON.stringify(query || {}));
   return JSON.parse(output.toString("utf8"));
+}
+
+// A trolley's photo folder can live under any of this app's configured
+// Google Drive accounts (see sync_index.py's own list_drive_configurations()
+// loop, which every other Drive-wide scan in this app already has to use) --
+// confirmed real, not hypothetical: the nightly trigger used to only ever
+// check the bare "default" account's root and came back 100% missing_photos
+// for every trolley on a real run, even though the photos existed under a
+// second configured account the whole time.
+async function runShelfCountDriveListAccounts() {
+  const output = await runPythonBridge(["drive-list-accounts"], "{}");
+  const accounts = JSON.parse(output.toString("utf8"));
+  if (!Array.isArray(accounts) || !accounts.length) {
+    throw new Error("No Google Drive accounts are configured");
+  }
+  return accounts;
+}
+
+const FOLDER_MIME_TYPE = "application/vnd.google-apps.folder";
+
+// Confirmed against real Drive data: a trolley's folder is never named
+// exactly "<reference>_<YYYYMMDD>" -- it always carries a trailing run
+// suffix the RFID portal appends per pass through the scanner, e.g.
+// "4GF073_20260929_01" or (older folders) "4CM060_20260622_154217". An
+// exact-name lookup for the bare "<reference>_<YYYYMMDD>" therefore never
+// matches anything, which is why a real run came back 100% missing_photos
+// even though the photos were sitting right there. This checks the same
+// reference+date base as a prefix instead.
+function shelfCountFolderMatchesBase(folderName, base) {
+  return folderName === base || folderName.startsWith(`${base}_`);
+}
+
+// Lists every account's root once per run (not once per trolley -- the
+// previous per-trolley exact-name lookup made one Drive call per trolley per
+// account; this makes one per account total and reuses it for both the
+// per-reference prefix match below and the unmatched-folder scan).
+async function loadShelfCountDriveRootEntries(accounts) {
+  const results = await Promise.all(accounts.map(async (account) => {
+    let listing;
+    try {
+      listing = await runShelfCountDriveListFolder({ folder_id: account.root_folder_id, account: account.account_name });
+    } catch {
+      listing = { files: [] };
+    }
+    return { ...account, entries: listing.files || [] };
+  }));
+  return results;
+}
+
+// Tries every configured Drive account's root in turn, stopping at the first
+// one with at least one folder matching this reference+date base. A
+// reference can legitimately have more than one run folder the same day
+// (confirmed real: e.g. "5FF955_20260929_01" and "..._02", two separate
+// portal passes) -- since shelf_counts keeps only one row per
+// (customer_reference, nightly_run_date), every matching run's photos are
+// combined into that single day's job rather than picking just one.
+async function findShelfCountFoldersAcrossAccounts(accountsWithEntries, base) {
+  for (const account of accountsWithEntries) {
+    const matchingFolders = account.entries.filter((entry) => (
+      entry.mime_type === FOLDER_MIME_TYPE && shelfCountFolderMatchesBase(String(entry.name || "").trim(), base)
+    ));
+    if (!matchingFolders.length) {
+      continue;
+    }
+    const photoFiles = [];
+    for (const folder of matchingFolders) {
+      let listing;
+      try {
+        listing = await runShelfCountDriveListFolder({ folder_id: folder.id, account: account.account_name });
+      } catch {
+        continue;
+      }
+      for (const file of listing.files || []) {
+        if (String(file.mime_type || "").startsWith("image/")) {
+          photoFiles.push(file);
+        }
+      }
+    }
+    if (photoFiles.length) {
+      return { account: account.account_name, photoFiles };
+    }
+  }
+  return null;
 }
 
 // job.result_json is the poller's raw ollama_chat wrapper, not the model's
@@ -8474,24 +8556,22 @@ async function runShelfCountNightlyTrigger(explicitDate) {
   await upsertShelfCountNightlyRun({ run_date: runDate, status: "running", totals, issues, started_at: new Date().toISOString() });
 
   try {
-    const events = await getWarehouseActivityLog({ date: runDate, limit: 20000 });
+    const [events, driveAccountList] = await Promise.all([
+      getWarehouseActivityLog({ date: runDate, limit: 20000 }),
+      runShelfCountDriveListAccounts(),
+    ]);
+    const driveAccounts = await loadShelfCountDriveRootEntries(driveAccountList);
     const completedReferences = computeCompletedWarehouseReferencesForDate(events);
-    const expectedFolderNames = new Set();
+    const expectedFolderBases = new Set();
 
     for (const row of completedReferences) {
       totals.checked += 1;
       const folderName = shelfCountFolderName(row.customer_reference, runDate);
-      expectedFolderNames.add(folderName);
+      expectedFolderBases.add(folderName);
 
-      let listing;
-      try {
-        listing = await runShelfCountDriveListFolder({ parent_folder_id: SHELF_COUNT_DRIVE_ROOT_FOLDER_ID, child_name: folderName });
-      } catch {
-        listing = { folder_id: null, files: [] };
-      }
-      const photoFiles = (listing.files || []).filter((file) => String(file.mime_type || "").startsWith("image/"));
+      const found = await findShelfCountFoldersAcrossAccounts(driveAccounts, folderName);
 
-      if (!listing.folder_id || !photoFiles.length) {
+      if (!found) {
         totals.missing_photos += 1;
         issues.push({ type: "missing_photos", customer_reference: row.customer_reference, folder_name: folderName });
         await upsertShelfCountRow({
@@ -8504,6 +8584,7 @@ async function runShelfCountNightlyTrigger(explicitDate) {
         });
         continue;
       }
+      const { account: matchedAccount, photoFiles } = found;
 
       // Photos are fetched here (server-side, service-account credentials)
       // and embedded in the job payload -- the poller never touches Drive
@@ -8511,7 +8592,7 @@ async function runShelfCountNightlyTrigger(explicitDate) {
       // their source file rather than having the poller fetch it itself.
       const visionDocuments = [];
       for (const file of photoFiles) {
-        const bytes = await runPythonBridge(["drive-download-file"], JSON.stringify({ file_id: file.id, oauth: null }));
+        const bytes = await runPythonBridge(["drive-download-file"], JSON.stringify({ file_id: file.id, oauth: null, account: matchedAccount }));
         visionDocuments.push({ name: file.name, mime_type: file.mime_type, content_base64: bytes.toString("base64") });
       }
 
@@ -8530,6 +8611,7 @@ async function runShelfCountNightlyTrigger(explicitDate) {
         payload_json: {
           ...buildShelfCountJobPayload({ photoCount: visionDocuments.length }),
           nightly_run_date: runDate,
+          drive_account: matchedAccount,
           customer_reference: row.customer_reference,
           vision_documents: visionDocuments,
         },
@@ -8539,22 +8621,28 @@ async function runShelfCountNightlyTrigger(explicitDate) {
     // Any Drive folder for this date with no matching completed reference at
     // all -- confirmed real risk: the RFID/photo scan was missed or failed
     // but photos were still taken. Reuses the same drive-list-folder
-    // subcommand, this time enumerating the root's own children instead of
-    // resolving one by name.
+    // subcommand, this time enumerating each account's root's own children
+    // instead of resolving one by name -- checked across every configured
+    // account, reusing the same root listings already fetched above rather
+    // than querying again. A folder's date can be a middle segment now (the
+    // run-suffix comes after it, e.g. "..._20260929_01"), not just a
+    // trailing one, so this checks for "_<date>" as a whole segment anywhere
+    // in the name, not only at the very end.
     const compactDate = String(runDate || "").replace(/-/g, "");
-    let rootListing;
-    try {
-      rootListing = await runShelfCountDriveListFolder({ folder_id: SHELF_COUNT_DRIVE_ROOT_FOLDER_ID });
-    } catch {
-      rootListing = { files: [] };
-    }
-    for (const entry of rootListing.files || []) {
-      const name = String(entry.name || "").trim();
-      if (!name.endsWith(`_${compactDate}`) || expectedFolderNames.has(name)) {
-        continue;
+    for (const account of driveAccounts) {
+      for (const entry of account.entries) {
+        const name = String(entry.name || "").trim();
+        const hasDateSegment = name.endsWith(`_${compactDate}`) || name.includes(`_${compactDate}_`);
+        if (!hasDateSegment) {
+          continue;
+        }
+        const isExpected = [...expectedFolderBases].some((base) => shelfCountFolderMatchesBase(name, base));
+        if (isExpected) {
+          continue;
+        }
+        totals.unmatched_folder += 1;
+        issues.push({ type: "unmatched_folder", folder_name: name, drive_account: account.account_name });
       }
-      totals.unmatched_folder += 1;
-      issues.push({ type: "unmatched_folder", folder_name: name });
     }
 
     await upsertShelfCountNightlyRun({ run_date: runDate, status: "done", totals, issues, completed_at: new Date().toISOString() });
