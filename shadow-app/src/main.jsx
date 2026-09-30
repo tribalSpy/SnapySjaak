@@ -36,6 +36,7 @@ const PERMISSIONS = {
   WAREHOUSE_VIEW: "warehouse:view",
   ERIC_DOCS_VIEW: "eric_docs:view",
   INKOOP_VIEW: "inkoop:view",
+  SHELF_COUNT_VIEW: "shelf_count:view",
 };
 const ALL_PERMISSIONS = Object.values(PERMISSIONS);
 const DEFAULT_PERMISSIONS_BY_ROLE = {
