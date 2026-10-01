@@ -14391,6 +14391,10 @@ function InkoopControlePage() {
   const [customerCount, setCustomerCount] = useState(0);
   const [manualLinks, setManualLinks] = useState([]);
   const [manualLinkDrafts, setManualLinkDrafts] = useState({});
+  const [facturationGroups, setFacturationGroups] = useState([]);
+  const [facturationGroupName, setFacturationGroupName] = useState("");
+  const [facturationGroupCodes, setFacturationGroupCodes] = useState("");
+  const [savingFacturationGroup, setSavingFacturationGroup] = useState(false);
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
 
@@ -14406,7 +14410,47 @@ function InkoopControlePage() {
       setSupplierFhCount(payload.supplier_fh_count || 0);
       setCustomerCount(payload.customer_count || 0);
       setManualLinks(payload.manual_supplier_links || []);
+      setFacturationGroups(payload.facturation_groups || []);
     });
+  }
+
+  async function saveFacturationGroup() {
+    const groupName = facturationGroupName.trim();
+    if (!groupName || !facturationGroupCodes.trim()) {
+      setError("Enter a group name and at least one code.");
+      return;
+    }
+    setSavingFacturationGroup(true);
+    setError("");
+    try {
+      const payload = await apiJson("/api/inkoop/facturation-groups", {
+        method: "POST",
+        body: JSON.stringify({ group_name: groupName, codes: facturationGroupCodes }),
+      });
+      setFacturationGroups(payload.facturation_groups || []);
+      setFacturationGroupName("");
+      setFacturationGroupCodes("");
+      setMessage(`Saved facturation group "${groupName}". Refreshing results...`);
+      await loadInkoopData();
+    } catch (saveError) {
+      setError(saveError.message);
+    } finally {
+      setSavingFacturationGroup(false);
+    }
+  }
+
+  async function removeFacturationGroup(groupName) {
+    setError("");
+    try {
+      const payload = await apiJson("/api/inkoop/facturation-groups", {
+        method: "DELETE",
+        body: JSON.stringify({ group_name: groupName }),
+      });
+      setFacturationGroups(payload.facturation_groups || []);
+      await loadInkoopData();
+    } catch (removeError) {
+      setError(removeError.message);
+    }
   }
 
   function loadCompanies() {
@@ -14588,6 +14632,7 @@ function InkoopControlePage() {
       {activeTab === "destinations" && <InkoopDestinationsTab />}
 
       {activeTab === "settings" && (
+      <>
       <div className="data-table-card">
         <div className="section-header"><h2>Master data</h2></div>
         <div className="notice">
@@ -14630,6 +14675,46 @@ function InkoopControlePage() {
           </>
         )}
       </div>
+
+      <div className="data-table-card">
+        <div className="section-header"><h2>Facturation groups</h2></div>
+        <div className="notice">
+          For a facturation umbrella that bills under one invoice identity for many member locations (e.g. Zentoo: one invoice, 20+ internal codes each with its own GLN/FH number) -- without this, grower+day reconciliation scatters the ERP side across every member's own name while the invoice lands under just one of them, so it can never balance even when the money is all there. Define the group once here with every member code, and the Calendar/Follow-up/Financial Dashboard aggregate checks will treat them as a single combined party.
+        </div>
+        <div className="form-grid">
+          <label>
+            <span>Group name</span>
+            <input type="text" value={facturationGroupName} onChange={(event) => setFacturationGroupName(event.target.value)} placeholder="e.g. Zentoo" />
+          </label>
+          <label>
+            <span>Member codes</span>
+            <input type="text" value={facturationGroupCodes} onChange={(event) => setFacturationGroupCodes(event.target.value)} placeholder="comma/space separated, e.g. ZEN01, ZEN02, ZEN03" />
+          </label>
+        </div>
+        <div className="row-actions spread-actions">
+          <button type="button" onClick={saveFacturationGroup} disabled={savingFacturationGroup}>
+            {savingFacturationGroup ? "Saving..." : "Save group"}
+          </button>
+        </div>
+        {!!facturationGroups.length && (
+          <div className="table-wrap">
+            <table className="data-table">
+              <thead><tr><th>Group</th><th>Member codes</th><th>Added by</th><th></th></tr></thead>
+              <tbody>
+                {facturationGroups.map((group) => (
+                  <tr key={group.group_name}>
+                    <td>{group.group_name}</td>
+                    <td>{(group.codes || []).join(", ")}</td>
+                    <td>{group.added_by}</td>
+                    <td><button type="button" onClick={() => removeFacturationGroup(group.group_name)}>Remove</button></td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
+      </>
       )}
 
       {activeTab === "compare" && (
@@ -15004,10 +15089,21 @@ function InkoopDashboardTab({ company }) {
           {todaySummary && (
             <div className="data-table-card">
               <div className="section-header"><h2>Today ({todaySummary.date})</h2></div>
+              <div className="notice">
+                Whole-day totals -- no grower/product matching involved, just "did the money invoiced add up to what the ERP recorded" for the day as a whole. A facturation umbrella (one invoice identity billing many ERP-side locations, e.g. Zentoo) can still show a gap at the grower level even when these two totals line up.
+              </div>
               <div className="inkoop-summary-cards">
                 <div className="inkoop-summary-card">
                   <div className="inkoop-summary-value">{formatInkoopEuro(todaySummary.purchase_value)}</div>
-                  <div className="inkoop-summary-label">Spend (per invoice)</div>
+                  <div className="inkoop-summary-label">Invoiced (FH invoice total)</div>
+                </div>
+                <div className="inkoop-summary-card">
+                  <div className="inkoop-summary-value">{formatInkoopEuro(todaySummary.erp_value)}</div>
+                  <div className="inkoop-summary-label">Recorded in ERP</div>
+                </div>
+                <div className="inkoop-summary-card">
+                  <div className="inkoop-summary-value">{formatInkoopEuro(todaySummary.purchase_value - todaySummary.erp_value)}</div>
+                  <div className="inkoop-summary-label">Difference</div>
                 </div>
                 <div className="inkoop-summary-card">
                   <div className="inkoop-summary-value">{formatInkoopEuro(todaySummary.gap_value)}</div>
@@ -15023,14 +15119,19 @@ function InkoopDashboardTab({ company }) {
 
           <div className="data-table-card">
             <div className="section-header"><h2>Day report</h2></div>
+            <div className="notice">
+              "Invoiced" vs "Recorded in ERP" are plain day-wide totals, matched by date only -- not by grower or product. Use this first to see whether the day balanced financially at all before drilling into Compare &amp; Reconcile or Follow-up for the specific lines.
+            </div>
             <div className="table-wrap">
               <table className="data-table">
-                <thead><tr><th>Date</th><th>Spend (per invoice)</th><th>Mismatches</th><th>Mismatch value</th><th>Gaps</th><th>Gap value</th><th>Emballage</th><th>Products</th></tr></thead>
+                <thead><tr><th>Date</th><th>Invoiced</th><th>Recorded in ERP</th><th>Difference</th><th>Mismatches</th><th>Mismatch value</th><th>Gaps</th><th>Gap value</th><th>Emballage</th><th>Products</th></tr></thead>
                 <tbody>
                   {dayReport.map((day) => (
                     <tr key={day.date}>
                       <td>{day.date}</td>
                       <td>{formatInkoopEuro(day.purchase_value)}</td>
+                      <td>{formatInkoopEuro(day.erp_value)}</td>
+                      <td>{formatInkoopEuro(day.purchase_value - day.erp_value)}</td>
                       <td>{day.mismatch_count}</td>
                       <td>{formatInkoopEuro(day.mismatch_value)}</td>
                       <td>{day.gap_count}</td>
@@ -15039,7 +15140,7 @@ function InkoopDashboardTab({ company }) {
                       <td>{day.product_count}</td>
                     </tr>
                   ))}
-                  {!dayReport.length && <tr><td colSpan="8">No data in this window.</td></tr>}
+                  {!dayReport.length && <tr><td colSpan="10">No data in this window.</td></tr>}
                 </tbody>
               </table>
             </div>
@@ -15049,12 +15150,14 @@ function InkoopDashboardTab({ company }) {
             <div className="section-header"><h2>Week report</h2></div>
             <div className="table-wrap">
               <table className="data-table">
-                <thead><tr><th>Week of</th><th>Spend (per invoice)</th><th>Mismatches</th><th>Mismatch value</th><th>Gaps</th><th>Gap value</th><th>Emballage</th><th>Products</th></tr></thead>
+                <thead><tr><th>Week of</th><th>Invoiced</th><th>Recorded in ERP</th><th>Difference</th><th>Mismatches</th><th>Mismatch value</th><th>Gaps</th><th>Gap value</th><th>Emballage</th><th>Products</th></tr></thead>
                 <tbody>
                   {weekReport.map((week) => (
                     <tr key={week.week_start}>
                       <td>{week.week_start}</td>
                       <td>{formatInkoopEuro(week.purchase_value)}</td>
+                      <td>{formatInkoopEuro(week.erp_value)}</td>
+                      <td>{formatInkoopEuro(week.purchase_value - week.erp_value)}</td>
                       <td>{week.mismatch_count}</td>
                       <td>{formatInkoopEuro(week.mismatch_value)}</td>
                       <td>{week.gap_count}</td>
@@ -15063,7 +15166,7 @@ function InkoopDashboardTab({ company }) {
                       <td>{week.product_count}</td>
                     </tr>
                   ))}
-                  {!weekReport.length && <tr><td colSpan="8">No data in this window.</td></tr>}
+                  {!weekReport.length && <tr><td colSpan="10">No data in this window.</td></tr>}
                 </tbody>
               </table>
             </div>

@@ -6748,7 +6748,7 @@ function matchInkoopVeilingLines(erpRows, invoices, supplierMap = {}, supplierNa
   };
 }
 
-const defaultInkoopState = { imports: [], supplier_map: {}, supplier_name_map: {}, supplier_fh_map: {}, customer_map: {}, manual_supplier_links: [] };
+const defaultInkoopState = { imports: [], supplier_map: {}, supplier_name_map: {}, supplier_fh_map: {}, customer_map: {}, manual_supplier_links: [], facturation_groups: [] };
 
 // Every compare/upload used to be matched in isolation and its full result
 // (every matched/mismatched/unmatched line) pushed onto this list forever --
@@ -6791,6 +6791,33 @@ function normalizeInkoopManualSupplierLink(link) {
     codes: normalizeInkoopManualSupplierLinkCodes(link),
     added_by: normalizeUkdocsText(link?.added_by),
     added_at: normalizeUkdocsText(link?.added_at) || new Date().toISOString(),
+  };
+}
+
+// A facturation umbrella (confirmed real: Zentoo bills under one invoice
+// identity for 20+ member locations, each with its own GLN/FH number and
+// its own internal code/Naam in master data) breaks grower+day aggregate
+// reconciliation even when line-level matching already pools the member
+// codes together via a manual link -- computeInkoopGrowerDayTotals groups
+// ERP rows by EACH code's own individual Naam, while every invoice line for
+// the umbrella resolves to just one of those Namen (whichever code happened
+// to come first), so the ERP spend is scattered across many buckets that
+// never line up with the invoice's single bucket. A facturation group fixes
+// this at the one place both sides share: buildInkoopCodeNameMap overrides
+// every member code's name with the group's name, so ERP rows and invoice
+// lines for any member code land in the SAME aggregate bucket regardless of
+// which specific code either side actually resolved to.
+function normalizeInkoopFacturationGroupCodes(group) {
+  const raw = Array.isArray(group?.codes) ? group.codes : String(group?.codes ?? "").split(/[,;\s]+/);
+  return [...new Set(raw.map((code) => normalizeUkdocsText(code).toUpperCase()).filter(Boolean))];
+}
+
+function normalizeInkoopFacturationGroup(group) {
+  return {
+    group_name: normalizeUkdocsText(group?.group_name),
+    codes: normalizeInkoopFacturationGroupCodes(group),
+    added_by: normalizeUkdocsText(group?.added_by),
+    added_at: normalizeUkdocsText(group?.added_at) || new Date().toISOString(),
   };
 }
 
@@ -6845,6 +6872,7 @@ function normalizeInkoopState(state) {
     customer_map: normalizeInkoopCustomerEntryMap(state?.customer_map),
     supplier_fh_map: normalizeInkoopSupplierEntryMap(state?.supplier_fh_map),
     manual_supplier_links: (Array.isArray(state?.manual_supplier_links) ? state.manual_supplier_links : []).map(normalizeInkoopManualSupplierLink),
+    facturation_groups: (Array.isArray(state?.facturation_groups) ? state.facturation_groups : []).map(normalizeInkoopFacturationGroup),
   };
 }
 
@@ -6985,13 +7013,35 @@ function normalizeInkoopProductName(name) {
 // key regardless of which of a grower's several internal codes (see
 // resolveInkoopSupplierCode's own comment -- Zentoo alone has 23) a
 // specific ERP row happens to carry.
-function buildInkoopCodeNameMap(supplierMap, supplierNameMap, supplierFhMap) {
+//
+// facturationGroups overrides this per-code Naam for a defined umbrella: a
+// facturation customer like Zentoo bills under ONE invoice identity for many
+// member locations, each with its own code and its own individual Naam in
+// master data -- without this override, ERP rows for 23 different member
+// codes would bucket under 23 different grower names while every invoice
+// line for the umbrella converges on just one of them, so grower+day
+// aggregate reconciliation (computeInkoopGrowerDayTotals) could never
+// reconcile even when the actual money balances. Applied last, after the
+// base per-code Naam, so a group's name always wins for its own members.
+function buildInkoopCodeNameMap(supplierMap, supplierNameMap, supplierFhMap, facturationGroups) {
   const codeToName = new Map();
   for (const entry of [...Object.values(supplierMap || {}), ...Object.values(supplierNameMap || {}), ...Object.values(supplierFhMap || {})]) {
     const code = normalizeInkoopKey(entry?.code);
     const name = normalizeInkoopSupplierName(entry?.name);
     if (code && name && !codeToName.has(code)) {
       codeToName.set(code, name);
+    }
+  }
+  for (const group of Array.isArray(facturationGroups) ? facturationGroups : []) {
+    const groupName = normalizeInkoopSupplierName(group?.group_name);
+    if (!groupName) {
+      continue;
+    }
+    for (const rawCode of group?.codes || []) {
+      const code = normalizeInkoopKey(rawCode);
+      if (code) {
+        codeToName.set(code, groupName);
+      }
     }
   }
   return codeToName;
@@ -7019,13 +7069,13 @@ function inkoopBumpAggregate(map, key, pieces, value) {
 // CHR T ALTAJ case: ~17 lots of 25-30 pieces each, re-aggregated by
 // FloraHolland into two differently-sized invoice lines) totals correctly
 // here even when no single ERP row lines up with any single invoice line.
-function computeInkoopGrowerDayTotals(erpRows, invoiceLines, supplierMap, supplierNameMap, manualLinks, supplierFhMap) {
+function computeInkoopGrowerDayTotals(erpRows, invoiceLines, supplierMap, supplierNameMap, manualLinks, supplierFhMap, facturationGroups) {
   const validSupplierCodes = new Set(
     [...Object.values(supplierMap || {}), ...Object.values(supplierNameMap || {}), ...Object.values(supplierFhMap || {})]
       .map((entry) => normalizeInkoopKey(entry?.code))
       .filter(Boolean),
   );
-  const codeToName = buildInkoopCodeNameMap(supplierMap, supplierNameMap, supplierFhMap);
+  const codeToName = buildInkoopCodeNameMap(supplierMap, supplierNameMap, supplierFhMap, facturationGroups);
 
   const erpByGrowerDay = new Map();
   const erpByGrowerDayProduct = new Map();
@@ -7083,8 +7133,8 @@ function inkoopAggregateReconciles(erpEntry, invoiceEntry) {
 // the Follow-up queue uses to suppress a line-level gap that's actually
 // just matching noise (money's all there, just split differently), even
 // when only that grower/product -- not the whole day -- reconciles.
-function computeInkoopAggregateMismatches(erpRows, invoiceLines, supplierMap, supplierNameMap, manualLinks, supplierFhMap) {
-  const totals = computeInkoopGrowerDayTotals(erpRows, invoiceLines, supplierMap, supplierNameMap, manualLinks, supplierFhMap);
+function computeInkoopAggregateMismatches(erpRows, invoiceLines, supplierMap, supplierNameMap, manualLinks, supplierFhMap, facturationGroups) {
+  const totals = computeInkoopGrowerDayTotals(erpRows, invoiceLines, supplierMap, supplierNameMap, manualLinks, supplierFhMap, facturationGroups);
   const growerDayKeys = new Set([...totals.erpByGrowerDay.keys(), ...totals.invoiceByGrowerDay.keys()]);
   const reconciledGrowerDays = new Set();
   const reconciledProducts = new Set();
@@ -7172,14 +7222,20 @@ async function buildInkoopAggregateContext(state, range) {
   ]);
   const aggregateResult = computeInkoopAggregateMismatches(
     erpRows, invoiceLines,
-    state.supplier_map, state.supplier_name_map, state.manual_supplier_links, state.supplier_fh_map,
+    state.supplier_map, state.supplier_name_map, state.manual_supplier_links, state.supplier_fh_map, state.facturation_groups,
   );
   const validSupplierCodes = new Set(
     [...Object.values(state.supplier_map || {}), ...Object.values(state.supplier_name_map || {}), ...Object.values(state.supplier_fh_map || {})]
       .map((entry) => normalizeInkoopKey(entry?.code))
       .filter(Boolean),
   );
-  const codeToName = buildInkoopCodeNameMap(state.supplier_map, state.supplier_name_map, state.supplier_fh_map);
+  // Must apply the same facturation-group overrides computeInkoopAggregateMismatches
+  // used internally to build reconciledGrowerDays/reconciledProducts above --
+  // otherwise the gap-suppression check below (inkoopGapIsExplainedByAggregate,
+  // via inkoopGrowerNameForErpRow/inkoopGrowerNameForInvoiceLine) would resolve
+  // a different, ungrouped name for the same code and never find the group's
+  // own reconciled entry.
+  const codeToName = buildInkoopCodeNameMap(state.supplier_map, state.supplier_name_map, state.supplier_fh_map, state.facturation_groups);
   return {
     aggregateResult,
     codeToName,
@@ -7484,6 +7540,7 @@ function inkoopEnsureDateBucket(buckets, dateKey) {
       date: dateKey,
       purchase_value: 0,
       invoice_value: 0,
+      erp_value: 0,
       mismatch_count: 0,
       mismatch_value: 0,
       gap_count: 0,
@@ -7509,6 +7566,16 @@ function inkoopEnsureDateBucket(buckets, dateKey) {
 // only_in_invoice at all -- when given, a gap whose grower+day (or grower+
 // product) total already reconciles still counts as real spend (the money
 // was genuinely paid) but not as a gap, exactly like the Follow-up queue.
+//
+// erp_value is tracked independently of match/gap status -- the plain sum
+// of every ERP row's own t_price that day, with zero identity resolution
+// involved. Confirmed need: once a purchase chain has several distinct
+// parties (a facturation umbrella like Zentoo billing 20+ member locations
+// under one invoice identity), per-grower matching can show gaps on both
+// sides even when the real money balances -- comparing purchase_value
+// (total actually invoiced) against erp_value (total actually recorded in
+// the ERP) for the whole day answers "did the day balance financially" with
+// no grower/product-level matching required at all.
 function bucketInkoopResultsByDate(matched, aggregateContext = null) {
   const buckets = new Map();
 
@@ -7517,6 +7584,7 @@ function bucketInkoopResultsByDate(matched, aggregateContext = null) {
     if (!bucket) continue;
     bucket.purchase_value += inkoopInvoiceLineTotal(row);
     bucket.invoice_value += inkoopInvoiceLineTotal(row);
+    bucket.erp_value += inkoopErpRowTotal(row?.erp_row);
     bucket.product_count += 1;
   }
   for (const row of matched?.matched_mismatch || []) {
@@ -7524,6 +7592,7 @@ function bucketInkoopResultsByDate(matched, aggregateContext = null) {
     if (!bucket) continue;
     bucket.purchase_value += inkoopInvoiceLineTotal(row);
     bucket.invoice_value += inkoopInvoiceLineTotal(row);
+    bucket.erp_value += inkoopErpRowTotal(row?.erp_row);
     bucket.product_count += 1;
     bucket.mismatch_count += 1;
     bucket.mismatch_value += inkoopMismatchValue(row);
@@ -7532,13 +7601,14 @@ function bucketInkoopResultsByDate(matched, aggregateContext = null) {
     const bucket = inkoopEnsureDateBucket(buckets, inkoopDateKeyFromErpAnchor(row));
     if (!bucket) continue;
     bucket.product_count += 1;
+    const value = inkoopErpRowTotal(row);
+    bucket.erp_value += value;
     if (aggregateContext) {
       const growerName = inkoopGrowerNameForErpRow(row, aggregateContext.codeToName, aggregateContext.validSupplierCodes);
       if (inkoopGapIsExplainedByAggregate(row, growerName, aggregateContext.aggregateResult)) {
         continue;
       }
     }
-    const value = inkoopErpRowTotal(row);
     bucket.gap_count += 1;
     bucket.gap_value += value;
   }
@@ -7598,6 +7668,7 @@ function inkoopBucketDayReportsByWeek(dayBuckets) {
         week_start: weekStart,
         purchase_value: 0,
         invoice_value: 0,
+        erp_value: 0,
         mismatch_count: 0,
         mismatch_value: 0,
         gap_count: 0,
@@ -7609,6 +7680,7 @@ function inkoopBucketDayReportsByWeek(dayBuckets) {
     const week = weeks.get(weekStart);
     week.purchase_value += day.purchase_value;
     week.invoice_value += day.invoice_value;
+    week.erp_value += day.erp_value;
     week.mismatch_count += day.mismatch_count;
     week.mismatch_value += day.mismatch_value;
     week.gap_count += day.gap_count;
@@ -7643,6 +7715,7 @@ function buildInkoopTodaySummary(matched, todayIso, aggregateContext = null) {
     date: todayIso,
     invoice_value: bucket?.invoice_value || 0,
     purchase_value: bucket?.purchase_value || 0,
+    erp_value: bucket?.erp_value || 0,
     gap_value: bucket?.gap_value || 0,
     product_count: bucket?.product_count || 0,
   };
@@ -18853,6 +18926,7 @@ async function handleApi(req, res, url) {
       supplier_fh_count: Object.keys(state.supplier_fh_map).length,
       customer_count: Object.keys(state.customer_map).length,
       manual_supplier_links: state.manual_supplier_links,
+      facturation_groups: state.facturation_groups,
     });
     return;
   }
@@ -19213,6 +19287,46 @@ async function handleApi(req, res, url) {
     ];
     await writeInkoopState(state);
     sendJson(res, 200, { manual_supplier_links: state.manual_supplier_links });
+    return;
+  }
+
+  // Facturation groups (see buildInkoopCodeNameMap's own comment): a group
+  // name plus every internal code billed together under one invoice identity
+  // (e.g. "Zentoo" + its ~23 member codes) -- lets grower+day aggregate
+  // reconciliation treat them as one combined party instead of scattering
+  // the ERP side across many never-reconciling per-code buckets.
+  if (url.pathname === "/api/inkoop/facturation-groups" && req.method === "POST") {
+    if (!requirePermission(res, requestUser, PERMISSIONS.INKOOP_VIEW)) {
+      return;
+    }
+    const body = await readRequestJson(req);
+    const codes = normalizeInkoopFacturationGroupCodes(body);
+    const groupName = normalizeUkdocsText(body?.group_name);
+    if (!groupName || !codes.length) {
+      sendJson(res, 400, { error: "A group name and at least one code are required" });
+      return;
+    }
+    const state = await readInkoopState();
+    const group = normalizeInkoopFacturationGroup({ ...body, group_name: groupName, codes, added_by: requestUser.username });
+    state.facturation_groups = [
+      group,
+      ...state.facturation_groups.filter((item) => item.group_name.toLowerCase() !== group.group_name.toLowerCase()),
+    ];
+    await writeInkoopState(state);
+    sendJson(res, 200, { facturation_groups: state.facturation_groups });
+    return;
+  }
+
+  if (url.pathname === "/api/inkoop/facturation-groups" && req.method === "DELETE") {
+    if (!requirePermission(res, requestUser, PERMISSIONS.INKOOP_VIEW)) {
+      return;
+    }
+    const body = await readRequestJson(req);
+    const groupName = normalizeUkdocsText(body?.group_name).toLowerCase();
+    const state = await readInkoopState();
+    state.facturation_groups = state.facturation_groups.filter((item) => item.group_name.toLowerCase() !== groupName);
+    await writeInkoopState(state);
+    sendJson(res, 200, { facturation_groups: state.facturation_groups });
     return;
   }
 
