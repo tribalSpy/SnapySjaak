@@ -4497,20 +4497,30 @@ function createFustApiReferenceActionId(matchKey, date) {
   return `fust-api-${digest}`;
 }
 
-// Turns matched fust_reference_actions rows for one day into real OUT
-// actions -- one per matched customer, codes summed together (a carrier can
-// cover several codes for the same customer). Unlike the Excel import, these
-// are created pre-confirmed (no CMR/Fustbon workflow, no confirmation
-// reminder emails) since the source data is itself already a confirmed/
-// planned figure from the carrier's own system, not something a human needs
-// to review line by line first.
-async function createOutActionsFromFustReferenceActions(date) {
-  const rows = await getFustReferenceActions({ from: date, to: date });
-  const matchedRows = rows.filter((row) => row.matched_by);
-  const unmatchedCount = rows.length - matchedRows.length;
+// A carrier name resolving to a known customer ("Matched") only means the
+// *identity* lookup worked -- it says nothing about whether the day's real
+// figures have actually landed yet. The Fust API pull writes DC-Planning
+// (the forecast, known well ahead of time) separately from DC-Actual/DCS/
+// DCO/CC/VK/PAL (the real confirmed figures, synced in later as the day's
+// activity is recorded) -- confirmed real on 2026-10-01's go-live day
+// itself: several "Matched" rows had DC-Planning=1 with every other field
+// still blank. Importing those as confirmed OUT actions would record the
+// forecast as if it were the real outcome, which is exactly backwards.
+// "Ready" requires both: a resolved carrier AND dc_actual actually present.
+function fustReferenceActionIsReady(row) {
+  return Boolean(row?.matched_by) && row?.dc_actual !== null && row?.dc_actual !== undefined;
+}
 
+// Shared by the real import (createOutActionsFromFustReferenceActions) and
+// the preview summary (summarizeFustReferenceActionsByCarrier) -- one row
+// per matched customer/carrier, codes summed together (a carrier can cover
+// several codes for the same customer), built only from rows that are
+// actually ready (see fustReferenceActionIsReady) so a preview and the
+// import it drives can never disagree about which rows counted.
+function groupFustReferenceActionsByCarrier(rows) {
+  const readyRows = (rows || []).filter(fustReferenceActionIsReady);
   const grouped = new Map();
-  for (const row of matchedRows) {
+  for (const row of readyRows) {
     const matchKey = [
       String(row.country || "").trim().toUpperCase(),
       String(row.matched_customer_code || "").trim() || String(row.matched_customer_name || "").trim().toLowerCase(),
@@ -4535,10 +4545,91 @@ async function createOutActionsFromFustReferenceActions(date) {
     group.metrics.vk += Number(row.vk || 0);
     group.codes.push(row.code);
   }
+  return grouped;
+}
+
+// Preview for the per-carrier summary UI -- every matched carrier for the
+// date, whether or not its data is ready yet, so staff can see what's still
+// pending (e.g. "Breewel: 3 codes, DC-Planning only, not ready") alongside
+// what's actually importable right now. not_ready_codes lists codes that
+// matched a carrier but have no dc_actual yet, kept separate from codes
+// that never matched any carrier at all.
+async function summarizeFustReferenceActionsByCarrier(date) {
+  const rows = await getFustReferenceActions({ from: date, to: date });
+  const readyGroups = groupFustReferenceActionsByCarrier(rows);
+
+  const pendingByKey = new Map();
+  const unmatchedCodes = [];
+  for (const row of rows) {
+    if (!row.matched_by) {
+      unmatchedCodes.push(row.code);
+      continue;
+    }
+    if (fustReferenceActionIsReady(row)) {
+      continue;
+    }
+    const matchKey = [
+      String(row.country || "").trim().toUpperCase(),
+      String(row.matched_customer_code || "").trim() || String(row.matched_customer_name || "").trim().toLowerCase(),
+    ].join("|");
+    if (!pendingByKey.has(matchKey)) {
+      pendingByKey.set(matchKey, {
+        match_key: matchKey,
+        country: row.country,
+        customer_name: row.matched_customer_name,
+        connect_name: row.matched_connect_name,
+        customer_code: row.matched_customer_code,
+        codes: [],
+      });
+    }
+    pendingByKey.get(matchKey).codes.push(row.code);
+  }
+
+  const allKeys = new Set([...readyGroups.keys(), ...pendingByKey.keys()]);
+  const carriers = [...allKeys].map((matchKey) => {
+    const ready = readyGroups.get(matchKey) || null;
+    const pending = pendingByKey.get(matchKey) || null;
+    const base = ready || pending;
+    return {
+      match_key: matchKey,
+      country: base.country,
+      customer_name: base.customer_name,
+      connect_name: base.connect_name,
+      customer_code: base.customer_code,
+      ready_codes: ready?.codes || [],
+      pending_codes: pending?.codes || [],
+      metrics: ready?.metrics || emptyFustMetrics(),
+      is_ready: Boolean(ready),
+    };
+  }).sort((left, right) => String(left.customer_name || "").localeCompare(String(right.customer_name || "")));
+
+  return { date, carriers, unmatched_codes: unmatchedCodes };
+}
+
+// Turns matched fust_reference_actions rows for one day into real OUT
+// actions -- one per matched customer, codes summed together (a carrier can
+// cover several codes for the same customer). Unlike the Excel import, these
+// are created pre-confirmed (no CMR/Fustbon workflow, no confirmation
+// reminder emails) since the source data is itself already a confirmed/
+// real figure from the carrier's own system by the time it's ready (see
+// fustReferenceActionIsReady), not something a human needs to review line
+// by line first. selectedMatchKeys (optional) restricts this to just the
+// carrier groups staff actually picked in the summary UI, instead of every
+// ready group for the date -- omit it to import everything ready, same as
+// before this selection UI existed.
+async function createOutActionsFromFustReferenceActions(date, selectedMatchKeys) {
+  const rows = await getFustReferenceActions({ from: date, to: date });
+  const notReadyCount = rows.filter((row) => !fustReferenceActionIsReady(row)).length;
+
+  const allGrouped = groupFustReferenceActionsByCarrier(rows);
+  const selectedKeySet = Array.isArray(selectedMatchKeys) ? new Set(selectedMatchKeys) : null;
+  const grouped = selectedKeySet
+    ? new Map([...allGrouped].filter(([matchKey]) => selectedKeySet.has(matchKey)))
+    : allGrouped;
 
   const settings = await readFustSettings();
   let localActions = await readFustActions();
-  const summary = { checked: matchedRows.length, unmatched: unmatchedCount, created: 0, updated: 0, failed: 0 };
+  const summary = { checked: rows.length - notReadyCount, unmatched: notReadyCount, created: 0, updated: 0, failed: 0 };
   const results = [];
 
   for (const group of grouped.values()) {
@@ -18871,10 +18962,39 @@ async function handleApi(req, res, url) {
     return;
   }
 
-  // Manual conversion of one day's matched reference-import rows into real
+  // Preview for the per-carrier selective-import UI: every carrier matched
+  // for the date, split into ready-to-import (dc_actual has landed) and
+  // still-pending (carrier resolved but only DC-Planning so far) -- lets
+  // staff see and pick specific carriers before anything is actually
+  // created, instead of the all-or-nothing create-out-actions below.
+  if (url.pathname === "/api/fust/reference-import/summary" && req.method === "GET") {
+    if (!requireAnyPermission(res, requestUser, [PERMISSIONS.FUST_OVERVIEW, PERMISSIONS.FUST_MANAGE])) {
+      return;
+    }
+    if (!isDatabaseEnabled()) {
+      sendJson(res, 200, { carriers: [], unmatched_codes: [], database_enabled: false });
+      return;
+    }
+    const date = String(url.searchParams.get("date") || "").slice(0, 10);
+    if (!date) {
+      sendJson(res, 400, { error: "date (YYYY-MM-DD) is required" });
+      return;
+    }
+    try {
+      const payload = await summarizeFustReferenceActionsByCarrier(date);
+      sendJson(res, 200, { ...payload, database_enabled: true });
+    } catch (error) {
+      sendJson(res, 400, { error: error instanceof Error ? error.message : String(error) });
+    }
+    return;
+  }
+
+  // Manual conversion of one day's ready reference-import rows into real
   // OUT actions (one per matched customer, codes summed) -- see
   // createOutActionsFromFustReferenceActions for why these are created
   // pre-confirmed rather than going through the normal confirmation flow.
+  // match_keys (optional) restricts this to the specific carrier groups
+  // staff picked in the summary UI -- omit it to import every ready group.
   if (url.pathname === "/api/fust/reference-import/create-out-actions" && req.method === "POST") {
     if (!requirePermission(res, requestUser, PERMISSIONS.FUST_MANAGE)) {
       return;
@@ -18889,8 +19009,11 @@ async function handleApi(req, res, url) {
       sendJson(res, 400, { error: "date (YYYY-MM-DD) is required" });
       return;
     }
+    const matchKeys = Array.isArray(body?.match_keys)
+      ? body.match_keys.map((key) => String(key || "").trim()).filter(Boolean)
+      : null;
     try {
-      const payload = await createOutActionsFromFustReferenceActions(date);
+      const payload = await createOutActionsFromFustReferenceActions(date, matchKeys);
       sendJson(res, 200, payload);
     } catch (error) {
       sendJson(res, 400, { error: error instanceof Error ? error.message : String(error) });

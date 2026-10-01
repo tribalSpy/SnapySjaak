@@ -13186,6 +13186,25 @@ function daysAgoIso(days) {
 // Viewer for fust_reference_actions -- the daily Code-level DC/DCS/DCO pull
 // from the svdvyver.fr Fust API had a save path but no way to see what it
 // saved until this was added (GET /api/fust/reference-actions).
+// A carrier name resolving to a known customer only means the identity
+// lookup worked -- it says nothing about whether the day's real DC-Actual/
+// DCS/DCO/etc. figures have landed yet (DC-Planning, the forecast, is
+// written well ahead of the real ones). Mirrors the server's own
+// fustReferenceActionIsReady exactly, so the per-row badge and the
+// per-carrier summary's ready/pending split never disagree.
+function fustReferenceRowStatus(row) {
+  if (!row.matched_by) {
+    return "unmatched";
+  }
+  if (row.dc_actual === null || row.dc_actual === undefined) {
+    return "pending";
+  }
+  return "ready";
+}
+
+const FUST_REFERENCE_STATUS_LABEL = { unmatched: "Unmatched", pending: "Pending data", ready: "Ready" };
+const FUST_REFERENCE_STATUS_TONE = { unmatched: "danger", pending: "info", ready: "success" };
+
 function FustReferenceActions({ canManage }) {
   const [fromDate, setFromDate] = useState(() => daysAgoIso(6));
   const [toDate, setToDate] = useState(() => todayIso());
@@ -13198,6 +13217,42 @@ function FustReferenceActions({ canManage }) {
   const [error, setError] = useState("");
   const [createDate, setCreateDate] = useState(() => todayIso());
   const [creatingActions, setCreatingActions] = useState(false);
+  const [carrierSummary, setCarrierSummary] = useState([]);
+  const [unmatchedCodes, setUnmatchedCodes] = useState([]);
+  const [summaryLoading, setSummaryLoading] = useState(false);
+  const [selectedKeys, setSelectedKeys] = useState(() => new Set());
+
+  function loadSummary() {
+    setSummaryLoading(true);
+    apiJson(`/api/fust/reference-import/summary?date=${createDate}`)
+      .then((payload) => {
+        setCarrierSummary(payload.carriers || []);
+        setUnmatchedCodes(payload.unmatched_codes || []);
+        // Pre-select every carrier that's actually ready -- staff can
+        // uncheck specific ones, but the common case (import everything
+        // that's ready today) shouldn't require clicking each row.
+        setSelectedKeys(new Set((payload.carriers || []).filter((c) => c.is_ready).map((c) => c.match_key)));
+      })
+      .catch((loadError) => setError(loadError.message))
+      .finally(() => setSummaryLoading(false));
+  }
+
+  useEffect(() => {
+    loadSummary();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [createDate]);
+
+  function toggleCarrier(matchKey) {
+    setSelectedKeys((current) => {
+      const next = new Set(current);
+      if (next.has(matchKey)) {
+        next.delete(matchKey);
+      } else {
+        next.add(matchKey);
+      }
+      return next;
+    });
+  }
 
   useEffect(() => {
     let cancelled = false;
@@ -13247,17 +13302,22 @@ function FustReferenceActions({ canManage }) {
   }
 
   async function createOutActions() {
+    if (!selectedKeys.size) {
+      setError("Select at least one ready carrier to import.");
+      return;
+    }
     setCreatingActions(true);
     setMessage("");
     setError("");
     try {
       const payload = await apiJson("/api/fust/reference-import/create-out-actions", {
         method: "POST",
-        body: JSON.stringify({ date: createDate }),
+        body: JSON.stringify({ date: createDate, match_keys: [...selectedKeys] }),
       });
       const { summary } = payload;
-      setMessage(`OUT actions for ${createDate}: created ${summary.created}, updated ${summary.updated}, failed ${summary.failed} (${summary.unmatched} unmatched code row(s) skipped).`);
+      setMessage(`OUT actions for ${createDate}: created ${summary.created}, updated ${summary.updated}, failed ${summary.failed} (${summary.unmatched} not-yet-ready code row(s) skipped).`);
       setRefreshKey((current) => current + 1);
+      loadSummary();
     } catch (createError) {
       setError(createError.message);
     } finally {
@@ -13286,12 +13346,81 @@ function FustReferenceActions({ canManage }) {
       </div>
 
       {canManage && (
-        <div className="overview-filters">
-          <label>Create OUT actions for <input type="date" value={createDate} onChange={(event) => setCreateDate(event.target.value)} /></label>
-          <button type="button" onClick={createOutActions} disabled={creatingActions}>
-            {creatingActions ? "Creating..." : "Create OUT actions"}
-          </button>
-          <span>One action per matched customer, codes summed, created pre-confirmed (no reminder emails).</span>
+        <div className="data-table-card">
+          <div className="section-header"><h3>Carriers ready to import</h3></div>
+          <div className="notice">
+            One row per carrier/customer for the chosen date. A carrier only shows as "Ready" once its real DC-Actual figures have landed -- DC-Planning (the forecast) alone doesn't count, so an early-day row with only DC-Planning filled stays "Pending" here even though its carrier name already resolved. Pick which ready carriers to import; codes for the same carrier are summed into one action.
+          </div>
+          <div className="overview-filters">
+            <label>Date <input type="date" value={createDate} onChange={(event) => setCreateDate(event.target.value)} /></label>
+            <button type="button" onClick={loadSummary} disabled={summaryLoading}>
+              {summaryLoading ? "Loading..." : "Refresh summary"}
+            </button>
+            <button
+              type="button"
+              onClick={createOutActions}
+              disabled={creatingActions || !selectedKeys.size}
+            >
+              {creatingActions ? "Importing..." : `Import selected (${selectedKeys.size})`}
+            </button>
+          </div>
+          <div className="table-wrap">
+            <table className="data-table">
+              <thead>
+                <tr>
+                  <th></th>
+                  <th>Country</th>
+                  <th>Carrier / customer</th>
+                  <th>Ready codes</th>
+                  <th>Pending codes</th>
+                  <th>DC</th>
+                  <th>DCS</th>
+                  <th>DCO</th>
+                  <th>CC</th>
+                  <th>VK</th>
+                  <th>PAL</th>
+                  <th>Status</th>
+                </tr>
+              </thead>
+              <tbody>
+                {carrierSummary.map((carrier) => (
+                  <tr key={carrier.match_key}>
+                    <td>
+                      <input
+                        type="checkbox"
+                        checked={selectedKeys.has(carrier.match_key)}
+                        disabled={!carrier.is_ready}
+                        onChange={() => toggleCarrier(carrier.match_key)}
+                      />
+                    </td>
+                    <td>{carrier.country}</td>
+                    <td>{carrier.customer_name || "-"}</td>
+                    <td>{carrier.ready_codes.join(", ") || "-"}</td>
+                    <td>{carrier.pending_codes.join(", ") || "-"}</td>
+                    <td>{carrier.metrics.dc}</td>
+                    <td>{carrier.metrics.dcs}</td>
+                    <td>{carrier.metrics.dco}</td>
+                    <td>{carrier.metrics.cctag}</td>
+                    <td>{carrier.metrics.vk}</td>
+                    <td>{carrier.metrics.pal}</td>
+                    <td>
+                      <span className={`ukdocs-status-badge ${carrier.is_ready ? "success" : "info"}`}>
+                        {carrier.is_ready ? "Ready" : "Pending data"}
+                      </span>
+                    </td>
+                  </tr>
+                ))}
+                {!carrierSummary.length && !summaryLoading && (
+                  <tr><td colSpan="12">No matched carriers for this date.</td></tr>
+                )}
+              </tbody>
+            </table>
+          </div>
+          {!!unmatchedCodes.length && (
+            <div className="notice">
+              {unmatchedCodes.length} code(s) with no carrier match at all, not shown above: {unmatchedCodes.join(", ")}.
+            </div>
+          )}
         </div>
       )}
 
@@ -13337,8 +13466,8 @@ function FustReferenceActions({ canManage }) {
                 <td>{row.pal ?? "-"}</td>
                 <td>{row.hours || "-"}</td>
                 <td>
-                  <span className={`ukdocs-status-badge ${row.matched_by ? "success" : "danger"}`}>
-                    {row.matched_by ? "Matched" : "Unmatched"}
+                  <span className={`ukdocs-status-badge ${FUST_REFERENCE_STATUS_TONE[fustReferenceRowStatus(row)]}`}>
+                    {FUST_REFERENCE_STATUS_LABEL[fustReferenceRowStatus(row)]}
                   </span>
                 </td>
               </tr>
@@ -13537,8 +13666,8 @@ function FustOverviewConnect() {
                 <td>{row.vk ?? "-"}</td>
                 <td>{row.pal ?? "-"}</td>
                 <td>
-                  <span className={`ukdocs-status-badge ${row.matched_by ? "success" : "danger"}`}>
-                    {row.matched_by ? "Matched" : "Unmatched"}
+                  <span className={`ukdocs-status-badge ${FUST_REFERENCE_STATUS_TONE[fustReferenceRowStatus(row)]}`}>
+                    {FUST_REFERENCE_STATUS_LABEL[fustReferenceRowStatus(row)]}
                   </span>
                 </td>
               </tr>
