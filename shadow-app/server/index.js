@@ -19090,17 +19090,33 @@ async function handleApi(req, res, url) {
     }
     try {
       const state = await readInkoopState();
-      const rawResult = await computeInkoopLiveMatch(state, {
-        from: addDaysToIsoDate(date, -14),
-        to: addDaysToIsoDate(date, 14),
-      });
+      const range = { from: addDaysToIsoDate(date, -14), to: addDaysToIsoDate(date, 14) };
+      const [rawResult, aggregateContext] = await Promise.all([
+        computeInkoopLiveMatch(state, range),
+        buildInkoopAggregateContext(state, range),
+      ]);
       const companyFiltered = filterInkoopResultsByCompany(rawResult, url.searchParams.get("company"));
       const onDate = (row, anchor) => (anchor === "erp" ? inkoopDateKeyFromErpAnchor(row) : inkoopDateKeyFromInvoiceAnchor(row)) === date;
+      // Same aggregate suppression the Calendar grid cell's own gap_count and
+      // the Follow-up queue already apply -- without this, drilling into a
+      // day the grid shows as "0 gaps" could still list gap-looking rows
+      // here, which would make the two views look like they disagree.
+      const onlyInErpNotExplained = (row) => {
+        const growerName = inkoopGrowerNameForErpRow(row, aggregateContext.codeToName, aggregateContext.validSupplierCodes);
+        return !inkoopGapIsExplainedByAggregate(row, growerName, aggregateContext.aggregateResult);
+      };
+      const onlyInInvoiceNotExplained = (row) => {
+        const growerName = inkoopGrowerNameForInvoiceLine(
+          row, aggregateContext.codeToName, aggregateContext.supplierMap,
+          aggregateContext.supplierNameMap, aggregateContext.manualLinks, aggregateContext.supplierFhMap,
+        );
+        return !inkoopGapIsExplainedByAggregate(row, growerName, aggregateContext.aggregateResult);
+      };
       const result = {
         matched_ok: companyFiltered.matched_ok.filter((row) => onDate(row, "erp")),
         matched_mismatch: companyFiltered.matched_mismatch.filter((row) => onDate(row, "erp")),
-        only_in_invoice: companyFiltered.only_in_invoice.filter((row) => onDate(row, "invoice")),
-        only_in_erp: companyFiltered.only_in_erp.filter((row) => onDate(row, "erp")),
+        only_in_invoice: companyFiltered.only_in_invoice.filter((row) => onDate(row, "invoice")).filter(onlyInInvoiceNotExplained),
+        only_in_erp: companyFiltered.only_in_erp.filter((row) => onDate(row, "erp")).filter(onlyInErpNotExplained),
         supplier_not_linked: companyFiltered.supplier_not_linked.filter((row) => onDate(row, "invoice")),
         ambiguous_matches: companyFiltered.ambiguous_matches.filter((row) => onDate(row, "invoice")),
         fee_lines: companyFiltered.fee_lines.filter((row) => onDate(row, "invoice")),

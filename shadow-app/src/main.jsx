@@ -14903,6 +14903,7 @@ function InkoopResultTables({ result, windowDays, manualLinkDrafts, setManualLin
           <div className="notice">
             FloraHolland charged for these but no matching purchase was found in the ERP export{windowDays ? ` within the last ${windowDays} days` : ""}.
             A Handel Aankopen/AI2 row here sometimes means the grower resolved to the wrong of several look-alike codes in the master data (confirmed real case: "DUTCH GREEN CENTRE" exists twice, under different codes) -- link the correct code below if so.
+            This list is unfiltered, unlike Calendar/Follow-up: it includes rows those views hide because the grower's day (or day+product) total already reconciles overall -- see Settings &gt; Facturation groups if a facturation umbrella (e.g. Zentoo) is the reason a batch of these look unexplained here.
           </div>
           <div className="table-wrap">
             <table className="data-table">
@@ -14943,7 +14944,10 @@ function InkoopResultTables({ result, windowDays, manualLinkDrafts, setManualLin
       {!!result.only_in_erp.length && (
         <div className="data-table-card">
           <div className="section-header"><h2>Only in ERP ({result.only_in_erp.length})</h2></div>
-          <div className="notice">Recorded as a purchase but no invoice line referenced this PAV{windowDays ? ` within the last ${windowDays} days` : ""} -- invoice not received yet, or a data entry mistake. No company can be attributed here -- the ERP export has no such field.</div>
+          <div className="notice">
+            Recorded as a purchase but no invoice line referenced this PAV{windowDays ? ` within the last ${windowDays} days` : ""} -- invoice not received yet, or a data entry mistake. No company can be attributed here -- the ERP export has no such field.
+            This list is unfiltered, unlike Calendar/Follow-up: it includes rows those views hide because the grower's day (or day+product) total already reconciles overall.
+          </div>
           <div className="table-wrap">
             <table className="data-table">
               <thead><tr><th>Date</th><th>PAV</th><th>Lot</th><th>Description</th><th>Pieces</th><th>Price</th><th>Total</th><th>Supplier</th></tr></thead>
