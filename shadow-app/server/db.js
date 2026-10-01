@@ -1842,16 +1842,19 @@ const databaseMigrations = [
   // photoCount reaches trolleyCount, that reference's photos are complete
   // and ready to count, no new "trolley" concept or ingest route needed.
   // shelf_counts is therefore keyed by (customer_reference, date), not a
-  // manufactured trolley id. Dropped first since the original attempt's
-  // shape (trolley_scan_id PRIMARY KEY) never held any real data -- the
-  // RFID-portal-facing ingest route it depended on was never actually wired
-  // up by anything external.
-  `
-    DROP TABLE IF EXISTS shelf_counts CASCADE
-  `,
-  `
-    DROP TABLE IF EXISTS warehouse_trolley_scans CASCADE
-  `,
+  // manufactured trolley id.
+  //
+  // This used to DROP TABLE shelf_counts/warehouse_trolley_scans here first,
+  // to clear out the original attempt's shape (trolley_scan_id PRIMARY KEY),
+  // which never held any real data since its RFID-portal ingest route was
+  // never wired up externally. That was only ever meant to run once --
+  // applyDatabaseMigrations re-runs this whole list on every server start
+  // (confirmed real, and confirmed the actual bug: it silently wiped every
+  // real shelf_counts row -- a full night's worth of LLM-counted
+  // shelves/levels/confidence -- on every single deploy, forever, since an
+  // unconditional DROP has no way to know the one-time cleanup it was meant
+  // for already happened). Removed now that the old shape is long gone and
+  // shelf_counts holds real production data that must survive a restart.
   // expected_average/deviation stay null in Phase 1 -- there is no manual
   // "expected count" config; a later training/derivation phase fills these
   // in from accumulated real counts, not a config screen.
