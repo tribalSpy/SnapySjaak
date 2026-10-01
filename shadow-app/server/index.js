@@ -8529,13 +8529,14 @@ function parseShelfCountJobResult(job) {
   const levels = Number(parsed?.levels);
   const extensions = Number(parsed?.extensions);
   const confidence = Number(parsed?.confidence);
-  const parseNote = fromContent
+  // Only a genuine parse failure is worth surfacing in the UI's Error column
+  // -- recovering the answer from thinking text is a normal, successful
+  // outcome (same numbers either way), not something wrong with this row.
+  const parseNote = fromContent || fromThinking
     ? ""
-    : fromThinking
-      ? "Model returned no final content; parsed from its thinking text instead."
-      : (contentText || thinkingText)
-        ? "Could not parse JSON from either the model's content or thinking text."
-        : "Model returned no content and no thinking text at all.";
+    : (contentText || thinkingText)
+      ? "Could not parse JSON from either the model's content or thinking text."
+      : "Model returned no content and no thinking text at all.";
   return {
     shelves: Number.isFinite(shelves) ? shelves : null,
     levels: Number.isFinite(levels) ? levels : null,
