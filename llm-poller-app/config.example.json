@@ -3,7 +3,7 @@
   "api_key": "replace-me",
   "agent_name": "office-ollama-1",
   "pc_name": "Office-PC",
-  "model_name": "gwen32b-vision",
+  "model_name": "REPLACE-WITH-AN-EXACT-NAME-FROM-OLLAMA-LIST",
   "version": "1.0.0",
   "poll_interval_seconds": 10,
   "ollama_url": "http://127.0.0.1:11434",

@@ -31,6 +31,16 @@ only ever hands a `shelf_count` job to a poller that asks for it by name, so:
 5. Fill in `server_url`, `api_key` (same value as `SHADOW_LLM_POLLER_API_KEY`
    on the server), a unique `agent_name` (must be different from the other
    poller's), and `model_name`.
+   **Run `ollama list` first and copy the exact name from there** (e.g.
+   `qwen3-vl:32b`) -- confirmed real: `config.example.json`'s own
+   `model_name` used to be a placeholder, `gwen32b-vision`, that was never
+   an actual installed model anywhere. Left as-is, every job failed
+   instantly with `{"error":"model 'gwen32b-vision' not found"}`, and
+   nothing in the Shelf Count page said why until `error_text` was added
+   to that table. A model without `-vl`/`vision` in its name (most of what
+   `ollama list` shows on a general-purpose PC) cannot take image input at
+   all, regardless of its name matching -- it has to be a real
+   vision-capable pull.
 6. Start it with `run_poller.bat`.
 
 ## What this does

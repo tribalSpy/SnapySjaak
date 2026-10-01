@@ -8081,7 +8081,7 @@ function ShelfCountPage() {
               <tr>
                 <th>Customer reference</th><th>Trolleys</th><th>Photos</th><th>Shelves</th><th>Levels</th>
                 <th>Extensions</th><th>Confidence</th><th>Fust expected (DC)</th><th>Deviation</th>
-                <th>Fust expected (DCO)</th><th>Ext. deviation</th><th>Status</th>
+                <th>Fust expected (DCO)</th><th>Ext. deviation</th><th>Status</th><th>Error</th>
               </tr>
             </thead>
             <tbody>
@@ -8099,9 +8099,10 @@ function ShelfCountPage() {
                   <td>{row.extension_expected ?? "-"}</td>
                   <td>{row.extension_deviation ?? "-"}</td>
                   <td><span className={`ukdocs-status-badge ${SHELF_COUNT_STATUS_TONE[row.status] || "muted"}`}>{row.status}</span></td>
+                  <td>{row.error_text || "-"}</td>
                 </tr>
               ))}
-              {!counts.length && <tr><td colSpan={12}>No completed references for this date.</td></tr>}
+              {!counts.length && <tr><td colSpan={13}>No completed references for this date.</td></tr>}
             </tbody>
           </table>
         </div>
