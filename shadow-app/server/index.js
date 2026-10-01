@@ -8510,18 +8510,38 @@ async function findShelfCountFoldersAcrossAccounts(accountsWithEntries, base) {
 // vision model can still wrap it in stray text), so this reuses the same
 // extractJsonObjectFromText helper rather than assuming result_json IS the
 // parsed object.
+//
+// Also falls back to ollama_response.message.thinking, same as
+// parseUkdocsCsiAuditJobResult already has to -- confirmed real on this
+// exact model family: despite requesting think:false, a Qwen reasoning
+// model can still leave message.content completely empty and put its
+// actual answer (including the requested JSON) in message.thinking
+// instead. Without this fallback every field here silently comes back
+// null -- not genuinely low confidence, just nothing to parse at all --
+// and every row lands in needs_review for the wrong reason.
 function parseShelfCountJobResult(job) {
   const contentText = String(job?.result_json?.ollama_response?.message?.content || job?.result_json?.response || "").trim();
-  const parsed = extractJsonObjectFromText(contentText) || {};
+  const thinkingText = String(job?.result_json?.ollama_response?.message?.thinking || "").trim();
+  const fromContent = extractJsonObjectFromText(contentText);
+  const fromThinking = fromContent ? null : extractJsonObjectFromText(thinkingText);
+  const parsed = fromContent || fromThinking || {};
   const shelves = Number(parsed?.shelves);
   const levels = Number(parsed?.levels);
   const extensions = Number(parsed?.extensions);
   const confidence = Number(parsed?.confidence);
+  const parseNote = fromContent
+    ? ""
+    : fromThinking
+      ? "Model returned no final content; parsed from its thinking text instead."
+      : (contentText || thinkingText)
+        ? "Could not parse JSON from either the model's content or thinking text."
+        : "Model returned no content and no thinking text at all.";
   return {
     shelves: Number.isFinite(shelves) ? shelves : null,
     levels: Number.isFinite(levels) ? levels : null,
     extensions: Number.isFinite(extensions) ? extensions : null,
     confidence: Number.isFinite(confidence) ? confidence : null,
+    parse_note: parseNote,
   };
 }
 
@@ -15563,6 +15583,7 @@ async function handleApi(req, res, url) {
         status,
         model_version: agentName,
         job_id: job.id,
+        error_text: parsed.parse_note,
         processed_at: new Date().toISOString(),
       });
       // "done" here means "counted successfully" -- there is no
