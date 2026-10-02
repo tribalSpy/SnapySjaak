@@ -103,7 +103,10 @@ def parse_erp(input_path: Path):
     return {"rows": rows}
 
 
-TYPE_CODE_RE = re.compile(r"[._](FK|FC|HA)[._]", re.IGNORECASE)
+# FK klok, FC Connect, HA handel aankoop, plus FD dienst and HV handel
+# verkoop (finance-confirmed list of every FloraHolland invoice kind) -- the
+# latter two carry no purchases to reconcile, but do have to go to King.
+TYPE_CODE_RE = re.compile(r"[._](FK|FC|HA|FD|HV)[._]", re.IGNORECASE)
 
 
 # The XML-folder messages ("XCrossIndustryInvoice;049876.FC.2026.0181") don't
@@ -115,7 +118,7 @@ def classify_subject(subject: str) -> str:
     match = TYPE_CODE_RE.search(subject or "")
     if match:
         code = match.group(1).upper()
-        return {"FK": "klokfactuur", "FC": "connect", "HA": "handel"}[code]
+        return {"FK": "klokfactuur", "FC": "connect", "HA": "handel", "FD": "dienst", "HV": "handel_verkoop"}[code]
     if "klokfactuur" in normalized:
         return "klokfactuur"
     if "connect factuur" in normalized:
@@ -258,6 +261,111 @@ def find_invoicee_info(root):
     return {"gln": "", "name": ""}
 
 
+def direct_child(element, tag_name):
+    for child in element:
+        if local_tag(child.tag) == tag_name:
+            return child
+    return None
+
+
+def direct_path_text(element, *path):
+    current = element
+    for tag_name in path:
+        if current is None:
+            return ""
+        current = direct_child(current, tag_name)
+    return (current.text or "").strip() if current is not None else ""
+
+
+def find_iv_references(item):
+    refs = []
+    for ref in item:
+        if local_tag(ref.tag) != "ReferenceReferencedDocument":
+            continue
+        for child in ref:
+            if local_tag(child.tag) == "IssuerAssignedID" and child.attrib.get("schemeName") == "IV":
+                refs.append((child.text or "").strip())
+    return refs
+
+
+# Fields King's journal export needs (see buildKingJournal in index.js):
+# summary lines (SetTriggerCode 0, no quantity) carry FloraHolland's own
+# Prd Id (Product/ID, schemeAgency FH, e.g. 1431) and the BTW category
+# (H/S/O/E); detail lines carry the marketplace (klok location / Connect /
+# Handelsregeling) and the sales account (001 flowers, 002/003 plants).
+def king_line_fields(item):
+    product = direct_child(item, "Product")
+    prd_id = ""
+    if product is not None:
+        for child in product:
+            if local_tag(child.tag) == "ID" and child.attrib.get("schemeAgencyName") == "FH":
+                prd_id = (child.text or "").strip()
+                break
+    iv_refs = find_iv_references(item)
+    return {
+        "line_id": direct_path_text(item, "ID"),
+        "prd_id": prd_id,
+        "vat_category": direct_path_text(item, "TotalCalculatedTax", "CategoryCode"),
+        "trigger_code": direct_path_text(item, "AccountSalesAccountingAccount", "SetTriggerCode"),
+        "account_id": direct_path_text(item, "AccountSalesAccountingAccount", "ID"),
+        "summary_ref": iv_refs[0] if iv_refs else "",
+        "marketplace_id": direct_path_text(item, "TradingTerms", "MarketPlace", "ID"),
+        "marketplace_name": direct_path_text(item, "TradingTerms", "MarketPlace", "NameText"),
+        "market_form_code": direct_path_text(item, "TradingTerms", "MarketFormCode"),
+    }
+
+
+KLOK_LOCATION_RE = re.compile(r"\b(AALSMEER|NAALDWIJK|RIJNSBURG)\b\s+KLOK", re.IGNORECASE)
+
+
+# Invoice-level totals for King: the BTW per category and the total incl.
+# BTW. Confirmed on every sample file: per category the summary lines add up
+# to BasisAmount, and the BasisAmounts plus BTW equal GrandTotalAmount.
+# klok_location: an FK invoice always covers exactly one klok (all product
+# lines share one MarketPlace) -- finance books its "Product aankopen" per
+# location ("1015_Aalsmeer_klok").
+def parse_invoice_header(xml_bytes):
+    root = ET.fromstring(xml_bytes)
+    invoice = None
+    for element in root.iter():
+        if local_tag(element.tag) == "CrossIndustryInvoice":
+            invoice = element
+            break
+    if invoice is None:
+        return {}
+    vat_subtotals = []
+    locations = {}
+    for child in invoice:
+        tag = local_tag(child.tag)
+        if tag == "CategorySubtotalTax":
+            vat_subtotals.append({
+                "category": direct_path_text(child, "CategoryCode"),
+                "rate": parse_number(direct_path_text(child, "CalculatedRate")),
+                "basis": parse_number(direct_path_text(child, "BasisAmount")) or 0.0,
+                "amount": parse_number(direct_path_text(child, "CalculatedAmount")) or 0.0,
+            })
+        elif tag == "InvoiceTradeLineItem":
+            match = KLOK_LOCATION_RE.search(direct_path_text(child, "TradingTerms", "MarketPlace", "NameText"))
+            if match:
+                location = match.group(1).capitalize()
+                locations[location] = locations.get(location, 0) + 1
+    klok_location = max(locations, key=locations.get) if locations else ""
+    return {
+        "billing_id": direct_path_text(invoice, "BillingDocument", "IssuerAssignedID"),
+        "issue_date": direct_path_text(invoice, "BillingDocument", "IssueDateTime")[:10],
+        "type_code": direct_path_text(invoice, "BillingDocument", "TypeCode"),
+        "currency": direct_path_text(invoice, "BillingDocument", "BillingCurrencyCode") or "EUR",
+        "grand_total": parse_number(direct_path_text(invoice, "BillingMonetarySummation", "GrandTotalAmount")),
+        "vat_subtotals": vat_subtotals,
+        "klok_location": klok_location,
+        # More than one location would mean the per-invoice rule doesn't hold
+        # for this invoice -- surfaced as a warning in the King export.
+        "klok_locations": sorted(locations),
+        "invoicee_name": direct_path_text(invoice, "InvoiceeParty", "Name"),
+        "invoicee_gln": direct_path_text(invoice, "InvoiceeParty", "PrimaryID"),
+    }
+
+
 def parse_invoice_xml(xml_bytes):
     root = ET.fromstring(xml_bytes)
     invoicee = find_invoicee_info(root)
@@ -289,6 +397,7 @@ def parse_invoice_xml(xml_bytes):
             "company_name": invoicee["name"],
             "line_date": line_date,
             "product_type_code": find_product_type_code(item),
+            **king_line_fields(item),
         })
     return lines
 
@@ -839,6 +948,7 @@ def parse_veiling(input_path: Path):
                 continue
 
             lines = parse_invoice_xml(xml_bytes)
+            header = parse_invoice_header(xml_bytes)
             invoice_number = extract_invoice_number(subject)
             invoices.append({
                 "file_name": msg_path.name,
@@ -847,6 +957,7 @@ def parse_veiling(input_path: Path):
                 "supplier_number": invoice_number.split(".")[0] if invoice_number else "",
                 "subject": subject,
                 "lines": lines,
+                "header": header,
             })
         except Exception as error:  # noqa: BLE001 -- report per-file, never abort the whole batch
             skipped.append({"file_name": msg_path.name, "reason": str(error)})

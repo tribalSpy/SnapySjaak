@@ -1,0 +1,11 @@
+{
+  "server_url": "https://your-render-app.onrender.com",
+  "api_key": "set-the-same-value-as-SHADOW_LLM_POLLER_API_KEY",
+  "agent_name": "king-export-1",
+  "pc_name": "OFFICE-PC",
+  "version": "1.0.0",
+  "poll_interval_seconds": 30,
+  "import_dir": "\\\\KING-SERVER\\KingImport",
+  "pdf_dir": "\\\\KING-SERVER\\KingImport\\pdf",
+  "archive_wait_minutes": 30
+}

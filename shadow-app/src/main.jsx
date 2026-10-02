@@ -14669,7 +14669,7 @@ function inkoopErpTranscript(erpRow) {
   return parts.join(" · ");
 }
 
-const INKOOP_INVOICE_TYPE_LABELS = { klokfactuur: "Klokfactuur", connect: "Connect", handel: "Handel", ai2: "AI2" };
+const INKOOP_INVOICE_TYPE_LABELS = { klokfactuur: "Klokfactuur", connect: "Connect", handel: "Handel", ai2: "AI2", dienst: "Dienst (FD)", handel_verkoop: "Handel verkoop (HV)" };
 
 // One company's invoice list, folded by default -- every invoice with its
 // own PDF link, same as the rest of Inkoop Controle.
@@ -14720,7 +14720,7 @@ function InkoopOverviewTab() {
   }, [fromDate, toDate]);
 
   const companies = data?.companies || [];
-  const types = ["klokfactuur", "connect", "handel", "ai2"].filter((type) => companies.some((company) => company.by_type[type]));
+  const types = ["klokfactuur", "connect", "handel", "handel_verkoop", "dienst", "ai2"].filter((type) => companies.some((company) => company.by_type[type]));
   const grand = companies.reduce((sum, company) => ({
     invoice_count: sum.invoice_count + company.invoice_count,
     total: sum.total + company.total,
@@ -14787,6 +14787,399 @@ function InkoopOverviewTab() {
         )}
       </div>
       {companies.map((company) => <InkoopCompanyInvoiceList key={company.company_number || "unknown"} company={company} />)}
+    </>
+  );
+}
+
+const KING_EXPORT_STATUS_LABELS = { queued: "Sent, waiting for delivery", delivered: "Delivered to King", failed: "Delivery failed" };
+
+function kingPostStatus(post) {
+  if (post.export) {
+    return { tone: post.export.status === "failed" ? "danger" : post.export.status === "delivered" ? "success" : "info", label: KING_EXPORT_STATUS_LABELS[post.export.status] || post.export.status };
+  }
+  if (post.problems.length) {
+    return { tone: "danger", label: "Blocked" };
+  }
+  return { tone: "muted", label: "Ready" };
+}
+
+function downloadTextFile(fileName, content) {
+  const blob = new Blob([content], { type: "application/xml" });
+  const href = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = href;
+  link.download = fileName;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  URL.revokeObjectURL(href);
+}
+
+// One invoice: status, problems/warnings, and its journal lines on demand.
+function InkoopKingPostRow({ post, selected, onToggle }) {
+  const [open, setOpen] = useState(false);
+  const status = kingPostStatus(post);
+  const selectable = !post.problems.length;
+  return (
+    <>
+      <tr>
+        <td><input type="checkbox" checked={selected} disabled={!selectable} onChange={() => onToggle(post.invoice_number)} /></td>
+        <td><InkoopInvoiceLink invoiceNumber={post.invoice_number} /></td>
+        <td>{INKOOP_INVOICE_TYPE_LABELS[post.invoice_type] || post.invoice_type || "-"}</td>
+        <td>{fustOverviewDate(post.invoice_date)}</td>
+        <td><strong>{formatInkoopEuro(post.totals.grand_total)}</strong></td>
+        <td>{post.lines.length}</td>
+        <td>
+          <span className={`ukdocs-status-badge ${status.tone}`}>{status.label}</span>
+          {post.export?.stuknummer ? ` #${post.export.stuknummer}` : ""}
+          {post.export?.error_text ? <div className="muted">{post.export.error_text}</div> : null}
+        </td>
+        <td>
+          {post.problems.map((problem) => <div key={problem} style={{ color: "#b91c1c" }}>{problem}</div>)}
+          {post.warnings.map((warning) => <div key={warning} style={{ color: "#b45309" }}>{warning}</div>)}
+          {!post.problems.length && !post.warnings.length ? "-" : null}
+        </td>
+        <td><button type="button" onClick={() => setOpen((current) => !current)}>{open ? "Hide" : "Journal"}</button></td>
+      </tr>
+      {open && (
+        <tr>
+          <td />
+          <td colSpan={8}>
+            <table className="data-table">
+              <thead><tr><th>#</th><th>Account</th><th>Side</th><th>Amount</th><th>Description</th><th>From (Prd/BTW)</th></tr></thead>
+              <tbody>
+                {post.lines.map((line) => (
+                  <tr key={line.volgnummer}>
+                    <td>{line.volgnummer}</td>
+                    <td>{line.rekeningnummer || "-"}</td>
+                    <td>{line.boekzijde}</td>
+                    <td>{formatInkoopEuro(line.bedrag)}</td>
+                    <td>{line.omschrijving}</td>
+                    <td>{(line.prd_keys || []).join(", ") || "-"}</td>
+                  </tr>
+                ))}
+                <tr><td /><td /><td><strong>DEB</strong></td><td><strong>{formatInkoopEuro(post.totals.debit)}</strong></td><td>CRED {formatInkoopEuro(post.totals.credit)}</td><td /></tr>
+              </tbody>
+            </table>
+          </td>
+        </tr>
+      )}
+    </>
+  );
+}
+
+function InkoopKingSettingsCard({ settings, onSaved }) {
+  const [draft, setDraft] = useState(settings);
+  const [saving, setSaving] = useState(false);
+  const [note, setNote] = useState("");
+  useEffect(() => setDraft(settings), [settings]);
+  if (!draft) return null;
+  const companies = [...new Set([...Object.keys(draft.creditor_accounts || {}), ...Object.keys(draft.company_ledger_column || {})])].sort();
+  const set = (key, value) => setDraft((current) => ({ ...current, [key]: value }));
+  const setMapValue = (mapKey, company, value) => setDraft((current) => ({ ...current, [mapKey]: { ...(current[mapKey] || {}), [company]: value } }));
+
+  async function save() {
+    setSaving(true);
+    setNote("");
+    try {
+      const payload = await apiJson("/api/inkoop/king/settings", { method: "POST", body: JSON.stringify({ settings: draft }) });
+      onSaved(payload.settings);
+      setNote("King settings saved.");
+    } catch (saveError) {
+      setNote(saveError.message);
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <InkoopCollapsibleCard title="King settings" defaultOpen={!settings.archiefsoort || !settings.king_pdf_dir}>
+      <div className="notice">
+        Prefilled from finance's sample journal. <strong>Archiefsoort</strong> and the <strong>King PDF folder</strong> (the folder as King's server sees it -- the archive XML tells King to read each PDF from there) must be filled in before anything can be sent.
+      </div>
+      <div className="form-grid">
+        <label><span>Dagboek</span><input value={draft.dagboek} onChange={(event) => set("dagboek", event.target.value)} /></label>
+        <label><span>BTW laag (S) account</span><input value={draft.btw_laag_account} onChange={(event) => set("btw_laag_account", event.target.value)} /></label>
+        <label><span>BTW hoog (H) account</span><input value={draft.btw_hoog_account} onChange={(event) => set("btw_hoog_account", event.target.value)} /></label>
+        <label><span>Archiefsoort</span><input value={draft.archiefsoort} onChange={(event) => set("archiefsoort", event.target.value)} placeholder="ask finance / King" /></label>
+        <label><span>King PDF folder (as King sees it)</span><input value={draft.king_pdf_dir} onChange={(event) => set("king_pdf_dir", event.target.value)} placeholder="e.g. D:\King\Import\pdf" /></label>
+        <label><span>Next stuknummer (0 = let King number)</span><input type="number" value={draft.next_stuknummer} onChange={(event) => set("next_stuknummer", Number(event.target.value) || 0)} /></label>
+        <label>
+          <span>Flowers / plants split</span>
+          <select value={draft.fl_pl_mode} onChange={(event) => set("fl_pl_mode", event.target.value)}>
+            <option value="split">Per product group on the invoice (001 flowers, 002/003 plants)</option>
+            <option value="company">Always the company's column below</option>
+          </select>
+        </label>
+        <label>
+          <span>Booking</span>
+          <select value={draft.bg_definitief ? "true" : "false"} onChange={(event) => set("bg_definitief", event.target.value === "true")}>
+            <option value="false">Concept (BG_DEFINITIEF false)</option>
+            <option value="true">Definitief</option>
+          </select>
+        </label>
+      </div>
+      <div className="table-wrap">
+        <table className="data-table">
+          <thead><tr><th>Company</th><th>Creditor account</th><th>Default ledger column</th></tr></thead>
+          <tbody>
+            {companies.map((company) => (
+              <tr key={company}>
+                <td>{company}</td>
+                <td><input value={draft.creditor_accounts?.[company] || ""} onChange={(event) => setMapValue("creditor_accounts", company, event.target.value)} /></td>
+                <td>
+                  <select value={draft.company_ledger_column?.[company] || "FL"} onChange={(event) => setMapValue("company_ledger_column", company, event.target.value)}>
+                    <option value="FL">GB FL (bloemen)</option>
+                    <option value="PL">GB PL (planten)</option>
+                  </select>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+      <div className="row-actions">
+        <button type="button" className="primary" onClick={save} disabled={saving}>{saving ? "Saving..." : "Save King settings"}</button>
+        {note && <span>{note}</span>}
+      </div>
+    </InkoopCollapsibleCard>
+  );
+}
+
+const EMPTY_KING_LEDGER_ROW = { prd_id: "", btw: "S", gb_fl: "", gb_pl: "", omschrijving: "" };
+
+// The old SQL "kingkoppel" tab: Prd Id + BTW -> GB FL / GB PL.
+function InkoopKingLedgerCard({ ledger, onChanged }) {
+  const [filter, setFilter] = useState("");
+  const [editingKey, setEditingKey] = useState(null);
+  const [draft, setDraft] = useState(EMPTY_KING_LEDGER_ROW);
+  const [note, setNote] = useState("");
+  const keyOf = (row) => `${String(row.prd_id).toUpperCase()}|${String(row.btw).toUpperCase()}`;
+  const needle = filter.trim().toLowerCase();
+  const rows = [...ledger]
+    .filter((row) => !needle || [row.prd_id, row.gb_fl, row.gb_pl, row.omschrijving].some((value) => String(value || "").toLowerCase().includes(needle)))
+    .sort((left, right) => String(left.gb_fl).localeCompare(String(right.gb_fl)) || String(left.prd_id).localeCompare(String(right.prd_id)));
+
+  async function saveRow() {
+    setNote("");
+    try {
+      const payload = await apiJson("/api/inkoop/king/ledger", { method: "POST", body: JSON.stringify({ row: draft, original_key: editingKey === "new" ? "" : editingKey }) });
+      onChanged(payload.ledger);
+      setEditingKey(null);
+      setDraft(EMPTY_KING_LEDGER_ROW);
+    } catch (saveError) {
+      setNote(saveError.message);
+    }
+  }
+
+  async function deleteRow(row) {
+    if (!window.confirm(`Delete mapping ${row.prd_id} / ${row.btw}?`)) return;
+    const payload = await apiJson("/api/inkoop/king/ledger", { method: "DELETE", body: JSON.stringify({ key: keyOf(row) }) });
+    onChanged(payload.ledger);
+  }
+
+  async function resetTable() {
+    if (!window.confirm("Replace the whole table with finance's original kingkoppel list? Your edits are lost.")) return;
+    const payload = await apiJson("/api/inkoop/king/ledger", { method: "POST", body: JSON.stringify({ reset: true }) });
+    onChanged(payload.ledger);
+  }
+
+  const editor = (
+    <tr>
+      <td><input value={draft.prd_id} onChange={(event) => setDraft({ ...draft, prd_id: event.target.value })} placeholder="1431 or 1015_Aalsmeer_klok" /></td>
+      <td>
+        <select value={draft.btw} onChange={(event) => setDraft({ ...draft, btw: event.target.value })}>
+          {["H", "S", "O", "E"].map((code) => <option key={code} value={code}>{code}</option>)}
+        </select>
+      </td>
+      <td><input value={draft.gb_fl} onChange={(event) => setDraft({ ...draft, gb_fl: event.target.value })} /></td>
+      <td><input value={draft.gb_pl} onChange={(event) => setDraft({ ...draft, gb_pl: event.target.value })} /></td>
+      <td><input value={draft.omschrijving} maxLength={40} onChange={(event) => setDraft({ ...draft, omschrijving: event.target.value })} /></td>
+      <td>
+        <button type="button" className="primary" onClick={saveRow}>Save</button>
+        <button type="button" onClick={() => { setEditingKey(null); setDraft(EMPTY_KING_LEDGER_ROW); }}>Cancel</button>
+      </td>
+    </tr>
+  );
+
+  return (
+    <InkoopCollapsibleCard title="Ledger mapping (kingkoppel)" count={ledger.length} defaultOpen={false}>
+      <div className="notice">H = hoog, S = laag, O = nul, E = leeg. GB FL = bloemen, GB PL = planten. FK "Product aankopen" (1015) uses the per-location rows <code>1015_Aalsmeer_klok</code> / <code>1015_Naaldwijk_klok</code> / <code>1015_Rijnsburg_klok</code>.</div>
+      <div className="row-actions">
+        <input placeholder="Search Prd Id, account, description..." value={filter} onChange={(event) => setFilter(event.target.value)} />
+        <button type="button" onClick={() => { setEditingKey("new"); setDraft(EMPTY_KING_LEDGER_ROW); }}>Add mapping</button>
+        <button type="button" onClick={resetTable}>Reset to finance's original</button>
+        {note && <span style={{ color: "#b91c1c" }}>{note}</span>}
+      </div>
+      <div className="table-wrap">
+        <table className="data-table">
+          <thead><tr><th>Prd Id</th><th>BTW</th><th>GB FL</th><th>GB PL</th><th>Omschrijving</th><th /></tr></thead>
+          <tbody>
+            {editingKey === "new" && editor}
+            {rows.map((row) => (editingKey === keyOf(row) ? <React.Fragment key={keyOf(row)}>{editor}</React.Fragment> : (
+              <tr key={keyOf(row)}>
+                <td>{row.prd_id}</td><td>{row.btw}</td><td>{row.gb_fl}</td><td>{row.gb_pl}</td><td>{row.omschrijving}</td>
+                <td>
+                  <button type="button" onClick={() => { setEditingKey(keyOf(row)); setDraft(row); }}>Edit</button>
+                  <button type="button" onClick={() => deleteRow(row)}>Delete</button>
+                </td>
+              </tr>
+            )))}
+          </tbody>
+        </table>
+      </div>
+    </InkoopCollapsibleCard>
+  );
+}
+
+// Inkoop Controle > Import naar King: one day's FloraHolland invoices as King
+// journal posts (preview, checks) and delivery to King via king-poller-app.
+function InkoopKingTab() {
+  const [date, setDate] = useState(() => todayIso());
+  const [data, setData] = useState(null);
+  const [settings, setSettings] = useState(null);
+  const [ledger, setLedger] = useState([]);
+  const [exportsHistory, setExportsHistory] = useState([]);
+  const [selected, setSelected] = useState(() => new Set());
+  const [loading, setLoading] = useState(true);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const [message, setMessage] = useState("");
+
+  function loadDay() {
+    setLoading(true);
+    setError("");
+    return Promise.all([
+      apiJson(`/api/inkoop/king/day?date=${date}`),
+      apiJson("/api/inkoop/king/exports"),
+    ])
+      .then(([day, history]) => {
+        setData(day);
+        setExportsHistory(history.exports || []);
+        setSelected(new Set(day.posts.filter((post) => !post.problems.length && !post.export).map((post) => post.invoice_number)));
+      })
+      .catch((loadError) => setError(loadError.message))
+      .finally(() => setLoading(false));
+  }
+
+  function loadSettings() {
+    return apiJson("/api/inkoop/king/settings").then((payload) => {
+      setSettings(payload.settings);
+      setLedger(payload.ledger || []);
+    });
+  }
+
+  useEffect(() => { loadSettings().catch((loadError) => setError(loadError.message)); }, []);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  useEffect(() => { loadDay(); }, [date]);
+
+  const posts = data?.posts || [];
+  const byCompany = posts.reduce((groups, post) => {
+    const key = `${post.company_number}${post.company_name ? ` - ${post.company_name}` : ""}`;
+    (groups[key] = groups[key] || []).push(post);
+    return groups;
+  }, {});
+  const toggle = (invoiceNumber) => setSelected((current) => {
+    const next = new Set(current);
+    if (next.has(invoiceNumber)) next.delete(invoiceNumber); else next.add(invoiceNumber);
+    return next;
+  });
+
+  async function downloadPreview() {
+    setBusy(true);
+    setError("");
+    try {
+      const payload = await apiJson("/api/inkoop/king/preview", { method: "POST", body: JSON.stringify({ date, invoice_numbers: [...selected] }) });
+      downloadTextFile(`journaal_${date}.xml`, payload.journaal_xml);
+      downloadTextFile(`archief_${date}.xml`, payload.archief_xml);
+    } catch (previewError) {
+      setError(previewError.message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function sendToKing() {
+    const chosen = posts.filter((post) => selected.has(post.invoice_number));
+    const resend = chosen.filter((post) => post.export && post.export.status !== "failed");
+    if (resend.length && !window.confirm(`${resend.length} of these were already sent to King (${resend.map((post) => post.invoice_number).join(", ")}). Sending again books them TWICE in King. Continue?`)) {
+      return;
+    }
+    if (!resend.length && !window.confirm(`Send ${chosen.length} invoice(s) of ${fustOverviewDate(date)} to King?`)) {
+      return;
+    }
+    setBusy(true);
+    setError("");
+    setMessage("");
+    try {
+      const payload = await apiJson("/api/inkoop/king/send", { method: "POST", body: JSON.stringify({ date, invoice_numbers: chosen.map((post) => post.invoice_number), allow_reexport: resend.length > 0 }) });
+      setMessage(`${payload.count} invoice(s) queued for King (batch ${payload.batch_id}). The King poller on the office network delivers them; the status updates here.`);
+      await loadDay();
+    } catch (sendError) {
+      setError(sendError.message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  const readyCount = posts.filter((post) => !post.problems.length && !post.export).length;
+  return (
+    <>
+      <div className="data-table-card">
+        <div className="section-header"><h2>Import naar King</h2></div>
+        <div className="notice">
+          Every uploaded FloraHolland invoice of the chosen day (Klok, Connect, Handel aankoop/verkoop, Dienst) as a King journal post, booked by the ledger mapping below, plus its PDF for King's digital archive. AI2 follows in a later step. Invoices uploaded before this menu existed must be uploaded again (their King fields weren't stored yet).
+        </div>
+        <div className="row-actions spread-actions">
+          <label><span>Date</span><input type="date" value={date} onChange={(event) => setDate(event.target.value)} /></label>
+          <button type="button" onClick={loadDay} disabled={loading}>{loading ? "Loading..." : "Refresh"}</button>
+          <button type="button" onClick={() => setSelected(new Set(posts.filter((post) => !post.problems.length && !post.export).map((post) => post.invoice_number)))}>Select all ready ({readyCount})</button>
+          <button type="button" onClick={downloadPreview} disabled={busy || !selected.size}>Download XML (preview)</button>
+          <button type="button" className="primary" onClick={sendToKing} disabled={busy || !selected.size}>Send to King ({selected.size})</button>
+        </div>
+        {error && <div className="notice danger">{error}</div>}
+        {message && <div className="notice">{message}</div>}
+      </div>
+
+      {Object.entries(byCompany).map(([company, companyPosts]) => (
+        <InkoopCollapsibleCard key={company} title={company} count={companyPosts.length}>
+          <div className="table-wrap">
+            <table className="data-table">
+              <thead><tr><th /><th>Invoice</th><th>Type</th><th>Date</th><th>Total incl. BTW</th><th>Lines</th><th>Status</th><th>Checks</th><th /></tr></thead>
+              <tbody>
+                {companyPosts.map((post) => (
+                  <InkoopKingPostRow key={post.invoice_number} post={post} selected={selected.has(post.invoice_number)} onToggle={toggle} />
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </InkoopCollapsibleCard>
+      ))}
+      {!loading && !posts.length && <div className="notice">No invoices uploaded for {fustOverviewDate(date)}.</div>}
+
+      <InkoopCollapsibleCard title="Sent to King" count={exportsHistory.length} defaultOpen={false}>
+        <div className="table-wrap">
+          <table className="data-table">
+            <thead><tr><th>Sent</th><th>Invoice</th><th>Stuknummer</th><th>Status</th><th>By</th><th>Batch</th></tr></thead>
+            <tbody>
+              {exportsHistory.map((row) => (
+                <tr key={row.invoice_number}>
+                  <td>{row.exported_at ? new Date(row.exported_at).toLocaleString("nl-NL") : "-"}</td>
+                  <td><InkoopInvoiceLink invoiceNumber={row.invoice_number} /></td>
+                  <td>{row.stuknummer || "-"}</td>
+                  <td>{KING_EXPORT_STATUS_LABELS[row.status] || row.status}{row.error_text ? ` -- ${row.error_text}` : ""}</td>
+                  <td>{row.exported_by || "-"}</td>
+                  <td>{row.batch_id}</td>
+                </tr>
+              ))}
+              {!exportsHistory.length && <tr><td colSpan={6}>Nothing sent yet.</td></tr>}
+            </tbody>
+          </table>
+        </div>
+      </InkoopCollapsibleCard>
+
+      {settings && <InkoopKingSettingsCard settings={settings} onSaved={(next) => { setSettings(next); loadDay(); }} />}
+      <InkoopKingLedgerCard ledger={ledger} onChanged={(next) => { setLedger(next); loadDay(); }} />
     </>
   );
 }
@@ -14915,20 +15308,22 @@ function InkoopControlePage({ currentUser }) {
   }, [selectedCompany]);
 
   async function runComparison() {
-    if (!erpFile || !veilingZip) {
-      setError("Choose both the ERP export and the veiling emails zip first.");
+    // The ERP export is optional: invoices alone can be uploaded too (e.g.
+    // FD/HV invoices, or a day that's only needed for Import naar King).
+    if (!veilingZip) {
+      setError("Choose the veiling emails zip first (the ERP export is optional).");
       return;
     }
     setComparing(true);
     setError("");
     setMessage("");
     try {
-      const [erpBase64, veilingBase64] = await Promise.all([fileToBase64(erpFile), fileToBase64(veilingZip)]);
+      const [erpBase64, veilingBase64] = await Promise.all([erpFile ? fileToBase64(erpFile) : null, fileToBase64(veilingZip)]);
       const payload = await apiJson("/api/inkoop/veiling/compare", {
         method: "POST",
         body: JSON.stringify({
           run_date: runDate,
-          erp_file: { name: erpFile.name, content_base64: erpBase64 },
+          erp_file: erpFile ? { name: erpFile.name, content_base64: erpBase64 } : null,
           veiling_zip: { name: veilingZip.name, content_base64: veilingBase64 },
           company: selectedCompany || undefined,
         }),
@@ -15064,6 +15459,7 @@ function InkoopControlePage({ currentUser }) {
         <button type="button" className={activeTab === "dashboard" ? "active" : ""} onClick={() => setActiveTab("dashboard")}>Financial Dashboard</button>
         <button type="button" className={activeTab === "followup" ? "active" : ""} onClick={() => setActiveTab("followup")}>Follow-up</button>
         <button type="button" className={activeTab === "destinations" ? "active" : ""} onClick={() => setActiveTab("destinations")}>Destinations</button>
+        <button type="button" className={activeTab === "king" ? "active" : ""} onClick={() => setActiveTab("king")}>Import naar King</button>
         <button type="button" className={activeTab === "settings" ? "active" : ""} onClick={() => setActiveTab("settings")}>Settings</button>
       </div>
 
@@ -15195,6 +15591,8 @@ function InkoopControlePage({ currentUser }) {
       )}
 
       {activeTab === "overview" && <InkoopOverviewTab />}
+
+      {activeTab === "king" && <InkoopKingTab />}
 
       {activeTab === "compare" && (
       <>

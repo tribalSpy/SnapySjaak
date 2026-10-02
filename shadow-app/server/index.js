@@ -7,6 +7,16 @@ import { spawn, execSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import zlib from "node:zlib";
 import { sealBuffer, openSealed } from "./backup/crypto.js";
+import {
+  buildKingArchiefXml,
+  buildKingJournaalXml,
+  buildKingJournalPost,
+  kingLedgerKey,
+  normalizeKingLedgerMap,
+  normalizeKingLedgerRow,
+  normalizeKingSettings,
+  seedKingLedgerMap,
+} from "./king.js";
 import { buildBackupManifest, isAllowedBackupPath } from "./backup/manifest.js";
 import {
   claimNextLlmJob,
@@ -23,6 +33,12 @@ import {
   getInkoopCompanies,
   clearInkoopUploads,
   getInkoopInvoiceSummaryLines,
+  saveInkoopInvoiceHeaders,
+  getInkoopInvoiceHeaders,
+  getInkoopInvoiceLinesByInvoiceNumbers,
+  getKingExports,
+  saveKingExports,
+  updateKingExportBatchStatus,
   getInkoopDispatchLots,
   getInkoopDispatchLotsByLots,
   getInkoopErpLines,
@@ -6770,8 +6786,13 @@ function inkoopInvoiceLineIsPackagingOrAdmin(line) {
 // Shared by the line matcher and the grower-day aggregate, so both agree on
 // what is a real purchase: packaging/admin (VBN 67/128), emballage, and any
 // no-quantity or no-value line never are.
+// FD (dienst) and HV (handel verkoop -- our own sales through
+// FloraHolland) invoices carry no purchases at all; they only go to King.
+const INKOOP_NON_PURCHASE_INVOICE_TYPES = new Set(["dienst", "handel_verkoop"]);
+
 function inkoopInvoiceLineIsNotAPurchase(line) {
-  return line?.quantity === null || line?.quantity === undefined
+  return INKOOP_NON_PURCHASE_INVOICE_TYPES.has(String(line?.invoice_type || ""))
+    || line?.quantity === null || line?.quantity === undefined
     || inkoopInvoiceLineIsPackagingOrAdmin(line)
     || /^emballage/i.test(String(line?.description || "").trim())
     || inkoopInvoiceLineHasNoValue(line);
@@ -7120,7 +7141,7 @@ function matchInkoopVeilingLines(erpRows, invoices, supplierMap = {}, supplierNa
   };
 }
 
-const defaultInkoopState = { imports: [], supplier_map: {}, supplier_name_map: {}, supplier_fh_map: {}, supplier_bw_map: {}, customer_map: {}, manual_supplier_links: [], facturation_groups: [] };
+const defaultInkoopState = { imports: [], supplier_map: {}, supplier_name_map: {}, supplier_fh_map: {}, supplier_bw_map: {}, customer_map: {}, manual_supplier_links: [], facturation_groups: [], king_ledger_map: null, king_settings: {} };
 
 // Every compare/upload used to be matched in isolation and its full result
 // (every matched/mismatched/unmatched line) pushed onto this list forever --
@@ -7298,6 +7319,10 @@ function normalizeInkoopState(state) {
     supplier_bw_map: normalizeInkoopSupplierBwMap(state?.supplier_bw_map),
     manual_supplier_links: (Array.isArray(state?.manual_supplier_links) ? state.manual_supplier_links : []).map(normalizeInkoopManualSupplierLink),
     facturation_groups: (Array.isArray(state?.facturation_groups) ? state.facturation_groups : []).map(normalizeInkoopFacturationGroup),
+    // King ERP export (king.js): the "kingkoppel" ledger table (seeded from
+    // finance's PDF until first edited) and the King settings.
+    king_ledger_map: normalizeKingLedgerMap(state?.king_ledger_map),
+    king_settings: normalizeKingSettings(state?.king_settings),
   };
 }
 
@@ -7371,10 +7396,41 @@ function flattenInkoopInvoiceLines(invoices, sourceFileName, fallbackDate) {
         // InvoiceeParty) -- company_name_override covers that case.
         company_name: normalizeUkdocsText(line?.company_name) || normalizeUkdocsText(invoice?.company_name_override),
         product_type_code: normalizeUkdocsText(line?.product_type_code),
+        // King export fields (see king.js buildKingJournalPost) -- kept in
+        // the raw jsonb, not separate columns.
+        line_id: normalizeUkdocsText(line?.line_id),
+        prd_id: normalizeUkdocsText(line?.prd_id),
+        vat_category: normalizeUkdocsText(line?.vat_category).toUpperCase(),
+        trigger_code: normalizeUkdocsText(line?.trigger_code),
+        account_id: normalizeUkdocsText(line?.account_id),
+        summary_ref: normalizeUkdocsText(line?.summary_ref),
+        marketplace_id: normalizeUkdocsText(line?.marketplace_id),
+        marketplace_name: normalizeUkdocsText(line?.marketplace_name),
+        market_form_code: normalizeUkdocsText(line?.market_form_code),
       });
     });
   }
   return flattened;
+}
+
+// One header row per invoice (total incl. BTW, BTW per category, klok
+// location) for the King export -- from the XML header the worker parses.
+function buildInkoopInvoiceHeaders(invoices, sourceFileName) {
+  return (Array.isArray(invoices) ? invoices : [])
+    .filter((invoice) => invoice?.invoice_number && invoice?.header && typeof invoice.header === "object")
+    .map((invoice) => ({
+      invoice_number: normalizeUkdocsText(invoice.invoice_number),
+      invoice_type: normalizeUkdocsText(invoice.type),
+      company_number: normalizeUkdocsText(invoice.supplier_number),
+      company_name: normalizeUkdocsText(invoice.header.invoicee_name),
+      invoice_date: normalizeUkdocsText(invoice.header.issue_date).slice(0, 10) || null,
+      grand_total: invoice.header.grand_total,
+      currency: normalizeUkdocsText(invoice.header.currency) || "EUR",
+      vat_subtotals: Array.isArray(invoice.header.vat_subtotals) ? invoice.header.vat_subtotals : [],
+      klok_location: normalizeUkdocsText(invoice.header.klok_location),
+      klok_locations: Array.isArray(invoice.header.klok_locations) ? invoice.header.klok_locations : [],
+      source_file_name: sourceFileName || invoice.file_name || "",
+    }));
 }
 
 function groupInkoopInvoiceLinesByInvoice(flatLines) {
@@ -7792,6 +7848,122 @@ function buildInkoopInvoiceSummary(lines) {
       String(right.invoice_date).localeCompare(String(left.invoice_date)) || left.invoice_number.localeCompare(right.invoice_number)
     )),
   })).sort((left, right) => String(left.company_number).localeCompare(String(right.company_number)));
+}
+
+// ---- King export (see king.js) ----------------------------------------
+
+// Every uploaded invoice of the date with the journal it would get.
+async function buildKingPostsForDate(state, date) {
+  const headers = await getInkoopInvoiceHeaders({ from: date, to: date });
+  const numbers = headers.map((header) => header.invoice_number);
+  const [lines, exports] = await Promise.all([
+    getInkoopInvoiceLinesByInvoiceNumbers(numbers),
+    getKingExports(numbers),
+  ]);
+  const linesByInvoice = new Map();
+  for (const line of lines) {
+    const key = String(line?.invoice_number || "");
+    if (!linesByInvoice.has(key)) {
+      linesByInvoice.set(key, []);
+    }
+    linesByInvoice.get(key).push(line);
+  }
+  const exportByInvoice = new Map(exports.map((row) => [row.invoice_number, row]));
+  return headers.map((header) => {
+    const post = buildKingJournalPost(header, linesByInvoice.get(header.invoice_number) || [], state.king_ledger_map, state.king_settings);
+    const hasPdf = existsSync(inkoopInvoicePdfPath(header.invoice_number));
+    if (!hasPdf) {
+      post.problems.push("Invoice PDF not uploaded -- King's archive needs it.");
+    }
+    return {
+      ...post,
+      company_name: header.company_name || "",
+      has_pdf: hasPdf,
+      export: exportByInvoice.get(header.invoice_number) || null,
+    };
+  });
+}
+
+async function selectKingPosts(state, body) {
+  const date = String(body?.date || "").slice(0, 10);
+  if (!date) {
+    throw new Error("date is required");
+  }
+  const wanted = new Set((Array.isArray(body?.invoice_numbers) ? body.invoice_numbers : []).map((item) => String(item || "").trim()).filter(Boolean));
+  const posts = (await buildKingPostsForDate(state, date)).filter((post) => wanted.has(post.invoice_number));
+  if (!posts.length) {
+    throw new Error("Select at least one invoice");
+  }
+  return posts;
+}
+
+async function sendKingExport(body, requestUser) {
+  const state = await readInkoopState();
+  const settings = state.king_settings;
+  if (!settings.archiefsoort || !settings.king_pdf_dir) {
+    throw new Error("Fill in the King archiefsoort and PDF folder in the King settings first");
+  }
+  const posts = await selectKingPosts(state, body);
+  const blocked = posts.filter((post) => post.problems.length);
+  if (blocked.length) {
+    throw new Error(`Not sent -- fix these first: ${blocked.map((post) => `${post.invoice_number}: ${post.problems[0]}`).join(" / ")}`);
+  }
+  const already = posts.filter((post) => post.export && post.export.status !== "failed");
+  if (already.length && body?.allow_reexport !== true) {
+    throw new Error(`Already sent to King: ${already.map((post) => post.invoice_number).join(", ")} -- sending again books them twice in King. Confirm "send again" to do it anyway.`);
+  }
+
+  let nextStuknummer = settings.next_stuknummer;
+  const numbered = posts.map((post) => {
+    const stuknummer = nextStuknummer > 0 ? nextStuknummer : 0;
+    if (nextStuknummer > 0) {
+      nextStuknummer += 1;
+    }
+    return { ...post, stuknummer };
+  });
+  const batchId = `king-${String(body?.date).slice(0, 10)}-${crypto.randomUUID().slice(0, 8)}`;
+  const journaalXml = buildKingJournaalXml(numbered, { boekdatum: body.date, dagboek: settings.dagboek, definitief: settings.bg_definitief });
+  const archiefXml = buildKingArchiefXml(numbered, { archiefsoort: settings.archiefsoort, pdfDir: settings.king_pdf_dir });
+  const pdfs = [];
+  for (const post of numbered) {
+    pdfs.push({
+      file_name: `${post.extern_id}.pdf`,
+      content_base64: (await fs.readFile(inkoopInvoicePdfPath(post.invoice_number))).toString("base64"),
+    });
+  }
+  const stamp = new Date().toISOString().replace(/[-:]/g, "").slice(0, 15);
+  const job = await createLlmJob({
+    job_type: "king_export",
+    created_by: requestUser.username,
+    priority: 30,
+    max_attempts: 3,
+    payload_json: {
+      batch_id: batchId,
+      date: body.date,
+      pdfs,
+      archief_file_name: `archief_${batchId}_${stamp}.xml`,
+      archief_xml: archiefXml,
+      journaal_file_name: `journaal_${batchId}_${stamp}.xml`,
+      journaal_xml: journaalXml,
+      invoice_numbers: numbered.map((post) => post.invoice_number),
+    },
+  });
+  await saveKingExports(numbered.map((post) => ({
+    invoice_number: post.invoice_number,
+    batch_id: batchId,
+    stuknummer: post.stuknummer || null,
+    extern_id: post.extern_id,
+    status: "queued",
+    job_id: job.id,
+    exported_by: requestUser.username,
+    journal_json: { lines: post.lines, totals: post.totals },
+  })));
+  if (nextStuknummer !== settings.next_stuknummer) {
+    const latest = await readInkoopState();
+    latest.king_settings = normalizeKingSettings({ ...latest.king_settings, next_stuknummer: nextStuknummer });
+    await writeInkoopState(latest);
+  }
+  return { batch_id: batchId, job_id: job.id, count: numbered.length };
 }
 
 async function computeInkoopLiveMatch(state, { from, to }) {
@@ -16205,6 +16377,9 @@ async function handleApi(req, res, url) {
     if (job.job_type === "excel_to_pdf" && job.collection_id) {
       await saveUkdocsGeneratedInvoicePdfResult(job);
     }
+    if (job.job_type === "king_export" && job.payload_json?.batch_id) {
+      await updateKingExportBatchStatus(job.payload_json.batch_id, "delivered");
+    }
     if (job.job_type === "ukdocs_csi_audit" && job.collection_id) {
       const csiGroupId = String(job?.payload_json?.csi_group_id || "").trim();
       if (csiGroupId) {
@@ -16306,6 +16481,10 @@ async function handleApi(req, res, url) {
     if (!job) {
       sendJson(res, 404, { error: "LLM job not found for this agent" });
       return;
+    }
+    if (job.job_type === "king_export" && job.payload_json?.batch_id) {
+      // A retried delivery stays "queued"; only a final failure is shown as failed.
+      await updateKingExportBatchStatus(job.payload_json.batch_id, job.status === "failed" ? "failed" : "queued", String(body.error_text || "Job failed"));
     }
     if (job.job_type === "ukdocs_csi_audit" && job.collection_id) {
       const label = String(job?.payload_json?.csi_document_label || "").trim();
@@ -19666,6 +19845,146 @@ async function handleApi(req, res, url) {
     return;
   }
 
+  // ---- Import naar King (king.js) --------------------------------------
+  // One day's invoices with the journal each would get, its blocking
+  // problems/warnings, PDF presence and King export status.
+  if (url.pathname === "/api/inkoop/king/day" && req.method === "GET") {
+    if (!requirePermission(res, requestUser, PERMISSIONS.INKOOP_VIEW)) {
+      return;
+    }
+    const date = String(url.searchParams.get("date") || localDateIso()).slice(0, 10);
+    try {
+      const state = await readInkoopState();
+      const posts = await buildKingPostsForDate(state, date);
+      sendJson(res, 200, {
+        date,
+        posts,
+        settings: state.king_settings,
+        ledger_count: state.king_ledger_map.length,
+      });
+    } catch (error) {
+      sendJson(res, 400, { error: error instanceof Error ? error.message : String(error) });
+    }
+    return;
+  }
+
+  // Downloadable preview of exactly what would be sent (journaal + archief).
+  if (url.pathname === "/api/inkoop/king/preview" && req.method === "POST") {
+    if (!requirePermission(res, requestUser, PERMISSIONS.INKOOP_VIEW)) {
+      return;
+    }
+    const body = await readRequestJson(req);
+    try {
+      const state = await readInkoopState();
+      const selected = await selectKingPosts(state, body);
+      const numbered = selected.map((post) => ({ ...post, stuknummer: post.export?.stuknummer || 0 }));
+      sendJson(res, 200, {
+        journaal_xml: buildKingJournaalXml(numbered, { boekdatum: body?.date, dagboek: state.king_settings.dagboek, definitief: state.king_settings.bg_definitief }),
+        archief_xml: buildKingArchiefXml(numbered, { archiefsoort: state.king_settings.archiefsoort, pdfDir: state.king_settings.king_pdf_dir }),
+        count: numbered.length,
+      });
+    } catch (error) {
+      sendJson(res, 400, { error: error instanceof Error ? error.message : String(error) });
+    }
+    return;
+  }
+
+  // Sends the selected invoices to King: one king_export job picked up by
+  // king-poller-app on the office network, which writes the PDFs, the
+  // archive XML and (once King has read that) the journal XML into King's
+  // import folder. Recorded in king_exports first, so nothing can go twice.
+  if (url.pathname === "/api/inkoop/king/send" && req.method === "POST") {
+    if (!requirePermission(res, requestUser, PERMISSIONS.INKOOP_VIEW)) {
+      return;
+    }
+    if (!isDatabaseEnabled()) {
+      sendJson(res, 503, { error: "Database is not enabled" });
+      return;
+    }
+    const body = await readRequestJson(req);
+    try {
+      const result = await sendKingExport(body, requestUser);
+      sendJson(res, 200, result);
+    } catch (error) {
+      sendJson(res, 400, { error: error instanceof Error ? error.message : String(error) });
+    }
+    return;
+  }
+
+  if (url.pathname === "/api/inkoop/king/exports" && req.method === "GET") {
+    if (!requirePermission(res, requestUser, PERMISSIONS.INKOOP_VIEW)) {
+      return;
+    }
+    sendJson(res, 200, { exports: await getKingExports() });
+    return;
+  }
+
+  if (url.pathname === "/api/inkoop/king/settings" && req.method === "GET") {
+    if (!requirePermission(res, requestUser, PERMISSIONS.INKOOP_VIEW)) {
+      return;
+    }
+    const state = await readInkoopState();
+    sendJson(res, 200, { settings: state.king_settings, ledger: state.king_ledger_map });
+    return;
+  }
+
+  if (url.pathname === "/api/inkoop/king/settings" && req.method === "POST") {
+    if (!requirePermission(res, requestUser, PERMISSIONS.INKOOP_VIEW)) {
+      return;
+    }
+    const body = await readRequestJson(req);
+    const state = await readInkoopState();
+    state.king_settings = normalizeKingSettings({ ...state.king_settings, ...(body?.settings || {}) });
+    await writeInkoopState(state);
+    sendJson(res, 200, { settings: state.king_settings });
+    return;
+  }
+
+  // Ledger table ("kingkoppel") edits: upsert one row (by prd_id + btw;
+  // original_key lets a row's own key be changed), delete one, or reset to
+  // finance's original table.
+  if (url.pathname === "/api/inkoop/king/ledger" && req.method === "POST") {
+    if (!requirePermission(res, requestUser, PERMISSIONS.INKOOP_VIEW)) {
+      return;
+    }
+    const body = await readRequestJson(req);
+    const state = await readInkoopState();
+    if (body?.reset === true) {
+      state.king_ledger_map = seedKingLedgerMap();
+    } else {
+      const row = normalizeKingLedgerRow(body?.row);
+      if (!row.prd_id || !row.btw || !row.gb_fl) {
+        sendJson(res, 400, { error: "Prd Id, BTW and GB FL are required" });
+        return;
+      }
+      const originalKey = String(body?.original_key || "").trim();
+      const newKey = kingLedgerKey(row.prd_id, row.btw);
+      state.king_ledger_map = [
+        ...state.king_ledger_map.filter((item) => {
+          const key = kingLedgerKey(item.prd_id, item.btw);
+          return key !== newKey && (!originalKey || key !== originalKey);
+        }),
+        row,
+      ];
+    }
+    await writeInkoopState(state);
+    sendJson(res, 200, { ledger: state.king_ledger_map });
+    return;
+  }
+
+  if (url.pathname === "/api/inkoop/king/ledger" && req.method === "DELETE") {
+    if (!requirePermission(res, requestUser, PERMISSIONS.INKOOP_VIEW)) {
+      return;
+    }
+    const body = await readRequestJson(req);
+    const key = String(body?.key || "").trim();
+    const state = await readInkoopState();
+    state.king_ledger_map = state.king_ledger_map.filter((item) => kingLedgerKey(item.prd_id, item.btw) !== key);
+    await writeInkoopState(state);
+    sendJson(res, 200, { ledger: state.king_ledger_map });
+    return;
+  }
+
   // Inkoop Controle's first page: invoices per company (totals by type, plus
   // the invoice list) for a date range.
   if (url.pathname === "/api/inkoop/invoice-summary" && req.method === "GET") {
@@ -19774,7 +20093,10 @@ async function handleApi(req, res, url) {
     try {
       const state = await readInkoopState();
       const runDate = body?.run_date || localDateIso();
-      const erpRows = await parseInkoopErpUpload(body?.erp_file);
+      // The ERP export is optional: invoices can be uploaded on their own
+      // (e.g. FD/HV invoices or a day that's only needed for King).
+      const hasErpFile = Boolean(body?.erp_file?.content_base64);
+      const erpRows = hasErpFile ? await parseInkoopErpUpload(body?.erp_file) : [];
       const veiling = await parseInkoopVeilingUpload(body?.veiling_zip);
       const flatInvoiceLines = flattenInkoopInvoiceLines(veiling.invoices, body?.veiling_zip?.name, runDate);
 
@@ -19791,13 +20113,16 @@ async function handleApi(req, res, url) {
       // parsing hiccup here must never block the invoice reconciliation.
       let dispatchLotCount = 0;
       try {
-        const dispatchLots = await parseInkoopDispatchDump(body?.erp_file);
-        await saveInkoopDispatchLots(dispatchLots);
-        dispatchLotCount = dispatchLots.length;
+        if (hasErpFile) {
+          const dispatchLots = await parseInkoopDispatchDump(body?.erp_file);
+          await saveInkoopDispatchLots(dispatchLots);
+          dispatchLotCount = dispatchLots.length;
+        }
       } catch {
         dispatchLotCount = 0;
       }
       await saveInkoopInvoiceLines(flatInvoiceLines);
+      await saveInkoopInvoiceHeaders(buildInkoopInvoiceHeaders(veiling.invoices, body?.veiling_zip?.name));
       await saveInkoopInvoicePdfs(veiling.pdfs);
       const rawResult = await computeInkoopLiveMatch(state, inkoopDefaultWindowRange(INKOOP_MATCH_WINDOW_DAYS));
       const result = filterInkoopResultsByCompany(rawResult, body?.company);

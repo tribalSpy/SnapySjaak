@@ -593,12 +593,150 @@ export async function clearInkoopUploads() {
     return { cleared: false };
   }
   const counts = {};
-  for (const table of ["inkoop_erp_lines", "inkoop_invoice_lines", "inkoop_dispatch_lots", "inkoop_issue_status"]) {
+  for (const table of ["inkoop_erp_lines", "inkoop_invoice_lines", "inkoop_invoice_headers", "inkoop_dispatch_lots", "inkoop_issue_status"]) {
     const result = await pool.query(`SELECT COUNT(*)::int AS count FROM ${table}`);
     counts[table] = result.rows[0]?.count || 0;
   }
-  await pool.query("TRUNCATE inkoop_erp_lines, inkoop_invoice_lines, inkoop_dispatch_lots, inkoop_issue_status");
+  await pool.query("TRUNCATE inkoop_erp_lines, inkoop_invoice_lines, inkoop_invoice_headers, inkoop_dispatch_lots, inkoop_issue_status");
   return { cleared: true, counts };
+}
+
+export async function saveInkoopInvoiceHeaders(headers) {
+  if (!pool || !Array.isArray(headers) || !headers.length) {
+    return;
+  }
+  for (const header of headers.filter((item) => item?.invoice_number)) {
+    await pool.query(
+      `
+        INSERT INTO inkoop_invoice_headers (
+          invoice_number, invoice_type, company_number, company_name, invoice_date, grand_total, currency,
+          vat_subtotals, klok_location, klok_locations, source_file_name
+        )
+        VALUES ($1, $2, $3, $4, $5::date, $6, $7, $8::jsonb, $9, $10::jsonb, $11)
+        ON CONFLICT (invoice_number) DO UPDATE SET
+          invoice_type = EXCLUDED.invoice_type,
+          company_number = EXCLUDED.company_number,
+          company_name = EXCLUDED.company_name,
+          invoice_date = EXCLUDED.invoice_date,
+          grand_total = EXCLUDED.grand_total,
+          currency = EXCLUDED.currency,
+          vat_subtotals = EXCLUDED.vat_subtotals,
+          klok_location = EXCLUDED.klok_location,
+          klok_locations = EXCLUDED.klok_locations,
+          source_file_name = EXCLUDED.source_file_name,
+          updated_at = now()
+      `,
+      [
+        header.invoice_number,
+        header.invoice_type || "",
+        header.company_number || "",
+        header.company_name || "",
+        header.invoice_date || null,
+        numberOrNull(header.grand_total),
+        header.currency || "EUR",
+        JSON.stringify(Array.isArray(header.vat_subtotals) ? header.vat_subtotals : []),
+        header.klok_location || "",
+        JSON.stringify(Array.isArray(header.klok_locations) ? header.klok_locations : []),
+        header.source_file_name || "",
+      ],
+    );
+  }
+}
+
+export async function getInkoopInvoiceHeaders({ from, to } = {}) {
+  if (!pool || !from || !to) {
+    return [];
+  }
+  const result = await pool.query(
+    `
+      SELECT invoice_number, invoice_type, company_number, company_name,
+        to_char(invoice_date, 'YYYY-MM-DD') AS invoice_date, grand_total::float AS grand_total, currency,
+        vat_subtotals, klok_location, klok_locations, source_file_name
+      FROM inkoop_invoice_headers
+      WHERE invoice_date >= $1::date AND invoice_date <= $2::date
+      ORDER BY company_number, invoice_number
+    `,
+    [from, to],
+  );
+  return result.rows;
+}
+
+// Every stored line of the given invoices (the raw jsonb carries the King
+// fields: prd_id, vat_category, trigger_code, ...).
+export async function getInkoopInvoiceLinesByInvoiceNumbers(invoiceNumbers) {
+  if (!pool || !Array.isArray(invoiceNumbers) || !invoiceNumbers.length) {
+    return [];
+  }
+  const result = await pool.query(
+    "SELECT raw FROM inkoop_invoice_lines WHERE invoice_number = ANY($1::text[]) ORDER BY invoice_number, id",
+    [invoiceNumbers],
+  );
+  return result.rows.map((row) => row.raw);
+}
+
+export async function getKingExports(invoiceNumbers = null) {
+  if (!pool) {
+    return [];
+  }
+  const result = Array.isArray(invoiceNumbers)
+    ? await pool.query(
+      `SELECT invoice_number, batch_id, stuknummer, extern_id, status, job_id, error_text, exported_by,
+         exported_at, delivered_at FROM king_exports WHERE invoice_number = ANY($1::text[])`,
+      [invoiceNumbers],
+    )
+    : await pool.query(
+      `SELECT invoice_number, batch_id, stuknummer, extern_id, status, job_id, error_text, exported_by,
+         exported_at, delivered_at FROM king_exports ORDER BY exported_at DESC LIMIT 500`,
+    );
+  return result.rows;
+}
+
+export async function saveKingExports(rows) {
+  if (!pool || !Array.isArray(rows) || !rows.length) {
+    return;
+  }
+  for (const row of rows) {
+    await pool.query(
+      `
+        INSERT INTO king_exports (invoice_number, batch_id, stuknummer, extern_id, status, job_id, error_text, exported_by, exported_at, delivered_at, journal_json)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, now(), NULL, $9::jsonb)
+        ON CONFLICT (invoice_number) DO UPDATE SET
+          batch_id = EXCLUDED.batch_id,
+          stuknummer = EXCLUDED.stuknummer,
+          extern_id = EXCLUDED.extern_id,
+          status = EXCLUDED.status,
+          job_id = EXCLUDED.job_id,
+          error_text = EXCLUDED.error_text,
+          exported_by = EXCLUDED.exported_by,
+          exported_at = now(),
+          delivered_at = NULL,
+          journal_json = EXCLUDED.journal_json
+      `,
+      [
+        row.invoice_number,
+        row.batch_id,
+        Number.isFinite(Number(row.stuknummer)) ? Number(row.stuknummer) : null,
+        row.extern_id || "",
+        row.status || "queued",
+        row.job_id || "",
+        row.error_text || "",
+        row.exported_by || "",
+        JSON.stringify(row.journal_json || null),
+      ],
+    );
+  }
+}
+
+export async function updateKingExportBatchStatus(batchId, status, errorText = "") {
+  if (!pool || !batchId) {
+    return;
+  }
+  await pool.query(
+    `UPDATE king_exports SET status = $2, error_text = $3,
+       delivered_at = CASE WHEN $2 = 'delivered' THEN now() ELSE delivered_at END
+     WHERE batch_id = $1`,
+    [batchId, status, errorText],
+  );
 }
 
 // Just the columns the per-company invoice summary needs (not the full raw
@@ -1300,7 +1438,8 @@ export async function claimNextLlmJob(agentName, apiKey, options = {}) {
     // every job type it already knows is completely unaffected. The one
     // exception: "shelf_count" is never handed to a poller that didn't ask
     // for it by name, so an unrelated/older poller can never claim (and
-    // wrongly fail) a job type it has no idea how to run.
+    // wrongly fail) a job type it has no idea how to run. Same for
+    // "king_export" (the King ERP delivery poller, king-poller-app).
     const allowedJobTypes = Array.isArray(options.jobTypes) ? options.jobTypes.filter(Boolean) : null;
     const jobResult = await client.query(
       `
@@ -1310,7 +1449,7 @@ export async function claimNextLlmJob(agentName, apiKey, options = {}) {
           AND attempt_count < max_attempts
           AND (
             ($1::text[] IS NOT NULL AND job_type = ANY($1::text[]))
-            OR ($1::text[] IS NULL AND job_type <> 'shelf_count')
+            OR ($1::text[] IS NULL AND job_type NOT IN ('shelf_count', 'king_export'))
           )
         ORDER BY priority DESC, created_at ASC
         LIMIT 1
@@ -1887,6 +2026,52 @@ const databaseMigrations = [
   `,
   `
     CREATE INDEX IF NOT EXISTS inkoop_dispatch_lots_date_idx ON inkoop_dispatch_lots (erp_date)
+  `,
+  // One row per FloraHolland invoice: the totals King's journal export
+  // needs (total incl. BTW, BTW per category, klok location) -- parsed from
+  // the invoice XML header (see inkoop_veiling_worker.py
+  // parse_invoice_header), which the per-line ledger doesn't carry.
+  `
+    CREATE TABLE IF NOT EXISTS inkoop_invoice_headers (
+      invoice_number text PRIMARY KEY,
+      invoice_type text,
+      company_number text,
+      company_name text,
+      invoice_date date,
+      grand_total numeric,
+      currency text,
+      vat_subtotals jsonb NOT NULL DEFAULT '[]'::jsonb,
+      klok_location text,
+      klok_locations jsonb NOT NULL DEFAULT '[]'::jsonb,
+      source_file_name text,
+      imported_at timestamptz NOT NULL DEFAULT now(),
+      updated_at timestamptz NOT NULL DEFAULT now()
+    )
+  `,
+  `
+    CREATE INDEX IF NOT EXISTS inkoop_invoice_headers_date_idx ON inkoop_invoice_headers (invoice_date)
+  `,
+  // What has been sent to King, per invoice -- the single source of truth
+  // that keeps an invoice from being booked twice. Deliberately NOT cleared
+  // by "Start fresh" (clearInkoopUploads): re-uploading an invoice later
+  // must still know it already went to King.
+  `
+    CREATE TABLE IF NOT EXISTS king_exports (
+      invoice_number text PRIMARY KEY,
+      batch_id text NOT NULL,
+      stuknummer integer,
+      extern_id text,
+      status text NOT NULL DEFAULT 'queued',
+      job_id text,
+      error_text text,
+      exported_by text,
+      exported_at timestamptz NOT NULL DEFAULT now(),
+      delivered_at timestamptz,
+      journal_json jsonb
+    )
+  `,
+  `
+    CREATE INDEX IF NOT EXISTS king_exports_batch_idx ON king_exports (batch_id)
   `,
   // Corrected design (superseding a first attempt that invented a new
   // per-trolley identity/ingest pipeline that turned out to be unnecessary):
