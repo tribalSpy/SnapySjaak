@@ -160,9 +160,13 @@ window.WD = (function () {
         };
       }
       const item = byRef[ref];
-      item.scannedCount = Number(e.scannedCount) || item.scannedCount;
+      // Highest seen, not last event wins: the RFID gate's events only know
+      // the LAN backend's own counts, so a gate scan after a phone/handscanner
+      // photo (reported straight to the server) would otherwise drop the
+      // scanned/photo count back down. rfidCount is the gate's own figure.
+      item.scannedCount = Math.max(Number(e.scannedCount) || 0, Number(item.scannedCount) || 0);
       item.rfidCount = Number(e.rfidCount) || item.rfidCount;
-      item.photoCount = Number(e.photoCount) || item.photoCount;
+      item.photoCount = Math.max(Number(e.photoCount) || 0, Number(item.photoCount) || 0);
       if (e.requiresRfid !== undefined) item.requiresRfid = e.requiresRfid !== false;
       if (e.requiresPhoto !== undefined) item.requiresPhoto = e.requiresPhoto !== false;
       item.trolleyCount = Number(e.trolleyCount) || item.trolleyCount;
@@ -179,6 +183,11 @@ window.WD = (function () {
       // it at all -- overall status should say so directly rather than
       // falling through to "Pending" just because nothing's been scanned.
       const nothingRequired = item.requiresRfid === false && item.requiresPhoto === false;
+      // A phone/handscanner photo is a trolley seen too -- same rule as the
+      // server's mergeWarehouseScannedCounts (highest of the two, never the
+      // sum). Also repairs older days, whose photo events carried no
+      // scannedCount of their own.
+      item.scannedCount = Math.max(Number(item.scannedCount) || 0, Number(item.photoCount) || 0);
       item.status = nothingRequired
         ? 'not_required'
         : statusFromCounts(Number(item.scannedCount) || 0, Number(item.trolleyCount) || 0);

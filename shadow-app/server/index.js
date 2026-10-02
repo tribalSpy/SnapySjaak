@@ -4577,16 +4577,18 @@ async function rematchFustReferenceRows(rows) {
       country: row.country,
       carrier1_name: row.carrier1_name,
       carrier2_name: row.carrier2_name,
-    }, { strictCarrier2: true });
+    });
     return {
       ...row,
       matched_customer_name: resolved.matched_by ? resolved.customer_name : "",
       matched_connect_name: resolved.matched_by ? resolved.connect_name : "",
       matched_customer_code: resolved.matched_by ? resolved.customer_code : "",
       matched_by: resolved.matched_by,
+      carrier2_fallback: resolved.carrier2_fallback === true,
+      fallback_note: resolved.fallback_note || "",
       unmatched_reason: resolved.matched_by
         ? ""
-        : resolved.unmatched_reason || `Carrier "${row.carrier2_name || row.carrier1_name || "-"}" (${row.country}) is not in the carrier/customer table`,
+        : `Neither Carrier 1 "${row.carrier1_name || "-"}" nor Carrier 2 "${row.carrier2_name || "-"}" (${row.country}) is in the carrier/customer table`,
     };
   });
 }
@@ -4643,6 +4645,17 @@ async function summarizeFustReferenceActionsByCarrier(date) {
     pendingByKey.get(matchKey).codes.push(row.code);
   }
 
+  const fallbackByKey = new Map();
+  for (const row of rows) {
+    if (row.matched_by && row.carrier2_fallback) {
+      const matchKey = fustReferenceMatchKey(row);
+      if (!fallbackByKey.has(matchKey)) {
+        fallbackByKey.set(matchKey, []);
+      }
+      fallbackByKey.get(matchKey).push({ code: row.code, carrier2_name: row.carrier2_name, ready: fustReferenceActionIsReady(row) });
+    }
+  }
+
   const allKeys = new Set([...readyGroups.keys(), ...pendingByKey.keys()]);
   const carriers = [...allKeys].map((matchKey) => {
     const ready = readyGroups.get(matchKey) || null;
@@ -4658,6 +4671,7 @@ async function summarizeFustReferenceActionsByCarrier(date) {
       pending_codes: pending?.codes || [],
       metrics: ready?.metrics || emptyFustMetrics(),
       is_ready: Boolean(ready),
+      fallback_codes: fallbackByKey.get(matchKey) || [],
     };
   }).sort((left, right) => String(left.customer_name || "").localeCompare(String(right.customer_name || "")));
 
@@ -4862,29 +4876,19 @@ function matchFustMetaRecord(records, country, customerName) {
     || null;
 }
 
-// strictCarrier2 (the Fust API reference import): a filled-in Carrier 2 that
-// isn't in the carrier/customer table is NOT silently booked to Carrier 1
-// -- confirmed real: codes with Carrier 2 "ML Express" landed on Breewel's
-// OUT action. Such a code stays unmatched (unmatched_reason says which name
-// to add) until the carrier exists, so it can never be imported under the
-// wrong customer. The Excel importer keeps its original fallback.
+// A filled-in Carrier 2 that isn't in the carrier/customer table falls back
+// to Carrier 1 -- wanted for some carriers (user-confirmed: "Frigo-Est"
+// should be booked to Carrier 1), but it used to happen silently (ML
+// Express codes landed on Breewel unnoticed). The result now always says
+// so: carrier2_fallback + fallback_note, shown in the import summary and
+// the code list, never blocked. Add the Carrier 2 (or an Alias) to the
+// table when it should get its own action instead.
 function resolveFustImportMeta(metaRecords, record, options = {}) {
   const country = String(record?.country || "").trim().toUpperCase();
   const carrier1Name = String(record?.carrier1_name || record?.customer_name || "").trim();
   const carrier2Name = String(record?.carrier2_name || "").trim();
   const carrier1Meta = carrier1Name ? matchFustMetaRecord(metaRecords, country, carrier1Name) : null;
   const carrier2Meta = carrier2Name ? matchFustMetaRecord(metaRecords, country, carrier2Name) : null;
-
-  if (options.strictCarrier2 && carrier2Name && !carrier2Meta) {
-    return {
-      customer_name: carrier2Name,
-      connect_name: "",
-      customer_code: "",
-      matched_by: "",
-      match_name: "",
-      unmatched_reason: `Carrier 2 "${carrier2Name}" (${country}) is not in the carrier/customer table -- add it as a row, or put "${carrier2Name}" in the Alias column of the matching row`,
-    };
-  }
 
   if (carrier2Meta) {
     return {
@@ -4897,12 +4901,17 @@ function resolveFustImportMeta(metaRecords, record, options = {}) {
   }
 
   if (carrier1Meta) {
+    const fallback = Boolean(carrier2Name);
     return {
       customer_name: carrier1Meta.customer_name,
       connect_name: carrier1Meta.connect_name || carrier1Meta.customer_code || "",
       customer_code: carrier1Meta.customer_code || carrier1Meta.connect_name || "",
       matched_by: "carrier1",
       match_name: carrier1Name,
+      carrier2_fallback: fallback,
+      fallback_note: fallback
+        ? `Carrier 2 "${carrier2Name}" is not in the carrier/customer table, so this goes to Carrier 1 (${carrier1Meta.customer_name}). Add "${carrier2Name}" as a row or Alias if it should get its own action.`
+        : "",
     };
   }
 
@@ -5138,7 +5147,7 @@ function mapFustApiRow(row, date, metaRecords) {
   const code = String(row?.Code || "").trim();
   const carrier1Name = String(row?.["Carrier 1"] || "").trim();
   const carrier2Name = String(row?.["Carrier 2"] || "").trim();
-  const resolvedMeta = resolveFustImportMeta(metaRecords, { country, carrier1_name: carrier1Name, carrier2_name: carrier2Name }, { strictCarrier2: true });
+  const resolvedMeta = resolveFustImportMeta(metaRecords, { country, carrier1_name: carrier1Name, carrier2_name: carrier2Name });
   return {
     id: `${date}|${code}`,
     action_date: date,
@@ -9224,6 +9233,34 @@ function buildShelfCountJobPayload({ photoCount, trolleyCount }) {
 // reference's trolleyCount can be more than 1 with no way to tell individual
 // trolleys apart) -- counting operates per REFERENCE, using all of that
 // reference's own Drive folder photos together, not per trolley.
+// Same status rule as warehouse-dashboard/public/data.js's statusFromCounts.
+function warehouseStatusFromCounts(scanned, expected, required = true) {
+  if (!required) return "not_required";
+  if (scanned <= 0) return "pending";
+  if (expected <= 0) return "extra";
+  if (scanned < expected) return "partial";
+  if (scanned === expected) return "scanned";
+  return "extra";
+}
+
+// A trolley can be counted by the RFID gate (serverBackend.js's own
+// scannedCount) or by a phone/handscanner photo reported straight to Render
+// (photoCount). There's no trolley identity to tell whether both saw the
+// same trolley, so the reference's scanned count is the higher of the two
+// -- never their sum (that would double count a trolley seen both ways),
+// and never just the photo count (that used to wipe a higher RFID count).
+function mergeWarehouseScannedCounts(row) {
+  const trolleyCount = Number(row?.trolleyCount) || 0;
+  const scannedCount = Math.max(Number(row?.scannedCount) || 0, Number(row?.photoCount) || 0);
+  const nothingRequired = row?.requiresRfid === false && row?.requiresPhoto === false;
+  return {
+    ...row,
+    scannedCount,
+    status: nothingRequired ? "not_required" : warehouseStatusFromCounts(scannedCount, trolleyCount),
+    photoStatus: warehouseStatusFromCounts(Number(row?.photoCount) || 0, trolleyCount, row?.requiresPhoto !== false),
+  };
+}
+
 function computeCompletedWarehouseReferencesForDate(events) {
   const byReference = new Map();
   for (const event of Array.isArray(events) ? events : []) {
@@ -9238,13 +9275,24 @@ function computeCompletedWarehouseReferencesForDate(events) {
     byReference.set(reference, {
       customer_reference: reference,
       trolley_count: Number(event.trolleyCount) || previous.trolley_count || 0,
-      photo_count: Number(event.photoCount) || previous.photo_count || 0,
+      // Highest seen, not last-write-wins: a later RFID-gate event can carry
+      // the LAN backend's own (lower) photoCount after a phone photo raised it.
+      photo_count: Math.max(Number(event.photoCount) || 0, previous.photo_count || 0),
       requires_photo: event.requiresPhoto !== undefined ? event.requiresPhoto !== false : previous.requires_photo !== false,
     });
   }
-  return [...byReference.values()].filter((row) => (
-    row.requires_photo !== false && row.trolley_count > 0 && row.photo_count >= row.trolley_count
-  ));
+  // Every reference scanned that day is a candidate -- its Drive photo
+  // folder is what decides whether there's anything to count. Confirmed
+  // real: FFP codes with photos "Not needed" and a Partial RFID scan still
+  // had real photo folders, which were reported as unmatched and never
+  // counted. photos_complete keeps the old, strict rule only for deciding
+  // when a MISSING folder is worth reporting.
+  return [...byReference.values()]
+    .filter((row) => row.trolley_count > 0)
+    .map((row) => ({
+      ...row,
+      photos_complete: row.requires_photo !== false && row.photo_count >= row.trolley_count,
+    }));
 }
 
 // Creates one shelf_count job per fully-photographed reference that day,
@@ -9279,12 +9327,17 @@ async function runShelfCountNightlyTrigger(explicitDate) {
     const expectedFolderBases = new Set();
 
     for (const row of completedReferences) {
-      totals.checked += 1;
       const folderName = shelfCountFolderName(row.customer_reference, runDate);
       expectedFolderBases.add(folderName);
 
       const found = await findShelfCountFoldersAcrossAccounts(driveAccounts, folderName);
 
+      if (!found && !row.photos_complete) {
+        // Photos weren't required/complete for this reference and none were
+        // taken -- nothing to count, nothing to report.
+        continue;
+      }
+      totals.checked += 1;
       if (!found) {
         totals.missing_photos += 1;
         issues.push({ type: "missing_photos", customer_reference: row.customer_reference, folder_name: folderName });
@@ -16403,9 +16456,19 @@ async function handleApi(req, res, url) {
         nextStatus = { ...incomingStatus };
         for (const [location, row] of Object.entries(nextStatus)) {
           const previous = currentStatus?.[location];
-          if (previous && Number(previous.photoCount) > Number(row?.photoCount || 0)) {
-            nextStatus[location] = { ...row, photoCount: previous.photoCount, photoStatus: previous.photoStatus };
-          }
+          // Only carry a phone photo count over for the SAME reference -- a
+          // location reused for another reference must start from its own.
+          const sameReference = previous
+            && String(previous.reference || "").trim().toUpperCase() === String(row?.reference || "").trim().toUpperCase();
+          const photoCount = sameReference
+            ? Math.max(Number(previous.photoCount) || 0, Number(row?.photoCount) || 0)
+            : Number(row?.photoCount) || 0;
+          const keepLastScan = sameReference && String(previous.lastScannedAt || "") > String(row?.lastScannedAt || "");
+          nextStatus[location] = mergeWarehouseScannedCounts({
+            ...row,
+            photoCount,
+            ...(keepLastScan ? { lastScannedBy: previous.lastScannedBy, lastScannedAt: previous.lastScannedAt } : {}),
+          });
         }
       }
       await upsertWarehouseStatus(nextStatus);
@@ -16440,42 +16503,50 @@ async function handleApi(req, res, url) {
     // periodic push, since serverBackend.js has no idea it happened.
     const currentStatus = await getWarehouseStatus();
     const nextStatus = { ...currentStatus };
-    let updatedPhotoCount = null;
+    let updated = null;
+    const scannedAt = new Date().toISOString();
     for (const [location, row] of Object.entries(currentStatus || {})) {
       if (String(row?.reference || "").trim().toUpperCase() !== reference) {
         continue;
       }
-      const trolleyCount = Number(row.trolleyCount) || 0;
-      const requiresPhoto = row.requiresPhoto !== false;
-      const photoCount = (Number(row.photoCount) || 0) + 1;
-      const photoStatus = !requiresPhoto
-        ? "not_required"
-        : photoCount < trolleyCount ? "partial" : photoCount === trolleyCount ? "scanned" : "extra";
-      nextStatus[location] = {
+      // One photo = one trolley seen. Previously this set scannedCount and
+      // status straight to the photo count -- lowering a higher RFID count,
+      // and writing a scan event with no scannedCount at all, so the
+      // dashboard's day view and its scanned totals never moved.
+      nextStatus[location] = mergeWarehouseScannedCounts({
         ...row,
-        photoCount,
-        photoStatus,
-        scannedCount: photoCount,
-        status: photoStatus,
+        photoCount: (Number(row.photoCount) || 0) + 1,
         lastScannedBy: scannerId,
-        lastScannedAt: new Date().toISOString(),
-      };
-      updatedPhotoCount = photoCount;
+        lastScannedAt: scannedAt,
+      });
+      updated = { location, row: nextStatus[location] };
     }
-    if (updatedPhotoCount === null) {
+    if (!updated) {
       sendJson(res, 404, { ok: false, error: `Reference not found: ${reference}` });
       return;
     }
     await upsertWarehouseStatus(nextStatus);
+    // A full snapshot like the RFID gate's own scan_complete events (see
+    // data.js buildStateForDate and computeCompletedWarehouseReferencesForDate),
+    // so history, the scanned totals and the shelf count all see this scan.
     await insertWarehouseActivityEvents([{
       type: "scan_complete",
       reference,
       scannerId,
       actionType: "photo",
-      photoCount: updatedPhotoCount,
-      timestamp: new Date().toISOString(),
+      locations: [updated.location],
+      trolleyCount: Number(updated.row.trolleyCount) || 0,
+      scannedCount: updated.row.scannedCount,
+      rfidCount: Number(updated.row.rfidCount) || 0,
+      photoCount: updated.row.photoCount,
+      requiresRfid: updated.row.requiresRfid !== false,
+      requiresPhoto: updated.row.requiresPhoto !== false,
+      status: updated.row.status,
+      group: updated.row.group || "",
+      mainCarrier: updated.row.mainCarrier || "",
+      timestamp: scannedAt,
     }]);
-    sendJson(res, 200, { ok: true, reference, photoCount: updatedPhotoCount });
+    sendJson(res, 200, { ok: true, reference, photoCount: updated.row.photoCount, scannedCount: updated.row.scannedCount, status: updated.row.status });
     return;
   }
 

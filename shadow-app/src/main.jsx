@@ -13458,7 +13458,14 @@ function FustReferenceActions({ canManage }) {
                       />
                     </td>
                     <td>{carrier.country}</td>
-                    <td>{carrier.customer_name || "-"}</td>
+                    <td>
+                      {carrier.customer_name || "-"}
+                      {!!carrier.fallback_codes?.length && (
+                        <div className="fust-fallback-note" style={{ color: "#b45309", fontSize: "0.85em" }}>
+                          Carrier 1 fallback: {carrier.fallback_codes.map((item) => `${item.code} (Carrier 2 ${item.carrier2_name} not in table)`).join(", ")}
+                        </div>
+                      )}
+                    </td>
                     <td>{carrier.ready_codes.join(", ") || "-"}</td>
                     <td>{carrier.pending_codes.join(", ") || "-"}</td>
                     <td>{carrier.metrics.dc}</td>
@@ -13482,7 +13489,7 @@ function FustReferenceActions({ canManage }) {
           </div>
           {!!unmatchedCodes.length && (
             <div className="notice danger">
-              {unmatchedCodes.length} code(s) not imported -- their carrier isn't in the carrier/customer table yet. Add the name exactly as below (same country), then Refresh summary:
+              {unmatchedCodes.length} code(s) not imported -- neither Carrier 1 nor Carrier 2 is in the carrier/customer table. Add one of the names exactly as below (same country, or as an Alias), then Refresh summary:
               {(unmatchedDetails.length ? unmatchedDetails : unmatchedCodes.map((code) => ({ code }))).map((item) => (
                 <div key={item.code}>
                   {item.code}{item.carrier1_name ? ` (Carrier 1 ${item.carrier1_name}${item.carrier2_name ? `, Carrier 2 ${item.carrier2_name}` : ""})` : ""}{item.reason ? ` -- ${item.reason}` : ""}
@@ -13545,7 +13552,14 @@ function FustReferenceActions({ canManage }) {
                 <td>{row.code}</td>
                 <td>{row.carrier1_name || "-"}</td>
                 <td>{row.carrier2_name || "-"}</td>
-                <td>{row.matched_customer_name || "-"}</td>
+                <td>
+                  {row.matched_customer_name || "-"}
+                  {row.carrier2_fallback && (
+                    <div style={{ color: "#b45309", fontSize: "0.85em" }} title={row.fallback_note}>
+                      Carrier 1 fallback (Carrier 2 {row.carrier2_name} not in table)
+                    </div>
+                  )}
+                </td>
                 <td>{row.dc_planning ?? "-"}</td>
                 <td>{row.dc_actual ?? "-"}</td>
                 <td>{row.dcs ?? "-"}</td>
@@ -13796,7 +13810,14 @@ Changed rows are updated, and rows that no longer exist there are removed here t
                 <td>{row.code}</td>
                 <td>{row.carrier1_name || "-"}</td>
                 <td>{row.carrier2_name || "-"}</td>
-                <td>{row.matched_customer_name || "-"}</td>
+                <td>
+                  {row.matched_customer_name || "-"}
+                  {row.carrier2_fallback && (
+                    <div style={{ color: "#b45309", fontSize: "0.85em" }} title={row.fallback_note}>
+                      Carrier 1 fallback (Carrier 2 {row.carrier2_name} not in table)
+                    </div>
+                  )}
+                </td>
                 <td>{row.dc_planning ?? "-"}</td>
                 <td>{row.dc_actual ?? "-"}</td>
                 <td>{row.dcs ?? "-"}</td>

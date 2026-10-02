@@ -378,6 +378,38 @@ def drive_list_folder() -> int:
     return 0
 
 
+# A tab only has as many rows as its grid allows (confirmed real: writing a
+# new action to row 997 of a 996-row "Uitgaand" tab failed with "exceeds
+# grid limits"). Grows the grid first, with headroom, instead of failing.
+SHEET_GROW_HEADROOM_ROWS = 500
+
+
+def _ensure_sheet_rows(service, spreadsheet_id: str, sheet_name: str, needed_row: int) -> None:
+    metadata = (
+        service.spreadsheets()
+        .get(spreadsheetId=spreadsheet_id, fields="sheets(properties(sheetId,title,gridProperties(rowCount)))")
+        .execute()
+    )
+    for sheet in metadata.get("sheets", []):
+        properties = sheet.get("properties", {})
+        if properties.get("title") != sheet_name:
+            continue
+        row_count = int(properties.get("gridProperties", {}).get("rowCount") or 0)
+        if needed_row <= row_count:
+            return
+        service.spreadsheets().batchUpdate(
+            spreadsheetId=spreadsheet_id,
+            body={"requests": [{
+                "appendDimension": {
+                    "sheetId": properties.get("sheetId"),
+                    "dimension": "ROWS",
+                    "length": needed_row - row_count + SHEET_GROW_HEADROOM_ROWS,
+                },
+            }]},
+        ).execute()
+        return
+
+
 def sheets_write_first_empty(spreadsheet_id: str, sheet_name: str) -> int:
     payload = json.loads(sys.stdin.read() or "{}")
     row = payload.get("row") if isinstance(payload, dict) else []
@@ -401,6 +433,7 @@ def sheets_write_first_empty(spreadsheet_id: str, sheet_name: str) -> int:
             target_row = index
             break
 
+    _ensure_sheet_rows(service, spreadsheet_id, sheet_name, target_row)
     update_range = f"{sheet_name}!A{target_row}:{last_column}{target_row}"
     response = (
         service.spreadsheets()
@@ -428,6 +461,7 @@ def sheets_write_row(spreadsheet_id: str, sheet_name: str, row_number: int) -> i
     last_column = _column_name(len(row))
     update_range = f"{sheet_name}!A{row_number}:{last_column}{row_number}"
     service = build("sheets", "v4", credentials=_service_account_credentials(), cache_discovery=False)
+    _ensure_sheet_rows(service, spreadsheet_id, sheet_name, row_number)
     response = (
         service.spreadsheets()
         .values()
