@@ -21,6 +21,8 @@ import {
   getFustReferenceActions,
   getDatabaseStatus,
   getInkoopCompanies,
+  clearInkoopUploads,
+  getInkoopInvoiceSummaryLines,
   getInkoopDispatchLots,
   getInkoopDispatchLotsByLots,
   getInkoopErpLines,
@@ -42,6 +44,7 @@ import {
   saveUkdocsCsiParsedDocumentToDatabase,
   saveFustActionToDatabase,
   saveFustReferenceAction,
+  deleteFustReferenceActionsForDateExcept,
   saveInkoopDispatchLots,
   saveInkoopErpLines,
   saveInkoopInvoiceLines,
@@ -4428,6 +4431,11 @@ function buildFustMetaFromSheetRows(rows) {
   const connectIndex = firstMatchingIndex(headers, ["klantcode connect", "connect", "connect name", "connect code", "klantcode connector"]);
   const customerCodeIndex = firstMatchingIndex(headers, ["customer code", "klantcode", "code", "customer id"]);
   const activeIndex = firstMatchingIndex(headers, ["active", "actief", "enabled", "status"]);
+  // Optional: other spellings a carrier arrives under from Fust Planning /
+  // the import (e.g. "ML Express" for the "ML Express Parijs" row),
+  // separated by ";" -- each must match exactly (case-insensitive), so a
+  // shorter name can never accidentally swallow a different carrier.
+  const aliasIndex = firstMatchingIndex(headers, ["fust planning name", "planning name", "alias", "aliases", "also known as"]);
   const hasHeaderRow = countryIndex >= 0 || customerIndex >= 0 || connectIndex >= 0;
 
   const sourceRows = hasHeaderRow ? rows.slice(1) : rows;
@@ -4448,6 +4456,7 @@ function buildFustMetaFromSheetRows(rows) {
         customer_name: customerName,
         connect_name: connectName || customerCode,
         customer_code: customerCode || connectName,
+        aliases: aliasIndex < 0 ? [] : rowValue(row, aliasIndex).split(/[;|]/).map((item) => item.trim()).filter(Boolean),
         active: activeIndex < 0 ? true : !["0", "false", "nee", "no", "inactive"].includes(activeValue.toLowerCase()),
       };
     })
@@ -4548,6 +4557,47 @@ function groupFustReferenceActionsByCarrier(rows) {
   return grouped;
 }
 
+// The carrier match stored on a fust_reference_actions row was decided when
+// that row was fetched -- adding a missing carrier (e.g. "ML Express") to
+// the table afterwards wouldn't reach rows already saved. Both the preview
+// and the import re-resolve every row against the table as it is NOW, so
+// they always agree with each other and with the current table.
+async function loadFustReferenceRowsRematched(date) {
+  return rematchFustReferenceRows(await getFustReferenceActions({ from: date, to: date }));
+}
+
+async function rematchFustReferenceRows(rows) {
+  if (!rows.length) {
+    return rows;
+  }
+  const settings = await readFustSettings();
+  const metaRecords = buildFustMetaFromSheetRows(await loadFustSheetRows(settings)).records;
+  return rows.map((row) => {
+    const resolved = resolveFustImportMeta(metaRecords, {
+      country: row.country,
+      carrier1_name: row.carrier1_name,
+      carrier2_name: row.carrier2_name,
+    }, { strictCarrier2: true });
+    return {
+      ...row,
+      matched_customer_name: resolved.matched_by ? resolved.customer_name : "",
+      matched_connect_name: resolved.matched_by ? resolved.connect_name : "",
+      matched_customer_code: resolved.matched_by ? resolved.customer_code : "",
+      matched_by: resolved.matched_by,
+      unmatched_reason: resolved.matched_by
+        ? ""
+        : resolved.unmatched_reason || `Carrier "${row.carrier2_name || row.carrier1_name || "-"}" (${row.country}) is not in the carrier/customer table`,
+    };
+  });
+}
+
+function fustReferenceMatchKey(row) {
+  return [
+    String(row.country || "").trim().toUpperCase(),
+    String(row.matched_customer_code || "").trim() || String(row.matched_customer_name || "").trim().toLowerCase(),
+  ].join("|");
+}
+
 // Preview for the per-carrier summary UI -- every matched carrier for the
 // date, whether or not its data is ready yet, so staff can see what's still
 // pending (e.g. "Breewel: 3 codes, DC-Planning only, not ready") alongside
@@ -4555,14 +4605,22 @@ function groupFustReferenceActionsByCarrier(rows) {
 // matched a carrier but have no dc_actual yet, kept separate from codes
 // that never matched any carrier at all.
 async function summarizeFustReferenceActionsByCarrier(date) {
-  const rows = await getFustReferenceActions({ from: date, to: date });
+  const rows = await loadFustReferenceRowsRematched(date);
   const readyGroups = groupFustReferenceActionsByCarrier(rows);
 
   const pendingByKey = new Map();
   const unmatchedCodes = [];
+  const unmatchedDetails = [];
   for (const row of rows) {
     if (!row.matched_by) {
       unmatchedCodes.push(row.code);
+      unmatchedDetails.push({
+        code: row.code,
+        country: row.country,
+        carrier1_name: row.carrier1_name,
+        carrier2_name: row.carrier2_name,
+        reason: row.unmatched_reason,
+      });
       continue;
     }
     if (fustReferenceActionIsReady(row)) {
@@ -4603,7 +4661,7 @@ async function summarizeFustReferenceActionsByCarrier(date) {
     };
   }).sort((left, right) => String(left.customer_name || "").localeCompare(String(right.customer_name || "")));
 
-  return { date, carriers, unmatched_codes: unmatchedCodes };
+  return { date, carriers, unmatched_codes: unmatchedCodes, unmatched_details: unmatchedDetails };
 }
 
 // Turns matched fust_reference_actions rows for one day into real OUT
@@ -4617,8 +4675,23 @@ async function summarizeFustReferenceActionsByCarrier(date) {
 // carrier groups staff actually picked in the summary UI, instead of every
 // ready group for the date -- omit it to import everything ready, same as
 // before this selection UI existed.
-async function createOutActionsFromFustReferenceActions(date, selectedMatchKeys) {
-  const rows = await getFustReferenceActions({ from: date, to: date });
+// Imports never run concurrently (a double click, two people at once):
+// each one reads, decides and writes the action list as a whole, so two
+// overlapping runs could both decide "doesn't exist yet". Chained instead.
+let fustReferenceImportChain = Promise.resolve();
+
+function createOutActionsFromFustReferenceActions(date, selectedMatchKeys) {
+  const run = fustReferenceImportChain.then(() => createOutActionsFromFustReferenceActionsUnlocked(date, selectedMatchKeys));
+  fustReferenceImportChain = run.catch(() => {});
+  return run;
+}
+
+function isFustApiImportedAction(action) {
+  return String(action?.id || "").startsWith("fust-api-");
+}
+
+async function createOutActionsFromFustReferenceActionsUnlocked(date, selectedMatchKeys) {
+  const rows = await loadFustReferenceRowsRematched(date);
   const notReadyCount = rows.filter((row) => !fustReferenceActionIsReady(row)).length;
 
   const allGrouped = groupFustReferenceActionsByCarrier(rows);
@@ -4629,13 +4702,36 @@ async function createOutActionsFromFustReferenceActions(date, selectedMatchKeys)
 
   const settings = await readFustSettings();
   let localActions = await readFustActions();
-  const summary = { checked: rows.length - notReadyCount, unmatched: notReadyCount, created: 0, updated: 0, failed: 0 };
+  const summary = { checked: rows.length - notReadyCount, unmatched: notReadyCount, created: 0, updated: 0, skipped: 0, removed: 0, failed: 0 };
   const results = [];
+  const sameDay = (action) => String(action?.action_date || "").slice(0, 10) === date;
 
   for (const group of grouped.values()) {
     const actionId = createFustApiReferenceActionId(group.match_key, date);
     try {
       const existingAction = localActions.find((item) => String(item.id || "").trim() === actionId) || null;
+      // An OUT action for the same customer and day that did NOT come from
+      // this import (Excel import or entered by hand) already counts this
+      // fust -- creating ours next to it would book it twice.
+      const otherSource = localActions.find((item) => (
+        !item.deleted
+        && !isFustApiImportedAction(item)
+        && sameDay(item)
+        && String(item.type || "").toUpperCase() === "OUT"
+        && String(item.country || "").trim().toUpperCase() === String(group.country || "").trim().toUpperCase()
+        && String(item.customer_name || "").trim().toLowerCase() === String(group.customer_name || "").trim().toLowerCase()
+      ));
+      if (otherSource) {
+        summary.skipped += 1;
+        results.push({
+          customer_name: group.customer_name,
+          country: group.country,
+          codes: group.codes,
+          status: "skipped",
+          note: `An OUT action for ${group.customer_name} on ${date} already exists from another source (${otherSource.created_by || "manual/Excel"}) -- delete that one first if this import should replace it.`,
+        });
+        continue;
+      }
       const now = new Date().toISOString();
 
       const nextAction = normalizeFustAction({
@@ -4705,6 +4801,7 @@ async function createOutActionsFromFustReferenceActions(date, selectedMatchKeys)
         codes: group.codes,
         action_id: actionId,
         status: existingAction ? "updated" : "created",
+        note: nextAction.sheet_sync?.ok === false && nextAction.sheet_sync?.error ? `Saved, but the sheet sync failed: ${nextAction.sheet_sync.error}` : "",
       });
     } catch (error) {
       summary.failed += 1;
@@ -4718,22 +4815,76 @@ async function createOutActionsFromFustReferenceActions(date, selectedMatchKeys)
     }
   }
 
+  // Codes can move to a different customer between imports (a carrier
+  // added to the table, Carrier 2 filled in later, data changed in Fust
+  // Planning). The earlier import's action for the old customer would then
+  // still count those codes next to the new one -- double counted. Every
+  // imported action for this date whose customer no longer has any codes
+  // (ready or pending) is removed, through the same path as a manual delete
+  // (sheet row cleared first, then marked deleted locally and in Postgres).
+  // Skipped entirely when the date has no rows at all, so an empty or
+  // failed fetch can never wipe a day's actions.
+  if (rows.length) {
+    const liveIds = new Set(
+      rows.filter((row) => row.matched_by).map((row) => createFustApiReferenceActionId(fustReferenceMatchKey(row), date)),
+    );
+    localActions = await readFustActions();
+    const stale = localActions.filter((item) => isFustApiImportedAction(item) && !item.deleted && sameDay(item) && !liveIds.has(String(item.id || "").trim()));
+    for (const action of stale) {
+      try {
+        const { tombstone } = await applyFustActionDeletion(action, settings, { username: "fust-api-import" });
+        localActions = await readFustActions();
+        const index = localActions.findIndex((item) => item.id === action.id);
+        if (index >= 0) {
+          localActions[index] = tombstone;
+          await writeFustActions(localActions);
+        }
+        summary.removed += 1;
+        results.push({ customer_name: action.customer_name, country: action.country, codes: [], action_id: action.id, status: "removed", note: "Its codes now belong to another customer (or no longer exist), so this earlier import was removed to avoid counting them twice." });
+      } catch (error) {
+        summary.failed += 1;
+        results.push({ customer_name: action.customer_name, country: action.country, codes: [], action_id: action.id, status: "failed", note: `Could not remove outdated import: ${error instanceof Error ? error.message : String(error)}` });
+      }
+    }
+  }
+
   return { date, summary, results };
 }
 
 function matchFustMetaRecord(records, country, customerName) {
-  return (records || []).find((record) => (
-    String(record.country || "").trim().toUpperCase() === String(country || "").trim().toUpperCase()
-    && String(record.customer_name || "").trim().toLowerCase() === String(customerName || "").trim().toLowerCase()
-  )) || null;
+  const targetCountry = String(country || "").trim().toUpperCase();
+  const target = String(customerName || "").trim().toLowerCase();
+  const sameCountry = (records || []).filter((record) => String(record.country || "").trim().toUpperCase() === targetCountry);
+  // The real name always wins over an alias, so an alias can never steal a
+  // carrier that has its own row.
+  return sameCountry.find((record) => String(record.customer_name || "").trim().toLowerCase() === target)
+    || sameCountry.find((record) => (record.aliases || []).some((alias) => alias.toLowerCase() === target))
+    || null;
 }
 
-function resolveFustImportMeta(metaRecords, record) {
+// strictCarrier2 (the Fust API reference import): a filled-in Carrier 2 that
+// isn't in the carrier/customer table is NOT silently booked to Carrier 1
+// -- confirmed real: codes with Carrier 2 "ML Express" landed on Breewel's
+// OUT action. Such a code stays unmatched (unmatched_reason says which name
+// to add) until the carrier exists, so it can never be imported under the
+// wrong customer. The Excel importer keeps its original fallback.
+function resolveFustImportMeta(metaRecords, record, options = {}) {
   const country = String(record?.country || "").trim().toUpperCase();
   const carrier1Name = String(record?.carrier1_name || record?.customer_name || "").trim();
   const carrier2Name = String(record?.carrier2_name || "").trim();
   const carrier1Meta = carrier1Name ? matchFustMetaRecord(metaRecords, country, carrier1Name) : null;
   const carrier2Meta = carrier2Name ? matchFustMetaRecord(metaRecords, country, carrier2Name) : null;
+
+  if (options.strictCarrier2 && carrier2Name && !carrier2Meta) {
+    return {
+      customer_name: carrier2Name,
+      connect_name: "",
+      customer_code: "",
+      matched_by: "",
+      match_name: "",
+      unmatched_reason: `Carrier 2 "${carrier2Name}" (${country}) is not in the carrier/customer table -- add it as a row, or put "${carrier2Name}" in the Alias column of the matching row`,
+    };
+  }
 
   if (carrier2Meta) {
     return {
@@ -4936,6 +5087,28 @@ function fustApiMetricValue(row, field) {
   return typeof value === "number" && Number.isFinite(value) ? value : null;
 }
 
+// Same request, but a response that isn't a real {rows: [...]} payload is an
+// error instead of an empty list -- the re-import removes rows the API no
+// longer returns, so "the API said nothing" must never be mistaken for "the
+// API says this date is empty".
+async function fetchFustApiImportRowsStrict(settings, date) {
+  const baseUrl = String(settings?.fust_api_base_url || "").trim();
+  const apiKey = String(settings?.fust_api_key || "").trim();
+  if (!baseUrl || !apiKey) {
+    throw new Error("Fust API base URL/key not configured");
+  }
+  const url = `${baseUrl}${baseUrl.includes("?") ? "&" : "?"}date=${encodeURIComponent(date)}`;
+  const response = await fetch(url, { headers: { "X-API-Key": apiKey } });
+  if (!response.ok) {
+    throw new Error(`Fust API request failed with HTTP ${response.status}`);
+  }
+  const payload = await response.json();
+  if (!Array.isArray(payload?.rows)) {
+    throw new Error("Fust API response has no rows list");
+  }
+  return payload.rows;
+}
+
 async function fetchFustApiImportRows(settings, date) {
   const baseUrl = String(settings?.fust_api_base_url || "").trim();
   const apiKey = String(settings?.fust_api_key || "").trim();
@@ -4965,7 +5138,7 @@ function mapFustApiRow(row, date, metaRecords) {
   const code = String(row?.Code || "").trim();
   const carrier1Name = String(row?.["Carrier 1"] || "").trim();
   const carrier2Name = String(row?.["Carrier 2"] || "").trim();
-  const resolvedMeta = resolveFustImportMeta(metaRecords, { country, carrier1_name: carrier1Name, carrier2_name: carrier2Name });
+  const resolvedMeta = resolveFustImportMeta(metaRecords, { country, carrier1_name: carrier1Name, carrier2_name: carrier2Name }, { strictCarrier2: true });
   return {
     id: `${date}|${code}`,
     action_date: date,
@@ -4995,7 +5168,16 @@ function mapFustApiRow(row, date, metaRecords) {
   };
 }
 
-async function runFustApiImportJob() {
+// Imports the given dates from the Fust API: every returned row is saved
+// (insert or overwrite), and -- with removeMissing -- rows we still hold for
+// that date but the API no longer returns are deleted, so a change or
+// deletion in the Fust Planning app (e.g. removed test data) carries over.
+// A date whose request fails is left completely untouched.
+// removeMissing: "always" (manual re-import -- an explicitly chosen range,
+// an empty date there really means empty), "if_rows" (the scheduled job --
+// early in the day an empty answer can just mean nothing is planned yet,
+// so it never empties a date), or false.
+async function importFustReferenceDates(dates, { removeMissing = false } = {}) {
   const settings = await readFustSettings();
   if (!settings.fust_api_base_url || !settings.fust_api_key) {
     return { ok: true, skipped: true, reason: "Fust API base URL/key not configured" };
@@ -5006,13 +5188,14 @@ async function runFustApiImportJob() {
   const dataRows = await loadFustSheetRows(settings);
   const metaRecords = buildFustMetaFromSheetRows(dataRows).records;
 
-  const today = localDateIso();
-  const summary = { ok: true, checked: 0, saved: 0, unmatched: 0, failed: 0, unmatched_carriers: [], errors: [] };
+  const summary = { ok: true, checked: 0, saved: 0, removed: 0, unmatched: 0, failed: 0, unmatched_carriers: [], errors: [], dates: [] };
   const unmatchedCarrierNames = new Set();
-  for (let offset = 0; offset < FUST_REFERENCE_IMPORT_WINDOW_DAYS; offset += 1) {
-    const date = addDaysToIsoDate(today, -offset);
+  for (const date of dates) {
+    const dateSummary = { date, saved: 0, removed: 0, removed_codes: [], error: "" };
     try {
-      const rows = await fetchFustApiImportRows(settings, date);
+      const rows = removeMissing ? await fetchFustApiImportRowsStrict(settings, date) : await fetchFustApiImportRows(settings, date);
+      const savedIds = [];
+      let rowFailures = 0;
       for (const row of rows) {
         summary.checked += 1;
         try {
@@ -5022,24 +5205,48 @@ async function runFustApiImportJob() {
             unmatchedCarrierNames.add(mapped.carrier2_name || mapped.carrier1_name);
           }
           await saveFustReferenceAction(mapped);
+          savedIds.push(mapped.id);
           summary.saved += 1;
+          dateSummary.saved += 1;
         } catch (rowError) {
+          rowFailures += 1;
           summary.failed += 1;
           summary.errors.push(`${date}/${row?.Code}: ${rowError instanceof Error ? rowError.message : String(rowError)}`);
         }
       }
+      // Never prune a date where any row failed to save -- its old copy
+      // would be deleted without the new one replacing it.
+      const mayRemove = !rowFailures && (removeMissing === "always" || (removeMissing === "if_rows" && rows.length > 0));
+      if (mayRemove) {
+        const removed = await deleteFustReferenceActionsForDateExcept(date, savedIds);
+        dateSummary.removed = removed.length;
+        dateSummary.removed_codes = removed.map((item) => item.code);
+        summary.removed += removed.length;
+      }
     } catch (error) {
       summary.ok = false;
-      summary.errors.push(`${date}: ${error instanceof Error ? error.message : String(error)}`);
+      dateSummary.error = error instanceof Error ? error.message : String(error);
+      summary.errors.push(`${date}: ${dateSummary.error}`);
     }
+    summary.dates.push(dateSummary);
   }
   // The set of carrier names (Carrier 2 if present, else Carrier 1) that
   // never matched a Data-tab customer -- the actionable list for fixing
-  // spelling mismatches before 1 October, without needing to query the
-  // database directly.
+  // spelling mismatches, without needing to query the database directly.
   summary.unmatched_carriers = [...unmatchedCarrierNames].filter(Boolean).sort();
   return summary;
 }
+
+async function runFustApiImportJob() {
+  const today = localDateIso();
+  const dates = [];
+  for (let offset = 0; offset < FUST_REFERENCE_IMPORT_WINDOW_DAYS; offset += 1) {
+    dates.push(addDaysToIsoDate(today, -offset));
+  }
+  return importFustReferenceDates(dates, { removeMissing: "if_rows" });
+}
+
+const FUST_REFERENCE_REIMPORT_MAX_DAYS = 93;
 
 function buildOverview(actions) {
   const grouped = new Map();
@@ -6204,6 +6411,27 @@ async function parseInkoopSupplierMaster({ kwekers_file: kwekersFile, leverancie
   };
 }
 
+// "kwekers met betaalwijze" / "leveranciers met betaalwijze" -- see
+// parse_betaalwijze in the worker. Either or both may be uploaded.
+async function parseInkoopSupplierBetaalwijze({ kwekers_bw_file: kwekersFile, leveranciers_bw_file: leveranciersFile } = {}) {
+  if (!kwekersFile && !leveranciersFile) {
+    return {};
+  }
+  const args = ["parse-betaalwijze"];
+  if (kwekersFile) {
+    args.push("--kwekers", await writeInkoopUploadToTempFile(kwekersFile, "inkoop-kwekers-bw-", ".csv"));
+  }
+  if (leveranciersFile) {
+    args.push("--leveranciers", await writeInkoopUploadToTempFile(leveranciersFile, "inkoop-leveranciers-bw-", ".csv"));
+  }
+  const output = await runInkoopVeilingWorker(args);
+  const payload = JSON.parse(output.toString("utf8"));
+  if (payload?.error) {
+    throw new Error(payload.error);
+  }
+  return payload?.by_code && typeof payload.by_code === "object" ? payload.by_code : {};
+}
+
 // "klant gegevens" (customer master) -- keyed by "Vkn", the exact code a
 // dispatch dump's "Dispatched to : <code>" rows carry (see
 // parseInkoopDispatchDump). Confirmed real: 12 customer codes carry Tgrp
@@ -6500,6 +6728,46 @@ function resolveErpRowSupplierCode(row, validSupplierCodes) {
   return suppl || avc || transp;
 }
 
+// A line that carries no value at all (no unit price, no total) can't be
+// over- or under-paid, so there is nothing to reconcile -- confirmed real:
+// "Stapelwagen" (the stacking trolley the goods arrive on, VBN 67) appears
+// once per grower on almost every Klok/Connect invoice with quantity 1 and
+// no price (724 lines in one week's XML). Older ledger rows were saved
+// before product_type_code existed, so the 67 check alone missed them and
+// they surfaced as fake "only in invoice"/"supplier not linked" purchases.
+function inkoopInvoiceLineHasNoValue(line) {
+  const price = line?.unit_price === null || line?.unit_price === undefined ? 0 : Number(line.unit_price) || 0;
+  const total = line?.total === null || line?.total === undefined ? 0 : Number(line.total) || 0;
+  return price === 0 && total === 0;
+}
+
+// Ledger rows saved before product_type_code existed have no VBN code at
+// all -- for those only, packaging/fust/fee lines are recognised by their
+// description instead. Every pattern is taken from real invoice XML where
+// the same line does carry 67/128: fust codes ("Fc577+kraag 70cm(Fc687)",
+// "Fc566+opzetrek(Fc596)"), containers/karren/dozen/trays, verrekencodes,
+// and the transactie-/serviceheffing fee lines. Confirmed real: these were
+// the "Grower total off" rows (ERP 0 pcs vs invoice 9 pcs "kraag 70cm").
+const INKOOP_PACKAGING_DESCRIPTION_RE = /^(?:fc\s?\d{3}|stapelwagen|deense kar|(?:kleine |medium |grote |kleine hoge |export)?container|exportcontainer|bloemendoos|paraat doos|normpack|normtray|verrekencode|emballage|transactieheffing|serviceheffing)/i;
+
+function inkoopInvoiceLineIsPackagingOrAdmin(line) {
+  const code = String(line?.product_type_code || "").trim();
+  if (code) {
+    return code === "67" || code === "128";
+  }
+  return INKOOP_PACKAGING_DESCRIPTION_RE.test(String(line?.description || "").trim());
+}
+
+// Shared by the line matcher and the grower-day aggregate, so both agree on
+// what is a real purchase: packaging/admin (VBN 67/128), emballage, and any
+// no-quantity or no-value line never are.
+function inkoopInvoiceLineIsNotAPurchase(line) {
+  return line?.quantity === null || line?.quantity === undefined
+    || inkoopInvoiceLineIsPackagingOrAdmin(line)
+    || /^emballage/i.test(String(line?.description || "").trim())
+    || inkoopInvoiceLineHasNoValue(line);
+}
+
 function matchInkoopVeilingLines(erpRows, invoices, supplierMap = {}, supplierNameMap = {}, manualLinks = [], supplierFhMap = {}) {
   // Every code the uploaded master data actually knows about, regardless of
   // which lookup (GLN/name/FH) it happened to be reachable through --
@@ -6568,7 +6836,7 @@ function matchInkoopVeilingLines(erpRows, invoices, supplierMap = {}, supplierNa
   // this was the actual cause of Handel Aankopen packaging lines (Kleine
   // container, Paraat doos, etc.) falsely showing up as unmatched
   // purchases. Only "57" (a real product) ever attempts a match.
-  const isPackagingOrAdminLine = (line) => line?.product_type_code === "67" || line?.product_type_code === "128";
+  const isPackagingOrAdminLine = (line) => inkoopInvoiceLineIsPackagingOrAdmin(line) || inkoopInvoiceLineHasNoValue(line);
 
   // Shared by Handel/AI2 (no per-line reference at all) and a Connect line
   // negotiated directly with no clock round (see the reference_bt check
@@ -6714,6 +6982,10 @@ function matchInkoopVeilingLines(erpRows, invoices, supplierMap = {}, supplierNa
         total: netTotal,
         matched_as_correction: true,
         correction_lines: group,
+        // Not matched (nothing left to compare), but the corrections check
+        // still needs to know which lot(s) to look up in the dispatch dump
+        // -- a full credit is exactly the case most likely to be a return.
+        correction_lots: (erpByPav.get(group[0].pav) || []).map((row) => row.lot).filter(Boolean),
       });
       continue;
     }
@@ -6839,7 +7111,7 @@ function matchInkoopVeilingLines(erpRows, invoices, supplierMap = {}, supplierNa
   };
 }
 
-const defaultInkoopState = { imports: [], supplier_map: {}, supplier_name_map: {}, supplier_fh_map: {}, customer_map: {}, manual_supplier_links: [], facturation_groups: [] };
+const defaultInkoopState = { imports: [], supplier_map: {}, supplier_name_map: {}, supplier_fh_map: {}, supplier_bw_map: {}, customer_map: {}, manual_supplier_links: [], facturation_groups: [] };
 
 // Every compare/upload used to be matched in isolation and its full result
 // (every matched/mismatched/unmatched line) pushed onto this list forever --
@@ -6948,11 +7220,63 @@ function normalizeInkoopCustomerEntryMap(source) {
         tgrp_b: normalizeUkdocsText(info?.tgrp_b),
         tgrp_p: normalizeUkdocsText(info?.tgrp_p),
         type: normalizeUkdocsText(info?.type),
+        bw: normalizeUkdocsText(info?.bw).toUpperCase(),
         is_retour: info?.is_retour === true,
       };
     }
   }
   return result;
+}
+
+// "kwekers/leveranciers met betaalwijze" entries -- keyed by the internal
+// code (Vkn), complementing the stamgegevens maps (keyed by GLN/name/FH
+// number) with each code's BW (betaalwijze) and relation info.
+function normalizeInkoopSupplierBwMap(source) {
+  const result = {};
+  if (source && typeof source === "object") {
+    for (const [key, info] of Object.entries(source)) {
+      const normalizedKey = normalizeInkoopKey(key);
+      if (!normalizedKey) {
+        continue;
+      }
+      result[normalizedKey] = {
+        name: normalizeUkdocsText(info?.name),
+        bw: normalizeUkdocsText(info?.bw).toUpperCase(),
+        type: normalizeUkdocsText(info?.type),
+        rel_nr: normalizeUkdocsText(info?.rel_nr),
+        h_bedr: normalizeUkdocsText(info?.h_bedr),
+        land: normalizeUkdocsText(info?.land),
+        source: normalizeUkdocsText(info?.source),
+      };
+    }
+  }
+  return result;
+}
+
+// BW "B" (bunches) marks an internal bunch-production account -- confirmed
+// real: every such code is a "Rose Mix 1"/"Bunches 10 Kraft"-style internal
+// mix, on both sides: as a klant (XXROS1, where purchased stock gets
+// dispatched to be made into bunches) and as a leverancier (XROS1, the
+// finished bunch booked back in as a T=B ERP "purchase" with no PAV). No
+// auction invoice ever exists for those ERP rows, so they're never matched
+// -- left in, every one of them was a false "missing from invoice" gap.
+const INKOOP_BW_INTERNAL_BUNCHES = "B";
+
+function inkoopErpRowIsInternalBunches(row, supplierBwMap) {
+  for (const value of [row?.suppl, row?.avc]) {
+    const entry = supplierBwMap?.[normalizeInkoopKey(value)];
+    if (entry) {
+      return entry.bw === INKOOP_BW_INTERNAL_BUNCHES;
+    }
+  }
+  return false;
+}
+
+function excludeInkoopInternalBunchRows(erpRows, supplierBwMap) {
+  if (!supplierBwMap || !Object.keys(supplierBwMap).length) {
+    return erpRows;
+  }
+  return (Array.isArray(erpRows) ? erpRows : []).filter((row) => !inkoopErpRowIsInternalBunches(row, supplierBwMap));
 }
 
 function normalizeInkoopState(state) {
@@ -6962,6 +7286,7 @@ function normalizeInkoopState(state) {
     supplier_name_map: normalizeInkoopSupplierEntryMap(state?.supplier_name_map),
     customer_map: normalizeInkoopCustomerEntryMap(state?.customer_map),
     supplier_fh_map: normalizeInkoopSupplierEntryMap(state?.supplier_fh_map),
+    supplier_bw_map: normalizeInkoopSupplierBwMap(state?.supplier_bw_map),
     manual_supplier_links: (Array.isArray(state?.manual_supplier_links) ? state.manual_supplier_links : []).map(normalizeInkoopManualSupplierLink),
     facturation_groups: (Array.isArray(state?.facturation_groups) ? state.facturation_groups : []).map(normalizeInkoopFacturationGroup),
   };
@@ -7189,6 +7514,9 @@ function computeInkoopGrowerDayTotals(erpRows, invoiceLines, supplierMap, suppli
   const invoiceByGrowerDay = new Map();
   const invoiceByGrowerDayProduct = new Map();
   for (const line of Array.isArray(invoiceLines) ? invoiceLines : []) {
+    if (inkoopInvoiceLineIsNotAPurchase(line)) {
+      continue;
+    }
     const growerName = inkoopGrowerNameForInvoiceLine(line, codeToName, supplierMap, supplierNameMap, manualLinks, supplierFhMap);
     const dateKey = String(line?.invoice_date || "").slice(0, 10);
     if (!growerName || !dateKey) {
@@ -7307,10 +7635,11 @@ function inkoopGapIsExplainedByAggregate(row, growerName, aggregateResult) {
 // bucketInkoopResultsByDate is already the shared source for the
 // gap/mismatch counts themselves.
 async function buildInkoopAggregateContext(state, range) {
-  const [erpRows, invoiceLines] = await Promise.all([
+  const [allErpRows, invoiceLines] = await Promise.all([
     getInkoopErpLines(range),
     getInkoopInvoiceLines(range),
   ]);
+  const erpRows = excludeInkoopInternalBunchRows(allErpRows, state.supplier_bw_map);
   const aggregateResult = computeInkoopAggregateMismatches(
     erpRows, invoiceLines,
     state.supplier_map, state.supplier_name_map, state.manual_supplier_links, state.supplier_fh_map, state.facturation_groups,
@@ -7338,14 +7667,145 @@ async function buildInkoopAggregateContext(state, range) {
   };
 }
 
+// Per-company invoice overview (Inkoop Controle's first page). Confirmed
+// against real Klok/Connect/Handel XML: an invoice's no-quantity lines
+// ("Product aankopen", "Emballage ...", "Transactieheffing"/"Serviceheffing",
+// "Rente ...") are its own summary and add up exactly to the invoice total
+// -- the quantity lines are the detail behind them, so summing every line
+// would count the purchases twice. AI2 Productnota lines have no such
+// summary lines, so there the line totals are the invoice.
+function inkoopRoundEuro(value) {
+  return Math.round((Number(value) || 0) * 100) / 100;
+}
+
+function buildInkoopInvoiceSummary(lines) {
+  const invoices = new Map();
+  for (const line of Array.isArray(lines) ? lines : []) {
+    const invoiceNumber = normalizeUkdocsText(line?.invoice_number);
+    if (!invoiceNumber) {
+      continue;
+    }
+    const key = `${invoiceNumber}|${line?.invoice_type || ""}`;
+    if (!invoices.has(key)) {
+      invoices.set(key, {
+        invoice_number: invoiceNumber,
+        invoice_type: normalizeUkdocsText(line?.invoice_type),
+        company_number: normalizeUkdocsText(line?.company_number) || (invoiceNumber.match(/^(\d{6})/) || [])[1] || "",
+        company_name: "",
+        invoice_date: "",
+        line_count: 0,
+        detail_total: 0,
+        summary_line_count: 0,
+        products: 0,
+        emballage: 0,
+        fees: 0,
+      });
+    }
+    const invoice = invoices.get(key);
+    invoice.company_name = invoice.company_name || normalizeUkdocsText(line?.company_name);
+    const date = String(line?.invoice_date || "").slice(0, 10);
+    if (date && (!invoice.invoice_date || date < invoice.invoice_date)) {
+      invoice.invoice_date = date;
+    }
+    invoice.line_count += 1;
+    const total = Number(line?.total) || 0;
+    const description = String(line?.description || "").trim();
+    if (line?.quantity === null || line?.quantity === undefined) {
+      invoice.summary_line_count += 1;
+      if (/^product aankopen/i.test(description)) {
+        invoice.products += total;
+      } else if (/^emballage/i.test(description)) {
+        invoice.emballage += total;
+      } else {
+        invoice.fees += total;
+      }
+    } else {
+      invoice.detail_total += total;
+    }
+  }
+
+  const companies = new Map();
+  for (const invoice of invoices.values()) {
+    if (!invoice.summary_line_count) {
+      // AI2 (or any invoice without summary lines): the lines are the bill.
+      invoice.products = invoice.detail_total;
+    }
+    invoice.products = inkoopRoundEuro(invoice.products);
+    invoice.emballage = inkoopRoundEuro(invoice.emballage);
+    invoice.fees = inkoopRoundEuro(invoice.fees);
+    invoice.total = inkoopRoundEuro(invoice.products + invoice.emballage + invoice.fees);
+    delete invoice.detail_total;
+    delete invoice.summary_line_count;
+
+    const companyKey = invoice.company_number || "unknown";
+    if (!companies.has(companyKey)) {
+      companies.set(companyKey, {
+        company_number: invoice.company_number,
+        company_name: invoice.company_name,
+        invoice_count: 0,
+        total: 0,
+        products: 0,
+        emballage: 0,
+        fees: 0,
+        by_type: {},
+        first_date: "",
+        last_date: "",
+        invoices: [],
+      });
+    }
+    const company = companies.get(companyKey);
+    company.company_name = company.company_name || invoice.company_name;
+    company.invoice_count += 1;
+    company.total += invoice.total;
+    company.products += invoice.products;
+    company.emballage += invoice.emballage;
+    company.fees += invoice.fees;
+    const type = invoice.invoice_type || "other";
+    company.by_type[type] = company.by_type[type] || { invoice_count: 0, total: 0 };
+    company.by_type[type].invoice_count += 1;
+    company.by_type[type].total += invoice.total;
+    if (invoice.invoice_date && (!company.first_date || invoice.invoice_date < company.first_date)) {
+      company.first_date = invoice.invoice_date;
+    }
+    if (invoice.invoice_date && invoice.invoice_date > company.last_date) {
+      company.last_date = invoice.invoice_date;
+    }
+    company.invoices.push(invoice);
+  }
+  return [...companies.values()].map((company) => ({
+    ...company,
+    total: inkoopRoundEuro(company.total),
+    products: inkoopRoundEuro(company.products),
+    emballage: inkoopRoundEuro(company.emballage),
+    fees: inkoopRoundEuro(company.fees),
+    by_type: Object.fromEntries(Object.entries(company.by_type).map(([type, entry]) => [type, { ...entry, total: inkoopRoundEuro(entry.total) }])),
+    invoices: company.invoices.sort((left, right) => (
+      String(right.invoice_date).localeCompare(String(left.invoice_date)) || left.invoice_number.localeCompare(right.invoice_number)
+    )),
+  })).sort((left, right) => String(left.company_number).localeCompare(String(right.company_number)));
+}
+
 async function computeInkoopLiveMatch(state, { from, to }) {
-  const [erpRows, invoiceLines] = await Promise.all([
+  const [allErpRows, invoiceLines] = await Promise.all([
     getInkoopErpLines({ from, to }),
     getInkoopInvoiceLines({ from, to }),
   ]);
+  const erpRows = excludeInkoopInternalBunchRows(allErpRows, state.supplier_bw_map);
   const invoices = groupInkoopInvoiceLinesByInvoice(invoiceLines);
   const result = matchInkoopVeilingLines(erpRows, invoices, state.supplier_map, state.supplier_name_map, state.manual_supplier_links, state.supplier_fh_map);
-  return reclassifyInkoopConfirmedReturns(result, state.customer_map);
+  const withReturns = await reclassifyInkoopConfirmedReturns(result, state.customer_map);
+  // Tagged in place (fresh rows from this request's own query) so every
+  // view showing an only-in-ERP gap can say what kind of party it is --
+  // e.g. a D (direct) or N (niet berekenen) code explains a gap no auction
+  // invoice will ever close.
+  for (const row of withReturns.only_in_erp || []) {
+    const entry = state.supplier_bw_map?.[normalizeInkoopKey(row?.suppl)] || state.supplier_bw_map?.[normalizeInkoopKey(row?.avc)];
+    if (entry) {
+      row.supplier_bw = entry.bw;
+      row.supplier_bw_name = entry.name;
+    }
+  }
+  return { ...withReturns, internal_bunches_skipped: allErpRows.length - erpRows.length };
 }
 
 // A dispatch's share of its lot's own value, apportioned by piece count --
@@ -7445,7 +7905,9 @@ function inkoopCorrectionRetourStatusForLot(dispatchLot, customerMap) {
       pieces: Number(dispatch?.pieces) || 0,
       name: customer?.name || "",
       land: customer?.land || "",
+      bw: customer?.bw || "",
       is_retour: customer?.is_retour === true,
+      is_internal_bunches: customer?.bw === INKOOP_BW_INTERNAL_BUNCHES,
     };
   });
   if (!dispatchLot || !destinations.length) {
@@ -7453,6 +7915,10 @@ function inkoopCorrectionRetourStatusForLot(dispatchLot, customerMap) {
   }
   const totalPieces = destinations.reduce((sum, item) => sum + item.pieces, 0);
   const retourPieces = destinations.filter((item) => item.is_retour).reduce((sum, item) => sum + item.pieces, 0);
+  // Only a Tgrp B/P "119" retour account confirms a return (user-confirmed).
+  // Stock dispatched to one of our own internal XX accounts (BW=B bunch
+  // production, M mix, ...) is labelled on the destination for context but
+  // is NOT evidence a correction happened -- it stays not_return.
   if (retourPieces <= 0) {
     return { status: "not_return", destinations };
   }
@@ -7540,29 +8006,46 @@ async function reclassifyInkoopConfirmedReturns(result, customerMap) {
 // time this runs, computeInkoopLiveMatch has already reclassified any
 // confirmed_return correction into matched_ok -- this still finds it there
 // (it stays tagged matched_as_correction) and reports it the same way.
+// A matched correction's lots come from its ERP row; a fully cancelled one
+// (net zero, never matched) carries them as correction_lots instead.
+function inkoopCorrectionLotSource(item) {
+  if (item?.erp_row) {
+    return item.erp_row;
+  }
+  return { lot: (Array.isArray(item?.correction_lots) ? item.correction_lots : []).join("+") };
+}
+
+// Every negative value coming in gets checked (user-confirmed) -- not just a
+// netted Klokfactuur/Connect PAV group, but also a full cancellation (sits
+// in fee_lines, nothing left to match) and a plain negative Handel/AI2
+// credit line.
 async function computeInkoopCorrectionRetourChecks(state, { from, to }) {
   const result = await computeInkoopLiveMatch(state, { from, to });
   const corrections = [];
-  for (const bucketName of ["matched_ok", "matched_mismatch", "only_in_invoice"]) {
+  for (const bucketName of ["matched_ok", "matched_mismatch", "only_in_invoice", "fee_lines"]) {
     for (const item of Array.isArray(result?.[bucketName]) ? result[bucketName] : []) {
-      if (item?.matched_as_correction) {
+      const isNegativeLine = Number(item?.quantity) < 0 || Number(item?.total) < 0;
+      if (item?.matched_as_correction || (bucketName !== "fee_lines" && isNegativeLine)) {
         corrections.push({ ...item, bucket: bucketName });
       }
     }
   }
   const allLotNumbers = new Set();
   for (const item of corrections) {
-    for (const lotNumber of inkoopCorrectionLotNumbers(item?.erp_row)) {
+    for (const lotNumber of inkoopCorrectionLotNumbers(inkoopCorrectionLotSource(item))) {
       allLotNumbers.add(lotNumber);
     }
   }
   const dispatchLots = await getInkoopDispatchLotsByLots([...allLotNumbers]);
   const dispatchByLot = new Map(dispatchLots.map((lot) => [String(lot.lot), lot]));
   return corrections.map((item) => {
-    const { status, lots } = inkoopOverallCorrectionRetourStatus(item?.erp_row, dispatchByLot, state.customer_map);
+    const { status, lots } = inkoopOverallCorrectionRetourStatus(inkoopCorrectionLotSource(item), dispatchByLot, state.customer_map);
     return {
       bucket: item.bucket,
       invoice_number: item.invoice_number,
+      invoice_numbers: [...new Set((Array.isArray(item.correction_lines) && item.correction_lines.length
+        ? item.correction_lines.map((line) => line.invoice_number)
+        : [item.invoice_number]).filter(Boolean))],
       invoice_date: item.invoice_date,
       pav: item.pav,
       description: item.description,
@@ -8616,10 +9099,36 @@ function parseShelfCountJobResult(job) {
   const fromContent = extractJsonObjectFromText(contentText);
   const fromThinking = fromContent ? null : extractJsonObjectFromText(thinkingText);
   const parsed = fromContent || fromThinking || {};
-  const shelves = Number(parsed?.shelves);
-  const levels = Number(parsed?.levels);
-  const extensions = Number(parsed?.extensions);
+  const finiteOrNull = (value) => (value === null || value === undefined || value === "" || !Number.isFinite(Number(value)) ? null : Number(value));
+  const perTrolley = (Array.isArray(parsed?.per_trolley) ? parsed.per_trolley : [])
+    .map((entry, index) => ({
+      trolley: finiteOrNull(entry?.trolley) ?? index + 1,
+      shelves: finiteOrNull(entry?.shelves),
+      levels: finiteOrNull(entry?.levels),
+      extensions: finiteOrNull(entry?.extensions),
+    }));
+  // Totals are the sum across every trolley of the reference. Older
+  // results (and a model that skips per_trolley) only give the totals; when
+  // only the breakdown is there, the totals are summed from it.
+  const sumOf = (key) => (perTrolley.length && perTrolley.every((entry) => entry[key] !== null)
+    ? perTrolley.reduce((sum, entry) => sum + entry[key], 0)
+    : null);
+  const shelves = finiteOrNull(parsed?.shelves) ?? sumOf("shelves");
+  const levels = finiteOrNull(parsed?.levels) ?? sumOf("levels");
+  const extensions = finiteOrNull(parsed?.extensions) ?? sumOf("extensions");
   const confidence = Number(parsed?.confidence);
+  const expectedTrolleys = Number(job?.payload_json?.trolley_count) || 0;
+  const breakdownProblems = [];
+  if (expectedTrolleys > 1 && perTrolley.length && perTrolley.length !== expectedTrolleys) {
+    breakdownProblems.push(`Model reported ${perTrolley.length} trolleys, scan says ${expectedTrolleys}.`);
+  }
+  for (const key of ["shelves", "levels", "extensions"]) {
+    const summed = sumOf(key);
+    const total = key === "shelves" ? shelves : key === "levels" ? levels : extensions;
+    if (summed !== null && total !== null && summed !== total) {
+      breakdownProblems.push(`Per-trolley ${key} add up to ${summed}, total says ${total}.`);
+    }
+  }
   // Only a genuine parse failure is worth surfacing in the UI's Error column
   // -- recovering the answer from thinking text is a normal, successful
   // outcome (same numbers either way), not something wrong with this row.
@@ -8629,27 +9138,35 @@ function parseShelfCountJobResult(job) {
       ? "Could not parse JSON from either the model's content or thinking text."
       : "Model returned no content and no thinking text at all.";
   return {
-    shelves: Number.isFinite(shelves) ? shelves : null,
-    levels: Number.isFinite(levels) ? levels : null,
-    extensions: Number.isFinite(extensions) ? extensions : null,
+    shelves,
+    levels,
+    extensions,
     confidence: Number.isFinite(confidence) ? confidence : null,
-    parse_note: parseNote,
+    per_trolley: perTrolley,
+    breakdown_inconsistent: breakdownProblems.length > 0,
+    parse_note: [parseNote, ...breakdownProblems].filter(Boolean).join(" "),
   };
 }
 
 // Mirrors buildUkdocsCsiAuditPayload's exact shape (model/messages/format/
 // think/options) -- the same ollama_chat job_type the dedicated shelf-count
 // poller handles.
-function buildShelfCountJobPayload({ photoCount }) {
+function buildShelfCountJobPayload({ photoCount, trolleyCount }) {
+  const trolleys = Math.max(1, Number(trolleyCount) || 1);
   const prompt = {
-    task: "Count the shelves, shelf levels, and pole extensions visible across these photos of one warehouse trolley/reference.",
+    task: `Count the shelves, shelf levels, and pole extensions on each of the ${trolleys} warehouse trolley(s) of one shipment reference.`,
     instructions: [
-      "These photos all show the same trolley(s) for one shipment reference, taken from a fixed camera angle.",
+      `This shipment reference has exactly ${trolleys} trolley(s), confirmed by the RFID scan. The ${photoCount} photos together show all of them, taken from a fixed camera angle.`,
+      trolleys > 1
+        ? `Tell the ${trolleys} trolleys apart (position, load, shape) and count each one separately. A photo may show one trolley or several; never count the same trolley twice, and never merge two trolleys into one.`
+        : "All photos show this one trolley from different views.",
+      `Return per_trolley with exactly ${trolleys} entries (trolley 1..${trolleys}), each with that trolley's own shelves, levels and extensions.`,
+      "shelves, levels and extensions at the top level are the TOTALS across all trolleys, i.e. the sum of the per_trolley entries.",
       "Shelves are mostly silver-grey.",
       "Count the total number of distinct shelves, and the number of levels (vertical tiers) visible.",
       "If photos overlap or show the same shelves from slightly different angles, do not double-count them.",
       "Each trolley has a vertical pole at each corner. An 'extension' is an added segment that makes a pole",
-      "taller so the trolley can carry more levels -- there can be 0 to 4 extensions per trolley, one per pole.",
+      "taller so the trolley can carry more levels -- there can be 0 to 4 extensions per trolley, one per pole (so a reference total can be up to 4 x the trolley count).",
       "Look for a visible joint, collar, or seam where one pole segment connects to another, or a change in the",
       "pole's color/thickness partway up its height -- that is what an extension looks like.",
       "An extension is often only clearly visible from some camera angles, not all of them -- these photos are",
@@ -8663,7 +9180,14 @@ function buildShelfCountJobPayload({ photoCount }) {
       "Return JSON only, no markdown, no explanation.",
     ],
     photo_count: photoCount,
-    output_schema: { shelves: 0, levels: 0, extensions: 0, confidence: "0.0-1.0" },
+    trolley_count: trolleys,
+    output_schema: {
+      per_trolley: [{ trolley: 1, shelves: 0, levels: 0, extensions: 0 }],
+      shelves: 0,
+      levels: 0,
+      extensions: 0,
+      confidence: "0.0-1.0",
+    },
   };
   return {
     model: "",
@@ -8681,7 +9205,8 @@ function buildShelfCountJobPayload({ photoCount }) {
     think: false,
     options: {
       temperature: 0,
-      num_predict: 200,
+      // Room for one per_trolley entry per trolley next to the totals.
+      num_predict: 200 + 60 * trolleys,
     },
   };
 }
@@ -8798,7 +9323,8 @@ async function runShelfCountNightlyTrigger(explicitDate) {
         priority: 40,
         max_attempts: 1,
         payload_json: {
-          ...buildShelfCountJobPayload({ photoCount: visionDocuments.length }),
+          ...buildShelfCountJobPayload({ photoCount: visionDocuments.length, trolleyCount: row.trolley_count }),
+          trolley_count: row.trolley_count,
           nightly_run_date: runDate,
           drive_account: matchedAccount,
           customer_reference: row.customer_reference,
@@ -15666,7 +16192,7 @@ async function handleApi(req, res, url) {
     }
     if (job.job_type === "shelf_count" && job.payload_json?.customer_reference) {
       const parsed = parseShelfCountJobResult(job);
-      const status = parsed.shelves === null || parsed.confidence === null || parsed.confidence < SHELF_COUNT_CONFIDENCE_THRESHOLD
+      const status = parsed.shelves === null || parsed.confidence === null || parsed.confidence < SHELF_COUNT_CONFIDENCE_THRESHOLD || parsed.breakdown_inconsistent
         ? "needs_review"
         : "done";
       await upsertShelfCountRow({
@@ -15676,6 +16202,7 @@ async function handleApi(req, res, url) {
         level_count: parsed.levels,
         extension_count: parsed.extensions,
         confidence: parsed.confidence,
+        per_trolley: parsed.per_trolley.length ? parsed.per_trolley : null,
         status,
         model_version: agentName,
         job_id: job.id,
@@ -18940,6 +19467,38 @@ async function handleApi(req, res, url) {
     return;
   }
 
+  // Re-imports a chosen date range from the Fust API (Overview Connect's
+  // "Re-import" button) -- for when data changed or was removed in the Fust
+  // Planning app after the scheduled job (which only re-reads today and
+  // yesterday) last saw it.
+  if (url.pathname === "/api/fust/reference-import/reimport" && req.method === "POST") {
+    if (!requirePermission(res, requestUser, PERMISSIONS.FUST_MANAGE)) {
+      return;
+    }
+    const body = await readRequestJson(req);
+    const from = String(body?.from || "").slice(0, 10);
+    const to = String(body?.to || "").slice(0, 10);
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(from) || !/^\d{4}-\d{2}-\d{2}$/.test(to) || from > to) {
+      sendJson(res, 400, { error: "from and to (YYYY-MM-DD, from <= to) are required" });
+      return;
+    }
+    const dates = [];
+    for (let date = from; date <= to && dates.length <= FUST_REFERENCE_REIMPORT_MAX_DAYS; date = addDaysToIsoDate(date, 1)) {
+      dates.push(date);
+    }
+    if (dates.length > FUST_REFERENCE_REIMPORT_MAX_DAYS) {
+      sendJson(res, 400, { error: `Re-import at most ${FUST_REFERENCE_REIMPORT_MAX_DAYS} days at once` });
+      return;
+    }
+    try {
+      const payload = await importFustReferenceDates(dates, { removeMissing: "always" });
+      sendJson(res, 200, payload);
+    } catch (error) {
+      sendJson(res, 400, { error: error instanceof Error ? error.message : String(error) });
+    }
+    return;
+  }
+
   // Read path for fust_reference_actions -- the reference-import job had no
   // way to view what it saved at all until this was added (see
   // saveFustReferenceAction/getFustReferenceActions in db.js).
@@ -18957,7 +19516,11 @@ async function handleApi(req, res, url) {
       sendJson(res, 400, { error: "from and to (YYYY-MM-DD) are required" });
       return;
     }
-    const rows = await getFustReferenceActions({ from, to });
+    const storedRows = await getFustReferenceActions({ from, to });
+    // Shown with the CURRENT carrier table's match (same as the import
+    // summary); if the table can't be read right now, fall back to the
+    // match saved at fetch time rather than failing the whole list.
+    const rows = await rematchFustReferenceRows(storedRows).catch(() => storedRows);
     sendJson(res, 200, { from, to, rows, database_enabled: true });
     return;
   }
@@ -19032,6 +19595,54 @@ async function handleApi(req, res, url) {
     return;
   }
 
+  // Inkoop Controle's first page: invoices per company (totals by type, plus
+  // the invoice list) for a date range.
+  if (url.pathname === "/api/inkoop/invoice-summary" && req.method === "GET") {
+    if (!requirePermission(res, requestUser, PERMISSIONS.INKOOP_VIEW)) {
+      return;
+    }
+    const to = String(url.searchParams.get("to") || localDateIso()).slice(0, 10);
+    const from = String(url.searchParams.get("from") || addDaysToIsoDate(to, -30)).slice(0, 10);
+    const lines = await getInkoopInvoiceSummaryLines({ from, to });
+    sendJson(res, 200, { from, to, companies: buildInkoopInvoiceSummary(lines) });
+    return;
+  }
+
+  // "Start fresh": removes every uploaded record (ERP + invoice ledgers,
+  // dispatch dump, Follow-up statuses, stored invoice PDFs, import history)
+  // while keeping master data, manual supplier links and facturation groups.
+  // Irreversible, so admin-only and the request must say so explicitly.
+  if (url.pathname === "/api/inkoop/reset-uploads" && req.method === "POST") {
+    if (!requirePermission(res, requestUser, PERMISSIONS.SETTINGS_MANAGE)) {
+      return;
+    }
+    const body = await readRequestJson(req);
+    if (body?.confirm !== "CLEAR") {
+      sendJson(res, 400, { error: 'Send {"confirm": "CLEAR"} to clear all uploaded Inkoop data' });
+      return;
+    }
+    try {
+      const result = await clearInkoopUploads();
+      let pdfCount = 0;
+      const pdfFiles = await fs.readdir(inkoopInvoicePdfFilesDir).catch(() => []);
+      for (const fileName of pdfFiles) {
+        if (fileName.toLowerCase().endsWith(".pdf")) {
+          await fs.rm(path.join(inkoopInvoicePdfFilesDir, fileName), { force: true });
+          pdfCount += 1;
+        }
+      }
+      const state = await readInkoopState();
+      const importCount = state.imports.length;
+      state.imports = [];
+      await writeInkoopState(state);
+      console.log(`[inkoop] uploads cleared by ${requestUser.username}:`, JSON.stringify({ ...result.counts, pdfs: pdfCount, imports: importCount }));
+      sendJson(res, 200, { ...result, pdf_count: pdfCount, import_count: importCount });
+    } catch (error) {
+      sendJson(res, 500, { error: error instanceof Error ? error.message : String(error) });
+    }
+    return;
+  }
+
   // Opens the original invoice straight from a mismatch/follow-up row --
   // captured from the veiling zip's PDF-only .msg companion (Klok/Connect/
   // Handel) or the AI2 Productnota itself, stored under a deterministic
@@ -19073,6 +19684,7 @@ async function handleApi(req, res, url) {
       supplier_count: Object.keys(state.supplier_map).length,
       supplier_name_count: Object.keys(state.supplier_name_map).length,
       supplier_fh_count: Object.keys(state.supplier_fh_map).length,
+      supplier_bw_count: Object.keys(state.supplier_bw_map).length,
       customer_count: Object.keys(state.customer_map).length,
       manual_supplier_links: state.manual_supplier_links,
       facturation_groups: state.facturation_groups,
@@ -19410,11 +20022,14 @@ async function handleApi(req, res, url) {
         const customerEntries = await parseInkoopKlantGegevens(body.klant_file);
         state.customer_map = { ...state.customer_map, ...customerEntries };
       }
+      const bwEntries = await parseInkoopSupplierBetaalwijze(body);
+      state.supplier_bw_map = { ...state.supplier_bw_map, ...bwEntries };
       await writeInkoopState(state);
       sendJson(res, 200, {
         supplier_count: Object.keys(state.supplier_map).length,
         supplier_name_count: Object.keys(state.supplier_name_map).length,
         supplier_fh_count: Object.keys(state.supplier_fh_map).length,
+        supplier_bw_count: Object.keys(state.supplier_bw_map).length,
         customer_count: Object.keys(state.customer_map).length,
       });
     } catch (error) {

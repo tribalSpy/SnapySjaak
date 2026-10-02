@@ -411,9 +411,9 @@ export async function upsertShelfCountRow(row) {
       INSERT INTO shelf_counts (
         customer_reference, nightly_run_date, drive_folder_name, trolley_count, photo_count, shelf_count,
         level_count, confidence, expected_average, deviation, extension_count, extension_expected,
-        extension_deviation, status, model_version, job_id, error_text, processed_at
+        extension_deviation, status, model_version, job_id, error_text, processed_at, per_trolley
       )
-      VALUES ($1, $2::date, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18::timestamptz)
+      VALUES ($1, $2::date, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18::timestamptz, $19::jsonb)
       ON CONFLICT (customer_reference, nightly_run_date) DO UPDATE SET
         drive_folder_name = COALESCE(NULLIF(EXCLUDED.drive_folder_name, ''), shelf_counts.drive_folder_name),
         trolley_count = COALESCE(NULLIF(EXCLUDED.trolley_count, 0), shelf_counts.trolley_count),
@@ -431,6 +431,7 @@ export async function upsertShelfCountRow(row) {
         job_id = COALESCE(NULLIF(EXCLUDED.job_id, ''), shelf_counts.job_id),
         error_text = EXCLUDED.error_text,
         processed_at = COALESCE(EXCLUDED.processed_at, shelf_counts.processed_at),
+        per_trolley = COALESCE(EXCLUDED.per_trolley, shelf_counts.per_trolley),
         updated_at = now()
       RETURNING *
     `,
@@ -453,6 +454,7 @@ export async function upsertShelfCountRow(row) {
       row.job_id || "",
       row.error_text || "",
       row.processed_at || null,
+      Array.isArray(row.per_trolley) ? JSON.stringify(row.per_trolley) : null,
     ],
   );
   return result.rows?.[0] || null;
@@ -581,6 +583,39 @@ export async function getInkoopInvoiceLines({ from, to } = {}) {
     [from, to],
   );
   return result.rows.map((row) => row.raw);
+}
+
+// "Start fresh": every uploaded Inkoop Controle record -- ERP ledger,
+// invoice ledger, dispatch dump, Follow-up statuses/notes. Master data and
+// manual links live in inkoop-state.json and are deliberately not touched.
+export async function clearInkoopUploads() {
+  if (!pool) {
+    return { cleared: false };
+  }
+  const counts = {};
+  for (const table of ["inkoop_erp_lines", "inkoop_invoice_lines", "inkoop_dispatch_lots", "inkoop_issue_status"]) {
+    const result = await pool.query(`SELECT COUNT(*)::int AS count FROM ${table}`);
+    counts[table] = result.rows[0]?.count || 0;
+  }
+  await pool.query("TRUNCATE inkoop_erp_lines, inkoop_invoice_lines, inkoop_dispatch_lots, inkoop_issue_status");
+  return { cleared: true, counts };
+}
+
+// Just the columns the per-company invoice summary needs (not the full raw
+// line), for every line in the date range.
+export async function getInkoopInvoiceSummaryLines({ from, to } = {}) {
+  if (!pool || !from || !to) {
+    return [];
+  }
+  const result = await pool.query(
+    `
+      SELECT company_number, company_name, invoice_number, invoice_type, to_char(invoice_date, 'YYYY-MM-DD') AS invoice_date, description, quantity, total
+      FROM inkoop_invoice_lines
+      WHERE invoice_date >= $1::date AND invoice_date <= $2::date
+    `,
+    [from, to],
+  );
+  return result.rows;
 }
 
 export async function getInkoopCompanies() {
@@ -712,6 +747,24 @@ export async function saveFustReferenceAction(row) {
       JSON.stringify(row.raw || {}),
     ],
   );
+}
+
+// Removes the rows for one date that the Fust API no longer returns (e.g.
+// test data deleted in the Fust Planning app) -- keepIds is exactly the set
+// the API just returned and saved for that date. Returns what was removed.
+export async function deleteFustReferenceActionsForDateExcept(date, keepIds) {
+  if (!pool || !date) {
+    return [];
+  }
+  const result = await pool.query(
+    `
+      DELETE FROM fust_reference_actions
+      WHERE action_date = $1::date AND NOT (id = ANY($2::text[]))
+      RETURNING id, code, matched_customer_name
+    `,
+    [date, Array.isArray(keepIds) ? keepIds : []],
+  );
+  return result.rows;
 }
 
 // Feeds the Fust Planning viewer (the reference-code-level API import had no
@@ -1898,6 +1951,12 @@ const databaseMigrations = [
   `,
   `
     ALTER TABLE shelf_counts ADD COLUMN IF NOT EXISTS extension_deviation numeric
+  `,
+  // A reference can have several trolleys (trolley_count) -- the model is
+  // told how many and returns one {shelves, levels, extensions} entry per
+  // trolley next to the totals, so a multi-trolley count can be checked.
+  `
+    ALTER TABLE shelf_counts ADD COLUMN IF NOT EXISTS per_trolley jsonb
   `,
   // One row per calendar day the nightly trigger has run for -- its own
   // existence for a given run_date is what makes the trigger idempotent

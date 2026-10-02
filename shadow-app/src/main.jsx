@@ -8080,7 +8080,7 @@ function ShelfCountPage() {
             <thead>
               <tr>
                 <th>Customer reference</th><th>Trolleys</th><th>Photos</th><th>Shelves</th><th>Levels</th>
-                <th>Extensions</th><th>Confidence</th><th>Fust expected (DC)</th><th>Deviation</th>
+                <th>Extensions</th><th>Per trolley (shelves / levels / ext.)</th><th>Confidence</th><th>Fust expected (DC)</th><th>Deviation</th>
                 <th>Fust expected (DCO)</th><th>Ext. deviation</th><th>Status</th><th>Error</th>
               </tr>
             </thead>
@@ -8093,6 +8093,13 @@ function ShelfCountPage() {
                   <td>{row.shelf_count ?? "-"}</td>
                   <td>{row.level_count ?? "-"}</td>
                   <td>{row.extension_count ?? "-"}</td>
+                  <td>
+                    {Array.isArray(row.per_trolley) && row.per_trolley.length
+                      ? row.per_trolley.map((entry, index) => (
+                        <div key={index}>T{entry.trolley ?? index + 1}: {entry.shelves ?? "-"} / {entry.levels ?? "-"} / {entry.extensions ?? "-"}</div>
+                      ))
+                      : "-"}
+                  </td>
                   <td>{row.confidence !== null && row.confidence !== undefined ? Number(row.confidence).toFixed(2) : "-"}</td>
                   <td>{row.expected_average ?? "-"}</td>
                   <td>{row.deviation ?? "-"}</td>
@@ -8102,7 +8109,7 @@ function ShelfCountPage() {
                   <td>{row.error_text || "-"}</td>
                 </tr>
               ))}
-              {!counts.length && <tr><td colSpan={13}>No completed references for this date.</td></tr>}
+              {!counts.length && <tr><td colSpan={14}>No completed references for this date.</td></tr>}
             </tbody>
           </table>
         </div>
@@ -8449,6 +8456,9 @@ function PdKeuringPage({ currentUser }) {
   const [backfillResult, setBackfillResult] = useState(null);
   const [selectedDate, setSelectedDate] = useState(() => localDateIso());
   const [rowDraft, setRowDraft] = useState(null);
+  // Set when a new row would land on the same shipment key as an existing
+  // row of the day -- the user picks join or separate before it's saved.
+  const [duplicateMatch, setDuplicateMatch] = useState(null);
   const [proposalSelectedIds, setProposalSelectedIds] = useState([]);
   // Uncommitted inline edits, keyed by row id -- only reference_connect,
   // expected_boxes, and expected_pieces are ever edited this way (fast,
@@ -8578,6 +8588,7 @@ function PdKeuringPage({ currentUser }) {
   }
 
   function updateRowDraftField(key, value) {
+    setDuplicateMatch(null);
     setRowDraft((current) => {
       let next = { ...current, [key]: value };
       if (key === "city_name") {
@@ -8590,7 +8601,30 @@ function PdKeuringPage({ currentUser }) {
     });
   }
 
-  async function saveRow() {
+  // Mirrors the server's ukdocsPrintCollectionGroupKey: rows sharing date +
+  // city + hub + remark + type are merged into one shipment on every sheet
+  // sync/dedupe, so this is exactly the key a new row would be joined on.
+  function pdShipmentGroupKey(row) {
+    const token = (value) => String(value || "").toUpperCase().replace(/[^A-Z0-9]/g, "");
+    const type = row.collection_type || (String(row.city_name || "").trim().toUpperCase() === "HONSELERSDIJK" ? "stock_control" : "export");
+    return [String(row.shipment_date || "").slice(0, 10), token(row.city_name), token(row.hub_code), token(row.remark), token(type)].join("|");
+  }
+
+  // Remark is part of that key and round-trips through the sheet, so a
+  // distinct "deel N" remark is what keeps a split shipment separate.
+  function nextSeparateShipmentRemark(draft) {
+    const base = String(draft.remark || "").trim().replace(/^-$/, "");
+    const takenKeys = new Set(dayRows.map(pdShipmentGroupKey));
+    for (let part = 2; part < 100; part += 1) {
+      const remark = base ? `${base} deel ${part}` : `deel ${part}`;
+      if (!takenKeys.has(pdShipmentGroupKey({ ...draft, remark }))) {
+        return remark;
+      }
+    }
+    return `${base} deel ${Date.now()}`.trim();
+  }
+
+  async function saveRow(choice) {
     if (!rowDraft) {
       return;
     }
@@ -8598,24 +8632,39 @@ function PdKeuringPage({ currentUser }) {
       setError("Select a customer before saving.");
       return;
     }
+    let draftToSave = rowDraft;
+    if (!rowDraft.id && !choice) {
+      const draftKey = pdShipmentGroupKey(rowDraft);
+      const match = dayRows.find((item) => pdShipmentGroupKey(item) === draftKey);
+      if (match) {
+        setDuplicateMatch(match);
+        return;
+      }
+    }
+    if (choice === "separate") {
+      draftToSave = { ...rowDraft, remark: nextSeparateShipmentRemark(rowDraft) };
+    }
+    setDuplicateMatch(null);
     setSaving(true);
     setError("");
     setMessage("");
     try {
-      if (rowDraft.id) {
-        const payload = await apiJson(`/api/ukdocs-print/collections/${encodeURIComponent(rowDraft.id)}`, {
+      if (draftToSave.id) {
+        const payload = await apiJson(`/api/ukdocs-print/collections/${encodeURIComponent(draftToSave.id)}`, {
           method: "PATCH",
-          body: JSON.stringify(rowDraft),
+          body: JSON.stringify(draftToSave),
         });
         setState((current) => ({ ...current, print_collections: payload.print_collections }));
         setMessage("Row updated.");
       } else {
         const payload = await apiJson("/api/ukdocs-print/collections", {
           method: "POST",
-          body: JSON.stringify({ collections: [rowDraft] }),
+          body: JSON.stringify({ collections: [draftToSave] }),
         });
         setState((current) => ({ ...current, print_collections: payload.print_collections }));
-        setMessage("Row added.");
+        setMessage(choice === "separate"
+          ? `Row added as a separate shipment (remark "${draftToSave.remark}").`
+          : choice === "join" ? "Row added and joined with the existing shipment." : "Row added.");
       }
       setRowDraft(null);
     } catch (saveError) {
@@ -8904,9 +8953,20 @@ function PdKeuringPage({ currentUser }) {
               ) : (
                 <span className="ukdocs-status-badge danger">No customer selected -- pick one from the Customer dropdown before saving.</span>
               )}
+              {duplicateMatch && (
+                <div className="notice">
+                  This matches an existing shipment for {selectedDate}: {duplicateMatch.city_name || "-"} / {duplicateMatch.hub_code || "-"}{duplicateMatch.remark ? ` / ${duplicateMatch.remark}` : ""} ({duplicateMatch.customer_name || "no customer"}{duplicateMatch.reference_connect ? `, ref ${duplicateMatch.reference_connect}` : ""}).
+                  {" "}Join them together, or treat this as a separate shipment (it gets remark "{nextSeparateShipmentRemark(rowDraft)}" so it stays its own row in the app and the sheet)?
+                  <div className="row-actions">
+                    <button type="button" onClick={() => saveRow("join")} disabled={saving}>Join with existing</button>
+                    <button type="button" className="primary" onClick={() => saveRow("separate")} disabled={saving}>Separate shipment</button>
+                    <button type="button" onClick={() => setDuplicateMatch(null)} disabled={saving}>Back</button>
+                  </div>
+                </div>
+              )}
               <div className="row-actions spread-actions">
-                <button type="button" className="primary" onClick={saveRow} disabled={saving || !rowDraft.customer_id || !customers.some((item) => item.id === rowDraft.customer_id)}>{rowDraft.id ? "Update row" : "Add row"}</button>
-                <button type="button" onClick={() => setRowDraft(null)} disabled={saving}>Cancel</button>
+                <button type="button" className="primary" onClick={() => saveRow()} disabled={saving || !!duplicateMatch || !rowDraft.customer_id || !customers.some((item) => item.id === rowDraft.customer_id)}>{rowDraft.id ? "Update row" : "Add row"}</button>
+                <button type="button" onClick={() => { setRowDraft(null); setDuplicateMatch(null); }} disabled={saving}>Cancel</button>
               </div>
             </>
           )}
@@ -8951,7 +9011,7 @@ function PdKeuringPage({ currentUser }) {
 
           {!rowDraft && (
             <div className="row-actions spread-actions">
-              <button type="button" className="primary" onClick={() => setRowDraft(emptyRowDraft())}>Add row for {selectedDate}</button>
+              <button type="button" className="primary" onClick={() => { setDuplicateMatch(null); setRowDraft(emptyRowDraft()); }}>Add row for {selectedDate}</button>
             </div>
           )}
 
@@ -10383,7 +10443,7 @@ function FustPage({ currentUser, menuVersion }) {
         />
       )}
 
-      {activeTab === "overview-connect" && <FustOverviewConnect />}
+      {activeTab === "overview-connect" && <FustOverviewConnect canManage={canManageFust} />}
 
       {activeTab === "last-actions" && (
         <FustLastActions
@@ -13219,6 +13279,8 @@ function FustReferenceActions({ canManage }) {
   const [creatingActions, setCreatingActions] = useState(false);
   const [carrierSummary, setCarrierSummary] = useState([]);
   const [unmatchedCodes, setUnmatchedCodes] = useState([]);
+  const [unmatchedDetails, setUnmatchedDetails] = useState([]);
+  const [importResults, setImportResults] = useState([]);
   const [summaryLoading, setSummaryLoading] = useState(false);
   const [selectedKeys, setSelectedKeys] = useState(() => new Set());
 
@@ -13228,6 +13290,7 @@ function FustReferenceActions({ canManage }) {
       .then((payload) => {
         setCarrierSummary(payload.carriers || []);
         setUnmatchedCodes(payload.unmatched_codes || []);
+        setUnmatchedDetails(payload.unmatched_details || []);
         // Pre-select every carrier that's actually ready -- staff can
         // uncheck specific ones, but the common case (import everything
         // that's ready today) shouldn't require clicking each row.
@@ -13315,7 +13378,8 @@ function FustReferenceActions({ canManage }) {
         body: JSON.stringify({ date: createDate, match_keys: [...selectedKeys] }),
       });
       const { summary } = payload;
-      setMessage(`OUT actions for ${createDate}: created ${summary.created}, updated ${summary.updated}, failed ${summary.failed} (${summary.unmatched} not-yet-ready code row(s) skipped).`);
+      setImportResults(payload.results || []);
+      setMessage(`OUT actions for ${createDate}: created ${summary.created}, updated ${summary.updated}, skipped ${summary.skipped || 0}, removed ${summary.removed || 0}, failed ${summary.failed} (${summary.unmatched} not-ready or unmatched code row(s) left out).`);
       setRefreshKey((current) => current + 1);
       loadSummary();
     } catch (createError) {
@@ -13417,8 +13481,33 @@ function FustReferenceActions({ canManage }) {
             </table>
           </div>
           {!!unmatchedCodes.length && (
-            <div className="notice">
-              {unmatchedCodes.length} code(s) with no carrier match at all, not shown above: {unmatchedCodes.join(", ")}.
+            <div className="notice danger">
+              {unmatchedCodes.length} code(s) not imported -- their carrier isn't in the carrier/customer table yet. Add the name exactly as below (same country), then Refresh summary:
+              {(unmatchedDetails.length ? unmatchedDetails : unmatchedCodes.map((code) => ({ code }))).map((item) => (
+                <div key={item.code}>
+                  {item.code}{item.carrier1_name ? ` (Carrier 1 ${item.carrier1_name}${item.carrier2_name ? `, Carrier 2 ${item.carrier2_name}` : ""})` : ""}{item.reason ? ` -- ${item.reason}` : ""}
+                </div>
+              ))}
+            </div>
+          )}
+          {!!importResults.length && (
+            <div className="table-wrap">
+              <table className="data-table">
+                <thead><tr><th>Customer</th><th>Country</th><th>Result</th><th>Codes</th><th>Note</th></tr></thead>
+                <tbody>
+                  {importResults.map((item, index) => (
+                    <tr key={`${item.action_id || item.customer_name}-${index}`}>
+                      <td>{item.customer_name || "-"}</td>
+                      <td>{item.country || "-"}</td>
+                      <td>
+                        <span className={`ukdocs-status-badge ${item.status === "failed" ? "danger" : item.status === "skipped" || item.status === "removed" || item.note ? "info" : "success"}`}>{item.status}</span>
+                      </td>
+                      <td>{(item.codes || []).length ? `${item.codes.length} code(s)` : "-"}</td>
+                      <td>{item.note || "-"}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
             </div>
           )}
         </div>
@@ -13451,7 +13540,7 @@ function FustReferenceActions({ canManage }) {
           <tbody>
             {visibleRows.map((row) => (
               <tr key={row.id}>
-                <td>{row.action_date}</td>
+                <td>{fustOverviewDate(row.action_date)}</td>
                 <td>{row.country}</td>
                 <td>{row.code}</td>
                 <td>{row.carrier1_name || "-"}</td>
@@ -13490,7 +13579,9 @@ function FustReferenceActions({ canManage }) {
 // straight totals over the selected range rather than an IN/OUT/balance
 // split. Defaults to a wide 90-day window since the point is watching how a
 // customer's fust develops over time, not just the last few days.
-function FustOverviewConnect() {
+function FustOverviewConnect({ canManage = false }) {
+  const [reimporting, setReimporting] = useState(false);
+  const [reimportResult, setReimportResult] = useState(null);
   const [fromDate, setFromDate] = useState(() => daysAgoIso(90));
   const [toDate, setToDate] = useState(() => todayIso());
   const [countryFilter, setCountryFilter] = useState("");
@@ -13529,6 +13620,32 @@ function FustOverviewConnect() {
     [...new Set(rows.map((row) => row.country).filter(Boolean))].sort()
   ), [rows]);
 
+  // Re-reads the chosen From/To range from the Fust API: changed rows are
+  // overwritten, rows the Fust Planning app no longer has (e.g. deleted
+  // test data) are removed here too. A date that fails to load is untouched.
+  async function reimportRange() {
+    if (!window.confirm(`Re-import ${fromDate} to ${toDate} from the Fust Planning app?
+
+Changed rows are updated, and rows that no longer exist there are removed here too.`)) {
+      return;
+    }
+    setReimporting(true);
+    setError("");
+    setReimportResult(null);
+    try {
+      const payload = await apiJson("/api/fust/reference-import/reimport", {
+        method: "POST",
+        body: JSON.stringify({ from: fromDate, to: toDate }),
+      });
+      setReimportResult(payload);
+      setRefreshKey((current) => current + 1);
+    } catch (reimportError) {
+      setError(reimportError.message);
+    } finally {
+      setReimporting(false);
+    }
+  }
+
   const searchText = customerSearch.trim().toLowerCase();
   const filteredRows = rows.filter((row) => (
     (!countryFilter || row.country === countryFilter)
@@ -13549,13 +13666,16 @@ function FustOverviewConnect() {
           country: row.country,
           customer_name: row.matched_customer_name,
           connect_name: row.matched_connect_name,
-          dc: 0, dcs: 0, dco: 0, cctag: 0, vk: 0, pal: 0,
+          dc: 0, dc_planning: 0, dcs: 0, dco: 0, cctag: 0, vk: 0, pal: 0,
           codes: new Set(),
           days: new Set(),
         });
       }
       const totals = grouped.get(key);
-      totals.dc += Number(row.dc_actual ?? row.dc_planning ?? 0);
+      // DC is the real count only -- the planning forecast is totalled
+      // separately, never mixed in for codes whose actual hasn't landed yet.
+      totals.dc += Number(row.dc_actual || 0);
+      totals.dc_planning += Number(row.dc_planning || 0);
       totals.dcs += Number(row.dcs || 0);
       totals.dco += Number(row.dco || 0);
       totals.cctag += Number(row.cctag || 0);
@@ -13583,9 +13703,26 @@ function FustOverviewConnect() {
         <button type="button" onClick={() => setRefreshKey((current) => current + 1)} disabled={loading}>
           {loading ? "Loading..." : "Refresh"}
         </button>
+        {canManage && (
+          <button type="button" onClick={reimportRange} disabled={loading || reimporting}>
+            {reimporting ? "Re-importing..." : "Re-import from Fust Planning"}
+          </button>
+        )}
       </div>
 
       {error && <div className="notice danger">{error}</div>}
+      {reimportResult && (
+        <div className={`notice${reimportResult.ok ? "" : " danger"}`}>
+          {reimportResult.skipped
+            ? `Re-import skipped: ${reimportResult.reason}`
+            : `Re-imported ${reimportResult.dates?.length || 0} days: ${reimportResult.saved} rows saved/updated, ${reimportResult.removed} removed (no longer in Fust Planning)${reimportResult.failed ? `, ${reimportResult.failed} rows failed` : ""}.`}
+          {(reimportResult.dates || []).filter((day) => day.removed || day.error).map((day) => (
+            <div key={day.date}>
+              {fustOverviewDate(day.date)}: {day.error ? `not changed -- ${day.error}` : `removed ${day.removed_codes.join(", ")}`}
+            </div>
+          ))}
+        </div>
+      )}
 
       <h3>Customer totals</h3>
       <div className="table-wrap">
@@ -13595,7 +13732,8 @@ function FustOverviewConnect() {
               <th>Country</th>
               <th>Klantnaam</th>
               <th>Connect</th>
-              <th>DC</th>
+              <th>DC-Actual</th>
+              <th>DC-Planning</th>
               <th>DCS</th>
               <th>DCO</th>
               <th>CC</th>
@@ -13612,6 +13750,7 @@ function FustOverviewConnect() {
                 <td>{totals.customer_name || "-"}</td>
                 <td>{totals.connect_name || "-"}</td>
                 <td>{totals.dc}</td>
+                <td>{totals.dc_planning}</td>
                 <td>{totals.dcs}</td>
                 <td>{totals.dco}</td>
                 <td>{totals.cctag}</td>
@@ -13622,7 +13761,7 @@ function FustOverviewConnect() {
               </tr>
             ))}
             {!customerTotals.length && !loading && (
-              <tr><td colSpan="11">No matched reference data for this range/filter.</td></tr>
+              <tr><td colSpan="12">No matched reference data for this range/filter.</td></tr>
             )}
           </tbody>
         </table>
@@ -13652,7 +13791,7 @@ function FustOverviewConnect() {
           <tbody>
             {filteredRows.map((row) => (
               <tr key={row.id}>
-                <td>{row.action_date}</td>
+                <td>{fustOverviewDate(row.action_date)}</td>
                 <td>{row.country}</td>
                 <td>{row.code}</td>
                 <td>{row.carrier1_name || "-"}</td>
@@ -14425,6 +14564,12 @@ function formatInkoopEuro(value) {
   return `€${(Number.isFinite(number) ? number : 0).toFixed(2)}`;
 }
 
+// "2026-10-01T00:00:00.000Z" / "2026-10-01" -> "01-10-2026"
+function fustOverviewDate(value) {
+  const match = String(value || "").match(/^(\d{4})-(\d{2})-(\d{2})/);
+  return match ? `${match[3]}-${match[2]}-${match[1]}` : (value || "-");
+}
+
 function inkoopShortDate(value) {
   const text = String(value || "").trim();
   return text ? text.slice(0, 10) : "-";
@@ -14468,15 +14613,20 @@ function inkoopPdfHref(invoiceNumber) {
   return `/api/inkoop/invoice-pdf/${encodeURIComponent(invoiceNumber || "")}`;
 }
 
+// A netted correction can span several invoices -- its invoice_number is
+// then "A + B" (see matchInkoopVeilingLines), which is no single PDF on
+// disk, so every part gets its own link.
 function InkoopInvoiceLink({ invoiceNumber }) {
-  if (!invoiceNumber) {
+  const parts = String(invoiceNumber || "").split("+").map((part) => part.trim()).filter(Boolean);
+  if (!parts.length) {
     return "-";
   }
-  return (
-    <a href={inkoopPdfHref(invoiceNumber)} target="_blank" rel="noreferrer">
-      {invoiceNumber}
-    </a>
-  );
+  return parts.map((part, index) => (
+    <React.Fragment key={part}>
+      {index > 0 && " + "}
+      <a href={inkoopPdfHref(part)} target="_blank" rel="noreferrer">{part}</a>
+    </React.Fragment>
+  ));
 }
 
 // A compact, readable transcript of the matched ERP line -- so someone
@@ -14498,10 +14648,134 @@ function inkoopErpTranscript(erpRow) {
   return parts.join(" · ");
 }
 
-function InkoopControlePage() {
+const INKOOP_INVOICE_TYPE_LABELS = { klokfactuur: "Klokfactuur", connect: "Connect", handel: "Handel", ai2: "AI2" };
+
+// One company's invoice list, folded by default -- every invoice with its
+// own PDF link, same as the rest of Inkoop Controle.
+function InkoopCompanyInvoiceList({ company }) {
+  return (
+    <InkoopCollapsibleCard title={`${company.company_number || "?"}${company.company_name ? ` - ${company.company_name}` : ""} -- invoices`} count={company.invoices.length} defaultOpen={false}>
+      <div className="table-wrap">
+        <table className="data-table">
+          <thead><tr><th>Date</th><th>Invoice</th><th>Type</th><th>Products</th><th>Emballage</th><th>Fees</th><th>Total</th><th>Lines</th></tr></thead>
+          <tbody>
+            {company.invoices.map((invoice) => (
+              <tr key={`${invoice.invoice_number}-${invoice.invoice_type}`}>
+                <td>{fustOverviewDate(invoice.invoice_date)}</td>
+                <td><InkoopInvoiceLink invoiceNumber={invoice.invoice_number} /></td>
+                <td>{INKOOP_INVOICE_TYPE_LABELS[invoice.invoice_type] || invoice.invoice_type || "-"}</td>
+                <td>{formatInkoopEuro(invoice.products)}</td>
+                <td>{formatInkoopEuro(invoice.emballage)}</td>
+                <td>{formatInkoopEuro(invoice.fees)}</td>
+                <td><strong>{formatInkoopEuro(invoice.total)}</strong></td>
+                <td>{invoice.line_count}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </InkoopCollapsibleCard>
+  );
+}
+
+// Inkoop Controle's first page: what each buying company was invoiced in a
+// date range -- totals split by invoice type, plus each company's invoices.
+function InkoopOverviewTab() {
+  const [toDate, setToDate] = useState(() => todayIso());
+  const [fromDate, setFromDate] = useState(() => daysAgoIso(30));
+  const [data, setData] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState("");
+
+  useEffect(() => {
+    let cancelled = false;
+    setLoading(true);
+    setError("");
+    apiJson(`/api/inkoop/invoice-summary?from=${fromDate}&to=${toDate}`)
+      .then((payload) => { if (!cancelled) setData(payload); })
+      .catch((loadError) => { if (!cancelled) setError(loadError.message); })
+      .finally(() => { if (!cancelled) setLoading(false); });
+    return () => { cancelled = true; };
+  }, [fromDate, toDate]);
+
+  const companies = data?.companies || [];
+  const types = ["klokfactuur", "connect", "handel", "ai2"].filter((type) => companies.some((company) => company.by_type[type]));
+  const grand = companies.reduce((sum, company) => ({
+    invoice_count: sum.invoice_count + company.invoice_count,
+    total: sum.total + company.total,
+    products: sum.products + company.products,
+    emballage: sum.emballage + company.emballage,
+    fees: sum.fees + company.fees,
+  }), { invoice_count: 0, total: 0, products: 0, emballage: 0, fees: 0 });
+
+  return (
+    <>
+      <div className="data-table-card">
+        <div className="section-header"><h2>Invoices per company</h2></div>
+        <div className="form-grid">
+          <label><span>From</span><input type="date" value={fromDate} onChange={(event) => setFromDate(event.target.value)} /></label>
+          <label><span>To</span><input type="date" value={toDate} onChange={(event) => setToDate(event.target.value)} /></label>
+        </div>
+        <div className="notice">
+          Each invoice's total is taken from its own summary lines (Product aankopen, Emballage, fees), so the detail lines behind them are not counted twice. AI2 Productnota's have no summary lines, so there the line totals are used.
+        </div>
+        {error && <div className="notice danger">{error}</div>}
+        {loading && !data ? <div className="notice">Loading invoices...</div> : (
+          <div className="table-wrap">
+            <table className="data-table">
+              <thead>
+                <tr>
+                  <th>Company</th><th>Invoices</th>
+                  {types.map((type) => <th key={type}>{INKOOP_INVOICE_TYPE_LABELS[type]}</th>)}
+                  <th>Products</th><th>Emballage</th><th>Fees</th><th>Total</th><th>Days</th>
+                </tr>
+              </thead>
+              <tbody>
+                {companies.map((company) => (
+                  <tr key={company.company_number || "unknown"}>
+                    <td>{company.company_number || "?"}{company.company_name ? ` - ${company.company_name}` : ""}</td>
+                    <td>{company.invoice_count}</td>
+                    {types.map((type) => (
+                      <td key={type}>
+                        {company.by_type[type] ? `${formatInkoopEuro(company.by_type[type].total)} (${company.by_type[type].invoice_count})` : "-"}
+                      </td>
+                    ))}
+                    <td>{formatInkoopEuro(company.products)}</td>
+                    <td>{formatInkoopEuro(company.emballage)}</td>
+                    <td>{formatInkoopEuro(company.fees)}</td>
+                    <td><strong>{formatInkoopEuro(company.total)}</strong></td>
+                    <td>{company.first_date ? `${fustOverviewDate(company.first_date)} - ${fustOverviewDate(company.last_date)}` : "-"}</td>
+                  </tr>
+                ))}
+                {!!companies.length && (
+                  <tr>
+                    <td><strong>All companies</strong></td>
+                    <td><strong>{grand.invoice_count}</strong></td>
+                    {types.map((type) => <td key={type} />)}
+                    <td><strong>{formatInkoopEuro(grand.products)}</strong></td>
+                    <td><strong>{formatInkoopEuro(grand.emballage)}</strong></td>
+                    <td><strong>{formatInkoopEuro(grand.fees)}</strong></td>
+                    <td><strong>{formatInkoopEuro(grand.total)}</strong></td>
+                    <td />
+                  </tr>
+                )}
+                {!companies.length && <tr><td colSpan={7 + types.length}>No invoices uploaded for this period yet.</td></tr>}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
+      {companies.map((company) => <InkoopCompanyInvoiceList key={company.company_number || "unknown"} company={company} />)}
+    </>
+  );
+}
+
+function InkoopControlePage({ currentUser }) {
   const [loading, setLoading] = useState(true);
   const [comparing, setComparing] = useState(false);
-  const [activeTab, setActiveTab] = useState("compare");
+  const [activeTab, setActiveTab] = useState("overview");
+  const canClearUploads = hasPermission(currentUser, PERMISSIONS.SETTINGS_MANAGE);
+  const [clearingUploads, setClearingUploads] = useState(false);
   const [imports, setImports] = useState([]);
   const [liveResult, setLiveResult] = useState(null);
   const [windowDays, setWindowDays] = useState(60);
@@ -14514,6 +14788,9 @@ function InkoopControlePage() {
   const [kwekersFile, setKwekersFile] = useState(null);
   const [leveranciersFile, setLeveranciersFile] = useState(null);
   const [klantFile, setKlantFile] = useState(null);
+  const [kwekersBwFile, setKwekersBwFile] = useState(null);
+  const [leveranciersBwFile, setLeveranciersBwFile] = useState(null);
+  const [supplierBwCount, setSupplierBwCount] = useState(0);
   const [uploadingSuppliers, setUploadingSuppliers] = useState(false);
   const [supplierCount, setSupplierCount] = useState(0);
   const [supplierNameCount, setSupplierNameCount] = useState(0);
@@ -14538,6 +14815,7 @@ function InkoopControlePage() {
       setSupplierCount(payload.supplier_count || 0);
       setSupplierNameCount(payload.supplier_name_count || 0);
       setSupplierFhCount(payload.supplier_fh_count || 0);
+      setSupplierBwCount(payload.supplier_bw_count || 0);
       setCustomerCount(payload.customer_count || 0);
       setManualLinks(payload.manual_supplier_links || []);
       setFacturationGroups(payload.facturation_groups || []);
@@ -14654,8 +14932,28 @@ function InkoopControlePage() {
     }
   }
 
+  async function clearAllUploads() {
+    const typed = window.prompt('This deletes ALL uploaded Inkoop data (ERP, invoices, dispatch, Follow-up notes, PDFs, import history). Master data and links are kept. It cannot be undone.\n\nType CLEAR to confirm.');
+    if (typed !== "CLEAR") {
+      return;
+    }
+    setClearingUploads(true);
+    setError("");
+    setMessage("");
+    try {
+      const payload = await apiJson("/api/inkoop/reset-uploads", { method: "POST", body: JSON.stringify({ confirm: "CLEAR" }) });
+      const counts = payload.counts || {};
+      setMessage(`Cleared: ${counts.inkoop_invoice_lines || 0} invoice lines, ${counts.inkoop_erp_lines || 0} ERP lines, ${counts.inkoop_dispatch_lots || 0} dispatch lots, ${counts.inkoop_issue_status || 0} follow-up statuses, ${payload.pdf_count || 0} PDFs, ${payload.import_count || 0} import records. Master data kept.`);
+      await loadInkoopData();
+    } catch (clearError) {
+      setError(clearError.message);
+    } finally {
+      setClearingUploads(false);
+    }
+  }
+
   async function uploadSupplierMasters() {
-    if (!kwekersFile && !leveranciersFile && !klantFile) {
+    if (!kwekersFile && !leveranciersFile && !klantFile && !kwekersBwFile && !leveranciersBwFile) {
       setError("Choose at least one master data file first.");
       return;
     }
@@ -14663,10 +14961,12 @@ function InkoopControlePage() {
     setError("");
     setMessage("");
     try {
-      const [kwekersBase64, leveranciersBase64, klantBase64] = await Promise.all([
+      const [kwekersBase64, leveranciersBase64, klantBase64, kwekersBwBase64, leveranciersBwBase64] = await Promise.all([
         kwekersFile ? fileToBase64(kwekersFile) : null,
         leveranciersFile ? fileToBase64(leveranciersFile) : null,
         klantFile ? fileToBase64(klantFile) : null,
+        kwekersBwFile ? fileToBase64(kwekersBwFile) : null,
+        leveranciersBwFile ? fileToBase64(leveranciersBwFile) : null,
       ]);
       const payload = await apiJson("/api/inkoop/suppliers/upload", {
         method: "POST",
@@ -14674,13 +14974,16 @@ function InkoopControlePage() {
           kwekers_file: kwekersFile ? { name: kwekersFile.name, content_base64: kwekersBase64 } : null,
           leveranciers_file: leveranciersFile ? { name: leveranciersFile.name, content_base64: leveranciersBase64 } : null,
           klant_file: klantFile ? { name: klantFile.name, content_base64: klantBase64 } : null,
+          kwekers_bw_file: kwekersBwFile ? { name: kwekersBwFile.name, content_base64: kwekersBwBase64 } : null,
+          leveranciers_bw_file: leveranciersBwFile ? { name: leveranciersBwFile.name, content_base64: leveranciersBwBase64 } : null,
         }),
       });
       setSupplierCount(payload.supplier_count || 0);
       setSupplierNameCount(payload.supplier_name_count || 0);
       setSupplierFhCount(payload.supplier_fh_count || 0);
+      setSupplierBwCount(payload.supplier_bw_count || 0);
       setCustomerCount(payload.customer_count || 0);
-      setMessage(`Master data updated: ${payload.supplier_count} suppliers linked by GLN, ${payload.supplier_fh_count} more by grower number, ${payload.supplier_name_count} more by name only, ${payload.customer_count} customers loaded from klant gegevens.`);
+      setMessage(`Master data updated: ${payload.supplier_count} suppliers linked by GLN, ${payload.supplier_fh_count} more by grower number, ${payload.supplier_name_count} more by name only, ${payload.customer_count} customers loaded from klant gegevens, ${payload.supplier_bw_count} codes with a betaalwijze (BW).`);
     } catch (uploadError) {
       setError(uploadError.message);
     } finally {
@@ -14734,6 +15037,7 @@ function InkoopControlePage() {
       </div>
 
       <div className="tab-strip">
+        <button type="button" className={activeTab === "overview" ? "active" : ""} onClick={() => setActiveTab("overview")}>Overview</button>
         <button type="button" className={activeTab === "compare" ? "active" : ""} onClick={() => setActiveTab("compare")}>Compare &amp; Reconcile</button>
         <button type="button" className={activeTab === "calendar" ? "active" : ""} onClick={() => setActiveTab("calendar")}>Calendar</button>
         <button type="button" className={activeTab === "dashboard" ? "active" : ""} onClick={() => setActiveTab("dashboard")}>Financial Dashboard</button>
@@ -14763,12 +15067,26 @@ function InkoopControlePage() {
 
       {activeTab === "settings" && (
       <>
+      {canClearUploads && (
+        <div className="data-table-card">
+          <div className="section-header"><h2>Start fresh</h2></div>
+          <div className="notice">
+            Deletes every uploaded ERP line, invoice line, dispatch data, Follow-up status/note, stored invoice PDF and the import history. Master data, manual supplier links and facturation groups are kept. This cannot be undone.
+          </div>
+          <div className="row-actions">
+            <button type="button" className="danger" onClick={clearAllUploads} disabled={clearingUploads}>
+              {clearingUploads ? "Clearing..." : "Clear all uploaded data"}
+            </button>
+          </div>
+        </div>
+      )}
       <div className="data-table-card">
         <div className="section-header"><h2>Master data</h2></div>
         <div className="notice">
           Upload each file once here -- it's remembered from then on. Re-upload any of them any time it's refreshed; entries merge in, nothing is removed.
           {" "}{supplierCount} suppliers linked by GLN, {supplierFhCount} more by grower number (Kwekercod), {supplierNameCount} more only by name (from "kwekers stamgegevens"/"leveranciers stamgegevens").
           {" "}{customerCount} customers loaded from "klant gegevens" (used to resolve dispatch destinations on the Destinations tab).
+          {" "}{supplierBwCount} codes with a betaalwijze (BW) from "kwekers/leveranciers met betaalwijze" -- complements the stamgegevens above; BW=B (bunches, internal) ERP rows are never matched.
         </div>
         <div className="form-grid">
           <label>
@@ -14782,6 +15100,14 @@ function InkoopControlePage() {
           <label>
             <span>Klant gegevens (.csv)</span>
             <input type="file" accept=".csv" onChange={(event) => setKlantFile(event.target.files?.[0] || null)} />
+          </label>
+          <label>
+            <span>Kwekers met betaalwijze (.csv)</span>
+            <input type="file" accept=".csv" onChange={(event) => setKwekersBwFile(event.target.files?.[0] || null)} />
+          </label>
+          <label>
+            <span>Leveranciers met betaalwijze (.csv)</span>
+            <input type="file" accept=".csv" onChange={(event) => setLeveranciersBwFile(event.target.files?.[0] || null)} />
           </label>
         </div>
         <div className="row-actions spread-actions">
@@ -14846,6 +15172,8 @@ function InkoopControlePage() {
       </div>
       </>
       )}
+
+      {activeTab === "overview" && <InkoopOverviewTab />}
 
       {activeTab === "compare" && (
       <>
@@ -14923,6 +15251,94 @@ function InkoopControlePage() {
   );
 }
 
+// Collapsible section card -- big result lists start folded so the page
+// stays scannable; the body is only rendered while open (a matched list can
+// run into the thousands of rows).
+function InkoopCollapsibleCard({ title, count, defaultOpen, children }) {
+  const [open, setOpen] = useState(defaultOpen ?? !(count > 25));
+  const toggle = () => setOpen((current) => !current);
+  return (
+    <div className="data-table-card">
+      <div
+        className="section-header"
+        role="button"
+        tabIndex={0}
+        aria-expanded={open}
+        style={{ cursor: "pointer", userSelect: "none" }}
+        onClick={toggle}
+        onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); toggle(); } }}
+      >
+        <h2>{open ? "▾" : "▸"} {title}{count !== undefined ? ` (${count})` : ""}</h2>
+      </div>
+      {open && children}
+    </div>
+  );
+}
+
+function inkoopMatchTypeLabel(row) {
+  if (row.confirmed_return) return "Correction (confirmed return)";
+  if (row.matched_as_correction) return "Correction (netted)";
+  if (row.matched_as_split_delivery) return "Split delivery";
+  if (row.matched_as_group) return "Group (same qty/price)";
+  if (row.pav) return "PAV";
+  if (row.supplier_code) return `Supplier code${row.supplier_match_type ? ` (${row.supplier_match_type})` : ""}`;
+  return "-";
+}
+
+const INKOOP_MATCHED_PAGE_SIZE = 200;
+
+// What every matched invoice line was matched with -- invoice side, ERP
+// side, and how -- with the same PDF link as every other table, so a match
+// can be checked against the original document when needed.
+function InkoopMatchedTable({ rows }) {
+  const [limit, setLimit] = useState(INKOOP_MATCHED_PAGE_SIZE);
+  const [filter, setFilter] = useState("");
+  const needle = filter.trim().toLowerCase();
+  const filtered = needle
+    ? rows.filter((row) => [row.invoice_number, row.pav, row.description, row.supplier_name, row.supplier_code, row.erp_row?.lot, row.erp_row?.suppl]
+      .some((value) => String(value || "").toLowerCase().includes(needle)))
+    : rows;
+  return (
+    <>
+      <div className="row-actions">
+        <input placeholder="Filter: invoice, PAV, lot, grower, description..." value={filter} onChange={(event) => { setFilter(event.target.value); setLimit(INKOOP_MATCHED_PAGE_SIZE); }} />
+      </div>
+      <div className="table-wrap">
+        <table className="data-table">
+          <thead>
+            <tr><th>Date</th><th>Company</th><th>Invoice</th><th>PAV / supplier</th><th>Grower</th><th>Description</th><th>Qty</th><th>Price</th><th>Total</th><th>Matched ERP line</th><th>Matched by</th></tr>
+          </thead>
+          <tbody>
+            {filtered.slice(0, limit).map((row, index) => (
+              <tr key={`${row.invoice_number}-${row.pav || row.supplier_code}-${index}`}>
+                <td>{inkoopShortDate(row.erp_row?.date || row.invoice_date)}</td>
+                <td>{inkoopCompanyLabel(row)}</td>
+                <td><InkoopInvoiceLink invoiceNumber={row.invoice_number} /></td>
+                <td>{row.pav || row.supplier_code || "-"}</td>
+                <td>{row.supplier_name || "-"}</td>
+                <td>{row.description}</td>
+                <td>{row.quantity}</td>
+                <td>{row.unit_price}</td>
+                <td>{row.total}</td>
+                <td>{row.erp_row ? inkoopErpTranscript(row.erp_row) : "-"}</td>
+                <td>{inkoopMatchTypeLabel(row)}</td>
+              </tr>
+            ))}
+            {!filtered.length && <tr><td colSpan={11}>No matched lines{needle ? " for this filter" : ""}.</td></tr>}
+          </tbody>
+        </table>
+      </div>
+      {filtered.length > limit && (
+        <div className="row-actions">
+          <span>Showing {limit} of {filtered.length}.</span>
+          <button type="button" onClick={() => setLimit((current) => current + INKOOP_MATCHED_PAGE_SIZE * 5)}>Show more</button>
+          <button type="button" onClick={() => setLimit(filtered.length)}>Show all</button>
+        </div>
+      )}
+    </>
+  );
+}
+
 // Shared read-only rendering of a match result's tables -- used by both the
 // Compare & Reconcile tab (the live, always-current result) and the
 // Calendar tab's day-detail drill-down (a single day's slice of the same
@@ -14935,8 +15351,7 @@ function InkoopResultTables({ result, windowDays, manualLinkDrafts, setManualLin
   return (
     <>
       {!!result.matched_mismatch.length && (
-        <div className="data-table-card">
-          <div className="section-header"><h2>Mismatches ({result.matched_mismatch.length})</h2></div>
+        <InkoopCollapsibleCard title="Mismatches" count={result.matched_mismatch.length}>
           <div className="table-wrap">
             <table className="data-table">
               <thead>
@@ -14961,12 +15376,11 @@ function InkoopResultTables({ result, windowDays, manualLinkDrafts, setManualLin
               </tbody>
             </table>
           </div>
-        </div>
+        </InkoopCollapsibleCard>
       )}
 
       {!!result.supplier_not_linked?.length && (
-        <div className="data-table-card">
-          <div className="section-header"><h2>Supplier not linked ({result.supplier_not_linked.length})</h2></div>
+        <InkoopCollapsibleCard title="Supplier not linked" count={result.supplier_not_linked.length}>
           <div className="notice">
             These Handel Aankopen lines have a real FloraHolland supplier, but no internal code is linked to that GLN yet -- link it once below, results refresh right away.
           </div>
@@ -14997,12 +15411,11 @@ function InkoopResultTables({ result, windowDays, manualLinkDrafts, setManualLin
               </tbody>
             </table>
           </div>
-        </div>
+        </InkoopCollapsibleCard>
       )}
 
       {!!result.ambiguous_matches?.length && (
-        <div className="data-table-card">
-          <div className="section-header"><h2>Ambiguous matches ({result.ambiguous_matches.length})</h2></div>
+        <InkoopCollapsibleCard title="Ambiguous matches" count={result.ambiguous_matches.length}>
           <div className="notice">
             Handel Aankopen has no unique reference number -- these lines have more than one ERP purchase from the same supplier with the exact same quantity and price, so which one it actually is can't be told apart automatically.
           </div>
@@ -15024,12 +15437,11 @@ function InkoopResultTables({ result, windowDays, manualLinkDrafts, setManualLin
               </tbody>
             </table>
           </div>
-        </div>
+        </InkoopCollapsibleCard>
       )}
 
       {!!result.only_in_invoice.length && (
-        <div className="data-table-card">
-          <div className="section-header"><h2>Only in invoice ({result.only_in_invoice.length})</h2></div>
+        <InkoopCollapsibleCard title="Only in invoice" count={result.only_in_invoice.length}>
           <div className="notice">
             FloraHolland charged for these but no matching purchase was found in the ERP export{windowDays ? ` within the last ${windowDays} days` : ""}.
             A Handel Aankopen/AI2 row here sometimes means the grower resolved to the wrong of several look-alike codes in the master data (confirmed real case: "DUTCH GREEN CENTRE" exists twice, under different codes) -- link the correct code below if so.
@@ -15068,46 +15480,43 @@ function InkoopResultTables({ result, windowDays, manualLinkDrafts, setManualLin
               </tbody>
             </table>
           </div>
-        </div>
+        </InkoopCollapsibleCard>
       )}
 
       {!!result.only_in_erp.length && (
-        <div className="data-table-card">
-          <div className="section-header"><h2>Only in ERP ({result.only_in_erp.length})</h2></div>
+        <InkoopCollapsibleCard title="Only in ERP" count={result.only_in_erp.length}>
           <div className="notice">
             Recorded as a purchase but no invoice line referenced this PAV{windowDays ? ` within the last ${windowDays} days` : ""} -- invoice not received yet, or a data entry mistake. No company can be attributed here -- the ERP export has no such field.
             This list is unfiltered, unlike Calendar/Follow-up: it includes rows those views hide because the grower's day (or day+product) total already reconciles overall.
+            {result.internal_bunches_skipped ? ` ${result.internal_bunches_skipped} internal bunch rows (BW=B) are left out entirely -- they never get an auction invoice.` : ""}
           </div>
           <div className="table-wrap">
             <table className="data-table">
               <thead><tr><th>Date</th><th>PAV</th><th>Lot</th><th>Description</th><th>Pieces</th><th>Price</th><th>Total</th><th>Supplier</th></tr></thead>
               <tbody>
                 {result.only_in_erp.map((row, index) => (
-                  <tr key={index}><td>{inkoopShortDate(row.date)}</td><td>{row.pav}</td><td>{row.lot}</td><td>{row.description}</td><td>{row.pieces}</td><td>{row.price}</td><td>{row.t_price}</td><td>{row.suppl}</td></tr>
+                  <tr key={index}><td>{inkoopShortDate(row.date)}</td><td>{row.pav}</td><td>{row.lot}</td><td>{row.description}</td><td>{row.pieces}</td><td>{row.price}</td><td>{row.t_price}</td><td>{row.suppl}{row.supplier_bw ? ` (BW ${row.supplier_bw}${INKOOP_BW_LABELS[row.supplier_bw] ? `: ${INKOOP_BW_LABELS[row.supplier_bw]}` : ""})` : ""}</td></tr>
                 ))}
               </tbody>
             </table>
           </div>
-        </div>
+        </InkoopCollapsibleCard>
       )}
 
-      <div className="data-table-card">
-        <div className="section-header"><h2>Matched OK</h2></div>
-        <div className="notice">{result.matched_ok.length} lines matched with no differences.</div>
-      </div>
+      <InkoopCollapsibleCard title="Matched OK" count={result.matched_ok.length} defaultOpen={false}>
+        <InkoopMatchedTable rows={result.matched_ok} />
+      </InkoopCollapsibleCard>
 
       {!!result.embalage_lines?.length && (
-        <div className="data-table-card">
-          <div className="section-header"><h2>Emballage (packaging) costs</h2></div>
+        <InkoopCollapsibleCard title="Emballage (packaging) costs" count={result.embalage_lines.length}>
           <div className="notice">
             {result.embalage_lines.length} lines, {formatInkoopEuro(embalageTotal)} total. Only ever appears on the invoice, never in the ERP export -- collected here for visibility, not reconciled against anything. See the Financial Dashboard for a day/company breakdown.
           </div>
-        </div>
+        </InkoopCollapsibleCard>
       )}
 
       {!!skippedFiles?.length && (
-        <div className="data-table-card">
-          <div className="section-header"><h2>Skipped files (last upload)</h2></div>
+        <InkoopCollapsibleCard title="Skipped files (last upload)" count={skippedFiles.length}>
           <div className="table-wrap">
             <table className="data-table">
               <thead><tr><th>File</th><th>Reason</th></tr></thead>
@@ -15118,7 +15527,7 @@ function InkoopResultTables({ result, windowDays, manualLinkDrafts, setManualLin
               </tbody>
             </table>
           </div>
-        </div>
+        </InkoopCollapsibleCard>
       )}
     </>
   );
@@ -15196,8 +15605,7 @@ function InkoopDashboardTab({ company }) {
 
   return (
     <>
-      <div className="data-table-card">
-        <div className="section-header"><h2>Financial dashboard</h2></div>
+      <InkoopCollapsibleCard title="Financial dashboard">
         <div className="notice">
           How much money is at risk from mismatches and unresolved gaps, and how much is actually being spent -- ranked by grower, AVC, buying company, and product group (Bloemen/Planten/Accessoires).
         </div>
@@ -15212,7 +15620,7 @@ function InkoopDashboardTab({ company }) {
             </select>
           </label>
         </div>
-      </div>
+      </InkoopCollapsibleCard>
 
       {error && <div className="notice danger">{error}</div>}
 
@@ -15221,8 +15629,7 @@ function InkoopDashboardTab({ company }) {
       ) : (
         <>
           {todaySummary && (
-            <div className="data-table-card">
-              <div className="section-header"><h2>Today ({todaySummary.date})</h2></div>
+            <InkoopCollapsibleCard title={<>Today ({todaySummary.date})</>}>
               <div className="notice">
                 Whole-day totals -- no grower/product matching involved, just "did the money invoiced add up to what the ERP recorded" for the day as a whole. A facturation umbrella (one invoice identity billing many ERP-side locations, e.g. Zentoo) can still show a gap at the grower level even when these two totals line up.
               </div>
@@ -15248,11 +15655,10 @@ function InkoopDashboardTab({ company }) {
                   <div className="inkoop-summary-label">Products</div>
                 </div>
               </div>
-            </div>
+            </InkoopCollapsibleCard>
           )}
 
-          <div className="data-table-card">
-            <div className="section-header"><h2>Day report</h2></div>
+          <InkoopCollapsibleCard title="Day report">
             <div className="notice">
               "Invoiced" vs "Recorded in ERP" are plain day-wide totals, matched by date only -- not by grower or product. Use this first to see whether the day balanced financially at all before drilling into Compare &amp; Reconcile or Follow-up for the specific lines.
             </div>
@@ -15278,10 +15684,9 @@ function InkoopDashboardTab({ company }) {
                 </tbody>
               </table>
             </div>
-          </div>
+          </InkoopCollapsibleCard>
 
-          <div className="data-table-card">
-            <div className="section-header"><h2>Week report</h2></div>
+          <InkoopCollapsibleCard title="Week report">
             <div className="table-wrap">
               <table className="data-table">
                 <thead><tr><th>Week of</th><th>Invoiced</th><th>Recorded in ERP</th><th>Difference</th><th>Mismatches</th><th>Mismatch value</th><th>Gaps</th><th>Gap value</th><th>Emballage</th><th>Products</th></tr></thead>
@@ -15304,28 +15709,23 @@ function InkoopDashboardTab({ company }) {
                 </tbody>
               </table>
             </div>
-          </div>
+          </InkoopCollapsibleCard>
 
-          <div className="data-table-card">
-            <div className="section-header"><h2>By grower</h2></div>
+          <InkoopCollapsibleCard title="By grower" defaultOpen={false}>
             {inkoopRenderBarList(byGrower)}
-          </div>
-          <div className="data-table-card">
-            <div className="section-header"><h2>By AVC</h2></div>
+          </InkoopCollapsibleCard>
+          <InkoopCollapsibleCard title="By AVC" defaultOpen={false}>
             {inkoopRenderBarList(byAvc)}
-          </div>
-          <div className="data-table-card">
-            <div className="section-header"><h2>By company</h2></div>
+          </InkoopCollapsibleCard>
+          <InkoopCollapsibleCard title="By company" defaultOpen={false}>
             {inkoopRenderBarList(byCompany)}
-          </div>
-          <div className="data-table-card">
-            <div className="section-header"><h2>By product group</h2></div>
+          </InkoopCollapsibleCard>
+          <InkoopCollapsibleCard title="By product group" defaultOpen={false}>
             {inkoopRenderBarList(byProductGroup)}
-          </div>
+          </InkoopCollapsibleCard>
 
           {embalageSummary && (
-            <div className="data-table-card">
-              <div className="section-header"><h2>Emballage (packaging) costs</h2></div>
+            <InkoopCollapsibleCard title="Emballage (packaging) costs">
               <div className="notice">
                 {formatInkoopEuro(embalageSummary.total_value)} total in this window. Only ever appears on the invoice, never in the ERP export -- collected for visibility, never reconciled against anything.
               </div>
@@ -15350,7 +15750,7 @@ function InkoopDashboardTab({ company }) {
                   </tbody>
                 </table>
               </div>
-            </div>
+            </InkoopCollapsibleCard>
           )}
         </>
       )}
@@ -15604,6 +16004,19 @@ function InkoopFollowUpTab({ company }) {
   );
 }
 
+// "BW" (betaalwijze) from the kwekers/leveranciers/klant exports.
+const INKOOP_BW_LABELS = {
+  A: "AI2",
+  B: "bunches",
+  D: "direct",
+  F: "FOB lokale valuta",
+  M: "mix klant",
+  N: "niet berekenen",
+  T: "LTD direct",
+  U: "Uraltorg direct",
+  V: "via veiling",
+};
+
 const INKOOP_RETOUR_STATUS_LABELS = {
   confirmed_return: "Confirmed return",
   partial_return: "Partially returned",
@@ -15664,8 +16077,7 @@ function InkoopDestinationsTab() {
       {error && <div className="notice danger">{error}</div>}
 
       {summary && (
-        <div className="data-table-card">
-          <div className="section-header"><h2>Sold per country</h2></div>
+        <InkoopCollapsibleCard title="Sold per country">
           <div className="notice">
             {summary.lot_count} purchase lots, {summary.total_pieces.toLocaleString()} pieces dispatched, {formatInkoopEuro(summary.total_value)} (apportioned from each lot's own value by dispatched piece share) -- {summary.from} to {summary.to}.
           </div>
@@ -15708,13 +16120,12 @@ function InkoopDestinationsTab() {
               </div>
             </>
           )}
-        </div>
+        </InkoopCollapsibleCard>
       )}
 
-      <div className="data-table-card">
-        <div className="section-header"><h2>Corrections check ({corrections.length})</h2></div>
+      <InkoopCollapsibleCard title="Corrections check" count={corrections.length}>
         <div className="notice">
-          Every Klokfactuur/Connect correction already reconciled against the ERP (see Compare &amp; Reconcile) -- cross-checked here against the dispatch dump to confirm it actually went back to one of FloraHolland's own "retour" accounts, not somewhere else.
+          Every negative value on an invoice (Klokfactuur/Connect corrections, full cancellations, Handel/AI2 credits) -- cross-checked against the dispatch dump: only stock sent to a "retour" customer (Tgrp B/P 119) counts as returned. Internal XX codes (bunches, mix, ...) are labelled but don't confirm a correction.
         </div>
         <div className="table-wrap">
           <table className="data-table">
@@ -15735,7 +16146,7 @@ function InkoopDestinationsTab() {
                     {item.lots.flatMap((lot) => lot.destinations).length
                       ? item.lots.flatMap((lot) => lot.destinations).map((dest, destIndex) => (
                         <div key={`${dest.code}-${destIndex}`}>
-                          {dest.pieces} &rarr; {dest.code}{dest.name ? ` (${dest.name}${dest.land ? `, ${dest.land}` : ""})` : ""}{dest.is_retour ? " [retour]" : ""}
+                          {dest.pieces} &rarr; {dest.code}{dest.name ? ` (${dest.name}${dest.land ? `, ${dest.land}` : ""})` : ""}{dest.is_retour ? " [retour 119]" : ""}{!dest.is_retour && dest.bw ? ` [intern: ${INKOOP_BW_LABELS[dest.bw] || `BW ${dest.bw}`}]` : ""}
                         </div>
                       ))
                       : "-"}
@@ -15748,7 +16159,7 @@ function InkoopDestinationsTab() {
             </tbody>
           </table>
         </div>
-      </div>
+      </InkoopCollapsibleCard>
     </>
   );
 }

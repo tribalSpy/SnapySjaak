@@ -649,8 +649,50 @@ def parse_klant_gegevens(input_path: Path):
             "tgrp_b": tgrp_b,
             "tgrp_p": tgrp_p,
             "type": get(row, "type"),
+            "bw": get(row, "bw").upper(),
             "is_retour": tgrp_b == KLANT_RETOUR_TGRP or tgrp_p == KLANT_RETOUR_TGRP,
         }
+    return {"by_code": by_code}
+
+
+# "kwekers met betaalwijze" / "leveranciers met betaalwijze" -- the same
+# fixed-width "Screen" export shape as klant gegevens, keyed by "Vkn" (the
+# same internal code as the stamgegevens' Code column and the ERP's Suppl.),
+# complementing the stamgegevens (which carry the GLN/Kwekercod join keys)
+# with "BW" (betaalwijze): A=AI2, B=bunches, D=direct, F=FOB lokale valuta,
+# M=mix klant, N=niet berekenen, T=LTD direct, U=Uraltorg direct, V=via
+# veiling. Confirmed real: every BW=B code is an internal bunch-production
+# account ("Rose Mix 1", "Bunches 10 Kraft", ...), never an auction supplier.
+def parse_betaalwijze(paths):
+    by_code = {}
+    for path, label in paths:
+        if not path:
+            continue
+        all_rows = load_erp_csv_rows(path)
+        headers, data_rows = find_header_row_by_column(all_rows, "Vkn")
+        if headers is None:
+            return {"by_code": {}, "error": f"Could not find a header row containing Vkn in the {label} file"}
+        idx = {name: i for i, name in enumerate(headers)}
+
+        def get(row, key):
+            col = idx.get(key)
+            if col is None or col >= len(row):
+                return ""
+            return clean_text(row[col])
+
+        for row in data_rows:
+            code = get(row, "vkn").upper()
+            if not code:
+                continue
+            by_code[code] = {
+                "name": get(row, "naam"),
+                "bw": get(row, "bw").upper(),
+                "type": get(row, "type"),
+                "rel_nr": get(row, "relnr"),
+                "h_bedr": get(row, "h_bedr"),
+                "land": get(row, "lan"),
+                "source": label,
+            }
     return {"by_code": by_code}
 
 
@@ -834,6 +876,10 @@ def main():
     dispatch_parser = subparsers.add_parser("parse-dispatch-dump")
     dispatch_parser.add_argument("--input", required=True)
 
+    betaalwijze_parser = subparsers.add_parser("parse-betaalwijze")
+    betaalwijze_parser.add_argument("--kwekers", required=False, default="")
+    betaalwijze_parser.add_argument("--leveranciers", required=False, default="")
+
     args = parser.parse_args()
 
     if args.command == "parse-erp":
@@ -848,6 +894,13 @@ def main():
         print(json.dumps(parse_klant_gegevens(Path(args.input))))
     elif args.command == "parse-dispatch-dump":
         print(json.dumps(parse_dispatch_dump(Path(args.input))))
+    elif args.command == "parse-betaalwijze":
+        # Kwekers first so the leveranciers entry wins on a shared code, same
+        # precedence as parse_suppliers.
+        print(json.dumps(parse_betaalwijze([
+            (Path(args.kwekers) if args.kwekers else None, "kwekers"),
+            (Path(args.leveranciers) if args.leveranciers else None, "leveranciers"),
+        ])))
 
 
 if __name__ == "__main__":
