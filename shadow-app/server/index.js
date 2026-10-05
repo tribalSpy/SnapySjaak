@@ -9274,6 +9274,42 @@ async function findShelfCountFoldersAcrossAccounts(accountsWithEntries, base) {
 // instead. Without this fallback every field here silently comes back
 // null -- not genuinely low confidence, just nothing to parse at all --
 // and every row lands in needs_review for the wrong reason.
+// The trained YOLO model's side-by-side result (see shelf-poller-app
+// run_trained_model): per-photo counts per class. Each photo shows one
+// trolley from some angle, so the reference estimate is the median photo
+// count times the trolley count -- kept next to the raw per-photo counts so
+// the estimate can always be checked. Comparison only, never the official
+// count.
+function summarizeShelfTrainedModel(trained, trolleyCount) {
+  if (!trained || typeof trained !== "object") {
+    return null;
+  }
+  if (trained.error) {
+    return { error: String(trained.error).slice(0, 500) };
+  }
+  const photos = (Array.isArray(trained.photos) ? trained.photos : []).filter((photo) => photo && !photo.error);
+  if (!photos.length) {
+    return { error: "trained model counted no photos", model_version: trained.model_version || "" };
+  }
+  const median = (values) => {
+    const sorted = [...values].sort((left, right) => left - right);
+    const middle = Math.floor(sorted.length / 2);
+    return sorted.length % 2 ? sorted[middle] : (sorted[middle - 1] + sorted[middle]) / 2;
+  };
+  const trolleys = Math.max(1, Number(trolleyCount) || 1);
+  const shelfPerPhoto = photos.map((photo) => Number(photo.shelf_level) || 0);
+  const extensionPerPhoto = photos.map((photo) => Number(photo.extension) || 0);
+  const confidence = photos.reduce((sum, photo) => sum + (Number(photo.confidence) || 0), 0) / photos.length;
+  return {
+    model_version: String(trained.model_version || ""),
+    shelf_count: Math.round(median(shelfPerPhoto) * trolleys),
+    extension_count: Math.round(median(extensionPerPhoto) * trolleys),
+    confidence: Math.round(confidence * 100) / 100,
+    per_photo: photos.map((photo) => ({ file: photo.file, shelf_level: Number(photo.shelf_level) || 0, extension: Number(photo.extension) || 0 })),
+    trolley_count: trolleys,
+  };
+}
+
 function parseShelfCountJobResult(job) {
   const contentText = String(job?.result_json?.ollama_response?.message?.content || job?.result_json?.response || "").trim();
   const thinkingText = String(job?.result_json?.ollama_response?.message?.thinking || "").trim();
@@ -16431,6 +16467,7 @@ async function handleApi(req, res, url) {
         extension_count: parsed.extensions,
         confidence: parsed.confidence,
         per_trolley: parsed.per_trolley.length ? parsed.per_trolley : null,
+        trained_model: summarizeShelfTrainedModel(job.result_json?.trained_model, job.payload_json.trolley_count),
         status,
         model_version: agentName,
         job_id: job.id,

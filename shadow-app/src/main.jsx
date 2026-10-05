@@ -8080,7 +8080,7 @@ function ShelfCountPage() {
             <thead>
               <tr>
                 <th>Customer reference</th><th>Trolleys</th><th>Photos</th><th>Shelves</th><th>Levels</th>
-                <th>Extensions</th><th>Per trolley (shelves / levels / ext.)</th><th>Confidence</th><th>Fust expected (DC)</th><th>Deviation</th>
+                <th>Extensions</th><th>Per trolley (shelves / levels / ext.)</th><th>Trained model (shelves / ext.)</th><th>Confidence</th><th>Fust expected (DC)</th><th>Deviation</th>
                 <th>Fust expected (DCO)</th><th>Ext. deviation</th><th>Status</th><th>Error</th>
               </tr>
             </thead>
@@ -8100,6 +8100,20 @@ function ShelfCountPage() {
                       ))
                       : "-"}
                   </td>
+                  <td>
+                    {row.trained_model?.error
+                      ? <span className="muted" title={row.trained_model.error}>error</span>
+                      : row.trained_model
+                        ? (
+                          <span
+                            title={`Model ${row.trained_model.model_version || "?"}, confidence ${row.trained_model.confidence ?? "-"}; per photo: ${(row.trained_model.per_photo || []).map((photo) => `${photo.shelf_level}/${photo.extension}`).join(", ")} (median x ${row.trained_model.trolley_count} trolleys)`}
+                            style={{ color: row.shelf_count !== null && row.shelf_count !== undefined && Number(row.shelf_count) !== Number(row.trained_model.shelf_count) ? "#b45309" : undefined, fontWeight: 600 }}
+                          >
+                            {row.trained_model.shelf_count} / {row.trained_model.extension_count}
+                          </span>
+                        )
+                        : "-"}
+                  </td>
                   <td>{row.confidence !== null && row.confidence !== undefined ? Number(row.confidence).toFixed(2) : "-"}</td>
                   <td>{row.expected_average ?? "-"}</td>
                   <td>{row.deviation ?? "-"}</td>
@@ -8109,7 +8123,7 @@ function ShelfCountPage() {
                   <td>{row.error_text || "-"}</td>
                 </tr>
               ))}
-              {!counts.length && <tr><td colSpan={14}>No completed references for this date.</td></tr>}
+              {!counts.length && <tr><td colSpan={15}>No completed references for this date.</td></tr>}
             </tbody>
           </table>
         </div>

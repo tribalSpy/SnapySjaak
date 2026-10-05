@@ -1,7 +1,10 @@
+import base64
 import json
 import os
 import socket
+import subprocess
 import sys
+import tempfile
 import time
 import urllib.error
 import urllib.request
@@ -51,6 +54,11 @@ def load_config():
         "version": str(env_or_config("SHELF_POLLER_VERSION", config, "version", "1.0.0")).strip(),
         "poll_interval_seconds": int(env_or_config("SHELF_POLLER_INTERVAL_SECONDS", config, "poll_interval_seconds", 10) or 10),
         "ollama_url": str(env_or_config("OLLAMA_URL", config, "ollama_url", "http://127.0.0.1:11434")).rstrip("/"),
+        # Optional side-by-side count with the trained YOLO model
+        # (shelf-training/models/infer.py, run with the training venv's own
+        # python so this poller never needs torch/ultralytics). Empty = off.
+        "trained_model_python": str(env_or_config("SHELF_TRAINED_MODEL_PYTHON", config, "trained_model_python", "")).strip(),
+        "trained_model_infer": str(env_or_config("SHELF_TRAINED_MODEL_INFER", config, "trained_model_infer", "")).strip(),
     }
 
 
@@ -185,11 +193,57 @@ def run_job(config: dict, job: dict):
         raise RuntimeError(f"Unexpected job type for the shelf-count poller: {job_type}")
     payload = job.get("payload_json") or {}
     ollama_response = ollama_chat(config, payload)
-    return {
+    result = {
         "job_type": job_type,
         "model": payload.get("model") or config["model_name"],
         "ollama_response": ollama_response,
     }
+    trained = run_trained_model(config, payload)
+    if trained is not None:
+        result["trained_model"] = trained
+    return result
+
+
+IMAGE_SUFFIXES = {"image/jpeg": ".jpg", "image/jpg": ".jpg", "image/png": ".png", "image/webp": ".webp"}
+
+
+# Side-by-side count with the trained shelf model -- never allowed to fail
+# the job: the Ollama count above stays the official one, this is only sent
+# along for comparison (shown as "Trained model" on the Shelf count page).
+def run_trained_model(config: dict, payload: dict):
+    python_path = config.get("trained_model_python") or ""
+    infer_path = config.get("trained_model_infer") or ""
+    if not python_path or not infer_path:
+        return None
+    if not Path(python_path).exists() or not Path(infer_path).exists():
+        return {"error": f"trained model not found (python: {python_path}, infer: {infer_path})"}
+    documents = payload.get("vision_documents") or []
+    with tempfile.TemporaryDirectory(prefix="shelf-trained-") as temp_dir:
+        image_paths = []
+        for index, document in enumerate(documents, start=1):
+            mime_type = str(document.get("mime_type") or "").strip().lower()
+            content = str(document.get("content_base64") or "").strip()
+            if not content or not mime_type.startswith("image/"):
+                continue
+            image_path = Path(temp_dir) / f"photo-{index:02d}{IMAGE_SUFFIXES.get(mime_type, '.jpg')}"
+            image_path.write_bytes(base64.b64decode(content))
+            image_paths.append(str(image_path))
+        if not image_paths:
+            return {"error": "no photos to count"}
+        try:
+            completed = subprocess.run(
+                [python_path, infer_path, "--batch", *image_paths],
+                capture_output=True, text=True, timeout=600,
+            )
+        except Exception as error:  # noqa: BLE001
+            return {"error": f"could not run trained model: {error}"}
+        if completed.returncode != 0:
+            message = (completed.stderr or completed.stdout or "").strip().splitlines()
+            return {"error": message[-1] if message else f"exit code {completed.returncode}"}
+        try:
+            return json.loads(completed.stdout.strip().splitlines()[-1])
+        except Exception as error:  # noqa: BLE001
+            return {"error": f"unreadable trained-model output: {error}"}
 
 
 def heartbeat_payload(config: dict, status: str):

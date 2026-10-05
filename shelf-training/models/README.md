@@ -15,17 +15,27 @@ zip the whole `models/` folder).
 ## Using the active model
 
 ```python
-from infer import count_shelf_levels
-result = count_shelf_levels("path/to/photo.jpg")  # {"shelf_count": 4, "confidence": 0.83}
+from infer import count_photo
+count_photo("path/to/photo.jpg")  # {"shelf_level": 4, "extension": 0, "confidence": 0.83}
 ```
 
-or from the command line: `python infer.py path/to/photo.jpg`.
+From the command line: `python infer.py path/to/photo.jpg`, or
+`python infer.py --batch photo1.jpg photo2.jpg ...` for one JSON document
+covering several photos (what `shelf-poller-app` runs).
 
-## This is intentionally not wired into shelf-poller-app
+## Side by side with the live count
 
-The live nightly shelf-count pipeline (`shelf-poller-app/`) still counts
-via the Ollama vision-language model, unchanged. Swapping the live job over
-to this trained detector is a separate decision to make once
-`evaluation/evaluate.py`'s counting-accuracy report shows it's actually
-more reliable than the current prompt-based approach on real trolley
-photos -- not something to flip on by default the moment a model exists.
+`shelf-poller-app/` still produces the official nightly count with the
+Ollama vision-language model. Once `trained_model_python` (this folder's
+`.venv\Scripts\python.exe`) and `trained_model_infer` (this `infer.py`) are
+set in the poller's `config.json`, it also runs the **active** model on the
+same photos and sends that along. The Shelf count page shows it in the
+"Trained model (shelves / ext.)" column, orange when it disagrees with the
+official count, with the per-photo counts in the tooltip (reference total =
+median photo count x trolley count). While no model is promoted, that
+column just shows "error" (hover: "No active model...") and nothing else
+changes.
+
+Switching the official count over to this model is a later, separate
+decision, once the side-by-side column has shown it is right more often
+than Ollama on real nights.

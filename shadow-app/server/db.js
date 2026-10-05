@@ -411,9 +411,9 @@ export async function upsertShelfCountRow(row) {
       INSERT INTO shelf_counts (
         customer_reference, nightly_run_date, drive_folder_name, trolley_count, photo_count, shelf_count,
         level_count, confidence, expected_average, deviation, extension_count, extension_expected,
-        extension_deviation, status, model_version, job_id, error_text, processed_at, per_trolley
+        extension_deviation, status, model_version, job_id, error_text, processed_at, per_trolley, trained_model
       )
-      VALUES ($1, $2::date, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18::timestamptz, $19::jsonb)
+      VALUES ($1, $2::date, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18::timestamptz, $19::jsonb, $20::jsonb)
       ON CONFLICT (customer_reference, nightly_run_date) DO UPDATE SET
         drive_folder_name = COALESCE(NULLIF(EXCLUDED.drive_folder_name, ''), shelf_counts.drive_folder_name),
         trolley_count = COALESCE(NULLIF(EXCLUDED.trolley_count, 0), shelf_counts.trolley_count),
@@ -432,6 +432,7 @@ export async function upsertShelfCountRow(row) {
         error_text = EXCLUDED.error_text,
         processed_at = COALESCE(EXCLUDED.processed_at, shelf_counts.processed_at),
         per_trolley = COALESCE(EXCLUDED.per_trolley, shelf_counts.per_trolley),
+        trained_model = COALESCE(EXCLUDED.trained_model, shelf_counts.trained_model),
         updated_at = now()
       RETURNING *
     `,
@@ -455,6 +456,7 @@ export async function upsertShelfCountRow(row) {
       row.error_text || "",
       row.processed_at || null,
       Array.isArray(row.per_trolley) ? JSON.stringify(row.per_trolley) : null,
+      row.trained_model && typeof row.trained_model === "object" ? JSON.stringify(row.trained_model) : null,
     ],
   );
   return result.rows?.[0] || null;
@@ -2142,6 +2144,12 @@ const databaseMigrations = [
   // trolley next to the totals, so a multi-trolley count can be checked.
   `
     ALTER TABLE shelf_counts ADD COLUMN IF NOT EXISTS per_trolley jsonb
+  `,
+  // Side-by-side count from the trained YOLO shelf model (shelf-training,
+  // run by shelf-poller-app next to the Ollama count) -- for comparison
+  // only; shelf_count/level_count stay the official Ollama figures.
+  `
+    ALTER TABLE shelf_counts ADD COLUMN IF NOT EXISTS trained_model jsonb
   `,
   // One row per calendar day the nightly trigger has run for -- its own
   // existence for a given run_date is what makes the trigger idempotent

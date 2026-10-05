@@ -43,6 +43,15 @@ only ever hands a `shelf_count` job to a poller that asks for it by name, so:
    vision-capable pull.
 6. Start it with `run_poller.bat`.
 
+## Optional: trained model side by side
+
+Set `trained_model_python` (e.g. `...\shelf-training\.venv\Scripts\python.exe`)
+and `trained_model_infer` (e.g. `...\shelf-training\models\infer.py`) in
+`config.json` to also count every job's photos with the trained YOLO model
+(the active one in `shelf-training/models/registry.json`). Its result is
+sent along for comparison only; it can never fail a job. Leave both empty to
+switch it off.
+
 ## What this does
 
 - Sends heartbeat updates to Shadow (capabilities always `["shelf_count"]`).

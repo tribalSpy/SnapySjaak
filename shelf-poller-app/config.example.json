@@ -6,5 +6,7 @@
   "model_name": "qwen3-vl:32b",
   "version": "1.0.0",
   "poll_interval_seconds": 10,
-  "ollama_url": "http://127.0.0.1:11434"
+  "ollama_url": "http://127.0.0.1:11434",
+  "trained_model_python": "C:\\SnappySjaak\\shelf-training\\.venv\\Scripts\\python.exe",
+  "trained_model_infer": "C:\\SnappySjaak\\shelf-training\\models\\infer.py"
 }
