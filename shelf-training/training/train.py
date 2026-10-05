@@ -42,6 +42,14 @@ def main():
 
     run_name = args.name or f'shelf_level_{datetime.now().strftime("%Y%m%d_%H%M%S")}'
 
+    # Any other key in config.json (workers, patience, cos_lr, mosaic,
+    # close_mosaic, ...) is passed straight to Ultralytics -- these used to
+    # be silently ignored. Unknown names are rejected by Ultralytics itself.
+    core_keys = {"base_model", "epochs", "imgsz", "batch", "device", "seed"}
+    extra_args = {key: value for key, value in config.items() if key not in core_keys and not key.startswith("_")}
+    if extra_args:
+        print(f"Extra training settings from config.json: {extra_args}")
+
     model = YOLO(config["base_model"])
     model.train(
         data=str(data_yaml),
@@ -52,6 +60,7 @@ def main():
         seed=config["seed"],
         project=str(RUNS_DIR),
         name=run_name,
+        **extra_args,
     )
 
     run_dir = RUNS_DIR / run_name

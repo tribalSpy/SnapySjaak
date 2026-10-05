@@ -67,6 +67,9 @@ def main():
         "version": args.run,
         "weights_path": dest_filename,
         "base_model": summary.get("base_model"),
+        # Photo size it was trained at -- inference must use the same size
+        # (thin shelf edges get lost when a 1280/1600 model runs at 640).
+        "imgsz": summary.get("imgsz"),
         "map50": summary.get("map50"),
         "map50_95": summary.get("map50_95"),
         "precision": summary.get("precision"),

@@ -84,6 +84,7 @@ def main():
     parser.add_argument("--run", required=True, help="Run name, as printed by train.py")
     parser.add_argument("--dataset", default=str(TRAINING_DIR / "dataset"), help="Dataset dir from prepare_dataset.py")
     parser.add_argument("--conf", type=float, default=0.25)
+    parser.add_argument("--imgsz", type=int, default=0, help="Photo size (default: the size the run was trained at)")
     args = parser.parse_args()
 
     weights_path = TRAINING_DIR / "runs" / args.run / "weights" / "best.pt"
@@ -97,11 +98,21 @@ def main():
     if not image_paths:
         raise SystemExit(f"No val images found in {val_images_dir}")
 
+    # Evaluate at the size the run was trained at (summary.json), not
+    # Ultralytics' 640 default.
+    imgsz = args.imgsz
+    if not imgsz:
+        summary_path = TRAINING_DIR / "runs" / args.run / "summary.json"
+        if summary_path.exists():
+            imgsz = int(json.loads(summary_path.read_text(encoding="utf-8")).get("imgsz") or 0)
+    imgsz = imgsz or 640
+    print(f"Evaluating at imgsz={imgsz}")
+
     model = YOLO(str(weights_path))
     rows = []
     for image_path in image_paths:
         gt_counts = ground_truth_counts(val_labels_dir / (image_path.stem + ".txt"))
-        results = model.predict(str(image_path), conf=args.conf, verbose=False)
+        results = model.predict(str(image_path), conf=args.conf, imgsz=imgsz, verbose=False)
         pred_counts = predicted_counts(results[0].boxes)
         # Filenames are "<source_folder>__<original_name>" (see prepare_dataset.py)
         source_folder = image_path.stem.split("__", 1)[0]

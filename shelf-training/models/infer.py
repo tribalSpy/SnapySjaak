@@ -69,7 +69,13 @@ def count_photo(image_path, conf: float = 0.25) -> dict:
     """Runs the active model on one photo: a count per class plus a
     confidence (mean of all box confidences, 0.0 if nothing detected)."""
     names = class_names()
-    results = load_model().predict(str(image_path), conf=conf, verbose=False)
+    # Same photo size the active model was trained at (registry, from
+    # promote_model.py); older entries without it fall back to the model's own default.
+    imgsz = active_entry().get("imgsz")
+    predict_args = {"conf": conf, "verbose": False}
+    if imgsz:
+        predict_args["imgsz"] = int(imgsz)
+    results = load_model().predict(str(image_path), **predict_args)
     boxes = results[0].boxes
     counts = {name: 0 for name in names}
     if boxes is None or len(boxes) == 0:
