@@ -173,17 +173,18 @@ def main():
         result = model.predict(str(image_path), conf=args.conf, imgsz=imgsz, verbose=False)[0]
         items = to_label_studio_result(result, args.min_shelf_height)
         scores = [item["score"] for item in items]
-        response = requests.post(
-            f"{base_url}/api/predictions",
-            headers=api_headers(access_token),
-            json={
-                "task": task["id"],
-                "model_version": version,
-                "score": round(sum(scores) / len(scores), 3) if scores else 0.0,
-                "result": items,
-            },
-            timeout=60,
-        )
+        body = {
+            "task": task["id"],
+            "model_version": version,
+            "score": round(sum(scores) / len(scores), 3) if scores else 0.0,
+            "result": items,
+        }
+        response = requests.post(f"{base_url}/api/predictions", headers=api_headers(access_token), json=body, timeout=60)
+        if response.status_code == 401:
+            # Label Studio's access tokens are short-lived (minutes); a long
+            # run outlives one -- exchange the personal token again and retry.
+            access_token = get_access_token(config)
+            response = requests.post(f"{base_url}/api/predictions", headers=api_headers(access_token), json=body, timeout=60)
         if response.status_code >= 400:
             print(f"  task {task['id']}: Label Studio refused the prediction ({response.status_code}): {response.text[:300]}")
             continue
