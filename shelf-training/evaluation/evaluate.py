@@ -37,6 +37,8 @@ REPORTS_DIR = SCRIPT_DIR / "reports"
 
 sys.path.insert(0, str(TRAINING_DIR))
 from prepare_dataset import CLASS_NAMES  # noqa: E402 -- single source of truth for class order
+sys.path.insert(0, str(TRAINING_DIR.parent / "models"))
+from postprocess import boxes_from_result, clean_boxes, count_classes  # noqa: E402 -- same clean-up as the live count
 
 
 def ground_truth_counts(label_path: Path) -> dict[str, int]:
@@ -85,6 +87,7 @@ def main():
     parser.add_argument("--dataset", default=str(TRAINING_DIR / "dataset"), help="Dataset dir from prepare_dataset.py")
     parser.add_argument("--conf", type=float, default=0.25)
     parser.add_argument("--imgsz", type=int, default=0, help="Photo size (default: the size the run was trained at)")
+    parser.add_argument("--raw", action="store_true", help="Count the model's raw boxes, without the clean-up (models/postprocess.py)")
     args = parser.parse_args()
 
     weights_path = TRAINING_DIR / "runs" / args.run / "weights" / "best.pt"
@@ -106,14 +109,19 @@ def main():
         if summary_path.exists():
             imgsz = int(json.loads(summary_path.read_text(encoding="utf-8")).get("imgsz") or 0)
     imgsz = imgsz or 640
-    print(f"Evaluating at imgsz={imgsz}")
+    print(f"Evaluating at imgsz={imgsz}, {'raw boxes' if args.raw else 'with clean-up (models/postprocess.py)'}")
 
     model = YOLO(str(weights_path))
     rows = []
     for image_path in image_paths:
         gt_counts = ground_truth_counts(val_labels_dir / (image_path.stem + ".txt"))
         results = model.predict(str(image_path), conf=args.conf, imgsz=imgsz, verbose=False)
-        pred_counts = predicted_counts(results[0].boxes)
+        if args.raw:
+            pred_counts = predicted_counts(results[0].boxes)
+        else:
+            # Same clean-up the live count and pre-labeling use.
+            cleaned = clean_boxes(boxes_from_result(results[0], CLASS_NAMES), results[0].orig_shape[0])
+            pred_counts = count_classes(cleaned, CLASS_NAMES)
         # Filenames are "<source_folder>__<original_name>" (see prepare_dataset.py)
         source_folder = image_path.stem.split("__", 1)[0]
         row = {"image": image_path.name, "source_folder": source_folder}

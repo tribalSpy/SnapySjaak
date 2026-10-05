@@ -75,17 +75,16 @@ def count_photo(image_path, conf: float = 0.25) -> dict:
     predict_args = {"conf": conf, "verbose": False}
     if imgsz:
         predict_args["imgsz"] = int(imgsz)
-    results = load_model().predict(str(image_path), **predict_args)
-    boxes = results[0].boxes
-    counts = {name: 0 for name in names}
-    if boxes is None or len(boxes) == 0:
+    from postprocess import boxes_from_result, clean_boxes, count_classes
+
+    result = load_model().predict(str(image_path), **predict_args)[0]
+    # Same clean-up as evaluation and pre-labeling (models/postprocess.py):
+    # drops a shelf drawn twice a few pixels apart, and too-narrow shelves.
+    boxes = clean_boxes(boxes_from_result(result, names), result.orig_shape[0])
+    counts = count_classes(boxes, names)
+    if not boxes:
         return {**counts, "confidence": 0.0}
-    for class_id in boxes.cls.tolist():
-        index = int(class_id)
-        if 0 <= index < len(names):
-            counts[names[index]] += 1
-    confidences = boxes.conf.tolist()
-    return {**counts, "confidence": sum(confidences) / len(confidences)}
+    return {**counts, "confidence": sum(box["conf"] for box in boxes) / len(boxes)}
 
 
 # Backwards-compatible name from the first version of this helper.

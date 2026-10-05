@@ -30,6 +30,8 @@ TRAINING_DIR = SCRIPT_DIR.parent / "training"
 MODELS_DIR = SCRIPT_DIR.parent / "models"
 sys.path.insert(0, str(TRAINING_DIR))
 from prepare_dataset import CLASS_NAMES  # noqa: E402 -- same class order the model was trained with
+sys.path.insert(0, str(SCRIPT_DIR.parent / "models"))
+from postprocess import boxes_from_result, clean_boxes  # noqa: E402
 
 # labeling_config.xml: <RectangleLabels name="label" toName="image">
 FROM_NAME = "label"
@@ -94,17 +96,18 @@ def local_image_path(task: dict, dataset_dir: Path) -> Path | None:
     return dataset_dir / relative
 
 
-def to_label_studio_result(result, min_shelf_height_pct: float) -> list[dict]:
-    boxes = result.boxes
-    if boxes is None or len(boxes) == 0:
-        return []
+def to_label_studio_result(result, min_shelf_height_pct: float, clean: bool = True) -> list[dict]:
     height, width = result.orig_shape[:2]
+    boxes = boxes_from_result(result, CLASS_NAMES)
+    if clean:
+        # Same clean-up the live count and evaluation use: no shelf drawn
+        # twice a few pixels apart, no too-narrow "shelves".
+        boxes = clean_boxes(boxes, height)
     items = []
-    for xyxy, class_id, confidence in zip(boxes.xyxy.tolist(), boxes.cls.tolist(), boxes.conf.tolist()):
-        index = int(class_id)
-        if not 0 <= index < len(CLASS_NAMES):
-            continue
-        x1, y1, x2, y2 = xyxy
+    for box in boxes:
+        index = CLASS_NAMES.index(box["cls"])
+        confidence = box["conf"]
+        x1, y1, x2, y2 = box["x1"], box["y1"], box["x2"], box["y2"]
         box = {
             "x": max(0.0, x1 / width * 100),
             "y": max(0.0, y1 / height * 100),
@@ -137,6 +140,7 @@ def main():
     parser.add_argument("--conf", type=float, default=0.25, help="Only boxes the model is at least this sure of")
     parser.add_argument("--limit", type=int, default=0, help="Stop after this many tasks (0 = all)")
     parser.add_argument("--overwrite", action="store_true", help="Also tasks that already have predictions")
+    parser.add_argument("--raw", action="store_true", help="Send the model's raw boxes, without the clean-up")
     parser.add_argument("--min-shelf-height", type=float, default=0.0,
                         help="Make predicted shelf boxes at least this tall, in %% of the photo height (0 = as predicted)")
     args = parser.parse_args()
@@ -171,7 +175,7 @@ def main():
             print(f"  task {task.get('id')}: photo not found ({image_path}) -- skipped")
             continue
         result = model.predict(str(image_path), conf=args.conf, imgsz=imgsz, verbose=False)[0]
-        items = to_label_studio_result(result, args.min_shelf_height)
+        items = to_label_studio_result(result, args.min_shelf_height, clean=not args.raw)
         scores = [item["score"] for item in items]
         body = {
             "task": task["id"],
