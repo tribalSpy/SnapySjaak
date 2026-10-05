@@ -46,6 +46,28 @@ What's left is the part that needs a human:
    percentage coordinates). `../training/prepare_dataset.py` (Step 3)
    converts this into YOLO-format labels and a train/val split.
 
+## Pre-labeling with a trained model (faster labeling)
+
+Once a model exists, let it draw the boxes first and only correct them:
+
+```
+prelabel_tasks.bat --run shelf_level_20261005_110950
+```
+
+(or without `--run` once a model is promoted). For every task with no
+annotation yet it runs the model and stores its boxes in Label Studio as a
+*prediction* (`model_version` = the run name). Open the task, fix the boxes
+(move, resize, delete wrong ones, add missed shelves) and **Submit** -- only
+submitted annotations are exported and trained on, predictions never are.
+
+Options: `--conf 0.3` (only surer boxes), `--limit 50` (first 50 tasks),
+`--overwrite` (also tasks that already got predictions, e.g. from an older
+model), `--min-shelf-height 1.5` (make predicted shelf boxes at least 1.5%
+of the photo height, the thicker shelf-board-plus-front-edge style).
+
+If the boxes don't show up when you open a task: project **Settings >
+Annotation**, enable showing predictions to annotators.
+
 ## Notes
 
 - `imported_tasks.json` and `exports/` are local working state, not meant
