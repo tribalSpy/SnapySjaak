@@ -573,6 +573,11 @@ const defaultFustSettings = {
   clock_records_sheet_name: "backup",
   hal_locations_spreadsheet_id: "",
   hal_locations_sheet_name: "ERP_PASTE",
+  // Where Hal Locations / Expedition stickers get the location -> customer
+  // assignments: the Halindeling app (Netlify, its public read-only
+  // GET /api/days/<date>) or the Google Sheet tab above.
+  hal_locations_source: "netlify",
+  hal_locations_netlify_url: "https://halindeling.netlify.app",
   ukdocs_print_spreadsheet_id: "",
   ukdocs_print_sheet_name: "PD keuringen",
   cmr_default_template_name: "",
@@ -1556,6 +1561,8 @@ function normalizeFustSettings(settings) {
     clock_records_sheet_name: String(settings?.clock_records_sheet_name || defaultFustSettings.clock_records_sheet_name).trim() || defaultFustSettings.clock_records_sheet_name,
     hal_locations_spreadsheet_id: String(settings?.hal_locations_spreadsheet_id || settings?.spreadsheet_id || "").trim(),
     hal_locations_sheet_name: String(settings?.hal_locations_sheet_name || defaultFustSettings.hal_locations_sheet_name).trim() || defaultFustSettings.hal_locations_sheet_name,
+    hal_locations_source: settings?.hal_locations_source === "sheet" ? "sheet" : "netlify",
+    hal_locations_netlify_url: String(settings?.hal_locations_netlify_url || defaultFustSettings.hal_locations_netlify_url).trim().replace(/\/+$/, "") || defaultFustSettings.hal_locations_netlify_url,
     ukdocs_print_spreadsheet_id: String(settings?.ukdocs_print_spreadsheet_id || "").trim(),
     ukdocs_print_sheet_name: String(settings?.ukdocs_print_sheet_name || defaultFustSettings.ukdocs_print_sheet_name).trim() || defaultFustSettings.ukdocs_print_sheet_name,
     cmr_default_template_name: String(settings?.cmr_default_template_name || "").trim(),
@@ -14415,6 +14422,59 @@ async function runPdKeuringSheetReconcile() {
   };
 }
 
+// Location -> customer rows for Hal Locations / Expedition stickers, as
+// [location, customer] rows the hal_locations_worker parser reads (column A
+// location, column B customer). From the Halindeling app: its saved day for
+// `date` (default today), or the latest saved day before it; each location
+// gives its main customer (klant) plus every order's customer (klanten) --
+// the same lines the old ERP_PASTE dump had.
+async function loadHalLocationSourceRows(settings, date) {
+  if (settings.hal_locations_source === "sheet") {
+    const spreadsheetId = String(settings.hal_locations_spreadsheet_id || settings.spreadsheet_id || "").trim();
+    const sheetName = String(settings.hal_locations_sheet_name || "ERP_PASTE").trim() || "ERP_PASTE";
+    if (!spreadsheetId) {
+      throw new Error("Set a Hal Locations spreadsheet ID in Settings first");
+    }
+    return { rows: await loadSheetRows(spreadsheetId, sheetName), source: { type: "sheet", spreadsheet_id: spreadsheetId, sheet_name: sheetName } };
+  }
+  const base = String(settings.hal_locations_netlify_url || "https://halindeling.netlify.app").replace(/\/+$/, "");
+  const fetchJson = async (pathName) => {
+    const response = await fetch(`${base}${pathName}`, { headers: { Accept: "application/json" } });
+    if (!response.ok) {
+      throw new Error(`Halindeling app ${pathName} answered HTTP ${response.status}`);
+    }
+    return response.json();
+  };
+  const wanted = String(date || localDateIso()).slice(0, 10);
+  const index = await fetchJson("/api/days");
+  const savedDays = (Array.isArray(index?.days) ? index.days : []).map((day) => String(day?.date || "")).filter(Boolean).sort();
+  const useDate = savedDays.includes(wanted) ? wanted : savedDays.filter((day) => day <= wanted).pop();
+  if (!useDate) {
+    throw new Error(`The Halindeling app has no saved day on or before ${wanted}`);
+  }
+  const day = await fetchJson(`/api/days/${encodeURIComponent(useDate)}`);
+  const rows = [["Locatie", "Klant"]];
+  for (const row of Array.isArray(day?.rows) ? day.rows : []) {
+    const location = String(row?.loc || "").trim();
+    if (!location) continue;
+    const customers = [...new Set([row?.klant, ...(Array.isArray(row?.klanten) ? row.klanten : [])].map((code) => String(code || "").trim()).filter(Boolean))];
+    for (const customer of customers) {
+      rows.push([location, customer]);
+    }
+  }
+  return {
+    rows,
+    source: {
+      type: "netlify",
+      url: base,
+      date: useDate,
+      requested_date: wanted,
+      saved_at: day?.savedAt || "",
+      sheet_name: `Halindeling ${useDate}`,
+    },
+  };
+}
+
 function runHalLocationsWorker(args) {
   return new Promise((resolve, reject) => {
     const child = spawn(resolvePythonCommand(), [halLocationsWorkerPath, ...args], {
@@ -17095,15 +17155,9 @@ async function handleApi(req, res, url) {
     let session = null;
     try {
       const settings = await readFustSettings();
-      const spreadsheetId = String(settings.hal_locations_spreadsheet_id || settings.spreadsheet_id || "").trim();
-      const sheetName = String(settings.hal_locations_sheet_name || "ERP_PASTE").trim() || "ERP_PASTE";
-      if (!spreadsheetId) {
-        sendJson(res, 400, { error: "Set a Hal Locations spreadsheet ID in Settings first" });
-        return;
-      }
-
-      const rows = await loadSheetRows(spreadsheetId, sheetName);
-      session = await createHalLocationSheetSession(rows, { spreadsheet_id: spreadsheetId, sheet_name: sheetName });
+      const body = await readRequestJson(req).catch(() => ({}));
+      const loaded = await loadHalLocationSourceRows(settings, body?.date);
+      session = await createHalLocationSheetSession(loaded.rows, loaded.source);
       const output = await runHalLocationsWorker([
         "inspect",
         "--input",
@@ -17116,11 +17170,7 @@ async function handleApi(req, res, url) {
         custPrefixes: Array.isArray(payload.custPrefixes) ? payload.custPrefixes : [],
         custByLoc: payload.custByLoc && typeof payload.custByLoc === "object" ? payload.custByLoc : {},
         totalRows: Number(payload.totalRows || 0),
-        source: {
-          type: "sheet",
-          spreadsheet_id: spreadsheetId,
-          sheet_name: sheetName,
-        },
+        source: loaded.source,
       });
     } catch (error) {
       if (session?.id) {
@@ -17612,15 +17662,9 @@ async function handleApi(req, res, url) {
     let session = null;
     try {
       const settings = await readFustSettings();
-      const spreadsheetId = String(settings.hal_locations_spreadsheet_id || settings.spreadsheet_id || "").trim();
-      const sheetName = String(settings.hal_locations_sheet_name || "ERP_PASTE").trim() || "ERP_PASTE";
-      if (!spreadsheetId) {
-        sendJson(res, 400, { error: "Set a Hal Locations spreadsheet ID in Settings first" });
-        return;
-      }
-
-      const rows = await loadSheetRows(spreadsheetId, sheetName);
-      session = await createHalLocationSheetSession(rows, { spreadsheet_id: spreadsheetId, sheet_name: sheetName });
+      const body = await readRequestJson(req).catch(() => ({}));
+      const loaded = await loadHalLocationSourceRows(settings, body?.date);
+      session = await createHalLocationSheetSession(loaded.rows, loaded.source);
       const output = await runHalLocationsWorker([
         "inspect",
         "--input",
@@ -17633,11 +17677,7 @@ async function handleApi(req, res, url) {
         custPrefixes: Array.isArray(payload.custPrefixes) ? payload.custPrefixes : [],
         custByLoc: payload.custByLoc && typeof payload.custByLoc === "object" ? payload.custByLoc : {},
         totalRows: Number(payload.totalRows || 0),
-        source: {
-          type: "sheet",
-          spreadsheet_id: spreadsheetId,
-          sheet_name: sheetName,
-        },
+        source: loaded.source,
       });
     } catch (error) {
       if (session?.id) {

@@ -541,6 +541,20 @@ function safeDownloadFilename(filename) {
   return cleaned || "download";
 }
 
+// "Halindeling app, day 06-10-2026" / "Google Sheet ERP_PASTE" -- says when
+// the app fell back to an earlier saved day.
+function halLocationSourceLabel(source) {
+  if (!source) return "Source: unknown";
+  if (source.type === "netlify") {
+    const used = fustOverviewDate(source.date);
+    const fallback = source.requested_date && source.requested_date !== source.date
+      ? ` (no saved day for ${fustOverviewDate(source.requested_date)} yet, using the latest before it)`
+      : "";
+    return `Source: Halindeling app, day ${used}${fallback}`;
+  }
+  return `Source: Google Sheet ${source.sheet_name || "ERP_PASTE"}`;
+}
+
 function HalLocationsPage() {
   const [file, setFile] = useState(null);
   const [sessionId, setSessionId] = useState("");
@@ -623,7 +637,7 @@ function HalLocationsPage() {
   async function handleLoadFromSheet() {
     setLoadingSheet(true);
     setUploadError("");
-    setUploadMessage("Loading ERP_PASTE from Google Sheets...");
+    setUploadMessage("Loading the hal locations...");
     setGenerateError("");
     setGenerateMessage("");
 
@@ -640,7 +654,7 @@ function HalLocationsPage() {
       setCustByLoc(payload.custByLoc || {});
       setSelectedLocPrefixes([]);
       setSelectedCustPrefixes([]);
-      setSourceLabel(payload.source?.sheet_name ? `Source: ${payload.source.sheet_name} (${payload.source.spreadsheet_id || "spreadsheet"})` : "Source: ERP_PASTE");
+      setSourceLabel(halLocationSourceLabel(payload.source));
       setUploadMessage(`Ready: ${payload.totalRows || 0} rows, ${(payload.locPrefixes || []).length} location prefixes, ${(payload.custPrefixes || []).length} customer prefixes.`);
     } catch (error) {
       setSessionId("");
@@ -936,7 +950,7 @@ function ExpeditionStickerPage() {
   async function loadHalindelingFromSheet() {
     setSheetBusy(true);
     setError("");
-    setMessage("Loading ERP_PASTE from Google Sheets...");
+    setMessage("Loading the hal locations...");
     setGeneratedFiles([]);
     try {
       const payload = await apiJson("/api/expedition-stickers/load-sheet", {
@@ -945,7 +959,7 @@ function ExpeditionStickerPage() {
       });
       setHalSessionId(payload.id || "");
       setHalSummary(payload);
-      setMessage(`ERP_PASTE loaded: ${payload.totalRows || 0} rows, ${(payload.locPrefixes || []).length} location prefixes.`);
+      setMessage(`${halLocationSourceLabel(payload.source)} -- loaded ${payload.totalRows || 0} rows, ${(payload.locPrefixes || []).length} location prefixes.`);
       return payload;
     } catch (sheetError) {
       setHalSessionId("");
@@ -17152,6 +17166,21 @@ function SettingsPage({ currentUser }) {
               value={form.hal_locations_spreadsheet_id || ""}
               onChange={(event) => setForm({ ...form, hal_locations_spreadsheet_id: event.target.value })}
               placeholder="Defaults to the main spreadsheet ID when left empty"
+            />
+          </label>
+          <label>
+            <span>Hal Locations source</span>
+            <select value={form.hal_locations_source || "netlify"} onChange={(event) => setForm({ ...form, hal_locations_source: event.target.value })}>
+              <option value="netlify">Halindeling app (Netlify)</option>
+              <option value="sheet">Google Sheet (tab below)</option>
+            </select>
+          </label>
+          <label className="wide">
+            <span>Halindeling app URL</span>
+            <input
+              value={form.hal_locations_netlify_url || "https://halindeling.netlify.app"}
+              onChange={(event) => setForm({ ...form, hal_locations_netlify_url: event.target.value })}
+              placeholder="https://halindeling.netlify.app"
             />
           </label>
           <label>
