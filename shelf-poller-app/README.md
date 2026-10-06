@@ -43,6 +43,16 @@ only ever hands a `shelf_count` job to a poller that asks for it by name, so:
    vision-capable pull.
 6. Start it with `run_poller.bat`.
 
+## Many photos per reference
+
+All photos of a reference go to Ollama in one request, and every 1080x1920
+photo costs the vision model about 2,000 tokens -- a 20-photo reference
+exceeded Ollama's 32,768-token context. The poller therefore keeps the
+photos together under ~24,000 tokens: with Pillow installed
+(`python -m pip install pillow`) it scales them all down by the same
+factor; without it, it sends an even selection and tells the model so.
+The trained model (below) always gets the full-size photos.
+
 ## Optional: trained model side by side
 
 Set `trained_model_python` (e.g. `...\shelf-training\.venv\Scripts\python.exe`)

@@ -109,7 +109,73 @@ def prepare_vision_images(payload: dict):
             prepared_images.append(content_base64)
             continue
         notes.append(f"{name}: unsupported mime type {mime_type or 'unknown'} (expected an image)")
-    return prepared_images, notes
+    fitted, fit_notes = fit_images_to_context(prepared_images, payload)
+    return fitted, notes + fit_notes
+
+
+# Vision models spend roughly one token per 32x32 pixel block of a photo
+# (Qwen-VL style): a 1080x1920 trolley photo is ~2,000 tokens. Confirmed
+# real: a 20-photo reference asked for 41,469 tokens against Ollama's 32,768
+# context and failed. All photos together must stay under this budget,
+# leaving room for the prompt and the answer.
+IMAGE_TOKEN_BUDGET = 24000
+TOKENS_PER_PIXEL = 1 / (32 * 32)
+
+
+def jpeg_or_png_size(data: bytes):
+    """(width, height) from the file header, stdlib only; None if unknown."""
+    if data[:8] == bytes([0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A]) and len(data) >= 24:
+        return int.from_bytes(data[16:20], "big"), int.from_bytes(data[20:24], "big")
+    if data[:2] != bytes([0xFF, 0xD8]):
+        return None
+    index = 2
+    while index + 9 < len(data):
+        if data[index] != 0xFF:
+            index += 1
+            continue
+        marker = data[index + 1]
+        if marker in (0xC0, 0xC1, 0xC2):
+            return int.from_bytes(data[index + 7:index + 9], "big"), int.from_bytes(data[index + 5:index + 7], "big")
+        length = int.from_bytes(data[index + 2:index + 4], "big")
+        index += 2 + length
+    return None
+
+
+def fit_images_to_context(images_base64, payload: dict):
+    """Keeps all photos together under IMAGE_TOKEN_BUDGET: scales every photo
+    down by the same factor (Pillow), or -- without Pillow -- sends an even
+    selection of the photos that fits, and says so in the prompt."""
+    if not images_base64:
+        return images_base64, []
+    budget = int((payload.get("options") or {}).get("image_token_budget") or IMAGE_TOKEN_BUDGET)
+    raw = [base64.b64decode(item) for item in images_base64]
+    sizes = [jpeg_or_png_size(item) or (1080, 1920) for item in raw]
+    tokens = [width * height * TOKENS_PER_PIXEL for width, height in sizes]
+    total = sum(tokens)
+    if total <= budget:
+        return images_base64, []
+    scale = (budget / total) ** 0.5
+    try:
+        from io import BytesIO
+        from PIL import Image  # optional: pip install pillow
+    except ImportError:
+        keep = max(1, int(len(raw) * budget / total))
+        step = len(raw) / keep
+        chosen = sorted({int(i * step) for i in range(keep)})
+        return [images_base64[i] for i in chosen], [
+            f"Only {len(chosen)} of the {len(raw)} photos are attached (evenly spread) -- the rest did not fit; "
+            "they show the same trolleys from other angles."
+        ]
+    resized = []
+    for data, (width, height) in zip(raw, sizes):
+        image = Image.open(BytesIO(data))
+        image = image.convert("RGB")
+        target = (max(32, int(width * scale)), max(32, int(height * scale)))
+        image = image.resize(target, Image.LANCZOS)
+        out = BytesIO()
+        image.save(out, format="JPEG", quality=90)
+        resized.append(base64.b64encode(out.getvalue()).decode("ascii"))
+    return resized, []
 
 
 def prepare_ollama_messages(messages, payload: dict):
