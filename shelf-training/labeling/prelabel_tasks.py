@@ -102,7 +102,7 @@ def to_label_studio_result(result, min_shelf_height_pct: float, clean: bool = Tr
     if clean:
         # Same clean-up the live count and evaluation use: no shelf drawn
         # twice a few pixels apart, no too-narrow "shelves".
-        boxes = clean_boxes(boxes, height)
+        boxes = clean_boxes(boxes, height, image_width=width)
     items = []
     for box in boxes:
         index = CLASS_NAMES.index(box["cls"])

@@ -80,7 +80,7 @@ def count_photo(image_path, conf: float = 0.25) -> dict:
     result = load_model().predict(str(image_path), **predict_args)[0]
     # Same clean-up as evaluation and pre-labeling (models/postprocess.py):
     # drops a shelf drawn twice a few pixels apart, and too-narrow shelves.
-    boxes = clean_boxes(boxes_from_result(result, names), result.orig_shape[0])
+    boxes = clean_boxes(boxes_from_result(result, names), result.orig_shape[0], image_width=result.orig_shape[1])
     counts = count_classes(boxes, names)
     if not boxes:
         return {**counts, "confidence": 0.0}

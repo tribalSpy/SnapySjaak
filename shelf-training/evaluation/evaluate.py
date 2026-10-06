@@ -71,6 +71,16 @@ def class_summary(rows: list[dict], gt_field: str, pred_field: str, abs_diff_fie
     }
 
 
+def add_extension_presence(row: dict):
+    """Extensions are all or nothing (0 or 4 per trolley), so what counts is
+    whether a photo's trolley HAS extensions -- one visible extension box is
+    enough. Scored as 4/0 so the numbers read as extensions per trolley."""
+    row["extension_set_gt"] = 4 if row["extension_gt"] > 0 else 0
+    row["extension_set_pred"] = 4 if row["extension_pred"] > 0 else 0
+    row["extension_set_abs_diff"] = abs(row["extension_set_gt"] - row["extension_set_pred"])
+    row["extension_set_exact_match"] = row["extension_set_gt"] == row["extension_set_pred"]
+
+
 def add_derived_shelf_count(row: dict):
     """shelf_level counts levels (every horizontal tier, including the
     trolley's own base) -- the actual shelf count excludes that always-non-
@@ -120,7 +130,7 @@ def main():
             pred_counts = predicted_counts(results[0].boxes)
         else:
             # Same clean-up the live count and pre-labeling use.
-            cleaned = clean_boxes(boxes_from_result(results[0], CLASS_NAMES), results[0].orig_shape[0])
+            cleaned = clean_boxes(boxes_from_result(results[0], CLASS_NAMES), results[0].orig_shape[0], image_width=results[0].orig_shape[1])
             pred_counts = count_classes(cleaned, CLASS_NAMES)
         # Filenames are "<source_folder>__<original_name>" (see prepare_dataset.py)
         source_folder = image_path.stem.split("__", 1)[0]
@@ -133,11 +143,12 @@ def main():
             row[f"{class_name}_abs_diff"] = abs(gt - pred)
             row[f"{class_name}_exact_match"] = gt == pred
         add_derived_shelf_count(row)
+        add_extension_presence(row)
         rows.append(row)
 
     REPORTS_DIR.mkdir(parents=True, exist_ok=True)
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    report_fields = list(CLASS_NAMES) + ["derived_shelf_count"]
+    report_fields = list(CLASS_NAMES) + ["derived_shelf_count", "extension_set"]
     fieldnames = ["image", "source_folder"] + [
         f"{field}_{suffix}" for field in report_fields for suffix in ("gt", "pred", "abs_diff", "exact_match")
     ]

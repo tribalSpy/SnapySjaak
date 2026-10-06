@@ -9286,6 +9286,9 @@ async function findShelfCountFoldersAcrossAccounts(accountsWithEntries, base) {
 // instead. Without this fallback every field here silently comes back
 // null -- not genuinely low confidence, just nothing to parse at all --
 // and every row lands in needs_review for the wrong reason.
+// Extensions come in a full set or not at all: 0 or 4 per trolley.
+const SHELF_EXTENSIONS_PER_TROLLEY = 4;
+
 // How close the counts are to what Fust Planning reports for the same
 // references (DC trolleys, DCS shelves, DCO extensions) -- for the official
 // Ollama count and the trained model side by side.
@@ -9333,12 +9336,18 @@ function summarizeShelfTrainedModel(trained, trolleyCount) {
   };
   const trolleys = Math.max(1, Number(trolleyCount) || 1);
   const shelfPerPhoto = photos.map((photo) => Number(photo.shelf_level) || 0);
-  const extensionPerPhoto = photos.map((photo) => Number(photo.extension) || 0);
+  // Extensions are 0 or 4 per trolley: a trolley whose photos show any
+  // extension has 4. With several trolleys, the share of photos showing
+  // extensions says how many of them have them (at least one if any do).
+  const photosWithExtensions = photos.filter((photo) => (Number(photo.extension) || 0) > 0).length;
+  const trolleysWithExtensions = photosWithExtensions
+    ? Math.min(trolleys, Math.max(1, Math.round((photosWithExtensions / photos.length) * trolleys)))
+    : 0;
   const confidence = photos.reduce((sum, photo) => sum + (Number(photo.confidence) || 0), 0) / photos.length;
   return {
     model_version: String(trained.model_version || ""),
     shelf_count: Math.round(median(shelfPerPhoto) * trolleys),
-    extension_count: Math.round(median(extensionPerPhoto) * trolleys),
+    extension_count: trolleysWithExtensions * SHELF_EXTENSIONS_PER_TROLLEY,
     confidence: Math.round(confidence * 100) / 100,
     per_photo: photos.map((photo) => ({ file: photo.file, shelf_level: Number(photo.shelf_level) || 0, extension: Number(photo.extension) || 0 })),
     trolley_count: trolleys,
@@ -9365,16 +9374,33 @@ function parseShelfCountJobResult(job) {
   const sumOf = (key) => (perTrolley.length && perTrolley.every((entry) => entry[key] !== null)
     ? perTrolley.reduce((sum, entry) => sum + entry[key], 0)
     : null);
+  const expectedTrolleys = Number(job?.payload_json?.trolley_count) || 0;
+  // Extensions are all or nothing (user-confirmed): a trolley has 0 or 4,
+  // never 1-3 -- any extension seen on a trolley means it has 4.
+  for (const entry of perTrolley) {
+    if (entry.extensions !== null) {
+      entry.extensions = entry.extensions > 0 ? SHELF_EXTENSIONS_PER_TROLLEY : 0;
+    }
+  }
+  const snapExtensionTotal = (value) => {
+    if (value === null || value <= 0) {
+      return value === null ? null : 0;
+    }
+    const trolleysWithExtensions = Math.ceil(value / SHELF_EXTENSIONS_PER_TROLLEY);
+    const capped = expectedTrolleys > 0 ? Math.min(trolleysWithExtensions, expectedTrolleys) : trolleysWithExtensions;
+    return capped * SHELF_EXTENSIONS_PER_TROLLEY;
+  };
   const shelves = finiteOrNull(parsed?.shelves) ?? sumOf("shelves");
   const levels = finiteOrNull(parsed?.levels) ?? sumOf("levels");
-  const extensions = finiteOrNull(parsed?.extensions) ?? sumOf("extensions");
+  // The per-trolley breakdown (already snapped) wins over the model's own
+  // total when both exist.
+  const extensions = sumOf("extensions") ?? snapExtensionTotal(finiteOrNull(parsed?.extensions));
   const confidence = Number(parsed?.confidence);
-  const expectedTrolleys = Number(job?.payload_json?.trolley_count) || 0;
   const breakdownProblems = [];
   if (expectedTrolleys > 1 && perTrolley.length && perTrolley.length !== expectedTrolleys) {
     breakdownProblems.push(`Model reported ${perTrolley.length} trolleys, scan says ${expectedTrolleys}.`);
   }
-  for (const key of ["shelves", "levels", "extensions"]) {
+  for (const key of ["shelves", "levels"]) {
     const summed = sumOf(key);
     const total = key === "shelves" ? shelves : key === "levels" ? levels : extensions;
     if (summed !== null && total !== null && summed !== total) {
@@ -9424,6 +9450,8 @@ function buildShelfCountJobPayload({ photoCount, trolleyCount }) {
       "An extension is often only clearly visible from some camera angles, not all of them -- these photos are",
       "different views of the same trolley, so check every photo individually for this, and count a pole's",
       "extension if you see it clearly in even one of the photos, even if the others don't show it.",
+      "Extensions are ALL OR NOTHING: a trolley has either 0 or exactly 4 extensions (one on every pole), never 1, 2 or 3.",
+      "So per trolley the answer is 0 or 4: if you clearly see an extension on any pole of a trolley in any photo, that trolley has 4.",
       "Never infer extensions from the trolley's overall height or how many levels it has -- a tall trolley loaded",
       "with many levels can genuinely have zero extensions if its poles were simply tall enough to begin with, and",
       "a short trolley can still have extensions. Treat level count and extension count as fully independent",
