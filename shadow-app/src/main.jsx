@@ -7823,6 +7823,55 @@ function ericDocsCheckStatus(check) {
 // discovered when a shipment fails to actually go out. Polls every 30s
 // while open; the server-side watchdogs (every 3 min) do the actual fixing,
 // this just makes sure nobody has to find out by accident.
+// Shelf count health in the Pipeline Monitor: last night's run, its queue
+// and the shelf poller's heartbeat. Hidden for users without shelf-count access.
+function ShelfCountMonitorCard({ date }) {
+  const [data, setData] = useState(null);
+  const [hidden, setHidden] = useState(false);
+  // The night run counts the photos OF a date -- show the run for the
+  // monitor's date and, by default, last night's.
+  const [runDate, setRunDate] = useState(() => addDaysToIso(date, -1));
+  useEffect(() => { setRunDate(addDaysToIso(date, -1)); }, [date]);
+
+  useEffect(() => {
+    let cancelled = false;
+    const load = () => apiJson(`/api/shelf-count/monitor?date=${runDate}`)
+      .then((payload) => { if (!cancelled) setData(payload); })
+      .catch((loadError) => { if (!cancelled && /403|permission/i.test(loadError.message)) setHidden(true); });
+    load();
+    const interval = setInterval(load, 30000);
+    return () => { cancelled = true; clearInterval(interval); };
+  }, [runDate]);
+
+  if (hidden || !data) return null;
+  const run = data.run;
+  const tone = !run ? "muted" : data.stale ? "danger" : run.status === "done" ? "success" : run.status === "failed" ? "danger" : "info";
+  const label = !run ? "not started" : data.stale ? `stuck -- no progress for ${run.quiet_minutes} min (auto-resumes after ${data.stale_after_minutes})` : run.status;
+  const pollerText = data.pollers.length
+    ? data.pollers.map((poller) => `${poller.agent_name}: ${poller.status}${poller.last_seen_minutes !== null ? `, seen ${poller.last_seen_minutes} min ago` : ""}`).join(" | ")
+    : "no shelf poller has reported in";
+  const shelves = data.accuracy?.shelves;
+  return (
+    <div className="data-table-card">
+      <div className="section-header"><h2>Shelf count</h2></div>
+      <div className="row-actions">
+        <label><span>Photos of</span><input type="date" value={runDate} onChange={(event) => setRunDate(event.target.value)} /></label>
+      </div>
+      <div className="table-wrap">
+        <table className="data-table">
+          <tbody>
+            <tr><td>Night run</td><td><span className={`ukdocs-status-badge ${tone}`}>{label}</span>{run?.started_at ? ` -- started ${new Date(run.started_at).toLocaleString("nl-NL")}` : ""}</td></tr>
+            <tr><td>References</td><td>{data.references} -- {Object.entries(data.by_status).map(([status, count]) => `${count} ${status}`).join(", ") || "none yet"}</td></tr>
+            <tr><td>Count jobs waiting</td><td>{data.queued_jobs} queued, {data.claimed_jobs} being counted{data.oldest_queued_minutes !== null ? ` (oldest waiting ${data.oldest_queued_minutes} min)` : ""}</td></tr>
+            <tr><td>Shelf poller (GPU PC)</td><td>{pollerText}</td></tr>
+            <tr><td>Shelves vs Fust (DCS)</td><td>{shelves?.compared ? `${shelves.exact_rate}% exactly right (${shelves.exact}/${shelves.compared}), off ${shelves.mean_abs_diff} on average` : "nothing to compare yet"}</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
 function UkdocsPipelineMonitorPage({ onNavigate }) {
   const [date, setDate] = useState(() => localDateIso());
   const [data, setData] = useState(null);
@@ -7875,6 +7924,8 @@ function UkdocsPipelineMonitorPage({ onNavigate }) {
       </div>
 
       {error && <div className="notice danger">{error}</div>}
+
+      <ShelfCountMonitorCard date={date} />
 
       {data && (
         <div className="notice">
@@ -7979,6 +8030,46 @@ const SHELF_COUNT_STATUS_TONE = {
 // Code data is also available for the same date -- shadow/observation only,
 // starting 2026-10-01, so these stay blank for anything before that or with
 // no Fust match.
+// Counted minus expected, shown with a sign ("+1", "-2", "0"); "-" when
+// either side is missing. Coloured when it's off.
+function shelfDiffCell(counted, expected) {
+  if (counted === null || counted === undefined || counted === "" || expected === null || expected === undefined || expected === "") {
+    return <td>-</td>;
+  }
+  const diff = Number(counted) - Number(expected);
+  return <td style={{ color: diff ? "#b45309" : "#15803d", fontWeight: 600 }}>{diff > 0 ? `+${diff}` : diff}</td>;
+}
+
+function ShelfAccuracySummary({ accuracy }) {
+  if (!accuracy) return null;
+  const row = (label, stats) => (
+    <tr key={label}>
+      <td>{label}</td>
+      <td>{stats?.compared ? `${stats.exact_rate}%` : "-"}</td>
+      <td>{stats?.compared ? `${stats.exact} / ${stats.compared}` : "-"}</td>
+      <td>{stats?.compared ? stats.mean_abs_diff : "-"}</td>
+    </tr>
+  );
+  return (
+    <div className="data-table-card">
+      <div className="section-header"><h3>How correct vs Fust Planning</h3></div>
+      <div className="notice">Compared with what Fust Planning reports for the same references: DC = trolleys, DCS = shelves, DCO = extensions. Only references where both sides have a number are compared.</div>
+      <div className="table-wrap">
+        <table className="data-table">
+          <thead><tr><th>What</th><th>Exactly right</th><th>Right / compared</th><th>Off on average</th></tr></thead>
+          <tbody>
+            {row("Trolleys (RFID scan vs DC)", accuracy.trolleys)}
+            {row("Shelves -- official count (vs DCS)", accuracy.shelves)}
+            {row("Shelves -- trained model (vs DCS)", accuracy.shelves_trained_model)}
+            {row("Extensions -- official count (vs DCO)", accuracy.extensions)}
+            {row("Extensions -- trained model (vs DCO)", accuracy.extensions_trained_model)}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
 function ShelfCountPage() {
   const [date, setDate] = useState(() => shelfCountYesterdayIso());
   const [data, setData] = useState(null);
@@ -8073,6 +8164,8 @@ function ShelfCountPage() {
         </div>
       )}
 
+      <ShelfAccuracySummary accuracy={data?.accuracy} />
+
       <div className="data-table-card">
         <div className="section-header"><h2>References ({counts.length})</h2></div>
         <div className="table-wrap">
@@ -8080,8 +8173,10 @@ function ShelfCountPage() {
             <thead>
               <tr>
                 <th>Customer reference</th><th>Trolleys</th><th>Photos</th><th>Shelves</th><th>Levels</th>
-                <th>Extensions</th><th>Per trolley (shelves / levels / ext.)</th><th>Trained model (shelves / ext.)</th><th>Confidence</th><th>Fust expected (DC)</th><th>Deviation</th>
-                <th>Fust expected (DCO)</th><th>Ext. deviation</th><th>Status</th><th>Error</th>
+                <th>Extensions</th><th>Per trolley (shelves / levels / ext.)</th><th>Trained model (shelves / ext.)</th><th>Confidence</th>
+                <th>Fust trolleys (DC)</th><th>Trolley diff</th>
+                <th>Fust shelves (DCS)</th><th>Shelf diff</th><th>Trained model shelf diff</th>
+                <th>Fust extensions (DCO)</th><th>Ext. diff</th><th>Status</th><th>Error</th>
               </tr>
             </thead>
             <tbody>
@@ -8115,15 +8210,18 @@ function ShelfCountPage() {
                         : "-"}
                   </td>
                   <td>{row.confidence !== null && row.confidence !== undefined ? Number(row.confidence).toFixed(2) : "-"}</td>
+                  <td>{row.expected_trolleys ?? "-"}</td>
+                  {shelfDiffCell(row.trolley_count, row.expected_trolleys)}
                   <td>{row.expected_average ?? "-"}</td>
-                  <td>{row.deviation ?? "-"}</td>
+                  {shelfDiffCell(row.shelf_count, row.expected_average)}
+                  {shelfDiffCell(row.trained_model && !row.trained_model.error ? row.trained_model.shelf_count : null, row.expected_average)}
                   <td>{row.extension_expected ?? "-"}</td>
-                  <td>{row.extension_deviation ?? "-"}</td>
+                  {shelfDiffCell(row.extension_count, row.extension_expected)}
                   <td><span className={`ukdocs-status-badge ${SHELF_COUNT_STATUS_TONE[row.status] || "muted"}`}>{row.status}</span></td>
                   <td>{row.error_text || "-"}</td>
                 </tr>
               ))}
-              {!counts.length && <tr><td colSpan={15}>No completed references for this date.</td></tr>}
+              {!counts.length && <tr><td colSpan={19}>No completed references for this date.</td></tr>}
             </tbody>
           </table>
         </div>

@@ -47,6 +47,7 @@ import {
   getLlmQueueSnapshot,
   getActiveLlmJobsByType,
   getShelfCountNightlyRun,
+  getRunningShelfCountNightlyRuns,
   getShelfCountsForDate,
   getShelfCountsInRange,
   getWarehouseActivityLog,
@@ -9071,7 +9072,16 @@ const SHELF_COUNT_NIGHTLY_CHECK_INTERVAL_MS = 5 * 60 * 1000;
 const FUST_SHADOW_START_DATE = "2026-10-01";
 const FUST_SHADOW_WINDOW_DAYS = FUST_REFERENCE_IMPORT_WINDOW_DAYS;
 
+// Fust Planning reports per Code: DC = trolleys (Deense containers), DCS =
+// shelves, DCO = extensions. The expected SHELF count is DCS -- this used to
+// compare shelves against DC (the trolley count), so a 1-trolley/4-shelf
+// reference showed "deviation 3" while both were actually right.
 function fustShadowExpectedValue(fustRow) {
+  const value = fustRow?.dcs;
+  return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+
+function fustShadowTrolleyExpectedValue(fustRow) {
   const value = fustRow?.dc_actual ?? fustRow?.dc_planning;
   return typeof value === "number" && Number.isFinite(value) ? value : null;
 }
@@ -9116,7 +9126,8 @@ async function applyFustShadowForDate(date) {
     summary.matched += 1;
     const expected = fustShadowExpectedValue(fustRow);
     const extensionExpected = fustShadowExtensionExpectedValue(fustRow);
-    if (expected === null && extensionExpected === null) {
+    const trolleysExpected = fustShadowTrolleyExpectedValue(fustRow);
+    if (expected === null && extensionExpected === null && trolleysExpected === null) {
       continue;
     }
     const shelfCount = finiteNumberOrNull(shelfRow.shelf_count);
@@ -9137,6 +9148,7 @@ async function applyFustShadowForDate(date) {
       deviation,
       extension_expected: extensionExpected,
       extension_deviation: extensionDeviation,
+      expected_trolleys: trolleysExpected,
     });
     summary.updated += 1;
   }
@@ -9274,6 +9286,29 @@ async function findShelfCountFoldersAcrossAccounts(accountsWithEntries, base) {
 // instead. Without this fallback every field here silently comes back
 // null -- not genuinely low confidence, just nothing to parse at all --
 // and every row lands in needs_review for the wrong reason.
+// How close the counts are to what Fust Planning reports for the same
+// references (DC trolleys, DCS shelves, DCO extensions) -- for the official
+// Ollama count and the trained model side by side.
+function buildShelfCountAccuracy(counts) {
+  const compare = (pairs) => {
+    const valid = pairs.filter(([counted, expected]) => Number.isFinite(counted) && Number.isFinite(expected));
+    if (!valid.length) {
+      return { compared: 0, exact: 0, exact_rate: null, mean_abs_diff: null };
+    }
+    const exact = valid.filter(([counted, expected]) => counted === expected).length;
+    const meanAbs = valid.reduce((sum, [counted, expected]) => sum + Math.abs(counted - expected), 0) / valid.length;
+    return { compared: valid.length, exact, exact_rate: Math.round((exact / valid.length) * 1000) / 10, mean_abs_diff: Math.round(meanAbs * 100) / 100 };
+  };
+  const num = (value) => (value === null || value === undefined || value === "" ? NaN : Number(value));
+  return {
+    trolleys: compare(counts.map((row) => [num(row.trolley_count), num(row.expected_trolleys)])),
+    shelves: compare(counts.map((row) => [num(row.shelf_count), num(row.expected_average)])),
+    shelves_trained_model: compare(counts.map((row) => [num(row.trained_model?.error ? null : row.trained_model?.shelf_count), num(row.expected_average)])),
+    extensions: compare(counts.map((row) => [num(row.extension_count), num(row.extension_expected)])),
+    extensions_trained_model: compare(counts.map((row) => [num(row.trained_model?.error ? null : row.trained_model?.extension_count), num(row.extension_expected)])),
+  };
+}
+
 // The trained YOLO model's side-by-side result (see shelf-poller-app
 // run_trained_model): per-photo counts per class. Each photo shows one
 // trolley from some angle, so the reference estimate is the median photo
@@ -9509,11 +9544,16 @@ function computeCompletedWarehouseReferencesForDate(events) {
 // check every few minutes without double-firing, while still being
 // explicitly re-runnable via an exact date (bypassing that skip) per the
 // requirement that a nightly run must be re-runnable for any given date.
-async function runShelfCountNightlyTrigger(explicitDate) {
+// options.resume (the watchdog, after a crash/restart mid-run): only the
+// references still missing are handled -- one already counted, or still
+// waiting on a queued job, is skipped -- and the totals already gathered
+// are kept instead of reset.
+async function runShelfCountNightlyTrigger(explicitDate, options = {}) {
   if (!isDatabaseEnabled()) {
     return { ok: true, skipped: "database_disabled" };
   }
   const runDate = explicitDate || addDaysToIsoDate(localDateIso(), -1);
+  const resume = options.resume === true;
   if (!explicitDate) {
     const existing = await getShelfCountNightlyRun(runDate);
     if (existing) {
@@ -9521,9 +9561,41 @@ async function runShelfCountNightlyTrigger(explicitDate) {
     }
   }
 
-  const totals = { checked: 0, ok: 0, deviation: 0, needs_review: 0, failed: 0, missing_photos: 0, unmatched_folder: 0 };
+  // Only the trigger's own keys are written below (merged into the stored
+  // totals); ok/needs_review/failed come from finished jobs.
+  const totals = { checked: 0, missing_photos: 0, unmatched_folder: 0 };
   const issues = [];
-  await upsertShelfCountNightlyRun({ run_date: runDate, status: "running", totals, issues, started_at: new Date().toISOString() });
+  const previousRun = resume ? await getShelfCountNightlyRun(runDate) : null;
+  if (resume) {
+    issues.push(...(Array.isArray(previousRun?.issues) ? previousRun.issues : []), { type: "resumed", message: `Resumed after an interruption at ${new Date().toISOString()}` });
+  }
+  await upsertShelfCountNightlyRun({
+    run_date: runDate,
+    status: "running",
+    totals: resume ? {} : { ...totals, ok: 0, deviation: 0, needs_review: 0, failed: 0 },
+    reset_totals: !resume,
+    issues,
+    started_at: new Date().toISOString(),
+  });
+  // What a resumed run can skip: references already counted, and ones with
+  // a shelf_count job still queued/claimed.
+  const doneReferences = new Set();
+  const queuedReferences = new Set();
+  if (resume) {
+    for (const row of await getShelfCountsForDate(runDate)) {
+      if (row.status && row.status !== "pending") {
+        doneReferences.add(String(row.customer_reference || "").toUpperCase());
+      }
+    }
+  }
+  // Never a second job for a reference that still has one queued -- also
+  // on a manual "Re-run for this date" (that one does recount references
+  // already done).
+  for (const job of await getActiveLlmJobsByType("shelf_count")) {
+    if (String(job?.payload_json?.nightly_run_date || "") === runDate) {
+      queuedReferences.add(String(job?.payload_json?.customer_reference || "").toUpperCase());
+    }
+  }
 
   try {
     const [events, driveAccountList] = await Promise.all([
@@ -9537,6 +9609,11 @@ async function runShelfCountNightlyTrigger(explicitDate) {
     for (const row of completedReferences) {
       const folderName = shelfCountFolderName(row.customer_reference, runDate);
       expectedFolderBases.add(folderName);
+      const referenceKey = String(row.customer_reference || "").toUpperCase();
+      if (doneReferences.has(referenceKey) || queuedReferences.has(referenceKey)) {
+        totals.checked += 1;
+        continue;
+      }
 
       const found = await findShelfCountFoldersAcrossAccounts(driveAccounts, folderName);
 
@@ -9592,6 +9669,9 @@ async function runShelfCountNightlyTrigger(explicitDate) {
           vision_documents: visionDocuments,
         },
       });
+      // Progress heartbeat (bumps updated_at): a run that stops reporting
+      // progress is what the watchdog treats as interrupted.
+      await upsertShelfCountNightlyRun({ run_date: runDate, status: "running", totals, issues });
     }
 
     // Any Drive folder for this date with no matching completed reference at
@@ -9635,7 +9715,34 @@ async function runShelfCountNightlyTrigger(explicitDate) {
   }
 }
 
+// A run still "running" with no progress for this long was interrupted
+// (confirmed real: a Render crash in the night left one stuck at
+// "running" with references never queued). The trigger bumps updated_at
+// after every reference, and downloading one reference's photos takes well
+// under a minute.
+const SHELF_COUNT_STALE_RUN_MINUTES = Number(process.env.SHELF_COUNT_STALE_RUN_MINUTES || 20);
+
+async function resumeStaleShelfCountRuns() {
+  const cutoff = Date.now() - SHELF_COUNT_STALE_RUN_MINUTES * 60 * 1000;
+  for (const run of await getRunningShelfCountNightlyRuns()) {
+    if (new Date(run.updated_at).getTime() > cutoff) {
+      continue;
+    }
+    console.warn(`Shelf count run for ${run.run_date} made no progress for ${SHELF_COUNT_STALE_RUN_MINUTES}+ minutes -- resuming it.`);
+    try {
+      await runShelfCountNightlyTrigger(run.run_date, { resume: true });
+    } catch (error) {
+      console.error(`Resuming shelf count run ${run.run_date} failed:`, error instanceof Error ? error.message : error);
+    }
+  }
+}
+
 async function runShelfCountNightlyScheduledCheck() {
+  try {
+    await resumeStaleShelfCountRuns();
+  } catch (error) {
+    console.error("Shelf count stale-run check failed:", error instanceof Error ? error.message : error);
+  }
   try {
     const result = await runShelfCountNightlyTrigger();
     if (result?.ok && !result.skipped) {
@@ -17911,7 +18018,47 @@ async function handleApi(req, res, url) {
       getShelfCountNightlyRun(targetDate),
       getShelfCountsForDate(targetDate),
     ]);
-    sendJson(res, 200, { date: targetDate, run, counts });
+    sendJson(res, 200, { date: targetDate, run, counts, accuracy: buildShelfCountAccuracy(counts) });
+    return;
+  }
+
+  // Shelf count health for the Pipeline Monitor: the run, its queue and the
+  // shelf poller's heartbeat -- what tells "still working" from "stuck".
+  if (url.pathname === "/api/shelf-count/monitor" && req.method === "GET") {
+    if (!requirePermission(res, requestUser, PERMISSIONS.SHELF_COUNT_VIEW)) {
+      return;
+    }
+    const targetDate = String(url.searchParams.get("date") || "").slice(0, 10) || addDaysToIsoDate(localDateIso(), -1);
+    const [run, counts, activeJobs, snapshot] = await Promise.all([
+      getShelfCountNightlyRun(targetDate),
+      getShelfCountsForDate(targetDate),
+      getActiveLlmJobsByType("shelf_count"),
+      getLlmQueueSnapshot(),
+    ]);
+    const jobsForDate = activeJobs.filter((job) => String(job?.payload_json?.nightly_run_date || "") === targetDate);
+    const byStatus = {};
+    for (const row of counts) {
+      byStatus[row.status || "unknown"] = (byStatus[row.status || "unknown"] || 0) + 1;
+    }
+    const minutesSince = (value) => (value ? Math.round((Date.now() - new Date(value).getTime()) / 60000) : null);
+    const pollers = (snapshot.agents || [])
+      .filter((agent) => (Array.isArray(agent.capabilities) ? agent.capabilities : []).includes("shelf_count"))
+      .map((agent) => ({ agent_name: agent.agent_name, status: agent.status, last_seen_minutes: minutesSince(agent.last_seen_at || agent.updated_at) }));
+    const oldestPending = jobsForDate.reduce((oldest, job) => (!oldest || job.created_at < oldest ? job.created_at : oldest), null);
+    const runQuietMinutes = run?.status === "running" ? minutesSince(run.updated_at) : null;
+    sendJson(res, 200, {
+      date: targetDate,
+      run: run ? { status: run.status, totals: run.totals, started_at: run.started_at, completed_at: run.completed_at, updated_at: run.updated_at, quiet_minutes: runQuietMinutes } : null,
+      stale: runQuietMinutes !== null && runQuietMinutes >= SHELF_COUNT_STALE_RUN_MINUTES,
+      stale_after_minutes: SHELF_COUNT_STALE_RUN_MINUTES,
+      references: counts.length,
+      by_status: byStatus,
+      queued_jobs: jobsForDate.filter((job) => job.status === "pending").length,
+      claimed_jobs: jobsForDate.filter((job) => job.status === "claimed").length,
+      oldest_queued_minutes: minutesSince(oldestPending),
+      pollers,
+      accuracy: buildShelfCountAccuracy(counts),
+    });
     return;
   }
 

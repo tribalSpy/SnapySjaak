@@ -411,9 +411,9 @@ export async function upsertShelfCountRow(row) {
       INSERT INTO shelf_counts (
         customer_reference, nightly_run_date, drive_folder_name, trolley_count, photo_count, shelf_count,
         level_count, confidence, expected_average, deviation, extension_count, extension_expected,
-        extension_deviation, status, model_version, job_id, error_text, processed_at, per_trolley, trained_model
+        extension_deviation, status, model_version, job_id, error_text, processed_at, per_trolley, trained_model, expected_trolleys
       )
-      VALUES ($1, $2::date, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18::timestamptz, $19::jsonb, $20::jsonb)
+      VALUES ($1, $2::date, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18::timestamptz, $19::jsonb, $20::jsonb, $21)
       ON CONFLICT (customer_reference, nightly_run_date) DO UPDATE SET
         drive_folder_name = COALESCE(NULLIF(EXCLUDED.drive_folder_name, ''), shelf_counts.drive_folder_name),
         trolley_count = COALESCE(NULLIF(EXCLUDED.trolley_count, 0), shelf_counts.trolley_count),
@@ -433,6 +433,7 @@ export async function upsertShelfCountRow(row) {
         processed_at = COALESCE(EXCLUDED.processed_at, shelf_counts.processed_at),
         per_trolley = COALESCE(EXCLUDED.per_trolley, shelf_counts.per_trolley),
         trained_model = COALESCE(EXCLUDED.trained_model, shelf_counts.trained_model),
+        expected_trolleys = COALESCE(EXCLUDED.expected_trolleys, shelf_counts.expected_trolleys),
         updated_at = now()
       RETURNING *
     `,
@@ -457,6 +458,7 @@ export async function upsertShelfCountRow(row) {
       row.processed_at || null,
       Array.isArray(row.per_trolley) ? JSON.stringify(row.per_trolley) : null,
       row.trained_model && typeof row.trained_model === "object" ? JSON.stringify(row.trained_model) : null,
+      numberOrNull(row.expected_trolleys),
     ],
   );
   return result.rows?.[0] || null;
@@ -506,8 +508,14 @@ export async function upsertShelfCountNightlyRun(run) {
       VALUES ($1::date, $2, $3::jsonb, $4::jsonb, COALESCE($5::timestamptz, now()), $6::timestamptz)
       ON CONFLICT (run_date) DO UPDATE SET
         status = EXCLUDED.status,
-        totals = EXCLUDED.totals,
+        -- Merged, not replaced: the trigger only writes its own keys
+        -- (checked/missing_photos/unmatched_folder) while finished jobs
+        -- increment ok/needs_review/failed concurrently -- replacing used to
+        -- wipe those. reset_totals (a fresh/explicit re-run) starts over.
+        totals = CASE WHEN $7 THEN EXCLUDED.totals
+                      ELSE COALESCE(shelf_count_nightly_runs.totals, '{}'::jsonb) || EXCLUDED.totals END,
         issues = EXCLUDED.issues,
+        started_at = CASE WHEN $7 THEN EXCLUDED.started_at ELSE shelf_count_nightly_runs.started_at END,
         completed_at = COALESCE(EXCLUDED.completed_at, shelf_count_nightly_runs.completed_at),
         updated_at = now()
       RETURNING *
@@ -519,9 +527,23 @@ export async function upsertShelfCountNightlyRun(run) {
       JSON.stringify(Array.isArray(run.issues) ? run.issues : []),
       run.started_at || null,
       run.completed_at || null,
+      run.reset_totals === true,
     ],
   );
   return result.rows?.[0] || null;
+}
+
+// Runs still marked "running" -- the watchdog resumes any whose updated_at
+// (bumped after every reference the trigger handles) has gone quiet, i.e.
+// the server crashed or restarted mid-run.
+export async function getRunningShelfCountNightlyRuns() {
+  if (!pool) {
+    return [];
+  }
+  const result = await pool.query(
+    "SELECT to_char(run_date, 'YYYY-MM-DD') AS run_date, status, started_at, updated_at FROM shelf_count_nightly_runs WHERE status = 'running' ORDER BY run_date DESC",
+  );
+  return result.rows;
 }
 
 export async function getShelfCountNightlyRun(date) {
@@ -2150,6 +2172,11 @@ const databaseMigrations = [
   // only; shelf_count/level_count stay the official Ollama figures.
   `
     ALTER TABLE shelf_counts ADD COLUMN IF NOT EXISTS trained_model jsonb
+  `,
+  // Fust Planning's trolley count (DC) for the reference, next to the RFID
+  // scan's own trolley_count -- expected_average holds the shelves (DCS).
+  `
+    ALTER TABLE shelf_counts ADD COLUMN IF NOT EXISTS expected_trolleys numeric
   `,
   // One row per calendar day the nightly trigger has run for -- its own
   // existence for a given run_date is what makes the trigger idempotent
