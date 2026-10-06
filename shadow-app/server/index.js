@@ -21953,7 +21953,13 @@ async function startServer() {
     } else if (result && result.ok === false) {
       console.error(`Online job "${jobName}" failed:`, result.error || (result.errors || []).join("; "));
     } else if (result) {
-      console.log(`Online job "${jobName}" completed:`, JSON.stringify(result));
+      // Render's log viewer flags any line containing "error"/"failed" in
+      // red -- success summaries carried "failed":0, "errors":[] and
+      // "error":"" and looked like failures. Empty/zero ones are left out.
+      const quiet = JSON.stringify(result, (key, value) => (
+        /^(error|errors|failed)$/i.test(key) && (!value || (Array.isArray(value) && !value.length)) ? undefined : value
+      ));
+      console.log(`Online job "${jobName}" completed:`, quiet);
     }
   }
 
