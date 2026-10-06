@@ -9124,17 +9124,36 @@ async function applyFustShadowForDate(date) {
     }
   }
 
+  // A main code's photos show its combined/mixed members' goods too, so its
+  // expectation is the sum over itself and every member.
+  const membersByMain = new Map();
+  for (const row of shelfRows) {
+    const main = String(row.combined_into || "").trim().toUpperCase();
+    if (main) {
+      if (!membersByMain.has(main)) membersByMain.set(main, []);
+      membersByMain.get(main).push(String(row.customer_reference || "").trim().toUpperCase());
+    }
+  }
+  const sumExpected = (codes, pick) => {
+    const values = codes.map((code) => fustByCode.get(code)).filter(Boolean).map(pick).filter((value) => value !== null);
+    return values.length ? values.reduce((sum, value) => sum + value, 0) : null;
+  };
+
   const summary = { date, checked: shelfRows.length, matched: 0, updated: 0 };
   for (const shelfRow of shelfRows) {
     const code = String(shelfRow.customer_reference || "").trim().toUpperCase();
-    const fustRow = fustByCode.get(code);
+    if (shelfRow.combined_into) {
+      continue; // counted as part of its main code
+    }
+    const groupCodes = [code, ...(membersByMain.get(code) || [])];
+    const fustRow = fustByCode.get(code) || groupCodes.map((member) => fustByCode.get(member)).find(Boolean);
     if (!fustRow) {
       continue;
     }
     summary.matched += 1;
-    const expected = fustShadowExpectedValue(fustRow);
-    const extensionExpected = fustShadowExtensionExpectedValue(fustRow);
-    const trolleysExpected = fustShadowTrolleyExpectedValue(fustRow);
+    const expected = sumExpected(groupCodes, fustShadowExpectedValue);
+    const extensionExpected = sumExpected(groupCodes, fustShadowExtensionExpectedValue);
+    const trolleysExpected = sumExpected(groupCodes, fustShadowTrolleyExpectedValue);
     if (expected === null && extensionExpected === null && trolleysExpected === null) {
       continue;
     }
@@ -9641,11 +9660,30 @@ async function runShelfCountNightlyTrigger(explicitDate, options = {}) {
     const driveAccounts = await loadShelfCountDriveRootEntries(driveAccountList);
     const completedReferences = computeCompletedWarehouseReferencesForDate(events);
     const expectedFolderBases = new Set();
+    const { memberToMain, error: mainCodeError } = await fetchHalindelingMainCodes(await readFustSettings(), runDate);
+    if (mainCodeError) {
+      issues.push({ type: "halindeling_unavailable", message: `Main codes not loaded (${mainCodeError}); combined references may show as missing photos.` });
+    }
 
     for (const row of completedReferences) {
       const folderName = shelfCountFolderName(row.customer_reference, runDate);
       expectedFolderBases.add(folderName);
       const referenceKey = String(row.customer_reference || "").toUpperCase();
+      // Combined/Mixed member: photographed as part of its main code, never
+      // on its own -- no photos expected, nothing to count separately.
+      if (memberToMain.has(referenceKey)) {
+        totals.combined = (totals.combined || 0) + 1;
+        await upsertShelfCountRow({
+          customer_reference: row.customer_reference,
+          nightly_run_date: runDate,
+          trolley_count: row.trolley_count,
+          photo_count: 0,
+          status: "combined",
+          combined_into: memberToMain.get(referenceKey),
+          error_text: "",
+        });
+        continue;
+      }
       if (doneReferences.has(referenceKey) || queuedReferences.has(referenceKey)) {
         totals.checked += 1;
         continue;
@@ -14421,6 +14459,34 @@ async function runPdKeuringSheetReconcile() {
     conflicts,
     catch_up_writes: catchUpWrites,
   };
+}
+
+// "Combined"/"Mixed" references whose maincode (Halindeling app) is another
+// code: they're loaded onto their main code's trolleys, so only the main
+// code is photographed. member code -> main code, for that exact day only
+// (a different day's grouping would be wrong). Empty when the app is
+// unreachable or the day isn't saved -- the shelf count then simply works
+// as before.
+async function fetchHalindelingMainCodes(settings, date) {
+  const base = String(settings?.hal_locations_netlify_url || "https://halindeling.netlify.app").replace(/\/+$/, "");
+  const memberToMain = new Map();
+  try {
+    const response = await fetch(`${base}/api/days/${encodeURIComponent(String(date).slice(0, 10))}`, { headers: { Accept: "application/json" } });
+    if (!response.ok) {
+      return { memberToMain, error: response.status === 404 ? "" : `Halindeling app answered HTTP ${response.status}` };
+    }
+    const day = await response.json();
+    for (const row of Array.isArray(day?.rows) ? day.rows : []) {
+      const code = String(row?.klant || "").trim().toUpperCase();
+      const main = String(row?.maincode || "").trim().toUpperCase();
+      if (code && main && code !== main) {
+        memberToMain.set(code, main);
+      }
+    }
+    return { memberToMain, error: "" };
+  } catch (error) {
+    return { memberToMain, error: error instanceof Error ? error.message : String(error) };
+  }
 }
 
 // Location -> customer rows for Hal Locations / Expedition stickers, as

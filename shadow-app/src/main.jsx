@@ -8037,6 +8037,7 @@ const SHELF_COUNT_STATUS_TONE = {
   needs_review: "danger",
   failed: "danger",
   missing_photos: "muted",
+  combined: "muted",
 };
 
 // expected_average/deviation are filled in by the Fust shadow job (server
@@ -8231,7 +8232,10 @@ function ShelfCountPage() {
                   {shelfDiffCell(row.trained_model && !row.trained_model.error ? row.trained_model.shelf_count : null, row.expected_average)}
                   <td>{row.extension_expected ?? "-"}</td>
                   {shelfDiffCell(row.extension_count, row.extension_expected)}
-                  <td><span className={`ukdocs-status-badge ${SHELF_COUNT_STATUS_TONE[row.status] || "muted"}`}>{row.status}</span></td>
+                  <td>
+                    <span className={`ukdocs-status-badge ${SHELF_COUNT_STATUS_TONE[row.status] || "muted"}`}>{row.status}</span>
+                    {row.combined_into ? <div className="muted">photographed with {row.combined_into}</div> : null}
+                  </td>
                   <td>{row.error_text || "-"}</td>
                 </tr>
               ))}
