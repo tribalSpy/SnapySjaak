@@ -46,6 +46,7 @@ import {
   getInkoopIssueStatuses,
   getLlmQueueSnapshot,
   getActiveLlmJobsByType,
+  compactFinishedLlmJobs,
   getShelfCountNightlyRun,
   getRunningShelfCountNightlyRuns,
   getShelfCountsForDate,
@@ -22053,6 +22054,19 @@ async function startServer() {
   setInterval(() => {
     runIfOnline("Fust shadow (photo controle vs Fust planning)", runFustShadowJob).catch(() => {});
   }, 15 * 60 * 1000);
+
+  // Hourly: drop the photos/PDFs/workbooks finished jobs still carry in the
+  // database (see compactFinishedLlmJobs).
+  const compactLlmJobs = async () => {
+    const compacted = await compactFinishedLlmJobs(6);
+    if (compacted) {
+      console.log(`Compacted ${compacted} finished job(s): removed stored photos/PDFs from the database.`);
+    }
+  };
+  runIfOnline("Compact finished jobs", compactLlmJobs).catch(() => {});
+  setInterval(() => {
+    runIfOnline("Compact finished jobs", compactLlmJobs).catch(() => {});
+  }, 60 * 60 * 1000);
 
   // No "run once at a specific wall-clock time" scheduler exists in this
   // codebase -- this follows the same setInterval house pattern as

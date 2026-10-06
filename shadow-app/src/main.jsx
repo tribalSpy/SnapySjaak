@@ -11234,6 +11234,21 @@ function downloadExcelFriendlyTable(filename, headers, rows) {
   window.URL.revokeObjectURL(url);
 }
 
+// Actions created by the Fust API import carry the full list of reference
+// codes in their remark -- dozens of codes that swamp every table. Tables
+// show just the "Auto-created ..." line; the codes stay in the tooltip, the
+// edit form and the import screen.
+const FUST_API_REMARK_PREFIX = "Auto-created from Fust API reference import";
+
+function FustRemarkCell({ remark }) {
+  const text = String(remark || "").trim();
+  if (!text) return "-";
+  if (text.startsWith(FUST_API_REMARK_PREFIX)) {
+    return <span title={text}>{FUST_API_REMARK_PREFIX}</span>;
+  }
+  return text;
+}
+
 function FustOverview({ loading, actions, overview, sourceDebug, onRefresh }) {
   const [groupBy, setGroupBy] = useState("week");
   const [selectedWeek, setSelectedWeek] = useState("");
@@ -11785,7 +11800,7 @@ function FustOverview({ loading, actions, overview, sourceDebug, onRefresh }) {
                       <td><DocumentStatus action={action} /></td>
                       <td>{action.fustbon_reference || "-"}</td>
                       <td>{action.fustfactuur_reference || "-"}</td>
-                      <td>{action.remark || "-"}</td>
+                      <td><FustRemarkCell remark={action.remark} /></td>
                     </tr>
                   ))}
                   {!transactionRecords.length && (
@@ -12690,7 +12705,7 @@ function FustActionTable({
                       </td>
                     ))}
                     <td><DocumentStatus action={action} /></td>
-                    <td>{isEditing ? <input value={editForm.remark} onChange={(event) => setEditForm({ ...editForm, remark: event.target.value })} /> : (action.remark || "-")}</td>
+                    <td>{isEditing ? <input value={editForm.remark} onChange={(event) => setEditForm({ ...editForm, remark: event.target.value })} /> : <FustRemarkCell remark={action.remark} />}</td>
                     <td>{isEditing ? <input value={editForm.fustbon_reference} onChange={(event) => setEditForm({ ...editForm, fustbon_reference: event.target.value })} /> : (action.fustbon_reference || "-")}</td>
                     <td>{isEditing ? <input value={editForm.fustfactuur_reference} onChange={(event) => setEditForm({ ...editForm, fustfactuur_reference: event.target.value })} /> : (action.fustfactuur_reference || "-")}</td>
                     <td>{confirmed ? `${formatTimestamp(action.confirmed_at)}${action.confirmed_by ? ` by ${action.confirmed_by}` : ""}` : "-"}</td>
@@ -13160,7 +13175,7 @@ function FustAnalyse({ loading, actions, onRefresh, currentUser }) {
                         <td>{action.metrics?.pal || 0}</td>
                         <td>{action.metrics?.vk || 0}</td>
                         <td><DocumentStatus action={action} /></td>
-                        <td>{action.remark || "-"}</td>
+                        <td><FustRemarkCell remark={action.remark} /></td>
                         <td>{action.fustbon_reference || "-"}</td>
                         <td>{action.fustfactuur_reference || "-"}</td>
                         <td>{isFustActionConfirmed(action) ? `${formatTimestamp(action.confirmed_at)}${action.confirmed_by ? ` by ${action.confirmed_by}` : ""}` : "-"}</td>

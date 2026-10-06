@@ -1682,6 +1682,38 @@ export async function getLlmQueueSnapshot() {
 // while still stuck pending/claimed. This query is scoped to one job_type
 // and only pending/claimed rows, so it stays small and complete regardless
 // of total queue traffic.
+// Finished jobs keep their whole payload/result forever otherwise --
+// shelf_count photos (~5-10 MB per reference, every night), CSI audit
+// documents, invoice workbooks, the generated invoice PDF (already saved as
+// a file by then) and King export PDFs. That grew the database by hundreds
+// of MB a week (suspected cause of Postgres crashing into "recovery mode").
+// Strips just those file fields from jobs that finished more than
+// `olderThanHours` ago; the job rows and every other field stay.
+export async function compactFinishedLlmJobs(olderThanHours = 6) {
+  if (!pool) {
+    return 0;
+  }
+  const result = await pool.query(
+    `
+      UPDATE llm_jobs
+      SET payload_json = payload_json - 'vision_documents' - 'workbook_content_base64' - 'pdfs',
+          result_json = CASE
+            WHEN result_json->'excel_pdf_result' ? 'content_base64'
+              THEN jsonb_set(result_json, '{excel_pdf_result}', (result_json->'excel_pdf_result') - 'content_base64')
+            ELSE result_json
+          END
+      WHERE status IN ('done', 'failed')
+        AND updated_at < now() - make_interval(hours => $1)
+        AND (
+          payload_json ?| ARRAY['vision_documents', 'workbook_content_base64', 'pdfs']
+          OR result_json->'excel_pdf_result' ? 'content_base64'
+        )
+    `,
+    [Math.max(1, Number(olderThanHours) || 6)],
+  );
+  return result.rowCount || 0;
+}
+
 export async function getActiveLlmJobsByType(jobType) {
   if (!pool) {
     return [];
