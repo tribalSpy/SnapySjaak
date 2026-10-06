@@ -17,10 +17,28 @@ function createPool() {
   if (!connectionString) {
     return null;
   }
-  return new Pool({
+  const created = new Pool({
     connectionString,
     ssl: sslEnabled ? { rejectUnauthorized: false } : false,
+    // Detect dropped connections sooner instead of finding out on the next query.
+    keepAlive: true,
   });
+  // A connection the database drops (Postgres restarting / recovering,
+  // network blip) emits an 'error' event; with no listener, Node treats it
+  // as uncaught and the WHOLE server crashes ("Connection terminated
+  // unexpectedly" -> "throw er; // Unhandled 'error' event", confirmed on
+  // Render). Logged instead: the pool discards that connection and opens a
+  // new one on the next query. Idle connections report on the pool,
+  // checked-out ones on the client itself -- both need a listener.
+  created.on("error", (error) => {
+    console.error("Database connection lost (idle):", error?.message || error);
+  });
+  created.on("connect", (client) => {
+    client.on("error", (error) => {
+      console.error("Database connection lost (in use):", error?.message || error);
+    });
+  });
+  return created;
 }
 
 export function isDatabaseEnabled() {
