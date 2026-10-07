@@ -22,6 +22,8 @@ import {
   claimNextLlmJob,
   completeLlmJob,
   applyDatabaseMigrations,
+  exportDatabaseSnapshot,
+  importDatabaseSnapshot,
   createLlmJob,
   dbQuery,
   deleteUkdocsCsiParsedDocumentFromDatabase,
@@ -174,52 +176,6 @@ function requireBackupAgentAuth(req, res) {
     return false;
   }
   return true;
-}
-
-async function createPostgresDumpBuffer() {
-  return new Promise((resolve, reject) => {
-    const child = spawn("pg_dump", [process.env.DATABASE_URL, "--format=custom", "--no-owner"]);
-    let stderr = "";
-    child.stderr.on("data", (chunk) => {
-      stderr += chunk.toString();
-    });
-    child.on("error", reject);
-
-    // Done only when BOTH the gzip stream has ended and pg_dump has exited
-    // with 0 -- the stream of a failed pg_dump ends cleanly too (just empty),
-    // and resolving on that alone used to hand the standby an empty "dump".
-    const gzip = zlib.createGzip();
-    const chunks = [];
-    let gzipEnded = false;
-    let exitCode = null;
-    const finish = () => {
-      if (!gzipEnded || exitCode === null) {
-        return;
-      }
-      if (exitCode !== 0) {
-        reject(new Error(`pg_dump exited with code ${exitCode}: ${stderr.trim()}`));
-        return;
-      }
-      const buffer = Buffer.concat(chunks);
-      if (zlib.gunzipSync(buffer).length === 0) {
-        reject(new Error(`pg_dump produced no output: ${stderr.trim()}`));
-        return;
-      }
-      resolve(buffer);
-    };
-    gzip.on("data", (chunk) => chunks.push(chunk));
-    gzip.on("error", reject);
-    gzip.on("end", () => {
-      gzipEnded = true;
-      finish();
-    });
-    child.stdout.pipe(gzip);
-
-    child.on("close", (code) => {
-      exitCode = code ?? 1;
-      finish();
-    });
-  });
 }
 
 // --- Office-PC side: pulls a verified, encrypted copy of Render's state while
@@ -495,8 +451,14 @@ async function runPostgresRestoreCycle() {
     const sealed = Buffer.from(await response.arrayBuffer());
     const compressed = openSealed(sealed, backupPrivateKey);
     const dumpBuffer = zlib.gunzipSync(compressed);
-    await fs.writeFile(tmpDumpPath, dumpBuffer);
-    await restorePostgresDumpFile(tmpDumpPath);
+    let loaded = null;
+    if (dumpBuffer.subarray(0, 5).toString("latin1") === "PGDMP") {
+      // pg_dump custom format (older Render code)
+      await fs.writeFile(tmpDumpPath, dumpBuffer);
+      await restorePostgresDumpFile(tmpDumpPath);
+    } else {
+      loaded = await importDatabaseSnapshot(dumpBuffer);
+    }
     lastPostgresRestoreAt = Date.now();
     postgresRestoreNeedsForce = false;
     // A restored dump reflects whatever schema Render had at the moment it
@@ -505,6 +467,10 @@ async function runPostgresRestoreCycle() {
     const migrationResult = await applyDatabaseMigrations();
     if (!migrationResult.ok) {
       return { ok: true, migrations_error: migrationResult.error };
+    }
+    if (loaded) {
+      const rows = Object.values(loaded.tables).reduce((sum, count) => sum + count, 0);
+      return { ok: true, snapshot_from: loaded.snapshot_created_at, tables: Object.keys(loaded.tables).length, rows };
     }
     return { ok: true };
   } catch (error) {
@@ -16981,7 +16947,9 @@ async function handleApi(req, res, url) {
       return;
     }
     try {
-      const dumpBuffer = await createPostgresDumpBuffer();
+      // A JSON snapshot instead of pg_dump: Render's pg_dump (15) refuses
+      // its newer Postgres (18) -- see exportDatabaseSnapshot.
+      const dumpBuffer = zlib.gzipSync(await exportDatabaseSnapshot());
       lastPostgresDumpAt = Date.now();
       const sealed = sealBuffer(dumpBuffer, backupPublicKey);
       res.writeHead(200, { "content-type": "application/octet-stream", "cache-control": "no-store" });

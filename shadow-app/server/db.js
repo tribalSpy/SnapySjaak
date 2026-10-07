@@ -2334,3 +2334,157 @@ export async function initializeDatabase() {
 
   return getDatabaseStatus();
 }
+
+// --- Standby backup snapshot, without pg_dump ---
+// Render's pg_dump (15) refuses its own newer Postgres (18), and a native
+// Render service can't install another version. So the standby copy is made
+// through the normal connection instead: every table's rows as JSON lines,
+// loaded on the office PC into the same tables (its own migrations create
+// them) -- independent of either side's Postgres version.
+const SNAPSHOT_BATCH_ROWS = 500;
+const SNAPSHOT_BATCH_BYTES = 8 * 1024 * 1024;
+
+const quoteIdent = (name) => `"${String(name).replace(/"/g, '""')}"`;
+
+async function listPublicTablesParentsFirst(client) {
+  const tables = (await client.query(
+    `SELECT table_name FROM information_schema.tables WHERE table_schema = 'public' AND table_type = 'BASE TABLE' ORDER BY table_name`,
+  )).rows.map((row) => row.table_name);
+  const deps = (await client.query(`
+    SELECT child.relname AS child, parent.relname AS parent
+    FROM pg_constraint c
+    JOIN pg_class child ON child.oid = c.conrelid
+    JOIN pg_class parent ON parent.oid = c.confrelid
+    JOIN pg_namespace n ON n.oid = child.relnamespace
+    WHERE c.contype = 'f' AND n.nspname = 'public'
+  `)).rows;
+  // Parents before children, so foreign keys hold while loading.
+  const ordered = [];
+  const visit = (table, seen = new Set()) => {
+    if (ordered.includes(table) || seen.has(table)) return;
+    seen.add(table);
+    for (const dep of deps) {
+      if (dep.child === table && dep.parent !== table) visit(dep.parent, seen);
+    }
+    ordered.push(table);
+  };
+  tables.forEach((table) => visit(table));
+  return ordered.filter((table) => tables.includes(table));
+}
+
+// Newline-delimited JSON: a header line, then per table a {"table"} line
+// followed by one line per row.
+export async function exportDatabaseSnapshot() {
+  if (!pool) {
+    throw new Error("Database is not initialized");
+  }
+  const client = await pool.connect();
+  const lines = [];
+  try {
+    // One consistent point in time across all tables.
+    await client.query("BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY");
+    const tables = await listPublicTablesParentsFirst(client);
+    lines.push(JSON.stringify({ format: "snappysjaak-db-snapshot", version: 1, created_at: new Date().toISOString(), tables }));
+    for (const table of tables) {
+      lines.push(JSON.stringify({ table }));
+      for (let offset = 0; ; offset += 2000) {
+        const { rows } = await client.query(
+          `SELECT to_jsonb(t)::text AS row FROM ${quoteIdent(table)} t ORDER BY ctid LIMIT 2000 OFFSET ${offset}`,
+        );
+        for (const row of rows) lines.push(row.row);
+        if (rows.length < 2000) break;
+      }
+    }
+    await client.query("COMMIT");
+  } catch (error) {
+    await client.query("ROLLBACK").catch(() => {});
+    throw error;
+  } finally {
+    client.release();
+  }
+  return Buffer.from(`${lines.join("\n")}\n`, "utf8");
+}
+
+// Replaces the local tables' contents with the snapshot, all in one
+// transaction: either everything is the new copy or nothing changed.
+export async function importDatabaseSnapshot(buffer) {
+  if (!pool) {
+    throw new Error("Database is not initialized");
+  }
+  const lines = buffer.toString("utf8").split("\n").filter(Boolean);
+  const header = JSON.parse(lines[0] || "{}");
+  if (header.format !== "snappysjaak-db-snapshot") {
+    throw new Error("Not a SnappySjaak database snapshot");
+  }
+  const client = await pool.connect();
+  const counts = {};
+  try {
+    await client.query("BEGIN");
+    const localTables = new Set((await client.query(
+      `SELECT table_name FROM information_schema.tables WHERE table_schema = 'public' AND table_type = 'BASE TABLE'`,
+    )).rows.map((row) => row.table_name));
+    const tables = (header.tables || []).filter((table) => localTables.has(table));
+    if (tables.length) {
+      await client.query(`TRUNCATE ${tables.map(quoteIdent).join(", ")} RESTART IDENTITY CASCADE`);
+    }
+    const columnsOf = async (table) => (await client.query(
+      `SELECT column_name FROM information_schema.columns WHERE table_schema = 'public' AND table_name = $1 AND is_generated = 'NEVER'`,
+      [table],
+    )).rows.map((row) => row.column_name);
+
+    let table = null;
+    let columns = [];
+    let batch = [];
+    let batchBytes = 0;
+    const flush = async () => {
+      if (!table || !batch.length) return;
+      // Only columns present on both sides; a column only this PC has keeps
+      // its default.
+      const present = columns.filter((column) => Object.prototype.hasOwnProperty.call(batch[0], column));
+      const list = present.map(quoteIdent).join(", ");
+      await client.query(
+        `INSERT INTO ${quoteIdent(table)} (${list}) SELECT ${list} FROM jsonb_populate_recordset(NULL::${quoteIdent(table)}, $1::jsonb)`,
+        [JSON.stringify(batch)],
+      );
+      counts[table] = (counts[table] || 0) + batch.length;
+      batch = [];
+      batchBytes = 0;
+    };
+    for (const line of lines.slice(1)) {
+      const parsed = JSON.parse(line);
+      if (parsed && typeof parsed.table === "string" && Object.keys(parsed).length === 1) {
+        await flush();
+        table = localTables.has(parsed.table) ? parsed.table : null;
+        columns = table ? await columnsOf(table) : [];
+        if (table) counts[table] = 0;
+        continue;
+      }
+      if (!table) continue;
+      batch.push(parsed);
+      batchBytes += line.length;
+      if (batch.length >= SNAPSHOT_BATCH_ROWS || batchBytes >= SNAPSHOT_BATCH_BYTES) {
+        await flush();
+      }
+    }
+    await flush();
+
+    // Serial ids continue after the highest copied id.
+    const sequences = (await client.query(`
+      SELECT table_name, column_name FROM information_schema.columns
+      WHERE table_schema = 'public' AND column_default LIKE 'nextval(%'
+    `)).rows;
+    for (const { table_name: seqTable, column_name: seqColumn } of sequences) {
+      await client.query(
+        `SELECT setval(pg_get_serial_sequence($1, $2), COALESCE((SELECT MAX(${quoteIdent(seqColumn)}) FROM ${quoteIdent(seqTable)}), 0) + 1, false)`,
+        [`public.${quoteIdent(seqTable)}`, seqColumn],
+      );
+    }
+    await client.query("COMMIT");
+  } catch (error) {
+    await client.query("ROLLBACK").catch(() => {});
+    throw error;
+  } finally {
+    client.release();
+  }
+  return { tables: counts, snapshot_created_at: header.created_at || "" };
+}
