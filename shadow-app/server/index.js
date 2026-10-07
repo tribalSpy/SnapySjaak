@@ -1,4 +1,4 @@
-import { createReadStream, existsSync, promises as fs } from "node:fs";
+import { createReadStream, existsSync, readdirSync, promises as fs } from "node:fs";
 import http from "node:http";
 import os from "node:os";
 import path from "node:path";
@@ -208,6 +208,15 @@ const backupSyncStatusPath = path.join(cacheDir, "backup-sync-status.json");
 const backupSyncLastManifestPath = path.join(cacheDir, "backup-sync-last-manifest.json");
 const postgresRestoreMinIntervalMs = 6 * 60 * 60 * 1000;
 let lastPostgresRestoreAt = 0;
+// Render hands out at most one dump per PGDUMP_MIN_INTERVAL_MINUTES (6h). If
+// a downloaded dump then couldn't be restored here (e.g. pg_restore missing),
+// waiting out Render's window would leave this PC empty for hours -- so the
+// first attempt after this process starts, and the next one after a local
+// restore failure, ask with force=1. At most once an hour, so a PC that
+// keeps failing can't make Render dump every 15 minutes.
+const postgresForcedDumpMinIntervalMs = 60 * 60 * 1000;
+let postgresRestoreNeedsForce = true;
+let lastPostgresForcedDumpAt = 0;
 
 function backupSyncClientConfigured() {
   return Boolean(renderBackupBaseUrl && backupAgentApiKey && backupPrivateKey);
@@ -384,9 +393,39 @@ async function runBackupSyncCycle() {
   return result;
 }
 
+// pg_restore by name when it's on PATH; otherwise (a standard Windows
+// PostgreSQL install doesn't add itself to PATH) PG_BIN_DIR, or the newest
+// C:\Program Files\PostgreSQL\<version>\bin -- newest, because pg_restore
+// must be at least as new as the pg_dump on Render that made the dump.
+function resolvePostgresTool(name) {
+  const exe = process.platform === "win32" ? `${name}.exe` : name;
+  const binDir = String(process.env.PG_BIN_DIR || "").trim();
+  if (binDir && existsSync(path.join(binDir, exe))) {
+    return path.join(binDir, exe);
+  }
+  if (process.platform === "win32") {
+    for (const root of [process.env.ProgramFiles, process.env["ProgramFiles(x86)"]].filter(Boolean)) {
+      const base = path.join(root, "PostgreSQL");
+      let versions = [];
+      try {
+        versions = readdirSync(base).filter((entry) => /^\d+(\.\d+)?$/.test(entry)).sort((x, y) => Number(y) - Number(x));
+      } catch {
+        continue;
+      }
+      for (const version of versions) {
+        const candidate = path.join(base, version, "bin", exe);
+        if (existsSync(candidate)) {
+          return candidate;
+        }
+      }
+    }
+  }
+  return name;
+}
+
 async function restorePostgresDumpFile(dumpPath) {
   return new Promise((resolve, reject) => {
-    const child = spawn("pg_restore", ["--clean", "--if-exists", "--no-owner", "-d", process.env.DATABASE_URL, dumpPath]);
+    const child = spawn(resolvePostgresTool("pg_restore"), ["--clean", "--if-exists", "--no-owner", "-d", process.env.DATABASE_URL, dumpPath]);
     let stderr = "";
     child.stderr.on("data", (chunk) => {
       stderr += chunk.toString();
@@ -416,16 +455,27 @@ async function runPostgresRestoreCycle() {
   const tmpDumpPath = path.join(cacheDir, `postgres-restore-${Date.now()}.dump`);
   try {
     const headers = { "x-shadow-agent-key": backupAgentApiKey };
-    const response = await fetch(`${renderBackupBaseUrl}/api/backup/postgres-dump`, { headers });
+    const force = postgresRestoreNeedsForce && Date.now() - lastPostgresForcedDumpAt >= postgresForcedDumpMinIntervalMs;
+    if (force) {
+      lastPostgresForcedDumpAt = Date.now();
+    }
+    const response = await fetch(`${renderBackupBaseUrl}/api/backup/postgres-dump${force ? "?force=1" : ""}`, { headers });
+    if (response.status === 429) {
+      return { ok: false, skipped: true, reason: "Render already made a dump recently; it hands out a new one at most every 6 hours" };
+    }
     if (!response.ok) {
       throw new Error(`Postgres dump request failed: HTTP ${response.status}`);
     }
+    // From here on Render has spent its dump on us -- a failure below needs a
+    // forced dump next time.
+    postgresRestoreNeedsForce = true;
     const sealed = Buffer.from(await response.arrayBuffer());
     const compressed = openSealed(sealed, backupPrivateKey);
     const dumpBuffer = zlib.gunzipSync(compressed);
     await fs.writeFile(tmpDumpPath, dumpBuffer);
     await restorePostgresDumpFile(tmpDumpPath);
     lastPostgresRestoreAt = Date.now();
+    postgresRestoreNeedsForce = false;
     // A restored dump reflects whatever schema Render had at the moment it
     // was taken -- re-apply migrations immediately so the standby's currently
     // running code never ends up with a stale schema until its next restart.

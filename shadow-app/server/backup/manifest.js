@@ -15,9 +15,11 @@ export const BACKUP_ALLOWED_FILES = [
   "expedition-stickers.json",
   "dag-foutjes.json",
   "bunches-state.json",
+  "inkoop-state.json",
+  "warehouse-dashboard-settings.json",
 ];
 
-export const BACKUP_ALLOWED_DIRS = ["ukdocs-print-files"];
+export const BACKUP_ALLOWED_DIRS = ["ukdocs-print-files", "inkoop-invoice-pdfs", "expedition-stickers"];
 
 async function walkDir(baseDir, relDir) {
   const absDir = path.join(baseDir, relDir);
