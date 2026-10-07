@@ -4542,6 +4542,16 @@ function createFustApiReferenceActionId(matchKey, date) {
 // still blank. Importing those as confirmed OUT actions would record the
 // forecast as if it were the real outcome, which is exactly backwards.
 // "Ready" requires both: a resolved carrier AND dc_actual actually present.
+// DC-Planning 0 with no DC-Actual: Fust Planning expects nothing for this
+// code, so it isn't "pending" anything (user-confirmed: showing those as
+// pending was misleading). Becomes pending/ready as usual once Fust fills
+// in a planning or actual figure.
+function fustReferenceActionNothingPlanned(row) {
+  const planning = row?.dc_planning;
+  return (row?.dc_actual === null || row?.dc_actual === undefined)
+    && planning !== null && planning !== undefined && planning !== "" && Number(planning) === 0;
+}
+
 function fustReferenceActionIsReady(row) {
   return Boolean(row?.matched_by) && row?.dc_actual !== null && row?.dc_actual !== undefined;
 }
@@ -4639,6 +4649,7 @@ async function summarizeFustReferenceActionsByCarrier(date) {
   const pendingByKey = new Map();
   const unmatchedCodes = [];
   const unmatchedDetails = [];
+  const notPlannedByKey = new Map();
   for (const row of rows) {
     if (!row.matched_by) {
       unmatchedCodes.push(row.code);
@@ -4658,6 +4669,13 @@ async function summarizeFustReferenceActionsByCarrier(date) {
       String(row.country || "").trim().toUpperCase(),
       String(row.matched_customer_code || "").trim() || String(row.matched_customer_name || "").trim().toLowerCase(),
     ].join("|");
+    if (fustReferenceActionNothingPlanned(row)) {
+      if (!notPlannedByKey.has(matchKey)) {
+        notPlannedByKey.set(matchKey, { match_key: matchKey, country: row.country, customer_name: row.matched_customer_name, connect_name: row.matched_connect_name, customer_code: row.matched_customer_code, codes: [] });
+      }
+      notPlannedByKey.get(matchKey).codes.push(row.code);
+      continue;
+    }
     if (!pendingByKey.has(matchKey)) {
       pendingByKey.set(matchKey, {
         match_key: matchKey,
@@ -4682,11 +4700,12 @@ async function summarizeFustReferenceActionsByCarrier(date) {
     }
   }
 
-  const allKeys = new Set([...readyGroups.keys(), ...pendingByKey.keys()]);
+  const allKeys = new Set([...readyGroups.keys(), ...pendingByKey.keys(), ...notPlannedByKey.keys()]);
   const carriers = [...allKeys].map((matchKey) => {
     const ready = readyGroups.get(matchKey) || null;
     const pending = pendingByKey.get(matchKey) || null;
-    const base = ready || pending;
+    const notPlanned = notPlannedByKey.get(matchKey) || null;
+    const base = ready || pending || notPlanned;
     return {
       match_key: matchKey,
       country: base.country,
@@ -4695,6 +4714,7 @@ async function summarizeFustReferenceActionsByCarrier(date) {
       customer_code: base.customer_code,
       ready_codes: ready?.codes || [],
       pending_codes: pending?.codes || [],
+      not_planned_codes: notPlanned?.codes || [],
       metrics: ready?.metrics || emptyFustMetrics(),
       is_ready: Boolean(ready),
       fallback_codes: fallbackByKey.get(matchKey) || [],
@@ -9102,6 +9122,12 @@ function fustShadowExtensionExpectedValue(fustRow) {
   return typeof value === "number" && Number.isFinite(value) ? value : null;
 }
 
+function numberOrNullValue(value) {
+  if (value === null || value === undefined || value === "") return null;
+  const number = Number(value);
+  return Number.isFinite(number) ? number : null;
+}
+
 function finiteNumberOrNull(value) {
   return typeof value === "number" && Number.isFinite(value) ? value : null;
 }
@@ -9155,7 +9181,8 @@ async function applyFustShadowForDate(date) {
     const expected = sumExpected(groupCodes, fustShadowExpectedValue);
     const extensionExpected = sumExpected(groupCodes, fustShadowExtensionExpectedValue);
     const trolleysExpected = sumExpected(groupCodes, fustShadowTrolleyExpectedValue);
-    const shelfCount = finiteNumberOrNull(shelfRow.shelf_count);
+    // Fust DCS = shelves = one plate per level, so compared with our levels.
+    const shelfCount = finiteNumberOrNull(numberOrNullValue(shelfRow.level_count) ?? numberOrNullValue(shelfRow.shelf_count));
     const deviation = expected === null || shelfCount === null ? null : shelfCount - expected;
     const extensionCount = finiteNumberOrNull(shelfRow.extension_count);
     const extensionDeviation = extensionExpected === null || extensionCount === null
@@ -9324,7 +9351,7 @@ function buildShelfCountAccuracy(counts) {
   const num = (value) => (value === null || value === undefined || value === "" ? NaN : Number(value));
   return {
     trolleys: compare(counts.map((row) => [num(row.trolley_count), num(row.expected_trolleys)])),
-    shelves: compare(counts.map((row) => [num(row.shelf_count), num(row.expected_average)])),
+    shelves: compare(counts.map((row) => [num(row.level_count ?? row.shelf_count), num(row.expected_average)])),
     shelves_trained_model: compare(counts.map((row) => [num(row.trained_model?.error ? null : row.trained_model?.shelf_count), num(row.expected_average)])),
     extensions: compare(counts.map((row) => [num(row.extension_count), num(row.extension_expected)])),
     extensions_trained_model: compare(counts.map((row) => [num(row.trained_model?.error ? null : row.trained_model?.extension_count), num(row.extension_expected)])),
@@ -9409,7 +9436,17 @@ function parseShelfCountJobResult(job) {
     const capped = expectedTrolleys > 0 ? Math.min(trolleysWithExtensions, expectedTrolleys) : trolleysWithExtensions;
     return capped * SHELF_EXTENSIONS_PER_TROLLEY;
   };
-  const shelves = finiteOrNull(parsed?.shelves) ?? sumOf("shelves");
+  // One plate per level (user-confirmed; Fust DCS matches our level count):
+  // the model's separate "shelves" answer double-counted plates seen in
+  // several photos (e.g. 20 shelves for 2 trolleys of 5 levels). Shelves are
+  // taken as the levels whenever the model reports levels.
+  for (const entry of perTrolley) {
+    if (entry.levels !== null) {
+      entry.shelves = entry.levels;
+    }
+  }
+  const reportedLevels = finiteOrNull(parsed?.levels) ?? sumOf("levels");
+  const shelves = reportedLevels ?? finiteOrNull(parsed?.shelves) ?? sumOf("shelves");
   const levels = finiteOrNull(parsed?.levels) ?? sumOf("levels");
   // The per-trolley breakdown (already snapped) wins over the model's own
   // total when both exist.
@@ -9460,7 +9497,9 @@ function buildShelfCountJobPayload({ photoCount, trolleyCount }) {
       `Return per_trolley with exactly ${trolleys} entries (trolley 1..${trolleys}), each with that trolley's own shelves, levels and extensions.`,
       "shelves, levels and extensions at the top level are the TOTALS across all trolleys, i.e. the sum of the per_trolley entries.",
       "Shelves are mostly silver-grey.",
-      "Count the total number of distinct shelves, and the number of levels (vertical tiers) visible.",
+      "Count the number of levels (horizontal tiers) per trolley. Every level has exactly ONE shelf (plate), so per trolley the number of shelves always EQUALS the number of levels -- never count the same plate twice because it shows in several photos or from both sides.",
+      "A level is a metal shelf PLATE (the grey horizontal board between the poles), not a layer of boxes: boxes stacked on top of each other on one plate are still ONE level. Count the plates you see, never the layers of boxes or plants.",
+      "Do NOT count the trolley's own bottom deck (the base frame on the wheels) -- only the loose shelf plates placed on the trolley. Example: a trolley with its bottom deck plus 3 loose shelf plates has 3 levels.",
       "If photos overlap or show the same shelves from slightly different angles, do not double-count them.",
       "Each trolley has a vertical pole at each corner. An 'extension' is an added segment that makes a pole",
       "taller so the trolley can carry more levels -- there can be 0 to 4 extensions per trolley, one per pole (so a reference total can be up to 4 x the trolley count).",

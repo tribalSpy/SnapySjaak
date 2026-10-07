@@ -8217,7 +8217,7 @@ function ShelfCountPage() {
                 <th>Customer reference</th><th>Trolleys</th><th>Photos</th><th>Shelves</th><th>Levels</th>
                 <th>Extensions</th><th>Per trolley (shelves / levels / ext.)</th><th>Trained model (shelves / ext.)</th><th>Confidence</th>
                 <th>Fust trolleys (DC)</th><th>Trolley diff</th>
-                <th>Fust shelves (DCS)</th><th>Shelf diff</th><th>Trained model shelf diff</th>
+                <th>Fust shelves (DCS)</th><th>Shelf diff (levels - DCS)</th><th>Trained model shelf diff</th>
                 <th>Fust extensions (DCO)</th><th>Ext. diff</th><th>Status</th><th>Error</th>
               </tr>
             </thead>
@@ -8255,7 +8255,7 @@ function ShelfCountPage() {
                   <td>{row.expected_trolleys ?? "-"}</td>
                   {shelfDiffCell(row.trolley_count, row.expected_trolleys)}
                   <td>{row.expected_average ?? "-"}</td>
-                  {shelfDiffCell(row.shelf_count, row.expected_average)}
+                  {shelfDiffCell(row.level_count ?? row.shelf_count, row.expected_average)}
                   {shelfDiffCell(row.trained_model && !row.trained_model.error ? row.trained_model.shelf_count : null, row.expected_average)}
                   <td>{row.extension_expected ?? "-"}</td>
                   {shelfDiffCell(row.extension_count, row.extension_expected)}
@@ -13429,13 +13429,18 @@ function fustReferenceRowStatus(row) {
     return "unmatched";
   }
   if (row.dc_actual === null || row.dc_actual === undefined) {
+    // DC-Planning 0: Fust expects nothing for this code -- not "pending".
+    const planning = row.dc_planning;
+    if (planning !== null && planning !== undefined && planning !== "" && Number(planning) === 0) {
+      return "not_planned";
+    }
     return "pending";
   }
   return "ready";
 }
 
-const FUST_REFERENCE_STATUS_LABEL = { unmatched: "Unmatched", pending: "Pending data", ready: "Ready" };
-const FUST_REFERENCE_STATUS_TONE = { unmatched: "danger", pending: "info", ready: "success" };
+const FUST_REFERENCE_STATUS_LABEL = { unmatched: "Unmatched", pending: "Pending data", ready: "Ready", not_planned: "Nothing planned" };
+const FUST_REFERENCE_STATUS_TONE = { unmatched: "danger", pending: "info", ready: "success", not_planned: "muted" };
 
 function FustReferenceActions({ canManage }) {
   const [fromDate, setFromDate] = useState(() => daysAgoIso(6));
@@ -13639,7 +13644,12 @@ function FustReferenceActions({ canManage }) {
                       )}
                     </td>
                     <td>{carrier.ready_codes.join(", ") || "-"}</td>
-                    <td>{carrier.pending_codes.join(", ") || "-"}</td>
+                    <td>
+                      {carrier.pending_codes.join(", ") || "-"}
+                      {!!carrier.not_planned_codes?.length && (
+                        <div className="muted" style={{ fontSize: "0.85em" }}>Nothing planned (DC-Planning 0): {carrier.not_planned_codes.join(", ")}</div>
+                      )}
+                    </td>
                     <td>{carrier.metrics.dc}</td>
                     <td>{carrier.metrics.dcs}</td>
                     <td>{carrier.metrics.dco}</td>
@@ -13647,8 +13657,8 @@ function FustReferenceActions({ canManage }) {
                     <td>{carrier.metrics.vk}</td>
                     <td>{carrier.metrics.pal}</td>
                     <td>
-                      <span className={`ukdocs-status-badge ${carrier.is_ready ? "success" : "info"}`}>
-                        {carrier.is_ready ? "Ready" : "Pending data"}
+                      <span className={`ukdocs-status-badge ${carrier.is_ready ? "success" : carrier.pending_codes.length ? "info" : "muted"}`}>
+                        {carrier.is_ready ? "Ready" : carrier.pending_codes.length ? "Pending data" : "Nothing planned"}
                       </span>
                     </td>
                   </tr>
