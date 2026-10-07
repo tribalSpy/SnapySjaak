@@ -185,17 +185,39 @@ async function createPostgresDumpBuffer() {
     });
     child.on("error", reject);
 
+    // Done only when BOTH the gzip stream has ended and pg_dump has exited
+    // with 0 -- the stream of a failed pg_dump ends cleanly too (just empty),
+    // and resolving on that alone used to hand the standby an empty "dump".
     const gzip = zlib.createGzip();
     const chunks = [];
+    let gzipEnded = false;
+    let exitCode = null;
+    const finish = () => {
+      if (!gzipEnded || exitCode === null) {
+        return;
+      }
+      if (exitCode !== 0) {
+        reject(new Error(`pg_dump exited with code ${exitCode}: ${stderr.trim()}`));
+        return;
+      }
+      const buffer = Buffer.concat(chunks);
+      if (zlib.gunzipSync(buffer).length === 0) {
+        reject(new Error(`pg_dump produced no output: ${stderr.trim()}`));
+        return;
+      }
+      resolve(buffer);
+    };
     gzip.on("data", (chunk) => chunks.push(chunk));
     gzip.on("error", reject);
-    gzip.on("end", () => resolve(Buffer.concat(chunks)));
+    gzip.on("end", () => {
+      gzipEnded = true;
+      finish();
+    });
     child.stdout.pipe(gzip);
 
     child.on("close", (code) => {
-      if (code !== 0) {
-        reject(new Error(`pg_dump exited with code ${code}: ${stderr.trim()}`));
-      }
+      exitCode = code ?? 1;
+      finish();
     });
   });
 }
@@ -464,7 +486,8 @@ async function runPostgresRestoreCycle() {
       return { ok: false, skipped: true, reason: "Render already made a dump recently; it hands out a new one at most every 6 hours" };
     }
     if (!response.ok) {
-      throw new Error(`Postgres dump request failed: HTTP ${response.status}`);
+      const detail = await response.json().then((body) => body?.error || "").catch(() => "");
+      throw new Error(`Postgres dump request failed: HTTP ${response.status}${detail ? ` (${detail})` : ""}`);
     }
     // From here on Render has spent its dump on us -- a failure below needs a
     // forced dump next time.
@@ -16964,6 +16987,7 @@ async function handleApi(req, res, url) {
       res.writeHead(200, { "content-type": "application/octet-stream", "cache-control": "no-store" });
       res.end(sealed);
     } catch (error) {
+      console.error("Postgres dump for the standby failed:", error instanceof Error ? error.message : error);
       sendJson(res, 500, { error: error instanceof Error ? error.message : String(error) });
     }
     return;
