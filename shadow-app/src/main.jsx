@@ -8055,6 +8055,32 @@ function shelfDiffCell(counted, expected) {
   return <td style={{ color: diff ? "#b45309" : "#15803d", fontWeight: 600 }}>{diff > 0 ? `+${diff}` : diff}</td>;
 }
 
+// "4 ext. · 4-6 shelves" from the Halindeling volume (see the server's
+// estimateFromVolume), flagged when the photo count falls outside it.
+function shelfVolumeCell(row) {
+  const estimate = row.volume_estimate;
+  if (!estimate) {
+    return <td>-</td>;
+  }
+  const range = (low, high) => (low === high ? `${low}` : `${low}-${high}`);
+  const outside = (value, low, high) => value !== null && value !== undefined && value !== "" && (Number(value) < low || Number(value) > high);
+  const photoLevels = row.level_count ?? row.shelf_count;
+  const warnings = [];
+  if (outside(row.extension_count, estimate.extensions_min, estimate.extensions_max)) {
+    warnings.push(`photo says ${row.extension_count} extensions`);
+  }
+  if (outside(photoLevels, estimate.shelves_min, estimate.shelves_max)) {
+    warnings.push(`photo says ${photoLevels} shelves`);
+  }
+  return (
+    <td title={`Volume ${estimate.volume} over ${estimate.trolleys} trolley(s); last trolley ${Math.round(estimate.last_fill * 100)}% full. Below 45% no extensions, from 80% extensions, in between undecided.`}>
+      <div style={{ fontWeight: 600 }}>{range(estimate.extensions_min, estimate.extensions_max)} ext. · {range(estimate.shelves_min, estimate.shelves_max)} shelves</div>
+      <div className="muted">vol. {estimate.volume} · last {Math.round(estimate.last_fill * 100)}%</div>
+      {warnings.length ? <div style={{ color: "#b45309", fontWeight: 600 }}>{warnings.join(", ")}</div> : null}
+    </td>
+  );
+}
+
 function ShelfAccuracySummary({ accuracy }) {
   if (!accuracy) return null;
   const row = (label, stats) => (
@@ -8078,6 +8104,7 @@ function ShelfAccuracySummary({ accuracy }) {
             {row("Shelves -- trained model (vs DCS)", accuracy.shelves_trained_model)}
             {row("Extensions -- official count (vs DCO)", accuracy.extensions)}
             {row("Extensions -- trained model (vs DCO)", accuracy.extensions_trained_model)}
+            {row("Extensions -- from volume, where decided (vs DCO)", accuracy.extensions_volume)}
           </tbody>
         </table>
       </div>
@@ -8211,6 +8238,7 @@ function ShelfCountPage() {
                 <th />
                 <th colSpan={8} style={{ textAlign: "center", background: "#e0f2fe" }}>Counted from the photos (RFID scan + shelf count)</th>
                 <th colSpan={7} style={{ textAlign: "center", background: "#fef3c7" }}>Fust Planning (expected) and difference (counted - Fust)</th>
+                <th style={{ textAlign: "center", background: "#dcfce7" }}>Halindeling volume</th>
                 <th colSpan={2} />
               </tr>
               <tr>
@@ -8218,7 +8246,7 @@ function ShelfCountPage() {
                 <th>Extensions</th><th>Per trolley (shelves / levels / ext.)</th><th>Trained model (shelves / ext.)</th><th>Confidence</th>
                 <th>Fust trolleys (DC)</th><th>Trolley diff</th>
                 <th>Fust shelves (DCS)</th><th>Shelf diff (levels - DCS)</th><th>Trained model shelf diff</th>
-                <th>Fust extensions (DCO)</th><th>Ext. diff</th><th>Status</th><th>Error</th>
+                <th>Fust extensions (DCO)</th><th>Ext. diff</th><th>Expected from volume</th><th>Status</th><th>Error</th>
               </tr>
             </thead>
             <tbody>
@@ -8259,6 +8287,7 @@ function ShelfCountPage() {
                   {shelfDiffCell(row.trained_model && !row.trained_model.error ? row.trained_model.shelf_count : null, row.expected_average)}
                   <td>{row.extension_expected ?? "-"}</td>
                   {shelfDiffCell(row.extension_count, row.extension_expected)}
+                  {shelfVolumeCell(row)}
                   <td>
                     <span className={`ukdocs-status-badge ${SHELF_COUNT_STATUS_TONE[row.status] || "muted"}`}>{row.status}</span>
                     {row.combined_into ? <div className="muted">photographed with {row.combined_into}</div> : null}
@@ -8266,7 +8295,7 @@ function ShelfCountPage() {
                   <td>{row.error_text || "-"}</td>
                 </tr>
               ))}
-              {!counts.length && <tr><td colSpan={19}>No completed references for this date.</td></tr>}
+              {!counts.length && <tr><td colSpan={20}>No completed references for this date.</td></tr>}
             </tbody>
           </table>
         </div>

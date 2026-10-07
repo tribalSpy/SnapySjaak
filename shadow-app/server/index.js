@@ -9374,6 +9374,90 @@ async function findShelfCountFoldersAcrossAccounts(accountsWithEntries, base) {
 // Extensions come in a full set or not at all: 0 or 4 per trolley.
 const SHELF_EXTENSIONS_PER_TROLLEY = 4;
 
+// What the Halindeling app's volume (volKlant, sum of the orders' "bakken")
+// says about a reference's trolleys, from the volume study (Fust DCS/DCO vs
+// volume, 6 days, Oct 2026): every trolley but the last is full; the last
+// one holds the rest. Per trolley fill: below 0.45 never had extensions
+// (2-3 shelves), 0.8 and up practically always (4-6 shelves), in between
+// it's a coin flip (3-5) -- the photos decide. A fill above 1 (a wrong or
+// group-wide volume) still just means "full".
+const VOLUME_FILL_NO_EXTENSIONS = 0.45;
+const VOLUME_FILL_EXTENSIONS = 0.8;
+
+function estimateFromVolume(volume, trolleys) {
+  const total = Number(volume);
+  const count = Math.round(Number(trolleys));
+  if (!Number.isFinite(total) || total <= 0 || !Number.isFinite(count) || count < 1) {
+    return null;
+  }
+  const lastFill = Math.min(1, Math.max(0, total - (count - 1)));
+  const estimate = { volume: Math.round(total * 100) / 100, trolleys: count, last_fill: Math.round(lastFill * 100) / 100, extensions_min: 0, extensions_max: 0, shelves_min: 0, shelves_max: 0 };
+  for (let index = 0; index < count; index += 1) {
+    const fill = index < count - 1 ? 1 : lastFill;
+    if (fill >= VOLUME_FILL_EXTENSIONS) {
+      estimate.extensions_min += SHELF_EXTENSIONS_PER_TROLLEY;
+      estimate.extensions_max += SHELF_EXTENSIONS_PER_TROLLEY;
+      estimate.shelves_min += 4;
+      estimate.shelves_max += 6;
+    } else if (fill < VOLUME_FILL_NO_EXTENSIONS) {
+      estimate.shelves_min += 2;
+      estimate.shelves_max += 3;
+    } else {
+      estimate.extensions_max += SHELF_EXTENSIONS_PER_TROLLEY;
+      estimate.shelves_min += 3;
+      estimate.shelves_max += 5;
+    }
+  }
+  return estimate;
+}
+
+// Adds volume_estimate to each shelf-count row of `date`: the Halindeling
+// app's volume for the reference plus its combined/mixed members (they ride
+// on the main code's trolleys), over Fust's DC (else the scanned trolleys).
+// Rows stay as they are when the app has no saved day for `date`.
+async function addVolumeEstimates(counts, date) {
+  const settings = await readFustSettings();
+  const base = String(settings.hal_locations_netlify_url || "https://halindeling.netlify.app").replace(/\/+$/, "");
+  let day = null;
+  try {
+    const response = await fetch(`${base}/api/days/${encodeURIComponent(String(date).slice(0, 10))}`, { headers: { Accept: "application/json" } });
+    day = response.ok ? await response.json() : null;
+  } catch {
+    day = null;
+  }
+  if (!day || !Array.isArray(day.rows)) {
+    return { counts, volume_source: null };
+  }
+  const volumeByCode = new Map();
+  const mainByCode = new Map();
+  for (const row of day.rows) {
+    const code = String(row?.klant || "").trim().toUpperCase();
+    if (!code) continue;
+    volumeByCode.set(code, Math.max(volumeByCode.get(code) || 0, Number(row.volKlant) || 0));
+    const main = String(row?.maincode || "").trim().toUpperCase();
+    if (main && main !== code) mainByCode.set(code, main);
+  }
+  for (const row of counts) {
+    const main = String(row.combined_into || "").trim().toUpperCase();
+    if (main) mainByCode.set(String(row.customer_reference || "").trim().toUpperCase(), main);
+  }
+  const groupVolume = new Map();
+  for (const [code, volume] of volumeByCode) {
+    const owner = mainByCode.get(code) || code;
+    groupVolume.set(owner, (groupVolume.get(owner) || 0) + volume);
+  }
+  return {
+    volume_source: { date: day.date || date, saved_at: day.savedAt || "" },
+    counts: counts.map((row) => {
+      const code = String(row.customer_reference || "").trim().toUpperCase();
+      if (row.combined_into || !groupVolume.has(code)) {
+        return row;
+      }
+      return { ...row, volume_estimate: estimateFromVolume(groupVolume.get(code), row.expected_trolleys ?? row.trolley_count) };
+    }),
+  };
+}
+
 // How close the counts are to what Fust Planning reports for the same
 // references (DC trolleys, DCS shelves, DCO extensions) -- for the official
 // Ollama count and the trained model side by side.
@@ -9394,6 +9478,11 @@ function buildShelfCountAccuracy(counts) {
     shelves_trained_model: compare(counts.map((row) => [num(row.trained_model?.error ? null : row.trained_model?.shelf_count), num(row.expected_average)])),
     extensions: compare(counts.map((row) => [num(row.extension_count), num(row.extension_expected)])),
     extensions_trained_model: compare(counts.map((row) => [num(row.trained_model?.error ? null : row.trained_model?.extension_count), num(row.extension_expected)])),
+    // Only where the volume decides (no "coin flip" trolley).
+    extensions_volume: compare(counts.map((row) => [
+      row.volume_estimate && row.volume_estimate.extensions_min === row.volume_estimate.extensions_max ? row.volume_estimate.extensions_min : NaN,
+      num(row.extension_expected),
+    ])),
   };
 }
 
@@ -18222,16 +18311,15 @@ async function handleApi(req, res, url) {
       return;
     }
     const targetDate = String(url.searchParams.get("date") || "").slice(0, 10) || addDaysToIsoDate(localDateIso(), -1);
-    const [run, counts] = await Promise.all([
+    const [run, rawCounts] = await Promise.all([
       getShelfCountNightlyRun(targetDate),
       getShelfCountsForDate(targetDate),
     ]);
-    sendJson(res, 200, { date: targetDate, run, counts, accuracy: buildShelfCountAccuracy(counts) });
+    const { counts, volume_source } = await addVolumeEstimates(rawCounts, targetDate);
+    sendJson(res, 200, { date: targetDate, run, counts, volume_source, accuracy: buildShelfCountAccuracy(counts) });
     return;
   }
 
-  // Shelf count health for the Pipeline Monitor: the run, its queue and the
-  // shelf poller's heartbeat -- what tells "still working" from "stuck".
   // Study: does the Halindeling app's volume per customer (volKlant, sum of
   // the orders' "bakken") predict Fust's shelves (DCS) and extensions (DCO)
   // per trolley (DC-Actual)? Joins both sources for every day the Halindeling
@@ -18347,6 +18435,8 @@ async function handleApi(req, res, url) {
     return;
   }
 
+  // Shelf count health for the Pipeline Monitor: the run, its queue and the
+  // shelf poller's heartbeat -- what tells "still working" from "stuck".
   if (url.pathname === "/api/shelf-count/monitor" && req.method === "GET") {
     if (!requirePermission(res, requestUser, PERMISSIONS.SHELF_COUNT_VIEW)) {
       return;
