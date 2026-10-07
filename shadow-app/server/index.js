@@ -18232,6 +18232,120 @@ async function handleApi(req, res, url) {
 
   // Shelf count health for the Pipeline Monitor: the run, its queue and the
   // shelf poller's heartbeat -- what tells "still working" from "stuck".
+  // Study: does the Halindeling app's volume per customer (volKlant, sum of
+  // the orders' "bakken") predict Fust's shelves (DCS) and extensions (DCO)
+  // per trolley (DC-Actual)? Joins both sources for every day the Halindeling
+  // app has saved (or ?days=N most recent), with the shelf-count results where
+  // they exist. ?format=csv gives the rows for Excel.
+  if (url.pathname === "/api/shelf-count/volume-study" && req.method === "GET") {
+    if (!requirePermission(res, requestUser, PERMISSIONS.SHELF_COUNT_VIEW)) {
+      return;
+    }
+    const settings = await readFustSettings();
+    const base = String(settings.hal_locations_netlify_url || "https://halindeling.netlify.app").replace(/\/+$/, "");
+    const maxDays = Math.max(1, Math.min(60, Number(url.searchParams.get("days")) || 30));
+    const index = await fetch(`${base}/api/days`, { headers: { Accept: "application/json" } }).then((r) => r.json()).catch(() => ({}));
+    const dates = (Array.isArray(index?.days) ? index.days : []).map((day) => String(day?.date || "")).filter(Boolean).sort().slice(-maxDays);
+    const rows = [];
+    const errors = [];
+    for (const date of dates) {
+      let day;
+      let fustRows;
+      try {
+        [day, fustRows] = await Promise.all([
+          fetch(`${base}/api/days/${encodeURIComponent(date)}`, { headers: { Accept: "application/json" } }).then((r) => r.json()),
+          fetchFustApiImportRows(settings, date),
+        ]);
+      } catch (error) {
+        errors.push(`${date}: ${error instanceof Error ? error.message : String(error)}`);
+        continue;
+      }
+      const shelfByCode = new Map((await getShelfCountsForDate(date).catch(() => [])).map((row) => [String(row.customer_reference || "").toUpperCase(), row]));
+      // One entry per customer code: its volume, locations, packing, main code.
+      const customers = new Map();
+      for (const row of Array.isArray(day?.rows) ? day.rows : []) {
+        const code = String(row?.klant || "").trim().toUpperCase();
+        if (!code) continue;
+        const entry = customers.get(code) || { volume: 0, locations: 0, packingcode: "", ptype: "", maincode: "", hal_dc: null, orders: 0 };
+        entry.volume = Math.max(entry.volume, Number(row.volKlant) || 0);
+        entry.locations += 1;
+        entry.packingcode = entry.packingcode || String(row.packingcode || "");
+        entry.ptype = entry.ptype || String(row.ptype || "");
+        entry.maincode = entry.maincode || String(row.maincode || "").trim().toUpperCase();
+        entry.hal_dc = entry.hal_dc ?? (row.dc ?? null);
+        entry.orders = Math.max(entry.orders, Array.isArray(row.orders) ? row.orders.length : 0);
+        customers.set(code, entry);
+      }
+      for (const fustRow of fustRows) {
+        const code = String(fustRow?.Code || "").trim().toUpperCase();
+        const hal = customers.get(code);
+        const dcActual = fustApiMetricValue(fustRow, "DC-Actual");
+        if (!hal || !dcActual) continue;
+        const dcs = fustApiMetricValue(fustRow, "DCS");
+        const dco = fustApiMetricValue(fustRow, "DCO");
+        const shelf = shelfByCode.get(code);
+        rows.push({
+          date,
+          code,
+          volume: Math.round(hal.volume * 100) / 100,
+          dc_actual: dcActual,
+          dc_planning: fustApiMetricValue(fustRow, "DC-Planning"),
+          hal_dc: hal.hal_dc,
+          dcs,
+          dco,
+          boxes: fustApiMetricValue(fustRow, "Boxes"),
+          volume_per_trolley: Math.round((hal.volume / dcActual) * 100) / 100,
+          shelves_per_trolley: dcs === null ? null : Math.round((dcs / dcActual) * 100) / 100,
+          extension_trolleys: dco === null ? null : Math.round((dco / SHELF_EXTENSIONS_PER_TROLLEY) * 100) / 100,
+          packingcode: hal.packingcode,
+          ptype: hal.ptype,
+          maincode: hal.maincode,
+          locations: hal.locations,
+          photo_levels: shelf?.level_count ?? shelf?.shelf_count ?? null,
+          photo_extensions: shelf?.extension_count ?? null,
+        });
+      }
+    }
+
+    // Per bucket of volume per trolley: how many shelves per trolley and what
+    // share of trolleys had extensions.
+    const bucketOf = (value) => {
+      const step = 0.1;
+      const low = Math.floor(value / step) * step;
+      return `${low.toFixed(1)}-${(low + step).toFixed(1)}`;
+    };
+    const buckets = new Map();
+    for (const row of rows) {
+      if (row.dcs === null || row.dco === null) continue;
+      const key = row.volume_per_trolley >= 1.5 ? "1.5+" : bucketOf(row.volume_per_trolley);
+      const bucket = buckets.get(key) || { volume_per_trolley: key, references: 0, trolleys: 0, shelves: 0, extension_trolleys: 0, refs_with_extensions: 0 };
+      bucket.references += 1;
+      bucket.trolleys += row.dc_actual;
+      bucket.shelves += row.dcs;
+      bucket.extension_trolleys += Math.min(row.dc_actual, row.dco / SHELF_EXTENSIONS_PER_TROLLEY);
+      bucket.refs_with_extensions += row.dco > 0 ? 1 : 0;
+      buckets.set(key, bucket);
+    }
+    const summary = [...buckets.values()]
+      .sort((a, b) => (a.volume_per_trolley === "1.5+" ? 1 : b.volume_per_trolley === "1.5+" ? -1 : parseFloat(a.volume_per_trolley) - parseFloat(b.volume_per_trolley)))
+      .map((bucket) => ({
+        ...bucket,
+        shelves_per_trolley: Math.round((bucket.shelves / bucket.trolleys) * 100) / 100,
+        trolleys_with_extension_pct: Math.round((bucket.extension_trolleys / bucket.trolleys) * 100),
+      }));
+
+    if (url.searchParams.get("format") === "csv") {
+      const columns = Object.keys(rows[0] || { date: "" });
+      const csvValue = (value) => (value === null || value === undefined ? "" : /[",;\n]/.test(String(value)) ? `"${String(value).replace(/"/g, '""')}"` : String(value));
+      const body = [columns.join(";"), ...rows.map((row) => columns.map((column) => csvValue(row[column])).join(";"))].join("\r\n");
+      res.writeHead(200, { "content-type": "text/csv; charset=utf-8", "content-disposition": `attachment; filename="volume-study-${dates[0] || ""}-${dates[dates.length - 1] || ""}.csv"` });
+      res.end(`\ufeff${body}`);
+      return;
+    }
+    sendJson(res, 200, { dates, references: rows.length, errors, summary, rows });
+    return;
+  }
+
   if (url.pathname === "/api/shelf-count/monitor" && req.method === "GET") {
     if (!requirePermission(res, requestUser, PERMISSIONS.SHELF_COUNT_VIEW)) {
       return;
