@@ -8125,6 +8125,24 @@ function ShelfCountPage() {
     }
   }
 
+  // Recomputes the Fust Planning columns for this date (automatic only for
+  // the last two days).
+  async function refreshFustComparison() {
+    setRerunning(true);
+    setError("");
+    setMessage("");
+    try {
+      const result = await apiJson("/api/shelf-count/fust-shadow/run", { method: "POST", body: JSON.stringify({ date }) });
+      const summary = (result.summaries || [])[0] || {};
+      setMessage(summary.skipped ? `Fust comparison skipped: ${summary.reason}` : `Fust comparison updated for ${date}: ${summary.matched ?? 0} of ${summary.checked ?? 0} references found in Fust Planning.`);
+      await load();
+    } catch (refreshError) {
+      setError(refreshError.message);
+    } finally {
+      setRerunning(false);
+    }
+  }
+
   const run = data?.run;
   const counts = data?.counts || [];
 
@@ -8141,6 +8159,9 @@ function ShelfCountPage() {
         </label>
         <button type="button" onClick={rerunForDate} disabled={rerunning}>
           {rerunning ? "Running..." : "Re-run for this date"}
+        </button>
+        <button type="button" onClick={refreshFustComparison} disabled={rerunning}>
+          Update Fust comparison
         </button>
       </div>
 
@@ -8186,6 +8207,12 @@ function ShelfCountPage() {
         <div className="table-wrap">
           <table className="data-table">
             <thead>
+              <tr>
+                <th />
+                <th colSpan={8} style={{ textAlign: "center", background: "#e0f2fe" }}>Counted from the photos (RFID scan + shelf count)</th>
+                <th colSpan={7} style={{ textAlign: "center", background: "#fef3c7" }}>Fust Planning (expected) and difference (counted - Fust)</th>
+                <th colSpan={2} />
+              </tr>
               <tr>
                 <th>Customer reference</th><th>Trolleys</th><th>Photos</th><th>Shelves</th><th>Levels</th>
                 <th>Extensions</th><th>Per trolley (shelves / levels / ext.)</th><th>Trained model (shelves / ext.)</th><th>Confidence</th>

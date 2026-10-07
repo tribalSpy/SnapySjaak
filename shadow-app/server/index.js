@@ -48,6 +48,7 @@ import {
   getActiveLlmJobsByType,
   compactFinishedLlmJobs,
   getShelfCountNightlyRun,
+  setShelfCountExpectations,
   getRunningShelfCountNightlyRuns,
   getShelfCountsForDate,
   getShelfCountsInRange,
@@ -9154,23 +9155,14 @@ async function applyFustShadowForDate(date) {
     const expected = sumExpected(groupCodes, fustShadowExpectedValue);
     const extensionExpected = sumExpected(groupCodes, fustShadowExtensionExpectedValue);
     const trolleysExpected = sumExpected(groupCodes, fustShadowTrolleyExpectedValue);
-    if (expected === null && extensionExpected === null && trolleysExpected === null) {
-      continue;
-    }
     const shelfCount = finiteNumberOrNull(shelfRow.shelf_count);
     const deviation = expected === null || shelfCount === null ? null : shelfCount - expected;
     const extensionCount = finiteNumberOrNull(shelfRow.extension_count);
     const extensionDeviation = extensionExpected === null || extensionCount === null
       ? null
       : extensionCount - extensionExpected;
-    // status/error_text passed through explicitly -- upsertShelfCountRow
-    // overwrites both unconditionally rather than coalescing, unlike the
-    // count/confidence columns this call actually intends to change.
-    await upsertShelfCountRow({
-      customer_reference: shelfRow.customer_reference,
-      nightly_run_date: date,
-      status: shelfRow.status,
-      error_text: shelfRow.error_text,
+    // Exactly what Fust has now: a missing Fust value clears the stored one.
+    await setShelfCountExpectations(shelfRow.customer_reference, date, {
       expected_average: expected,
       deviation,
       extension_expected: extensionExpected,

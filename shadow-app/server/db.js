@@ -484,6 +484,33 @@ export async function upsertShelfCountRow(row) {
   return result.rows?.[0] || null;
 }
 
+// Writes the Fust Planning expectations exactly as given -- a value Fust
+// doesn't have (null) is cleared, not kept. upsertShelfCountRow COALESCEs,
+// which left an old value standing (confirmed: "Fust shelves" kept showing
+// the trolley count from before the DC/DCS fix when DCS was empty).
+export async function setShelfCountExpectations(customerReference, date, values) {
+  if (!pool || !customerReference || !date) {
+    return;
+  }
+  await pool.query(
+    `
+      UPDATE shelf_counts
+      SET expected_average = $3, deviation = $4, extension_expected = $5, extension_deviation = $6,
+          expected_trolleys = $7, updated_at = now()
+      WHERE customer_reference = $1 AND nightly_run_date = $2::date
+    `,
+    [
+      customerReference,
+      date,
+      numberOrNull(values.expected_average),
+      numberOrNull(values.deviation),
+      numberOrNull(values.extension_expected),
+      numberOrNull(values.extension_deviation),
+      numberOrNull(values.expected_trolleys),
+    ],
+  );
+}
+
 export async function getShelfCountsForDate(date) {
   if (!pool || !date) {
     return [];
