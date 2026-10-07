@@ -18282,7 +18282,8 @@ async function handleApi(req, res, url) {
         const dcActual = fustApiMetricValue(fustRow, "DC-Actual");
         if (!hal || !dcActual) continue;
         const dcs = fustApiMetricValue(fustRow, "DCS");
-        const dco = fustApiMetricValue(fustRow, "DCO");
+        // An empty DCO on a filled-in row (DCS present) means no extensions.
+        const dco = fustApiMetricValue(fustRow, "DCO") ?? (dcs === null ? null : 0);
         const shelf = shelfByCode.get(code);
         rows.push({
           date,
