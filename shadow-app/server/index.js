@@ -15831,6 +15831,74 @@ async function runUkdocsPrintAutoSend() {
   return { ok: errors.length === 0, checked: eligible.length, sent, errors };
 }
 
+// Minimal .zip writer (stored, no compression) -- enough for a handful of
+// small text files, without adding a dependency.
+const ZIP_CRC_TABLE = (() => {
+  const table = new Uint32Array(256);
+  for (let n = 0; n < 256; n += 1) {
+    let c = n;
+    for (let k = 0; k < 8; k += 1) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1;
+    table[n] = c >>> 0;
+  }
+  return table;
+})();
+
+function zipCrc32(buffer) {
+  let crc = 0xffffffff;
+  for (const byte of buffer) crc = ZIP_CRC_TABLE[(crc ^ byte) & 0xff] ^ (crc >>> 8);
+  return (crc ^ 0xffffffff) >>> 0;
+}
+
+function buildZipBuffer(entries) {
+  const now = new Date();
+  const dosTime = (now.getHours() << 11) | (now.getMinutes() << 5) | Math.floor(now.getSeconds() / 2);
+  const dosDate = ((now.getFullYear() - 1980) << 9) | ((now.getMonth() + 1) << 5) | now.getDate();
+  const locals = [];
+  const centrals = [];
+  let offset = 0;
+  for (const entry of entries) {
+    const name = Buffer.from(entry.name, "utf8");
+    const data = entry.data;
+    const crc = zipCrc32(data);
+    const local = Buffer.alloc(30);
+    local.writeUInt32LE(0x04034b50, 0);
+    local.writeUInt16LE(20, 4);
+    local.writeUInt16LE(0x0800, 6); // UTF-8 names
+    local.writeUInt16LE(0, 8); // stored
+    local.writeUInt16LE(dosTime, 10);
+    local.writeUInt16LE(dosDate, 12);
+    local.writeUInt32LE(crc, 14);
+    local.writeUInt32LE(data.length, 18);
+    local.writeUInt32LE(data.length, 22);
+    local.writeUInt16LE(name.length, 26);
+    local.writeUInt16LE(0, 28);
+    const central = Buffer.alloc(46);
+    central.writeUInt32LE(0x02014b50, 0);
+    central.writeUInt16LE(20, 4);
+    central.writeUInt16LE(20, 6);
+    central.writeUInt16LE(0x0800, 8);
+    central.writeUInt16LE(0, 10);
+    central.writeUInt16LE(dosTime, 12);
+    central.writeUInt16LE(dosDate, 14);
+    central.writeUInt32LE(crc, 16);
+    central.writeUInt32LE(data.length, 20);
+    central.writeUInt32LE(data.length, 24);
+    central.writeUInt16LE(name.length, 28);
+    central.writeUInt32LE(offset, 42);
+    locals.push(local, name, data);
+    centrals.push(central, name);
+    offset += local.length + name.length + data.length;
+  }
+  const centralSize = centrals.reduce((sum, part) => sum + part.length, 0);
+  const end = Buffer.alloc(22);
+  end.writeUInt32LE(0x06054b50, 0);
+  end.writeUInt16LE(entries.length, 8);
+  end.writeUInt16LE(entries.length, 10);
+  end.writeUInt32LE(centralSize, 12);
+  end.writeUInt32LE(offset, 16);
+  return Buffer.concat([...locals, ...centrals, end]);
+}
+
 // Set once the background jobs start (see the serialized job chain below):
 // runs the CSI send queue right away instead of on its next tick. Called when
 // something it waits on lands -- an invoice PDF or a finished CSI audit.
@@ -20552,6 +20620,73 @@ async function handleApi(req, res, url) {
       return;
     }
     sendJson(res, 200, { exports: await getKingExports() });
+    return;
+  }
+
+  // The King poller as a ready-to-install zip for the PC that reaches King:
+  // the poller, its installer (install.bat asks only for the King folders)
+  // and config.defaults.json with this server's address and the poller key
+  // already in -- so nobody has to edit config files.
+  if (url.pathname === "/api/inkoop/king/poller-download" && req.method === "GET") {
+    if (!requirePermission(res, requestUser, PERMISSIONS.INKOOP_VIEW)) {
+      return;
+    }
+    if (!llmPollerEnabled()) {
+      sendJson(res, 503, { error: "SHADOW_LLM_POLLER_API_KEY is not configured on the server" });
+      return;
+    }
+    const sourceDir = [path.join(repoRoot, "king-poller-app"), path.join(process.cwd(), "king-poller-app")].find((dir) => existsSync(path.join(dir, "poller.py")));
+    if (!sourceDir) {
+      sendJson(res, 500, { error: "king-poller-app is not part of this deployment" });
+      return;
+    }
+    const proto = String(req.headers["x-forwarded-proto"] || "http").split(",")[0].trim();
+    const host = String(req.headers["x-forwarded-host"] || req.headers.host || "").split(",")[0].trim();
+    const entries = [];
+    for (const name of ["install.bat", "install.ps1", "poller.py", "README.md"]) {
+      let data = await fs.readFile(path.join(sourceDir, name));
+      if (/\.(bat|ps1)$/i.test(name)) {
+        // Windows scripts need CRLF, whatever git checked them out with.
+        data = Buffer.from(data.toString("utf8").replace(/\r?\n/g, "\r\n"), "utf8");
+      }
+      entries.push({ name: `KingPoller/${name}`, data });
+    }
+    entries.push({
+      name: "KingPoller/config.defaults.json",
+      data: Buffer.from(`${JSON.stringify({ server_url: `${proto}://${host}`, api_key: llmPollerApiKey }, null, 2)}\n`, "utf8"),
+    });
+    res.writeHead(200, {
+      "content-type": "application/zip",
+      "content-disposition": 'attachment; filename="KingPoller.zip"',
+      "cache-control": "no-store",
+    });
+    res.end(buildZipBuffer(entries));
+    return;
+  }
+
+  // Which King pollers are connected (for the tab): last heartbeat per PC and
+  // the PDF folder as King sees it, as entered in the installer.
+  if (url.pathname === "/api/inkoop/king/poller-status" && req.method === "GET") {
+    if (!requirePermission(res, requestUser, PERMISSIONS.INKOOP_VIEW)) {
+      return;
+    }
+    const snapshot = isDatabaseEnabled() ? await getLlmQueueSnapshot() : { agents: [] };
+    const pollers = (snapshot.agents || [])
+      .filter((agent) => (Array.isArray(agent.capabilities) ? agent.capabilities : []).includes("king_export"))
+      .map((agent) => {
+        const seen = agent.last_seen_at || agent.updated_at;
+        const minutes = seen ? Math.round((Date.now() - new Date(seen).getTime()) / 60000) : null;
+        return {
+          agent_name: agent.agent_name,
+          pc_name: agent.pc_name,
+          version: agent.version,
+          last_seen_minutes: minutes,
+          online: minutes !== null && minutes <= 3,
+          import_dir: agent.meta?.import_dir || "",
+          king_pdf_dir: agent.meta?.king_pdf_dir || "",
+        };
+      });
+    sendJson(res, 200, { pollers });
     return;
   }
 

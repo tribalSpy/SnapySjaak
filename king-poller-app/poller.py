@@ -29,6 +29,9 @@ from pathlib import Path
 APP_DIR = Path(__file__).resolve().parent
 CONFIG_PATH = APP_DIR / "config.json"
 EXAMPLE_CONFIG_PATH = APP_DIR / "config.example.json"
+# Written into the download from the app (server_url + api_key), so the
+# installer only has to ask for the folders. config.json wins over it.
+DEFAULTS_CONFIG_PATH = APP_DIR / "config.defaults.json"
 
 JOB_TYPES = ["king_export"]
 
@@ -36,7 +39,7 @@ JOB_TYPES = ["king_export"]
 def load_json(path: Path):
     if not path.exists():
         return {}
-    return json.loads(path.read_text(encoding="utf-8"))
+    return json.loads(path.read_text(encoding="utf-8-sig"))
 
 
 def env_or_config(env_name: str, config: dict, key: str, default=""):
@@ -47,7 +50,10 @@ def env_or_config(env_name: str, config: dict, key: str, default=""):
 
 
 def load_config():
-    config = load_json(CONFIG_PATH) if CONFIG_PATH.exists() else load_json(EXAMPLE_CONFIG_PATH)
+    if CONFIG_PATH.exists() or DEFAULTS_CONFIG_PATH.exists():
+        config = {**load_json(DEFAULTS_CONFIG_PATH), **load_json(CONFIG_PATH)}
+    else:
+        config = load_json(EXAMPLE_CONFIG_PATH)
     return {
         "server_url": str(env_or_config("KING_POLLER_SERVER_URL", config, "server_url", "")).rstrip("/"),
         "api_key": str(env_or_config("KING_POLLER_API_KEY", config, "api_key", "")).strip(),
@@ -58,6 +64,9 @@ def load_config():
         "import_dir": str(env_or_config("KING_IMPORT_DIR", config, "import_dir", "")).strip(),
         "pdf_dir": str(env_or_config("KING_PDF_DIR", config, "pdf_dir", "")).strip(),
         "archive_wait_minutes": float(env_or_config("KING_ARCHIVE_WAIT_MINUTES", config, "archive_wait_minutes", 30) or 30),
+        # The PDF folder as King's server sees it (shown in the app, which
+        # offers it for the "King PDF folder" setting); empty = same as pdf_dir.
+        "king_pdf_dir": str(env_or_config("KING_PDF_DIR_FOR_KING", config, "king_pdf_dir", "")).strip(),
     }
 
 
@@ -156,6 +165,8 @@ def heartbeat_payload(config: dict, status: str):
             "python": sys.version.split()[0],
             "platform": sys.platform,
             "import_dir": config["import_dir"],
+            "pdf_dir": config["pdf_dir"],
+            "king_pdf_dir": config["king_pdf_dir"] or config["pdf_dir"],
         },
     }
 
@@ -170,7 +181,39 @@ def validate_config(config: dict):
             raise RuntimeError(f"{key} does not exist or is not reachable from this PC: {folder}")
 
 
+# `python poller.py --check`: what the installer runs -- config complete,
+# both folders writable from this PC, and the app accepts this PC (one
+# heartbeat). Prints one line per check; exit code 0 only when all pass.
+def run_check() -> int:
+    ok = True
+    try:
+        config = load_config()
+        validate_config(config)
+        print("OK   settings complete")
+    except Exception as error:
+        print(f"FAIL settings: {error}")
+        return 1
+    for key, label in [("import_dir", "King import folder"), ("pdf_dir", "PDF folder")]:
+        test_file = Path(config[key]) / f".king-poller-test-{os.getpid()}.tmp"
+        try:
+            test_file.write_text("test", encoding="utf-8")
+            test_file.unlink()
+            print(f"OK   {label} is writable: {config[key]}")
+        except Exception as error:
+            ok = False
+            print(f"FAIL {label} is not writable from this PC ({config[key]}): {error}")
+    try:
+        api_request(config, "POST", "/api/llm/agent/heartbeat", heartbeat_payload(config, "online"))
+        print(f"OK   connected to {config['server_url']}")
+    except Exception as error:
+        ok = False
+        print(f"FAIL cannot reach the app at {config['server_url']}: {error}")
+    return 0 if ok else 1
+
+
 def main():
+    if "--check" in sys.argv:
+        sys.exit(run_check())
     config = load_config()
     validate_config(config)
     print(f'King poller starting for agent {config["agent_name"]} -> {config["server_url"]}')

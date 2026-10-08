@@ -19,7 +19,16 @@ Files are written as `*.part` and renamed when complete, so King never reads a
 half-written file. The app shows each export as queued → delivered (or failed
 with the reason).
 
-## Setup (once, on an always-on office PC with access to the King folder)
+## Easiest setup: download from the app
+In the app, **Inkoop Controle > Import naar King > King poller > Download King
+poller**. Unzip it on the PC that reaches King and double-click
+**install.bat**: it installs Python if needed, asks for King's import folder,
+the PDF folder and how the King server sees that PDF folder, tests everything,
+and makes the poller start at every logon (plus a desktop shortcut). The
+server address and poller key are already in the download
+(`config.defaults.json`). Run `install.bat` again to change the folders.
+
+## Manual setup (once, on an always-on office PC with access to the King folder)
 1. Python 3 (standard library only, nothing to install).
 2. Copy `config.example.json` to `config.json` and fill in:
    - `server_url`: the shadow-app URL.

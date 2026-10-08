@@ -35,6 +35,16 @@ button:disabled {
   opacity: 0.55;
 }
 
+/* A download link that looks like the primary button. */
+a.button.primary {
+  display: inline-block;
+  padding: 8px 14px;
+  border: 1px solid #1f7a5a;
+  border-radius: 8px;
+  text-decoration: none;
+}
+
+a.button.primary,
 button.primary {
   background: #1f7a5a;
   border-color: #1f7a5a;

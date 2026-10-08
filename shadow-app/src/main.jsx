@@ -15265,6 +15265,68 @@ function InkoopKingLedgerCard({ ledger, onChanged }) {
 
 // Inkoop Controle > Import naar King: one day's FloraHolland invoices as King
 // journal posts (preview, checks) and delivery to King via king-poller-app.
+// The PC that can reach King's import folder runs the King poller. Shows
+// whether it's connected, and offers it as a download with an installer
+// (asks only for the King folders) -- so finance can set it up themselves.
+function InkoopKingPollerCard({ settings, onUsePdfDir }) {
+  const [pollers, setPollers] = useState(null);
+  const [error, setError] = useState("");
+
+  useEffect(() => {
+    let cancelled = false;
+    const load = () => apiJson("/api/inkoop/king/poller-status")
+      .then((payload) => { if (!cancelled) { setPollers(payload.pollers || []); setError(""); } })
+      .catch((loadError) => { if (!cancelled) setError(loadError.message); });
+    load();
+    const timer = setInterval(load, 30000);
+    return () => { cancelled = true; clearInterval(timer); };
+  }, []);
+
+  const online = (pollers || []).filter((poller) => poller.online);
+  return (
+    <InkoopCollapsibleCard title={`King poller -- ${online.length ? `online on ${online.map((poller) => poller.pc_name || poller.agent_name).join(", ")}` : "not connected"}`} defaultOpen={!online.length}>
+      {error && <div className="notice danger">{error}</div>}
+      {pollers && pollers.length > 0 && (
+        <div className="table-wrap">
+          <table className="data-table">
+            <thead><tr><th>PC</th><th>Status</th><th>King import folder</th><th>PDF folder as King sees it</th></tr></thead>
+            <tbody>
+              {pollers.map((poller) => (
+                <tr key={poller.agent_name}>
+                  <td>{poller.pc_name || poller.agent_name}</td>
+                  <td>
+                    <span className={`ukdocs-status-badge ${poller.online ? "success" : "muted"}`}>{poller.online ? "online" : "offline"}</span>
+                    {poller.last_seen_minutes !== null && <div className="muted">last seen {poller.last_seen_minutes} min ago</div>}
+                  </td>
+                  <td>{poller.import_dir || "-"}</td>
+                  <td>
+                    {poller.king_pdf_dir || "-"}
+                    {poller.king_pdf_dir && settings && poller.king_pdf_dir !== settings.king_pdf_dir && (
+                      <div><button type="button" onClick={() => onUsePdfDir(poller.king_pdf_dir)}>Use as King PDF folder</button></div>
+                    )}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+      <div className="notice">
+        <strong>Set up the PC that can reach King</strong> (always on, with access to King's import folder):
+        <ol>
+          <li>On that PC, open this page and click <strong>Download King poller</strong>.</li>
+          <li>Unzip <code>KingPoller.zip</code> (right-click &gt; Extract All) and double-click <strong>install.bat</strong>.</li>
+          <li>Answer the questions: King's import folder, the PDF folder, and how the King server sees that PDF folder. Python is installed automatically if needed.</li>
+        </ol>
+        The installer tests everything, starts the poller and makes it start by itself after every logon. Running it again changes the folders. The download contains the app's poller key -- keep it on that PC only.
+      </div>
+      <div className="row-actions">
+        <a className="button primary" href="/api/inkoop/king/poller-download">Download King poller</a>
+      </div>
+    </InkoopCollapsibleCard>
+  );
+}
+
 function InkoopKingTab() {
   const [date, setDate] = useState(() => todayIso());
   const [data, setData] = useState(null);
@@ -15409,6 +15471,19 @@ function InkoopKingTab() {
         </div>
       </InkoopCollapsibleCard>
 
+      <InkoopKingPollerCard
+        settings={settings}
+        onUsePdfDir={async (dir) => {
+          try {
+            const payload = await apiJson("/api/inkoop/king/settings", { method: "POST", body: JSON.stringify({ settings: { king_pdf_dir: dir } }) });
+            setSettings(payload.settings);
+            setMessage(`King PDF folder set to ${dir}.`);
+            loadDay();
+          } catch (saveError) {
+            setError(saveError.message);
+          }
+        }}
+      />
       {settings && <InkoopKingSettingsCard settings={settings} onSaved={(next) => { setSettings(next); loadDay(); }} />}
       <InkoopKingLedgerCard ledger={ledger} onChanged={(next) => { setLedger(next); loadDay(); }} />
     </>
