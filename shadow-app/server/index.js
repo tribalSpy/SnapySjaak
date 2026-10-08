@@ -7982,7 +7982,11 @@ async function buildKingPostsForDate(state, date) {
   const exportByInvoice = new Map(exports.map((row) => [row.invoice_number, row]));
   return headers.map((header) => {
     const post = buildKingJournalPost(header, linesByInvoice.get(header.invoice_number) || [], state.king_ledger_map, state.king_settings);
-    if (header.missing_header) {
+    if (/^AI2/i.test(String(header.invoice_type || ""))) {
+      // AI2 Productnota's (PDF, no XML header) aren't part of the King
+      // export yet -- re-uploading can never fix that, so say so.
+      post.problems = ["AI2 Productnota -- the King export for AI2 comes in a later step; book this one by hand for now."];
+    } else if (header.missing_header) {
       // Replaces the generic "invoice total missing" with what to do.
       post.problems = ["Uploaded before Import naar King existed -- upload this day's veiling zip again (no need to clear anything)."];
     }
