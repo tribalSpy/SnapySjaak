@@ -233,7 +233,9 @@ export const DEFAULT_KING_SETTINGS = {
   creditor_accounts: { "049876": "250051", "057390": "250050", "060708": "250055", "063155": "250052" },
   // flowers ("FL") or plants ("PL") per company -- used for product lines
   // that can't be split by product group.
-  company_ledger_column: { "049876": "FL", "057390": "FL", "060708": "FL", "063155": "PL" },
+  // AI2 (Sjaak van der Vijver B.V.'s Ai2 incasso, klant 90985) has its own
+  // creditor in King -- listed here so its field shows in the settings.
+  company_ledger_column: { "049876": "FL", "057390": "FL", "060708": "FL", "063155": "PL", "AI2-90985": "FL" },
   // "split": product amounts split over flowers (sales account 001) vs
   // plants (002/003) in proportion to the invoice's own product lines;
   // "company": always the company's column above.
@@ -255,7 +257,9 @@ export function normalizeKingSettings(source) {
     }
     return out;
   };
-  const columns = cleanMap(merged.company_ledger_column, DEFAULT_KING_SETTINGS.company_ledger_column);
+  // Defaults merged per company, so a company added later (AI2) also shows
+  // up for settings saved before it existed.
+  const columns = cleanMap({ ...DEFAULT_KING_SETTINGS.company_ledger_column, ...(merged.company_ledger_column || {}) }, DEFAULT_KING_SETTINGS.company_ledger_column);
   for (const key of Object.keys(columns)) {
     columns[key] = columns[key].toUpperCase() === "PL" ? "PL" : "FL";
   }

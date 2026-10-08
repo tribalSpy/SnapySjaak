@@ -7526,6 +7526,7 @@ function buildInkoopInvoiceHeaders(invoices, sourceFileName) {
       klok_location: normalizeUkdocsText(invoice.header.klok_location),
       klok_locations: Array.isArray(invoice.header.klok_locations) ? invoice.header.klok_locations : [],
       source_file_name: sourceFileName || invoice.file_name || "",
+      king_summary: Array.isArray(invoice.header.king_summary) ? invoice.header.king_summary : [],
     }));
 }
 
@@ -7981,11 +7982,14 @@ async function buildKingPostsForDate(state, date) {
   }
   const exportByInvoice = new Map(exports.map((row) => [row.invoice_number, row]));
   return headers.map((header) => {
-    const post = buildKingJournalPost(header, linesByInvoice.get(header.invoice_number) || [], state.king_ledger_map, state.king_settings);
-    if (/^AI2/i.test(String(header.invoice_type || ""))) {
-      // AI2 Productnota's (PDF, no XML header) aren't part of the King
-      // export yet -- re-uploading can never fix that, so say so.
-      post.problems = ["AI2 Productnota -- the King export for AI2 comes in a later step; book this one by hand for now."];
+    // AI2 notas book from their own summary (Dagnota XML, see the worker's
+    // ai2_king_summary) -- their stored lines are the PDF's product lines.
+    const kingSummary = Array.isArray(header.king_summary) ? header.king_summary : [];
+    const post = buildKingJournalPost(header, kingSummary.length ? kingSummary : (linesByInvoice.get(header.invoice_number) || []), state.king_ledger_map, state.king_settings);
+    if (/^AI2/i.test(String(header.invoice_type || "")) && !kingSummary.length) {
+      // Uploaded before the AI2 export existed, or the email had no
+      // Dagnota XML.
+      post.problems = ["AI2 nota without its Dagnota XML -- upload this day's veiling zip again (the AI2 email must still contain the Dagnota zip)."];
     } else if (header.missing_header) {
       // Replaces the generic "invoice total missing" with what to do.
       post.problems = ["Uploaded before Import naar King existed -- upload this day's veiling zip again (no need to clear anything)."];

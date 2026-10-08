@@ -681,9 +681,9 @@ export async function saveInkoopInvoiceHeaders(headers) {
       `
         INSERT INTO inkoop_invoice_headers (
           invoice_number, invoice_type, company_number, company_name, invoice_date, grand_total, currency,
-          vat_subtotals, klok_location, klok_locations, source_file_name
+          vat_subtotals, klok_location, klok_locations, source_file_name, king_summary
         )
-        VALUES ($1, $2, $3, $4, $5::date, $6, $7, $8::jsonb, $9, $10::jsonb, $11)
+        VALUES ($1, $2, $3, $4, $5::date, $6, $7, $8::jsonb, $9, $10::jsonb, $11, $12::jsonb)
         ON CONFLICT (invoice_number) DO UPDATE SET
           invoice_type = EXCLUDED.invoice_type,
           company_number = EXCLUDED.company_number,
@@ -695,6 +695,7 @@ export async function saveInkoopInvoiceHeaders(headers) {
           klok_location = EXCLUDED.klok_location,
           klok_locations = EXCLUDED.klok_locations,
           source_file_name = EXCLUDED.source_file_name,
+          king_summary = EXCLUDED.king_summary,
           updated_at = now()
       `,
       [
@@ -709,6 +710,7 @@ export async function saveInkoopInvoiceHeaders(headers) {
         header.klok_location || "",
         JSON.stringify(Array.isArray(header.klok_locations) ? header.klok_locations : []),
         header.source_file_name || "",
+        JSON.stringify(Array.isArray(header.king_summary) ? header.king_summary : []),
       ],
     );
   }
@@ -722,7 +724,7 @@ export async function getInkoopInvoiceHeaders({ from, to } = {}) {
     `
       SELECT invoice_number, invoice_type, company_number, company_name,
         to_char(invoice_date, 'YYYY-MM-DD') AS invoice_date, grand_total::float AS grand_total, currency,
-        vat_subtotals, klok_location, klok_locations, source_file_name
+        vat_subtotals, klok_location, klok_locations, source_file_name, king_summary
       FROM inkoop_invoice_headers
       WHERE invoice_date >= $1::date AND invoice_date <= $2::date
       ORDER BY company_number, invoice_number
@@ -745,7 +747,7 @@ export async function getInkoopInvoicesByLineDate(date) {
         MIN(l.company_name) AS company_name,
         h.invoice_number IS NOT NULL AS has_header,
         to_char(h.invoice_date, 'YYYY-MM-DD') AS invoice_date, h.grand_total::float AS grand_total, h.currency,
-        h.vat_subtotals, h.klok_location, h.klok_locations, h.source_file_name, h.company_name AS header_company_name
+        h.vat_subtotals, h.klok_location, h.klok_locations, h.source_file_name, h.king_summary, h.company_name AS header_company_name
       FROM inkoop_invoice_lines l
       LEFT JOIN inkoop_invoice_headers h ON h.invoice_number = l.invoice_number
       WHERE l.invoice_date = $1::date AND l.invoice_number <> ''
@@ -2178,6 +2180,11 @@ const databaseMigrations = [
   `,
   `
     CREATE INDEX IF NOT EXISTS inkoop_invoice_headers_date_idx ON inkoop_invoice_headers (invoice_date)
+  `,
+  // Booking lines for invoices without per-product summary lines in the
+  // stored invoice lines -- AI2 notas (from their Dagnota XML).
+  `
+    ALTER TABLE inkoop_invoice_headers ADD COLUMN IF NOT EXISTS king_summary jsonb NOT NULL DEFAULT '[]'::jsonb
   `,
   // What has been sent to King, per invoice -- the single source of truth
   // that keeps an invoice from being booked twice. Deliberately NOT cleared

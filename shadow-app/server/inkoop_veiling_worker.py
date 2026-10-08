@@ -562,6 +562,64 @@ def parse_ai2_row(row_words, year, is_credit):
 # placeholder-PAV bug is fixed (see matchInkoopVeilingLines). Genuine
 # selectable text, parsed positionally with pdfplumber since the PDF has no
 # ruling lines for pdfplumber's own table-detection to key off.
+# The AI2 Dagnota XML (zipped in the same email as the Productnota PDF) is
+# Florecom CII like FloraHolland's invoices, so parse_invoice_header reads its
+# total and BTW as is. For King, its detail lines (trigger 1) are summed into
+# the kingkoppel keys: products (type 57) -> AI2 per BTW category, emballage
+# (type 67) -> AI2_PC huur / AI2_PE eenmalig / AI2_CT statiegeld (BTW 0).
+# Same shape as an XML invoice's summary lines (trigger 0), so the King
+# builder books them the same way. XML BTW category Z (0%) is kingkoppel "O".
+def ai2_king_summary(xml_bytes):
+    root = ET.fromstring(xml_bytes)
+    totals = {}
+    for item in root.iter():
+        if local_tag(item.tag) != "InvoiceTradeLineItem":
+            continue
+        if direct_path_text(item, "AccountSalesAccountingAccount", "SetTriggerCode") != "1":
+            continue
+        type_code = direct_path_text(item, "Product", "TypeCode")
+        description = direct_path_text(item, "Product", "DescriptionText").lower()
+        vat = direct_path_text(item, "TotalCalculatedTax", "CategoryCode").upper() or "O"
+        vat = "O" if vat in ("Z", "E") else vat
+        amount = None
+        for tag in ("ActualBillingMonetarySummation", "SpecifiedBilledDelivery"):
+            node = direct_child(item, tag)
+            if node is None:
+                continue
+            for child in node.iter():
+                if local_tag(child.tag) in ("GrandTotalAmount", "LineTotalAmount", "ChargeAmount") and child.text:
+                    amount = float(child.text)
+                    break
+            if amount is not None:
+                break
+        if amount is None:
+            continue
+        if type_code == "57":
+            key = "AI2"
+        elif "huur" in description:
+            key, vat = "AI2_PC", vat if vat != "O" else "H"
+        elif "eenmalig" in description:
+            key, vat = "AI2_PE", vat if vat != "O" else "S"
+        elif vat == "O" or "statiegeld" in description:
+            key, vat = "AI2_CT", "O"
+        else:
+            key = "AI2_PC" if vat == "H" else "AI2_PE"
+        totals[(key, vat)] = totals.get((key, vat), 0.0) + amount
+    labels = {"AI2": "Product aankopen AI2", "AI2_CT": "Emballage statiegeld AI2", "AI2_PC": "Emballage huur AI2", "AI2_PE": "Emballage eenmalig AI2"}
+    return [
+        {
+            "trigger_code": "0",
+            "prd_id": key,
+            "vat_category": vat,
+            "total": round(amount, 2),
+            "description": labels[key],
+            "product_type_code": "57" if key == "AI2" else "67",
+        }
+        for (key, vat), amount in sorted(totals.items())
+        if round(amount, 2) != 0
+    ]
+
+
 def parse_ai2_productnota(pdf_bytes):
     with pdfplumber.open(io.BytesIO(pdf_bytes)) as pdf:
         first_page_text = pdf.pages[0].extract_text() or ""
@@ -926,6 +984,16 @@ def parse_veiling(input_path: Path):
                     continue
                 invoice_number = f"AI2-{parsed['klantnummer']}-{parsed['notanummer'] or msg_path.stem}"
                 pdfs[invoice_number] = base64.b64encode(pdf_bytes).decode("ascii")
+                # King export: total/BTW and the booking lines from the
+                # Dagnota XML in the same email (absent = not exportable).
+                ai2_header = None
+                ai2_xml = find_xml_bytes(msg)
+                if ai2_xml:
+                    try:
+                        ai2_header = parse_invoice_header(ai2_xml)
+                        ai2_header["king_summary"] = ai2_king_summary(ai2_xml)
+                    except Exception:  # noqa: BLE001 -- the compare still works without it
+                        ai2_header = None
                 invoices.append({
                     "file_name": msg_path.name,
                     "type": kind,
@@ -934,6 +1002,7 @@ def parse_veiling(input_path: Path):
                     "subject": subject,
                     "company_name_override": parsed["klantnaam"],
                     "lines": parsed["lines"],
+                    "header": ai2_header,
                 })
                 continue
 
