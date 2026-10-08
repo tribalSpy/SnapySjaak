@@ -6,6 +6,8 @@ import crypto from "node:crypto";
 import { spawn, execSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import zlib from "node:zlib";
+import readline from "node:readline";
+import { Readable } from "node:stream";
 import { sealBuffer, openSealed } from "./backup/crypto.js";
 import {
   buildKingArchiefXml,
@@ -176,6 +178,29 @@ function requireBackupAgentAuth(req, res) {
     return false;
   }
   return true;
+}
+
+// The database snapshot (see exportDatabaseSnapshot), gzipped as it's
+// produced -- only the compressed bytes are ever held in memory.
+const backupDumpAttemptPath = path.join(cacheDir, "backup-dump-attempt.json");
+
+async function buildCompressedDatabaseSnapshot() {
+  const gzip = zlib.createGzip();
+  const chunks = [];
+  gzip.on("data", (chunk) => chunks.push(chunk));
+  const finished = new Promise((resolve, reject) => {
+    gzip.on("end", resolve);
+    gzip.on("error", reject);
+  });
+  await exportDatabaseSnapshot((line) => (gzip.write(`${line}\n`) ? undefined : new Promise((resolve) => gzip.once("drain", resolve))));
+  gzip.end();
+  await finished;
+  return Buffer.concat(chunks);
+}
+
+// The snapshot's lines, unzipped and read one at a time.
+function readCompressedSnapshotLines(compressed) {
+  return readline.createInterface({ input: Readable.from([compressed]).pipe(zlib.createGunzip()), crlfDelay: Infinity });
 }
 
 // --- Office-PC side: pulls a verified, encrypted copy of Render's state while
@@ -450,14 +475,15 @@ async function runPostgresRestoreCycle() {
     postgresRestoreNeedsForce = true;
     const sealed = Buffer.from(await response.arrayBuffer());
     const compressed = openSealed(sealed, backupPrivateKey);
-    const dumpBuffer = zlib.gunzipSync(compressed);
+    // Peek at the start: pg_dump's custom format (older Render code) or our
+    // JSON snapshot.
+    const head = zlib.gunzipSync(compressed.subarray(0, 64 * 1024), { finishFlush: zlib.constants.Z_SYNC_FLUSH });
     let loaded = null;
-    if (dumpBuffer.subarray(0, 5).toString("latin1") === "PGDMP") {
-      // pg_dump custom format (older Render code)
-      await fs.writeFile(tmpDumpPath, dumpBuffer);
+    if (head.subarray(0, 5).toString("latin1") === "PGDMP") {
+      await fs.writeFile(tmpDumpPath, zlib.gunzipSync(compressed));
       await restorePostgresDumpFile(tmpDumpPath);
     } else {
-      loaded = await importDatabaseSnapshot(dumpBuffer);
+      loaded = await importDatabaseSnapshot(readCompressedSnapshotLines(compressed));
     }
     lastPostgresRestoreAt = Date.now();
     postgresRestoreNeedsForce = false;
@@ -17031,6 +17057,11 @@ async function handleApi(req, res, url) {
     }
     const forced = url.searchParams.get("force") === "1";
     const minIntervalMs = pgDumpMinIntervalMinutes * 60 * 1000;
+    // Persisted, not just in memory: when a dump crashed Render (out of
+    // memory, Oct 2026) the restart forgot the last attempt, and the standby
+    // set it off again 15 minutes later -- a crash loop.
+    const lastAttempt = await readJsonFile(backupDumpAttemptPath, {});
+    lastPostgresDumpAt = Math.max(lastPostgresDumpAt, Date.parse(lastAttempt.started_at || "") || 0);
     if (!forced && Date.now() - lastPostgresDumpAt < minIntervalMs) {
       sendJson(res, 429, { error: `Postgres dump was already taken recently; wait ${pgDumpMinIntervalMinutes} minutes between dumps (use ?force=1 to override).` });
       return;
@@ -17038,8 +17069,9 @@ async function handleApi(req, res, url) {
     try {
       // A JSON snapshot instead of pg_dump: Render's pg_dump (15) refuses
       // its newer Postgres (18) -- see exportDatabaseSnapshot.
-      const dumpBuffer = zlib.gzipSync(await exportDatabaseSnapshot());
       lastPostgresDumpAt = Date.now();
+      await writeJsonFile(backupDumpAttemptPath, { started_at: new Date(lastPostgresDumpAt).toISOString() });
+      const dumpBuffer = await buildCompressedDatabaseSnapshot();
       const sealed = sealBuffer(dumpBuffer, backupPublicKey);
       res.writeHead(200, { "content-type": "application/octet-stream", "cache-control": "no-store" });
       res.end(sealed);

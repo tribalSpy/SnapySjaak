@@ -2373,26 +2373,38 @@ async function listPublicTablesParentsFirst(client) {
 }
 
 // Newline-delimited JSON: a header line, then per table a {"table"} line
-// followed by one line per row.
-export async function exportDatabaseSnapshot() {
+// followed by one line per row -- handed line by line to `writeLine` (which
+// may return a promise, for backpressure), never built up as one string: the
+// whole database as one string ran Render out of memory (Oct 2026).
+// Finished LLM jobs go without their payload/result (photos, PDFs, model
+// output): a standby never re-runs those, and they're most of the size.
+const SNAPSHOT_FETCH_ROWS = 200;
+
+function snapshotRowSelect(table) {
+  if (table === "llm_jobs") {
+    return `SELECT (to_jsonb(t) || CASE WHEN t.finished_at IS NOT NULL THEN '{"payload_json":{},"result_json":{}}'::jsonb ELSE '{}'::jsonb END)::text AS row FROM llm_jobs t`;
+  }
+  return `SELECT to_jsonb(t)::text AS row FROM ${quoteIdent(table)} t`;
+}
+
+export async function exportDatabaseSnapshot(writeLine) {
   if (!pool) {
     throw new Error("Database is not initialized");
   }
   const client = await pool.connect();
-  const lines = [];
   try {
     // One consistent point in time across all tables.
     await client.query("BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY");
     const tables = await listPublicTablesParentsFirst(client);
-    lines.push(JSON.stringify({ format: "snappysjaak-db-snapshot", version: 1, created_at: new Date().toISOString(), tables }));
+    await writeLine(JSON.stringify({ format: "snappysjaak-db-snapshot", version: 1, created_at: new Date().toISOString(), tables }));
     for (const table of tables) {
-      lines.push(JSON.stringify({ table }));
-      for (let offset = 0; ; offset += 2000) {
-        const { rows } = await client.query(
-          `SELECT to_jsonb(t)::text AS row FROM ${quoteIdent(table)} t ORDER BY ctid LIMIT 2000 OFFSET ${offset}`,
-        );
-        for (const row of rows) lines.push(row.row);
-        if (rows.length < 2000) break;
+      await writeLine(JSON.stringify({ table }));
+      for (let offset = 0; ; offset += SNAPSHOT_FETCH_ROWS) {
+        const { rows } = await client.query(`${snapshotRowSelect(table)} ORDER BY ctid LIMIT ${SNAPSHOT_FETCH_ROWS} OFFSET ${offset}`);
+        for (const row of rows) {
+          await writeLine(row.row);
+        }
+        if (rows.length < SNAPSHOT_FETCH_ROWS) break;
       }
     }
     await client.query("COMMIT");
@@ -2402,17 +2414,20 @@ export async function exportDatabaseSnapshot() {
   } finally {
     client.release();
   }
-  return Buffer.from(`${lines.join("\n")}\n`, "utf8");
 }
 
 // Replaces the local tables' contents with the snapshot, all in one
 // transaction: either everything is the new copy or nothing changed.
-export async function importDatabaseSnapshot(buffer) {
+// `lines` is an (async) iterable of the snapshot's lines, read one at a time
+// so the whole copy never sits in memory as one string either.
+export async function importDatabaseSnapshot(lines) {
   if (!pool) {
     throw new Error("Database is not initialized");
   }
-  const lines = buffer.toString("utf8").split("\n").filter(Boolean);
-  const header = JSON.parse(lines[0] || "{}");
+  const iterator = lines[Symbol.asyncIterator] ? lines[Symbol.asyncIterator]() : lines[Symbol.iterator]();
+  let first = await iterator.next();
+  while (!first.done && !String(first.value).trim()) first = await iterator.next();
+  const header = JSON.parse(first.done ? "{}" : first.value);
   if (header.format !== "snappysjaak-db-snapshot") {
     throw new Error("Not a SnappySjaak database snapshot");
   }
@@ -2450,7 +2465,9 @@ export async function importDatabaseSnapshot(buffer) {
       batch = [];
       batchBytes = 0;
     };
-    for (const line of lines.slice(1)) {
+    for (let next = await iterator.next(); !next.done; next = await iterator.next()) {
+      const line = next.value;
+      if (!line || !String(line).trim()) continue;
       const parsed = JSON.parse(line);
       if (parsed && typeof parsed.table === "string" && Object.keys(parsed).length === 1) {
         await flush();
