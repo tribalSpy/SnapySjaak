@@ -3038,6 +3038,24 @@ function ukdocsCsiInvoicesReady(collection) {
   return countUkdocsGeneratedInvoiceGroups(collection?.documents?.generated_files) >= invoiceExpected;
 }
 
+// Under a "Queued for CSI" button: what the automatic send is still waiting
+// for (the server checks every 2 minutes and as soon as a PDF or CSI result
+// comes in).
+function ukdocsCsiQueueWaitingText(collection) {
+  if (!collection?.csi_send_queue?.queued) {
+    return "";
+  }
+  if (!collection.csi_check_passed) {
+    return "Waiting for a passing CSI audit";
+  }
+  const invoiceExpected = ukdocsPrintSplitTokens(collection?.invoice_numbers).length;
+  const invoiceReady = countUkdocsGeneratedInvoiceGroups(collection?.documents?.generated_files);
+  if (invoiceExpected > 0 && invoiceReady < invoiceExpected) {
+    return `Waiting for invoice PDFs ${invoiceReady}/${invoiceExpected}`;
+  }
+  return "Ready -- sends within 2 minutes (or click to send now)";
+}
+
 function isPdfUkdocsDocument(document) {
   const fileName = String(document?.original_name || document?.storage_name || "").trim().toLowerCase();
   const mimeType = String(document?.mime_type || "").trim().toLowerCase();
@@ -7208,6 +7226,7 @@ function UkdocsCSIPage({ currentUser }) {
                       {collection.csi_send_queue?.queued ? "Queued for CSI" : "Send papers to CSI"}
                     </button>
                   </div>
+                  {collection.csi_send_queue?.queued && <small className="muted">{ukdocsCsiQueueWaitingText(collection)}</small>}
                 </div>
               );
             })}
@@ -7352,6 +7371,7 @@ function UkdocsCSIPage({ currentUser }) {
                 >
                   {selectedCsiSendQueue.queued ? "Queued for CSI" : "Send papers to CSI"}
                 </button>
+                {selectedCsiSendQueue.queued && <small className="muted">{ukdocsCsiQueueWaitingText(selectedCollection)}</small>}
                 {selectedCsiDisplayReport.status === "done" && selectedCsiDisplayReport.overall_status !== "pass" && (
                   <button
                     type="button"

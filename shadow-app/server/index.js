@@ -15831,6 +15831,11 @@ async function runUkdocsPrintAutoSend() {
   return { ok: errors.length === 0, checked: eligible.length, sent, errors };
 }
 
+// Set once the background jobs start (see the serialized job chain below):
+// runs the CSI send queue right away instead of on its next tick. Called when
+// something it waits on lands -- an invoice PDF or a finished CSI audit.
+let kickUkdocsCsiSendQueue = () => {};
+
 // Fires the CSI-papers send for any collection queued via the "Send papers to
 // CSI" button before its invoice PDFs had finished generating (see the
 // /csi/send route) -- same eligibility the button already required (CSI
@@ -15840,7 +15845,7 @@ async function runUkdocsCsiSendQueue() {
   const state = await readUkdocsState();
   const queued = state.print_collections.filter((item) => item.csi_send_queue?.queued === true);
   if (!queued.length) {
-    return { ok: true, checked: 0, sent: 0, errors: [] };
+    return null; // nothing queued -- no log line every 2 minutes
   }
 
   const settings = await readFustSettings();
@@ -16859,6 +16864,7 @@ async function handleApi(req, res, url) {
     }
     if (job.job_type === "excel_to_pdf" && job.collection_id) {
       await saveUkdocsGeneratedInvoicePdfResult(job);
+      kickUkdocsCsiSendQueue();
     }
     if (job.job_type === "king_export" && job.payload_json?.batch_id) {
       await updateKingExportBatchStatus(job.payload_json.batch_id, "delivered");
@@ -16900,6 +16906,7 @@ async function handleApi(req, res, url) {
         sent_at: "",
         error: "",
       });
+      kickUkdocsCsiSendQueue();
     }
     if (job.job_type === "shelf_count" && job.payload_json?.customer_reference) {
       const parsed = parseShelfCountJobResult(job);
@@ -22367,11 +22374,25 @@ async function startServer() {
   // unsent and causing it to be re-sent indefinitely. Funneling all four
   // through one promise chain means only one is ever mid-read-modify-write
   // at a time, which removes the race instead of just reacting to it.
+  //
+  // A job that never finishes (e.g. a Google request that hangs) used to
+  // hold the chain forever: every later run of every job in it queued up
+  // behind it until the next restart -- a queued "Send papers to CSI" then
+  // simply never went out. The chain now moves on after
+  // UKDOCS_JOB_CHAIN_TIMEOUT_MS; the hung job itself is logged.
+  const UKDOCS_JOB_CHAIN_TIMEOUT_MS = 10 * 60 * 1000;
   let ukdocsPrintCollectionsJobLock = Promise.resolve();
   function serializeUkdocsPrintCollectionsJob(jobFn) {
     return () => {
       const runPromise = ukdocsPrintCollectionsJobLock.then(() => jobFn());
-      ukdocsPrintCollectionsJobLock = runPromise.catch(() => {});
+      let timer = null;
+      const timeout = new Promise((resolve) => {
+        timer = setTimeout(() => {
+          console.error(`UKdocs background job ${jobFn.name || "(unnamed)"} still running after ${UKDOCS_JOB_CHAIN_TIMEOUT_MS / 60000} min -- letting the next jobs go ahead.`);
+          resolve();
+        }, UKDOCS_JOB_CHAIN_TIMEOUT_MS);
+      });
+      ukdocsPrintCollectionsJobLock = Promise.race([runPromise.catch(() => {}), timeout]).finally(() => clearTimeout(timer));
       return runPromise;
     };
   }
@@ -22398,10 +22419,13 @@ async function startServer() {
     runIfOnline("PD Keuring sheet reconcile", serializedPdKeuringReconcile).catch(() => {});
   }, 15 * 60 * 1000);
 
-  runIfOnline("UKdocs CSI send queue", serializedCsiSendQueue).catch(() => {});
-  setInterval(() => {
+  // Every 2 minutes (it does nothing when nothing is queued), and right away
+  // whenever an invoice PDF or a CSI audit result comes in.
+  kickUkdocsCsiSendQueue = () => {
     runIfOnline("UKdocs CSI send queue", serializedCsiSendQueue).catch(() => {});
-  }, 15 * 60 * 1000);
+  };
+  kickUkdocsCsiSendQueue();
+  setInterval(kickUkdocsCsiSendQueue, 2 * 60 * 1000);
 
   runIfOnline("Eric Docs send queue", serializedEricDocsSendQueue).catch(() => {});
   setInterval(() => {
