@@ -39,6 +39,7 @@ import {
   getInkoopInvoiceSummaryLines,
   saveInkoopInvoiceHeaders,
   getInkoopInvoiceHeaders,
+  getInkoopInvoicesByLineDate,
   getInkoopInvoiceLinesByInvoiceNumbers,
   getKingExports,
   saveKingExports,
@@ -7948,8 +7949,23 @@ function buildInkoopInvoiceSummary(lines) {
 // ---- King export (see king.js) ----------------------------------------
 
 // Every uploaded invoice of the date with the journal it would get.
+// The invoices of `date`: those with lines on that date (the same day the
+// calendar shows them under) plus those issued that day. An invoice
+// uploaded before this export existed has no header (total, BTW) -- it is
+// listed anyway, blocked with "re-upload".
 async function buildKingPostsForDate(state, date) {
-  const headers = await getInkoopInvoiceHeaders({ from: date, to: date });
+  const [issued, byLineDate] = await Promise.all([
+    getInkoopInvoiceHeaders({ from: date, to: date }),
+    getInkoopInvoicesByLineDate(date),
+  ]);
+  const headerByNumber = new Map(issued.map((header) => [header.invoice_number, header]));
+  for (const row of byLineDate) {
+    if (headerByNumber.has(row.invoice_number)) continue;
+    headerByNumber.set(row.invoice_number, row.has_header
+      ? { ...row, company_name: row.header_company_name || row.company_name }
+      : { invoice_number: row.invoice_number, invoice_type: row.invoice_type, company_number: row.company_number, company_name: row.company_name, invoice_date: date, grand_total: null, vat_subtotals: [], missing_header: true });
+  }
+  const headers = [...headerByNumber.values()].sort((left, right) => `${left.company_number}|${left.invoice_number}`.localeCompare(`${right.company_number}|${right.invoice_number}`));
   const numbers = headers.map((header) => header.invoice_number);
   const [lines, exports] = await Promise.all([
     getInkoopInvoiceLinesByInvoiceNumbers(numbers),
@@ -7966,6 +7982,10 @@ async function buildKingPostsForDate(state, date) {
   const exportByInvoice = new Map(exports.map((row) => [row.invoice_number, row]));
   return headers.map((header) => {
     const post = buildKingJournalPost(header, linesByInvoice.get(header.invoice_number) || [], state.king_ledger_map, state.king_settings);
+    if (header.missing_header) {
+      // Replaces the generic "invoice total missing" with what to do.
+      post.problems = ["Uploaded before Import naar King existed -- upload this day's veiling zip again (no need to clear anything)."];
+    }
     const hasPdf = existsSync(inkoopInvoicePdfPath(header.invoice_number));
     if (!hasPdf) {
       post.problems.push("Invoice PDF not uploaded -- King's archive needs it.");

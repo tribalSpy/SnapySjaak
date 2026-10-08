@@ -15421,7 +15421,7 @@ function InkoopKingTab() {
       <div className="data-table-card">
         <div className="section-header"><h2>Import naar King</h2></div>
         <div className="notice">
-          Every uploaded FloraHolland invoice of the chosen day (Klok, Connect, Handel aankoop/verkoop, Dienst) as a King journal post, booked by the ledger mapping below, plus its PDF for King's digital archive. AI2 follows in a later step. Invoices uploaded before this menu existed must be uploaded again (their King fields weren't stored yet).
+          Every uploaded FloraHolland invoice of the chosen day (Klok, Connect, Handel aankoop/verkoop, Dienst) as a King journal post, booked by the ledger mapping below, plus its PDF for King's digital archive. The day is the same as in the calendar (the auction/delivery day), plus invoices issued that day. AI2 follows in a later step. Invoices uploaded before this menu existed show as blocked: upload that day's veiling zip once more -- nothing needs to be cleared.
         </div>
         <div className="row-actions spread-actions">
           <label><span>Date</span><input type="date" value={date} onChange={(event) => setDate(event.target.value)} /></label>
