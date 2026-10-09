@@ -20932,11 +20932,17 @@ async function handleApi(req, res, url) {
     try {
       const state = await readInkoopState();
       const runDate = body?.run_date || localDateIso();
-      // The ERP export is optional: invoices can be uploaded on their own
-      // (e.g. FD/HV invoices or a day that's only needed for King).
+      // Either file on its own is fine: invoices only (FD/HV invoices, a
+      // day only needed for King, the ERP comes later) or the ERP export
+      // only (invoices already uploaded). The match always runs over
+      // everything accumulated, so the other half can follow any time.
       const hasErpFile = Boolean(body?.erp_file?.content_base64);
+      const hasVeilingZip = Boolean(body?.veiling_zip?.content_base64);
+      if (!hasErpFile && !hasVeilingZip) {
+        throw new Error("Choose the veiling emails zip, the ERP export, or both.");
+      }
       const erpRows = hasErpFile ? await parseInkoopErpUpload(body?.erp_file) : [];
-      const veiling = await parseInkoopVeilingUpload(body?.veiling_zip);
+      const veiling = hasVeilingZip ? await parseInkoopVeilingUpload(body?.veiling_zip) : { invoices: [], skipped: [], pdfs: {} };
       const flatInvoiceLines = flattenInkoopInvoiceLines(veiling.invoices, body?.veiling_zip?.name, runDate);
 
       // Accumulate into the permanent ledger first, then re-match against

@@ -15617,23 +15617,23 @@ function InkoopControlePage({ currentUser }) {
   }, [selectedCompany]);
 
   async function runComparison() {
-    // The ERP export is optional: invoices alone can be uploaded too (e.g.
-    // FD/HV invoices, or a day that's only needed for Import naar King).
-    if (!veilingZip) {
-      setError("Choose the veiling emails zip first (the ERP export is optional).");
+    // Either file on its own is enough (invoices only, or the ERP export
+    // only) -- the match runs over everything uploaded so far.
+    if (!veilingZip && !erpFile) {
+      setError("Choose the veiling emails zip, the ERP export, or both.");
       return;
     }
     setComparing(true);
     setError("");
     setMessage("");
     try {
-      const [erpBase64, veilingBase64] = await Promise.all([erpFile ? fileToBase64(erpFile) : null, fileToBase64(veilingZip)]);
+      const [erpBase64, veilingBase64] = await Promise.all([erpFile ? fileToBase64(erpFile) : null, veilingZip ? fileToBase64(veilingZip) : null]);
       const payload = await apiJson("/api/inkoop/veiling/compare", {
         method: "POST",
         body: JSON.stringify({
           run_date: runDate,
           erp_file: erpFile ? { name: erpFile.name, content_base64: erpBase64 } : null,
-          veiling_zip: { name: veilingZip.name, content_base64: veilingBase64 },
+          veiling_zip: veilingZip ? { name: veilingZip.name, content_base64: veilingBase64 } : null,
           company: selectedCompany || undefined,
         }),
       });
@@ -15918,17 +15918,17 @@ function InkoopControlePage({ currentUser }) {
             <input type="date" value={runDate} onChange={(event) => setRunDate(event.target.value)} />
           </label>
           <label>
-            <span>ERP export (.xlsx or .csv)</span>
+            <span>ERP export (.xlsx or .csv) -- optional</span>
             <input type="file" accept=".xlsx,.csv" onChange={(event) => setErpFile(event.target.files?.[0] || null)} />
           </label>
           <label>
-            <span>Veiling emails (.zip of .msg files)</span>
+            <span>Veiling emails (.zip of .msg files) -- optional</span>
             <input type="file" accept=".zip" onChange={(event) => setVeilingZip(event.target.files?.[0] || null)} />
           </label>
         </div>
         <div className="row-actions spread-actions">
           <button type="button" className="primary" onClick={runComparison} disabled={comparing}>
-            {comparing ? "Comparing..." : "Compare"}
+            {comparing ? "Uploading..." : erpFile && veilingZip ? "Upload both and compare" : veilingZip ? "Upload invoices only" : erpFile ? "Upload ERP only" : "Compare"}
           </button>
         </div>
       </div>
