@@ -2660,7 +2660,36 @@ function normalizeUkdocsState(state) {
     finance_audit_invoice_documents: Array.isArray(state?.finance_audit_invoice_documents)
       ? state.finance_audit_invoice_documents.map(normalizeUkdocsFinanceAuditInvoiceDocument).filter((item) => item.shipment_id && item.category)
       : [],
+    deleted_print_collections: normalizeUkdocsDeletedPrintCollections(state?.deleted_print_collections),
   };
+}
+
+// Rows deleted in the app (PD Keuring / Zendingen). The row usually still
+// exists in the PD keuringen sheet, and every sheet import (the 15-minute
+// reconcile, "load from sheet") creates any sheet row it can't find in the
+// app -- so a deleted row came straight back. These are what those imports
+// match against to leave a deleted row out. Kept 60 days past its date
+// (the reconcile only looks 3 days back).
+function normalizeUkdocsDeletedPrintCollections(entries) {
+  const cutoff = addDaysToIsoDate(localDateIso(), -60);
+  return (Array.isArray(entries) ? entries : [])
+    .filter((entry) => entry && typeof entry === "object" && String(entry.shipment_date || "") >= cutoff)
+    .map((entry) => ({
+      id: String(entry.id || ""),
+      shipment_date: String(entry.shipment_date || "").slice(0, 10),
+      sheet_row_number: Number(entry.sheet_row_number || 0) || 0,
+      reference_connect: String(entry.reference_connect || ""),
+      city_name: String(entry.city_name || ""),
+      hub_code: String(entry.hub_code || ""),
+      remark: String(entry.remark || ""),
+      collection_type: String(entry.collection_type || ""),
+      deleted_at: String(entry.deleted_at || ""),
+      deleted_by: String(entry.deleted_by || ""),
+    }));
+}
+
+function isDeletedUkdocsPrintSheetRow(state, sending) {
+  return Boolean(findMatchingUkdocsPrintCollection(state?.deleted_print_collections || [], sending, { allowInvoiceFallback: false }));
 }
 
 // Dropdown option lists sourced from the "data" tab of the PD keuringen
@@ -14312,6 +14341,9 @@ async function syncUkdocsPrintCollectionsFromSheet(settings, date, options = {})
   let updatedCount = 0;
   for (const sending of sendings) {
     const existingCollection = findMatchingUkdocsPrintCollection(state.print_collections, sending, { allowInvoiceFallback: false });
+    if (!existingCollection && isDeletedUkdocsPrintSheetRow(state, sending)) {
+      continue; // deleted in the app -- don't bring it back from the sheet
+    }
     const nextCollection = referenceConnectOnly && existingCollection
       ? normalizeUkdocsPrintCollection({
         ...existingCollection,
@@ -14474,8 +14506,11 @@ async function backfillPdKeuringHistoryFromSheet(settings, sheetNames = ["PD pla
       if (!sending.shipment_date) {
         continue;
       }
-      touchedDates.add(sending.shipment_date);
       const existingCollection = findMatchingUkdocsPrintCollection(state.print_collections, sending, { allowInvoiceFallback: false });
+      if (!existingCollection && isDeletedUkdocsPrintSheetRow(state, sending)) {
+        continue; // deleted in the app -- don't bring it back from the sheet
+      }
+      touchedDates.add(sending.shipment_date);
       if (existingCollection) {
         updatedCount += 1;
       } else {
@@ -14571,6 +14606,9 @@ async function runPdKeuringSheetReconcile() {
 
   for (const sending of sendings) {
     const existingCollection = findMatchingUkdocsPrintCollection(state.print_collections, sending, { allowInvoiceFallback: false });
+    if (!existingCollection && isDeletedUkdocsPrintSheetRow(state, sending)) {
+      continue; // deleted in the app -- don't bring it back from the sheet
+    }
     if (!existingCollection) {
       const newCollection = normalizeUkdocsPrintCollection({
         id: sending.id,
@@ -19006,6 +19044,21 @@ async function handleApi(req, res, url) {
     // with the one actually being deleted. existingCollection is the exact
     // object found in this array, so remove it by reference instead.
     state.print_collections = state.print_collections.filter((item) => item !== existingCollection);
+    state.deleted_print_collections = [
+      ...(state.deleted_print_collections || []).filter((entry) => entry.id !== existingCollection.id),
+      {
+        id: existingCollection.id,
+        shipment_date: existingCollection.shipment_date,
+        sheet_row_number: existingCollection.sheet_row_number,
+        reference_connect: existingCollection.reference_connect,
+        city_name: existingCollection.city_name,
+        hub_code: existingCollection.hub_code,
+        remark: existingCollection.remark,
+        collection_type: existingCollection.collection_type,
+        deleted_at: new Date().toISOString(),
+        deleted_by: requestUser?.username || "",
+      },
+    ];
     await writeUkdocsState(state);
     sendJson(res, 200, { ok: true, print_collections: normalizeUkdocsState(state).print_collections });
     return;
