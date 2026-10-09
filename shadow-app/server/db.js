@@ -734,31 +734,6 @@ export async function getInkoopInvoiceHeaders({ from, to } = {}) {
   return result.rows;
 }
 
-// The invoices with lines on `date` (the line/auction date the calendar and
-// the compare use -- not the invoice's own issue date), with their header
-// when one was stored (invoices uploaded before the King export have none).
-export async function getInkoopInvoicesByLineDate(date) {
-  if (!pool || !date) {
-    return [];
-  }
-  const result = await pool.query(
-    `
-      SELECT l.invoice_number, MIN(l.invoice_type) AS invoice_type, MIN(l.company_number) AS company_number,
-        MIN(l.company_name) AS company_name,
-        h.invoice_number IS NOT NULL AS has_header,
-        to_char(h.invoice_date, 'YYYY-MM-DD') AS invoice_date, h.grand_total::float AS grand_total, h.currency,
-        h.vat_subtotals, h.klok_location, h.klok_locations, h.source_file_name, h.king_summary, h.company_name AS header_company_name
-      FROM inkoop_invoice_lines l
-      LEFT JOIN inkoop_invoice_headers h ON h.invoice_number = l.invoice_number
-      WHERE l.invoice_date = $1::date AND l.invoice_number <> ''
-      GROUP BY l.invoice_number, h.invoice_number
-      ORDER BY MIN(l.company_number), l.invoice_number
-    `,
-    [date],
-  );
-  return result.rows;
-}
-
 // Every stored line of the given invoices (the raw jsonb carries the King
 // fields: prd_id, vat_category, trigger_code, ...).
 export async function getInkoopInvoiceLinesByInvoiceNumbers(invoiceNumbers) {

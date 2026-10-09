@@ -15134,6 +15134,8 @@ function InkoopKingSettingsCard({ settings, onSaved }) {
         <label><span>BTW hoog (H) account</span><input value={draft.btw_hoog_account} onChange={(event) => set("btw_hoog_account", event.target.value)} /></label>
         <label><span>Archiefsoort</span><input value={draft.archiefsoort} onChange={(event) => set("archiefsoort", event.target.value)} placeholder="ask finance / King" /></label>
         <label><span>King PDF folder (as King sees it)</span><input value={draft.king_pdf_dir} onChange={(event) => set("king_pdf_dir", event.target.value)} placeholder="e.g. D:\King\Import\pdf" /></label>
+        <label><span>Journal file name in King's folder</span><input value={draft.journaal_file_name || ""} onChange={(event) => set("journaal_file_name", event.target.value)} placeholder="king_journaal.xml" /></label>
+        <label><span>Archive file name in King's folder</span><input value={draft.archief_file_name || ""} onChange={(event) => set("archief_file_name", event.target.value)} placeholder="king_archief.xml" /></label>
         <label><span>Next stuknummer (0 = let King number)</span><input type="number" value={draft.next_stuknummer} onChange={(event) => set("next_stuknummer", Number(event.target.value) || 0)} /></label>
         <label>
           <span>Flowers / plants split</span>
@@ -15421,12 +15423,13 @@ function InkoopKingTab() {
       <div className="data-table-card">
         <div className="section-header"><h2>Import naar King</h2></div>
         <div className="notice">
-          Every uploaded FloraHolland invoice of the chosen day (Klok, Connect, Handel aankoop/verkoop, Dienst) as a King journal post, booked by the ledger mapping below, plus its PDF for King's digital archive. The day is the same as in the calendar (the auction/delivery day), plus invoices issued that day. AI2 follows in a later step. Invoices uploaded before this menu existed show as blocked: upload that day's veiling zip once more -- nothing needs to be cleared.
+          Every uploaded FloraHolland invoice of the chosen day (Klok, Connect, Handel aankoop/verkoop, Dienst) as a King journal post, booked by the ledger mapping below, plus its PDF for King's digital archive. The date is the factuurdatum (the invoice's own date, as on the PDF). Invoices uploaded before this menu existed don't show: upload their veiling zip once more -- nothing needs to be cleared.
         </div>
         <div className="row-actions spread-actions">
           <label><span>Date</span><input type="date" value={date} onChange={(event) => setDate(event.target.value)} /></label>
           <button type="button" onClick={loadDay} disabled={loading}>{loading ? "Loading..." : "Refresh"}</button>
           <button type="button" onClick={() => setSelected(new Set(posts.filter((post) => !post.problems.length && !post.export).map((post) => post.invoice_number)))}>Select all ready ({readyCount})</button>
+          <button type="button" onClick={() => setSelected(new Set())} disabled={!selected.size}>Unselect all</button>
           <button type="button" onClick={downloadPreview} disabled={busy || !selected.size}>Download XML (preview)</button>
           <button type="button" className="primary" onClick={sendToKing} disabled={busy || !selected.size}>Send to King ({selected.size})</button>
         </div>

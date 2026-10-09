@@ -121,6 +121,18 @@ def wait_until_gone(path: Path, minutes: float) -> bool:
     return not path.exists()
 
 
+# The XML names are fixed (king_journaal.xml / king_archief.xml), so the
+# previous export's file may still be waiting for King's scheduler. Never
+# overwrite it: wait until King has read it; still there after the wait ->
+# fail (the server retries the job later).
+def wait_for_free_name(folder: Path, name: str, minutes: float):
+    target = folder / name
+    if target.exists():
+        print(f"  {name} from a previous export is still waiting for King -- waiting")
+        if not wait_until_gone(target, minutes):
+            raise RuntimeError(f"{name} is still in {folder} (King hasn't read the previous export yet); not overwriting it -- will retry")
+
+
 def run_job(config: dict, job: dict):
     payload = job.get("payload_json") or {}
     import_dir = Path(config["import_dir"])
@@ -134,7 +146,11 @@ def run_job(config: dict, job: dict):
             raise RuntimeError(f"Empty PDF in job: {pdf.get('file_name')}")
         written.append(str(write_atomic(pdf_dir, pdf.get("file_name"), content)))
 
-    archief_path = write_atomic(import_dir, payload.get("archief_file_name") or "archief.xml", str(payload.get("archief_xml") or "").encode("utf-8"))
+    archief_name = safe_file_name(payload.get("archief_file_name") or "king_archief.xml")
+    journaal_name = safe_file_name(payload.get("journaal_file_name") or "king_journaal.xml")
+    wait_for_free_name(import_dir, archief_name, config["archive_wait_minutes"])
+    wait_for_free_name(import_dir, journaal_name, config["archive_wait_minutes"])
+    archief_path = write_atomic(import_dir, archief_name, str(payload.get("archief_xml") or "").encode("utf-8"))
     written.append(str(archief_path))
     print(f"  archive XML written: {archief_path} -- waiting for King to read it")
     if not wait_until_gone(archief_path, config["archive_wait_minutes"]):
@@ -143,7 +159,7 @@ def run_job(config: dict, job: dict):
             "journal written anyway -- check in King that the PDFs are attached."
         )
 
-    journaal_path = write_atomic(import_dir, payload.get("journaal_file_name") or "journaal.xml", str(payload.get("journaal_xml") or "").encode("utf-8"))
+    journaal_path = write_atomic(import_dir, journaal_name, str(payload.get("journaal_xml") or "").encode("utf-8"))
     written.append(str(journaal_path))
     return {
         "delivered": True,

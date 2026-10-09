@@ -244,6 +244,9 @@ export const DEFAULT_KING_SETTINGS = {
   king_pdf_dir: "",
   next_stuknummer: 0,
   bg_definitief: false,
+  // Fixed names in King's import folder (finance: no date/time in them).
+  journaal_file_name: "king_journaal.xml",
+  archief_file_name: "king_archief.xml",
 };
 
 export function normalizeKingSettings(source) {
@@ -274,7 +277,16 @@ export function normalizeKingSettings(source) {
     king_pdf_dir: text(merged.king_pdf_dir),
     next_stuknummer: Math.max(0, Math.floor(Number(merged.next_stuknummer) || 0)),
     bg_definitief: merged.bg_definitief === true,
+    journaal_file_name: kingFileName(merged.journaal_file_name, DEFAULT_KING_SETTINGS.journaal_file_name),
+    archief_file_name: kingFileName(merged.archief_file_name, DEFAULT_KING_SETTINGS.archief_file_name),
   };
+}
+
+// A plain file name ending in .xml (no folders).
+function kingFileName(value, fallback) {
+  const cleaned = text(value).replace(/[^A-Za-z0-9._-]/g, "");
+  if (!cleaned || cleaned.startsWith(".")) return fallback;
+  return /\.xml$/i.test(cleaned) ? cleaned : `${cleaned}.xml`;
 }
 
 // "049876.FC.2025.0085" -> "049876FC20250085" (the sample's own format).

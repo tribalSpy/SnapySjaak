@@ -39,7 +39,6 @@ import {
   getInkoopInvoiceSummaryLines,
   saveInkoopInvoiceHeaders,
   getInkoopInvoiceHeaders,
-  getInkoopInvoicesByLineDate,
   getInkoopInvoiceLinesByInvoiceNumbers,
   getKingExports,
   saveKingExports,
@@ -7979,23 +7978,12 @@ function buildInkoopInvoiceSummary(lines) {
 // ---- King export (see king.js) ----------------------------------------
 
 // Every uploaded invoice of the date with the journal it would get.
-// The invoices of `date`: those with lines on that date (the same day the
-// calendar shows them under) plus those issued that day. An invoice
-// uploaded before this export existed has no header (total, BTW) -- it is
-// listed anyway, blocked with "re-upload".
+// The invoices of `date` by their factuurdatum (the invoice's own issue
+// date, as finance books them) -- not the auction/delivery day the calendar
+// uses. Invoices uploaded before this export existed have no stored
+// factuurdatum and don't show; upload their zip again.
 async function buildKingPostsForDate(state, date) {
-  const [issued, byLineDate] = await Promise.all([
-    getInkoopInvoiceHeaders({ from: date, to: date }),
-    getInkoopInvoicesByLineDate(date),
-  ]);
-  const headerByNumber = new Map(issued.map((header) => [header.invoice_number, header]));
-  for (const row of byLineDate) {
-    if (headerByNumber.has(row.invoice_number)) continue;
-    headerByNumber.set(row.invoice_number, row.has_header
-      ? { ...row, company_name: row.header_company_name || row.company_name }
-      : { invoice_number: row.invoice_number, invoice_type: row.invoice_type, company_number: row.company_number, company_name: row.company_name, invoice_date: date, grand_total: null, vat_subtotals: [], missing_header: true });
-  }
-  const headers = [...headerByNumber.values()].sort((left, right) => `${left.company_number}|${left.invoice_number}`.localeCompare(`${right.company_number}|${right.invoice_number}`));
+  const headers = await getInkoopInvoiceHeaders({ from: date, to: date });
   const numbers = headers.map((header) => header.invoice_number);
   const [lines, exports] = await Promise.all([
     getInkoopInvoiceLinesByInvoiceNumbers(numbers),
@@ -8083,7 +8071,6 @@ async function sendKingExport(body, requestUser) {
       content_base64: (await fs.readFile(inkoopInvoicePdfPath(post.invoice_number))).toString("base64"),
     });
   }
-  const stamp = new Date().toISOString().replace(/[-:]/g, "").slice(0, 15);
   const job = await createLlmJob({
     job_type: "king_export",
     created_by: requestUser.username,
@@ -8093,9 +8080,9 @@ async function sendKingExport(body, requestUser) {
       batch_id: batchId,
       date: body.date,
       pdfs,
-      archief_file_name: `archief_${batchId}_${stamp}.xml`,
+      archief_file_name: settings.archief_file_name,
       archief_xml: archiefXml,
-      journaal_file_name: `journaal_${batchId}_${stamp}.xml`,
+      journaal_file_name: settings.journaal_file_name,
       journaal_xml: journaalXml,
       invoice_numbers: numbered.map((post) => post.invoice_number),
     },
