@@ -144,6 +144,15 @@ def main():
     parser.add_argument("--out", default=str(SCRIPT_DIR / "dataset"))
     parser.add_argument("--val-fraction", type=float, default=0.15)
     parser.add_argument("--seed", type=int, default=42)
+    # Photos with no box at all are mostly loaded trolleys whose shelves are
+    # hidden behind the goods ("no shelf visible"). Hundreds of those next
+    # to similar photos where shelf edges ARE boxed taught the model to
+    # doubt every shelf: the 1,900-photo run (Oct 2026) predicted 0 shelves
+    # on 82 of 280 val photos and undercounted by 1.7 on average. Only this
+    # share of the dataset is kept as "nothing here" examples (Ultralytics'
+    # usual advice is a few percent of background images).
+    parser.add_argument("--empty-fraction", type=float, default=0.05,
+                        help="max share of photos without any box to keep (0 = none, 1 = all)")
     args = parser.parse_args()
 
     raw_dataset_dir = Path(args.raw_dataset_dir).resolve()
@@ -184,7 +193,12 @@ def main():
             "customer_reference": task.get("data", {}).get("customer_reference") or "unknown",
         })
 
-    print(f"{len(rows)} labeled photo(s) usable ({empty_boxes} with zero boxes -- a photo with no visible shelf level, kept as a negative example)")
+    empty_rows = [row for row in rows if not row["boxes"]]
+    boxed_rows = [row for row in rows if row["boxes"]]
+    keep_empty = min(len(empty_rows), math.floor(len(boxed_rows) * args.empty_fraction / max(1e-9, 1 - args.empty_fraction))) if args.empty_fraction < 1 else len(empty_rows)
+    random.Random(args.seed).shuffle(empty_rows)
+    rows = boxed_rows + empty_rows[:keep_empty]
+    print(f"{len(boxed_rows)} photo(s) with boxes; {empty_boxes} without any box, of which {keep_empty} kept as 'nothing here' examples (--empty-fraction {args.empty_fraction})")
     print(f"Skipped: {skipped_no_annotation} not yet annotated/skipped in Label Studio, {skipped_missing_image} with a missing image file")
 
     if not rows:

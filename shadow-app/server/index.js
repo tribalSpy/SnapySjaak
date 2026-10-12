@@ -9579,7 +9579,11 @@ function summarizeShelfTrainedModel(trained, trolleyCount) {
     return sorted.length % 2 ? sorted[middle] : (sorted[middle - 1] + sorted[middle]) / 2;
   };
   const trolleys = Math.max(1, Number(trolleyCount) || 1);
-  const shelfPerPhoto = photos.map((photo) => Number(photo.shelf_level) || 0);
+  // A photo where the model sees no shelf at all is usually one where the
+  // goods hide them (or a bad angle) -- not a trolley without shelves. Only
+  // photos that show shelves count; all zero -> 0.
+  const shelfPerPhotoAll = photos.map((photo) => Number(photo.shelf_level) || 0);
+  const shelfPerPhoto = shelfPerPhotoAll.some((count) => count > 0) ? shelfPerPhotoAll.filter((count) => count > 0) : shelfPerPhotoAll;
   // Extensions are 0 or 4 per trolley: a trolley whose photos show any
   // extension has 4. With several trolleys, the share of photos showing
   // extensions says how many of them have them (at least one if any do).
