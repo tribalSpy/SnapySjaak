@@ -8167,6 +8167,7 @@ async function sendKingExport(body, requestUser) {
 // (bumpInkoopMatchVersion: uploads, "start fresh", any inkoop-state write)
 // or after INKOOP_MATCH_CACHE_MS.
 const INKOOP_MATCH_CACHE_MS = 10 * 60 * 1000;
+const INKOOP_MATCH_CACHE_ENTRIES = 80;
 let inkoopMatchVersion = 0;
 let inkoopMatchLock = Promise.resolve();
 const inkoopMatchCache = new Map();
@@ -8176,24 +8177,110 @@ function bumpInkoopMatchVersion() {
   inkoopMatchCache.clear();
 }
 
-async function computeInkoopLiveMatch(state, range) {
-  const key = `${range.from}|${range.to}|${inkoopMatchVersion}`;
+function inkoopCachedCompute(kind, range, compute) {
+  const key = `${kind}|${range.from}|${range.to}|${inkoopMatchVersion}`;
   const cached = inkoopMatchCache.get(key);
   if (cached && Date.now() - cached.at < INKOOP_MATCH_CACHE_MS) {
     return cached.promise;
   }
-  // One fresh computation at a time across all windows: two at once (the
-  // 60-day page and the 90-day dashboard) each held every line in memory
-  // and ran the server out of heap.
-  const promise = inkoopMatchLock.then(() => computeInkoopLiveMatchFresh(state, range));
+  // One fresh computation at a time: several at once each held their lines
+  // in memory and ran the server out of heap.
+  const promise = inkoopMatchLock.then(() => compute());
   inkoopMatchLock = promise.catch(() => {});
   inkoopMatchCache.set(key, { at: Date.now(), promise });
   promise.catch(() => inkoopMatchCache.delete(key));
-  // Only a handful of windows are ever asked for; keep the newest few.
-  while (inkoopMatchCache.size > 4) {
+  // Day windows are small; a month of them (calendar) plus a few more.
+  while (inkoopMatchCache.size > INKOOP_MATCH_CACHE_ENTRIES) {
     inkoopMatchCache.delete(inkoopMatchCache.keys().next().value);
   }
   return promise;
+}
+
+async function computeInkoopLiveMatch(state, range) {
+  return inkoopCachedCompute("match", range, () => computeInkoopLiveMatchFresh(state, range));
+}
+
+function buildInkoopAggregateContextCached(state, range) {
+  return inkoopCachedCompute("aggregate", range, () => buildInkoopAggregateContext(state, range));
+}
+
+// --- Matching per day -------------------------------------------------------
+// Invoices are matched to the ERP by date: for a day D, only the lines of
+// D-1..D+1 are loaded (one day either side for an invoice line or purchase
+// that lands a day off), and only the rows that belong to D are kept --
+// ERP-anchored lists (matched, mismatch, only in ERP) by the ERP date, the
+// others by the invoice line's date. Ranges (follow-up, dashboard,
+// destinations: a week by default, a month at most) and the calendar are
+// built day by day from these. This replaced matching a rolling 60/90-day
+// window on every page load, which held every line in memory at once.
+const INKOOP_RANGE_DEFAULT_DAYS = 7;
+const INKOOP_RANGE_MAX_DAYS = 31;
+const INKOOP_RESULT_LISTS = ["matched_ok", "matched_mismatch", "only_in_invoice", "only_in_erp", "supplier_not_linked", "ambiguous_matches", "fee_lines", "embalage_lines"];
+const INKOOP_ERP_ANCHORED_LISTS = new Set(["matched_ok", "matched_mismatch", "only_in_erp"]);
+
+function inkoopDayWindow(date) {
+  return { from: addDaysToIsoDate(date, -1), to: addDaysToIsoDate(date, 1) };
+}
+
+function inkoopResultOnDay(result, date) {
+  const out = { ...result };
+  for (const key of INKOOP_RESULT_LISTS) {
+    const anchorOf = INKOOP_ERP_ANCHORED_LISTS.has(key) ? inkoopDateKeyFromErpAnchor : inkoopDateKeyFromInvoiceAnchor;
+    out[key] = (Array.isArray(result?.[key]) ? result[key] : []).filter((row) => anchorOf(row) === date);
+  }
+  return out;
+}
+
+async function computeInkoopDay(state, date) {
+  const window = inkoopDayWindow(date);
+  const match = await computeInkoopLiveMatch(state, window);
+  const aggregateContext = await buildInkoopAggregateContextCached(state, window);
+  return { date, result: inkoopResultOnDay(match, date), aggregateContext };
+}
+
+function inkoopIsoDate(value) {
+  const text = String(value || "").trim().slice(0, 10);
+  return /^\d{4}-\d{2}-\d{2}$/.test(text) ? text : "";
+}
+
+// ?from=&to= or ?days=N (ending today / ?to=), a week by default, a month at
+// most.
+function inkoopRangeFromRequest(url, defaultDays = INKOOP_RANGE_DEFAULT_DAYS) {
+  let to = inkoopIsoDate(url.searchParams.get("to")) || localDateIso();
+  let from = inkoopIsoDate(url.searchParams.get("from"));
+  if (!from) {
+    const days = Math.max(1, Math.min(INKOOP_RANGE_MAX_DAYS, Number(url.searchParams.get("days")) || defaultDays));
+    from = addDaysToIsoDate(to, -(days - 1));
+  }
+  if (from > to) [from, to] = [to, from];
+  if (addDaysToIsoDate(from, INKOOP_RANGE_MAX_DAYS - 1) < to) {
+    from = addDaysToIsoDate(to, -(INKOOP_RANGE_MAX_DAYS - 1));
+  }
+  return { from, to };
+}
+
+function inkoopDatesInRange(from, to) {
+  const dates = [];
+  for (let date = from; date <= to && dates.length < INKOOP_RANGE_MAX_DAYS + 1; date = addDaysToIsoDate(date, 1)) {
+    dates.push(date);
+  }
+  return dates;
+}
+
+async function computeInkoopDays(state, from, to) {
+  const days = [];
+  for (const date of inkoopDatesInRange(from, to)) {
+    days.push(await computeInkoopDay(state, date));
+  }
+  return days;
+}
+
+function mergeInkoopDayResults(results) {
+  const merged = {};
+  for (const key of INKOOP_RESULT_LISTS) {
+    merged[key] = results.flatMap((result) => (Array.isArray(result?.[key]) ? result[key] : []));
+  }
+  return merged;
 }
 
 async function computeInkoopLiveMatchFresh(state, { from, to }) {
@@ -8431,7 +8518,7 @@ function inkoopCorrectionLotSource(item) {
 // in fee_lines, nothing left to match) and a plain negative Handel/AI2
 // credit line.
 async function computeInkoopCorrectionRetourChecks(state, { from, to }) {
-  const result = await computeInkoopLiveMatch(state, { from, to });
+  const result = mergeInkoopDayResults((await computeInkoopDays(state, from, to)).map((day) => day.result));
   const corrections = [];
   for (const bucketName of ["matched_ok", "matched_mismatch", "only_in_invoice", "fee_lines"]) {
     for (const item of Array.isArray(result?.[bucketName]) ? result[bucketName] : []) {
@@ -21177,9 +21264,14 @@ async function handleApi(req, res, url) {
       return;
     }
     const state = await readInkoopState();
-    const rawResult = await computeInkoopLiveMatch(state, inkoopDefaultWindowRange(INKOOP_MATCH_WINDOW_DAYS));
-    const result = limitInkoopResultForPage(filterInkoopResultsByCompany(rawResult, url.searchParams.get("company")));
+    // Only the chosen day is matched (none chosen: just the import history
+    // and master-data counts -- nothing heavy on opening the page).
+    const date = inkoopIsoDate(url.searchParams.get("date"));
+    const result = date
+      ? limitInkoopResultForPage(filterInkoopResultsByCompany((await computeInkoopDay(state, date)).result, url.searchParams.get("company")))
+      : null;
     sendJson(res, 200, {
+      date,
       imports: state.imports,
       result,
       window_days: INKOOP_MATCH_WINDOW_DAYS,
@@ -21246,9 +21338,17 @@ async function handleApi(req, res, url) {
       // A big upload arrives in parts (the page splits it); only the last
       // part runs the -- heavy -- match over everything accumulated.
       const skipMatch = body?.skip_match === true;
+      // The day most of this upload's lines are on (the page then shows
+      // that day; any other day is one date pick away).
+      const dateCounts = new Map();
+      for (const date of [...flatInvoiceLines.map((line) => line?.invoice_date), ...erpRows.map((row) => row?.date)]) {
+        const day = inkoopIsoDate(date);
+        if (day) dateCounts.set(day, (dateCounts.get(day) || 0) + 1);
+      }
+      const resultDate = [...dateCounts.entries()].sort((left, right) => right[1] - left[1])[0]?.[0] || inkoopIsoDate(runDate) || localDateIso();
       const result = skipMatch
         ? null
-        : filterInkoopResultsByCompany(await computeInkoopLiveMatch(state, inkoopDefaultWindowRange(INKOOP_MATCH_WINDOW_DAYS)), body?.company);
+        : filterInkoopResultsByCompany((await computeInkoopDay(state, resultDate)).result, body?.company);
 
       const importRecord = normalizeInkoopImportRecord({
         run_date: runDate,
@@ -21261,7 +21361,7 @@ async function handleApi(req, res, url) {
       });
       state.imports = [importRecord, ...state.imports].slice(0, 200);
       await writeInkoopState(state);
-      sendJson(res, 200, { import: importRecord, imports: state.imports, result: limitInkoopResultForPage(result), window_days: INKOOP_MATCH_WINDOW_DAYS, dispatch_lot_count: dispatchLotCount });
+      sendJson(res, 200, { import: importRecord, imports: state.imports, result: limitInkoopResultForPage(result), result_date: resultDate, dispatch_lot_count: dispatchLotCount });
     } catch (error) {
       sendJson(res, 400, { error: error instanceof Error ? error.message : String(error) });
     }
@@ -21277,21 +21377,28 @@ async function handleApi(req, res, url) {
     if (!requirePermission(res, requestUser, PERMISSIONS.INKOOP_VIEW)) {
       return;
     }
-    const requestedDays = Number(url.searchParams.get("days"));
-    const days = Number.isFinite(requestedDays) && requestedDays > 0 ? requestedDays : INKOOP_DASHBOARD_DEFAULT_WINDOW_DAYS;
+    const range = inkoopRangeFromRequest(url);
+    const days = inkoopDatesInRange(range.from, range.to).length;
     try {
       const state = await readInkoopState();
-      const range = inkoopDefaultWindowRange(days);
-      const rawResult = await computeInkoopLiveMatch(state, range);
-      const result = filterInkoopResultsByCompany(rawResult, url.searchParams.get("company"));
-      const aggregateContext = await buildInkoopAggregateContext(state, range);
+      const company = url.searchParams.get("company");
+      const dayBundles = await computeInkoopDays(state, range.from, range.to);
+      const result = filterInkoopResultsByCompany(mergeInkoopDayResults(dayBundles.map((day) => day.result)), company);
       const summary = buildInkoopDashboardSummary(result);
-      const dayReport = inkoopDateBucketsToSortedArray(bucketInkoopResultsByDate(result, aggregateContext));
+      const dayBuckets = new Map();
+      for (const day of dayBundles) {
+        const bucket = bucketInkoopResultsByDate(filterInkoopResultsByCompany(day.result, company), day.aggregateContext).get(day.date);
+        if (bucket) dayBuckets.set(day.date, bucket);
+      }
+      const dayReport = inkoopDateBucketsToSortedArray(dayBuckets);
       const weekReport = inkoopBucketDayReportsByWeek(dayReport);
       const embalageSummary = buildInkoopEmbalageSummary(result);
-      const todaySummary = buildInkoopTodaySummary(result, localDateIso(), aggregateContext);
+      const todayBundle = dayBundles.find((day) => day.date === localDateIso()) || await computeInkoopDay(state, localDateIso());
+      const todaySummary = buildInkoopTodaySummary(filterInkoopResultsByCompany(todayBundle.result, company), localDateIso(), todayBundle.aggregateContext);
       sendJson(res, 200, {
         days,
+        from: range.from,
+        to: range.to,
         ...summary,
         day_report: dayReport,
         week_report: weekReport,
@@ -21324,14 +21431,16 @@ async function handleApi(req, res, url) {
     const monthEnd = `${yearStr}-${monthStr}-${String(daysInMonth).padStart(2, "0")}`;
     try {
       const state = await readInkoopState();
-      const range = {
-        from: addDaysToIsoDate(monthStart, -14),
-        to: addDaysToIsoDate(monthEnd, 14),
-      };
-      const rawResult = await computeInkoopLiveMatch(state, range);
-      const result = filterInkoopResultsByCompany(rawResult, url.searchParams.get("company"));
-      const aggregateContext = await buildInkoopAggregateContext(state, range);
-      const buckets = bucketInkoopResultsByDate(result, aggregateContext);
+      const company = url.searchParams.get("company");
+      // Days after today have nothing to match yet.
+      const lastDay = monthEnd < localDateIso() ? monthEnd : localDateIso();
+      const buckets = new Map();
+      if (monthStart <= lastDay) {
+        for (const day of await computeInkoopDays(state, monthStart, lastDay)) {
+          const bucket = bucketInkoopResultsByDate(filterInkoopResultsByCompany(day.result, company), day.aggregateContext).get(day.date);
+          if (bucket) buckets.set(day.date, bucket);
+        }
+      }
       const days = [];
       for (let day = 1; day <= daysInMonth; day += 1) {
         const dateIso = `${yearStr}-${monthStr}-${String(day).padStart(2, "0")}`;
@@ -21370,12 +21479,8 @@ async function handleApi(req, res, url) {
     }
     try {
       const state = await readInkoopState();
-      const range = { from: addDaysToIsoDate(date, -14), to: addDaysToIsoDate(date, 14) };
-      const [rawResult, aggregateContext] = await Promise.all([
-        computeInkoopLiveMatch(state, range),
-        buildInkoopAggregateContext(state, range),
-      ]);
-      const companyFiltered = filterInkoopResultsByCompany(rawResult, url.searchParams.get("company"));
+      const { result: dayResult, aggregateContext } = await computeInkoopDay(state, date);
+      const companyFiltered = filterInkoopResultsByCompany(dayResult, url.searchParams.get("company"));
       const onDate = (row, anchor) => (anchor === "erp" ? inkoopDateKeyFromErpAnchor(row) : inkoopDateKeyFromInvoiceAnchor(row)) === date;
       // Same aggregate suppression the Calendar grid cell's own gap_count and
       // the Follow-up queue already apply -- without this, drilling into a
@@ -21419,9 +21524,9 @@ async function handleApi(req, res, url) {
     }
     try {
       const state = await readInkoopState();
-      const range = inkoopDefaultWindowRange(INKOOP_MATCH_WINDOW_DAYS);
-      const rawResult = await computeInkoopLiveMatch(state, range);
-      const result = filterInkoopResultsByCompany(rawResult, url.searchParams.get("company"));
+      const range = inkoopRangeFromRequest(url);
+      const company = url.searchParams.get("company");
+      const dayBundles = await computeInkoopDays(state, range.from, range.to);
       const statuses = await getInkoopIssueStatuses();
       const statusById = new Map(statuses.map((row) => [row.id, row]));
       const showResolved = url.searchParams.get("show_resolved") === "1";
@@ -21434,9 +21539,13 @@ async function handleApi(req, res, url) {
       // split-lot noise (see computeInkoopAggregateMismatches). Shared with
       // the Calendar/day-report/today-summary views via
       // buildInkoopAggregateContext so all of them agree.
-      const { aggregateResult, codeToName, validSupplierCodes, supplierMap, supplierNameMap, manualLinks, supplierFhMap } = await buildInkoopAggregateContext(state, range);
-
       const issues = [];
+      for (const day of dayBundles) {
+      const result = filterInkoopResultsByCompany(day.result, company);
+      const { aggregateResult: dayAggregate, codeToName, validSupplierCodes, supplierMap, supplierNameMap, manualLinks, supplierFhMap } = day.aggregateContext;
+      // The aggregate covers the day's window (D-1..D+1); only D's own
+      // grower-day mismatches are this day's issues.
+      const aggregateResult = { ...dayAggregate, mismatches: (dayAggregate?.mismatches || []).filter((mismatch) => mismatch.date === day.date) };
       for (const row of result.matched_mismatch || []) {
         issues.push({ id: inkoopIssueId("mismatch", row), issue_type: "mismatch", date: inkoopDateKeyFromErpAnchor(row), description: row.description, value: inkoopMismatchValue(row), invoice_number: row.invoice_number || "", erp_row: row.erp_row || null, detail: row });
       }
@@ -21471,6 +21580,7 @@ async function handleApi(req, res, url) {
           detail: { ...mismatch, piece_diff: pieceDiff, value_diff: valueDiff },
         });
       }
+      }
 
       const merged = issues.map((issue) => {
         const stored = statusById.get(issue.id);
@@ -21485,7 +21595,7 @@ async function handleApi(req, res, url) {
       });
       const filtered = showResolved ? merged : merged.filter((issue) => issue.status !== "resolved");
       filtered.sort((left, right) => right.value - left.value);
-      sendJson(res, 200, { issues: filtered });
+      sendJson(res, 200, { issues: filtered, from: range.from, to: range.to });
     } catch (error) {
       sendJson(res, 400, { error: error instanceof Error ? error.message : String(error) });
     }
@@ -21633,9 +21743,8 @@ async function handleApi(req, res, url) {
     if (!requirePermission(res, requestUser, PERMISSIONS.INKOOP_VIEW)) {
       return;
     }
-    const from = url.searchParams.get("from");
-    const to = url.searchParams.get("to");
-    const range = from && to ? { from, to } : inkoopDefaultWindowRange(INKOOP_DASHBOARD_DEFAULT_WINDOW_DAYS);
+    // A week by default, a month at most (was 90 days).
+    const range = inkoopRangeFromRequest(url);
     const state = await readInkoopState();
     const dispatchLots = await getInkoopDispatchLots(range);
     const summary = computeInkoopDestinationsSummary(dispatchLots, state.customer_map);
@@ -21659,8 +21768,9 @@ async function handleApi(req, res, url) {
       return;
     }
     const state = await readInkoopState();
-    const checks = await computeInkoopCorrectionRetourChecks(state, inkoopDefaultWindowRange(INKOOP_MATCH_WINDOW_DAYS));
-    sendJson(res, 200, { checks });
+    const range = inkoopRangeFromRequest(url);
+    const checks = await computeInkoopCorrectionRetourChecks(state, range);
+    sendJson(res, 200, { checks, from: range.from, to: range.to });
     return;
   }
 

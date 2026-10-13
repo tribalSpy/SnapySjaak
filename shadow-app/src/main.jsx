@@ -15681,7 +15681,10 @@ function InkoopControlePage({ currentUser }) {
   const [clearingUploads, setClearingUploads] = useState(false);
   const [imports, setImports] = useState([]);
   const [liveResult, setLiveResult] = useState(null);
-  const [windowDays, setWindowDays] = useState(60);
+  const [windowDays, setWindowDays] = useState(1);
+  // Compare & Reconcile matches one chosen day (nothing until one is picked
+  // -- opening the page stays light).
+  const [compareDate, setCompareDate] = useState("");
   const [lastSkippedFiles, setLastSkippedFiles] = useState([]);
   const [companies, setCompanies] = useState([]);
   const [selectedCompany, setSelectedCompany] = useState("");
@@ -15714,10 +15717,10 @@ function InkoopControlePage({ currentUser }) {
   function loadInkoopData() {
     const params = new URLSearchParams();
     if (selectedCompany) params.set("company", selectedCompany);
+    if (compareDate) params.set("date", compareDate);
     return apiJson(`/api/inkoop/veiling/runs${params.toString() ? `?${params}` : ""}`).then((payload) => {
       setImports(payload.imports || []);
       setLiveResult(payload.result || null);
-      setWindowDays(payload.window_days || 60);
       setSupplierCount(payload.supplier_count || 0);
       setSupplierNameCount(payload.supplier_name_count || 0);
       setSupplierFhCount(payload.supplier_fh_count || 0);
@@ -15797,7 +15800,7 @@ function InkoopControlePage({ currentUser }) {
       cancelled = true;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [selectedCompany]);
+  }, [selectedCompany, compareDate]);
 
   async function runComparison() {
     // Either file on its own is enough (invoices only, or the ERP export
@@ -15887,13 +15890,13 @@ function InkoopControlePage({ currentUser }) {
       }
       setImports(payload.imports || []);
       setLiveResult(payload.result || null);
-      setWindowDays(payload.window_days || windowDays);
+      if (payload.result_date) setCompareDate(payload.result_date);
       setLastSkippedFiles(payload.import?.skipped_files || []);
       const r = payload.result || {};
       setMessage(
         `Imported ${erpRows} ERP rows and ${invoiceLines} invoice lines${parts.length > 1 ? ` (${messages.length} emails in ${parts.length} parts)` : ""}`
         + `${payload.dispatch_lot_count ? ` (${payload.dispatch_lot_count} of them with dispatch destinations, see the Destinations tab)` : ""}. `
-        + `Live totals (last ${payload.window_days ?? windowDays} days): ${inkoopResultCount(r, "matched_ok")} matched, ${inkoopResultCount(r, "matched_mismatch")} mismatches, `
+        + `${payload.result_date ? `Result for ${payload.result_date}` : "Result"}: ${inkoopResultCount(r, "matched_ok")} matched, ${inkoopResultCount(r, "matched_mismatch")} mismatches, `
         + `${inkoopResultCount(r, "only_in_invoice")} only in invoice, ${inkoopResultCount(r, "only_in_erp")} only in ERP, `
         + `${inkoopResultCount(r, "supplier_not_linked")} supplier not linked, ${inkoopResultCount(r, "ambiguous_matches")} ambiguous.`,
       );
@@ -16186,7 +16189,7 @@ function InkoopControlePage({ currentUser }) {
         <div className="data-table-card">
           <div className="section-header"><h2>Import history</h2></div>
           <div className="notice">
-            Matching always reconciles the last {windowDays} days of accumulated data, not just this upload's pair -- a gap closes on its own once its matching file eventually gets uploaded, even from a different day.
+            Matching is per day: a day's invoice lines against that day's ERP purchases (one day either side allowed). A gap closes on its own once the missing file for that day is uploaded.
           </div>
           <div className="table-wrap">
             <table className="data-table">
@@ -16211,10 +16214,20 @@ function InkoopControlePage({ currentUser }) {
         </div>
       )}
 
-      {liveResult && (
+      <div className="data-table-card">
+        <div className="row-actions spread-actions">
+          <label>
+            <span>Compare day</span>
+            <input type="date" value={compareDate} onChange={(event) => setCompareDate(event.target.value)} />
+          </label>
+        </div>
+        {!compareDate && <div className="notice">Pick a day to see how its invoices match the ERP.</div>}
+      </div>
+
+      {liveResult && compareDate && (
         <InkoopResultTables
           result={liveResult}
-          windowDays={windowDays}
+          windowDays={null}
           manualLinkDrafts={manualLinkDrafts}
           setManualLinkDrafts={setManualLinkDrafts}
           onLinkSupplier={linkSupplier}
@@ -16333,6 +16346,21 @@ function InkoopTruncatedNote({ result, list }) {
       Showing the first {(result[list] || []).length} of {inkoopResultCount(result, list)} -- too many to show at once.
       Pick one company at the top, or use the Calendar / Follow-up tabs to work through them per day.
     </div>
+  );
+}
+
+// Follow-up, Destinations and the dashboard look back a week by default, a
+// month at most (the server matches day by day, see computeInkoopDays).
+function InkoopRangeSelect({ days, onChange }) {
+  return (
+    <label>
+      <span>Period</span>
+      <select value={days} onChange={(event) => onChange(Number(event.target.value))}>
+        <option value={7}>Last 7 days</option>
+        <option value={14}>Last 14 days</option>
+        <option value={31}>Last month</option>
+      </select>
+    </label>
   );
 }
 
@@ -16563,7 +16591,7 @@ function inkoopRenderBarList(entries) {
 
 function InkoopDashboardTab({ company }) {
   const [loading, setLoading] = useState(true);
-  const [days, setDays] = useState(90);
+  const [days, setDays] = useState(7);
   const [byGrower, setByGrower] = useState([]);
   const [byAvc, setByAvc] = useState([]);
   const [byCompany, setByCompany] = useState([]);
@@ -16610,15 +16638,7 @@ function InkoopDashboardTab({ company }) {
           How much money is at risk from mismatches and unresolved gaps, and how much is actually being spent -- ranked by grower, AVC, buying company, and product group (Bloemen/Planten/Accessoires).
         </div>
         <div className="form-grid">
-          <label>
-            <span>Window</span>
-            <select value={days} onChange={(event) => setDays(Number(event.target.value))}>
-              <option value={30}>Last 30 days</option>
-              <option value={90}>Last 90 days</option>
-              <option value={180}>Last 180 days</option>
-              <option value={365}>Last 365 days</option>
-            </select>
-          </label>
+          <InkoopRangeSelect days={days} onChange={setDays} />
         </div>
       </InkoopCollapsibleCard>
 
@@ -16888,6 +16908,7 @@ function InkoopCalendarTab({ company, manualLinkDrafts, setManualLinkDrafts, onL
 }
 
 function InkoopFollowUpTab({ company }) {
+  const [days, setDays] = useState(7);
   const [issues, setIssues] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
@@ -16901,6 +16922,7 @@ function InkoopFollowUpTab({ company }) {
     const params = new URLSearchParams();
     if (company) params.set("company", company);
     if (showResolved) params.set("show_resolved", "1");
+    params.set("days", String(days));
     return apiJson(`/api/inkoop/issues?${params.toString()}`)
       .then((payload) => setIssues(payload.issues || []))
       .catch((loadError) => setError(loadError.message))
@@ -16910,7 +16932,7 @@ function InkoopFollowUpTab({ company }) {
   useEffect(() => {
     load().catch(() => {});
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [company, showResolved]);
+  }, [company, showResolved, days]);
 
   function getDraft(issue) {
     return drafts[issue.id] || { status: issue.status, assigned_to: issue.assigned_to, note: issue.note };
@@ -16952,6 +16974,7 @@ function InkoopFollowUpTab({ company }) {
         Genuine financial discrepancies worth physically checking -- mismatches, and purchases/invoice lines with no counterpart yet. Mark progress here so nothing gets checked twice or forgotten.
       </div>
       <div className="row-actions spread-actions">
+        <InkoopRangeSelect days={days} onChange={setDays} />
         <label className="inline-checkbox">
           <input type="checkbox" checked={showResolved} onChange={(event) => setShowResolved(event.target.checked)} />
           <span>Show resolved</span>
@@ -17039,6 +17062,7 @@ function InkoopRetourStatusBadge({ status }) {
 // matchInkoopVeilingLines already netted against whether it actually went
 // to one of FloraHolland's own "retour" (return) accounts.
 function InkoopDestinationsTab() {
+  const [days, setDays] = useState(7);
   const [summary, setSummary] = useState(null);
   const [corrections, setCorrections] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -17048,8 +17072,8 @@ function InkoopDestinationsTab() {
     setLoading(true);
     setError("");
     return Promise.all([
-      apiJson("/api/inkoop/destinations/summary"),
-      apiJson("/api/inkoop/destinations/corrections"),
+      apiJson(`/api/inkoop/destinations/summary?days=${days}`),
+      apiJson(`/api/inkoop/destinations/corrections?days=${days}`),
     ])
       .then(([summaryPayload, correctionsPayload]) => {
         setSummary(summaryPayload);
@@ -17062,7 +17086,7 @@ function InkoopDestinationsTab() {
   useEffect(() => {
     load().catch(() => {});
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [days]);
 
   if (loading && !summary) {
     return <div className="notice">Loading destinations...</div>;
@@ -17074,6 +17098,9 @@ function InkoopDestinationsTab() {
         No separate upload here -- the same ERP export you upload on Compare &amp; Reconcile now also carries a "Dispatched to : &lt;code&gt;" row after every purchase lot, showing where that lot's stock actually went. It's read from that one upload automatically; nothing extra to do.
       </div>
 
+      <div className="row-actions spread-actions">
+        <InkoopRangeSelect days={days} onChange={setDays} />
+      </div>
       {error && <div className="notice danger">{error}</div>}
 
       {summary && (
