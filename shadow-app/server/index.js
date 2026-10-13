@@ -39,6 +39,9 @@ import {
   getInkoopInvoiceSummaryLines,
   saveInkoopInvoiceHeaders,
   getInkoopInvoiceHeaders,
+  getInkoopDaySummaries,
+  saveInkoopDaySummaries,
+  deleteInkoopDaySummaries,
   getInkoopInvoiceLinesByInvoiceNumbers,
   getKingExports,
   saveKingExports,
@@ -8277,6 +8280,85 @@ async function computeInkoopDays(state, from, to) {
     days.push(await computeInkoopDay(state, date));
   }
   return days;
+}
+
+// --- Stored day figures for the Calendar -----------------------------------
+// A day's calendar bucket (per company) is computed once and kept in
+// inkoop_day_summaries; the Calendar reads those. Missing ones (new days,
+// days an upload touched, master data changed since) are filled in the
+// background, one day at a time, and the Calendar shows them as they land.
+const INKOOP_EMPTY_DAY_BUCKET = {
+  purchase_value: 0, invoice_value: 0, mismatch_count: 0, mismatch_value: 0,
+  gap_count: 0, gap_value: 0, embalage_value: 0, product_count: 0,
+};
+
+// Which master data a stored day was computed with -- changing supplier
+// links, facturation groups, BW codes etc. changes the matching, so those
+// days count as missing again.
+function inkoopStateFingerprint(state) {
+  return crypto.createHash("sha1").update(JSON.stringify([
+    state.supplier_map, state.supplier_name_map, state.supplier_fh_map, state.supplier_bw_map,
+    state.manual_supplier_links, state.facturation_groups, state.customer_map,
+  ])).digest("hex");
+}
+
+async function computeAndStoreInkoopDaySummary(state, date, fingerprint) {
+  const day = await computeInkoopDay(state, date);
+  const companies = new Set([""]);
+  for (const key of INKOOP_RESULT_LISTS) {
+    for (const row of day.result[key] || []) {
+      const company = normalizeUkdocsText(row?.company_number);
+      if (company) companies.add(company);
+    }
+  }
+  const buckets = {};
+  for (const company of companies) {
+    const bucket = bucketInkoopResultsByDate(filterInkoopResultsByCompany(day.result, company || null), day.aggregateContext).get(date);
+    buckets[company] = bucket || { date, ...INKOOP_EMPTY_DAY_BUCKET };
+  }
+  await saveInkoopDaySummaries(date, buckets, fingerprint);
+}
+
+const inkoopDaySummaryQueue = new Set();
+let inkoopDaySummaryWorker = null;
+
+// Queue days to (re)compute in the background; returns at once.
+function queueInkoopDaySummaries(dates) {
+  for (const date of dates) inkoopDaySummaryQueue.add(date);
+  if (inkoopDaySummaryWorker) return;
+  inkoopDaySummaryWorker = (async () => {
+    try {
+      while (inkoopDaySummaryQueue.size) {
+        const date = [...inkoopDaySummaryQueue].sort().pop(); // newest first
+        inkoopDaySummaryQueue.delete(date);
+        try {
+          const state = await readInkoopState();
+          await computeAndStoreInkoopDaySummary(state, date, inkoopStateFingerprint(state));
+        } catch (error) {
+          console.error(`Inkoop day summary ${date} failed:`, error instanceof Error ? error.message : error);
+        }
+      }
+    } finally {
+      inkoopDaySummaryWorker = null;
+    }
+  })();
+}
+
+// After an upload: the days it touched (plus the match tolerance either
+// side) are stale -- remove and recompute them in the background.
+async function refreshInkoopDaySummariesForDates(dates) {
+  const days = [...new Set((dates || []).map(inkoopIsoDate).filter(Boolean))].sort();
+  if (!days.length) return;
+  const from = addDaysToIsoDate(days[0], -INKOOP_DAY_TOLERANCE_DAYS);
+  const to = addDaysToIsoDate(days[days.length - 1], INKOOP_DAY_TOLERANCE_DAYS);
+  await deleteInkoopDaySummaries({ from, to });
+  const lastDay = to < localDateIso() ? to : localDateIso();
+  if (from <= lastDay) {
+    // Only the most recent ~2 months right away; older days fill in when
+    // their month is opened in the Calendar.
+    const recentFrom = addDaysToIsoDate(lastDay, -62) > from ? addDaysToIsoDate(lastDay, -62) : from;
+    queueInkoopDaySummaries(inkoopDatesInRange(recentFrom, lastDay));
+  }
 }
 
 function mergeInkoopDayResults(results) {
@@ -21337,6 +21419,11 @@ async function handleApi(req, res, url) {
       }
       await saveInkoopInvoiceLines(flatInvoiceLines);
       bumpInkoopMatchVersion();
+      // Calendar figures of the days this upload touched: recompute.
+      await refreshInkoopDaySummariesForDates([
+        ...flatInvoiceLines.map((line) => line?.invoice_date),
+        ...erpRows.map((row) => row?.date),
+      ]);
       await saveInkoopInvoiceHeaders(buildInkoopInvoiceHeaders(veiling.invoices, body?.veiling_zip?.name));
       await saveInkoopInvoicePdfs(veiling.pdfs);
       // A big upload arrives in parts (the page splits it); only the last
@@ -21435,15 +21522,25 @@ async function handleApi(req, res, url) {
     const monthEnd = `${yearStr}-${monthStr}-${String(daysInMonth).padStart(2, "0")}`;
     try {
       const state = await readInkoopState();
-      const company = url.searchParams.get("company");
-      // Days after today have nothing to match yet.
+      const company = normalizeUkdocsText(url.searchParams.get("company"));
+      // Stored day figures (see computeAndStoreInkoopDaySummary); days not
+      // computed yet -- or computed with different master data -- are
+      // queued and reported as pending, the page asks again shortly.
       const lastDay = monthEnd < localDateIso() ? monthEnd : localDateIso();
       const buckets = new Map();
+      const pending = [];
       if (monthStart <= lastDay) {
-        for (const day of await computeInkoopDays(state, monthStart, lastDay)) {
-          const bucket = bucketInkoopResultsByDate(filterInkoopResultsByCompany(day.result, company), day.aggregateContext).get(day.date);
-          if (bucket) buckets.set(day.date, bucket);
+        const fingerprint = inkoopStateFingerprint(state);
+        const stored = await getInkoopDaySummaries({ from: monthStart, to: lastDay });
+        const fresh = stored.filter((row) => row.state_fingerprint === fingerprint);
+        const computedDays = new Set(fresh.filter((row) => row.company === "").map((row) => row.date));
+        for (const row of fresh) {
+          if (row.company === company) buckets.set(row.date, { ...row.bucket, date: row.date });
         }
+        for (const date of inkoopDatesInRange(monthStart, lastDay)) {
+          if (!computedDays.has(date)) pending.push(date);
+        }
+        if (pending.length) queueInkoopDaySummaries(pending);
       }
       const days = [];
       for (let day = 1; day <= daysInMonth; day += 1) {
@@ -21461,7 +21558,7 @@ async function handleApi(req, res, url) {
           product_count: 0,
         });
       }
-      sendJson(res, 200, { month, days });
+      sendJson(res, 200, { month, days, pending_days: pending });
     } catch (error) {
       sendJson(res, 400, { error: error instanceof Error ? error.message : String(error) });
     }

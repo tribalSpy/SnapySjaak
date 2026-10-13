@@ -670,7 +670,7 @@ export async function clearInkoopUploads() {
     const result = await pool.query(`SELECT COUNT(*)::int AS count FROM ${table}`);
     counts[table] = result.rows[0]?.count || 0;
   }
-  await pool.query("TRUNCATE inkoop_erp_lines, inkoop_invoice_lines, inkoop_invoice_headers, inkoop_dispatch_lots, inkoop_issue_status");
+  await pool.query("TRUNCATE inkoop_erp_lines, inkoop_invoice_lines, inkoop_invoice_headers, inkoop_dispatch_lots, inkoop_issue_status, inkoop_day_summaries");
   return { cleared: true, counts };
 }
 
@@ -816,6 +816,53 @@ export async function updateKingExportBatchStatus(batchId, status, errorText = "
 
 // Just the columns the per-company invoice summary needs (not the full raw
 // line), for every line in the date range.
+export async function getInkoopDaySummaries({ from, to } = {}) {
+  if (!pool || !from || !to) {
+    return [];
+  }
+  const result = await pool.query(
+    `SELECT to_char(summary_date, 'YYYY-MM-DD') AS date, company, bucket, state_fingerprint
+     FROM inkoop_day_summaries WHERE summary_date >= $1::date AND summary_date <= $2::date`,
+    [from, to],
+  );
+  return result.rows;
+}
+
+// All companies' buckets of one day in one go (replaces that day's rows).
+export async function saveInkoopDaySummaries(date, bucketsByCompany, stateFingerprint) {
+  if (!pool || !date) {
+    return;
+  }
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    await client.query("DELETE FROM inkoop_day_summaries WHERE summary_date = $1::date", [date]);
+    for (const [company, bucket] of Object.entries(bucketsByCompany || {})) {
+      await client.query(
+        "INSERT INTO inkoop_day_summaries (summary_date, company, bucket, state_fingerprint) VALUES ($1::date, $2, $3::jsonb, $4)",
+        [date, company, JSON.stringify(bucket), stateFingerprint || ""],
+      );
+    }
+    await client.query("COMMIT");
+  } catch (error) {
+    await client.query("ROLLBACK").catch(() => {});
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
+export async function deleteInkoopDaySummaries({ from, to } = {}) {
+  if (!pool) {
+    return;
+  }
+  if (from && to) {
+    await pool.query("DELETE FROM inkoop_day_summaries WHERE summary_date >= $1::date AND summary_date <= $2::date", [from, to]);
+  } else {
+    await pool.query("DELETE FROM inkoop_day_summaries");
+  }
+}
+
 export async function getInkoopInvoiceSummaryLines({ from, to } = {}) {
   if (!pool || !from || !to) {
     return [];
@@ -2114,6 +2161,26 @@ const databaseMigrations = [
   `,
   `
     CREATE INDEX IF NOT EXISTS inkoop_invoice_lines_company_number_idx ON inkoop_invoice_lines (company_number)
+  `,
+  // Every day-based match looks lines up by date -- without this each
+  // lookup scanned all invoice lines ever uploaded (months of them), many
+  // times per calendar load.
+  `
+    CREATE INDEX IF NOT EXISTS inkoop_invoice_lines_date_idx ON inkoop_invoice_lines (invoice_date)
+  `,
+  // The Calendar's per-day figures, computed once and read back (per
+  // company; company '' = all). Rows for days an upload touches are
+  // removed so they're recomputed; state_fingerprint marks which master
+  // data (supplier links, groups, BW...) they were computed with.
+  `
+    CREATE TABLE IF NOT EXISTS inkoop_day_summaries (
+      summary_date date NOT NULL,
+      company text NOT NULL DEFAULT '',
+      bucket jsonb NOT NULL,
+      state_fingerprint text NOT NULL DEFAULT '',
+      computed_at timestamptz NOT NULL DEFAULT now(),
+      PRIMARY KEY (summary_date, company)
+    )
   `,
   `
     CREATE TABLE IF NOT EXISTS inkoop_issue_status (

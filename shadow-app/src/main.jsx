@@ -16797,6 +16797,7 @@ function InkoopCalendarTab({ company, manualLinkDrafts, setManualLinkDrafts, onL
   const [selectedDate, setSelectedDate] = useState("");
   const [dayResult, setDayResult] = useState(null);
   const [dayLoading, setDayLoading] = useState(false);
+  const [pendingDays, setPendingDays] = useState(0);
 
   useEffect(() => {
     let cancelled = false;
@@ -16806,9 +16807,15 @@ function InkoopCalendarTab({ company, manualLinkDrafts, setManualLinkDrafts, onL
     setDayResult(null);
     const params = new URLSearchParams({ month });
     if (company) params.set("company", company);
-    apiJson(`/api/inkoop/calendar?${params.toString()}`)
+    // Days not calculated yet come back as pending_days; they're computed
+    // in the background, so ask again until none are left.
+    let timer = null;
+    const fetchMonth = () => apiJson(`/api/inkoop/calendar?${params.toString()}`)
       .then((payload) => {
-        if (!cancelled) setDays(payload.days || []);
+        if (cancelled) return;
+        setDays(payload.days || []);
+        setPendingDays((payload.pending_days || []).length);
+        if ((payload.pending_days || []).length) timer = setTimeout(fetchMonth, 4000);
       })
       .catch((loadError) => {
         if (!cancelled) setError(loadError.message);
@@ -16816,8 +16823,10 @@ function InkoopCalendarTab({ company, manualLinkDrafts, setManualLinkDrafts, onL
       .finally(() => {
         if (!cancelled) setLoading(false);
       });
+    fetchMonth();
     return () => {
       cancelled = true;
+      if (timer) clearTimeout(timer);
     };
   }, [month, company]);
 
@@ -16863,6 +16872,7 @@ function InkoopCalendarTab({ company, manualLinkDrafts, setManualLinkDrafts, onL
           <strong>{month}</strong>
           <button type="button" onClick={() => shiftMonth(1)}>Next &gt;</button>
         </div>
+        {!!pendingDays && <div className="notice">Calculating {pendingDays} day(s) in the background -- they fill in by themselves. Once calculated, this month opens instantly.</div>}
         {error && <div className="notice danger">{error}</div>}
         {loading ? (
           <div className="notice">Loading calendar...</div>
