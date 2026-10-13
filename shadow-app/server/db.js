@@ -2162,12 +2162,6 @@ const databaseMigrations = [
   `
     CREATE INDEX IF NOT EXISTS inkoop_invoice_lines_company_number_idx ON inkoop_invoice_lines (company_number)
   `,
-  // Every day-based match looks lines up by date -- without this each
-  // lookup scanned all invoice lines ever uploaded (months of them), many
-  // times per calendar load.
-  `
-    CREATE INDEX IF NOT EXISTS inkoop_invoice_lines_date_idx ON inkoop_invoice_lines (invoice_date)
-  `,
   // The Calendar's per-day figures, computed once and read back (per
   // company; company '' = all). Rows for days an upload touches are
   // removed so they're recomputed; state_fingerprint marks which master
@@ -2380,6 +2374,40 @@ const databaseMigrations = [
 // after the standby PC restores a Postgres dump pulled from Render, which
 // would otherwise leave the schema however that dump happened to look,
 // until the next full server restart re-ran migrations.
+// Indexes on big tables, built after the server is up: as a startup
+// migration the invoice_date index on months of invoice lines (and waiting
+// for the old instance still writing to that table) kept a deploy from
+// opening its port within Render's limit. CONCURRENTLY doesn't block
+// reads/writes; a failed attempt leaves an invalid index, dropped and
+// rebuilt here.
+const BACKGROUND_INDEXES = [
+  // Every day-based Inkoop match looks invoice lines up by date -- without
+  // this each lookup scanned every invoice line ever uploaded.
+  { name: "inkoop_invoice_lines_date_idx", sql: "CREATE INDEX CONCURRENTLY IF NOT EXISTS inkoop_invoice_lines_date_idx ON inkoop_invoice_lines (invoice_date)" },
+];
+
+export async function ensureBackgroundIndexes() {
+  if (!pool) {
+    return [];
+  }
+  const built = [];
+  for (const index of BACKGROUND_INDEXES) {
+    const existing = await pool.query(
+      "SELECT i.indisvalid FROM pg_class c JOIN pg_index i ON i.indexrelid = c.oid WHERE c.relname = $1",
+      [index.name],
+    );
+    if (existing.rows[0]?.indisvalid) {
+      continue;
+    }
+    if (existing.rows.length) {
+      await pool.query(`DROP INDEX CONCURRENTLY IF EXISTS ${index.name}`);
+    }
+    await pool.query(index.sql);
+    built.push(index.name);
+  }
+  return built;
+}
+
 export async function applyDatabaseMigrations() {
   if (!pool) {
     return { ok: false, error: "Database pool is not initialized" };

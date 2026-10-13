@@ -24,6 +24,7 @@ import {
   claimNextLlmJob,
   completeLlmJob,
   applyDatabaseMigrations,
+  ensureBackgroundIndexes,
   exportDatabaseSnapshot,
   importDatabaseSnapshot,
   createLlmJob,
@@ -23229,6 +23230,12 @@ async function startServer() {
   }, 15 * 60 * 1000);
 
   server.listen(port, host, () => {
+    // Big-table indexes after the port is open (see ensureBackgroundIndexes).
+    if (isDatabaseEnabled()) {
+      ensureBackgroundIndexes()
+        .then((built) => { if (built.length) console.log(`Built database index(es): ${built.join(", ")}`); })
+        .catch((error) => console.error("Building background database indexes failed:", error instanceof Error ? error.message : error));
+    }
     console.log("SnappySjaak shadow app is running.");
     console.log("Open on this PC:");
     console.log(`  http://127.0.0.1:${port}`);
