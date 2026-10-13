@@ -8659,9 +8659,26 @@ function EricDocsPage({ currentUser }) {
 // never surprises someone opening that menu later by hand.
 const PD_STEP_PLAN_FOCUS_KEY = "pd-step-plan-focus";
 
-function setPdStepPlanFocus(page, date, collectionId, action = "") {
+// A page can refuse to be left (PD Keuring when the step plan's fields are
+// still missing); the app shell asks it before switching pages.
+let pageLeaveGuard = null;
+
+function setPageLeaveGuard(guard) {
+  pageLeaveGuard = guard;
+}
+
+// The labels of the PD Keuring row fields the plan can ask for.
+const PD_STEP_PLAN_FIELD_LABELS = {
+  reference_connect: "Connect number",
+  truck_number: "Truck number",
+  trailer_number: "Licence plate",
+  expected_pieces: "Pieces",
+};
+
+function setPdStepPlanFocus(page, date, collectionId, action = "", fields = []) {
   try {
-    sessionStorage.setItem(PD_STEP_PLAN_FOCUS_KEY, JSON.stringify({ page, date, collection_id: collectionId, action, at: Date.now() }));
+    sessionStorage.setItem("pd-step-plan-date", date);
+    sessionStorage.setItem(PD_STEP_PLAN_FOCUS_KEY, JSON.stringify({ page, date, collection_id: collectionId, action, fields, at: Date.now() }));
   } catch {
     // Storage blocked: the menu just opens on today.
   }
@@ -8684,7 +8701,13 @@ const PD_STEP_PLAN_PAGE_LABELS = {
 };
 
 function PdStepPlanPage({ onNavigate }) {
-  const [date, setDate] = useState(() => localDateIso());
+  const [date, setDate] = useState(() => {
+    try {
+      return sessionStorage.getItem("pd-step-plan-date") || localDateIso();
+    } catch {
+      return localDateIso();
+    }
+  });
   const [plan, setPlan] = useState(null);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
@@ -8719,7 +8742,8 @@ function PdStepPlanPage({ onNavigate }) {
   }, [date]);
 
   function goTo(row, step) {
-    setPdStepPlanFocus(step.page, date, row.collection_id);
+    // The missing row fields go along, so PD Keuring can highlight them.
+    setPdStepPlanFocus(step.page, date, row.collection_id, "", (step.skippable || []).map((item) => item.code));
     onNavigate(step.page);
   }
 
@@ -8963,6 +8987,40 @@ function PdKeuringPage({ currentUser }) {
   const printCollections = state?.print_collections || [];
   const customers = state?.customers || [];
   const dayRows = printCollections.filter((item) => String(item.shipment_date || "").slice(0, 10) === selectedDate);
+  // Opened from the PD Step Plan for one shipment: the fields it still
+  // needs glow until they're filled in, and leaving with some still empty
+  // asks to continue without them (recorded in the plan).
+  const [stepFocus] = useState(() => pdStepPlanFocus("pdkeuring"));
+  const stepFocusRowId = stepFocus?.collection_id || "";
+  const stepNeededFields = (stepFocus?.fields || []).filter((field) => PD_STEP_PLAN_FIELD_LABELS[field]);
+  const stepNeeded = (row, field) => row.id === stepFocusRowId && stepNeededFields.includes(field) && !String(inlineFieldValue(row, field) || "").trim();
+  const stepLeaveCheck = useRef(null);
+  stepLeaveCheck.current = () => {
+    const row = dayRows.find((item) => item.id === stepFocusRowId) || printCollections.find((item) => item.id === stepFocusRowId);
+    if (!row || !stepNeededFields.length) return true;
+    if (isRowDirty(row) && !window.confirm(`${row.customer_name || row.city_name || "This shipment"}: you have changes that aren't saved yet (press Save first).\n\nLeave without saving them?`)) {
+      return false;
+    }
+    const missing = stepNeededFields.filter((field) => !String(row[field] || "").trim());
+    if (!missing.length) return true;
+    const labels = missing.map((field) => PD_STEP_PLAN_FIELD_LABELS[field]).join(", ");
+    if (!window.confirm(`${row.customer_name || row.city_name || "This shipment"}: still missing ${labels}.\n\nOK = continue without them (shown as a warning in the PD Step Plan)\nCancel = stay and fill them in`)) {
+      return false;
+    }
+    apiJson("/api/pd-step-plan/skip", { method: "POST", body: JSON.stringify({ collection_id: row.id, codes: missing, skip: true }) }).catch(() => {});
+    return true;
+  };
+  useEffect(() => {
+    if (!stepFocusRowId || !stepNeededFields.length) return undefined;
+    setPageLeaveGuard(() => stepLeaveCheck.current());
+    return () => setPageLeaveGuard(null);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [stepFocusRowId]);
+  useEffect(() => {
+    if (!stepFocusRowId) return;
+    const element = document.getElementById(`pd-row-${stepFocusRowId}`);
+    if (element) element.scrollIntoView({ block: "center", behavior: "smooth" });
+  }, [stepFocusRowId, dayRows.length]);
   const lastWeekDate = addDaysToIso(selectedDate, -7);
   const lastWeekRows = printCollections.filter((item) => String(item.shipment_date || "").slice(0, 10) === lastWeekDate);
   const showProposals = dayRows.length === 0 && lastWeekRows.length > 0;
@@ -9509,7 +9567,7 @@ function PdKeuringPage({ currentUser }) {
                 {dayRows.map((row) => {
                   const dirty = isRowDirty(row);
                   return (
-                    <tr key={row.id}>
+                    <tr key={row.id} id={`pd-row-${row.id}`} className={row.id === stepFocusRowId ? "step-plan-row" : undefined}>
                       <td>{row.city_name || "-"}</td>
                       <td>{row.border_crossing || "-"}</td>
                       <td>{row.hub_code || "-"}</td>
@@ -9517,12 +9575,12 @@ function PdKeuringPage({ currentUser }) {
                       <td>{row.pd_form || "-"}</td>
                       <td>{row.pd_type || "-"}</td>
                       <td>{row.pd_code || "-"}</td>
-                      <td><input value={inlineFieldValue(row, "reference_connect")} onChange={(event) => updateInlineField(row.id, "reference_connect", event.target.value)} /></td>
+                      <td><input className={stepNeeded(row, "reference_connect") ? "step-plan-needed" : undefined} value={inlineFieldValue(row, "reference_connect")} onChange={(event) => updateInlineField(row.id, "reference_connect", event.target.value)} /></td>
                       <td>{row.customer_id && customers.some((item) => item.id === row.customer_id) ? (row.customer_name || "-") : <span className="ukdocs-status-badge danger">No customer picked</span>}</td>
-                      <td><input value={inlineFieldValue(row, "truck_number")} onChange={(event) => updateInlineField(row.id, "truck_number", event.target.value)} placeholder="Truck number" /></td>
-                      <td><input value={inlineFieldValue(row, "trailer_number")} onChange={(event) => updateInlineField(row.id, "trailer_number", event.target.value)} placeholder="Licence plate" /></td>
+                      <td><input className={stepNeeded(row, "truck_number") ? "step-plan-needed" : undefined} value={inlineFieldValue(row, "truck_number")} onChange={(event) => updateInlineField(row.id, "truck_number", event.target.value)} placeholder="Truck number" /></td>
+                      <td><input className={stepNeeded(row, "trailer_number") ? "step-plan-needed" : undefined} value={inlineFieldValue(row, "trailer_number")} onChange={(event) => updateInlineField(row.id, "trailer_number", event.target.value)} placeholder="Licence plate" /></td>
                       <td><input value={inlineFieldValue(row, "expected_boxes")} onChange={(event) => updateInlineField(row.id, "expected_boxes", event.target.value)} placeholder="Boxes" /></td>
-                      <td><input value={inlineFieldValue(row, "expected_pieces")} onChange={(event) => updateInlineField(row.id, "expected_pieces", event.target.value)} placeholder="Pieces" /></td>
+                      <td><input className={stepNeeded(row, "expected_pieces") ? "step-plan-needed" : undefined} value={inlineFieldValue(row, "expected_pieces")} onChange={(event) => updateInlineField(row.id, "expected_pieces", event.target.value)} placeholder="Pieces" /></td>
                       <td className="row-actions">
                         {dirty && <button type="button" className="primary" onClick={() => saveInlineEdits(row)} disabled={saving}>Save</button>}
                         <button type="button" onClick={() => setRowDraft({ ...row })}>Edit</button>
@@ -10088,6 +10146,8 @@ function App() {
   const normalizedPathname = rawPathname !== "/" ? rawPathname.replace(/\/+$/, "").toLowerCase() : rawPathname;
   const publicClockMode = normalizedPathname === "/inklokken";
   const [page, setPage] = useState("dashboard");
+  // Pages the PD Step Plan sent you to show a bar back to the plan.
+  const [fromStepPlan, setFromStepPlan] = useState(false);
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [fustMenuVersion, setFustMenuVersion] = useState(0);
   const loggedIn = Boolean(auth.user);
@@ -10286,7 +10346,11 @@ function App() {
               className={page === item.key ? "active" : ""}
               onClick={(event) => {
                 event.currentTarget.blur();
+                if (item.key !== page && pageLeaveGuard && !pageLeaveGuard(item.key)) {
+                  return;
+                }
                 setPage(item.key);
+                setFromStepPlan(false);
                 if (item.key === "fust") {
                   setFustMenuVersion((value) => value + 1);
                 }
@@ -10336,6 +10400,22 @@ function App() {
           <h1>{heading.title}</h1>
           <p>{heading.caption}</p>
         </header>
+        {fromStepPlan && page !== "pdstepplan" && (
+          <div className="step-plan-return">
+            <span>You came here from the <strong>PD Step Plan</strong>.</span>
+            <button
+              type="button"
+              className="primary"
+              onClick={() => {
+                if (pageLeaveGuard && !pageLeaveGuard("pdstepplan")) return;
+                setPage("pdstepplan");
+                setFromStepPlan(false);
+              }}
+            >
+              ← Continue with the PD Step Plan
+            </button>
+          </div>
+        )}
 
         {page === "users" && <UsersPage currentUser={auth.user} />}
         {page === "fust" && <FustPage currentUser={auth.user} menuVersion={fustMenuVersion} />}
@@ -10353,7 +10433,7 @@ function App() {
         {page === "shelfcount" && <ShelfCountPage currentUser={auth.user} />}
         {page === "ericdocs" && <EricDocsPage currentUser={auth.user} />}
         {page === "pdkeuring" && <PdKeuringPage currentUser={auth.user} />}
-        {page === "pdstepplan" && <PdStepPlanPage onNavigate={setPage} />}
+        {page === "pdstepplan" && <PdStepPlanPage onNavigate={(next) => { setFromStepPlan(true); setPage(next); }} />}
         {page === "inkoop" && <InkoopControlePage currentUser={auth.user} />}
         {page === "settings" && <SettingsPage currentUser={auth.user} />}
         {page === "ukdocs" && <UkdocsPage currentUser={auth.user} onNavigate={setPage} />}
