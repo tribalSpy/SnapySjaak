@@ -2406,6 +2406,13 @@ function normalizeUkdocsPrintCollection(collection) {
     // where the mistake is, and agrees with it -- unlocks "Send papers to
     // CSI" for this one zending despite the audit not passing cleanly.
     // Cleared automatically the next time CSI is re-run on this zending.
+    // PD Step Plan: "this shipment really has no connect number" -- lets
+    // the plan move past step 2 without one (a deliberate, confirmed skip).
+    no_connect_confirmed: {
+      confirmed: collection?.no_connect_confirmed?.confirmed === true,
+      confirmed_at: normalizeUkdocsText(collection?.no_connect_confirmed?.confirmed_at),
+      confirmed_by: normalizeUkdocsText(collection?.no_connect_confirmed?.confirmed_by),
+    },
     csi_override: {
       overridden: collection?.csi_override?.overridden === true,
       overridden_at: normalizeUkdocsText(collection?.csi_override?.overridden_at),
@@ -10110,6 +10117,92 @@ async function runShelfCountNightlyScheduledCheck() {
 // cross-references the exact same job types/staleness thresholds the two
 // retry watchdogs above use, so "needs attention" here means the same
 // thing it means to them.
+// PD Step Plan: the fixed order a paper shipment goes through, per
+// shipment of `date` (stock control "Voorraad" needs no papers and is left
+// out):
+//   1 PD Keuring set up (city, PD type, PD form/code)       -> PD Keuring
+//   2 Connect number, truck number, licence plate           -> PD Keuring
+//     (no connect number: allowed once confirmed, see no_connect_confirmed)
+//   3 Invoices + export document generated                  -> UKDocs Export
+//   4 Papers sent: UKdocs CSI for export shipments, Eric Docs for
+//     nakeuring (reinspection) shipments                    -> CSI / Eric Docs
+// A step counts as done from the same data the other menus check; the
+// current step is the first one not done, later ones are locked.
+function buildPdStepPlan(state, targetDate) {
+  const collections = (state.print_collections || []).filter((item) => (
+    String(item?.shipment_date || "").slice(0, 10) === targetDate
+    && ukdocsPrintInspectionMode(item) !== "stock_control"
+  ));
+  const rows = collections.map((collection) => {
+    const requirements = getUkdocsPrintCollectionRequirements(collection, state.customers, collections, { requireInspectionListForReinspection: false });
+    const route = ukdocsPrintInspectionMode(collection) === "reinspection" ? "ericdocs" : "ukdocscsi";
+    const has = (value) => Boolean(String(value || "").trim());
+
+    const setupMissing = [];
+    if (!has(collection.city_name)) setupMissing.push("City");
+    if (!has(collection.pd_type)) setupMissing.push("PD type");
+    if (!has(collection.pd_form) && !has(collection.pd_code)) setupMissing.push("PD form / code");
+
+    const refsMissing = [];
+    const refsWarnings = [];
+    if (!has(collection.truck_number)) refsMissing.push("Truck number");
+    if (!has(collection.trailer_number)) refsMissing.push("Licence plate");
+    const noConnect = !has(collection.reference_connect);
+    if (noConnect && !collection.no_connect_confirmed?.confirmed) refsMissing.push("Connect number");
+    if (noConnect && collection.no_connect_confirmed?.confirmed) {
+      refsWarnings.push(`No connect number (confirmed by ${collection.no_connect_confirmed.confirmed_by || "?"})`);
+    }
+
+    const docsMissing = requirements.missing.filter((item) => /^(Generated export|Invoice numbers|Invoices \d)/.test(item));
+    const otherMissing = requirements.missing.filter((item) => !docsMissing.includes(item));
+
+    const finalMissing = [];
+    let finalStatus = "";
+    if (route === "ericdocs") {
+      if (!collection.eric_docs_email?.ok) {
+        finalMissing.push(...otherMissing);
+        finalStatus = collection.eric_docs_send_queue?.queued ? "queued to send" : collection.eric_docs_check?.ok ? "check ok, papers not sent" : "pieces check not done";
+        finalMissing.push("Eric Docs papers not sent");
+      }
+    } else if (!collection.csi_email?.ok) {
+      finalMissing.push(...otherMissing);
+      const csiStatus = normalizeUkdocsText(collection.csi_report?.status);
+      finalStatus = collection.csi_send_queue?.queued
+        ? "queued for CSI"
+        : collection.csi_check_passed
+          ? "CSI passed, papers not sent"
+          : ["queued", "running"].includes(csiStatus) ? "CSI audit running" : csiStatus === "done" ? "CSI not passed" : "CSI not run";
+      finalMissing.push("CSI papers not sent");
+    }
+
+    const steps = [
+      { key: "setup", label: "PD Keuring", page: "pdkeuring", done: setupMissing.length === 0, missing: setupMissing, warnings: [] },
+      { key: "references", label: "Connect / truck / plate", page: "pdkeuring", done: refsMissing.length === 0, missing: refsMissing, warnings: refsWarnings, can_confirm_no_connect: noConnect && !collection.no_connect_confirmed?.confirmed, no_connect_confirmed: noConnect && collection.no_connect_confirmed?.confirmed === true },
+      { key: "documents", label: "Invoices & export docs", page: "ukdocs", done: docsMissing.length === 0, missing: docsMissing, warnings: [] },
+      { key: "papers", label: route === "ericdocs" ? "Eric Docs" : "UKdocs CSI", page: route, done: finalMissing.length === 0, missing: finalMissing, warnings: [], status: finalStatus },
+    ];
+    const currentIndex = steps.findIndex((step) => !step.done);
+    return {
+      collection_id: collection.id,
+      shipment_reference: collection.shipment_reference || "",
+      customer_name: requirements.customer?.customer_name || collection.customer_name || collection.city_name || "-",
+      city_name: collection.city_name || "",
+      pd_type: collection.pd_type || "",
+      reference_connect: collection.reference_connect || "",
+      truck_number: collection.truck_number || "",
+      trailer_number: collection.trailer_number || "",
+      route,
+      steps,
+      current_step: currentIndex === -1 ? steps.length : currentIndex,
+      complete: currentIndex === -1,
+    };
+  });
+  rows.sort((left, right) => left.current_step - right.current_step || left.customer_name.localeCompare(right.customer_name));
+  const perStep = [0, 0, 0, 0, 0];
+  rows.forEach((row) => { perStep[row.current_step] += 1; });
+  return { date: targetDate, rows, summary: { total: rows.length, at_step: perStep.slice(0, 4), complete: perStep[4] } };
+}
+
 async function buildUkdocsPipelineMonitor(state, targetDate) {
   const collections = (state.print_collections || []).filter((item) => (
     item?.collection_type !== "stock_control"
@@ -18481,6 +18574,40 @@ async function handleApi(req, res, url) {
       sendJson(res, 200, { state: nextState });
       return;
     }
+  }
+
+  if (url.pathname === "/api/pd-step-plan" && req.method === "GET") {
+    if (!requireAnyPermission(res, requestUser, [PERMISSIONS.PD_KEURING_VIEW, PERMISSIONS.UKDOCS_VIEW])) {
+      return;
+    }
+    const targetDate = String(url.searchParams.get("date") || "").slice(0, 10) || localDateIso();
+    sendJson(res, 200, buildPdStepPlan(await readUkdocsState(), targetDate));
+    return;
+  }
+
+  // "This shipment has no connect number" (or undo it).
+  if (url.pathname === "/api/pd-step-plan/no-connect" && req.method === "POST") {
+    if (!requireAnyPermission(res, requestUser, [PERMISSIONS.PD_KEURING_VIEW, PERMISSIONS.UKDOCS_VIEW])) {
+      return;
+    }
+    const body = await readRequestJson(req);
+    const state = await readUkdocsState();
+    const existing = ukdocsPrintCollectionById(state.print_collections, String(body?.collection_id || ""));
+    if (!existing) {
+      sendJson(res, 404, { error: "Shipment not found" });
+      return;
+    }
+    const confirmed = body?.confirmed !== false;
+    state.print_collections = upsertUkdocsPrintCollection(state.print_collections, normalizeUkdocsPrintCollection({
+      ...existing,
+      no_connect_confirmed: confirmed
+        ? { confirmed: true, confirmed_at: new Date().toISOString(), confirmed_by: requestUser.username }
+        : { confirmed: false, confirmed_at: "", confirmed_by: "" },
+      updated_at: new Date().toISOString(),
+    }));
+    await writeUkdocsState(state);
+    sendJson(res, 200, buildPdStepPlan(state, String(existing.shipment_date || "").slice(0, 10)));
+    return;
   }
 
   if (url.pathname === "/api/ukdocs-print/pipeline-monitor" && req.method === "GET") {

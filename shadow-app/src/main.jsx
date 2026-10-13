@@ -61,6 +61,7 @@ const PAGE_DEFINITIONS = [
   { key: "shelfcount", label: "Shelf Count", permission: PERMISSIONS.SHELF_COUNT_VIEW },
   { key: "ericdocs", label: "Eric Docs", permission: PERMISSIONS.ERIC_DOCS_VIEW },
   { key: "pdkeuring", label: "PD Keuring", permission: PERMISSIONS.PD_KEURING_VIEW },
+  { key: "pdstepplan", label: "PD Step Plan", permission: PERMISSIONS.PD_KEURING_VIEW },
   { key: "inkoop", label: "Inkoop Controle", permission: PERMISSIONS.INKOOP_VIEW },
   { key: "clock", label: "Inklokken", permission: PERMISSIONS.CLOCK_VIEW },
   { key: "users", label: "Users", permission: PERMISSIONS.USERS_MANAGE },
@@ -242,6 +243,11 @@ function pageHeading(page) {
       return {
         title: "PD Keuring",
         caption: "Plan PD keuring shipments, kept in sync with the PD keuringen spreadsheet while both are in use.",
+      };
+    case "pdstepplan":
+      return {
+        title: "PD Step Plan",
+        caption: "Every export shipment from PD keuring to papers sent, one step at a time.",
       };
     case "inkoop":
       return {
@@ -6645,8 +6651,8 @@ function UkdocsCSIPage({ currentUser }) {
   const [state, setState] = useState(null);
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
-  const [selectedCollectionDate, setSelectedCollectionDate] = useState(() => localDateIso());
-  const [selectedCollectionId, setSelectedCollectionId] = useState("");
+  const [selectedCollectionDate, setSelectedCollectionDate] = useState(() => pdStepPlanFocus("ukdocscsi")?.date || localDateIso());
+  const [selectedCollectionId, setSelectedCollectionId] = useState(() => pdStepPlanFocus("ukdocscsi")?.collection_id || "");
   const [detailDrawerOpen, setDetailDrawerOpen] = useState(false);
   const [acceptedCsiPlantReviewKeys, setAcceptedCsiPlantReviewKeys] = useState([]);
   const [showAcceptedCsiPlantReviewRows, setShowAcceptedCsiPlantReviewRows] = useState(false);
@@ -8331,8 +8337,8 @@ function EricDocsPage({ currentUser }) {
   const [state, setState] = useState(null);
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
-  const [selectedCollectionDate, setSelectedCollectionDate] = useState(() => localDateIso());
-  const [selectedCollectionId, setSelectedCollectionId] = useState("");
+  const [selectedCollectionDate, setSelectedCollectionDate] = useState(() => pdStepPlanFocus("ericdocs")?.date || localDateIso());
+  const [selectedCollectionId, setSelectedCollectionId] = useState(() => pdStepPlanFocus("ericdocs")?.collection_id || "");
   const [detailDrawerOpen, setDetailDrawerOpen] = useState(false);
 
   useEffect(() => {
@@ -8648,6 +8654,174 @@ function EricDocsPage({ currentUser }) {
   );
 }
 
+// "Go to step" hands the target menu the shipment's date (and zending) via
+// sessionStorage; the menu picks it up when it opens. Short-lived, so it
+// never surprises someone opening that menu later by hand.
+const PD_STEP_PLAN_FOCUS_KEY = "pd-step-plan-focus";
+
+function setPdStepPlanFocus(page, date, collectionId) {
+  try {
+    sessionStorage.setItem(PD_STEP_PLAN_FOCUS_KEY, JSON.stringify({ page, date, collection_id: collectionId, at: Date.now() }));
+  } catch {
+    // Storage blocked: the menu just opens on today.
+  }
+}
+
+function pdStepPlanFocus(page) {
+  try {
+    const focus = JSON.parse(sessionStorage.getItem(PD_STEP_PLAN_FOCUS_KEY) || "null");
+    return focus && focus.page === page && Date.now() - Number(focus.at || 0) < 30000 ? focus : null;
+  } catch {
+    return null;
+  }
+}
+
+const PD_STEP_PLAN_PAGE_LABELS = {
+  pdkeuring: "PD Keuring",
+  ukdocs: "UKDocs Export",
+  ukdocscsi: "UKDocs CSI",
+  ericdocs: "Eric Docs",
+};
+
+function PdStepPlanPage({ onNavigate }) {
+  const [date, setDate] = useState(() => localDateIso());
+  const [plan, setPlan] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+
+  function load() {
+    return apiJson(`/api/pd-step-plan?date=${encodeURIComponent(date)}`)
+      .then((payload) => { setPlan(payload); setError(""); })
+      .catch((loadError) => setError(loadError.message))
+      .finally(() => setLoading(false));
+  }
+
+  useEffect(() => {
+    setLoading(true);
+    load();
+    const timer = setInterval(load, 30000);
+    return () => clearInterval(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [date]);
+
+  function goTo(row, step) {
+    setPdStepPlanFocus(step.page, date, row.collection_id);
+    onNavigate(step.page);
+  }
+
+  async function setNoConnect(row, confirmed) {
+    if (confirmed && !window.confirm(
+      `${row.customer_name}${row.city_name ? ` (${row.city_name})` : ""} has no connect number.\n\n`
+      + "Continue without a connect number? Only do this when the shipment really has none.",
+    )) {
+      return;
+    }
+    setBusy(true);
+    try {
+      setPlan(await apiJson("/api/pd-step-plan/no-connect", { method: "POST", body: JSON.stringify({ collection_id: row.collection_id, confirmed }) }));
+    } catch (saveError) {
+      setError(saveError.message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  const rows = plan?.rows || [];
+  const summary = plan?.summary;
+  const stepTitles = ["1. PD Keuring", "2. Connect / truck / plate", "3. Invoices & export docs", "4. CSI / Eric Docs"];
+
+  return (
+    <section className="overview-stack">
+      <div className="row-actions spread-actions">
+        <label>
+          <span>Shipment date</span>
+          <input type="date" value={date} onChange={(event) => setDate(event.target.value)} />
+        </label>
+        <button type="button" onClick={() => { setLoading(true); load(); }} disabled={loading}>Refresh</button>
+      </div>
+
+      <div className="notice">
+        Every export shipment of the day, step by step: set up the PD keuring, fill in connect number, truck number and licence plate,
+        create the invoices and export documents, then send the papers through UKDocs CSI (export) or Eric Docs (nakeuring).
+        A step opens when the one before it is done; <strong>Go to</strong> opens the menu for that step on this date.
+        Stock control (Voorraad) needs no papers and isn't listed.
+      </div>
+      {error && <div className="notice danger">{error}</div>}
+
+      {summary && (
+        <div className="row-actions">
+          {stepTitles.map((title, index) => (
+            <span key={title} className={`ukdocs-status-badge ${summary.at_step[index] ? "info" : "muted"}`}>{title}: {summary.at_step[index]}</span>
+          ))}
+          <span className={`ukdocs-status-badge ${summary.complete ? "success" : "muted"}`}>Complete: {summary.complete} / {summary.total}</span>
+        </div>
+      )}
+
+      <div className="data-table-card">
+        <div className="table-wrap">
+          <table className="data-table">
+            <thead>
+              <tr>
+                <th>Shipment</th>
+                {stepTitles.map((title) => <th key={title}>{title}</th>)}
+                <th>Next</th>
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map((row) => {
+                const current = row.steps[row.current_step];
+                return (
+                  <tr key={row.collection_id}>
+                    <td>
+                      <strong>{row.customer_name}</strong>
+                      <div className="muted">{[row.city_name, row.pd_type].filter(Boolean).join(" · ") || "-"}</div>
+                      {row.shipment_reference && <div className="muted">Invoices {row.shipment_reference}</div>}
+                    </td>
+                    {row.steps.map((step, index) => {
+                      const state = step.done ? "done" : index === row.current_step ? "current" : "locked";
+                      return (
+                        <td key={step.key} style={{ background: state === "done" ? "#ecfdf5" : state === "current" ? "#fffbeb" : undefined }}>
+                          <div style={{ fontWeight: 600, color: state === "done" ? "#15803d" : state === "current" ? "#b45309" : "#9ca3af" }}>
+                            {state === "done" ? "✓ " : state === "current" ? "▶ " : "🔒 "}{step.label}
+                          </div>
+                          {state === "current" && step.missing.map((item) => <div key={item} className="muted">• {item}</div>)}
+                          {state === "current" && step.status && <div className="muted">{step.status}</div>}
+                          {step.warnings.map((item) => <div key={item} style={{ color: "#b45309" }}>⚠ {item}</div>)}
+                          {step.key === "references" && step.no_connect_confirmed && (
+                            <button type="button" className="link-button" onClick={() => setNoConnect(row, false)} disabled={busy}>undo "no connect"</button>
+                          )}
+                        </td>
+                      );
+                    })}
+                    <td>
+                      {row.complete
+                        ? <span className="ukdocs-status-badge success">✓ Complete</span>
+                        : (
+                          <div className="row-actions">
+                            <button type="button" className="primary" onClick={() => goTo(row, current)}>
+                              Go to {PD_STEP_PLAN_PAGE_LABELS[current.page] || current.page}
+                            </button>
+                            {current.key === "references" && current.can_confirm_no_connect && (
+                              <button type="button" onClick={() => setNoConnect(row, true)} disabled={busy} title="Allow this step without a connect number">
+                                No connect number…
+                              </button>
+                            )}
+                          </div>
+                        )}
+                    </td>
+                  </tr>
+                );
+              })}
+              {!rows.length && !loading && <tr><td colSpan={6}>No export shipments for {date}.</td></tr>}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+  );
+}
+
 function PdKeuringPage({ currentUser }) {
   const canManageSettings = hasPermission(currentUser, PERMISSIONS.SETTINGS_MANAGE);
   const [activeMenu, setActiveMenu] = useState("planning");
@@ -8661,7 +8835,7 @@ function PdKeuringPage({ currentUser }) {
   const [backfillBusy, setBackfillBusy] = useState(false);
   const [buildingReferenceFromHistory, setBuildingReferenceFromHistory] = useState(false);
   const [backfillResult, setBackfillResult] = useState(null);
-  const [selectedDate, setSelectedDate] = useState(() => localDateIso());
+  const [selectedDate, setSelectedDate] = useState(() => pdStepPlanFocus("pdkeuring")?.date || localDateIso());
   const [rowDraft, setRowDraft] = useState(null);
   // Set when a new row would land on the same shipment key as an existing
   // row of the day -- the user picks join or separate before it's saved.
@@ -10090,6 +10264,7 @@ function App() {
         {page === "shelfcount" && <ShelfCountPage currentUser={auth.user} />}
         {page === "ericdocs" && <EricDocsPage currentUser={auth.user} />}
         {page === "pdkeuring" && <PdKeuringPage currentUser={auth.user} />}
+        {page === "pdstepplan" && <PdStepPlanPage onNavigate={setPage} />}
         {page === "inkoop" && <InkoopControlePage currentUser={auth.user} />}
         {page === "settings" && <SettingsPage currentUser={auth.user} />}
         {page === "ukdocs" && <UkdocsPage currentUser={auth.user} onNavigate={setPage} />}
