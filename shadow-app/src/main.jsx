@@ -8689,6 +8689,19 @@ function PdStepPlanPage({ onNavigate }) {
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  // Right-click / "Continue without..." menu: { row, step, x, y }.
+  const [skipMenu, setSkipMenu] = useState(null);
+
+  useEffect(() => {
+    if (!skipMenu) return undefined;
+    const close = () => setSkipMenu(null);
+    window.addEventListener("click", close);
+    window.addEventListener("scroll", close, true);
+    return () => {
+      window.removeEventListener("click", close);
+      window.removeEventListener("scroll", close, true);
+    };
+  }, [skipMenu]);
 
   function load() {
     return apiJson(`/api/pd-step-plan?date=${encodeURIComponent(date)}`)
@@ -8710,21 +8723,37 @@ function PdStepPlanPage({ onNavigate }) {
     onNavigate(step.page);
   }
 
-  async function setNoConnect(row, confirmed) {
-    if (confirmed && !window.confirm(
-      `${row.customer_name}${row.city_name ? ` (${row.city_name})` : ""} has no connect number.\n\n`
-      + "Continue without a connect number? Only do this when the shipment really has none.",
+  // "Continue without ..." (skip = true) or undo it, for one or more items.
+  async function setSkipped(row, items, skip) {
+    setSkipMenu(null);
+    const names = items.map((item) => item.label).join(", ");
+    if (skip && !window.confirm(
+      `${row.customer_name}${row.city_name ? ` (${row.city_name})` : ""}\n\n`
+      + `Continue without: ${names}?\n\nOnly do this when it really isn't there for this shipment. It stays visible as a warning.`,
     )) {
       return;
     }
     setBusy(true);
     try {
-      setPlan(await apiJson("/api/pd-step-plan/no-connect", { method: "POST", body: JSON.stringify({ collection_id: row.collection_id, confirmed }) }));
+      setPlan(await apiJson("/api/pd-step-plan/skip", {
+        method: "POST",
+        body: JSON.stringify({ collection_id: row.collection_id, codes: items.map((item) => item.code), skip }),
+      }));
     } catch (saveError) {
       setError(saveError.message);
     } finally {
       setBusy(false);
     }
+  }
+
+  function openSkipMenu(event, row, step) {
+    if (!step?.skippable?.length) return;
+    event.preventDefault();
+    event.stopPropagation();
+    const rect = event.currentTarget.getBoundingClientRect();
+    const x = event.type === "contextmenu" ? event.clientX : rect.left;
+    const y = event.type === "contextmenu" ? event.clientY : rect.bottom + 4;
+    setSkipMenu({ row, step, x, y });
   }
 
   const rows = plan?.rows || [];
@@ -8781,16 +8810,23 @@ function PdStepPlanPage({ onNavigate }) {
                     {row.steps.map((step, index) => {
                       const state = step.done ? "done" : index === row.current_step ? "current" : "locked";
                       return (
-                        <td key={step.key} style={{ background: state === "done" ? "#ecfdf5" : state === "current" ? "#fffbeb" : undefined }}>
+                        <td
+                          key={step.key}
+                          style={{ background: state === "done" ? "#ecfdf5" : state === "current" ? "#fffbeb" : undefined }}
+                          onContextMenu={state === "current" ? (event) => openSkipMenu(event, row, step) : undefined}
+                          title={state === "current" && step.skippable?.length ? "Right-click to continue without a missing item" : undefined}
+                        >
                           <div style={{ fontWeight: 600, color: state === "done" ? "#15803d" : state === "current" ? "#b45309" : "#9ca3af" }}>
                             {state === "done" ? "✓ " : state === "current" ? "▶ " : "🔒 "}{step.label}
                           </div>
                           {state === "current" && step.missing.map((item) => <div key={item} className="muted">• {item}</div>)}
                           {state === "current" && step.status && <div className="muted">{step.status}</div>}
-                          {step.warnings.map((item) => <div key={item} style={{ color: "#b45309" }}>⚠ {item}</div>)}
-                          {step.key === "references" && step.no_connect_confirmed && (
-                            <button type="button" className="link-button" onClick={() => setNoConnect(row, false)} disabled={busy}>undo "no connect"</button>
-                          )}
+                          {(step.skipped || []).map((item) => (
+                            <div key={item.code} style={{ color: "#b45309" }}>
+                              ⚠ Without {item.label} <span className="muted">({item.by})</span>{" "}
+                              <button type="button" className="link-button" onClick={() => setSkipped(row, [item], false)} disabled={busy}>undo</button>
+                            </div>
+                          ))}
                         </td>
                       );
                     })}
@@ -8802,9 +8838,9 @@ function PdStepPlanPage({ onNavigate }) {
                             <button type="button" className="primary" onClick={() => goTo(row, current)}>
                               Go to {PD_STEP_PLAN_PAGE_LABELS[current.page] || current.page}
                             </button>
-                            {current.key === "references" && current.can_confirm_no_connect && (
-                              <button type="button" onClick={() => setNoConnect(row, true)} disabled={busy} title="Allow this step without a connect number">
-                                No connect number…
+                            {!!current.skippable?.length && (
+                              <button type="button" onClick={(event) => openSkipMenu(event, row, current)} disabled={busy} title="Continue this step without a missing item">
+                                Continue without…
                               </button>
                             )}
                           </div>
@@ -8818,6 +8854,30 @@ function PdStepPlanPage({ onNavigate }) {
           </table>
         </div>
       </div>
+
+      {skipMenu && (
+        <div
+          role="menu"
+          onClick={(event) => event.stopPropagation()}
+          style={{
+            position: "fixed", left: Math.min(skipMenu.x, window.innerWidth - 280), top: Math.min(skipMenu.y, window.innerHeight - 180),
+            zIndex: 1000, background: "#fff", border: "1px solid #b8c2cc", borderRadius: 8, boxShadow: "0 6px 18px rgba(0,0,0,.15)",
+            padding: 6, minWidth: 240,
+          }}
+        >
+          <div className="muted" style={{ padding: "4px 8px" }}>{skipMenu.row.customer_name} -- {skipMenu.step.label}</div>
+          {skipMenu.step.skippable.map((item) => (
+            <button key={item.code} type="button" className="link-button" style={{ display: "block", padding: "6px 8px", textAlign: "left", width: "100%" }} onClick={() => setSkipped(skipMenu.row, [item], true)}>
+              Continue without {item.label}
+            </button>
+          ))}
+          {skipMenu.step.skippable.length > 1 && (
+            <button type="button" className="link-button" style={{ display: "block", padding: "6px 8px", textAlign: "left", width: "100%", fontWeight: 600 }} onClick={() => setSkipped(skipMenu.row, skipMenu.step.skippable, true)}>
+              Continue without all of these
+            </button>
+          )}
+        </div>
+      )}
     </section>
   );
 }

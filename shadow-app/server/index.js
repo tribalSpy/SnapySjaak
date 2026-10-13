@@ -2327,6 +2327,9 @@ function deriveUkdocsPrintCollectionStatus(collection) {
   return "pending";
 }
 
+// PD Step Plan items that can be skipped ("continue without ...").
+const PD_STEP_PLAN_SKIP_CODES = ["city_name", "pd_type", "pd_form", "reference_connect", "truck_number", "trailer_number", "documents", "papers"];
+
 function normalizeUkdocsPrintCollection(collection) {
   const shipmentReference = normalizeUkdocsText(collection?.shipment_reference);
   const invoiceNumbers = String(collection?.invoice_numbers || "").trim() || shipmentReference;
@@ -2417,6 +2420,11 @@ function normalizeUkdocsPrintCollection(collection) {
       confirmed_at: normalizeUkdocsText(collection?.no_connect_confirmed?.confirmed_at),
       confirmed_by: normalizeUkdocsText(collection?.no_connect_confirmed?.confirmed_by),
     },
+    // PD Step Plan "continue without ..." per item (truck number, licence
+    // plate, ...): item code -> who/when confirmed it.
+    step_plan_skips: Object.fromEntries(Object.entries(collection?.step_plan_skips && typeof collection.step_plan_skips === "object" ? collection.step_plan_skips : {})
+      .filter(([code, entry]) => PD_STEP_PLAN_SKIP_CODES.includes(code) && entry && typeof entry === "object")
+      .map(([code, entry]) => [code, { by: normalizeUkdocsText(entry.by), at: normalizeUkdocsText(entry.at) }])),
     csi_override: {
       overridden: collection?.csi_override?.overridden === true,
       overridden_at: normalizeUkdocsText(collection?.csi_override?.overridden_at),
@@ -10426,23 +10434,46 @@ function buildPdStepPlan(state, targetDate) {
     const route = ukdocsPrintInspectionMode(collection) === "reinspection" ? "ericdocs" : "ukdocscsi";
     const has = (value) => Boolean(String(value || "").trim());
 
-    const setupMissing = [];
-    if (!has(collection.city_name)) setupMissing.push("City");
-    if (!has(collection.pd_type)) setupMissing.push("PD type");
-    if (!has(collection.pd_form) && !has(collection.pd_code)) setupMissing.push("PD form / code");
-
-    const refsMissing = [];
-    const refsWarnings = [];
-    if (!has(collection.truck_number)) refsMissing.push("Truck number");
-    if (!has(collection.trailer_number)) refsMissing.push("Licence plate");
-    const noConnect = !has(collection.reference_connect);
-    if (noConnect && !collection.no_connect_confirmed?.confirmed) refsMissing.push("Connect number");
-    if (noConnect && collection.no_connect_confirmed?.confirmed) {
-      refsWarnings.push(`No connect number (confirmed by ${collection.no_connect_confirmed.confirmed_by || "?"})`);
+    // Every missing item can be skipped on purpose ("continue without ...",
+    // confirmed in the plan); a skipped item no longer blocks its step but
+    // stays visible as a warning.
+    const skips = { ...(collection.step_plan_skips || {}) };
+    if (collection.no_connect_confirmed?.confirmed && !skips.reference_connect) {
+      skips.reference_connect = { by: collection.no_connect_confirmed.confirmed_by, at: collection.no_connect_confirmed.confirmed_at };
     }
+    const checkItems = (items) => {
+      const missing = [];
+      const skippable = [];
+      const skipped = [];
+      for (const item of items) {
+        if (item.present) continue;
+        if (skips[item.code]) {
+          skipped.push({ code: item.code, label: item.label, by: skips[item.code].by || "?" });
+        } else {
+          missing.push(item.detail || item.label);
+          if (!skippable.some((entry) => entry.code === item.code)) skippable.push({ code: item.code, label: item.label });
+        }
+      }
+      return { missing, skippable, skipped, warnings: skipped.map((item) => `Continued without ${item.label} (by ${item.by})`) };
+    };
 
-    const docsMissing = requirements.missing.filter((item) => /^(Generated export|Invoice numbers|Invoices \d)/.test(item));
-    const otherMissing = requirements.missing.filter((item) => !docsMissing.includes(item));
+    const setup = checkItems([
+      { code: "city_name", label: "City", present: has(collection.city_name) },
+      { code: "pd_type", label: "PD type", present: has(collection.pd_type) },
+      { code: "pd_form", label: "PD form / code", present: has(collection.pd_form) || has(collection.pd_code) },
+    ]);
+    const refs = checkItems([
+      { code: "reference_connect", label: "Connect number", present: has(collection.reference_connect) },
+      { code: "truck_number", label: "Truck number", present: has(collection.truck_number) },
+      { code: "trailer_number", label: "Licence plate", present: has(collection.trailer_number) },
+    ]);
+    const setupMissing = setup.missing;
+    const refsMissing = refs.missing;
+
+    const docsMissingRaw = requirements.missing.filter((item) => /^(Generated export|Invoice numbers|Invoices \d)/.test(item));
+    const docs = checkItems(docsMissingRaw.map((detail) => ({ code: "documents", label: "Invoices & export docs", detail, present: false })));
+    const docsMissing = docs.missing;
+    const otherMissing = requirements.missing.filter((item) => !docsMissingRaw.includes(item));
 
     const finalMissing = [];
     let finalStatus = "";
@@ -10463,11 +10494,13 @@ function buildPdStepPlan(state, targetDate) {
       finalMissing.push("CSI papers not sent");
     }
 
+    const papers = checkItems(finalMissing.map((detail) => ({ code: "papers", label: route === "ericdocs" ? "Eric Docs papers" : "CSI papers", detail, present: false })));
+
     const steps = [
-      { key: "setup", label: "PD Keuring", page: "pdkeuring", done: setupMissing.length === 0, missing: setupMissing, warnings: [] },
-      { key: "references", label: "Connect / truck / plate", page: "pdkeuring", done: refsMissing.length === 0, missing: refsMissing, warnings: refsWarnings, can_confirm_no_connect: noConnect && !collection.no_connect_confirmed?.confirmed, no_connect_confirmed: noConnect && collection.no_connect_confirmed?.confirmed === true },
-      { key: "documents", label: "Invoices & export docs", page: "ukdocs", done: docsMissing.length === 0, missing: docsMissing, warnings: [] },
-      { key: "papers", label: route === "ericdocs" ? "Eric Docs" : "UKdocs CSI", page: route, done: finalMissing.length === 0, missing: finalMissing, warnings: [], status: finalStatus },
+      { key: "setup", label: "PD Keuring", page: "pdkeuring", done: setup.missing.length === 0, missing: setup.missing, skippable: setup.skippable, skipped: setup.skipped, warnings: setup.warnings },
+      { key: "references", label: "Connect / truck / plate", page: "pdkeuring", done: refs.missing.length === 0, missing: refs.missing, skippable: refs.skippable, skipped: refs.skipped, warnings: refs.warnings },
+      { key: "documents", label: "Invoices & export docs", page: "ukdocs", done: docs.missing.length === 0, missing: docs.missing, skippable: docs.skippable, skipped: docs.skipped, warnings: docs.warnings },
+      { key: "papers", label: route === "ericdocs" ? "Eric Docs" : "UKdocs CSI", page: route, done: papers.missing.length === 0, missing: papers.missing, skippable: papers.skippable, skipped: papers.skipped, warnings: papers.warnings, status: finalStatus },
     ];
     const currentIndex = steps.findIndex((step) => !step.done);
     return {
@@ -18873,8 +18906,9 @@ async function handleApi(req, res, url) {
     return;
   }
 
-  // "This shipment has no connect number" (or undo it).
-  if (url.pathname === "/api/pd-step-plan/no-connect" && req.method === "POST") {
+  // "Continue without <item>" (or undo it): body { collection_id, codes:
+  // [...], skip: true|false }. /no-connect is the older single-item form.
+  if ((url.pathname === "/api/pd-step-plan/skip" || url.pathname === "/api/pd-step-plan/no-connect") && req.method === "POST") {
     if (!requireAnyPermission(res, requestUser, [PERMISSIONS.PD_KEURING_VIEW, PERMISSIONS.UKDOCS_VIEW])) {
       return;
     }
@@ -18885,12 +18919,23 @@ async function handleApi(req, res, url) {
       sendJson(res, 404, { error: "Shipment not found" });
       return;
     }
-    const confirmed = body?.confirmed !== false;
+    const legacy = url.pathname.endsWith("/no-connect");
+    const codes = legacy ? ["reference_connect"] : (Array.isArray(body?.codes) ? body.codes : []).filter((code) => PD_STEP_PLAN_SKIP_CODES.includes(code));
+    if (!codes.length) {
+      sendJson(res, 400, { error: "Nothing to skip" });
+      return;
+    }
+    const skip = legacy ? body?.confirmed !== false : body?.skip !== false;
+    const skips = { ...(existing.step_plan_skips || {}) };
+    for (const code of codes) {
+      if (skip) skips[code] = { by: requestUser.username, at: new Date().toISOString() };
+      else delete skips[code];
+    }
     state.print_collections = upsertUkdocsPrintCollection(state.print_collections, normalizeUkdocsPrintCollection({
       ...existing,
-      no_connect_confirmed: confirmed
-        ? { confirmed: true, confirmed_at: new Date().toISOString(), confirmed_by: requestUser.username }
-        : { confirmed: false, confirmed_at: "", confirmed_by: "" },
+      step_plan_skips: skips,
+      // The older flag is folded into step_plan_skips.
+      no_connect_confirmed: { confirmed: false, confirmed_at: "", confirmed_by: "" },
       updated_at: new Date().toISOString(),
     }));
     await writeUkdocsState(state);
