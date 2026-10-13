@@ -2387,11 +2387,19 @@ async function listPublicTablesParentsFirst(client) {
 // output): a standby never re-runs those, and they're most of the size.
 const SNAPSHOT_FETCH_ROWS = 200;
 
-function snapshotRowSelect(table) {
-  if (table === "llm_jobs") {
-    return `SELECT (to_jsonb(t) || CASE WHEN t.finished_at IS NOT NULL THEN '{"payload_json":{},"result_json":{}}'::jsonb ELSE '{}'::jsonb END)::text AS row FROM llm_jobs t`;
+// Finished LLM jobs leave out payload/result *before* they're turned into
+// JSON (to_jsonb(t) first would still build the whole photo payload).
+async function snapshotRowSelect(client, table) {
+  if (table !== "llm_jobs") {
+    return `SELECT to_jsonb(t)::text AS row FROM ${quoteIdent(table)} t`;
   }
-  return `SELECT to_jsonb(t)::text AS row FROM ${quoteIdent(table)} t`;
+  const columns = (await client.query(
+    `SELECT column_name FROM information_schema.columns WHERE table_schema = 'public' AND table_name = 'llm_jobs' ORDER BY ordinal_position`,
+  )).rows.map((row) => row.column_name);
+  const list = columns.map((column) => (["payload_json", "result_json"].includes(column)
+    ? `CASE WHEN j.finished_at IS NOT NULL THEN '{}'::jsonb ELSE j.${quoteIdent(column)} END AS ${quoteIdent(column)}`
+    : `j.${quoteIdent(column)}`)).join(", ");
+  return `SELECT to_jsonb(t)::text AS row FROM (SELECT ${list} FROM llm_jobs j) t`;
 }
 
 export async function exportDatabaseSnapshot(writeLine) {
@@ -2406,13 +2414,20 @@ export async function exportDatabaseSnapshot(writeLine) {
     await writeLine(JSON.stringify({ format: "snappysjaak-db-snapshot", version: 1, created_at: new Date().toISOString(), tables }));
     for (const table of tables) {
       await writeLine(JSON.stringify({ table }));
-      for (let offset = 0; ; offset += SNAPSHOT_FETCH_ROWS) {
-        const { rows } = await client.query(`${snapshotRowSelect(table)} ORDER BY ctid LIMIT ${SNAPSHOT_FETCH_ROWS} OFFSET ${offset}`);
+      // A cursor reads the table straight through. The earlier
+      // "ORDER BY ctid LIMIT/OFFSET" re-sorted the whole table for every
+      // batch of 200 rows -- hundreds of full sorts of the big job table,
+      // heavy enough to take Render's small Postgres down (Oct 2026:
+      // "the database system is in recovery mode" loops).
+      await client.query(`DECLARE snapshot_cursor NO SCROLL CURSOR FOR ${await snapshotRowSelect(client, table)}`);
+      for (;;) {
+        const { rows } = await client.query(`FETCH ${SNAPSHOT_FETCH_ROWS} FROM snapshot_cursor`);
         for (const row of rows) {
           await writeLine(row.row);
         }
         if (rows.length < SNAPSHOT_FETCH_ROWS) break;
       }
+      await client.query("CLOSE snapshot_cursor");
     }
     await client.query("COMMIT");
   } catch (error) {
