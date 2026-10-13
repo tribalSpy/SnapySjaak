@@ -2328,7 +2328,7 @@ function deriveUkdocsPrintCollectionStatus(collection) {
 }
 
 // PD Step Plan items that can be skipped ("continue without ...").
-const PD_STEP_PLAN_SKIP_CODES = ["city_name", "pd_type", "pd_form", "reference_connect", "truck_number", "trailer_number", "documents", "papers"];
+const PD_STEP_PLAN_SKIP_CODES = ["city_name", "pd_type", "pd_form", "reference_connect", "truck_number", "trailer_number", "expected_pieces", "documents", "papers"];
 
 function normalizeUkdocsPrintCollection(collection) {
   const shipmentReference = normalizeUkdocsText(collection?.shipment_reference);
@@ -10466,6 +10466,9 @@ function buildPdStepPlan(state, targetDate) {
       { code: "reference_connect", label: "Connect number", present: has(collection.reference_connect) },
       { code: "truck_number", label: "Truck number", present: has(collection.truck_number) },
       { code: "trailer_number", label: "Licence plate", present: has(collection.trailer_number) },
+      // Eric Docs checks the phyto's pieces against this number -- asked
+      // here with the other PD Keuring fields, not discovered at step 4.
+      ...(route === "ericdocs" ? [{ code: "expected_pieces", label: "Pieces", present: has(collection.expected_pieces) }] : []),
     ]);
     const setupMissing = setup.missing;
     const refsMissing = refs.missing;
@@ -10498,7 +10501,7 @@ function buildPdStepPlan(state, targetDate) {
 
     const steps = [
       { key: "setup", label: "PD Keuring", page: "pdkeuring", done: setup.missing.length === 0, missing: setup.missing, skippable: setup.skippable, skipped: setup.skipped, warnings: setup.warnings },
-      { key: "references", label: "Connect / truck / plate", page: "pdkeuring", done: refs.missing.length === 0, missing: refs.missing, skippable: refs.skippable, skipped: refs.skipped, warnings: refs.warnings },
+      { key: "references", label: route === "ericdocs" ? "Connect / truck / plate / pieces" : "Connect / truck / plate", page: "pdkeuring", done: refs.missing.length === 0, missing: refs.missing, skippable: refs.skippable, skipped: refs.skipped, warnings: refs.warnings },
       { key: "documents", label: "Invoices & export docs", page: "ukdocs", done: docs.missing.length === 0, missing: docs.missing, skippable: docs.skippable, skipped: docs.skipped, warnings: docs.warnings },
       { key: "papers", label: route === "ericdocs" ? "Eric Docs" : "UKdocs CSI", page: route, done: papers.missing.length === 0, missing: papers.missing, skippable: papers.skippable, skipped: papers.skipped, warnings: papers.warnings, status: finalStatus },
     ];

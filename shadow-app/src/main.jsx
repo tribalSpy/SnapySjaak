@@ -8764,7 +8764,7 @@ function PdStepPlanPage({ onNavigate }) {
 
   const rows = plan?.rows || [];
   const summary = plan?.summary;
-  const stepTitles = ["1. PD Keuring", "2. Connect / truck / plate", "3. Invoices & export docs", "4. CSI / Eric Docs"];
+  const stepTitles = ["1. PD Keuring", "2. Connect / truck / plate (/ pieces)", "3. Invoices & export docs", "4. CSI / Eric Docs"];
 
   return (
     <section className="overview-stack">
