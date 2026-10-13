@@ -8206,8 +8206,8 @@ function buildInkoopAggregateContextCached(state, range) {
 
 // --- Matching per day -------------------------------------------------------
 // Invoices are matched to the ERP by date: for a day D, only the lines of
-// D-1..D+1 are loaded (one day either side for an invoice line or purchase
-// that lands a day off), and only the rows that belong to D are kept --
+// D-4..D+4 are loaded (INKOOP_DAY_TOLERANCE_DAYS: an invoice line or
+// purchase that lands a few days off, e.g. over a weekend), and only the rows that belong to D are kept --
 // ERP-anchored lists (matched, mismatch, only in ERP) by the ERP date, the
 // others by the invoice line's date. Ranges (follow-up, dashboard,
 // destinations: a week by default, a month at most) and the calendar are
@@ -8218,8 +8218,12 @@ const INKOOP_RANGE_MAX_DAYS = 31;
 const INKOOP_RESULT_LISTS = ["matched_ok", "matched_mismatch", "only_in_invoice", "only_in_erp", "supplier_not_linked", "ambiguous_matches", "fee_lines", "embalage_lines"];
 const INKOOP_ERP_ANCHORED_LISTS = new Set(["matched_ok", "matched_mismatch", "only_in_erp"]);
 
+// Four days either side: an invoice over a weekend (Friday purchase,
+// Monday invoice) still finds its ERP row.
+const INKOOP_DAY_TOLERANCE_DAYS = 4;
+
 function inkoopDayWindow(date) {
-  return { from: addDaysToIsoDate(date, -1), to: addDaysToIsoDate(date, 1) };
+  return { from: addDaysToIsoDate(date, -INKOOP_DAY_TOLERANCE_DAYS), to: addDaysToIsoDate(date, INKOOP_DAY_TOLERANCE_DAYS) };
 }
 
 function inkoopResultOnDay(result, date) {

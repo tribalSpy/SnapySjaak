@@ -1043,6 +1043,46 @@ def _parse_veiling_from(input_path: Path, extract_dir: Path):
         finally:
             msg.close()
 
+    # Loose files next to the emails: invoice XMLs (also zipped, like the
+    # ".xml.zip" FloraHolland attaches) and invoice PDFs, named by their
+    # invoice number. Same result as the email they'd otherwise come in.
+    for nested_zip in sorted(extract_dir.rglob("*.zip")):
+        try:
+            with zipfile.ZipFile(nested_zip) as archive:
+                archive.extractall(nested_zip.parent / f"{nested_zip.stem}_unzipped")
+        except zipfile.BadZipFile:
+            skipped.append({"file_name": nested_zip.name, "reason": "Not a readable zip file"})
+    seen_xml_invoices = {invoice["invoice_number"] for invoice in invoices if invoice.get("invoice_number")}
+    for xml_path in sorted(extract_dir.rglob("*.xml")):
+        try:
+            xml_bytes = xml_path.read_bytes()
+            header = parse_invoice_header(xml_bytes)
+            invoice_number = extract_invoice_number(header.get("billing_id") or "") or extract_invoice_number(xml_path.name)
+            kind = classify_subject(invoice_number) if invoice_number else "other"
+            if kind == "other":
+                skipped.append({"file_name": xml_path.name, "reason": "Not a FloraHolland invoice XML (no FK/FC/HA/FD/HV invoice number)"})
+                continue
+            if invoice_number in seen_xml_invoices:
+                continue  # already read from its email in this upload
+            seen_xml_invoices.add(invoice_number)
+            invoices.append({
+                "file_name": xml_path.name,
+                "type": kind,
+                "invoice_number": invoice_number,
+                "supplier_number": invoice_number.split(".")[0],
+                "subject": xml_path.name,
+                "lines": parse_invoice_xml(xml_bytes),
+                "header": header,
+            })
+        except Exception as error:  # noqa: BLE001 -- report per file
+            skipped.append({"file_name": xml_path.name, "reason": str(error)})
+    for pdf_path in sorted(extract_dir.rglob("*.pdf")):
+        invoice_number = extract_invoice_number(pdf_path.name)
+        if invoice_number:
+            pdfs.setdefault(invoice_number, base64.b64encode(pdf_path.read_bytes()).decode("ascii"))
+        else:
+            skipped.append({"file_name": pdf_path.name, "reason": "PDF name has no invoice number (e.g. 049876.FK.2026.0458.pdf)"})
+
     return {"invoices": invoices, "skipped": skipped, "pdfs": pdfs}
 
 

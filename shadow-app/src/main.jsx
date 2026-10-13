@@ -15819,20 +15819,21 @@ function InkoopControlePage({ currentUser }) {
       // file goes with the first part; only the last part runs the match.
       const messages = [];
       for (const file of veilingFiles) {
-        if (/\.zip$/i.test(file.name)) {
+        if (/\.zip$/i.test(file.name) && !/\.xml\.zip$/i.test(file.name)) {
           const archive = await JSZip.loadAsync(file);
           for (const entry of Object.values(archive.files)) {
-            if (!entry.dir && /\.msg$/i.test(entry.name)) {
+            // Emails, invoice XMLs (also FloraHolland's ".xml.zip") and PDFs.
+            if (!entry.dir && /\.(msg|xml|pdf|zip)$/i.test(entry.name)) {
               const data = await entry.async("uint8array");
               messages.push({ name: entry.name.split("/").pop(), data });
             }
           }
-        } else if (/\.msg$/i.test(file.name)) {
+        } else if (/\.(msg|xml|pdf|zip)$/i.test(file.name)) {
           messages.push({ name: file.name, data: new Uint8Array(await file.arrayBuffer()) });
         }
       }
       if (veilingFiles.length && !messages.length) {
-        throw new Error("No .msg emails found in the chosen file(s).");
+        throw new Error("No emails (.msg), invoice XMLs or PDFs found in the chosen file(s).");
       }
       const parts = [];
       let current = [];
@@ -15866,7 +15867,7 @@ function InkoopControlePage({ currentUser }) {
           const used = new Set();
           part.forEach((message, position) => {
             // Same file name in two zips: keep both.
-            const name = used.has(message.name.toLowerCase()) ? message.name.replace(/(\.msg)$/i, ` (${position})$1`) : message.name;
+            const name = used.has(message.name.toLowerCase()) ? message.name.replace(/(\.[a-z]+)$/i, ` (${position})$1`) : message.name;
             used.add(name.toLowerCase());
             zip.file(name, message.data);
           });
@@ -16173,8 +16174,8 @@ function InkoopControlePage({ currentUser }) {
             <input type="file" accept=".xlsx,.csv" onChange={(event) => setErpFile(event.target.files?.[0] || null)} />
           </label>
           <label>
-            <span>Veiling emails (.zip files and/or .msg emails, any amount) -- optional</span>
-            <input type="file" accept=".zip,.msg" multiple onChange={(event) => setVeilingFiles([...(event.target.files || [])])} />
+            <span>Veiling invoices: .zip, .msg emails, invoice .xml and .pdf files (any amount) -- optional</span>
+            <input type="file" accept=".zip,.msg,.xml,.pdf" multiple onChange={(event) => setVeilingFiles([...(event.target.files || [])])} />
             {veilingFiles.length > 1 && <small className="muted">{veilingFiles.length} files chosen</small>}
           </label>
         </div>
@@ -16189,7 +16190,7 @@ function InkoopControlePage({ currentUser }) {
         <div className="data-table-card">
           <div className="section-header"><h2>Import history</h2></div>
           <div className="notice">
-            Matching is per day: a day's invoice lines against that day's ERP purchases (one day either side allowed). A gap closes on its own once the missing file for that day is uploaded.
+            Matching is per day: a day's invoice lines against that day's ERP purchases (up to 4 days either side, e.g. over a weekend). A gap closes on its own once the missing file for that day is uploaded.
           </div>
           <div className="table-wrap">
             <table className="data-table">

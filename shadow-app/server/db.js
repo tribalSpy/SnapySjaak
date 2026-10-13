@@ -632,7 +632,8 @@ export async function getInkoopErpLines({ from, to } = {}) {
   }
   const result = await pool.query(
     `
-      SELECT raw FROM inkoop_erp_lines
+      SELECT raw - ARRAY['cont','cr','deb_no','inv_no','ite_date','ite_no','ite_t','items','keur','po_no','verd','fust']::text[] AS raw
+      FROM inkoop_erp_lines
       WHERE erp_date IS NULL OR (erp_date >= $1 AND erp_date <= $2)
       ORDER BY lot
     `,
@@ -647,7 +648,8 @@ export async function getInkoopInvoiceLines({ from, to } = {}) {
   }
   const result = await pool.query(
     `
-      SELECT raw FROM inkoop_invoice_lines
+      SELECT raw - ARRAY['source_file_name','account_id','line_id','market_form_code','marketplace_id','marketplace_name','summary_ref','trigger_code','vat_category']::text[] AS raw
+      FROM inkoop_invoice_lines
       WHERE invoice_date IS NULL OR (invoice_date >= $1 AND invoice_date <= $2)
       ORDER BY invoice_number
     `,
