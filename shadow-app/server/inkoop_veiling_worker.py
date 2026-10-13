@@ -4,6 +4,7 @@ import csv
 import io
 import json
 import re
+import shutil
 import tempfile
 import zipfile
 import xml.etree.ElementTree as ET
@@ -957,7 +958,16 @@ def parse_dispatch_dump(input_path: Path):
 # (for opening the original document later) -- that's not an error, so it's
 # captured into `pdfs` rather than reported as a skip.
 def parse_veiling(input_path: Path):
+    # Unpacked into its own temp folder, removed again when done (it used
+    # to stay behind for every upload and filled the server's /tmp).
     extract_dir = Path(tempfile.mkdtemp(prefix="inkoop-veiling-"))
+    try:
+        return _parse_veiling_from(input_path, extract_dir)
+    finally:
+        shutil.rmtree(extract_dir, ignore_errors=True)
+
+
+def _parse_veiling_from(input_path: Path, extract_dir: Path):
     with zipfile.ZipFile(input_path) as archive:
         archive.extractall(extract_dir)
 

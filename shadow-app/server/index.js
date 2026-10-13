@@ -6498,9 +6498,49 @@ async function writeInkoopUploadToTempFile(filePayload, prefix, defaultExtension
   return inputPath;
 }
 
+// Uploaded files only live in os.tmpdir() while the worker reads them. They
+// used to stay there forever: Render's /tmp passed its 2 GB limit (Oct 2026,
+// a few thousand invoices in many upload parts) and the instance was
+// replaced. The two big ones are removed right after use; everything else
+// "inkoop-*" is swept once it's older than INKOOP_TEMP_MAX_AGE_MS.
+const INKOOP_TEMP_MAX_AGE_MS = 15 * 60 * 1000;
+
+async function removeInkoopTempFile(inputPath) {
+  await fs.rm(path.dirname(inputPath), { recursive: true, force: true }).catch(() => {});
+}
+
+async function sweepInkoopTempDirs(maxAgeMs = INKOOP_TEMP_MAX_AGE_MS) {
+  let removed = 0;
+  let entries = [];
+  try {
+    entries = await fs.readdir(os.tmpdir(), { withFileTypes: true });
+  } catch {
+    return 0;
+  }
+  for (const entry of entries) {
+    if (!entry.isDirectory() || !/^inkoop-/.test(entry.name)) continue;
+    const dir = path.join(os.tmpdir(), entry.name);
+    try {
+      const stat = await fs.stat(dir);
+      if (Date.now() - stat.mtimeMs > maxAgeMs) {
+        await fs.rm(dir, { recursive: true, force: true });
+        removed += 1;
+      }
+    } catch {
+      // Gone already / not ours to remove -- skip.
+    }
+  }
+  return removed;
+}
+
 async function parseInkoopErpUpload(filePayload) {
   const inputPath = await writeInkoopUploadToTempFile(filePayload, "inkoop-erp-", ".xlsx");
-  const output = await runInkoopVeilingWorker(["parse-erp", "--input", inputPath]);
+  let output;
+  try {
+    output = await runInkoopVeilingWorker(["parse-erp", "--input", inputPath]);
+  } finally {
+    await removeInkoopTempFile(inputPath);
+  }
   const payload = JSON.parse(output.toString("utf8"));
   if (payload?.error) {
     throw new Error(payload.error);
@@ -6510,7 +6550,12 @@ async function parseInkoopErpUpload(filePayload) {
 
 async function parseInkoopVeilingUpload(filePayload) {
   const inputPath = await writeInkoopUploadToTempFile(filePayload, "inkoop-veiling-", ".zip");
-  const output = await runInkoopVeilingWorker(["parse-veiling", "--input", inputPath]);
+  let output;
+  try {
+    output = await runInkoopVeilingWorker(["parse-veiling", "--input", inputPath]);
+  } finally {
+    await removeInkoopTempFile(inputPath);
+  }
   const payload = JSON.parse(output.toString("utf8"));
   return {
     invoices: Array.isArray(payload?.invoices) ? payload.invoices : [],
@@ -22838,6 +22883,14 @@ async function startServer() {
     runIfOnline("Fust shadow (photo controle vs Fust planning)", runFustShadowJob).catch(() => {});
   }, 15 * 60 * 1000);
 
+  // Leftover Inkoop upload files in /tmp (any mode -- the standby uploads
+  // too when it's live). The first sweep removes everything already there.
+  sweepInkoopTempDirs(0).then((removed) => {
+    if (removed) console.log(`Removed ${removed} leftover Inkoop upload folder(s) from ${os.tmpdir()}.`);
+  }).catch(() => {});
+  setInterval(() => {
+    sweepInkoopTempDirs().catch(() => {});
+  }, INKOOP_TEMP_MAX_AGE_MS);
   // Hourly: drop the photos/PDFs/workbooks finished jobs still carry in the
   // database (see compactFinishedLlmJobs).
   const compactLlmJobs = async () => {
