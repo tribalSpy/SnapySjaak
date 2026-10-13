@@ -22552,9 +22552,15 @@ async function startServer() {
       // Render's log viewer flags any line containing "error"/"failed" in
       // red -- success summaries carried "failed":0, "errors":[] and
       // "error":"" and looked like failures. Empty/zero ones are left out.
-      const quiet = JSON.stringify(result, (key, value) => (
-        /^(error|errors|failed)$/i.test(key) && (!value || (Array.isArray(value) && !value.length)) ? undefined : value
-      ));
+      // Some jobs return whole state lists (the Gmail sync returns every
+      // zending with all its documents and CSI report) -- one log line of
+      // 50,000+ characters that buried real errors. Long lists are logged
+      // as their length only.
+      const quiet = JSON.stringify(result, (key, value) => {
+        if (/^(error|errors|failed)$/i.test(key) && (!value || (Array.isArray(value) && !value.length))) return undefined;
+        if (Array.isArray(value) && (value.length > 5 || key === "print_collections")) return `[${value.length} items]`;
+        return value;
+      });
       console.log(`Online job "${jobName}" completed:`, quiet);
     }
   }
