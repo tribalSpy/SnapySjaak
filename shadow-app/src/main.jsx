@@ -15893,9 +15893,9 @@ function InkoopControlePage({ currentUser }) {
       setMessage(
         `Imported ${erpRows} ERP rows and ${invoiceLines} invoice lines${parts.length > 1 ? ` (${messages.length} emails in ${parts.length} parts)` : ""}`
         + `${payload.dispatch_lot_count ? ` (${payload.dispatch_lot_count} of them with dispatch destinations, see the Destinations tab)` : ""}. `
-        + `Live totals (last ${payload.window_days ?? windowDays} days): ${r.matched_ok?.length ?? 0} matched, ${r.matched_mismatch?.length ?? 0} mismatches, `
-        + `${r.only_in_invoice?.length ?? 0} only in invoice, ${r.only_in_erp?.length ?? 0} only in ERP, `
-        + `${r.supplier_not_linked?.length ?? 0} supplier not linked, ${r.ambiguous_matches?.length ?? 0} ambiguous.`,
+        + `Live totals (last ${payload.window_days ?? windowDays} days): ${inkoopResultCount(r, "matched_ok")} matched, ${inkoopResultCount(r, "matched_mismatch")} mismatches, `
+        + `${inkoopResultCount(r, "only_in_invoice")} only in invoice, ${inkoopResultCount(r, "only_in_erp")} only in ERP, `
+        + `${inkoopResultCount(r, "supplier_not_linked")} supplier not linked, ${inkoopResultCount(r, "ambiguous_matches")} ambiguous.`,
       );
       loadCompanies().catch(() => {});
     } catch (compareError) {
@@ -16320,6 +16320,22 @@ function InkoopMatchedTable({ rows }) {
 // Compare & Reconcile tab (the live, always-current result) and the
 // Calendar tab's day-detail drill-down (a single day's slice of the same
 // shape), so the two never drift out of sync with each other.
+// The server caps long lists (see limitInkoopResultForPage); counts carry
+// the real totals.
+function inkoopResultCount(result, list) {
+  return result?.counts?.[list] ?? (Array.isArray(result?.[list]) ? result[list].length : 0);
+}
+
+function InkoopTruncatedNote({ result, list }) {
+  if (!result?.truncated?.[list]) return null;
+  return (
+    <div className="notice">
+      Showing the first {(result[list] || []).length} of {inkoopResultCount(result, list)} -- too many to show at once.
+      Pick one company at the top, or use the Calendar / Follow-up tabs to work through them per day.
+    </div>
+  );
+}
+
 function InkoopResultTables({ result, windowDays, manualLinkDrafts, setManualLinkDrafts, onLinkSupplier, skippedFiles, manualLinks }) {
   if (!result) {
     return null;
@@ -16328,7 +16344,8 @@ function InkoopResultTables({ result, windowDays, manualLinkDrafts, setManualLin
   return (
     <>
       {!!result.matched_mismatch.length && (
-        <InkoopCollapsibleCard title="Mismatches" count={result.matched_mismatch.length}>
+        <InkoopCollapsibleCard title="Mismatches" count={inkoopResultCount(result, "matched_mismatch")}>
+          <InkoopTruncatedNote result={result} list="matched_mismatch" />
           <div className="table-wrap">
             <table className="data-table">
               <thead>
@@ -16357,7 +16374,8 @@ function InkoopResultTables({ result, windowDays, manualLinkDrafts, setManualLin
       )}
 
       {!!result.supplier_not_linked?.length && (
-        <InkoopCollapsibleCard title="Supplier not linked" count={result.supplier_not_linked.length}>
+        <InkoopCollapsibleCard title="Supplier not linked" count={inkoopResultCount(result, "supplier_not_linked")}>
+          <InkoopTruncatedNote result={result} list="supplier_not_linked" />
           <div className="notice">
             These Handel Aankopen lines have a real FloraHolland supplier, but no internal code is linked to that GLN yet -- link it once below, results refresh right away.
           </div>
@@ -16392,7 +16410,8 @@ function InkoopResultTables({ result, windowDays, manualLinkDrafts, setManualLin
       )}
 
       {!!result.ambiguous_matches?.length && (
-        <InkoopCollapsibleCard title="Ambiguous matches" count={result.ambiguous_matches.length}>
+        <InkoopCollapsibleCard title="Ambiguous matches" count={inkoopResultCount(result, "ambiguous_matches")}>
+          <InkoopTruncatedNote result={result} list="ambiguous_matches" />
           <div className="notice">
             Handel Aankopen has no unique reference number -- these lines have more than one ERP purchase from the same supplier with the exact same quantity and price, so which one it actually is can't be told apart automatically.
           </div>
@@ -16418,7 +16437,8 @@ function InkoopResultTables({ result, windowDays, manualLinkDrafts, setManualLin
       )}
 
       {!!result.only_in_invoice.length && (
-        <InkoopCollapsibleCard title="Only in invoice" count={result.only_in_invoice.length}>
+        <InkoopCollapsibleCard title="Only in invoice" count={inkoopResultCount(result, "only_in_invoice")}>
+          <InkoopTruncatedNote result={result} list="only_in_invoice" />
           <div className="notice">
             FloraHolland charged for these but no matching purchase was found in the ERP export{windowDays ? ` within the last ${windowDays} days` : ""}.
             A Handel Aankopen/AI2 row here sometimes means the grower resolved to the wrong of several look-alike codes in the master data (confirmed real case: "DUTCH GREEN CENTRE" exists twice, under different codes) -- link the correct code below if so.
@@ -16461,7 +16481,8 @@ function InkoopResultTables({ result, windowDays, manualLinkDrafts, setManualLin
       )}
 
       {!!result.only_in_erp.length && (
-        <InkoopCollapsibleCard title="Only in ERP" count={result.only_in_erp.length}>
+        <InkoopCollapsibleCard title="Only in ERP" count={inkoopResultCount(result, "only_in_erp")}>
+          <InkoopTruncatedNote result={result} list="only_in_erp" />
           <div className="notice">
             Recorded as a purchase but no invoice line referenced this PAV{windowDays ? ` within the last ${windowDays} days` : ""} -- invoice not received yet, or a data entry mistake. No company can be attributed here -- the ERP export has no such field.
             This list is unfiltered, unlike Calendar/Follow-up: it includes rows those views hide because the grower's day (or day+product) total already reconciles overall.
@@ -16480,12 +16501,14 @@ function InkoopResultTables({ result, windowDays, manualLinkDrafts, setManualLin
         </InkoopCollapsibleCard>
       )}
 
-      <InkoopCollapsibleCard title="Matched OK" count={result.matched_ok.length} defaultOpen={false}>
+      <InkoopCollapsibleCard title="Matched OK" count={inkoopResultCount(result, "matched_ok")} defaultOpen={false}>
+          <InkoopTruncatedNote result={result} list="matched_ok" />
         <InkoopMatchedTable rows={result.matched_ok} />
       </InkoopCollapsibleCard>
 
       {!!result.embalage_lines?.length && (
-        <InkoopCollapsibleCard title="Emballage (packaging) costs" count={result.embalage_lines.length}>
+        <InkoopCollapsibleCard title="Emballage (packaging) costs" count={inkoopResultCount(result, "embalage_lines")}>
+          <InkoopTruncatedNote result={result} list="embalage_lines" />
           <div className="notice">
             {result.embalage_lines.length} lines, {formatInkoopEuro(embalageTotal)} total. Only ever appears on the invoice, never in the ERP export -- collected here for visibility, not reconciled against anything. See the Financial Dashboard for a day/company breakdown.
           </div>

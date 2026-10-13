@@ -8157,7 +8157,46 @@ async function sendKingExport(body, requestUser) {
   return { batch_id: batchId, job_id: job.id, count: numbered.length };
 }
 
-async function computeInkoopLiveMatch(state, { from, to }) {
+// The live match reads every ERP and invoice line in the window and matches
+// them in memory. With a few thousand invoices that's heavy, and the
+// Inkoop Controle page (overview, calendar, dashboard, follow-up...) asks
+// for it several times at once -- each request built its own copy, enough
+// to crash the server (Oct 2026, exit 139). Now one result per window is
+// computed once, shared by every request (concurrent ones wait for the same
+// computation), and recomputed only after the data changes
+// (bumpInkoopMatchVersion: uploads, "start fresh", any inkoop-state write)
+// or after INKOOP_MATCH_CACHE_MS.
+const INKOOP_MATCH_CACHE_MS = 10 * 60 * 1000;
+let inkoopMatchVersion = 0;
+let inkoopMatchLock = Promise.resolve();
+const inkoopMatchCache = new Map();
+
+function bumpInkoopMatchVersion() {
+  inkoopMatchVersion += 1;
+  inkoopMatchCache.clear();
+}
+
+async function computeInkoopLiveMatch(state, range) {
+  const key = `${range.from}|${range.to}|${inkoopMatchVersion}`;
+  const cached = inkoopMatchCache.get(key);
+  if (cached && Date.now() - cached.at < INKOOP_MATCH_CACHE_MS) {
+    return cached.promise;
+  }
+  // One fresh computation at a time across all windows: two at once (the
+  // 60-day page and the 90-day dashboard) each held every line in memory
+  // and ran the server out of heap.
+  const promise = inkoopMatchLock.then(() => computeInkoopLiveMatchFresh(state, range));
+  inkoopMatchLock = promise.catch(() => {});
+  inkoopMatchCache.set(key, { at: Date.now(), promise });
+  promise.catch(() => inkoopMatchCache.delete(key));
+  // Only a handful of windows are ever asked for; keep the newest few.
+  while (inkoopMatchCache.size > 4) {
+    inkoopMatchCache.delete(inkoopMatchCache.keys().next().value);
+  }
+  return promise;
+}
+
+async function computeInkoopLiveMatchFresh(state, { from, to }) {
   const [allErpRows, invoiceLines] = await Promise.all([
     getInkoopErpLines({ from, to }),
     getInkoopInvoiceLines({ from, to }),
@@ -8436,6 +8475,35 @@ async function computeInkoopCorrectionRetourChecks(state, { from, to }) {
 // has no such concept -- so they always show in full with the caller
 // responsible for explaining why, rather than being silently hidden or
 // wrongly attributed to whichever company happens to be selected.
+// What the Compare & Reconcile page gets: every list capped (the full
+// lists of a 60-day window with thousands of invoices were megabytes of JSON
+// per page load), with the real counts alongside. Totals and the other
+// tabs still work from the full result on the server.
+const INKOOP_RESULT_LIST_LIMITS = {
+  matched_ok: 300,
+  matched_mismatch: 1500,
+  only_in_invoice: 1500,
+  only_in_erp: 1500,
+  supplier_not_linked: 1500,
+  ambiguous_matches: 1500,
+  fee_lines: 300,
+  embalage_lines: 300,
+};
+
+function limitInkoopResultForPage(result) {
+  if (!result) return result;
+  const limited = { ...result, counts: {}, truncated: {} };
+  for (const [key, limit] of Object.entries(INKOOP_RESULT_LIST_LIMITS)) {
+    const list = Array.isArray(result[key]) ? result[key] : [];
+    limited.counts[key] = list.length;
+    if (list.length > limit) {
+      limited[key] = list.slice(0, limit);
+      limited.truncated[key] = true;
+    }
+  }
+  return limited;
+}
+
 function filterInkoopResultsByCompany(matched, companyNumber) {
   const normalized = normalizeUkdocsText(companyNumber);
   if (!normalized) {
@@ -8785,6 +8853,7 @@ async function readInkoopState() {
 
 async function writeInkoopState(state) {
   await writeJsonFile(inkoopStatePath, normalizeInkoopState(state));
+  bumpInkoopMatchVersion();
 }
 
 function mergeUkdocsStatePatch(currentState, patch) {
@@ -21055,6 +21124,7 @@ async function handleApi(req, res, url) {
     }
     try {
       const result = await clearInkoopUploads();
+      bumpInkoopMatchVersion();
       let pdfCount = 0;
       const pdfFiles = await fs.readdir(inkoopInvoicePdfFilesDir).catch(() => []);
       for (const fileName of pdfFiles) {
@@ -21108,7 +21178,7 @@ async function handleApi(req, res, url) {
     }
     const state = await readInkoopState();
     const rawResult = await computeInkoopLiveMatch(state, inkoopDefaultWindowRange(INKOOP_MATCH_WINDOW_DAYS));
-    const result = filterInkoopResultsByCompany(rawResult, url.searchParams.get("company"));
+    const result = limitInkoopResultForPage(filterInkoopResultsByCompany(rawResult, url.searchParams.get("company")));
     sendJson(res, 200, {
       imports: state.imports,
       result,
@@ -21170,6 +21240,7 @@ async function handleApi(req, res, url) {
         dispatchLotCount = 0;
       }
       await saveInkoopInvoiceLines(flatInvoiceLines);
+      bumpInkoopMatchVersion();
       await saveInkoopInvoiceHeaders(buildInkoopInvoiceHeaders(veiling.invoices, body?.veiling_zip?.name));
       await saveInkoopInvoicePdfs(veiling.pdfs);
       // A big upload arrives in parts (the page splits it); only the last
@@ -21190,7 +21261,7 @@ async function handleApi(req, res, url) {
       });
       state.imports = [importRecord, ...state.imports].slice(0, 200);
       await writeInkoopState(state);
-      sendJson(res, 200, { import: importRecord, imports: state.imports, result, window_days: INKOOP_MATCH_WINDOW_DAYS, dispatch_lot_count: dispatchLotCount });
+      sendJson(res, 200, { import: importRecord, imports: state.imports, result: limitInkoopResultForPage(result), window_days: INKOOP_MATCH_WINDOW_DAYS, dispatch_lot_count: dispatchLotCount });
     } catch (error) {
       sendJson(res, 400, { error: error instanceof Error ? error.message : String(error) });
     }

@@ -26,4 +26,7 @@ RUN cd shadow-app && npm run build
 
 EXPOSE 4174
 
-CMD ["node", "shadow-app/server/index.js"]
+# Render instance: 2 GB. Node's own default heap limit was about 1 GB --
+# the Inkoop Controle match over thousands of invoices hit it. 1400 MB
+# leaves room for the Python workers next to it.
+CMD ["node", "--max-old-space-size=1400", "shadow-app/server/index.js"]
