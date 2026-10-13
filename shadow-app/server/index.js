@@ -21000,8 +21000,12 @@ async function handleApi(req, res, url) {
       await saveInkoopInvoiceLines(flatInvoiceLines);
       await saveInkoopInvoiceHeaders(buildInkoopInvoiceHeaders(veiling.invoices, body?.veiling_zip?.name));
       await saveInkoopInvoicePdfs(veiling.pdfs);
-      const rawResult = await computeInkoopLiveMatch(state, inkoopDefaultWindowRange(INKOOP_MATCH_WINDOW_DAYS));
-      const result = filterInkoopResultsByCompany(rawResult, body?.company);
+      // A big upload arrives in parts (the page splits it); only the last
+      // part runs the -- heavy -- match over everything accumulated.
+      const skipMatch = body?.skip_match === true;
+      const result = skipMatch
+        ? null
+        : filterInkoopResultsByCompany(await computeInkoopLiveMatch(state, inkoopDefaultWindowRange(INKOOP_MATCH_WINDOW_DAYS)), body?.company);
 
       const importRecord = normalizeInkoopImportRecord({
         run_date: runDate,

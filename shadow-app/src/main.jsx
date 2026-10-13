@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
+import JSZip from "jszip";
 import "./styles.css";
 
 const REFRESH_INTERVAL_MS = 15000;
@@ -15099,6 +15100,10 @@ function InkoopKingPostRow({ post, selected, onToggle }) {
   );
 }
 
+// Upload parts for the veiling emails: well under the server's 60 MB
+// request limit once base64-encoded (x4/3).
+const INKOOP_UPLOAD_PART_BYTES = 20 * 1024 * 1024;
+
 function InkoopKingSettingsCard({ settings, onSaved }) {
   const [draft, setDraft] = useState(settings);
   const [saving, setSaving] = useState(false);
@@ -15507,7 +15512,10 @@ function InkoopControlePage({ currentUser }) {
   const [selectedCompany, setSelectedCompany] = useState("");
   const [runDate, setRunDate] = useState(() => localDateIso());
   const [erpFile, setErpFile] = useState(null);
-  const [veilingZip, setVeilingZip] = useState(null);
+  // One or more .zip files and/or loose .msg files -- split into parts on
+  // upload (see runComparison).
+  const [veilingFiles, setVeilingFiles] = useState([]);
+  const veilingZip = veilingFiles.length ? veilingFiles : null;
   const [kwekersFile, setKwekersFile] = useState(null);
   const [leveranciersFile, setLeveranciersFile] = useState(null);
   const [klantFile, setKlantFile] = useState(null);
@@ -15620,30 +15628,95 @@ function InkoopControlePage({ currentUser }) {
     // Either file on its own is enough (invoices only, or the ERP export
     // only) -- the match runs over everything uploaded so far.
     if (!veilingZip && !erpFile) {
-      setError("Choose the veiling emails zip, the ERP export, or both.");
+      setError("Choose the veiling emails (zip or .msg files), the ERP export, or both.");
       return;
     }
     setComparing(true);
     setError("");
     setMessage("");
     try {
-      const [erpBase64, veilingBase64] = await Promise.all([erpFile ? fileToBase64(erpFile) : null, veilingZip ? fileToBase64(veilingZip) : null]);
-      const payload = await apiJson("/api/inkoop/veiling/compare", {
-        method: "POST",
-        body: JSON.stringify({
-          run_date: runDate,
-          erp_file: erpFile ? { name: erpFile.name, content_base64: erpBase64 } : null,
-          veiling_zip: veilingZip ? { name: veilingZip.name, content_base64: veilingBase64 } : null,
-          company: selectedCompany || undefined,
-        }),
-      });
+      // Every .msg out of the chosen zips / loose files, re-packed into parts
+      // of at most INKOOP_UPLOAD_PART_BYTES -- each part is its own request,
+      // so a busy day's emails no longer hit the upload size limit. The ERP
+      // file goes with the first part; only the last part runs the match.
+      const messages = [];
+      for (const file of veilingFiles) {
+        if (/\.zip$/i.test(file.name)) {
+          const archive = await JSZip.loadAsync(file);
+          for (const entry of Object.values(archive.files)) {
+            if (!entry.dir && /\.msg$/i.test(entry.name)) {
+              const data = await entry.async("uint8array");
+              messages.push({ name: entry.name.split("/").pop(), data });
+            }
+          }
+        } else if (/\.msg$/i.test(file.name)) {
+          messages.push({ name: file.name, data: new Uint8Array(await file.arrayBuffer()) });
+        }
+      }
+      if (veilingFiles.length && !messages.length) {
+        throw new Error("No .msg emails found in the chosen file(s).");
+      }
+      const parts = [];
+      let current = [];
+      let currentBytes = 0;
+      for (const message of messages) {
+        if (current.length && currentBytes + message.data.length > INKOOP_UPLOAD_PART_BYTES) {
+          parts.push(current);
+          current = [];
+          currentBytes = 0;
+        }
+        current.push(message);
+        currentBytes += message.data.length;
+      }
+      if (current.length) parts.push(current);
+      if (!parts.length) parts.push(null); // ERP only
+
+      const erpBase64 = erpFile ? await fileToBase64(erpFile) : null;
+      const baseName = veilingFiles.length === 1 ? veilingFiles[0].name.replace(/\.(zip|msg)$/i, "") : `veiling ${runDate}`;
+      let payload = null;
+      let erpRows = 0;
+      let invoiceLines = 0;
+      for (let index = 0; index < parts.length; index += 1) {
+        const part = parts[index];
+        const isLast = index === parts.length - 1;
+        if (parts.length > 1) {
+          setMessage(`Uploading part ${index + 1} of ${parts.length} (${part.length} emails)${isLast ? " and comparing" : ""}...`);
+        }
+        let veilingZipPayload = null;
+        if (part) {
+          const zip = new JSZip();
+          const used = new Set();
+          part.forEach((message, position) => {
+            // Same file name in two zips: keep both.
+            const name = used.has(message.name.toLowerCase()) ? message.name.replace(/(\.msg)$/i, ` (${position})$1`) : message.name;
+            used.add(name.toLowerCase());
+            zip.file(name, message.data);
+          });
+          veilingZipPayload = {
+            name: parts.length > 1 ? `${baseName} (part ${index + 1} of ${parts.length}).zip` : `${baseName}.zip`,
+            content_base64: await zip.generateAsync({ type: "base64", compression: "STORE" }),
+          };
+        }
+        payload = await apiJson("/api/inkoop/veiling/compare", {
+          method: "POST",
+          body: JSON.stringify({
+            run_date: runDate,
+            erp_file: index === 0 && erpFile ? { name: erpFile.name, content_base64: erpBase64 } : null,
+            veiling_zip: veilingZipPayload,
+            company: selectedCompany || undefined,
+            skip_match: !isLast,
+          }),
+        });
+        erpRows += Number(payload?.import?.erp_row_count || 0);
+        invoiceLines += Number(payload?.import?.invoice_line_count || 0);
+      }
       setImports(payload.imports || []);
       setLiveResult(payload.result || null);
       setWindowDays(payload.window_days || windowDays);
       setLastSkippedFiles(payload.import?.skipped_files || []);
       const r = payload.result || {};
       setMessage(
-        `Imported ${payload.import?.erp_row_count ?? 0} ERP rows and ${payload.import?.invoice_line_count ?? 0} invoice lines`
+        `Imported ${erpRows} ERP rows and ${invoiceLines} invoice lines${parts.length > 1 ? ` (${messages.length} emails in ${parts.length} parts)` : ""}`
         + `${payload.dispatch_lot_count ? ` (${payload.dispatch_lot_count} of them with dispatch destinations, see the Destinations tab)` : ""}. `
         + `Live totals (last ${payload.window_days ?? windowDays} days): ${r.matched_ok?.length ?? 0} matched, ${r.matched_mismatch?.length ?? 0} mismatches, `
         + `${r.only_in_invoice?.length ?? 0} only in invoice, ${r.only_in_erp?.length ?? 0} only in ERP, `
@@ -15922,8 +15995,9 @@ function InkoopControlePage({ currentUser }) {
             <input type="file" accept=".xlsx,.csv" onChange={(event) => setErpFile(event.target.files?.[0] || null)} />
           </label>
           <label>
-            <span>Veiling emails (.zip of .msg files) -- optional</span>
-            <input type="file" accept=".zip" onChange={(event) => setVeilingZip(event.target.files?.[0] || null)} />
+            <span>Veiling emails (.zip files and/or .msg emails, any amount) -- optional</span>
+            <input type="file" accept=".zip,.msg" multiple onChange={(event) => setVeilingFiles([...(event.target.files || [])])} />
+            {veilingFiles.length > 1 && <small className="muted">{veilingFiles.length} files chosen</small>}
           </label>
         </div>
         <div className="row-actions spread-actions">
