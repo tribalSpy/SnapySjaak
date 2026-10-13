@@ -8659,9 +8659,9 @@ function EricDocsPage({ currentUser }) {
 // never surprises someone opening that menu later by hand.
 const PD_STEP_PLAN_FOCUS_KEY = "pd-step-plan-focus";
 
-function setPdStepPlanFocus(page, date, collectionId) {
+function setPdStepPlanFocus(page, date, collectionId, action = "") {
   try {
-    sessionStorage.setItem(PD_STEP_PLAN_FOCUS_KEY, JSON.stringify({ page, date, collection_id: collectionId, at: Date.now() }));
+    sessionStorage.setItem(PD_STEP_PLAN_FOCUS_KEY, JSON.stringify({ page, date, collection_id: collectionId, action, at: Date.now() }));
   } catch {
     // Storage blocked: the menu just opens on today.
   }
@@ -8723,6 +8723,12 @@ function PdStepPlanPage({ onNavigate }) {
     onNavigate(step.page);
   }
 
+  // Step 1 starts here: open PD Keuring on this date with a new row ready.
+  function createPdKeuring() {
+    setPdStepPlanFocus("pdkeuring", date, "", "create");
+    onNavigate("pdkeuring");
+  }
+
   // "Continue without ..." (skip = true) or undo it, for one or more items.
   async function setSkipped(row, items, skip) {
     setSkipMenu(null);
@@ -8777,6 +8783,20 @@ function PdStepPlanPage({ onNavigate }) {
         Stock control (Voorraad) needs no papers and isn't listed.
       </div>
       {error && <div className="notice danger">{error}</div>}
+
+      <div className="data-table-card">
+        <div className="row-actions spread-actions">
+          <div>
+            <strong>Step 1 -- PD keuringen for {date}</strong>
+            <div className="muted">
+              {rows.length
+                ? `${rows.length} shipment(s) set up. Add another one for a shipment that still needs papers.`
+                : "No shipments set up yet for this date. Start by creating the PD keuring for every export shipment that needs papers."}
+            </div>
+          </div>
+          <button type="button" className="primary" onClick={createPdKeuring}>+ Create PD keuring for {date}</button>
+        </div>
+      </div>
 
       {summary && (
         <div className="row-actions">
@@ -8849,7 +8869,14 @@ function PdStepPlanPage({ onNavigate }) {
                   </tr>
                 );
               })}
-              {!rows.length && !loading && <tr><td colSpan={6}>No export shipments for {date}.</td></tr>}
+              {!rows.length && !loading && (
+                <tr>
+                  <td colSpan={6}>
+                    No export shipments for {date} yet.{" "}
+                    <button type="button" className="primary" onClick={createPdKeuring}>+ Create PD keuring</button>
+                  </td>
+                </tr>
+              )}
             </tbody>
           </table>
         </div>
@@ -8896,7 +8923,9 @@ function PdKeuringPage({ currentUser }) {
   const [buildingReferenceFromHistory, setBuildingReferenceFromHistory] = useState(false);
   const [backfillResult, setBackfillResult] = useState(null);
   const [selectedDate, setSelectedDate] = useState(() => pdStepPlanFocus("pdkeuring")?.date || localDateIso());
-  const [rowDraft, setRowDraft] = useState(null);
+  // Opened from the PD Step Plan's "Create PD keuring": the new-row form is
+  // already open for that date.
+  const [rowDraft, setRowDraft] = useState(() => (pdStepPlanFocus("pdkeuring")?.action === "create" ? emptyRowDraft() : null));
   // Set when a new row would land on the same shipment key as an existing
   // row of the day -- the user picks join or separate before it's saved.
   const [duplicateMatch, setDuplicateMatch] = useState(null);
