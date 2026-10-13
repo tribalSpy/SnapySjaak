@@ -822,9 +822,26 @@ export async function getInkoopInvoiceSummaryLines({ from, to } = {}) {
   }
   const result = await pool.query(
     `
-      SELECT company_number, company_name, invoice_number, invoice_type, to_char(invoice_date, 'YYYY-MM-DD') AS invoice_date, description, quantity, total
-      FROM inkoop_invoice_lines
-      WHERE invoice_date >= $1::date AND invoice_date <= $2::date
+      -- By factuurdatum (the invoice's own date, from its XML header) so a
+      -- month here matches the month of invoices finance receives -- not
+      -- the sale/service date of each line (a Diensten factuur of 08-10
+      -- carries lines from 01-10 on). Invoices without a stored header fall
+      -- back to their earliest line date.
+      WITH invoice_dates AS (
+        SELECT invoice_number, invoice_date AS factuur_date
+        FROM inkoop_invoice_headers
+        WHERE invoice_date >= $1::date AND invoice_date <= $2::date
+        UNION ALL
+        SELECT l.invoice_number, MIN(l.invoice_date) AS factuur_date
+        FROM inkoop_invoice_lines l
+        WHERE NOT EXISTS (SELECT 1 FROM inkoop_invoice_headers h WHERE h.invoice_number = l.invoice_number)
+        GROUP BY l.invoice_number
+        HAVING MIN(l.invoice_date) >= $1::date AND MIN(l.invoice_date) <= $2::date
+      )
+      SELECT l.company_number, l.company_name, l.invoice_number, l.invoice_type,
+        to_char(d.factuur_date, 'YYYY-MM-DD') AS invoice_date, l.description, l.quantity, l.total
+      FROM inkoop_invoice_lines l
+      JOIN invoice_dates d ON d.invoice_number = l.invoice_number
     `,
     [from, to],
   );

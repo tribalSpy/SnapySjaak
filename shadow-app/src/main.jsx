@@ -15085,7 +15085,7 @@ function InkoopCompanyInvoiceList({ company }) {
     <InkoopCollapsibleCard title={`${company.company_number || "?"}${company.company_name ? ` - ${company.company_name}` : ""} -- invoices`} count={company.invoices.length} defaultOpen={false}>
       <div className="table-wrap">
         <table className="data-table">
-          <thead><tr><th>Date</th><th>Invoice</th><th>Type</th><th>Products</th><th>Emballage</th><th>Fees</th><th>Total</th><th>Lines</th></tr></thead>
+          <thead><tr><th>Factuurdatum</th><th>Invoice</th><th>Type</th><th>Products</th><th>Emballage</th><th>Fees</th><th>Total</th><th>Lines</th></tr></thead>
           <tbody>
             {company.invoices.map((invoice) => (
               <tr key={`${invoice.invoice_number}-${invoice.invoice_type}`}>
@@ -15109,8 +15109,17 @@ function InkoopCompanyInvoiceList({ company }) {
 // Inkoop Controle's first page: what each buying company was invoiced in a
 // date range -- totals split by invoice type, plus each company's invoices.
 function InkoopOverviewTab() {
+  // By factuurdatum; this month by default, so it lines up with the month's
+  // invoices as finance receives them.
   const [toDate, setToDate] = useState(() => todayIso());
-  const [fromDate, setFromDate] = useState(() => daysAgoIso(30));
+  const [fromDate, setFromDate] = useState(() => `${todayIso().slice(0, 7)}-01`);
+  const pickMonth = (month) => {
+    if (!/^\d{4}-\d{2}$/.test(month)) return;
+    const [year, monthNumber] = month.split("-").map(Number);
+    const lastDay = new Date(year, monthNumber, 0).getDate();
+    setFromDate(`${month}-01`);
+    setToDate(`${month}-${String(lastDay).padStart(2, "0")}`);
+  };
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
@@ -15141,11 +15150,12 @@ function InkoopOverviewTab() {
       <div className="data-table-card">
         <div className="section-header"><h2>Invoices per company</h2></div>
         <div className="form-grid">
-          <label><span>From</span><input type="date" value={fromDate} onChange={(event) => setFromDate(event.target.value)} /></label>
-          <label><span>To</span><input type="date" value={toDate} onChange={(event) => setToDate(event.target.value)} /></label>
+          <label><span>Month (factuurdatum)</span><input type="month" value={fromDate.slice(0, 7)} onChange={(event) => pickMonth(event.target.value)} /></label>
+          <label><span>From factuurdatum</span><input type="date" value={fromDate} onChange={(event) => setFromDate(event.target.value)} /></label>
+          <label><span>To factuurdatum</span><input type="date" value={toDate} onChange={(event) => setToDate(event.target.value)} /></label>
         </div>
         <div className="notice">
-          Each invoice's total is taken from its own summary lines (Product aankopen, Emballage, fees), so the detail lines behind them are not counted twice. AI2 Productnota's have no summary lines, so there the line totals are used.
+          Invoices are listed by their <strong>factuurdatum</strong> (the date on the invoice itself), not by the dates of the products or services on it. Each invoice's total is taken from its own summary lines (Product aankopen, Emballage, fees), so the detail lines behind them are not counted twice. AI2 Productnota's have no summary lines, so there the line totals are used.
         </div>
         {error && <div className="notice danger">{error}</div>}
         {loading && !data ? <div className="notice">Loading invoices...</div> : (
