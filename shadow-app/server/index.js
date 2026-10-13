@@ -10029,13 +10029,40 @@ async function runShelfCountNightlyTrigger(explicitDate, options = {}) {
 // under a minute.
 const SHELF_COUNT_STALE_RUN_MINUTES = Number(process.env.SHELF_COUNT_STALE_RUN_MINUTES || 20);
 
+// Only recent runs are resumed automatically, and only a few times: every
+// resume downloads Drive photos and queues jobs that carry them, and a run
+// that keeps dying (Oct 2026: the 05-10 run, still "running" a week later)
+// was resumed every 20 minutes forever -- heavy writes on a database that
+// was already struggling. Past either limit it's marked "interrupted";
+// "Re-run for this date" on the Shelf count page starts it again.
+const SHELF_COUNT_RESUME_MAX_AGE_DAYS = 2;
+const SHELF_COUNT_RESUME_MAX_ATTEMPTS = 3;
+
 async function resumeStaleShelfCountRuns() {
   const cutoff = Date.now() - SHELF_COUNT_STALE_RUN_MINUTES * 60 * 1000;
+  const oldestResumable = addDaysToIsoDate(localDateIso(), -SHELF_COUNT_RESUME_MAX_AGE_DAYS);
   for (const run of await getRunningShelfCountNightlyRuns()) {
     if (new Date(run.updated_at).getTime() > cutoff) {
       continue;
     }
-    console.warn(`Shelf count run for ${run.run_date} made no progress for ${SHELF_COUNT_STALE_RUN_MINUTES}+ minutes -- resuming it.`);
+    const stored = await getShelfCountNightlyRun(run.run_date);
+    const attempts = Number(stored?.totals?.auto_resumes || 0);
+    if (run.run_date < oldestResumable || attempts >= SHELF_COUNT_RESUME_MAX_ATTEMPTS) {
+      const reason = run.run_date < oldestResumable
+        ? `older than ${SHELF_COUNT_RESUME_MAX_AGE_DAYS} days`
+        : `already resumed ${attempts} times`;
+      await upsertShelfCountNightlyRun({
+        run_date: run.run_date,
+        status: "interrupted",
+        totals: {},
+        issues: [...(Array.isArray(stored?.issues) ? stored.issues : []), { type: "interrupted", message: `Stopped resuming automatically (${reason}) -- use "Re-run for this date" to start it again.` }],
+        completed_at: new Date().toISOString(),
+      });
+      console.warn(`Shelf count run for ${run.run_date} marked interrupted (${reason}); not resuming it again.`);
+      continue;
+    }
+    await upsertShelfCountNightlyRun({ run_date: run.run_date, status: "running", totals: { auto_resumes: attempts + 1 }, issues: Array.isArray(stored?.issues) ? stored.issues : [] });
+    console.warn(`Shelf count run for ${run.run_date} made no progress for ${SHELF_COUNT_STALE_RUN_MINUTES}+ minutes -- resuming it (attempt ${attempts + 1}/${SHELF_COUNT_RESUME_MAX_ATTEMPTS}).`);
     try {
       await runShelfCountNightlyTrigger(run.run_date, { resume: true });
     } catch (error) {
