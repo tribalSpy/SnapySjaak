@@ -16360,18 +16360,48 @@ function InkoopTruncatedNote({ result, list }) {
   );
 }
 
-// Follow-up, Destinations and the dashboard look back a week by default, a
-// month at most (the server matches day by day, see computeInkoopDays).
-function InkoopRangeSelect({ days, onChange }) {
+// Follow-up, Destinations and the dashboard look back a week by default:
+// a quick choice ({ days }) or a picked period ({ from, to }), a month at
+// most (the server matches day by day, see computeInkoopDays).
+const INKOOP_PERIOD_MAX_DAYS = 31;
+
+function inkoopPeriodParams(period) {
+  return period?.from && period?.to ? { from: period.from, to: period.to } : { days: String(period?.days || 7) };
+}
+
+function InkoopRangeSelect({ period, onChange }) {
+  const custom = Boolean(period?.from && period?.to);
+  const spanDays = custom ? Math.round((new Date(`${period.to}T00:00:00`) - new Date(`${period.from}T00:00:00`)) / 86400000) + 1 : 0;
+  const setDates = (from, to) => {
+    if (!from || !to) return;
+    onChange(from <= to ? { from, to } : { from: to, to: from });
+  };
   return (
-    <label>
-      <span>Period</span>
-      <select value={days} onChange={(event) => onChange(Number(event.target.value))}>
-        <option value={7}>Last 7 days</option>
-        <option value={14}>Last 14 days</option>
-        <option value={31}>Last month</option>
-      </select>
-    </label>
+    <>
+      <label>
+        <span>Period</span>
+        <select
+          value={custom ? "custom" : String(period?.days || 7)}
+          onChange={(event) => (event.target.value === "custom"
+            ? onChange({ from: daysAgoIso(6), to: todayIso() })
+            : onChange({ days: Number(event.target.value) }))}
+        >
+          <option value="7">Last 7 days</option>
+          <option value="14">Last 14 days</option>
+          <option value="31">Last month</option>
+          <option value="custom">Custom period...</option>
+        </select>
+      </label>
+      {custom && (
+        <>
+          <label><span>From</span><input type="date" value={period.from} max={todayIso()} onChange={(event) => setDates(event.target.value, period.to)} /></label>
+          <label><span>To</span><input type="date" value={period.to} max={todayIso()} onChange={(event) => setDates(period.from, event.target.value)} /></label>
+          {spanDays > INKOOP_PERIOD_MAX_DAYS && (
+            <small className="muted">At most {INKOOP_PERIOD_MAX_DAYS} days at a time -- the last {INKOOP_PERIOD_MAX_DAYS} days up to "To" are shown.</small>
+          )}
+        </>
+      )}
+    </>
   );
 }
 
@@ -16602,7 +16632,7 @@ function inkoopRenderBarList(entries) {
 
 function InkoopDashboardTab({ company }) {
   const [loading, setLoading] = useState(true);
-  const [days, setDays] = useState(7);
+  const [period, setPeriod] = useState({ days: 7 });
   const [byGrower, setByGrower] = useState([]);
   const [byAvc, setByAvc] = useState([]);
   const [byCompany, setByCompany] = useState([]);
@@ -16617,7 +16647,7 @@ function InkoopDashboardTab({ company }) {
     let cancelled = false;
     setLoading(true);
     setError("");
-    const params = new URLSearchParams({ days: String(days) });
+    const params = new URLSearchParams(inkoopPeriodParams(period));
     if (company) params.set("company", company);
     apiJson(`/api/inkoop/dashboard/summary?${params.toString()}`)
       .then((payload) => {
@@ -16640,7 +16670,7 @@ function InkoopDashboardTab({ company }) {
     return () => {
       cancelled = true;
     };
-  }, [days, company]);
+  }, [period, company]);
 
   return (
     <>
@@ -16649,7 +16679,7 @@ function InkoopDashboardTab({ company }) {
           How much money is at risk from mismatches and unresolved gaps, and how much is actually being spent -- ranked by grower, AVC, buying company, and product group (Bloemen/Planten/Accessoires).
         </div>
         <div className="form-grid">
-          <InkoopRangeSelect days={days} onChange={setDays} />
+          <InkoopRangeSelect period={period} onChange={setPeriod} />
         </div>
       </InkoopCollapsibleCard>
 
@@ -16929,7 +16959,7 @@ function InkoopCalendarTab({ company, manualLinkDrafts, setManualLinkDrafts, onL
 }
 
 function InkoopFollowUpTab({ company }) {
-  const [days, setDays] = useState(7);
+  const [period, setPeriod] = useState({ days: 7 });
   const [issues, setIssues] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
@@ -16943,7 +16973,7 @@ function InkoopFollowUpTab({ company }) {
     const params = new URLSearchParams();
     if (company) params.set("company", company);
     if (showResolved) params.set("show_resolved", "1");
-    params.set("days", String(days));
+    for (const [key, value] of Object.entries(inkoopPeriodParams(period))) params.set(key, value);
     return apiJson(`/api/inkoop/issues?${params.toString()}`)
       .then((payload) => setIssues(payload.issues || []))
       .catch((loadError) => setError(loadError.message))
@@ -16953,7 +16983,7 @@ function InkoopFollowUpTab({ company }) {
   useEffect(() => {
     load().catch(() => {});
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [company, showResolved, days]);
+  }, [company, showResolved, period]);
 
   function getDraft(issue) {
     return drafts[issue.id] || { status: issue.status, assigned_to: issue.assigned_to, note: issue.note };
@@ -16995,7 +17025,7 @@ function InkoopFollowUpTab({ company }) {
         Genuine financial discrepancies worth physically checking -- mismatches, and purchases/invoice lines with no counterpart yet. Mark progress here so nothing gets checked twice or forgotten.
       </div>
       <div className="row-actions spread-actions">
-        <InkoopRangeSelect days={days} onChange={setDays} />
+        <InkoopRangeSelect period={period} onChange={setPeriod} />
         <label className="inline-checkbox">
           <input type="checkbox" checked={showResolved} onChange={(event) => setShowResolved(event.target.checked)} />
           <span>Show resolved</span>
@@ -17083,7 +17113,7 @@ function InkoopRetourStatusBadge({ status }) {
 // matchInkoopVeilingLines already netted against whether it actually went
 // to one of FloraHolland's own "retour" (return) accounts.
 function InkoopDestinationsTab() {
-  const [days, setDays] = useState(7);
+  const [period, setPeriod] = useState({ days: 7 });
   const [summary, setSummary] = useState(null);
   const [corrections, setCorrections] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -17093,8 +17123,8 @@ function InkoopDestinationsTab() {
     setLoading(true);
     setError("");
     return Promise.all([
-      apiJson(`/api/inkoop/destinations/summary?days=${days}`),
-      apiJson(`/api/inkoop/destinations/corrections?days=${days}`),
+      apiJson(`/api/inkoop/destinations/summary?${new URLSearchParams(inkoopPeriodParams(period))}`),
+      apiJson(`/api/inkoop/destinations/corrections?${new URLSearchParams(inkoopPeriodParams(period))}`),
     ])
       .then(([summaryPayload, correctionsPayload]) => {
         setSummary(summaryPayload);
@@ -17107,7 +17137,7 @@ function InkoopDestinationsTab() {
   useEffect(() => {
     load().catch(() => {});
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [days]);
+  }, [period]);
 
   if (loading && !summary) {
     return <div className="notice">Loading destinations...</div>;
@@ -17120,7 +17150,7 @@ function InkoopDestinationsTab() {
       </div>
 
       <div className="row-actions spread-actions">
-        <InkoopRangeSelect days={days} onChange={setDays} />
+        <InkoopRangeSelect period={period} onChange={setPeriod} />
       </div>
       {error && <div className="notice danger">{error}</div>}
 
