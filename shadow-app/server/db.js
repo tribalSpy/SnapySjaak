@@ -2408,17 +2408,60 @@ export async function ensureBackgroundIndexes() {
   return built;
 }
 
+// Migrations run before the server opens its port, while the previous
+// instance is still serving. "ADD COLUMN IF NOT EXISTS" / "CREATE INDEX IF
+// NOT EXISTS" still take a table lock even when there's nothing to do, so a
+// long query on the old instance made a deploy wait past Render's port-scan
+// limit. Already-done ones are now skipped from the catalog (no lock), and
+// any other statement waits at most MIGRATION_LOCK_TIMEOUT for its lock --
+// if it can't get it, it's skipped this time (logged) and retried on the
+// next start or restore.
+const MIGRATION_LOCK_TIMEOUT = "15s";
+
+async function migrationAlreadyApplied(client, sql) {
+  const addColumn = /ALTER TABLE\s+(?:IF EXISTS\s+)?([a-z_]+)\s+ADD COLUMN IF NOT EXISTS\s+([a-z_]+)/i.exec(sql);
+  if (addColumn && !/,\s*ADD/i.test(sql)) {
+    const result = await client.query(
+      "SELECT 1 FROM information_schema.columns WHERE table_schema = 'public' AND table_name = $1 AND column_name = $2",
+      [addColumn[1].toLowerCase(), addColumn[2].toLowerCase()],
+    );
+    return result.rows.length > 0;
+  }
+  const createIndex = /CREATE (?:UNIQUE )?INDEX IF NOT EXISTS\s+([a-z_0-9]+)/i.exec(sql);
+  if (createIndex) {
+    const result = await client.query("SELECT 1 FROM pg_class WHERE relname = $1 AND relkind = 'i'", [createIndex[1].toLowerCase()]);
+    return result.rows.length > 0;
+  }
+  return false;
+}
+
 export async function applyDatabaseMigrations() {
   if (!pool) {
     return { ok: false, error: "Database pool is not initialized" };
   }
+  const client = await pool.connect();
   try {
+    await client.query(`SET lock_timeout = '${MIGRATION_LOCK_TIMEOUT}'`);
     for (const migration of databaseMigrations) {
-      await pool.query(migration);
+      if (await migrationAlreadyApplied(client, migration)) {
+        continue;
+      }
+      try {
+        await client.query(migration);
+      } catch (error) {
+        if (error?.code === "55P03") {
+          console.warn(`Migration skipped for now (table busy, lock not granted within ${MIGRATION_LOCK_TIMEOUT}): ${String(migration).trim().split("\n")[0].slice(0, 120)}`);
+          continue;
+        }
+        throw error;
+      }
     }
     return { ok: true, error: "" };
   } catch (error) {
     return { ok: false, error: error instanceof Error ? error.message : String(error) };
+  } finally {
+    await client.query("RESET lock_timeout").catch(() => {});
+    client.release();
   }
 }
 
