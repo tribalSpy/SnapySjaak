@@ -45,6 +45,30 @@ Double-click **make_report.bat**: it opens `data\map.html` with every screen
 (screenshot + text), the keys that lead from it to other screens, and a
 diagram of the whole map.
 
+## Actions dashboard (record once, start with a button)
+
+Double-click **run_dashboard.bat**: it opens http://127.0.0.1:8765 (this PC
+only).
+
+**Record an action**
+1. Put Uniware on the screen where the action should start (e.g. the main
+   menu) -- every run must start there too.
+2. In the dashboard: type a name (e.g. "UKdocs invoice data") and click
+   **Record**. Uniware comes to the front.
+3. Do the action by hand. On each screen whose data you want, press
+   **Ctrl+Alt+C** (capture this screen).
+4. Click **Stop and save** (or Ctrl+Alt+Q).
+
+**Edit** (per step): tick *Capture screen* / *All pages* (Page Down until the
+list ends), or give typed text a **field name** (e.g. `invoice`) -- then the
+dashboard asks that value every time you start the action.
+
+**Start**: fill in the fields, click Start and don't touch keyboard or mouse
+until it says Finished. After every step it checks Uniware is on the
+expected screen (Prg number) and stops if not. **Stop** or **Ctrl+Alt+Q**
+stops at any time. Captured screens are saved in `outputs\` as text, CSV
+(with positions, for tables) and JSON.
+
 ## After an update of this tool
 
 Double-click **rebuild_map.bat**: re-reads every screenshot recorded so far
