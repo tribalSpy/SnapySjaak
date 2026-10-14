@@ -8747,9 +8747,11 @@ function PdStepPlanPage({ onNavigate }) {
     onNavigate(step.page);
   }
 
-  // Step 1 starts here: open PD Keuring on this date with a new row ready.
+  // Step 1 starts here. Nothing set up for the date yet: PD Keuring opens
+  // on its proposals (last week's same weekday, accept in one go); already
+  // some shipments: straight to the new-row form for one more.
   function createPdKeuring() {
-    setPdStepPlanFocus("pdkeuring", date, "", "create");
+    setPdStepPlanFocus("pdkeuring", date, "", plan?.rows?.length ? "create" : "");
     onNavigate("pdkeuring");
   }
 
@@ -8815,10 +8817,12 @@ function PdStepPlanPage({ onNavigate }) {
             <div className="muted">
               {rows.length
                 ? `${rows.length} shipment(s) set up. Add another one for a shipment that still needs papers.`
-                : "No shipments set up yet for this date. Start by creating the PD keuring for every export shipment that needs papers."}
+                : "No shipments set up yet for this date. Start here: PD Keuring opens with last week's shipments of the same weekday as proposals -- accept them in one go, or add rows by hand."}
             </div>
           </div>
-          <button type="button" className="primary" onClick={createPdKeuring}>+ Create PD keuring for {date}</button>
+          <button type="button" className="primary" onClick={createPdKeuring}>
+            {rows.length ? `+ Add a PD keuring for ${date}` : `+ Set up PD keuringen for ${date}`}
+          </button>
         </div>
       </div>
 
@@ -8897,7 +8901,7 @@ function PdStepPlanPage({ onNavigate }) {
                 <tr>
                   <td colSpan={6}>
                     No export shipments for {date} yet.{" "}
-                    <button type="button" className="primary" onClick={createPdKeuring}>+ Create PD keuring</button>
+                    <button type="button" className="primary" onClick={createPdKeuring}>+ Set up PD keuringen</button>
                   </td>
                 </tr>
               )}
