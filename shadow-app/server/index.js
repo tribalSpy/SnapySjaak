@@ -357,7 +357,11 @@ async function runBackupSyncCycle() {
       }
       const sealed = Buffer.from(await fileResponse.arrayBuffer());
       const plaintext = openSealed(sealed, backupPrivateKey);
-      if (crypto.createHash("sha256").update(plaintext).digest("hex") !== entry.sha256) {
+      // Checked against the checksum Render sent with this copy (a file
+      // saved again since the manifest is simply newer, not damaged); the
+      // manifest's only for an older Render without that header.
+      const expectedSha = String(fileResponse.headers.get("x-backup-sha256") || "").trim() || entry.sha256;
+      if (crypto.createHash("sha256").update(plaintext).digest("hex") !== expectedSha) {
         throw new Error("checksum mismatch after decrypt");
       }
       await fs.mkdir(path.dirname(absPath), { recursive: true });
@@ -17611,7 +17615,14 @@ async function handleApi(req, res, url) {
     try {
       const plaintext = await fs.readFile(absPath);
       const sealed = sealBuffer(plaintext, backupPublicKey);
-      res.writeHead(200, { "content-type": "application/octet-stream", "cache-control": "no-store" });
+      // The checksum of exactly this copy: a busy file (ukdocs-state.json)
+      // is often saved again between the manifest and this request, so the
+      // manifest's checksum can be for an older version.
+      res.writeHead(200, {
+        "content-type": "application/octet-stream",
+        "cache-control": "no-store",
+        "x-backup-sha256": crypto.createHash("sha256").update(plaintext).digest("hex"),
+      });
       res.end(sealed);
     } catch (error) {
       sendJson(res, 500, { error: error instanceof Error ? error.message : String(error) });
