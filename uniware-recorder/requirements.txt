@@ -1,0 +1,5 @@
+# Windows only. winsdk needs Python 3.9-3.12.
+pynput>=1.7
+mss>=9.0
+pillow>=10.0
+winsdk>=1.0.0b10
