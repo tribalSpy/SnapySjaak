@@ -209,7 +209,11 @@ class Recorder:
     # ------------------------------------------------------------ main loop
     def handle_hotkey(self, name: str):
         if name == "start":
-            self.target_hwnd = screen_reader.foreground_window()
+            hwnd = screen_reader.foreground_window()
+            if "uniware recorder" in screen_reader.window_title(hwnd).lower() or "python" in screen_reader.window_title(hwnd).lower():
+                print("That's the recorder's own window -- click in the Uniware window first, then press Ctrl+Alt+R.")
+                return
+            self.target_hwnd = hwnd
             self.paused = False
             SESSIONS_DIR.mkdir(parents=True, exist_ok=True)
             self.session_path = SESSIONS_DIR / f"session_{datetime.datetime.now():%Y%m%d_%H%M%S}.jsonl"
