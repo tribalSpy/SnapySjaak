@@ -45,9 +45,25 @@ Double-click **make_report.bat**: it opens `data\map.html` with every screen
 (screenshot + text), the keys that lead from it to other screens, and a
 diagram of the whole map.
 
+## After an update of this tool
+
+Double-click **rebuild_map.bat**: re-reads every screenshot recorded so far
+with the current screen recognition (old map kept as
+`data\map.before-rebuild.json`), then make_report.bat again.
+
+## How screens are named
+
+Uniware puts a number on every screen: menus show **Prg. NNN** top right
+(000 Hoofdmenu, 260 Inkoop, 400 Voorraad...), forms and lists show
+**Title [NN]** in their top bar (Muteren Labels [38]). Those numbers are
+the screen names in the map. The terminal program's own title, menu bar
+("Bestand Edit Beeld...") and status bar are ignored, and the window is
+captured on its own -- another window on top of it doesn't get in.
+
 ## Files
 
 - `data\map.json` -- the map (all sessions together)
+- `data\menu_overview.md` -- every menu with its options and the route to it
 - `data\screens\` -- one screenshot per screen
 - `data\sessions\` -- step-by-step log per recording session
 - `config.json` (optional, copy from `config.example.json`) -- which screens

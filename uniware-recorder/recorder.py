@@ -81,6 +81,41 @@ def now_iso() -> str:
     return datetime.datetime.now().isoformat(timespec="seconds")
 
 
+def describe_screen(image):
+    """(id, title, selected items, text lines, layout) of a captured screen,
+    without the terminal program's own title/menu/status bars."""
+    lines = screen_reader.strip_chrome(screen_reader.read_screen(image))
+    screen_id, title = screen_reader.screen_identity(lines, image.height, image.width)
+    header_limit = image.height * 0.15
+    # The terminal program's status bar ("1,1 Sessie 1 ... UTF-8 ansi") is
+    # the bottom ~45 px.
+    footer_limit = image.height - 45
+    body = [line for line in lines if header_limit <= line["y"] < footer_limit]
+    selected = [line["text"] for line in body if line["highlighted"]]
+    layout = [{"x": line["x"], "y": line["y"], "text": line["text"], "highlighted": line["highlighted"]} for line in body]
+    return screen_id, title, selected, [line["text"] for line in body], layout
+
+
+def remember_screen(data: dict, screen_id: str, title: str, text: list, layout: list, image=None):
+    screens = data["screens"]
+    entry = screens.get(screen_id)
+    SCREENS_DIR.mkdir(parents=True, exist_ok=True)
+    if entry is None:
+        if image is not None:
+            image.save(SCREENS_DIR / f"{screen_id}.png")
+        entry = screens[screen_id] = {"title": title, "first_seen": now_iso(), "seen": 0, "texts": [], "layout": layout}
+    # A fuller title wins ("Prg. 000" -> "Prg. 000 Hoofdmenu").
+    if len(title) > len(entry.get("title", "")) and title.split(" ")[:2] == entry.get("title", "").split(" ")[:2]:
+        entry["title"] = title
+    entry["seen"] = entry.get("seen", 0) + 1
+    entry["last_seen"] = now_iso()
+    entry.setdefault("layout", layout)
+    # Keep the first version, plus a few that differ (lists change).
+    if text not in entry["texts"] and len(entry["texts"]) < 5:
+        entry["texts"].append(text)
+    return entry
+
+
 class Recorder:
     def __init__(self):
         self.config = load_config()
@@ -135,22 +170,8 @@ class Recorder:
     # ------------------------------------------------------------ screens
     def read_current(self):
         image = screen_reader.capture_when_settled(self.target_hwnd, timeout=self.config["settle_timeout_seconds"])
-        lines = screen_reader.read_screen(image)
-        screen_id, title = screen_reader.screen_identity(lines, image.height)
-        header_limit = image.height * 0.15
-        selected = [line["text"] for line in lines if line["highlighted"] and line["y"] >= header_limit]
-        screens = self.map["screens"]
-        entry = screens.get(screen_id)
-        SCREENS_DIR.mkdir(parents=True, exist_ok=True)
-        if entry is None:
-            image.save(SCREENS_DIR / f"{screen_id}.png")
-            entry = screens[screen_id] = {"title": title, "first_seen": now_iso(), "seen": 0, "texts": []}
-        entry["seen"] += 1
-        entry["last_seen"] = now_iso()
-        text = [line["text"] for line in lines if line["y"] >= header_limit]
-        # Keep the first version, plus a few that differ (lists change).
-        if text not in entry["texts"] and len(entry["texts"]) < 5:
-            entry["texts"].append(text)
+        screen_id, title, selected, text, layout = describe_screen(image)
+        remember_screen(self.map, screen_id, title, text, layout, image)
         return screen_id, title, selected, text
 
     def masked(self, screen_text) -> bool:

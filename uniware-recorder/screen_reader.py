@@ -51,7 +51,48 @@ def window_rect(hwnd: int):
     return rect.left, rect.top, rect.right, rect.bottom
 
 
+def _print_window(hwnd: int):
+    """The window's own content via PrintWindow -- correct even when another
+    window (the recorder, the Start menu) lies on top of it. None if the
+    window can't draw itself that way (then the screen area is used)."""
+    left, top, right, bottom = window_rect(hwnd)
+    width, height = right - left, bottom - top
+    if width <= 0 or height <= 0:
+        return None
+    gdi32 = ctypes.windll.gdi32
+    window_dc = user32.GetWindowDC(hwnd)
+    memory_dc = gdi32.CreateCompatibleDC(window_dc)
+    bitmap = gdi32.CreateCompatibleBitmap(window_dc, width, height)
+    gdi32.SelectObject(memory_dc, bitmap)
+    try:
+        if not user32.PrintWindow(hwnd, memory_dc, 2):  # PW_RENDERFULLCONTENT
+            return None
+
+        class BITMAPINFOHEADER(ctypes.Structure):
+            _fields_ = [("biSize", wintypes.DWORD), ("biWidth", wintypes.LONG), ("biHeight", wintypes.LONG),
+                        ("biPlanes", wintypes.WORD), ("biBitCount", wintypes.WORD), ("biCompression", wintypes.DWORD),
+                        ("biSizeImage", wintypes.DWORD), ("biXPelsPerMeter", wintypes.LONG), ("biYPelsPerMeter", wintypes.LONG),
+                        ("biClrUsed", wintypes.DWORD), ("biClrImportant", wintypes.DWORD)]
+
+        header = BITMAPINFOHEADER()
+        header.biSize = ctypes.sizeof(BITMAPINFOHEADER)
+        header.biWidth, header.biHeight = width, -height  # top-down
+        header.biPlanes, header.biBitCount = 1, 32
+        buffer = ctypes.create_string_buffer(width * height * 4)
+        gdi32.GetDIBits(memory_dc, bitmap, 0, height, buffer, ctypes.byref(header), 0)
+        image = Image.frombuffer("RGBA", (width, height), buffer, "raw", "BGRA", 0, 1).convert("RGB")
+        # A window that didn't actually draw gives an all-black image.
+        return image if image.getbbox() else None
+    finally:
+        gdi32.DeleteObject(bitmap)
+        gdi32.DeleteDC(memory_dc)
+        user32.ReleaseDC(hwnd, window_dc)
+
+
 def capture_window(hwnd: int) -> Image.Image:
+    image = _print_window(hwnd)
+    if image is not None:
+        return image
     left, top, right, bottom = window_rect(hwnd)
     with mss.mss() as grabber:
         shot = grabber.grab({"left": left, "top": top, "width": max(1, right - left), "height": max(1, bottom - top)})
@@ -181,12 +222,67 @@ def read_screen(image: Image.Image) -> list[dict]:
     return merged
 
 
+# The terminal program's own window parts (title bar, menu bar, status bar),
+# not Uniware's screen.
+CHROME_RE = re.compile(
+    r"^(g\s*)?Connect\s*\(|Bestand\s+Edit\s+Beeld|Sessie\s*\d|Connect\s*mode|SlowScr|^Pauze$|ingelogd|^x$",
+    re.IGNORECASE,
+)
+
+
+def strip_chrome(lines: list[dict]) -> list[dict]:
+    return [line for line in lines if not CHROME_RE.search(line["text"])]
+
+
 DATE_TIME_RE = re.compile(r"\b\d{1,2}[-/.]\d{1,2}[-/.]\d{2,4}\b|\b\d{1,2}:\d{2}(:\d{2})?\b|\[\d+\]|\b\d+\.\d+\.\d+\b")
 
 
-def screen_identity(lines: list[dict], image_height: int) -> tuple[str, str]:
-    """(id, title) for a screen: the header (top ~15%) without dates, times
-    and version numbers -- e.g. "Hoofdmenu | Prg. 000"."""
+PRG_RE = re.compile(r"Prg\.?\s*(\d{2,4})", re.IGNORECASE)
+SCREEN_NUMBER_RE = re.compile(r"^(.*?)\s*\[?(\d{1,4})\]?$")
+
+
+def screen_identity(lines: list[dict], image_height: int, image_width: int = 0) -> tuple[str, str]:
+    """(id, title) for a screen.
+
+    Uniware puts a stable number on every screen: menus show "Prg. 260" (top
+    right) with the menu name under it -> "prg-260"; forms and lists show
+    "<title> [38]" in their top bar -> "scr-38". Only if neither is found:
+    the header text without dates/times/versions."""
+    lines = strip_chrome(lines)
+    width = image_width or max((line["x"] for line in lines), default=0) * 1.2 or 1
+    top = [line for line in lines if line["y"] < image_height * 0.22]
+    def title_below(line):
+        below = [other for other in top if 8 < other["y"] - line["y"] < 50 and other["x"] > width * 0.45
+                 and not re.search(r"Prg\.?", other["text"], re.IGNORECASE)]
+        return below[0]["text"] if below else ""
+
+    for line in top:
+        match = PRG_RE.search(line["text"])
+        if match:
+            number = match.group(1)
+            return f"prg-{number}", f"Prg. {number} {title_below(line) or ''}".strip()
+    # "Prg." with its number read as a separate piece on the same row, or
+    # (some screens) no number at all -- then the title names it.
+    for line in top:
+        if re.fullmatch(r"Prg\.?", line["text"].strip(), re.IGNORECASE):
+            same_row = [other for other in top if abs(other["y"] - line["y"]) <= 6 and other["x"] > line["x"] and re.fullmatch(r"\d{2,4}", other["text"].strip())]
+            title = title_below(line)
+            if same_row:
+                number = same_row[0]["text"].strip()
+                return f"prg-{number}", f"Prg. {number} {title}".strip()
+            if title:
+                slug = re.sub(r"[^a-z0-9]+", "-", title.lower()).strip("-")[:40]
+                return f"prg-{slug}", f"Prg. -- {title}"
+    for line in top:
+        match = SCREEN_NUMBER_RE.match(line["text"])
+        if not match or line["x"] < width * 0.5:
+            continue
+        text, number = match.group(1).strip(" [|"), match.group(2)
+        if not text:
+            left = [other for other in top if abs(other["y"] - line["y"]) <= 6 and other["x"] < line["x"] and other["x"] > width * 0.45]
+            text = left[-1]["text"] if left else ""
+        if text and not DATE_TIME_RE.search(text):
+            return f"scr-{number}", f"{text} [{number}]"
     header = [line for line in lines if line["y"] < image_height * 0.15]
     parts = []
     for line in header:
