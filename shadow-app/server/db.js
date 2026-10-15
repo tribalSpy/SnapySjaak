@@ -280,7 +280,9 @@ export async function saveInkoopInvoiceLines(lines) {
   if (!pool || !Array.isArray(lines) || !lines.length) {
     return;
   }
-  const validLines = lines.filter((line) => line?.id);
+  // Same id twice in one batch makes Postgres refuse the whole insert
+  // ("cannot affect row a second time") -- e.g. one invoice sent twice.
+  const validLines = dedupeByKeyKeepingLast(lines.filter((line) => line?.id), (line) => line.id);
   for (const chunk of chunkArray(validLines, INKOOP_UPSERT_CHUNK_SIZE)) {
     const values = [];
     const placeholders = chunk.map((line) => {

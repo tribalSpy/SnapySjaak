@@ -1083,7 +1083,36 @@ def _parse_veiling_from(input_path: Path, extract_dir: Path):
         else:
             skipped.append({"file_name": pdf_path.name, "reason": "PDF name has no invoice number (e.g. 049876.FK.2026.0458.pdf)"})
 
-    return {"invoices": invoices, "skipped": skipped, "pdfs": pdfs}
+    return {"invoices": drop_duplicate_invoices(invoices, skipped), "skipped": skipped, "pdfs": pdfs}
+
+
+def drop_duplicate_invoices(invoices, skipped):
+    """The same invoice sent twice (e.g. one AI2 Productnota in two emails)
+    gives the same invoice number with the same lines -- read it once; the
+    database refused the double rows ("ON CONFLICT DO UPDATE command cannot
+    affect row a second time"). Two invoices with the same number but
+    different lines are both kept (the second gets " (2)"), never dropped."""
+    kept = []
+    seen = {}
+    for invoice in invoices:
+        number = invoice.get("invoice_number") or ""
+        fingerprint = json.dumps(invoice.get("lines") or [], sort_keys=True, default=str)
+        if not number:
+            kept.append(invoice)
+            continue
+        if number not in seen:
+            seen[number] = [(fingerprint, invoice.get("file_name", ""))]
+            kept.append(invoice)
+            continue
+        same = next((file_name for known, file_name in seen[number] if known == fingerprint), None)
+        if same is not None:
+            skipped.append({"file_name": invoice.get("file_name", ""), "reason": f"Same invoice {number} as {same} (sent twice) -- read once"})
+            continue
+        copy = len(seen[number]) + 1
+        seen[number].append((fingerprint, invoice.get("file_name", "")))
+        kept.append({**invoice, "invoice_number": f"{number} ({copy})"})
+        skipped.append({"file_name": invoice.get("file_name", ""), "reason": f"Invoice number {number} appears again with different lines -- kept as {number} ({copy}), check it"})
+    return kept
 
 
 def main():
