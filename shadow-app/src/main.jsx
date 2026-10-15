@@ -15384,50 +15384,111 @@ function InkoopOverviewTab() {
   );
 }
 
-const INKOOP_SEARCH_FIELDS = [
-  { key: "product", label: "Product", placeholder: "e.g. Rosa Naomi" },
-  { key: "supplier", label: "Grower / supplier", placeholder: "name or FH / GLN number" },
-  { key: "invoice", label: "Invoice / PAV", placeholder: "invoice or PAV number" },
-];
-
-function inkoopSearchCsv(lines) {
+function inkoopCsv(header, rows) {
   const cell = (value) => {
     const text = String(value ?? "");
     return /[";\n]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text;
   };
-  const header = ["Date", "Invoice", "Type", "Company", "PAV", "Product", "Grower / supplier", "FH number", "Quantity", "Price", "Total"];
-  const rows = lines.map((line) => [
-    line.line_date, line.invoice_number, INKOOP_INVOICE_TYPE_LABELS[line.invoice_type] || line.invoice_type, line.company_number, line.pav,
-    line.description, line.supplier_name, line.supplier_fh_number, line.quantity, line.unit_price, line.total,
-  ]);
   return [header, ...rows].map((row) => row.map(cell).join(";")).join("\n");
 }
 
-// Every product line of the uploaded invoices (not the ERP), searchable by
-// date, product, grower/supplier and invoice/PAV (customer / dispatch codes are only
-// in the ERP, not on the invoices).
-function InkoopInvoiceSearchTab({ company }) {
-  const [filters, setFilters] = useState(() => ({ from: addDaysToIso(todayIso(), -6), to: todayIso(), product: "", supplier: "", invoice: "" }));
+function inkoopDispatchText(dispatch) {
+  return `${dispatch.code}${dispatch.name ? ` - ${dispatch.name}` : ""}${dispatch.land ? ` (${dispatch.land})` : ""}: ${dispatch.pieces}`;
+}
+
+// The two halves of Inkoop Controle's Search tab. Each keeps its own
+// filters and results, so both stay on screen side by side for comparing.
+const INKOOP_SEARCH_KINDS = {
+  invoices: {
+    title: "Invoices",
+    endpoint: "/api/inkoop/invoice-lines/search",
+    dateLabel: "From (product date)",
+    pavField: "invoice",
+    fields: [
+      { key: "product", label: "Product", placeholder: "e.g. Rosa Naomi" },
+      { key: "supplier", label: "Grower / supplier", placeholder: "name or FH / GLN number" },
+      { key: "invoice", label: "Invoice / PAV", placeholder: "invoice or PAV number" },
+    ],
+    notice: "The product lines of the uploaded FloraHolland invoices -- what the controle tries to match. The invoices have no customer or dispatch codes; search those in the ERP below.",
+    empty: "No invoice lines found.",
+    columns: ["Date", "Invoice", "Company", "PAV", "Product", "Grower / supplier", "Qty", "Price", "Total"],
+    csvName: "invoice-lines",
+    csv: (lines) => inkoopCsv(
+      ["Date", "Invoice", "Type", "Company", "PAV", "Product", "Grower / supplier", "FH number", "Quantity", "Price", "Total"],
+      lines.map((line) => [line.line_date, line.invoice_number, INKOOP_INVOICE_TYPE_LABELS[line.invoice_type] || line.invoice_type, line.company_number, line.pav,
+        line.description, line.supplier_name, line.supplier_fh_number, line.quantity, line.unit_price, line.total]),
+    ),
+    date: (line) => line.line_date,
+    row: (line, pavButton) => [
+      fustOverviewDate(line.line_date),
+      <><InkoopInvoiceLink invoiceNumber={line.invoice_number} /><div className="muted">{INKOOP_INVOICE_TYPE_LABELS[line.invoice_type] || line.invoice_type}</div></>,
+      line.company_number,
+      pavButton,
+      line.description,
+      <>{line.supplier_name || "-"}{line.supplier_fh_number ? <div className="muted">FH {line.supplier_fh_number}</div> : null}</>,
+      line.quantity,
+      line.unit_price === null ? "-" : formatInkoopEuro(line.unit_price),
+      formatInkoopEuro(line.total),
+    ],
+  },
+  erp: {
+    title: "ERP",
+    endpoint: "/api/inkoop/erp-lines/search",
+    dateLabel: "From (ERP date)",
+    pavField: "pav",
+    fields: [
+      { key: "product", label: "Product", placeholder: "e.g. Rosa Naomi" },
+      { key: "supplier", label: "Supplier (code)", placeholder: "e.g. a898" },
+      { key: "customer", label: "Customer / dispatch code", placeholder: "code or customer name" },
+      { key: "pav", label: "PAV / lot", placeholder: "PAV or lot number" },
+    ],
+    notice: "The purchase lots of the uploaded ERP files. Customer / dispatch code is who the lot was sent to (the \"Dispatched to\" rows of the ERP dump); a name searches the klant gegevens.",
+    empty: "No ERP lines found.",
+    columns: ["Date", "Lot", "PAV", "Product", "Supplier", "Pieces", "Price", "Total", "Dispatched to"],
+    csvName: "erp-lines",
+    csv: (lines) => inkoopCsv(
+      ["Date", "Lot", "PAV", "Product", "Supplier", "Pieces", "Price", "Total", "Dispatched to"],
+      lines.map((line) => [line.erp_date, line.lot, line.pav, line.description, line.suppl, line.pieces, line.price, line.t_price,
+        line.dispatches.map(inkoopDispatchText).join(", ")]),
+    ),
+    date: (line) => line.erp_date,
+    row: (line, pavButton) => [
+      fustOverviewDate(line.erp_date),
+      line.lot,
+      pavButton,
+      line.description,
+      line.suppl || "-",
+      line.pieces,
+      line.price === null ? "-" : formatInkoopEuro(line.price),
+      line.t_price === null ? "-" : formatInkoopEuro(line.t_price),
+      line.dispatches.length ? line.dispatches.map((dispatch) => <div key={dispatch.code}>{inkoopDispatchText(dispatch)}</div>) : <span className="muted">-</span>,
+    ],
+  },
+};
+
+function InkoopSearchPanel({ kind, company, request, onFindOther, otherTitle }) {
+  const config = INKOOP_SEARCH_KINDS[kind];
+  const blank = () => ({ from: addDaysToIso(todayIso(), -6), to: todayIso(), ...Object.fromEntries(config.fields.map((field) => [field.key, ""])) });
+  const [filters, setFilters] = useState(blank);
   const [result, setResult] = useState(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const setFilter = (key, value) => setFilters((current) => ({ ...current, [key]: value }));
 
-  async function search(event) {
-    event?.preventDefault();
+  async function search(nextFilters = filters) {
     setLoading(true);
     setError("");
     try {
       const params = new URLSearchParams();
-      for (const [key, value] of Object.entries(filters)) {
+      for (const [key, value] of Object.entries(nextFilters)) {
         if (String(value).trim()) {
           params.set(key, String(value).trim());
         }
       }
-      if (company) {
+      if (company && kind === "invoices") {
         params.set("company", company);
       }
-      setResult(await apiJson(`/api/inkoop/invoice-lines/search?${params}`));
+      setResult(await apiJson(`${config.endpoint}?${params}`));
     } catch (searchError) {
       setError(searchError.message);
     } finally {
@@ -15435,58 +15496,75 @@ function InkoopInvoiceSearchTab({ company }) {
     }
   }
 
+  // "-> ERP" / "-> invoices" from the other half: this PAV, a few days
+  // around its date (invoice and ERP dates can differ by a weekend).
+  useEffect(() => {
+    if (!request?.pav) {
+      return;
+    }
+    const next = { ...blank(), [config.pavField]: request.pav, from: addDaysToIso(request.date, -4), to: addDaysToIso(request.date, 4) };
+    setFilters(next);
+    search(next);
+  }, [request]);
+
   const lines = result?.lines || [];
   return (
     <div className="data-table-card">
-      <div className="section-header"><h2>Search invoices</h2></div>
-      <form className="form-grid" onSubmit={search}>
-        <label><span>From (product date)</span><input type="date" value={filters.from} onChange={(event) => setFilter("from", event.target.value)} /></label>
+      <div className="section-header"><h2>{config.title}</h2></div>
+      <form className="form-grid" onSubmit={(event) => { event.preventDefault(); search(); }}>
+        <label><span>{config.dateLabel}</span><input type="date" value={filters.from} onChange={(event) => setFilter("from", event.target.value)} /></label>
         <label><span>To</span><input type="date" value={filters.to} onChange={(event) => setFilter("to", event.target.value)} /></label>
-        {INKOOP_SEARCH_FIELDS.map((field) => (
+        {config.fields.map((field) => (
           <label key={field.key}>
             <span>{field.label}</span>
             <input value={filters[field.key]} placeholder={field.placeholder} onChange={(event) => setFilter(field.key, event.target.value)} />
           </label>
         ))}
         <div className="row-actions">
-          <button type="submit" className="primary" disabled={loading}>{loading ? "Searching..." : "Search"}</button>
+          <button type="submit" className="primary" disabled={loading}>{loading ? "Searching..." : `Search ${config.title.toLowerCase() === "erp" ? "ERP" : "invoices"}`}</button>
+          <button type="button" onClick={() => { setFilters(blank()); setResult(null); setError(""); }}>Clear</button>
           {!!lines.length && (
-            <button type="button" onClick={() => downloadTextFile(`invoice-lines_${result.from}_${result.to}.csv`, `﻿${inkoopSearchCsv(lines)}`)}>Download CSV</button>
+            <button type="button" onClick={() => downloadTextFile(`${config.csvName}_${result.from}_${result.to}.csv`, `﻿${config.csv(lines)}`)}>Download CSV</button>
           )}
         </div>
       </form>
       <div className="notice">
-        The product lines of the uploaded FloraHolland invoices -- what the controle tries to match -- not the ERP. Every field is optional; product and grower find every word you type, in any order. The period is at most 3 months. The invoices have no customer or dispatch codes -- those are in the ERP.{company ? ` Only company ${company} (the company choice above).` : ""}
+        {config.notice} Every field is optional; product and supplier find every word you type, in any order. At most 3 months per search.{company && kind === "invoices" ? ` Only company ${company} (the company choice above).` : ""}
       </div>
       {error && <div className="notice danger">{error}</div>}
       {result?.limited_from && <div className="notice info">Searched {fustOverviewDate(result.from)} - {fustOverviewDate(result.to)} only (3 months at most).</div>}
       {result && (
         <div className="table-wrap" style={loading ? { opacity: 0.35 } : undefined}>
-          <p className="muted">{lines.length}{result.truncated ? "+ lines -- only the first 500 are shown, narrow the search" : ` line${lines.length === 1 ? "" : "s"}`}</p>
+          <p className="muted">{lines.length}{result.truncated ? "+ lines -- only the first 500 are shown, narrow the search" : ` line${lines.length === 1 ? "" : "s"}`} ({fustOverviewDate(result.from)} - {fustOverviewDate(result.to)})</p>
           <table className="data-table">
-            <thead>
-              <tr><th>Date</th><th>Invoice</th><th>Company</th><th>PAV</th><th>Product</th><th>Grower / supplier</th><th>Qty</th><th>Price</th><th>Total</th></tr>
-            </thead>
+            <thead><tr>{config.columns.map((column) => <th key={column}>{column}</th>)}</tr></thead>
             <tbody>
-              {lines.map((line, index) => (
-                <tr key={`${line.invoice_number}-${index}`}>
-                  <td>{fustOverviewDate(line.line_date)}</td>
-                  <td><InkoopInvoiceLink invoiceNumber={line.invoice_number} /><div className="muted">{INKOOP_INVOICE_TYPE_LABELS[line.invoice_type] || line.invoice_type}</div></td>
-                  <td>{line.company_number}</td>
-                  <td>{line.pav || "-"}</td>
-                  <td>{line.description}</td>
-                  <td>{line.supplier_name || "-"}{line.supplier_fh_number ? <div className="muted">FH {line.supplier_fh_number}</div> : null}</td>
-                  <td>{line.quantity}</td>
-                  <td>{line.unit_price === null ? "-" : formatInkoopEuro(line.unit_price)}</td>
-                  <td>{formatInkoopEuro(line.total)}</td>
-                </tr>
-              ))}
-              {!lines.length && <tr><td colSpan={9}>No invoice lines found.</td></tr>}
+              {lines.map((line, index) => {
+                const pavButton = line.pav ? (
+                  <>{line.pav} <button type="button" className="link-button" title={`Find PAV ${line.pav} in ${otherTitle}`} onClick={() => onFindOther({ pav: line.pav, date: config.date(line) })}>&rarr; {otherTitle}</button></>
+                ) : "-";
+                return <tr key={`${line.lot || line.invoice_number}-${index}`}>{config.row(line, pavButton).map((cell, cellIndex) => <td key={cellIndex}>{cell}</td>)}</tr>;
+              })}
+              {!lines.length && <tr><td colSpan={config.columns.length}>{config.empty}</td></tr>}
             </tbody>
           </table>
         </div>
       )}
     </div>
+  );
+}
+
+// Search: the invoices on top, the ERP below -- each searched on its own,
+// both results stay visible to compare. A PAV's arrow looks it up in the
+// other half.
+function InkoopSearchTab({ company }) {
+  const [invoiceRequest, setInvoiceRequest] = useState(null);
+  const [erpRequest, setErpRequest] = useState(null);
+  return (
+    <>
+      <InkoopSearchPanel kind="invoices" company={company} request={invoiceRequest} otherTitle="ERP" onFindOther={(request) => setErpRequest({ ...request, at: Date.now() })} />
+      <InkoopSearchPanel kind="erp" company={company} request={erpRequest} otherTitle="invoices" onFindOther={(request) => setInvoiceRequest({ ...request, at: Date.now() })} />
+    </>
   );
 }
 
@@ -16312,7 +16390,7 @@ function InkoopControlePage({ currentUser }) {
         <button type="button" className={activeTab === "dashboard" ? "active" : ""} onClick={() => setActiveTab("dashboard")}>Financial Dashboard</button>
         <button type="button" className={activeTab === "followup" ? "active" : ""} onClick={() => setActiveTab("followup")}>Follow-up</button>
         <button type="button" className={activeTab === "destinations" ? "active" : ""} onClick={() => setActiveTab("destinations")}>Destinations</button>
-        <button type="button" className={activeTab === "search" ? "active" : ""} onClick={() => setActiveTab("search")}>Search invoices</button>
+        <button type="button" className={activeTab === "search" ? "active" : ""} onClick={() => setActiveTab("search")}>Search</button>
         <button type="button" className={activeTab === "king" ? "active" : ""} onClick={() => setActiveTab("king")}>Import naar King</button>
         <button type="button" className={activeTab === "settings" ? "active" : ""} onClick={() => setActiveTab("settings")}>Settings</button>
       </div>
@@ -16448,7 +16526,8 @@ function InkoopControlePage({ currentUser }) {
 
       {activeTab === "king" && <InkoopKingTab />}
 
-      {activeTab === "search" && <InkoopInvoiceSearchTab company={selectedCompany} />}
+      {/* Kept mounted: results stay when you look at another tab and come back. */}
+      <div style={activeTab === "search" ? undefined : { display: "none" }}><InkoopSearchTab company={selectedCompany} /></div>
 
       {activeTab === "compare" && (
       <>

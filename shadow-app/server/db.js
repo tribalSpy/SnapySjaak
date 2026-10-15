@@ -958,6 +958,55 @@ export async function searchInkoopInvoiceLines({ from, to, product, supplier, in
   return { rows: result.rows.slice(0, max), truncated: result.rows.length > max };
 }
 
+// Inkoop Controle "Search" -- ERP side: the ERP's purchase lots by ERP date
+// and any of product, supplier code, PAV / lot and the customers the lot was
+// dispatched to ("Dispatched to : <code>" rows of the dump, stored per lot
+// in inkoop_dispatch_lots). Product and supplier match every word.
+export async function searchInkoopErpLines({ from, to, product, supplier, pav, customerCodes, limit = 500 } = {}) {
+  if (!pool || !from || !to) {
+    return { rows: [], truncated: false };
+  }
+  const conditions = ["e.erp_date >= $1::date", "e.erp_date <= $2::date"];
+  const values = [from, to];
+  const like = (value) => `%${String(value).replace(/[\\%_]/g, (match) => `\\${match}`)}%`;
+  const words = (value) => String(value || "").split(/\s+/).filter(Boolean).slice(0, 8);
+  for (const word of words(product)) {
+    values.push(like(word));
+    conditions.push(`e.description ILIKE $${values.length}`);
+  }
+  for (const word of words(supplier)) {
+    values.push(like(word));
+    conditions.push(`e.suppl ILIKE $${values.length}`);
+  }
+  if (pav) {
+    values.push(like(pav));
+    conditions.push(`(e.pav ILIKE $${values.length} OR e.lot::text ILIKE $${values.length})`);
+  }
+  if (Array.isArray(customerCodes)) {
+    values.push(customerCodes.map((code) => String(code).toUpperCase()));
+    conditions.push(`EXISTS (
+      SELECT 1 FROM jsonb_array_elements(COALESCE(d.dispatches, '[]'::jsonb)) dispatch
+      WHERE upper(btrim(dispatch->>'code')) = ANY($${values.length}::text[])
+    )`);
+  }
+  values.push(Math.max(1, Math.min(2000, Number(limit) || 500)) + 1);
+  const result = await pool.query(
+    `
+      SELECT e.lot::text AS lot, to_char(e.erp_date, 'YYYY-MM-DD') AS erp_date, e.pav, e.suppl, e.transp, e.avc,
+        e.description, e.pieces::float8 AS pieces, e.price::float8 AS price, e.t_price::float8 AS t_price,
+        COALESCE(d.dispatches, '[]'::jsonb) AS dispatches
+      FROM inkoop_erp_lines e
+      LEFT JOIN inkoop_dispatch_lots d ON d.lot = e.lot
+      WHERE ${conditions.join(" AND ")}
+      ORDER BY e.erp_date DESC, e.lot
+      LIMIT $${values.length}
+    `,
+    values,
+  );
+  const max = values[values.length - 1] - 1;
+  return { rows: result.rows.slice(0, max), truncated: result.rows.length > max };
+}
+
 export async function getInkoopCompanies() {
   if (!pool) {
     return [];

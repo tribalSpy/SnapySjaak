@@ -39,6 +39,7 @@ import {
   clearInkoopUploads,
   getInkoopInvoiceSummaryInvoices,
   searchInkoopInvoiceLines,
+  searchInkoopErpLines,
   saveInkoopInvoiceHeaders,
   getInkoopInvoiceHeaders,
   getInkoopDaySummaries,
@@ -21357,6 +21358,58 @@ async function handleApi(req, res, url) {
       limit: 500,
     });
     sendJson(res, 200, { from, to, limited_from: limitedFrom, lines: rows, truncated });
+    return;
+  }
+
+  // Inkoop Controle "Search" -- ERP side: purchase lots by ERP date plus
+  // product, supplier code, PAV / lot and customer (dispatch code or name
+  // from the klant gegevens). At most 3 months per search, 500 rows shown.
+  if (url.pathname === "/api/inkoop/erp-lines/search" && req.method === "GET") {
+    if (!requirePermission(res, requestUser, PERMISSIONS.INKOOP_VIEW)) {
+      return;
+    }
+    const to = String(url.searchParams.get("to") || localDateIso()).slice(0, 10);
+    let from = String(url.searchParams.get("from") || addDaysToIsoDate(to, -6)).slice(0, 10);
+    if (from > to) {
+      from = to;
+    }
+    let limitedFrom = "";
+    if (from < addDaysToIsoDate(to, -92)) {
+      limitedFrom = from;
+      from = addDaysToIsoDate(to, -92);
+    }
+    const text = (name) => normalizeUkdocsText(url.searchParams.get(name)).slice(0, 80);
+    const state = await readInkoopState();
+    const customerMap = state.customer_map || {};
+    const customer = text("customer");
+    let customerCodes;
+    if (customer) {
+      const term = customer.toUpperCase();
+      customerCodes = Object.entries(customerMap)
+        .filter(([code, info]) => code === term || code.startsWith(term) || String(info?.name || "").toUpperCase().includes(term))
+        .map(([code]) => code);
+      if (!customerCodes.includes(term)) {
+        customerCodes.push(term); // a dispatch code not in the klant gegevens (yet)
+      }
+    }
+    const { rows, truncated } = await searchInkoopErpLines({
+      from,
+      to,
+      product: text("product"),
+      supplier: text("supplier"),
+      pav: text("pav"),
+      customerCodes,
+      limit: 500,
+    });
+    const lines = rows.map((row) => ({
+      ...row,
+      dispatches: (Array.isArray(row.dispatches) ? row.dispatches : []).map((dispatch) => {
+        const code = normalizeUkdocsText(dispatch?.code).toUpperCase();
+        const info = resolveInkoopCustomer(code, customerMap);
+        return { code, pieces: Number(dispatch?.pieces) || 0, name: info?.name || "", land: info?.land || "" };
+      }),
+    }));
+    sendJson(res, 200, { from, to, limited_from: limitedFrom, lines, truncated, customer_codes: customerCodes ? customerCodes.length : 0 });
     return;
   }
 
