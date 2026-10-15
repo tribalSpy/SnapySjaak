@@ -424,6 +424,11 @@ def parse_combo(combo: str):
     for name in modifier_names:
         modifiers.append({"ctrl": keyboard.Key.ctrl, "alt": keyboard.Key.alt, "altgr": keyboard.Key.alt_gr, "shift": keyboard.Key.shift}[name.lower()])
     if len(base) == 1:
+        if modifiers and base.isascii() and base.isalnum():
+            # With Ctrl/Alt the physical key, not the character: pynput
+            # types "P" as a Unicode character, which Ctrl doesn't combine
+            # with -- Uniware never saw Ctrl+P / Ctrl+A.
+            return modifiers, keyboard.KeyCode.from_vk(ord(base.upper()))
         return modifiers, base
     key_name = base.lower().replace(" ", "_")
     if key_name == "space":
