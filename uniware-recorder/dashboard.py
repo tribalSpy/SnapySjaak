@@ -315,10 +315,23 @@ setInterval(() => { if (state && (state.recording.active || state.run.active)) a
 </script></body></html>"""
 
 
+class SingleServer(ThreadingHTTPServer):
+    # Windows lets a second program share a port that allows reuse, and the
+    # browser then talks to either one at random -- an old dashboard with
+    # old code kept answering. Only one dashboard at a time.
+    allow_reuse_address = False
+
+
 def main():
-    stop_hotkey_listener()
-    server = ThreadingHTTPServer(("127.0.0.1", PORT), Handler)
     url = f"http://127.0.0.1:{PORT}"
+    try:
+        server = SingleServer(("127.0.0.1", PORT), Handler)
+    except OSError:
+        print(f"The dashboard is already running ({url}). Close its window first to restart it with the newest version.")
+        webbrowser.open(url)
+        input("Press Enter to close this window...")
+        return
+    stop_hotkey_listener()
     print(f"Uniware actions dashboard: {url}  (close this window to stop it)")
     webbrowser.open(url)
     server.serve_forever()

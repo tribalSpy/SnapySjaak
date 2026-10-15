@@ -103,10 +103,24 @@ def _crop_empty_margin(image: Image.Image) -> Image.Image:
     return image.crop((0, 0, min(image.width, right + 2), min(image.height, bottom + 2)))
 
 
+MIN_CAPTURE_WIDTH = 1700
+NORMAL_CAPTURE_WIDTH = 1936  # the window size the map was recorded at
+
+
+def _normal_size(image: Image.Image) -> Image.Image:
+    """A smaller window has smaller text: "Prg. 000" then reads as "Prg. --"
+    and the screen gets the wrong name. Enlarge it to the size the map was
+    recorded at, so names and positions come out the same."""
+    if image.width >= MIN_CAPTURE_WIDTH:
+        return image
+    scale = NORMAL_CAPTURE_WIDTH / image.width
+    return image.resize((NORMAL_CAPTURE_WIDTH, round(image.height * scale)), Image.LANCZOS)
+
+
 def capture_window(hwnd: int) -> Image.Image:
     image = _print_window(hwnd)
     if image is not None:
-        return _crop_empty_margin(image)
+        return _normal_size(_crop_empty_margin(image))
     left, top, right, bottom = window_rect(hwnd)
     with mss.mss() as grabber:
         shot = grabber.grab({"left": left, "top": top, "width": max(1, right - left), "height": max(1, bottom - top)})
@@ -197,6 +211,9 @@ def read_screen(image: Image.Image) -> list[dict]:
     readable = image.convert("RGB").copy()
     readable.paste((192, 192, 192), mask=cursor)
     words = asyncio.run(_ocr(readable))
+    for word in words:
+        if _ZERO_WORD_RE.fullmatch(word["text"]):
+            word["text"] = _fix_zeros(word["text"])
     if not words:
         return []
     char_width = median(word["w"] / max(1, len(word["text"])) for word in words)
@@ -261,10 +278,39 @@ def read_screen(image: Image.Image) -> list[dict]:
     for line in merged:
         line.pop("_right", None)
     merged = _split_at_columns(image, merged, char_width, cursor)
+    _read_missing_program_numbers(readable, merged, char_width)
     for line in merged:
         line.pop("words", None)
     merged.sort(key=lambda line: (line["y"] // 8, line["x"]))
     return merged
+
+
+# Uniware's terminal font draws zero with a dot/stroke inside; Windows' text
+# recognition reads it as "Û" (or "Ø"). In a word that is otherwise digits
+# ("ÛÛÛ", "2Û26"), that's a 0.
+_ZERO_WORD_RE = re.compile(r"[0-9ÛØøOo]*[ÛØø][0-9ÛØøOo]*")
+
+
+def _fix_zeros(text: str) -> str:
+    return re.sub(r"[ÛØøOo]", "0", text)
+
+
+def _read_missing_program_numbers(image: Image.Image, lines: list[dict], char_width: float):
+    """Windows' text recognition sometimes drops a lone number such as the
+    "000" in "Prg. 000" (the menu's screen name). Read the bit right of a
+    bare "Prg." again, enlarged, and add the number to that line."""
+    for line in lines:
+        if not re.fullmatch(r"Prg\.?", line["text"].strip(), re.IGNORECASE):
+            continue
+        left = line["x"] + char_width * 3
+        top = max(0, line["y"] - 6)
+        box = (int(left), int(top), int(min(image.width, left + char_width * 8)), int(min(image.height, line["y"] + 30)))
+        crop = image.crop(box)
+        crop = crop.resize((crop.width * 3, crop.height * 3), Image.LANCZOS)
+        words = asyncio.run(_ocr(crop))
+        digits = "".join(re.sub(r"[^0-9]", "", _fix_zeros(word["text"]) if _ZERO_WORD_RE.fullmatch(word["text"]) else word["text"]) for word in words)
+        if digits:
+            line["text"] = f"Prg. {digits}"
 
 
 def _split_at_columns(image, lines: list[dict], char_width: float, cursor) -> list[dict]:
