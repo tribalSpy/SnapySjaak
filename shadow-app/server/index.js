@@ -10408,6 +10408,14 @@ async function runShelfCountNightlyScheduledCheck() {
 //     nakeuring (reinspection) shipments                    -> CSI / Eric Docs
 // A step counts as done from the same data the other menus check; the
 // current step is the first one not done, later ones are locked.
+// "A B C" / "A+B" / "F" -> the number of PD forms ("geen" / empty: none).
+function pdStepPlanFormCount(pdForm) {
+  return String(pdForm || "")
+    .split(/[\s,;+/&]+/)
+    .filter((part) => part && !/^(geen|none|-)$/i.test(part))
+    .length;
+}
+
 function buildPdStepPlan(state, targetDate) {
   const collections = (state.print_collections || []).filter((item) => (
     String(item?.shipment_date || "").slice(0, 10) === targetDate
@@ -10446,8 +10454,15 @@ function buildPdStepPlan(state, targetDate) {
       { code: "pd_type", label: "PD type", present: has(collection.pd_type) },
       { code: "pd_form", label: "PD form / code", present: has(collection.pd_form) || has(collection.pd_code) },
     ]);
+    // One connect number per PD form: "A B C" are three forms, so three
+    // connect numbers (typed in the one field, separated by a space or comma).
+    const formCount = pdStepPlanFormCount(collection.pd_form);
+    const connectCount = ukdocsPrintSplitTokens(collection.reference_connect).length;
+    const connectDetail = connectCount && connectCount < formCount
+      ? `Connect numbers: ${connectCount} of ${formCount} (one per PD form ${collection.pd_form}; separate them with a space, comma or /)`
+      : "";
     const refs = checkItems([
-      { code: "reference_connect", label: "Connect number", present: has(collection.reference_connect) },
+      { code: "reference_connect", label: "Connect number", detail: connectDetail || undefined, present: connectCount > 0 && connectCount >= formCount },
       { code: "truck_number", label: "Truck number", present: has(collection.truck_number) },
       { code: "trailer_number", label: "Licence plate", present: has(collection.trailer_number) },
       // Eric Docs checks the phyto's pieces against this number -- asked
