@@ -175,17 +175,18 @@ def read_screen(image: Image.Image) -> list[dict]:
         current = None
         for word in line_words:
             if current is None:
-                current = dict(word)
+                current = {**word, "words": [word]}
                 continue
             gap = word["x"] - (current["x"] + current["w"])
             if gap > char_width * 3:
                 fields.append(current)
-                current = dict(word)
+                current = {**word, "words": [word]}
             else:
                 joiner = "" if gap < char_width * 0.45 else " "
                 current["text"] += joiner + word["text"]
                 current["w"] = word["x"] + word["w"] - current["x"]
                 current["h"] = max(current["h"], word["h"])
+                current["words"].append(word)
         fields.append(current)
         for field in fields:
             box = (field["x"], field["y"], field["x"] + field["w"], field["y"] + field["h"])
@@ -194,6 +195,7 @@ def read_screen(image: Image.Image) -> list[dict]:
                 "x": round(field["x"]),
                 "text": field["text"].strip(),
                 "highlighted": _is_highlighted(image, box),
+                "words": field["words"],
             })
     # OCR sometimes reports one visual line as several lines ("Uitstaand" +
     # "transportfust", "Prg." + "000"): same height and a small gap -> one.
@@ -214,12 +216,48 @@ def read_screen(image: Image.Image) -> list[dict]:
             previous["text"] += " " + line["text"]
             previous["_right"] = line["x"] + len(line["text"]) * char_width
             previous["highlighted"] = previous["highlighted"] or line["highlighted"]
+            previous["words"] = previous["words"] + line["words"]
             continue
         merged.append({**line, "_right": line["x"] + len(line["text"]) * char_width})
     for line in merged:
         line.pop("_right", None)
+    merged = _split_at_columns(image, merged, char_width)
+    for line in merged:
+        line.pop("words", None)
     merged.sort(key=lambda line: (line["y"] // 8, line["x"]))
     return merged
+
+
+def _split_at_columns(image, lines: list[dict], char_width: float) -> list[dict]:
+    """Menu levels sit side by side and the longest item of one level can end
+    close to the next level ("Alternatieve vt_control" + "Factuur"), so OCR
+    glues them into one line. A line holding a word that starts exactly where
+    another line starts (the next level's column) is cut there, and each
+    part gets its own highlight. (The font is fixed-width, so only starts of
+    whole lines count -- not the second word of many items.)"""
+    columns = sorted({line["x"] for line in lines})
+    result = []
+    for line in lines:
+        words = sorted(line.get("words") or [], key=lambda word: word["x"])
+        cuts = [index for index, word in enumerate(words) if index and abs(word["x"] - line["x"]) > 6
+                and any(abs(word["x"] - column) <= 6 for column in columns)
+                and word["x"] - (words[index - 1]["x"] + words[index - 1]["w"]) > char_width * 0.45]
+        if not cuts or line["y"] < image.height * 0.15:  # never the title bar (screen names)
+            result.append(line)
+            continue
+        for start, end in zip([0] + cuts, cuts + [len(words)]):
+            part = words[start:end]
+            left = part[0]["x"]
+            right = max(word["x"] + word["w"] for word in part)
+            top = min(word["y"] for word in part)
+            bottom = max(word["y"] + word["h"] for word in part)
+            text = ""
+            for index, word in enumerate(part):
+                gap = word["x"] - (part[index - 1]["x"] + part[index - 1]["w"]) if index else 0
+                text += ("" if not index or gap < char_width * 0.45 else " ") + word["text"]
+            result.append({"y": round(top), "x": round(left), "text": text.strip(),
+                           "highlighted": _is_highlighted(image, (left, top, right, bottom))})
+    return result
 
 
 # The terminal program's own window parts (title bar, menu bar, status bar),

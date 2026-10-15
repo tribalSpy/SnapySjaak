@@ -154,6 +154,7 @@ class Handler(BaseHTTPRequestHandler):
                         action["uniware_dump_wait"] = max(10, min(3600, int(float(body.get("uniware_dump_wait")))))
                     except (TypeError, ValueError):
                         action["uniware_dump_wait"] = 180
+                    action["back_key"] = str(body.get("back_key") or action.get("back_key") or "Esc").strip()
                     for index, change in enumerate(body.get("steps") or []):
                         if index < len(action["steps"]):
                             step = action["steps"][index]
@@ -246,7 +247,7 @@ function render() {
       ${run.outputs.map((f) => `<a href="/outputs/${encodeURIComponent(f)}" target="_blank">${esc(f)}</a>`).join(" &middot; ")}
       ${run.exported.length ? `<p>Dump: ${run.exported.map(esc).join("<br>")}</p>` : ""}` : "";
   $("actions").innerHTML = state.actions.length ? `<table><tr><th>Action</th><th>Steps</th><th>Fields</th><th></th></tr>${state.actions.map((a) => `
-      <tr><td><strong>${esc(a.name)}</strong><div class="muted">${esc(a.description || "")}</div><div class="muted">starts on: ${esc(a.start_title || a.start_screen)}</div>${a.uniware_dump_dir ? `<div class="muted">dump file &rarr; ${esc(a.export_name || "{action}_{date}_{time}")}.csv</div>` : a.export_dir ? `<div class="muted">dump to: ${esc(a.export_dir)} &rarr; ${esc(a.export_name || "{action}_{date}_{time}")}.csv</div>` : ""}</td>
+      <tr><td><strong>${esc(a.name)}</strong><div class="muted">${esc(a.description || "")}</div><div class="muted">starts on: ${a.steps.length && a.steps[0].menu ? `any menu position (goes back with ${esc(a.back_key || "Esc")} if needed)` : esc(a.start_title || a.start_screen)}</div>${a.uniware_dump_dir ? `<div class="muted">dump file &rarr; ${esc(a.export_name || "{action}_{date}_{time}")}.csv</div>` : a.export_dir ? `<div class="muted">dump to: ${esc(a.export_dir)} &rarr; ${esc(a.export_name || "{action}_{date}_{time}")}.csv</div>` : ""}</td>
       <td>${a.steps.length} (${a.steps.filter((s) => s.capture).length} capture)</td>
       <td>${a.fields.map((f) => `<label>${esc(f)} <input data-field="${esc(a.slug)}:${esc(f)}" size="14"></label>`).join("<br>") || "-"}</td>
       <td class="row"><button class="primary" onclick="runAction('${a.slug}')">Start</button><button onclick="edit('${a.slug}')">Edit</button><button class="danger" onclick="del('${a.slug}')">Delete</button></td></tr>`).join("")}</table>`
@@ -265,6 +266,7 @@ function edit(slug) {
   $("editCard").style.display = "";
   $("editCard").innerHTML = `<h2>Edit: ${esc(a.name)}</h2>
     <p><input id="editDesc" size="70" value="${esc(a.description || "")}"></p>
+    <p class="row"><label>Back key (from a program back to the menu) <input id="editBackKey" size="8" value="${esc(a.back_key || "Esc")}"></label></p>
     <h3>Dump file</h3>
     <p class="row"><label>Uniware saves its dump in <input id="editUniwareDir" size="60" placeholder="paste the folder path (e.g. the OneDrive folder)" value="${esc(a.uniware_dump_dir || "")}"></label>
       <label>Its name looks like <input id="editUniwarePattern" size="14" value="${esc(a.uniware_dump_pattern || "dump.*.csv")}"></label>
@@ -274,7 +276,7 @@ function edit(slug) {
     <p class="muted">At the end of the run it waits for the new dump file Uniware writes (e.g. dump.filipe.2026-10-14_16_57_30.csv), waits until it is completely written, then renames it, e.g. <code>tour-508_{date}</code> gives tour-508_20261014.csv. You can use {date}, {time}, {action} and the fields. Same name again = replaced. No new file within Max wait = the run fails and the file is left alone.</p>
     <table><tr><th>#</th><th>Step</th><th>Goes to</th><th>Field (typed text) / list row</th><th>Wait until screen shows</th><th>Max wait (s)</th><th>Capture screen</th><th>All pages</th></tr>
     ${a.steps.map((s, i) => `<tr><td>${i + 1}</td>
-      <td>${s.text !== undefined ? `type <code>${esc(s.text)}</code>` : `<code>${esc(s.key)}</code>${s.enter_on ? ` on "${esc(s.enter_on)}"` : ""}`}</td>
+      <td>${s.text !== undefined ? `type <code>${esc(s.text)}</code>` : `${s.menu ? `menu <strong>${s.menu.map(esc).join(" &rsaquo; ")}</strong>, then ` : ""}<code>${esc(s.key)}</code>${s.enter_on ? ` on "${esc(s.enter_on)}"` : ""}`}</td>
       <td>${esc(s.to_title || s.to)}${s.recorded_wait ? `<div class="muted">took ${esc(s.recorded_wait)}s when recorded</div>` : ""}</td>
       <td>${s.text !== undefined ? `<input data-step-field="${i}" placeholder="e.g. invoice" value="${esc((s.text.match(/^\\{(.+)\\}$/) || [])[1] || "")}" size="12"><div class="muted">recorded: ${esc(s.recorded_text || s.text)}</div>` : s.key === "Enter" ? `find row with <input data-step-pick="${i}" placeholder="e.g. 508 or {tour}" value="${esc(s.pick || "")}" size="10">${s.pick_row ? `<div class="muted">recorded row: ${esc(s.pick_row)}</div>` : ""}` : ""}</td>
       <td><input data-step-wait="${i}" size="16" placeholder="(optional) e.g. Totaal" value="${esc(s.wait_text || "")}"></td>
@@ -295,7 +297,7 @@ function saveEdit() {
     field: s.text !== undefined ? document.querySelector(`[data-step-field="${i}"]`).value : null,
     pick: s.key === "Enter" ? document.querySelector(`[data-step-pick="${i}"]`).value : null,
   }));
-  api(`/api/actions/${editing}/update`, { description: $("editDesc").value, export_dir: $("editExportDir").value, export_name: $("editExportName").value, uniware_dump_dir: $("editUniwareDir").value, uniware_dump_pattern: $("editUniwarePattern").value, uniware_dump_wait: $("editUniwareWait").value, steps });
+  api(`/api/actions/${editing}/update`, { description: $("editDesc").value, export_dir: $("editExportDir").value, back_key: $("editBackKey").value, export_name: $("editExportName").value, uniware_dump_dir: $("editUniwareDir").value, uniware_dump_pattern: $("editUniwarePattern").value, uniware_dump_wait: $("editUniwareWait").value, steps });
 }
 api("/api/state");
 setInterval(() => { if (state && (state.recording.active || state.run.active)) api("/api/state"); }, 1000);

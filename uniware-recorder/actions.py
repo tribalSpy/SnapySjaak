@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import csv
 import ctypes
+import difflib
 import datetime
 import json
 import queue
@@ -80,6 +81,62 @@ def action_fields(action: dict) -> list[str]:
             if name not in fields:
                 fields.append(name)
     return fields
+
+
+# ------------------------------------------------------------------ menus
+# Uniware's menus are levels side by side: the main menu on the left, each
+# Right arrow opens the blue (selected) item's submenu as the next column,
+# Left goes back a level. The level you're in is the rightmost column with a
+# blue item (a column further right without one is just a preview of the
+# selected item's submenu). So a menu route is the blue item per level --
+# ["Expeditie", "Inklaring bedrijf"] -- and replay steers there by reading
+# the screen, whatever the menu looked like when it started.
+MENU_KEYS = {"Down", "Up", "Left", "Right", "Page Down", "Page Up", "Home", "End"}
+
+
+def menu_levels(layout: list) -> list[dict]:
+    """The columns of a menu screen, left to right: {x, items, selected}
+    (selected = index of the blue item, or None)."""
+    levels = []
+    for line in sorted(layout, key=lambda line: line["x"]):
+        if levels and line["x"] - levels[-1]["x"] <= 40:
+            levels[-1]["lines"].append(line)
+        else:
+            levels.append({"x": line["x"], "lines": [line]})
+    result = []
+    for level in levels:
+        lines = sorted(level["lines"], key=lambda line: line["y"])
+        selected = [index for index, line in enumerate(lines) if line.get("highlighted")]
+        result.append({"x": level["x"], "items": [line["text"] for line in lines], "selected": selected[0] if selected else None})
+    return result
+
+
+def is_menu(screen_id: str, layout: list) -> bool:
+    """A menu screen: a Prg number and the main menu as the first column."""
+    levels = menu_levels(layout)
+    return screen_id.startswith("prg-") and bool(levels) and len(levels[0]["items"]) >= 8 and levels[0]["selected"] is not None
+
+
+def menu_path(layout: list) -> list[str]:
+    """The blue item of every level up to the one you're in."""
+    levels = menu_levels(layout)
+    active = max((index for index, level in enumerate(levels) if level["selected"] is not None), default=-1)
+    return [levels[index]["items"][levels[index]["selected"]] if levels[index]["selected"] is not None else "" for index in range(active + 1)]
+
+
+def _plain(text: str) -> str:
+    return re.sub(r"[^a-z0-9]+", "", text.lower())
+
+
+def same_item(seen: str, wanted: str) -> bool:
+    """Menu text as read now vs as recorded -- OCR may differ a little
+    ("vt_control" / "vt control", "virtuee" / "virtueel")."""
+    left, right = _plain(seen), _plain(wanted)
+    if not left or not right:
+        return False
+    if left == right or (min(len(left), len(right)) >= 5 and (left.startswith(right) or right.startswith(left))):
+        return True
+    return difflib.SequenceMatcher(None, left, right).ratio() >= 0.85
 
 
 # ------------------------------------------------------------------ lists
@@ -280,6 +337,7 @@ class ActionRecorder:
         step.update({
             "to": screen_id, "to_title": title, "capture": False, "capture_pages": False,
             "recorded_wait": round(waited, 1),
+            "to_menu": is_menu(screen_id, layout),
             "max_wait": default_max_wait(waited),
             "wait_text": "",
         })
@@ -320,7 +378,16 @@ class ActionRecorder:
                 self._typed.append(name)
                 continue
             step = {"key": name}
-            if name == "Enter":
+            if name not in MENU_KEYS and is_menu(self.screen_id, self.layout):
+                # A key that leaves (or acts in) a menu: the arrows that led
+                # here become one route by name, e.g. Expeditie > Inklaring
+                # bedrijf -- replay steers there from wherever the menu is.
+                steps = self.action["steps"]
+                while steps and steps[-1].get("key") in MENU_KEYS and steps[-1].get("to_menu"):
+                    steps.pop()
+                step["menu"] = menu_path(self.layout)
+                self.status = f"Menu route: {' > '.join(step['menu'])}, then {name}"
+            elif name == "Enter":
                 # Arrowed through a list (e.g. the tours after F1) and then
                 # Enter: the row's position changes from day to day, so
                 # replay looks the row up by its value instead of pressing
@@ -402,6 +469,71 @@ class ActionRun:
                 self.say(f"{label}: Uniware still busy, waiting for {expected_title}" + (f" / '{wait_text}'" if wait_text else "") + f" ({waited:.0f}s of max {max_wait:.0f}s)")
                 next_note = time.time() + 10
             time.sleep(0.5)
+
+    def _back_to_menu(self, hwnd, controller, reading):
+        """From inside a program, press the back key (Esc by default, Edit:
+        "Back key") until a menu shows -- at most 8 times, and never once a
+        menu is there (Esc on the main menu could close Uniware)."""
+        back_key = self.action.get("back_key") or "Esc"
+        screen_id, title, selected, text, layout = reading
+        unchanged = 0
+        for _ in range(8):
+            if is_menu(screen_id, layout):
+                return screen_id, title, selected, text, layout
+            self._check(hwnd)
+            self.say(f"Not in a menu ('{title}'): pressing {back_key}")
+            send_combo(controller, back_key)
+            _, new_id, title, selected, new_text, layout = self._read(hwnd)
+            unchanged = unchanged + 1 if new_text == text else 0
+            if unchanged >= 2:
+                break
+            screen_id, text = new_id, new_text
+        raise RuntimeError(f"Could not get back to the menu from '{title}' with {back_key}. Go to the menu yourself and start again (or set the Back key under Edit).")
+
+    def _go_menu(self, hwnd, controller, path: list, label: str):
+        """Steer the menu to `path` (blue item per level) from wherever it is:
+        Left back to the first level that's wrong, Up/Down within the level
+        (counting rows from the blue item), Right into the next level --
+        reading the screen after every move."""
+        path = [item for item in path if item]
+        if not path:
+            return
+        route = " > ".join(path)
+        last_depth = None
+        for _ in range(80):
+            self._check(hwnd)
+            image, screen_id, title, _, _, layout = self._read(hwnd, timeout=1.5)
+            if not is_menu(screen_id, layout):
+                self._save_problem_screen(image)
+                raise RuntimeError(f"{label}: expected a menu on the way to {route}, but Uniware shows '{title}'. Stopped (screenshot in outputs).")
+            levels = menu_levels(layout)
+            active = max(index for index, level in enumerate(levels) if level["selected"] is not None)
+            current = [levels[index]["items"][levels[index]["selected"]] if levels[index]["selected"] is not None else "" for index in range(active + 1)]
+            wrong = next((index for index in range(min(active + 1, len(path))) if not same_item(current[index], path[index])), None)
+            if wrong is None and active == len(path) - 1:
+                self.say(f"{label}: menu at {route}")
+                return
+            if wrong is not None and wrong < active:
+                self._press(controller, "Left", active - wrong)
+            elif wrong is None and active > len(path) - 1:
+                self._press(controller, "Left", active - (len(path) - 1))
+            elif wrong is None:
+                if last_depth is not None and last_depth == active:
+                    self._save_problem_screen(image)
+                    raise RuntimeError(f"{label}: Right on '{current[active]}' did not open its submenu (looking for {route}). Stopped (screenshot in outputs).")
+                last_depth = active
+                self._press(controller, "Right", 1)
+                continue
+            else:
+                items = levels[active]["items"]
+                target = next((index for index, item in enumerate(items) if same_item(item, path[active])), None)
+                if target is None:
+                    self._save_problem_screen(image)
+                    raise RuntimeError(f"{label}: '{path[active]}' is not in this menu level ({', '.join(items[:8])}...). Stopped (screenshot in outputs).")
+                distance = target - levels[active]["selected"]
+                self._press(controller, "Down" if distance > 0 else "Up", abs(distance))
+            last_depth = None
+        raise RuntimeError(f"{label}: could not reach {route} in the menu. Stopped.")
 
     def _press(self, controller, key: str, times: int):
         for _ in range(times):
@@ -489,7 +621,13 @@ class ActionRun:
                 raise RuntimeError("Could not bring Uniware to the front -- click it once and start again.")
             controller = keyboard.Controller()
             _, screen_id, title, selected, text, layout = self._read(hwnd)
-            if self.action.get("start_screen") and screen_id != self.action["start_screen"]:
+            steps = self.action.get("steps", [])
+            if steps and steps[0].get("menu"):
+                # Starts with a menu route: any menu position is fine (the
+                # route steers from there); from inside a program, go back
+                # to the menu first.
+                screen_id, title, selected, text, layout = self._back_to_menu(hwnd, controller, (screen_id, title, selected, text, layout))
+            elif self.action.get("start_screen") and screen_id != self.action["start_screen"]:
                 raise RuntimeError(f"Uniware is on '{title}', but this action starts on '{self.action.get('start_title') or self.action['start_screen']}'. Go there first.")
             self.say(f"Start: {title}")
             dump_before = self._dump_files_now()
@@ -502,7 +640,9 @@ class ActionRun:
                     controller.type(typed)
                     self.say(f"Step {number}: typed {typed!r}")
                 else:
-                    if step.get("pick"):
+                    if step.get("menu"):
+                        self._go_menu(hwnd, controller, step["menu"], f"Step {number}")
+                    elif step.get("pick"):
                         target = re.sub(r"\{([a-z0-9_]+)\}", lambda match: self.values.get(match.group(1), ""), step["pick"])
                         self._choose_row(hwnd, controller, target, f"Step {number}")
                     elif step.get("enter_on"):

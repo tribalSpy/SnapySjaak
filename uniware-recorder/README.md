@@ -91,6 +91,18 @@ renamed. Record the action including the keys that make Uniware export.
 Without that setting, a **Dump folder** gets the screens captured with
 Ctrl+Alt+C (`.csv` + `.txt`), only after a run that *finished*.
 
+**Menus are routes by name**: Uniware's menu levels sit side by side (Right =
+one level deeper, Left = back; the level you're in is the rightmost column
+with a blue item). While recording, arrow through the menu as usual; when
+you press Enter (or another key) on a menu, all those arrows become one step
+like `menu Expeditie > Inklaring bedrijf, then Enter`. When running, it reads
+the screen and steers there from wherever the menu is: Left back to the
+first level that's wrong, Up/Down by counting rows from the blue item, Right
+into the next level -- checking after every move. So an action that starts
+with a menu route can start from any menu position; if Uniware is inside a
+program, it first presses the **Back key** (Esc; changeable under Edit) until
+a menu shows (never on a menu itself). An item that isn't there stops the run.
+
 **Lists whose order changes** (e.g. the tours after F1): while recording,
 just arrow down to the row (e.g. 508) and press Enter. The action then
 remembers *the row with 508*, not "3x Down": when running it reads the list,
