@@ -91,6 +91,15 @@ renamed. Record the action including the keys that make Uniware export.
 Without that setting, a **Dump folder** gets the screens captured with
 Ctrl+Alt+C (`.csv` + `.txt`), only after a run that *finished*.
 
+**Lists whose order changes** (e.g. the tours after F1): while recording,
+just arrow down to the row (e.g. 508) and press Enter. The action then
+remembers *the row with 508*, not "3x Down": when running it reads the list,
+finds the row with 508 (whole number -- not 1508 or 50,80), counts how far
+it is from the highlighted row, presses Down/Up that often (scrolling if it
+is off screen) and checks 508 is highlighted before Enter. Not in the list
+today -> it stops with a screenshot. Under Edit, **find row with** shows /
+changes the value (a field like `{tour}` also works).
+
 **Tours (UKdocs)**: record one action per tour (508 flowers, 515
 accessories, 1000 BQ, ...) -- some tours need an extra key, so each has its
 own recording -- each with its own dump file name.

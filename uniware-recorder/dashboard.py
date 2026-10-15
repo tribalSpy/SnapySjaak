@@ -164,6 +164,15 @@ class Handler(BaseHTTPRequestHandler):
                                 step["max_wait"] = max(5, min(1800, int(float(change.get("max_wait")))))
                             except (TypeError, ValueError):
                                 step["max_wait"] = actions.default_max_wait(float(step.get("recorded_wait") or 0))
+                            if step.get("key") == "Enter" and change.get("pick") is not None:
+                                # Look the list row up by this value (e.g. a
+                                # tour number) instead of its position.
+                                pick = str(change["pick"]).strip()
+                                if pick:
+                                    step["pick"] = pick
+                                    step.pop("enter_on", None)
+                                else:
+                                    step.pop("pick", None)
                             if "text" in step and change.get("field") is not None:
                                 # A field name: typed text becomes "{field}",
                                 # asked at start; empty: the recorded text.
@@ -263,17 +272,17 @@ function edit(slug) {
     <p class="row"><label>Rename it to <input id="editExportName" size="28" placeholder="{action}_{date}_{time}" value="${esc(a.export_name || "")}"></label>
       <label>and move it to <input id="editExportDir" size="50" placeholder="(empty: stays in the same folder)" value="${esc(a.export_dir || "")}"></label></p>
     <p class="muted">At the end of the run it waits for the new dump file Uniware writes (e.g. dump.filipe.2026-10-14_16_57_30.csv), waits until it is completely written, then renames it, e.g. <code>tour-508_{date}</code> gives tour-508_20261014.csv. You can use {date}, {time}, {action} and the fields. Same name again = replaced. No new file within Max wait = the run fails and the file is left alone.</p>
-    <table><tr><th>#</th><th>Step</th><th>Goes to</th><th>Field (typed text)</th><th>Wait until screen shows</th><th>Max wait (s)</th><th>Capture screen</th><th>All pages</th></tr>
+    <table><tr><th>#</th><th>Step</th><th>Goes to</th><th>Field (typed text) / list row</th><th>Wait until screen shows</th><th>Max wait (s)</th><th>Capture screen</th><th>All pages</th></tr>
     ${a.steps.map((s, i) => `<tr><td>${i + 1}</td>
       <td>${s.text !== undefined ? `type <code>${esc(s.text)}</code>` : `<code>${esc(s.key)}</code>${s.enter_on ? ` on "${esc(s.enter_on)}"` : ""}`}</td>
       <td>${esc(s.to_title || s.to)}${s.recorded_wait ? `<div class="muted">took ${esc(s.recorded_wait)}s when recorded</div>` : ""}</td>
-      <td>${s.text !== undefined ? `<input data-step-field="${i}" placeholder="e.g. invoice" value="${esc((s.text.match(/^\\{(.+)\\}$/) || [])[1] || "")}" size="12"><div class="muted">recorded: ${esc(s.recorded_text || s.text)}</div>` : ""}</td>
+      <td>${s.text !== undefined ? `<input data-step-field="${i}" placeholder="e.g. invoice" value="${esc((s.text.match(/^\\{(.+)\\}$/) || [])[1] || "")}" size="12"><div class="muted">recorded: ${esc(s.recorded_text || s.text)}</div>` : s.key === "Enter" ? `find row with <input data-step-pick="${i}" placeholder="e.g. 508 or {tour}" value="${esc(s.pick || "")}" size="10">${s.pick_row ? `<div class="muted">recorded row: ${esc(s.pick_row)}</div>` : ""}` : ""}</td>
       <td><input data-step-wait="${i}" size="16" placeholder="(optional) e.g. Totaal" value="${esc(s.wait_text || "")}"></td>
       <td><input data-step-max="${i}" size="4" value="${esc(s.max_wait || 30)}"></td>
       <td><input type="checkbox" data-step-capture="${i}" ${s.capture ? "checked" : ""}></td>
       <td><input type="checkbox" data-step-pages="${i}" ${s.capture_pages ? "checked" : ""}></td></tr>`).join("")}
     </table><p class="row"><button class="primary" onclick="saveEdit()">Save</button><button onclick="$('editCard').style.display='none'">Close</button></p>
-    <p class="muted">Field: the typed text becomes a value you fill in when starting (leave empty to always type the recorded text). All pages: Page Down until the list ends.<br>
+    <p class="muted">Field: the typed text becomes a value you fill in when starting (leave empty to always type the recorded text). All pages: Page Down until the list ends. Find row with: in a list (e.g. the tours after F1) the run reads the list, finds the row with this value and moves the highlight there -- the position may differ every day. Arrowing in a list and pressing Enter while recording fills this in by itself (the first number of the row).<br>
     Waiting: after each step the run waits until Uniware shows that screen and has stopped changing (finished loading), up to Max wait -- then it stops with a screenshot. If data appears on the same screen later (e.g. after typing the tour), put a word that only shows once the data is there in "Wait until screen shows".</p>`;
 }
 function saveEdit() {
@@ -284,6 +293,7 @@ function saveEdit() {
     wait_text: document.querySelector(`[data-step-wait="${i}"]`).value,
     max_wait: document.querySelector(`[data-step-max="${i}"]`).value,
     field: s.text !== undefined ? document.querySelector(`[data-step-field="${i}"]`).value : null,
+    pick: s.key === "Enter" ? document.querySelector(`[data-step-pick="${i}"]`).value : null,
   }));
   api(`/api/actions/${editing}/update`, { description: $("editDesc").value, export_dir: $("editExportDir").value, export_name: $("editExportName").value, uniware_dump_dir: $("editUniwareDir").value, uniware_dump_pattern: $("editUniwarePattern").value, uniware_dump_wait: $("editUniwareWait").value, steps });
 }

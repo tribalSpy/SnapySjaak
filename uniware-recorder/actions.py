@@ -76,10 +76,47 @@ def save_action(action: dict):
 def action_fields(action: dict) -> list[str]:
     fields = []
     for step in action.get("steps", []):
-        for name in re.findall(r"\{([a-z0-9_]+)\}", step.get("text") or ""):
+        for name in re.findall(r"\{([a-z0-9_]+)\}", (step.get("text") or "") + (step.get("pick") or "")):
             if name not in fields:
                 fields.append(name)
     return fields
+
+
+# ------------------------------------------------------------------ lists
+ARROW_KEYS = {"Down", "Up", "Page Down", "Page Up"}
+
+
+def screen_rows(layout: list) -> list[dict]:
+    """Text lines grouped into screen rows (top to bottom): {text, y,
+    highlighted}. OCR splits a list row into one line per column."""
+    rows = []
+    for line in sorted(layout, key=lambda line: line["y"]):
+        if rows and abs(line["y"] - rows[-1]["y"]) <= 8:
+            rows[-1]["parts"].append(line)
+            rows[-1]["highlighted"] = rows[-1]["highlighted"] or line.get("highlighted", False)
+        else:
+            rows.append({"y": line["y"], "parts": [line], "highlighted": line.get("highlighted", False)})
+    return [{"y": row["y"], "highlighted": row["highlighted"],
+             "text": " ".join(part["text"] for part in sorted(row["parts"], key=lambda part: part["x"]))} for row in rows]
+
+
+def find_row(rows: list[dict], target: str) -> int | None:
+    """Index of the row showing `target` as a whole value ("508" matches
+    "508 GBR ..." but not "1508" or "50,80"); a row that starts with it wins."""
+    pattern = re.compile(rf"(?<![\w.,]){re.escape(target.strip())}(?![\w.,]|,\d|\.\d)", re.IGNORECASE)
+    matches = [index for index, row in enumerate(rows) if pattern.search(row["text"])]
+    starting = [index for index in matches if rows[index]["text"].strip().lower().startswith(target.strip().lower())]
+    return (starting or matches or [None])[0]
+
+
+def row_key(row_text: str) -> str:
+    """What to look for in a list row next time: its first number (the tour,
+    e.g. "508"), else its first word."""
+    number = re.search(r"(?<![\w.,])\d+(?![\w.,])", row_text)
+    if number:
+        return number.group()
+    words = row_text.split()
+    return words[0] if words else row_text
 
 
 # ------------------------------------------------------------------ window
@@ -163,6 +200,8 @@ class ActionRecorder:
         self._listener = None
         self._thread = None
         self._open = None  # (step, pressed at) until its screen is known
+        self.screen_id = ""
+        self.layout: list = []
         self._typed: list[str] = []
         self._typed_at = 0.0
         self._last_printable_at = 0.0
@@ -175,7 +214,8 @@ class ActionRecorder:
             raise RuntimeError("Uniware window not found -- start Uniware (logged in) first.")
         bring_to_front(self.hwnd)
         image = screen_reader.capture_when_settled(self.hwnd)
-        screen_id, title, selected, _, _ = recorder.describe_screen(image)
+        screen_id, title, selected, _, layout = recorder.describe_screen(image)
+        self.screen_id, self.layout = screen_id, layout
         self.action["start_screen"] = screen_id
         self.action["start_title"] = title
         self.selected = selected
@@ -228,8 +268,10 @@ class ActionRecorder:
     def _finish_open_step(self, image, at: float):
         """The open step (last key, or a run of typed text) ends on the screen
         in `image`; remember where it went and how long Uniware took."""
-        screen_id, title, selected, _, _ = recorder.describe_screen(image)
+        screen_id, title, selected, _, layout = recorder.describe_screen(image)
         self.selected = selected
+        self.screen_id = screen_id
+        self.layout = layout
         if self._open is None:
             return
         step, started = self._open
@@ -278,8 +320,23 @@ class ActionRecorder:
                 self._typed.append(name)
                 continue
             step = {"key": name}
-            if name == "Enter" and self.selected:
-                step["enter_on"] = self.selected[0]
+            if name == "Enter":
+                # Arrowed through a list (e.g. the tours after F1) and then
+                # Enter: the row's position changes from day to day, so
+                # replay looks the row up by its value instead of pressing
+                # Down the same number of times.
+                steps = self.action["steps"]
+                arrows = 0
+                while steps and steps[-1].get("key") in ARROW_KEYS and steps[-1].get("to") == self.screen_id:
+                    steps.pop()
+                    arrows += 1
+                highlighted = [row for row in screen_rows(self.layout) if row["highlighted"]]
+                if arrows and highlighted:
+                    step["pick"] = row_key(highlighted[0]["text"])
+                    step["pick_row"] = highlighted[0]["text"]
+                    self.status = f"List: will look for the row with '{step['pick']}' ({highlighted[0]['text'][:50]}), not count {arrows} key(s) -- change it under Edit if needed"
+                elif self.selected:
+                    step["enter_on"] = self.selected[0]
             self._open = (step, at)
 
 
@@ -346,6 +403,49 @@ class ActionRun:
                 next_note = time.time() + 10
             time.sleep(0.5)
 
+    def _press(self, controller, key: str, times: int):
+        for _ in range(times):
+            send_combo(controller, key)
+            time.sleep(0.05)
+
+    def _choose_row(self, hwnd, controller, target: str, label: str):
+        """Move the highlight in a list to the row showing `target`: read the
+        list, count the rows between the highlight and that row, press
+        Down/Up that often, read again to check. Rows not on screen: scroll
+        down to the end of the list, then up."""
+        if not target.strip():
+            raise RuntimeError(f"{label}: no value to look for in the list (fill in the field).")
+        direction, previous_text = "Down", None
+        for _ in range(60):
+            self._check(hwnd)
+            image, _, _, _, text, layout = self._read(hwnd, timeout=1.5)
+            rows = screen_rows(layout)
+            highlighted = [index for index, row in enumerate(rows) if row["highlighted"]]
+            if not highlighted:
+                self._save_problem_screen(image)
+                raise RuntimeError(f"{label}: can't see which row is selected in the list. Stopped (screenshot in outputs).")
+            current = highlighted[0]
+            found = find_row(rows, target)
+            if found == current:
+                self.say(f"{label}: '{target}' selected ({rows[current]['text'][:60]})")
+                return
+            if found is not None:
+                distance = found - current
+                self._press(controller, "Down" if distance > 0 else "Up", abs(distance))
+                previous_text = None
+                continue
+            # Not on screen: move past the visible rows to scroll the list.
+            if text == previous_text:
+                if direction == "Up":
+                    break
+                direction = "Up"  # end of the list: search the part above
+            previous_text = text
+            # Past the last (first) visible row and about a screen further.
+            to_edge = len(rows) - 1 - current if direction == "Down" else current
+            self._press(controller, direction, to_edge + max(1, len(rows) - 1))
+        self._save_problem_screen(screen_reader.capture_window(hwnd))
+        raise RuntimeError(f"{label}: '{target}' is not in the list today. Stopped (screenshot in outputs).")
+
     def _save_problem_screen(self, image):
         OUTPUTS_DIR.mkdir(parents=True, exist_ok=True)
         name = f"{self.action['slug']}_{self.started:%Y%m%d_%H%M%S}_stopped.png"
@@ -402,7 +502,10 @@ class ActionRun:
                     controller.type(typed)
                     self.say(f"Step {number}: typed {typed!r}")
                 else:
-                    if step.get("enter_on"):
+                    if step.get("pick"):
+                        target = re.sub(r"\{([a-z0-9_]+)\}", lambda match: self.values.get(match.group(1), ""), step["pick"])
+                        self._choose_row(hwnd, controller, target, f"Step {number}")
+                    elif step.get("enter_on"):
                         # Arrow to the recorded menu item first if the
                         # highlight is somewhere else.
                         for _ in range(30):
@@ -413,7 +516,7 @@ class ActionRun:
                         else:
                             raise RuntimeError(f"Menu item '{step['enter_on']}' not found.")
                     send_combo(controller, step["key"])
-                    self.say(f"Step {number}: {step['key']}" + (f" on '{step['enter_on']}'" if step.get("enter_on") else ""))
+                    self.say(f"Step {number}: {step['key']}" + (f" on '{step['pick']}'" if step.get("pick") else f" on '{step['enter_on']}'" if step.get("enter_on") else ""))
                 reading = self._wait_for(hwnd, step, f"Step {number}")
                 screen_id, title, selected, text, layout = reading
                 if step.get("capture"):
