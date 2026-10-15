@@ -187,8 +187,45 @@ class Handler(BaseHTTPRequestHandler):
                                 # asked at start; empty: the recorded text.
                                 field = re.sub(r"[^a-z0-9_]+", "_", str(change["field"]).lower()).strip("_")
                                 step["text"] = f"{{{field}}}" if field else step.get("recorded_text", step["text"])
+                            if "key" in step and str(change.get("key") or "").strip() and change["key"].strip() != step["key"]:
+                                # Another key for this step (e.g. Left instead of
+                                # Right) without recording again -- must be a key
+                                # the run can press.
+                                new_key = change["key"].strip()
+                                try:
+                                    actions.parse_combo(new_key)
+                                except (AttributeError, KeyError, ValueError):
+                                    raise RuntimeError(f"Step {index + 1}: '{new_key}' is not a key (e.g. Left, Right, Enter, F6, Shift+F11, Ctrl+P).")
+                                step["key"] = new_key
+                            column = str(change.get("read_column") or "").strip()
+                            field = re.sub(r"[^a-z0-9_]+", "_", str(change.get("read_field") or "").lower()).strip("_")
+                            if column and field:
+                                step["read_column"], step["read_field"] = column, field
+                            else:
+                                step.pop("read_column", None)
+                                step.pop("read_field", None)
+                    removed = {index for index, change in enumerate(body.get("steps") or []) if change.get("remove")}
+                    if removed:
+                        action["steps"] = [step for index, step in enumerate(action["steps"]) if index not in removed]
                     actions.save_action(action)
                     STATE["message"] = f"Saved changes to '{action['name']}'."
+                elif path.startswith("/api/actions/") and path.endswith("/copy"):
+                    # A copy to change (e.g. tour 515 from tour 508) without
+                    # recording it again.
+                    slug = path.split("/")[3]
+                    action = actions.load_action(slug)
+                    if not action:
+                        raise RuntimeError("Action not found.")
+                    name = str(body.get("name") or "").strip()
+                    if not name:
+                        raise RuntimeError("Give the copy a name.")
+                    new_slug = actions.slugify(name)
+                    if (actions.ACTIONS_DIR / f"{new_slug}.json").exists():
+                        raise RuntimeError(f"An action called '{name}' already exists.")
+                    copy = json.loads(json.dumps(action))
+                    copy.update({"name": name, "slug": new_slug, "copied_from": action["name"]})
+                    actions.save_action(copy)
+                    STATE["message"] = f"Copied '{action['name']}' to '{name}' -- change it under Edit."
                 elif path.startswith("/api/actions/") and path.endswith("/delete"):
                     slug = path.split("/")[3]
                     (actions.ACTIONS_DIR / f"{slug}.json").unlink(missing_ok=True)
@@ -258,7 +295,7 @@ function render() {
       <tr><td><strong>${esc(a.name)}</strong><div class="muted">${esc(a.description || "")}</div><div class="muted">starts on: ${a.steps.length && a.steps[0].menu ? `any menu position (goes back with ${esc(a.back_key || "Esc")} if needed)` : esc(a.start_title || a.start_screen)}</div>${a.uniware_dump_dir ? `<div class="muted">dump file &rarr; ${esc(a.export_name || "{action}_{date}_{time}")}.csv</div>` : a.export_dir ? `<div class="muted">dump to: ${esc(a.export_dir)} &rarr; ${esc(a.export_name || "{action}_{date}_{time}")}.csv</div>` : ""}</td>
       <td>${a.steps.length} (${a.steps.filter((s) => s.capture).length} capture)</td>
       <td>${a.fields.map((f) => `<label>${esc(f)} <input data-field="${esc(a.slug)}:${esc(f)}" size="14"></label>`).join("<br>") || "-"}</td>
-      <td class="row"><button class="primary" onclick="runAction('${a.slug}')">Start</button><button onclick="edit('${a.slug}')">Edit</button><button class="danger" onclick="del('${a.slug}')">Delete</button></td></tr>`).join("")}</table>`
+      <td class="row"><button class="primary" onclick="runAction('${a.slug}')">Start</button><button onclick="edit('${a.slug}')">Edit</button><button onclick="copyAction('${a.slug}')">Copy</button><button class="danger" onclick="del('${a.slug}')">Delete</button></td></tr>`).join("")}</table>`
     : `<p class="muted">No actions yet -- record one above.</p>`;
 }
 function startRecording() { api("/api/record/start", { name: $("newName").value, description: $("newDesc").value }); }
@@ -267,6 +304,11 @@ function runAction(slug) {
   document.querySelectorAll(`[data-field^="${slug}:"]`).forEach((input) => { values[input.dataset.field.split(":")[1]] = input.value; });
   if (!confirm("Start this action? Don't touch keyboard or mouse until it's done.")) return;
   api(`/api/actions/${slug}/run`, { values });
+}
+function copyAction(slug) {
+  const a = state.actions.find((x) => x.slug === slug);
+  const name = prompt("Name of the copy:", `${a.name} (copy)`);
+  if (name) api(`/api/actions/${slug}/copy`, { name });
 }
 function del(slug) { if (confirm("Delete this action?")) api(`/api/actions/${slug}/delete`, {}); }
 function edit(slug) {
@@ -284,17 +326,19 @@ function edit(slug) {
     <p class="row"><label>Rename it to <input id="editExportName" size="28" placeholder="{action}_{date}_{time}" value="${esc(a.export_name || "")}"></label>
       <label>and put it in <input id="editExportDir" size="50" placeholder="e.g. the OneDrive folder" value="${esc(a.export_dir || "")}"></label></p>
     <p class="muted">At the end of the run it waits for the new dump file Uniware writes (e.g. dump.filipe.2026-10-14_16_57_30.csv), waits until it is completely written, then renames it, e.g. <code>tour-508_{date}</code> gives tour-508_20261014.csv. You can use {date}, {time}, {action} and the fields. Same name again = replaced. No new file within Max wait = the run fails and the file is left alone.</p>
-    <table><tr><th>#</th><th>Step</th><th>Goes to</th><th>Field (typed text) / list row</th><th>Wait until screen shows</th><th>Max wait (s)</th><th>Capture screen</th><th>All pages</th></tr>
+    <table><tr><th>#</th><th>Step</th><th>Goes to</th><th>Field (typed text) / list row</th><th>Wait until screen shows</th><th>Max wait (s)</th><th>Read column (into field)</th><th>Capture screen</th><th>All pages</th><th>Remove</th></tr>
     ${a.steps.map((s, i) => `<tr><td>${i + 1}</td>
-      <td>${s.text !== undefined ? `type <code>${esc(s.text)}</code>` : `${s.menu ? `menu <strong>${s.menu.map(esc).join(" &rsaquo; ")}</strong>, then ` : ""}<code>${esc(s.key)}</code>${s.enter_on ? ` on "${esc(s.enter_on)}"` : ""}${s.key ? `<div><label><input type="checkbox" data-step-window="${i}" ${s.opens_window ? "checked" : ""}> opens the dump in a new window</label>${s.opens_window && s.opens_window.title ? `<div class="muted">recorded: ${esc(s.opens_window.title)}${s.opens_window.exe ? ` (${esc(s.opens_window.exe)})` : ""}</div>` : ""}</div>` : ""}`}</td>
+      <td>${s.text !== undefined ? `type <code>${esc(s.text)}</code>` : `${s.menu ? `menu <strong>${s.menu.map(esc).join(" &rsaquo; ")}</strong>, then ` : ""}<input data-step-key="${i}" value="${esc(s.key)}" size="9" title="The key this step presses -- change it (e.g. Left instead of Right) without recording again">${s.enter_on ? ` on "${esc(s.enter_on)}"` : ""}${s.key ? `<div><label><input type="checkbox" data-step-window="${i}" ${s.opens_window ? "checked" : ""}> opens the dump in a new window</label>${s.opens_window && s.opens_window.title ? `<div class="muted">recorded: ${esc(s.opens_window.title)}${s.opens_window.exe ? ` (${esc(s.opens_window.exe)})` : ""}</div>` : ""}</div>` : ""}`}</td>
       <td>${esc(s.to_title || s.to)}${s.recorded_wait ? `<div class="muted">took ${esc(s.recorded_wait)}s when recorded</div>` : ""}</td>
       <td>${s.text !== undefined ? `<input data-step-field="${i}" placeholder="e.g. invoice" value="${esc((s.text.match(/^\\{(.+)\\}$/) || [])[1] || "")}" size="12"><div class="muted">recorded: ${esc(s.recorded_text || s.text)}</div>` : s.key === "Enter" ? `find row with <input data-step-pick="${i}" placeholder="empty = selected row" value="${esc(s.pick || "")}" size="12">${s.pick_row ? `<div class="muted">recorded row: ${esc(s.pick_row)}</div>` : ""}` : ""}</td>
       <td><input data-step-wait="${i}" size="16" placeholder="(optional) e.g. Totaal" value="${esc(s.wait_text || "")}"></td>
       <td><input data-step-max="${i}" size="4" value="${esc(s.max_wait || 30)}"></td>
+      <td><input data-step-readcol="${i}" size="10" placeholder="e.g. invoiceRes" value="${esc(s.read_column || "")}"> &rarr; <input data-step-readfield="${i}" size="9" placeholder="invoiceres" value="${esc(s.read_field || "")}"></td>
       <td><input type="checkbox" data-step-capture="${i}" ${s.capture ? "checked" : ""}></td>
-      <td><input type="checkbox" data-step-pages="${i}" ${s.capture_pages ? "checked" : ""}></td></tr>`).join("")}
+      <td><input type="checkbox" data-step-pages="${i}" ${s.capture_pages ? "checked" : ""}></td>
+      <td><input type="checkbox" data-step-remove="${i}"></td></tr>`).join("")}
     </table><p class="row"><button class="primary" onclick="saveEdit()">Save</button><button onclick="$('editCard').style.display='none'">Close</button></p>
-    <p class="muted">Field: the typed text becomes a value you fill in when starting (leave empty to always type the recorded text). All pages: Page Down until the list ends. Find row with: in a list (e.g. the tours after F1) the run reads the list, finds the row with this value and moves the highlight there -- the position may differ every day. Arrowing in a list and pressing Enter while recording fills this in by itself (the first number of the row).<br>
+    <p class="muted">Field: the typed text becomes a value you fill in when starting (leave empty to always type the recorded text). All pages: Page Down until the list ends. Key: change what a step presses (e.g. Left instead of Right) without recording again. Read column: after this step, read that column of the table on screen (e.g. invoiceRes) into a field -- use it in the dump file name as {invoiceres}; it is read twice and must agree, otherwise the run stops. Remove: drop the step. Find row with: in a list (e.g. the tours after F1) the run reads the list, finds the row with this value and moves the highlight there -- the position may differ every day. Arrowing in a list and pressing Enter while recording fills this in by itself (the first number of the row).<br>
     Waiting: after each step the run waits until Uniware shows that screen and has stopped changing (finished loading), up to Max wait -- then it stops with a screenshot. If data appears on the same screen later (e.g. after typing the tour), put a word that only shows once the data is there in "Wait until screen shows".</p>`;
 }
 function saveEdit() {
@@ -307,6 +351,10 @@ function saveEdit() {
     field: s.text !== undefined ? document.querySelector(`[data-step-field="${i}"]`).value : null,
     pick: s.key === "Enter" ? document.querySelector(`[data-step-pick="${i}"]`).value : null,
     opens_window: s.key ? document.querySelector(`[data-step-window="${i}"]`).checked : null,
+    key: s.key ? document.querySelector(`[data-step-key="${i}"]`).value : null,
+    read_column: document.querySelector(`[data-step-readcol="${i}"]`).value,
+    read_field: document.querySelector(`[data-step-readfield="${i}"]`).value,
+    remove: document.querySelector(`[data-step-remove="${i}"]`).checked,
   }));
   api(`/api/actions/${editing}/update`, { description: $("editDesc").value, export_dir: $("editExportDir").value, back_key: $("editBackKey").value, close_dump_window: $("editCloseWindow").checked, export_name: $("editExportName").value, uniware_dump_dir: $("editUniwareDir").value, uniware_dump_pattern: $("editUniwarePattern").value, uniware_dump_wait: $("editUniwareWait").value, steps });
 }

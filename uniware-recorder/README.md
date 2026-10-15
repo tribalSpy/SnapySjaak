@@ -125,6 +125,17 @@ is off screen) and checks 508 is highlighted before Enter. Not in the list
 today -> it stops with a screenshot. Under Edit, **find row with** shows /
 changes the value (a field like `{tour}` also works).
 
+**Change without recording again** (Edit): change the **key** of a step
+(e.g. Left instead of Right), **remove** a step, or **Copy** a whole action
+(e.g. tour 515 from tour 508) and change its "find row with" and file name.
+
+**Read a value from the screen into the file name** (Edit, "Read column"):
+after that step, the run reads a table column on screen -- e.g. `invoiceRes`
+into field `invoiceres` -- and the dump file name can use it:
+`data_tour-508_{invoiceres}_{date}`. It reads twice from two screenshots and
+stops if they differ (a misread number must never end up as an invoice
+number); look-alike letters in numbers are corrected (483S236 -> 4835236).
+
 **Tours (UKdocs)**: record one action per tour (508 flowers, 515
 accessories, 1000 BQ, ...) -- some tours need an extra key, so each has its
 own recording -- each with its own dump file name.

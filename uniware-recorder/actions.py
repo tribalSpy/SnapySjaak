@@ -224,6 +224,57 @@ def find_row(rows: list[dict], target: str) -> int | None:
     return (starting or matches or [None])[0]
 
 
+def _words_with_x(line: dict) -> list[tuple[float, float, str]]:
+    """(left, right, word) of every word in a line -- by character position,
+    the font is fixed-width."""
+    width = line.get("w") or len(line["text"]) * 14
+    char = width / max(1, len(line["text"]))
+    return [(line["x"] + match.start() * char, line["x"] + match.end() * char, match.group())
+            for match in re.finditer(r"\S+", line["text"])]
+
+
+def read_column(layout: list, header: str) -> list[str]:
+    """The values under a table column, e.g. "invoiceRes", one per row
+    (empty cells left out). The column runs from the end of the header
+    before it to the start of the header after it (headers can be narrower
+    than their column, right-aligned like "order"). A header cut to the
+    column width ("invoiceRe") is found too."""
+    wanted = header.strip().lower()
+    best = None
+    for line in layout:
+        for left, right, word in _words_with_x(line):
+            token = word.lower()
+            if token == wanted or (len(token) >= 5 and wanted.startswith(token)):
+                best = (line["y"], left, right)
+                break
+        if best:
+            break
+    if best is None:
+        return []
+    head_y, head_left, head_right = best
+    header_words = sorted(word for line in layout if abs(line["y"] - head_y) <= 8 for word in _words_with_x(line))
+    before = [right for left, right, _ in header_words if right <= head_left + 1]
+    after = [left for left, right, _ in header_words if left >= head_right - 1]
+    left = max(before) + 4 if before else head_left
+    right = min(after) - 4 if after else head_right
+    rows = {}
+    for line in layout:
+        if line["y"] <= head_y + 8:
+            continue
+        for word_left, word_right, word in _words_with_x(line):
+            middle = (word_left + word_right) / 2
+            if left <= middle <= right:
+                rows.setdefault(round(line["y"] / 8), []).append((word_left, word))
+    return [" ".join(word for _, word in sorted(rows[key])) for key in sorted(rows)]
+
+
+def clean_number(value: str) -> str:
+    """An OCR'd number with look-alike letters ("483S236") -> digits, when
+    that's what it is; otherwise unchanged."""
+    fixed = value.translate(_DIGIT_LOOKALIKES).strip()
+    return fixed if re.fullmatch(r"[0-9][0-9 ./-]*", fixed) and sum(ch.isdigit() for ch in value) >= len(value.strip()) / 2 else value.strip()
+
+
 def _column_of(layout: list, anchor: dict) -> list[dict]:
     """The texts straight above / below `anchor` (overlapping it
     horizontally): the items of a popup list like the tours after F1."""
@@ -708,6 +759,25 @@ class ActionRun:
                 next_note = time.time() + 10
             time.sleep(0.5)
 
+    def _read_column_value(self, hwnd, step: dict, label: str, layout: list):
+        """Read a column (e.g. invoiceRes) off the screen into a field for
+        the dump file name. Read twice from separate screenshots; both must
+        agree, or the run stops -- a misread number must never end up in a
+        file name that SnappySjaak takes as the invoice number."""
+        column, field = step["read_column"], step["read_field"]
+        first = [clean_number(value) for value in read_column(layout, column)]
+        _, _, _, _, _, again_layout = self._read(hwnd, timeout=1.5)
+        second = [clean_number(value) for value in read_column(again_layout, column)]
+        distinct = list(dict.fromkeys(first))
+        if not distinct:
+            raise RuntimeError(f"{label}: column '{column}' is empty or not on this screen -- nothing to put in {{{field}}}.")
+        if first != second:
+            raise RuntimeError(f"{label}: column '{column}' read differently twice ({', '.join(distinct)} / {', '.join(dict.fromkeys(second))}). Stopped to be safe.")
+        if len(distinct) > 1:
+            self.say(f"{label}: '{column}' has {len(distinct)} different values ({', '.join(distinct)}); all go in the name")
+        self.values[field] = "_".join(distinct)
+        self.say(f"{label}: {column} = {self.values[field]} -> {{{field}}}")
+
     def _take_window_dump(self, hwnd, windows_before: dict, step: dict, label: str):
         """The key opened the data in another program's window (Uniware's
         Ctrl+P): wait for that window, find its file, copy it as the dump
@@ -953,6 +1023,8 @@ class ActionRun:
                     self.say(f"Step {number}: {step['key']}" + (f" on '{step['pick']}'" if step.get("pick") else f" on '{step['enter_on']}'" if step.get("enter_on") else ""))
                 reading = self._wait_for(hwnd, step, f"Step {number}")
                 screen_id, title, selected, text, layout = reading
+                if step.get("read_column") and step.get("read_field"):
+                    self._read_column_value(hwnd, step, f"Step {number}", layout)
                 if step.get("capture"):
                     self._capture(hwnd, number, bool(step.get("capture_pages")), controller, reading)
             if dump_before is not None:
