@@ -300,7 +300,7 @@ def _read_missing_program_numbers(image: Image.Image, lines: list[dict], char_wi
     "000" in "Prg. 000" (the menu's screen name). Read the bit right of a
     bare "Prg." again, enlarged, and add the number to that line."""
     for line in lines:
-        if not re.fullmatch(r"Prg\.?", line["text"].strip(), re.IGNORECASE):
+        if not re.fullmatch(r"Prg\.?[^0-9A-Za-z]*", line["text"].strip(), re.IGNORECASE):  # "Prg." / "Prg. --"
             continue
         left = line["x"] + char_width * 3
         top = max(0, line["y"] - 6)

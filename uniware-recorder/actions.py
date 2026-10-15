@@ -126,6 +126,30 @@ def menu_path(layout: list) -> list[str]:
     return [levels[index]["items"][levels[index]["selected"]] if levels[index]["selected"] is not None else "" for index in range(active + 1)]
 
 
+def _screen_number(screen_id: str):
+    match = re.fullmatch(r"(prg|scr)-(\d+)", screen_id or "")
+    return (match.group(1), match.group(2)) if match else None
+
+
+def same_screen(expected_id: str, expected_title: str, seen_id: str, seen_title: str) -> bool:
+    """Is Uniware on the expected screen? The screen name comes from text
+    recognition, which can misread a letter or the closing bracket
+    ("Customsclearance cornpany [86]" / "company [861]"): same number, or
+    one digit more at the end, plus a nearly identical title is the same
+    screen. Different numbers otherwise never are (Prg. 000 vs 420)."""
+    if expected_id == seen_id:
+        return True
+    letters = lambda text: re.sub(r"[^a-z]+", "", re.sub(r"\[[^\]]*\]?|prg\.?\s*\S+", "", (text or "").lower()))
+    similar = difflib.SequenceMatcher(None, letters(expected_title), letters(seen_title)).ratio() >= 0.85
+    expected_number, seen_number = _screen_number(expected_id), _screen_number(seen_id)
+    if expected_number and seen_number:
+        if expected_number[0] != seen_number[0]:
+            return False
+        short, long = sorted((expected_number[1], seen_number[1]), key=len)
+        return similar and long.startswith(short) and len(long) - len(short) <= 1
+    return similar and bool(letters(expected_title))
+
+
 def _plain(text: str) -> str:
     return re.sub(r"[^a-z0-9]+", "", text.lower())
 
@@ -458,6 +482,13 @@ class ActionRecorder:
         step, started = self._open
         self._open = None
         waited = max(0.0, at - started)
+        menu_before = step.pop("_menu_before", None)
+        if menu_before and not is_menu(screen_id, layout):
+            # An arrow that left the menu (Right into a program): the arrows
+            # before it become one route by name, this key opens it.
+            while self.action["steps"] and self.action["steps"][-1].get("key") in MENU_KEYS and self.action["steps"][-1].get("to_menu"):
+                self.action["steps"].pop()
+            step["menu"] = menu_before
         step.update({
             "to": screen_id, "to_title": title, "capture": False, "capture_pages": False,
             "recorded_wait": round(waited, 1),
@@ -510,6 +541,11 @@ class ActionRecorder:
                 self._typed.append(name)
                 continue
             step = {"key": name}
+            if name in MENU_KEYS and is_menu(self.screen_id, self.layout):
+                # Arrow on a menu: if it turns out to leave the menu (Right
+                # on "Inklaring bedrijf" opens the program), it becomes the
+                # route step -- see _finish_open_step.
+                step["_menu_before"] = menu_path(self.layout)
             if name not in MENU_KEYS and is_menu(self.screen_id, self.layout):
                 # A key that leaves (or acts in) a menu: the arrows that led
                 # here become one route by name, e.g. Expeditie > Inklaring
@@ -587,7 +623,7 @@ class ActionRun:
             self._check(hwnd)
             image, screen_id, title, selected, text, layout = self._read(hwnd)
             joined = "\n".join(text).lower()
-            if screen_id == expected and wait_text.lower() in joined:
+            if same_screen(expected, expected_title, screen_id, title) and wait_text.lower() in joined:
                 if text == previous_text:
                     return screen_id, title, selected, text, layout
                 previous_text = text
