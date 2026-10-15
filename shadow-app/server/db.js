@@ -911,14 +911,33 @@ export async function getInkoopInvoiceSummaryInvoices({ from, to } = {}) {
   return result.rows;
 }
 
-// Inkoop Controle "Search invoices": the invoices' own product lines (not
+// What kind of line an invoice line is -- the same split the controle uses
+// (index.js inkoopInvoiceLineIsNotAPurchase): FloraHolland's VBN type 57 is
+// a real product, 67 packaging / fust, 128 an administrative line; older
+// rows without the code are recognised by their description.
+const INKOOP_LINE_KIND_SQL = `
+  CASE
+    WHEN l.invoice_type IN ('dienst', 'handel_verkoop') THEN 'service'
+    WHEN btrim(COALESCE(l.description, '')) ~* '^emballage' THEN 'emballage'
+    WHEN btrim(COALESCE(l.description, '')) ~* '^(transactieheffing|serviceheffing)' THEN 'fee'
+    WHEN COALESCE(l.raw->>'product_type_code', '') = '128' OR btrim(COALESCE(l.description, '')) ~* '^verrekencode' THEN 'admin'
+    WHEN COALESCE(l.raw->>'product_type_code', '') = '67'
+      OR (COALESCE(l.raw->>'product_type_code', '') = ''
+        AND btrim(COALESCE(l.description, '')) ~* '^(fc\\s?[0-9]{3}|stapelwagen|deense kar|(kleine |medium |grote |kleine hoge |export)?container|exportcontainer|bloemendoos|paraat doos|normpack|normtray)')
+      THEN 'fust'
+    WHEN COALESCE(l.unit_price, 0) = 0 AND COALESCE(l.total, 0) = 0 THEN 'no_value'
+    ELSE 'product'
+  END`;
+
+// Inkoop Controle "Search" -- invoice side: the invoices' own lines (not
 // the ERP), filtered by line date and any of product, grower/supplier,
 // invoice / PAV and company (the invoices carry no customer or dispatch codes
 // -- those are only in the ERP). Product and grower match every word, in any
-// order. Capped at `limit` rows.
-export async function searchInkoopInvoiceLines({ from, to, product, supplier, invoice, company, limit = 500 } = {}) {
+// order. Only products unless `utilities` (fust, fees, emballage, ...);
+// `kinds` counts every kind either way. Capped at `limit` rows.
+export async function searchInkoopInvoiceLines({ from, to, product, supplier, invoice, company, utilities = false, limit = 500 } = {}) {
   if (!pool || !from || !to) {
-    return { rows: [], truncated: false };
+    return { rows: [], truncated: false, kinds: {} };
   }
   const conditions = ["l.invoice_date >= $1::date", "l.invoice_date <= $2::date", "l.quantity IS NOT NULL"];
   const values = [from, to];
@@ -940,22 +959,35 @@ export async function searchInkoopInvoiceLines({ from, to, product, supplier, in
     values.push(company);
     conditions.push(`l.company_number = $${values.length}`);
   }
-  values.push(Math.max(1, Math.min(2000, Number(limit) || 500)) + 1);
-  const result = await pool.query(
-    `
-      SELECT l.invoice_number, l.invoice_type, l.company_number, l.company_name,
-        to_char(l.invoice_date, 'YYYY-MM-DD') AS line_date,
-        l.reference_bt AS pav, l.description, l.supplier_name, l.supplier_fh_number,
-        l.quantity::float8 AS quantity, l.unit_price::float8 AS unit_price, l.total::float8 AS total
-      FROM inkoop_invoice_lines l
-      WHERE ${conditions.join(" AND ")}
-      ORDER BY l.invoice_date DESC, l.invoice_number, l.id
-      LIMIT $${values.length}
-    `,
+  const where = conditions.join(" AND ");
+  const counts = await pool.query(
+    `SELECT kind, COUNT(*)::int AS count, COALESCE(SUM(total), 0)::float8 AS total
+     FROM (SELECT ${INKOOP_LINE_KIND_SQL} AS kind, l.total FROM inkoop_invoice_lines l WHERE ${where}) lines
+     GROUP BY kind`,
     values,
   );
-  const max = values[values.length - 1] - 1;
-  return { rows: result.rows.slice(0, max), truncated: result.rows.length > max };
+  const kinds = Object.fromEntries(counts.rows.map((row) => [row.kind, { count: row.count, total: Math.round(row.total * 100) / 100 }]));
+  const rowValues = [...values, Math.max(1, Math.min(3000, Number(limit) || 500)) + 1];
+  const result = await pool.query(
+    `
+      SELECT * FROM (
+        SELECT l.invoice_number, l.invoice_type, l.company_number, l.company_name,
+          to_char(l.invoice_date, 'YYYY-MM-DD') AS line_date,
+          l.reference_bt AS pav, l.description, l.supplier_name, l.supplier_fh_number,
+          l.quantity::float8 AS quantity, l.unit_price::float8 AS unit_price, l.total::float8 AS total,
+          ${INKOOP_LINE_KIND_SQL} AS kind, l.invoice_date AS sort_date, l.id AS sort_id
+        FROM inkoop_invoice_lines l
+        WHERE ${where}
+      ) lines
+      ${utilities ? "" : "WHERE kind = 'product'"}
+      ORDER BY (kind <> 'product'), kind, sort_date DESC, invoice_number, sort_id
+      LIMIT $${rowValues.length}
+    `,
+    rowValues,
+  );
+  const max = rowValues[rowValues.length - 1] - 1;
+  const rows = result.rows.slice(0, max).map(({ sort_date: _date, sort_id: _id, ...row }) => row);
+  return { rows, truncated: result.rows.length > max, kinds };
 }
 
 // Inkoop Controle "Search" -- ERP side: the ERP's purchase lots by ERP date

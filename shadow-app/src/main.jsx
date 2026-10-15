@@ -15396,6 +15396,18 @@ function inkoopDispatchText(dispatch) {
   return `${dispatch.code}${dispatch.name ? ` - ${dispatch.name}` : ""}${dispatch.land ? ` (${dispatch.land})` : ""}: ${dispatch.pieces}`;
 }
 
+// Invoice lines that aren't a product (server: INKOOP_LINE_KIND_SQL), each
+// shown in its own section when "Also show utilities" is ticked.
+const INKOOP_LINE_KINDS = [
+  ["product", "Products"],
+  ["fust", "Fust & packaging (stapelwagens, containers, Fc codes)"],
+  ["fee", "Transactie- / serviceheffing"],
+  ["emballage", "Emballage"],
+  ["admin", "Administrative lines (verrekencodes)"],
+  ["service", "Services (Dienst FD / Handel verkoop HV invoices)"],
+  ["no_value", "Lines without a value"],
+];
+
 // The two halves of Inkoop Controle's Search tab. Each keeps its own
 // filters and results, so both stay on screen side by side for comparing.
 const INKOOP_SEARCH_KINDS = {
@@ -15404,6 +15416,7 @@ const INKOOP_SEARCH_KINDS = {
     endpoint: "/api/inkoop/invoice-lines/search",
     dateLabel: "From (product date)",
     pavField: "invoice",
+    utilities: true,
     fields: [
       { key: "product", label: "Product", placeholder: "e.g. Rosa Naomi" },
       { key: "supplier", label: "Grower / supplier", placeholder: "name or FH / GLN number" },
@@ -15414,8 +15427,8 @@ const INKOOP_SEARCH_KINDS = {
     columns: ["Date", "Invoice", "Company", "PAV", "Product", "Grower / supplier", "Qty", "Price", "Total"],
     csvName: "invoice-lines",
     csv: (lines) => inkoopCsv(
-      ["Date", "Invoice", "Type", "Company", "PAV", "Product", "Grower / supplier", "FH number", "Quantity", "Price", "Total"],
-      lines.map((line) => [line.line_date, line.invoice_number, INKOOP_INVOICE_TYPE_LABELS[line.invoice_type] || line.invoice_type, line.company_number, line.pav,
+      ["Kind", "Date", "Invoice", "Type", "Company", "PAV", "Product", "Grower / supplier", "FH number", "Quantity", "Price", "Total"],
+      lines.map((line) => [(INKOOP_LINE_KINDS.find(([kind]) => kind === line.kind) || [, "Products"])[1].split(" (")[0], line.line_date, line.invoice_number, INKOOP_INVOICE_TYPE_LABELS[line.invoice_type] || line.invoice_type, line.company_number, line.pav,
         line.description, line.supplier_name, line.supplier_fh_number, line.quantity, line.unit_price, line.total]),
     ),
     date: (line) => line.line_date,
@@ -15468,7 +15481,7 @@ const INKOOP_SEARCH_KINDS = {
 
 function InkoopSearchPanel({ kind, company, request, onFindOther, otherTitle }) {
   const config = INKOOP_SEARCH_KINDS[kind];
-  const blank = () => ({ from: addDaysToIso(todayIso(), -6), to: todayIso(), ...Object.fromEntries(config.fields.map((field) => [field.key, ""])) });
+  const blank = () => ({ from: addDaysToIso(todayIso(), -6), to: todayIso(), ...Object.fromEntries(config.fields.map((field) => [field.key, ""])), ...(config.utilities ? { utilities: false } : {}) });
   const [filters, setFilters] = useState(blank);
   const [result, setResult] = useState(null);
   const [loading, setLoading] = useState(false);
@@ -15481,7 +15494,11 @@ function InkoopSearchPanel({ kind, company, request, onFindOther, otherTitle }) 
     try {
       const params = new URLSearchParams();
       for (const [key, value] of Object.entries(nextFilters)) {
-        if (String(value).trim()) {
+        if (key === "utilities") {
+          if (value) {
+            params.set("utilities", "1");
+          }
+        } else if (String(value).trim()) {
           params.set(key, String(value).trim());
         }
       }
@@ -15520,6 +15537,12 @@ function InkoopSearchPanel({ kind, company, request, onFindOther, otherTitle }) 
             <input value={filters[field.key]} placeholder={field.placeholder} onChange={(event) => setFilter(field.key, event.target.value)} />
           </label>
         ))}
+        {config.utilities && (
+          <label className="checkbox-label">
+            <input type="checkbox" checked={!!filters.utilities} onChange={(event) => { const next = { ...filters, utilities: event.target.checked }; setFilters(next); if (result) search(next); }} />
+            <span>Also show utilities (fust, stapelwagens, heffingen, emballage, services) -- each in its own section</span>
+          </label>
+        )}
         <div className="row-actions">
           <button type="submit" className="primary" disabled={loading}>{loading ? "Searching..." : `Search ${config.title.toLowerCase() === "erp" ? "ERP" : "invoices"}`}</button>
           <button type="button" onClick={() => { setFilters(blank()); setResult(null); setError(""); }}>Clear</button>
@@ -15535,19 +15558,35 @@ function InkoopSearchPanel({ kind, company, request, onFindOther, otherTitle }) 
       {result?.limited_from && <div className="notice info">Searched {fustOverviewDate(result.from)} - {fustOverviewDate(result.to)} only (3 months at most).</div>}
       {result && (
         <div className="table-wrap" style={loading ? { opacity: 0.35 } : undefined}>
-          <p className="muted">{lines.length}{result.truncated ? "+ lines -- only the first 500 are shown, narrow the search" : ` line${lines.length === 1 ? "" : "s"}`} ({fustOverviewDate(result.from)} - {fustOverviewDate(result.to)})</p>
-          <table className="data-table">
-            <thead><tr>{config.columns.map((column) => <th key={column}>{column}</th>)}</tr></thead>
-            <tbody>
-              {lines.map((line, index) => {
-                const pavButton = line.pav ? (
-                  <>{line.pav} <button type="button" className="link-button" title={`Find PAV ${line.pav} in ${otherTitle}`} onClick={() => onFindOther({ pav: line.pav, date: config.date(line) })}>&rarr; {otherTitle}</button></>
-                ) : "-";
-                return <tr key={`${line.lot || line.invoice_number}-${index}`}>{config.row(line, pavButton).map((cell, cellIndex) => <td key={cellIndex}>{cell}</td>)}</tr>;
-              })}
-              {!lines.length && <tr><td colSpan={config.columns.length}>{config.empty}</td></tr>}
-            </tbody>
-          </table>
+          <p className="muted">{lines.length}{result.truncated ? `+ lines -- only the first ${result.utilities ? 1500 : 500} are shown, narrow the search` : ` line${lines.length === 1 ? "" : "s"}`} ({fustOverviewDate(result.from)} - {fustOverviewDate(result.to)})</p>
+          {config.utilities && !result.utilities && (() => {
+            const hidden = INKOOP_LINE_KINDS.filter(([kind]) => kind !== "product" && result.kinds?.[kind]?.count);
+            return hidden.length ? <p className="muted">Not shown (utilities): {hidden.map(([kind, label]) => `${label.split(" (")[0]} ${result.kinds[kind].count}`).join(", ")} -- tick "Also show utilities" to see them.</p> : null;
+          })()}
+          {(config.utilities ? INKOOP_LINE_KINDS.filter(([kind]) => kind === "product" || result.utilities) : [["all", ""]]).map(([kind, label]) => {
+            const sectionLines = kind === "all" ? lines : lines.filter((line) => (line.kind || "product") === kind);
+            if (kind !== "all" && kind !== "product" && !sectionLines.length && !result.kinds?.[kind]?.count) {
+              return null;
+            }
+            const totals = result.kinds?.[kind];
+            return (
+              <React.Fragment key={kind}>
+                {label && <h3>{label} <span className="muted">-- {totals?.count || 0} line{totals?.count === 1 ? "" : "s"}{totals ? `, ${formatInkoopEuro(totals.total)}` : ""}{totals && totals.count > sectionLines.length ? ` (${sectionLines.length} shown)` : ""}</span></h3>}
+                <table className="data-table">
+                  <thead><tr>{config.columns.map((column) => <th key={column}>{column}</th>)}</tr></thead>
+                  <tbody>
+                    {sectionLines.map((line, index) => {
+                      const pavButton = line.pav ? (
+                        <>{line.pav} <button type="button" className="link-button" title={`Find PAV ${line.pav} in ${otherTitle}`} onClick={() => onFindOther({ pav: line.pav, date: config.date(line) })}>&rarr; {otherTitle}</button></>
+                      ) : "-";
+                      return <tr key={`${line.lot || line.invoice_number}-${index}`}>{config.row(line, pavButton).map((cell, cellIndex) => <td key={cellIndex}>{cell}</td>)}</tr>;
+                    })}
+                    {!sectionLines.length && <tr><td colSpan={config.columns.length}>{config.empty}</td></tr>}
+                  </tbody>
+                </table>
+              </React.Fragment>
+            );
+          })}
         </div>
       )}
     </div>

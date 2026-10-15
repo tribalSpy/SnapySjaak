@@ -21348,16 +21348,18 @@ async function handleApi(req, res, url) {
       from = addDaysToIsoDate(to, -92);
     }
     const text = (name) => normalizeUkdocsText(url.searchParams.get(name)).slice(0, 80);
-    const { rows, truncated } = await searchInkoopInvoiceLines({
+    const utilities = url.searchParams.get("utilities") === "1";
+    const { rows, truncated, kinds } = await searchInkoopInvoiceLines({
       from,
       to,
       product: text("product"),
       supplier: text("supplier"),
       invoice: text("invoice"),
       company: text("company"),
-      limit: 500,
+      utilities,
+      limit: utilities ? 1500 : 500,
     });
-    sendJson(res, 200, { from, to, limited_from: limitedFrom, lines: rows, truncated });
+    sendJson(res, 200, { from, to, limited_from: limitedFrom, lines: rows, truncated, kinds, utilities });
     return;
   }
 
