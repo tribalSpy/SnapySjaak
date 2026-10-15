@@ -15387,7 +15387,6 @@ function InkoopOverviewTab() {
 const INKOOP_SEARCH_FIELDS = [
   { key: "product", label: "Product", placeholder: "e.g. Rosa Naomi" },
   { key: "supplier", label: "Grower / supplier", placeholder: "name or FH / GLN number" },
-  { key: "customer", label: "Customer / dispatch code", placeholder: "code or name" },
   { key: "invoice", label: "Invoice / PAV", placeholder: "invoice or PAV number" },
 ];
 
@@ -15396,19 +15395,19 @@ function inkoopSearchCsv(lines) {
     const text = String(value ?? "");
     return /[";\n]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text;
   };
-  const header = ["Date", "Invoice", "Type", "Company", "PAV", "Product", "Grower / supplier", "FH number", "Quantity", "Price", "Total", "Dispatched to"];
+  const header = ["Date", "Invoice", "Type", "Company", "PAV", "Product", "Grower / supplier", "FH number", "Quantity", "Price", "Total"];
   const rows = lines.map((line) => [
     line.line_date, line.invoice_number, INKOOP_INVOICE_TYPE_LABELS[line.invoice_type] || line.invoice_type, line.company_number, line.pav,
     line.description, line.supplier_name, line.supplier_fh_number, line.quantity, line.unit_price, line.total,
-    line.dispatches.map((dispatch) => `${dispatch.code}${dispatch.name ? ` ${dispatch.name}` : ""} (${dispatch.pieces})`).join(", "),
   ]);
   return [header, ...rows].map((row) => row.map(cell).join(";")).join("\n");
 }
 
 // Every product line of the uploaded invoices (not the ERP), searchable by
-// date, product, grower/supplier, customer/dispatch code and invoice/PAV.
+// date, product, grower/supplier and invoice/PAV (customer / dispatch codes are only
+// in the ERP, not on the invoices).
 function InkoopInvoiceSearchTab({ company }) {
-  const [filters, setFilters] = useState(() => ({ from: addDaysToIso(todayIso(), -6), to: todayIso(), product: "", supplier: "", customer: "", invoice: "" }));
+  const [filters, setFilters] = useState(() => ({ from: addDaysToIso(todayIso(), -6), to: todayIso(), product: "", supplier: "", invoice: "" }));
   const [result, setResult] = useState(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
@@ -15457,7 +15456,7 @@ function InkoopInvoiceSearchTab({ company }) {
         </div>
       </form>
       <div className="notice">
-        The product lines of the uploaded FloraHolland invoices -- what the controle tries to match -- not the ERP. Every field is optional and searches on part of the text; the period is at most 3 months. Customer / dispatch code comes from the dispatch dump (who the lot was sent to), so it only works for days whose ERP / dispatch file was uploaded.{company ? ` Only company ${company} (the company choice above).` : ""}
+        The product lines of the uploaded FloraHolland invoices -- what the controle tries to match -- not the ERP. Every field is optional; product and grower find every word you type, in any order. The period is at most 3 months. The invoices have no customer or dispatch codes -- those are in the ERP.{company ? ` Only company ${company} (the company choice above).` : ""}
       </div>
       {error && <div className="notice danger">{error}</div>}
       {result?.limited_from && <div className="notice info">Searched {fustOverviewDate(result.from)} - {fustOverviewDate(result.to)} only (3 months at most).</div>}
@@ -15466,7 +15465,7 @@ function InkoopInvoiceSearchTab({ company }) {
           <p className="muted">{lines.length}{result.truncated ? "+ lines -- only the first 500 are shown, narrow the search" : ` line${lines.length === 1 ? "" : "s"}`}</p>
           <table className="data-table">
             <thead>
-              <tr><th>Date</th><th>Invoice</th><th>Company</th><th>PAV</th><th>Product</th><th>Grower / supplier</th><th>Qty</th><th>Price</th><th>Total</th><th>Dispatched to</th></tr>
+              <tr><th>Date</th><th>Invoice</th><th>Company</th><th>PAV</th><th>Product</th><th>Grower / supplier</th><th>Qty</th><th>Price</th><th>Total</th></tr>
             </thead>
             <tbody>
               {lines.map((line, index) => (
@@ -15480,12 +15479,9 @@ function InkoopInvoiceSearchTab({ company }) {
                   <td>{line.quantity}</td>
                   <td>{line.unit_price === null ? "-" : formatInkoopEuro(line.unit_price)}</td>
                   <td>{formatInkoopEuro(line.total)}</td>
-                  <td>{line.dispatches.length ? line.dispatches.map((dispatch) => (
-                    <div key={dispatch.code}>{dispatch.code}{dispatch.name ? ` - ${dispatch.name}` : ""}{dispatch.land ? ` (${dispatch.land})` : ""}: {dispatch.pieces}</div>
-                  )) : <span className="muted">-</span>}</td>
                 </tr>
               ))}
-              {!lines.length && <tr><td colSpan={10}>No invoice lines found.</td></tr>}
+              {!lines.length && <tr><td colSpan={9}>No invoice lines found.</td></tr>}
             </tbody>
           </table>
         </div>

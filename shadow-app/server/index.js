@@ -21330,8 +21330,8 @@ async function handleApi(req, res, url) {
 
   // Inkoop Controle "Search invoices": the invoices' own product lines (what
   // the controle tries to match), by line date plus product, grower /
-  // supplier, invoice or PAV, company and customer (code or name, via the
-  // dispatch dump). At most 3 months per search, 500 rows shown.
+  // supplier, invoice or PAV and company. At most 3 months per search, 500
+  // rows shown.
   if (url.pathname === "/api/inkoop/invoice-lines/search" && req.method === "GET") {
     if (!requirePermission(res, requestUser, PERMISSIONS.INKOOP_VIEW)) {
       return;
@@ -21347,19 +21347,6 @@ async function handleApi(req, res, url) {
       from = addDaysToIsoDate(to, -92);
     }
     const text = (name) => normalizeUkdocsText(url.searchParams.get(name)).slice(0, 80);
-    const customer = text("customer");
-    const state = await readInkoopState();
-    const customerMap = state.customer_map || {};
-    let customerCodes;
-    if (customer) {
-      const term = customer.toUpperCase();
-      customerCodes = Object.entries(customerMap)
-        .filter(([code, info]) => code === term || code.startsWith(term) || String(info?.name || "").toUpperCase().includes(term))
-        .map(([code]) => code);
-      if (!customerCodes.includes(term)) {
-        customerCodes.push(term); // a dispatch code not in the klant gegevens (yet)
-      }
-    }
     const { rows, truncated } = await searchInkoopInvoiceLines({
       from,
       to,
@@ -21367,26 +21354,9 @@ async function handleApi(req, res, url) {
       supplier: text("supplier"),
       invoice: text("invoice"),
       company: text("company"),
-      customerCodes,
       limit: 500,
     });
-    const lines = rows.map(({ dispatch_sets: dispatchSets, ...row }) => {
-      const pieces = new Map();
-      for (const set of Array.isArray(dispatchSets) ? dispatchSets : []) {
-        for (const dispatch of Array.isArray(set) ? set : []) {
-          const code = normalizeUkdocsText(dispatch?.code).toUpperCase();
-          if (code) {
-            pieces.set(code, (pieces.get(code) || 0) + (Number(dispatch?.pieces) || 0));
-          }
-        }
-      }
-      const dispatches = [...pieces.entries()].map(([code, count]) => {
-        const info = resolveInkoopCustomer(code, customerMap);
-        return { code, pieces: Math.round(count * 100) / 100, name: info?.name || "", land: info?.land || "" };
-      });
-      return { ...row, dispatches };
-    });
-    sendJson(res, 200, { from, to, limited_from: limitedFrom, lines, truncated });
+    sendJson(res, 200, { from, to, limited_from: limitedFrom, lines: rows, truncated });
     return;
   }
 

@@ -913,21 +913,23 @@ export async function getInkoopInvoiceSummaryInvoices({ from, to } = {}) {
 
 // Inkoop Controle "Search invoices": the invoices' own product lines (not
 // the ERP), filtered by line date and any of product, grower/supplier,
-// invoice, company and the customer codes the lot was dispatched to (from
-// the dispatch dump, linked by PAV). Capped at `limit` rows.
-export async function searchInkoopInvoiceLines({ from, to, product, supplier, invoice, company, customerCodes, limit = 500 } = {}) {
+// invoice / PAV and company (the invoices carry no customer or dispatch codes
+// -- those are only in the ERP). Product and grower match every word, in any
+// order. Capped at `limit` rows.
+export async function searchInkoopInvoiceLines({ from, to, product, supplier, invoice, company, limit = 500 } = {}) {
   if (!pool || !from || !to) {
     return { rows: [], truncated: false };
   }
   const conditions = ["l.invoice_date >= $1::date", "l.invoice_date <= $2::date", "l.quantity IS NOT NULL"];
   const values = [from, to];
   const like = (value) => `%${String(value).replace(/[\\%_]/g, (match) => `\\${match}`)}%`;
-  if (product) {
-    values.push(like(product));
+  const words = (value) => String(value || "").split(/\s+/).filter(Boolean).slice(0, 8);
+  for (const word of words(product)) {
+    values.push(like(word));
     conditions.push(`l.description ILIKE $${values.length}`);
   }
-  if (supplier) {
-    values.push(like(supplier));
+  for (const word of words(supplier)) {
+    values.push(like(word));
     conditions.push(`(l.supplier_name ILIKE $${values.length} OR l.supplier_fh_number ILIKE $${values.length} OR l.supplier_gln ILIKE $${values.length})`);
   }
   if (invoice) {
@@ -938,22 +940,13 @@ export async function searchInkoopInvoiceLines({ from, to, product, supplier, in
     values.push(company);
     conditions.push(`l.company_number = $${values.length}`);
   }
-  if (Array.isArray(customerCodes)) {
-    values.push(customerCodes.map((code) => String(code).toUpperCase()));
-    conditions.push(`EXISTS (
-      SELECT 1 FROM inkoop_dispatch_lots dl, jsonb_array_elements(dl.dispatches) dispatch
-      WHERE dl.pav = l.reference_bt AND upper(dispatch->>'code') = ANY($${values.length}::text[])
-    )`);
-  }
   values.push(Math.max(1, Math.min(2000, Number(limit) || 500)) + 1);
   const result = await pool.query(
     `
       SELECT l.invoice_number, l.invoice_type, l.company_number, l.company_name,
         to_char(l.invoice_date, 'YYYY-MM-DD') AS line_date,
         l.reference_bt AS pav, l.description, l.supplier_name, l.supplier_fh_number,
-        l.quantity::float8 AS quantity, l.unit_price::float8 AS unit_price, l.total::float8 AS total,
-        (SELECT COALESCE(jsonb_agg(dl.dispatches), '[]'::jsonb) FROM inkoop_dispatch_lots dl
-          WHERE l.reference_bt IS NOT NULL AND l.reference_bt <> '' AND dl.pav = l.reference_bt) AS dispatch_sets
+        l.quantity::float8 AS quantity, l.unit_price::float8 AS unit_price, l.total::float8 AS total
       FROM inkoop_invoice_lines l
       WHERE ${conditions.join(" AND ")}
       ORDER BY l.invoice_date DESC, l.invoice_number, l.id
