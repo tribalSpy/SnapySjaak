@@ -191,13 +191,70 @@ def screen_rows(layout: list) -> list[dict]:
              "text": " ".join(part["text"] for part in sorted(row["parts"], key=lambda part: part["x"]))} for row in rows]
 
 
-def find_row(rows: list[dict], target: str) -> int | None:
-    """Index of the row showing `target` as a whole value ("508" matches
-    "508 GBR ..." but not "1508" or "50,80"); a row that starts with it wins."""
+# Windows' text recognition reads Uniware's digits as letters when a number
+# stands on its own: "508" -> "soa", "515" -> "SIS", "55" -> "SS". When
+# looking for a number, read those letters as the digits they resemble.
+_DIGIT_LOOKALIKES = str.maketrans({"S": "5", "s": "5", "O": "0", "o": "0", "Û": "0", "Ø": "0", "D": "0", "a": "8", "B": "8",
+                                   "I": "1", "l": "1", "i": "1", "|": "1", "Z": "2", "z": "2", "G": "6", "b": "6", "q": "9", "g": "9"})
+
+
+def _as_digits(text: str, target: str) -> str:
+    return text.translate(_DIGIT_LOOKALIKES) if target.strip().isdigit() else text
+
+
+def value_matches(text: str, target: str) -> bool:
+    """Does `text` show `target` as a whole value ("508" matches "508 GBR"
+    and an OCR'd "soa", not "1508" or "50,80")?"""
     pattern = re.compile(rf"(?<![\w.,]){re.escape(target.strip())}(?![\w.,]|,\d|\.\d)", re.IGNORECASE)
-    matches = [index for index, row in enumerate(rows) if pattern.search(row["text"])]
-    starting = [index for index in matches if rows[index]["text"].strip().lower().startswith(target.strip().lower())]
+    return bool(pattern.search(text) or pattern.search(_as_digits(text, target)))
+
+
+def find_row(rows: list[dict], target: str) -> int | None:
+    """Index of the row showing `target` as a whole value; a row that starts
+    with it wins."""
+    matches = [index for index, row in enumerate(rows) if value_matches(row["text"], target)]
+    starting = [index for index in matches if _as_digits(rows[index]["text"].strip(), target).lower().startswith(target.strip().lower())]
     return (starting or matches or [None])[0]
+
+
+def _column_of(layout: list, anchor: dict) -> list[dict]:
+    """The texts straight above / below `anchor` (overlapping it
+    horizontally): the items of a popup list like the tours after F1."""
+    left, right = anchor["x"], anchor["x"] + max(1, anchor.get("w") or len(anchor["text"]) * 14)
+    column = []
+    for line in layout:
+        line_left, line_right = line["x"], line["x"] + max(1, line.get("w") or len(line["text"]) * 14)
+        overlap = min(right, line_right) - max(left, line_left)
+        if overlap >= 0.4 * min(right - left, line_right - line_left):
+            column.append(line)
+    items = []
+    for line in sorted(column, key=lambda line: line["y"]):
+        if items and abs(line["y"] - items[-1]["y"]) <= 8:
+            items[-1]["text"] += " " + line["text"]
+            items[-1]["highlighted"] = items[-1]["highlighted"] or bool(line.get("cursor"))
+        else:
+            items.append({"y": line["y"], "text": line["text"], "highlighted": bool(line.get("cursor"))})
+    return items
+
+
+def list_items(layout: list, target: str) -> list[dict]:
+    """The list to move through, as rows {text, y, highlighted}. A popup
+    list lies on top of a table (its own teal cell vs the table's teal row):
+    then it's the column holding the value with a teal cell in it, or the
+    column of a lone teal cell. Otherwise the screen's rows."""
+    for line in layout:
+        if value_matches(line["text"], target):
+            column = _column_of(layout, line)
+            if any(item["highlighted"] for item in column):
+                return column
+    cursor_rows = {}
+    for line in layout:
+        if line.get("cursor"):
+            cursor_rows.setdefault(round(line["y"] / 8), []).append(line)
+    lone = [lines[0] for lines in cursor_rows.values() if len(lines) == 1 and (lines[0].get("w") or 999) < 200]
+    if lone and len(cursor_rows) > 1:
+        return _column_of(layout, lone[0])
+    return screen_rows(layout)
 
 
 def row_key(row_text: str) -> str:
@@ -770,7 +827,7 @@ class ActionRun:
         for _ in range(60):
             self._check(hwnd)
             image, _, _, _, text, layout = self._read(hwnd, timeout=1.5)
-            rows = screen_rows(layout)
+            rows = list_items(layout, target)
             highlighted = [index for index, row in enumerate(rows) if row["highlighted"]]
             if not highlighted:
                 self._save_problem_screen(image)

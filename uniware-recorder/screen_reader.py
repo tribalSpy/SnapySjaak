@@ -247,6 +247,7 @@ def read_screen(image: Image.Image) -> list[dict]:
             result.append({
                 "y": round(field["y"]),
                 "x": round(field["x"]),
+                "w": round(field["w"]),
                 "text": field["text"].strip(),
                 "highlighted": _is_highlighted(image, box),
                 "cursor": _on_cursor(cursor, box),
@@ -270,6 +271,7 @@ def read_screen(image: Image.Image) -> list[dict]:
         if previous is not None and 0 <= line["x"] - previous["_right"] < char_width * 3:
             previous["text"] += " " + line["text"]
             previous["_right"] = line["x"] + len(line["text"]) * char_width
+            previous["w"] = max(previous.get("w", 0), line["x"] + line.get("w", 0) - previous["x"])
             previous["highlighted"] = previous["highlighted"] or line["highlighted"]
             previous["cursor"] = previous.get("cursor") or line.get("cursor")
             previous["words"] = previous["words"] + line["words"]
@@ -340,7 +342,7 @@ def _split_at_columns(image, lines: list[dict], char_width: float, cursor) -> li
             for index, word in enumerate(part):
                 gap = word["x"] - (part[index - 1]["x"] + part[index - 1]["w"]) if index else 0
                 text += ("" if not index or gap < char_width * 0.45 else " ") + word["text"]
-            result.append({"y": round(top), "x": round(left), "text": text.strip(),
+            result.append({"y": round(top), "x": round(left), "w": round(right - left), "text": text.strip(),
                            "highlighted": _is_highlighted(image, (left, top, right, bottom)),
                            "cursor": _on_cursor(cursor, (left, top, right, bottom))})
     return result
