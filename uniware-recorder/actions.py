@@ -147,7 +147,14 @@ def same_screen(expected_id: str, expected_title: str, seen_id: str, seen_title:
             return False
         short, long = sorted((expected_number[1], seen_number[1]), key=len)
         return similar and long.startswith(short) and len(long) - len(short) <= 1
-    return similar and bool(letters(expected_title))
+    if similar and letters(expected_title):
+        return True
+    # One of the two names was read badly while recording, e.g. "o |
+    # Customsclearance lines | Info | Filter Settings | ..." (the whole top
+    # of the screen) for "Customsclearance lines [85]": the shorter title
+    # inside the longer one is the same screen.
+    short, long = sorted((letters(expected_title), letters(seen_title)), key=len)
+    return len(short) >= 10 and short in long
 
 
 def _plain(text: str) -> str:
