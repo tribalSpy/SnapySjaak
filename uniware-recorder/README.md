@@ -63,11 +63,30 @@ only).
 list ends), or give typed text a **field name** (e.g. `invoice`) -- then the
 dashboard asks that value every time you start the action.
 
+**Slow screens / loading**: while recording, just wait until a screen has
+finished loading before pressing the next key -- the screen you see at that
+moment is what the step leads to, and how long it took is remembered. When
+running, after every key it waits until Uniware shows that screen (Prg /
+[number]) and has stopped changing, up to **Max wait** (default 4x the time
+it took while recording, at least 30 s; editable per step). If data appears
+later on the same screen (e.g. after typing a tour), put a word that only
+shows once the data is there in **Wait until screen shows** (e.g. a column
+heading or "Totaal"). Waited too long -> it stops, with a screenshot in
+`outputs\`; it never keeps typing into a wrong screen.
+
 **Start**: fill in the fields, click Start and don't touch keyboard or mouse
-until it says Finished. After every step it checks Uniware is on the
-expected screen (Prg number) and stops if not. **Stop** or **Ctrl+Alt+Q**
-stops at any time. Captured screens are saved in `outputs\` as text, CSV
-(with positions, for tables) and JSON.
+until it says Finished. **Stop** or **Ctrl+Alt+Q** stops at any time.
+Captured screens are saved in `outputs\` as text, CSV (with positions, for
+tables) and JSON.
+
+**Dump folder** (Edit, per action): e.g. a OneDrive folder. After a run that
+*finished*, the data is also written there as `.csv` + `.txt` with the
+**File name** you give (`{date}`, `{time}`, `{action}` and fields allowed,
+e.g. `tour-508_{date}`). A run that stopped halfway never lands there.
+
+**Tours (UKdocs)**: record one action per tour (508 flowers, 515
+accessories, 1000 BQ, ...) -- some tours need an extra key, so each has its
+own recording -- each with its own dump file name.
 
 ## After an update of this tool
 

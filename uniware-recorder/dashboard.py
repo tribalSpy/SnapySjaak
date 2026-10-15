@@ -44,6 +44,7 @@ def state_payload() -> dict:
             "result": run.result if run else "",
             "log": run.log[-60:] if run else [],
             "outputs": run.output_files if run else [],
+            "exported": run.exported_files if run else [],
         },
         "message": STATE["message"],
     }
@@ -145,11 +146,18 @@ class Handler(BaseHTTPRequestHandler):
                     if not action:
                         raise RuntimeError("Action not found.")
                     action["description"] = str(body.get("description", action.get("description", "")))
+                    action["export_dir"] = str(body.get("export_dir", action.get("export_dir", ""))).strip().strip('"')
+                    action["export_name"] = str(body.get("export_name", action.get("export_name", ""))).strip()
                     for index, change in enumerate(body.get("steps") or []):
                         if index < len(action["steps"]):
                             step = action["steps"][index]
                             step["capture"] = bool(change.get("capture"))
                             step["capture_pages"] = bool(change.get("capture_pages"))
+                            step["wait_text"] = str(change.get("wait_text") or "").strip()
+                            try:
+                                step["max_wait"] = max(5, min(1800, int(float(change.get("max_wait")))))
+                            except (TypeError, ValueError):
+                                step["max_wait"] = actions.default_max_wait(float(step.get("recorded_wait") or 0))
                             if "text" in step and change.get("field") is not None:
                                 # A field name: typed text becomes "{field}",
                                 # asked at start; empty: the recorded text.
@@ -220,9 +228,10 @@ function render() {
   $("runCard").innerHTML = run.name ? `<h2>${run.active ? "Running" : "Last run"}: ${esc(run.name)} ${run.result ? `<span class="muted">(${esc(run.result)})</span>` : ""}</h2>
       ${run.active ? `<button class="danger" onclick="api('/api/run/stop',{})">Stop (Ctrl+Alt+Q)</button>` : ""}
       <pre>${esc(run.log.join("\\n"))}</pre>
-      ${run.outputs.map((f) => `<a href="/outputs/${encodeURIComponent(f)}" target="_blank">${esc(f)}</a>`).join(" &middot; ")}` : "";
+      ${run.outputs.map((f) => `<a href="/outputs/${encodeURIComponent(f)}" target="_blank">${esc(f)}</a>`).join(" &middot; ")}
+      ${run.exported.length ? `<p>Dump: ${run.exported.map(esc).join("<br>")}</p>` : ""}` : "";
   $("actions").innerHTML = state.actions.length ? `<table><tr><th>Action</th><th>Steps</th><th>Fields</th><th></th></tr>${state.actions.map((a) => `
-      <tr><td><strong>${esc(a.name)}</strong><div class="muted">${esc(a.description || "")}</div><div class="muted">starts on: ${esc(a.start_title || a.start_screen)}</div></td>
+      <tr><td><strong>${esc(a.name)}</strong><div class="muted">${esc(a.description || "")}</div><div class="muted">starts on: ${esc(a.start_title || a.start_screen)}</div>${a.export_dir ? `<div class="muted">dump to: ${esc(a.export_dir)} &rarr; ${esc(a.export_name || "{action}_{date}_{time}")}.csv</div>` : ""}</td>
       <td>${a.steps.length} (${a.steps.filter((s) => s.capture).length} capture)</td>
       <td>${a.fields.map((f) => `<label>${esc(f)} <input data-field="${esc(a.slug)}:${esc(f)}" size="14"></label>`).join("<br>") || "-"}</td>
       <td class="row"><button class="primary" onclick="runAction('${a.slug}')">Start</button><button onclick="edit('${a.slug}')">Edit</button><button class="danger" onclick="del('${a.slug}')">Delete</button></td></tr>`).join("")}</table>`
@@ -241,24 +250,32 @@ function edit(slug) {
   $("editCard").style.display = "";
   $("editCard").innerHTML = `<h2>Edit: ${esc(a.name)}</h2>
     <p><input id="editDesc" size="70" value="${esc(a.description || "")}"></p>
-    <table><tr><th>#</th><th>Step</th><th>Goes to</th><th>Field (typed text)</th><th>Capture screen</th><th>All pages</th></tr>
+    <p class="row"><label>Dump folder <input id="editExportDir" size="60" placeholder="paste the OneDrive folder path"value="${esc(a.export_dir || "")}"></label>
+      <label>File name <input id="editExportName" size="28" placeholder="{action}_{date}_{time}" value="${esc(a.export_name || "")}"></label></p>
+    <p class="muted">After a run that finished, the data is written there as .csv and .txt. File name may use {date}, {time}, {action} and the fields, e.g. <code>tour-508_{date}</code>. Same name again = overwritten. Leave the folder empty: only in outputs.</p>
+    <table><tr><th>#</th><th>Step</th><th>Goes to</th><th>Field (typed text)</th><th>Wait until screen shows</th><th>Max wait (s)</th><th>Capture screen</th><th>All pages</th></tr>
     ${a.steps.map((s, i) => `<tr><td>${i + 1}</td>
       <td>${s.text !== undefined ? `type <code>${esc(s.text)}</code>` : `<code>${esc(s.key)}</code>${s.enter_on ? ` on "${esc(s.enter_on)}"` : ""}`}</td>
-      <td>${esc(s.to_title || s.to)}</td>
+      <td>${esc(s.to_title || s.to)}${s.recorded_wait ? `<div class="muted">took ${esc(s.recorded_wait)}s when recorded</div>` : ""}</td>
       <td>${s.text !== undefined ? `<input data-step-field="${i}" placeholder="e.g. invoice" value="${esc((s.text.match(/^\\{(.+)\\}$/) || [])[1] || "")}" size="12"><div class="muted">recorded: ${esc(s.recorded_text || s.text)}</div>` : ""}</td>
+      <td><input data-step-wait="${i}" size="16" placeholder="(optional) e.g. Totaal" value="${esc(s.wait_text || "")}"></td>
+      <td><input data-step-max="${i}" size="4" value="${esc(s.max_wait || 30)}"></td>
       <td><input type="checkbox" data-step-capture="${i}" ${s.capture ? "checked" : ""}></td>
       <td><input type="checkbox" data-step-pages="${i}" ${s.capture_pages ? "checked" : ""}></td></tr>`).join("")}
     </table><p class="row"><button class="primary" onclick="saveEdit()">Save</button><button onclick="$('editCard').style.display='none'">Close</button></p>
-    <p class="muted">Field: the typed text becomes a value you fill in when starting (leave empty to always type the recorded text). All pages: Page Down until the list ends.</p>`;
+    <p class="muted">Field: the typed text becomes a value you fill in when starting (leave empty to always type the recorded text). All pages: Page Down until the list ends.<br>
+    Waiting: after each step the run waits until Uniware shows that screen and has stopped changing (finished loading), up to Max wait -- then it stops with a screenshot. If data appears on the same screen later (e.g. after typing the tour), put a word that only shows once the data is there in "Wait until screen shows".</p>`;
 }
 function saveEdit() {
   const a = state.actions.find((x) => x.slug === editing);
   const steps = a.steps.map((s, i) => ({
     capture: document.querySelector(`[data-step-capture="${i}"]`).checked,
     capture_pages: document.querySelector(`[data-step-pages="${i}"]`).checked,
+    wait_text: document.querySelector(`[data-step-wait="${i}"]`).value,
+    max_wait: document.querySelector(`[data-step-max="${i}"]`).value,
     field: s.text !== undefined ? document.querySelector(`[data-step-field="${i}"]`).value : null,
   }));
-  api(`/api/actions/${editing}/update`, { description: $("editDesc").value, steps });
+  api(`/api/actions/${editing}/update`, { description: $("editDesc").value, export_dir: $("editExportDir").value, export_name: $("editExportName").value, steps });
 }
 api("/api/state");
 setInterval(() => { if (state && (state.recording.active || state.run.active)) api("/api/state"); }, 1000);

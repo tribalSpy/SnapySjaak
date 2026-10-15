@@ -35,6 +35,14 @@ user32 = ctypes.windll.user32
 
 # The Uniware window: "Connect (C Uniware Computer Systems BV) (Session 1: ...)".
 DEFAULT_WINDOW_TITLE = "Uniware Computer Systems"
+TYPING_GAP_SECONDS = 0.7  # typed characters closer together than this are one step
+PAGE_WAIT_SECONDS = 8  # Page Down: no change within this time = end of the list
+
+
+def default_max_wait(recorded_seconds: float) -> int:
+    """How long a run waits for a step's screen: plenty more than it took
+    while recording (Uniware can be slow), at least 30 s."""
+    return int(min(600, max(30, recorded_seconds * 4)))
 
 
 def slugify(name: str) -> str:
@@ -154,6 +162,10 @@ class ActionRecorder:
         self.selected = []
         self._listener = None
         self._thread = None
+        self._open = None  # (step, pressed at) until its screen is known
+        self._typed: list[str] = []
+        self._typed_at = 0.0
+        self._last_printable_at = 0.0
         self._helper = recorder.Recorder.__new__(recorder.Recorder)  # for combo_name()
         self._helper.held = self.held
 
@@ -175,7 +187,7 @@ class ActionRecorder:
         self._thread.start()
 
     def stop(self) -> dict:
-        self.events.put(("stop", None, time.time()))
+        self.events.put(("stop", None, time.time(), None))
         if self._thread:
             self._thread.join(timeout=10)
         if self._listener:
@@ -186,7 +198,7 @@ class ActionRecorder:
         return self.action
 
     def mark_capture(self):
-        self.events.put(("capture", None, time.time()))
+        self.events.put(("capture", None, time.time(), None))
 
     def _on_press(self, key):
         if key in recorder.MODIFIERS:
@@ -194,52 +206,61 @@ class ActionRecorder:
             return
         vk = getattr(key, "vk", None)
         if {"Ctrl", "Alt"} <= self.held and vk in (0x43, 0x51):  # C, Q
-            self.events.put(("capture" if vk == 0x43 else "stop", None, time.time()))
+            self.events.put(("capture" if vk == 0x43 else "stop", None, time.time(), None))
             return
         if not self.active or screen_reader.foreground_window() != self.hwnd:
             return
         name, printable = self._helper.combo_name(key)
-        self.events.put(("key", (name, printable), time.time()))
+        now = time.time()
+        # The screen as it is when this key goes down is where the previous
+        # step ended up: you only press the next key once Uniware has finished
+        # loading, however long that took. (Inside a run of typed characters
+        # no new picture is needed.)
+        starts_something = not printable or now - self._last_printable_at > TYPING_GAP_SECONDS
+        image = screen_reader.capture_window(self.hwnd) if starts_something else None
+        self._last_printable_at = now if printable else 0.0
+        self.events.put(("key", (name, printable), now, image))
 
     def _on_release(self, key):
         if key in recorder.MODIFIERS:
             self.held.discard(recorder.MODIFIERS[key])
 
-    def _record(self, keys: list[tuple[str, bool]]):
-        enter_on = self.selected[0] if [name for name, _ in keys] == ["Enter"] and self.selected else None
-        image = screen_reader.capture_when_settled(self.hwnd)
+    def _finish_open_step(self, image, at: float):
+        """The open step (last key, or a run of typed text) ends on the screen
+        in `image`; remember where it went and how long Uniware took."""
         screen_id, title, selected, _, _ = recorder.describe_screen(image)
-        if all(printable for _, printable in keys):
-            typed = "".join(" " if name == "Space" else name for name, _ in keys)
-            step = {"text": typed, "recorded_text": typed}
-        else:
-            step = {"key": keys[0][0]}
-            if enter_on:
-                step["enter_on"] = enter_on
-        step.update({"to": screen_id, "to_title": title, "capture": False, "capture_pages": False})
-        self.action["steps"].append(step)
         self.selected = selected
-        self.status = f"Step {len(self.action['steps'])}: {step.get('key') or 'type ' + repr(step['text'])} -> {title}"
+        if self._open is None:
+            return
+        step, started = self._open
+        self._open = None
+        waited = max(0.0, at - started)
+        step.update({
+            "to": screen_id, "to_title": title, "capture": False, "capture_pages": False,
+            "recorded_wait": round(waited, 1),
+            "max_wait": default_max_wait(waited),
+            "wait_text": "",
+        })
+        self.action["steps"].append(step)
+        self.status = f"Step {len(self.action['steps'])}: {step.get('key') or 'type ' + repr(step['text'])} -> {title} (took {waited:.0f}s)"
+
+    def _close_typing(self, at: float):
+        if self._typed:
+            typed = "".join(" " if name == "Space" else name for name in self._typed)
+            self._open = ({"text": typed, "recorded_text": typed}, self._typed_at)
+            self._typed = []
 
     def _worker(self):
-        burst = []
-        last_key_at = 0.0
         while True:
-            try:
-                kind, value, at = self.events.get(timeout=0.1)
-            except queue.Empty:
-                if burst and time.time() - last_key_at > 0.7:
-                    self._record(burst)
-                    burst = []
-                continue
-            if kind == "stop":
-                if burst:
-                    self._record(burst)
-                return
-            if kind == "capture":
-                if burst:
-                    self._record(burst)
-                    burst = []
+            kind, value, at, image = self.events.get()
+            if kind in ("stop", "capture"):
+                # Nothing is pressed now, so the screen you're looking at is
+                # the finished one.
+                self._close_typing(at)
+                if self._open is not None:
+                    self._finish_open_step(screen_reader.capture_when_settled(self.hwnd), at)
+                if kind == "stop":
+                    return
                 if self.action["steps"]:
                     self.action["steps"][-1]["capture"] = True
                     self.status = f"Step {len(self.action['steps'])} will capture its screen"
@@ -248,19 +269,25 @@ class ActionRecorder:
                     self.status = "The start screen will be captured"
                 continue
             name, printable = value
+            if image is not None:
+                self._close_typing(at)
+                self._finish_open_step(image, at)
             if printable:
-                burst.append(value)
-                last_key_at = at
+                if not self._typed:
+                    self._typed_at = at
+                self._typed.append(name)
                 continue
-            if burst:
-                self._record(burst)
-                burst = []
-            self._record([value])
+            step = {"key": name}
+            if name == "Enter" and self.selected:
+                step["enter_on"] = self.selected[0]
+            self._open = (step, at)
 
 
 # ------------------------------------------------------------------ replay
 class ActionRun:
-    """Replays an action; check after every step, stop on anything unexpected."""
+    """Replays an action. After every step it waits until Uniware really shows
+    the recorded screen (and the step's "wait until" text) and has stopped
+    changing -- up to the step's max wait -- and stops on anything else."""
 
     def __init__(self, action: dict, values: dict, title_part: str = DEFAULT_WINDOW_TITLE):
         self.action = action
@@ -271,31 +298,86 @@ class ActionRun:
         self.stop_requested = False
         self.result = ""
         self.output_files: list[str] = []
+        self.exported_files: list[str] = []
         self.captures: list[dict] = []
+        self.started = datetime.datetime.now()
 
     def say(self, message: str):
         self.log.append(f"{datetime.datetime.now():%H:%M:%S} {message}")
 
-    def _check_focus(self, hwnd):
+    def _check(self, hwnd):
+        if self.stop_requested:
+            raise RuntimeError("Stopped by you.")
         if screen_reader.foreground_window() != hwnd:
             raise RuntimeError("Uniware lost focus (another window was clicked) -- stopped for safety.")
 
-    def _capture(self, hwnd, step_number: int, all_pages: bool, controller):
-        pages = []
-        previous = None
-        for _ in range(60 if all_pages else 1):
-            image = screen_reader.capture_when_settled(hwnd)
-            screen_id, title, _, text, layout = recorder.describe_screen(image)
-            if text == previous:
-                break
-            pages.append({"screen": screen_id, "title": title, "lines": layout})
-            previous = text
-            if not all_pages:
-                break
-            self._check_focus(hwnd)
+    def _read(self, hwnd, timeout: float = 3.0):
+        image = screen_reader.capture_when_settled(hwnd, timeout=timeout)
+        return (image, *recorder.describe_screen(image))
+
+    def _wait_for(self, hwnd, step: dict, label: str):
+        """Read the screen until it is the step's screen, contains its "wait
+        until" text and two reads in a row are the same (finished loading),
+        for at most the step's max wait. Returns the reading."""
+        expected = step["to"]
+        expected_title = step.get("to_title") or expected
+        wait_text = (step.get("wait_text") or "").strip()
+        max_wait = float(step.get("max_wait") or default_max_wait(float(step.get("recorded_wait") or 0)))
+        started = time.time()
+        next_note = started + 5
+        previous_text = None
+        while True:
+            self._check(hwnd)
+            image, screen_id, title, selected, text, layout = self._read(hwnd)
+            joined = "\n".join(text).lower()
+            if screen_id == expected and wait_text.lower() in joined:
+                if text == previous_text:
+                    return screen_id, title, selected, text, layout
+                previous_text = text
+                continue  # read once more: is it still drawing?
+            previous_text = None
+            waited = time.time() - started
+            if waited > max_wait:
+                self._save_problem_screen(image)
+                looking = f"'{expected_title}'" + (f" showing '{wait_text}'" if wait_text else "")
+                raise RuntimeError(f"{label}: waited {max_wait:.0f}s for {looking}, but Uniware shows '{title}'. Stopped (screenshot in outputs).")
+            if time.time() > next_note:
+                self.say(f"{label}: Uniware still busy, waiting for {expected_title}" + (f" / '{wait_text}'" if wait_text else "") + f" ({waited:.0f}s of max {max_wait:.0f}s)")
+                next_note = time.time() + 10
+            time.sleep(0.5)
+
+    def _save_problem_screen(self, image):
+        OUTPUTS_DIR.mkdir(parents=True, exist_ok=True)
+        name = f"{self.action['slug']}_{self.started:%Y%m%d_%H%M%S}_stopped.png"
+        image.save(OUTPUTS_DIR / name)
+        self.output_files.append(name)
+
+    def _capture(self, hwnd, step_number: int, all_pages: bool, controller, reading):
+        screen_id, title, _, text, layout = reading
+        pages = [{"screen": screen_id, "title": title, "lines": layout}]
+        previous = text
+        while all_pages and len(pages) < 200:
+            self._check(hwnd)
             send_combo(controller, "Page Down")
+            # Wait until the next page is drawn (and stays the same); no
+            # change at all within PAGE_WAIT_SECONDS = that was the last page.
+            deadline = time.time() + PAGE_WAIT_SECONDS
+            new_page = None
+            while time.time() < deadline:
+                self._check(hwnd)
+                _, screen_id, title, _, text, layout = self._read(hwnd, timeout=1.5)
+                if text != previous:
+                    _, _, _, _, again, again_layout = self._read(hwnd, timeout=1.5)
+                    if again == text:
+                        new_page = (screen_id, title, text, again_layout)
+                        break
+                time.sleep(0.3)
+            if new_page is None:
+                break
+            screen_id, title, previous, layout = new_page
+            pages.append({"screen": screen_id, "title": title, "lines": layout})
         self.captures.append({"step": step_number, "pages": pages})
-        self.say(f"Captured {len(pages)} page(s) of {pages[0]['title'] if pages else '?'}")
+        self.say(f"Captured {len(pages)} page(s) of {title}")
 
     def run(self):
         self.active = True
@@ -306,21 +388,18 @@ class ActionRun:
             if not bring_to_front(hwnd):
                 raise RuntimeError("Could not bring Uniware to the front -- click it once and start again.")
             controller = keyboard.Controller()
-            image = screen_reader.capture_when_settled(hwnd)
-            screen_id, title, selected, _, _ = recorder.describe_screen(image)
+            _, screen_id, title, selected, text, layout = self._read(hwnd)
             if self.action.get("start_screen") and screen_id != self.action["start_screen"]:
                 raise RuntimeError(f"Uniware is on '{title}', but this action starts on '{self.action.get('start_title') or self.action['start_screen']}'. Go there first.")
             self.say(f"Start: {title}")
             if self.action.get("capture_start"):
-                self._capture(hwnd, 0, False, controller)
+                self._capture(hwnd, 0, False, controller, (screen_id, title, selected, text, layout))
             for number, step in enumerate(self.action.get("steps", []), start=1):
-                if self.stop_requested:
-                    raise RuntimeError("Stopped by you.")
-                self._check_focus(hwnd)
+                self._check(hwnd)
                 if "text" in step:
-                    text = re.sub(r"\{([a-z0-9_]+)\}", lambda match: self.values.get(match.group(1), ""), step["text"])
-                    controller.type(text)
-                    self.say(f"Step {number}: typed {text!r}")
+                    typed = re.sub(r"\{([a-z0-9_]+)\}", lambda match: self.values.get(match.group(1), ""), step["text"])
+                    controller.type(typed)
+                    self.say(f"Step {number}: typed {typed!r}")
                 else:
                     if step.get("enter_on"):
                         # Arrow to the recorded menu item first if the
@@ -329,32 +408,41 @@ class ActionRun:
                             if selected and selected[0] == step["enter_on"]:
                                 break
                             send_combo(controller, "Down")
-                            image = screen_reader.capture_when_settled(hwnd, timeout=1.5)
-                            _, _, selected, _, _ = recorder.describe_screen(image)
+                            _, _, _, selected, _, _ = self._read(hwnd, timeout=1.5)
                         else:
                             raise RuntimeError(f"Menu item '{step['enter_on']}' not found.")
                     send_combo(controller, step["key"])
                     self.say(f"Step {number}: {step['key']}" + (f" on '{step['enter_on']}'" if step.get("enter_on") else ""))
-                image = screen_reader.capture_when_settled(hwnd)
-                screen_id, title, selected, _, _ = recorder.describe_screen(image)
-                if screen_id != step["to"]:
-                    raise RuntimeError(f"Step {number}: expected '{step.get('to_title') or step['to']}', but Uniware shows '{title}'. Stopped.")
+                reading = self._wait_for(hwnd, step, f"Step {number}")
+                screen_id, title, selected, text, layout = reading
                 if step.get("capture"):
-                    self._capture(hwnd, number, bool(step.get("capture_pages")), controller)
+                    self._capture(hwnd, number, bool(step.get("capture_pages")), controller, reading)
             self.result = "done"
             self.say("Finished.")
         except Exception as error:  # noqa: BLE001 -- shown in the dashboard
             self.result = "failed"
             self.say(f"STOPPED: {error}")
         finally:
+            try:
+                self._write_outputs()
+            except OSError as error:
+                self.result = "failed"
+                self.say(f"Could not write the output: {error}")
             self.active = False
-            self._write_outputs()
+
+    def export_name(self) -> str:
+        """The dump file name from the action's template: {date}, {time},
+        {action} and any field, e.g. "tour-508_{date}"."""
+        template = self.action.get("export_name") or "{action}_{date}_{time}"
+        names = {**self.values, "action": self.action["slug"], "date": f"{self.started:%Y%m%d}", "time": f"{self.started:%H%M%S}"}
+        name = re.sub(r"\{([a-z0-9_]+)\}", lambda match: names.get(match.group(1), ""), template)
+        return re.sub(r'[\\/:*?"<>|]+', "-", name).strip(" .") or self.action["slug"]
 
     def _write_outputs(self):
         if not self.captures:
             return
         OUTPUTS_DIR.mkdir(parents=True, exist_ok=True)
-        stamp = f"{self.action['slug']}_{datetime.datetime.now():%Y%m%d_%H%M%S}"
+        stamp = f"{self.action['slug']}_{self.started:%Y%m%d_%H%M%S}"
         text_path = OUTPUTS_DIR / f"{stamp}.txt"
         csv_path = OUTPUTS_DIR / f"{stamp}.csv"
         with text_path.open("w", encoding="utf-8") as handle:
@@ -371,5 +459,22 @@ class ActionRun:
                     for line in page["lines"]:
                         writer.writerow([capture["step"], index, page["screen"], line["y"], line["x"], line["text"]])
         (OUTPUTS_DIR / f"{stamp}.json").write_text(json.dumps(self.captures, indent=2, ensure_ascii=False), encoding="utf-8")
-        self.output_files = [text_path.name, csv_path.name]
-        self.say(f"Saved: outputs\\{text_path.name} and {csv_path.name}")
+        self.output_files = [text_path.name, csv_path.name] + self.output_files
+        export_dir = (self.action.get("export_dir") or "").strip()
+        if not export_dir:
+            return
+        if self.result != "done":
+            self.say("NOT put in the dump folder: the run did not finish (the partial data is only in outputs).")
+            return
+        target_dir = Path(export_dir)
+        target_dir.mkdir(parents=True, exist_ok=True)
+        base = self.export_name()
+        for source, suffix in ((csv_path, ".csv"), (text_path, ".txt")):
+            target = target_dir / f"{base}{suffix}"
+            # Written under a temporary name first, so OneDrive never syncs a
+            # half-written file.
+            temp = target_dir / f"~{base}{suffix}.tmp"
+            temp.write_bytes(source.read_bytes())
+            temp.replace(target)
+            self.exported_files.append(str(target))
+        self.say(f"Dump written to {target_dir}: {base}.csv / .txt")
