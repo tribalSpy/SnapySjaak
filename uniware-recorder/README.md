@@ -79,10 +79,17 @@ until it says Finished. **Stop** or **Ctrl+Alt+Q** stops at any time.
 Captured screens are saved in `outputs\` as text, CSV (with positions, for
 tables) and JSON.
 
-**Dump folder** (Edit, per action): e.g. a OneDrive folder. After a run that
-*finished*, the data is also written there as `.csv` + `.txt` with the
-**File name** you give (`{date}`, `{time}`, `{action}` and fields allowed,
-e.g. `tour-508_{date}`). A run that stopped halfway never lands there.
+**Uniware's own dump file** (Edit, per action): Uniware saves its export
+itself with a generic name (`dump.filipe.2026-10-14_16_57_30.csv`). Fill in
+the folder it saves to (e.g. the OneDrive folder) and the name to give it
+(`{date}`, `{time}`, `{action}` and fields allowed, e.g. `tour-508_{date}`).
+After the last step the run waits for the *new* dump file, waits until it
+is completely written, then renames it (and moves it, if you give another
+folder). No new file within the max wait = the run fails and nothing is
+renamed. Record the action including the keys that make Uniware export.
+
+Without that setting, a **Dump folder** gets the screens captured with
+Ctrl+Alt+C (`.csv` + `.txt`), only after a run that *finished*.
 
 **Tours (UKdocs)**: record one action per tour (508 flowers, 515
 accessories, 1000 BQ, ...) -- some tours need an extra key, so each has its

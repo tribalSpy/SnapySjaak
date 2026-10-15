@@ -392,6 +392,7 @@ class ActionRun:
             if self.action.get("start_screen") and screen_id != self.action["start_screen"]:
                 raise RuntimeError(f"Uniware is on '{title}', but this action starts on '{self.action.get('start_title') or self.action['start_screen']}'. Go there first.")
             self.say(f"Start: {title}")
+            dump_before = self._dump_files_now()
             if self.action.get("capture_start"):
                 self._capture(hwnd, 0, False, controller, (screen_id, title, selected, text, layout))
             for number, step in enumerate(self.action.get("steps", []), start=1):
@@ -417,6 +418,8 @@ class ActionRun:
                 screen_id, title, selected, text, layout = reading
                 if step.get("capture"):
                     self._capture(hwnd, number, bool(step.get("capture_pages")), controller, reading)
+            if dump_before is not None:
+                self._collect_uniware_dump(dump_before)
             self.result = "done"
             self.say("Finished.")
         except Exception as error:  # noqa: BLE001 -- shown in the dashboard
@@ -437,6 +440,66 @@ class ActionRun:
         names = {**self.values, "action": self.action["slug"], "date": f"{self.started:%Y%m%d}", "time": f"{self.started:%H%M%S}"}
         name = re.sub(r"\{([a-z0-9_]+)\}", lambda match: names.get(match.group(1), ""), template)
         return re.sub(r'[\\/:*?"<>|]+', "-", name).strip(" .") or self.action["slug"]
+
+    # Uniware writes its own dump file (e.g. "dump.filipe.2026-10-14_16_57_30.csv")
+    # into a folder; the run picks up the new one and gives it the action's name.
+    def _dump_files_now(self) -> dict | None:
+        folder = (self.action.get("uniware_dump_dir") or "").strip()
+        if not folder:
+            return None
+        if not Path(folder).is_dir():
+            raise RuntimeError(f"Uniware's dump folder '{folder}' doesn't exist (see Edit).")
+        pattern = self.action.get("uniware_dump_pattern") or "dump.*.csv"
+        return {path.name: path.stat().st_mtime for path in Path(folder).glob(pattern) if path.is_file()}
+
+    def _collect_uniware_dump(self, before: dict):
+        folder = Path(self.action["uniware_dump_dir"].strip())
+        pattern = self.action.get("uniware_dump_pattern") or "dump.*.csv"
+        max_wait = float(self.action.get("uniware_dump_wait") or 180)
+        started = time.time()
+        next_note = started + 10
+        last_size, steady_since = None, None
+        self.say(f"Waiting for Uniware's dump file ({pattern}) in {folder}")
+        while True:
+            if self.stop_requested:
+                raise RuntimeError("Stopped by you.")
+            new = [path for path in folder.glob(pattern)
+                   if path.is_file() and (path.name not in before or path.stat().st_mtime > before[path.name])]
+            if new:
+                newest = max(new, key=lambda path: path.stat().st_mtime)
+                size = newest.stat().st_size
+                if size > 0 and size == last_size:
+                    # Same size for 3 s: Uniware (and OneDrive) are done
+                    # writing. Moving fails while it's still open -- retry.
+                    if time.time() - steady_since >= 3 and self._move_dump(newest):
+                        return
+                else:
+                    last_size, steady_since = size, time.time()
+            waited = time.time() - started
+            if waited > max_wait:
+                raise RuntimeError(f"No new dump file ({pattern}) appeared in {folder} within {max_wait:.0f}s.")
+            if time.time() > next_note:
+                self.say(f"Still waiting for the dump file ({waited:.0f}s of max {max_wait:.0f}s)")
+                next_note = time.time() + 15
+            time.sleep(1)
+
+    def _move_dump(self, source: Path) -> bool:
+        target_dir = Path((self.action.get("export_dir") or "").strip() or source.parent)
+        target_dir.mkdir(parents=True, exist_ok=True)
+        target = target_dir / f"{self.export_name()}{source.suffix}"
+        try:
+            if target_dir.resolve().drive == source.resolve().drive:
+                source.replace(target)
+            else:
+                temp = target_dir / f"~{target.name}.tmp"
+                temp.write_bytes(source.read_bytes())
+                temp.replace(target)
+                source.unlink()
+        except PermissionError:
+            return False  # still being written
+        self.exported_files.append(str(target))
+        self.say(f"Dump file {source.name} -> {target}")
+        return True
 
     def _write_outputs(self):
         if not self.captures:
@@ -461,8 +524,8 @@ class ActionRun:
         (OUTPUTS_DIR / f"{stamp}.json").write_text(json.dumps(self.captures, indent=2, ensure_ascii=False), encoding="utf-8")
         self.output_files = [text_path.name, csv_path.name] + self.output_files
         export_dir = (self.action.get("export_dir") or "").strip()
-        if not export_dir:
-            return
+        if not export_dir or self.action.get("uniware_dump_dir"):
+            return  # with Uniware's own dump file, that file is the dump
         if self.result != "done":
             self.say("NOT put in the dump folder: the run did not finish (the partial data is only in outputs).")
             return

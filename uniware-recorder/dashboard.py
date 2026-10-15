@@ -148,6 +148,12 @@ class Handler(BaseHTTPRequestHandler):
                     action["description"] = str(body.get("description", action.get("description", "")))
                     action["export_dir"] = str(body.get("export_dir", action.get("export_dir", ""))).strip().strip('"')
                     action["export_name"] = str(body.get("export_name", action.get("export_name", ""))).strip()
+                    action["uniware_dump_dir"] = str(body.get("uniware_dump_dir", action.get("uniware_dump_dir", ""))).strip().strip('"')
+                    action["uniware_dump_pattern"] = str(body.get("uniware_dump_pattern") or "dump.*.csv").strip()
+                    try:
+                        action["uniware_dump_wait"] = max(10, min(3600, int(float(body.get("uniware_dump_wait")))))
+                    except (TypeError, ValueError):
+                        action["uniware_dump_wait"] = 180
                     for index, change in enumerate(body.get("steps") or []):
                         if index < len(action["steps"]):
                             step = action["steps"][index]
@@ -231,7 +237,7 @@ function render() {
       ${run.outputs.map((f) => `<a href="/outputs/${encodeURIComponent(f)}" target="_blank">${esc(f)}</a>`).join(" &middot; ")}
       ${run.exported.length ? `<p>Dump: ${run.exported.map(esc).join("<br>")}</p>` : ""}` : "";
   $("actions").innerHTML = state.actions.length ? `<table><tr><th>Action</th><th>Steps</th><th>Fields</th><th></th></tr>${state.actions.map((a) => `
-      <tr><td><strong>${esc(a.name)}</strong><div class="muted">${esc(a.description || "")}</div><div class="muted">starts on: ${esc(a.start_title || a.start_screen)}</div>${a.export_dir ? `<div class="muted">dump to: ${esc(a.export_dir)} &rarr; ${esc(a.export_name || "{action}_{date}_{time}")}.csv</div>` : ""}</td>
+      <tr><td><strong>${esc(a.name)}</strong><div class="muted">${esc(a.description || "")}</div><div class="muted">starts on: ${esc(a.start_title || a.start_screen)}</div>${a.uniware_dump_dir ? `<div class="muted">dump file &rarr; ${esc(a.export_name || "{action}_{date}_{time}")}.csv</div>` : a.export_dir ? `<div class="muted">dump to: ${esc(a.export_dir)} &rarr; ${esc(a.export_name || "{action}_{date}_{time}")}.csv</div>` : ""}</td>
       <td>${a.steps.length} (${a.steps.filter((s) => s.capture).length} capture)</td>
       <td>${a.fields.map((f) => `<label>${esc(f)} <input data-field="${esc(a.slug)}:${esc(f)}" size="14"></label>`).join("<br>") || "-"}</td>
       <td class="row"><button class="primary" onclick="runAction('${a.slug}')">Start</button><button onclick="edit('${a.slug}')">Edit</button><button class="danger" onclick="del('${a.slug}')">Delete</button></td></tr>`).join("")}</table>`
@@ -250,9 +256,13 @@ function edit(slug) {
   $("editCard").style.display = "";
   $("editCard").innerHTML = `<h2>Edit: ${esc(a.name)}</h2>
     <p><input id="editDesc" size="70" value="${esc(a.description || "")}"></p>
-    <p class="row"><label>Dump folder <input id="editExportDir" size="60" placeholder="paste the OneDrive folder path"value="${esc(a.export_dir || "")}"></label>
-      <label>File name <input id="editExportName" size="28" placeholder="{action}_{date}_{time}" value="${esc(a.export_name || "")}"></label></p>
-    <p class="muted">After a run that finished, the data is written there as .csv and .txt. File name may use {date}, {time}, {action} and the fields, e.g. <code>tour-508_{date}</code>. Same name again = overwritten. Leave the folder empty: only in outputs.</p>
+    <h3>Dump file</h3>
+    <p class="row"><label>Uniware saves its dump in <input id="editUniwareDir" size="60" placeholder="paste the folder path (e.g. the OneDrive folder)" value="${esc(a.uniware_dump_dir || "")}"></label>
+      <label>Its name looks like <input id="editUniwarePattern" size="14" value="${esc(a.uniware_dump_pattern || "dump.*.csv")}"></label>
+      <label>Max wait (s) <input id="editUniwareWait" size="4" value="${esc(a.uniware_dump_wait || 180)}"></label></p>
+    <p class="row"><label>Rename it to <input id="editExportName" size="28" placeholder="{action}_{date}_{time}" value="${esc(a.export_name || "")}"></label>
+      <label>and move it to <input id="editExportDir" size="50" placeholder="(empty: stays in the same folder)" value="${esc(a.export_dir || "")}"></label></p>
+    <p class="muted">At the end of the run it waits for the new dump file Uniware writes (e.g. dump.filipe.2026-10-14_16_57_30.csv), waits until it is completely written, then renames it, e.g. <code>tour-508_{date}</code> gives tour-508_20261014.csv. You can use {date}, {time}, {action} and the fields. Same name again = replaced. No new file within Max wait = the run fails and the file is left alone.</p>
     <table><tr><th>#</th><th>Step</th><th>Goes to</th><th>Field (typed text)</th><th>Wait until screen shows</th><th>Max wait (s)</th><th>Capture screen</th><th>All pages</th></tr>
     ${a.steps.map((s, i) => `<tr><td>${i + 1}</td>
       <td>${s.text !== undefined ? `type <code>${esc(s.text)}</code>` : `<code>${esc(s.key)}</code>${s.enter_on ? ` on "${esc(s.enter_on)}"` : ""}`}</td>
@@ -275,7 +285,7 @@ function saveEdit() {
     max_wait: document.querySelector(`[data-step-max="${i}"]`).value,
     field: s.text !== undefined ? document.querySelector(`[data-step-field="${i}"]`).value : null,
   }));
-  api(`/api/actions/${editing}/update`, { description: $("editDesc").value, export_dir: $("editExportDir").value, export_name: $("editExportName").value, steps });
+  api(`/api/actions/${editing}/update`, { description: $("editDesc").value, export_dir: $("editExportDir").value, export_name: $("editExportName").value, uniware_dump_dir: $("editUniwareDir").value, uniware_dump_pattern: $("editUniwarePattern").value, uniware_dump_wait: $("editUniwareWait").value, steps });
 }
 api("/api/state");
 setInterval(() => { if (state && (state.recording.active || state.run.active)) api("/api/state"); }, 1000);
