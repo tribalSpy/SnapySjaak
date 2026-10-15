@@ -17499,11 +17499,13 @@ const INKOOP_RETOUR_STATUS_LABELS = {
   partial_return: "Partially returned",
   not_return: "Not returned - investigate",
   no_dispatch_data: "No dispatch data yet",
+  no_return_expected: "No return (price / fust correction)",
+  extra_return: "More returned than credited",
 };
 
 function InkoopRetourStatusBadge({ status }) {
   const tone = status === "confirmed_return" ? "success"
-    : status === "no_dispatch_data" ? "muted"
+    : status === "no_dispatch_data" || status === "no_return_expected" ? "muted"
     : "danger";
   return <span className={`ukdocs-status-badge ${tone}`}>{INKOOP_RETOUR_STATUS_LABELS[status] || status}</span>;
 }
@@ -17515,36 +17517,44 @@ function InkoopRetourStatusBadge({ status }) {
 // a sold-per-country overview, and a check of every correction
 // matchInkoopVeilingLines already netted against whether it actually went
 // to one of FloraHolland's own "retour" (return) accounts.
+function inkoopPeriodLabel(period) {
+  return period?.from && period?.to ? `${fustOverviewDate(period.from)} - ${fustOverviewDate(period.to)}` : `the last ${period?.days || 7} days`;
+}
+
 function InkoopDestinationsTab() {
+  // The period being picked vs the one shown: nothing loads until "Show",
+  // so picking two dates doesn't fire a request per click.
+  const [draftPeriod, setDraftPeriod] = useState({ days: 7 });
   const [period, setPeriod] = useState({ days: 7 });
   const [summary, setSummary] = useState(null);
-  const [corrections, setCorrections] = useState([]);
-  const [loading, setLoading] = useState(true);
+  const [corrections, setCorrections] = useState(null);
+  const [loadingSummary, setLoadingSummary] = useState(true);
+  const [loadingCorrections, setLoadingCorrections] = useState(true);
   const [error, setError] = useState("");
+  const requestRef = useRef(0);
 
-  function load() {
-    setLoading(true);
-    setError("");
-    return Promise.all([
-      apiJson(`/api/inkoop/destinations/summary?${new URLSearchParams(inkoopPeriodParams(period))}`),
-      apiJson(`/api/inkoop/destinations/corrections?${new URLSearchParams(inkoopPeriodParams(period))}`),
-    ])
-      .then(([summaryPayload, correctionsPayload]) => {
-        setSummary(summaryPayload);
-        setCorrections(correctionsPayload.checks || []);
-      })
-      .catch((loadError) => setError(loadError.message))
-      .finally(() => setLoading(false));
-  }
-
+  // Summary and corrections load separately (the corrections run the match
+  // over every day of the period, the slow part). An answer for an older
+  // period that arrives late is ignored -- it used to overwrite the newer
+  // one, so the screen showed another period than picked.
   useEffect(() => {
-    load().catch(() => {});
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    const request = ++requestRef.current;
+    const params = new URLSearchParams(inkoopPeriodParams(period));
+    setError("");
+    setLoadingSummary(true);
+    setLoadingCorrections(true);
+    apiJson(`/api/inkoop/destinations/summary?${params}`)
+      .then((payload) => { if (request === requestRef.current) setSummary(payload); })
+      .catch((loadError) => { if (request === requestRef.current) setError(loadError.message); })
+      .finally(() => { if (request === requestRef.current) setLoadingSummary(false); });
+    apiJson(`/api/inkoop/destinations/corrections?${params}`)
+      .then((payload) => { if (request === requestRef.current) setCorrections({ ...payload, checks: payload.checks || [] }); })
+      .catch((loadError) => { if (request === requestRef.current) setError(loadError.message); })
+      .finally(() => { if (request === requestRef.current) setLoadingCorrections(false); });
   }, [period]);
 
-  if (loading && !summary) {
-    return <div className="notice">Loading destinations...</div>;
-  }
+  const changed = JSON.stringify(draftPeriod) !== JSON.stringify(period);
+  const correctionRows = corrections?.checks || [];
 
   return (
     <>
@@ -17553,12 +17563,23 @@ function InkoopDestinationsTab() {
       </div>
 
       <div className="row-actions spread-actions">
-        <InkoopRangeSelect period={period} onChange={setPeriod} />
+        <InkoopRangeSelect period={draftPeriod} onChange={setDraftPeriod} />
+        <button type="button" className="primary" onClick={() => setPeriod({ ...draftPeriod })} disabled={(loadingSummary || loadingCorrections) && !changed}>
+          {changed ? "Show" : "Show again"}
+        </button>
       </div>
+      {changed && <div className="notice info">Click <strong>Show</strong> to load {inkoopPeriodLabel(draftPeriod)}.</div>}
+      {(loadingSummary || loadingCorrections) && (
+        <div className="notice info">
+          Loading {inkoopPeriodLabel(period)}... {loadingSummary ? "sold per country" : ""}{loadingSummary && loadingCorrections ? " and " : ""}{loadingCorrections ? "corrections (this one checks every day of the period and can take a minute)" : ""}
+        </div>
+      )}
       {error && <div className="notice danger">{error}</div>}
 
+      {!summary && loadingSummary && <div className="notice">Loading destinations...</div>}
       {summary && (
-        <InkoopCollapsibleCard title="Sold per country">
+        <div style={loadingSummary ? { opacity: 0.35, pointerEvents: "none" } : undefined}>
+        <InkoopCollapsibleCard title={`Sold per country -- ${fustOverviewDate(summary.from)} - ${fustOverviewDate(summary.to)}`}>
           <div className="notice">
             {summary.lot_count} purchase lots, {summary.total_pieces.toLocaleString()} pieces dispatched, {formatInkoopEuro(summary.total_value)} (apportioned from each lot's own value by dispatched piece share) -- {summary.from} to {summary.to}.
           </div>
@@ -17602,25 +17623,32 @@ function InkoopDestinationsTab() {
             </>
           )}
         </InkoopCollapsibleCard>
+        </div>
       )}
 
-      <InkoopCollapsibleCard title="Corrections check" count={corrections.length}>
+      <div style={loadingCorrections && corrections ? { opacity: 0.35, pointerEvents: "none" } : undefined}>
+      <InkoopCollapsibleCard title={corrections ? `Corrections check -- ${fustOverviewDate(corrections.from)} - ${fustOverviewDate(corrections.to)}` : "Corrections check"} count={correctionRows.length}>
         <div className="notice">
-          Every negative value on an invoice (Klokfactuur/Connect corrections, full cancellations, Handel/AI2 credits) -- cross-checked against the dispatch dump: only stock sent to a "retour" customer (Tgrp B/P 119) counts as returned. Internal XX codes (bunches, mix, ...) are labelled but don't confirm a correction.
+          A correction credits the whole invoiced lot and invoices the right amount again: bought 5x50, one bunch bad -&gt; credited 250, invoiced again 200, so <strong>50 returned</strong>. That returned amount has to show up at a "retour" customer (Tgrp B/P 119) in the dispatch dump; the rest of the lot was sold normally. Credited and invoiced again in full = a price or fust correction, nothing returned. Internal XX codes (bunches, mix, ...) are labelled but don't confirm a return.
         </div>
         <div className="table-wrap">
           <table className="data-table">
             <thead>
-              <tr><th>Date</th><th>Invoice</th><th>PAV</th><th>Description</th><th>Quantity</th><th>Value</th><th>Status</th><th>Destination(s)</th></tr>
+              <tr><th>Date</th><th>Invoice</th><th>PAV</th><th>Description</th><th>Invoiced</th><th>Credited</th><th>Invoiced again</th><th>Returned</th><th>At retour</th><th>Net value</th><th>Status</th><th>Destination(s)</th></tr>
             </thead>
             <tbody>
-              {corrections.map((item, index) => (
+              {!corrections && <tr><td colSpan={12}>Loading corrections...</td></tr>}
+              {correctionRows.map((item, index) => (
                 <tr key={`${item.invoice_number}-${item.pav}-${index}`}>
                   <td>{inkoopShortDate(item.invoice_date)}</td>
                   <td><InkoopInvoiceLink invoiceNumber={item.invoice_number} /></td>
                   <td>{item.pav}</td>
                   <td>{item.description}</td>
-                  <td>{item.quantity}</td>
+                  <td>{item.original || "-"}</td>
+                  <td>{item.credited ? `-${item.credited}` : "-"}</td>
+                  <td>{item.reissued || "-"}</td>
+                  <td><strong>{item.returned || 0}</strong></td>
+                  <td>{item.retour_pieces || 0}</td>
                   <td>{formatInkoopEuro(item.total)}</td>
                   <td><InkoopRetourStatusBadge status={item.status} /></td>
                   <td>
@@ -17634,13 +17662,14 @@ function InkoopDestinationsTab() {
                   </td>
                 </tr>
               ))}
-              {!corrections.length && (
-                <tr><td colSpan={8}>No open corrections in the current matching window.</td></tr>
+              {corrections && !correctionRows.length && (
+                <tr><td colSpan={12}>No open corrections in the current matching window.</td></tr>
               )}
             </tbody>
           </table>
         </div>
       </InkoopCollapsibleCard>
+      </div>
     </>
   );
 }

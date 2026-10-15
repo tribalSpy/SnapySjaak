@@ -8519,13 +8519,61 @@ const INKOOP_RETOUR_STATUS_RANK = {
 // where even one of its lots did NOT confirm a return is exactly the case
 // worth surfacing, never letting one clean lot mask a real discrepancy on
 // another.
-function inkoopOverallCorrectionRetourStatus(erpRow, dispatchByLot, customerMap) {
+function inkoopOverallCorrectionRetourStatus(erpRow, dispatchByLot, customerMap, expectedReturn) {
   const lotNumbers = inkoopCorrectionLotNumbers(erpRow);
   const lots = lotNumbers.length
     ? lotNumbers.map((lotNumber) => ({ lot: lotNumber, ...inkoopCorrectionRetourStatusForLot(dispatchByLot.get(lotNumber), customerMap) }))
     : [{ lot: "", status: "no_dispatch_data", destinations: [] }];
-  const status = lots.map((entry) => entry.status).sort((left, right) => INKOOP_RETOUR_STATUS_RANK[right] - INKOOP_RETOUR_STATUS_RANK[left])[0];
-  return { status, lots };
+  const destinations = lots.flatMap((entry) => entry.destinations);
+  const retourPieces = destinations.filter((item) => item.is_retour).reduce((sum, item) => sum + item.pieces, 0);
+  if (expectedReturn === undefined || expectedReturn === null) {
+    const status = lots.map((entry) => entry.status).sort((left, right) => INKOOP_RETOUR_STATUS_RANK[right] - INKOOP_RETOUR_STATUS_RANK[left])[0];
+    return { status, lots, retour_pieces: retourPieces };
+  }
+  // A correction credits the whole invoiced lot and invoices the right
+  // amount again (bought 5x50, one bunch bad: -250 then +200), so only the
+  // difference -- 50 -- went back, and only that has to show up at a
+  // retour (119) customer in the dispatch dump; the rest of the lot was
+  // sold normally. (Was: every piece of the lot had to go to retour, so a
+  // partial return never confirmed.)
+  let status;
+  if (!destinations.length) {
+    status = "no_dispatch_data";
+  } else if (expectedReturn <= INKOOP_MATCH_TOLERANCE) {
+    status = "no_return_expected"; // credited and invoiced again in full: a price/fust correction
+  } else if (retourPieces <= 0) {
+    status = "not_return";
+  } else if (!inkoopValuesDiffer(retourPieces, expectedReturn)) {
+    status = "confirmed_return";
+  } else {
+    status = retourPieces < expectedReturn ? "partial_return" : "extra_return";
+  }
+  return { status, lots, retour_pieces: retourPieces };
+}
+
+// What a correction did, from its own invoice lines (all lines of the PAV
+// in the match window): the original purchase, the credit (negative lines)
+// and the amount invoiced again -- positive lines on the credit's invoice or
+// after it. Returned = credited - invoiced again. A plain negative Handel /
+// AI2 credit line is credited only.
+function inkoopCorrectionBreakdown(item) {
+  const lines = Array.isArray(item?.correction_lines) && item.correction_lines.length ? item.correction_lines : [item];
+  const credits = lines.filter((line) => Number(line?.quantity) < 0);
+  const creditInvoices = new Set(credits.map((line) => line.invoice_number));
+  const firstCreditDate = credits.map((line) => String(line.invoice_date || "")).sort()[0] || "";
+  let original = 0;
+  let reissued = 0;
+  for (const line of lines) {
+    const quantity = Number(line?.quantity) || 0;
+    if (quantity <= 0) continue;
+    if (creditInvoices.has(line.invoice_number) || (firstCreditDate && String(line.invoice_date || "") > firstCreditDate)) {
+      reissued += quantity;
+    } else {
+      original += quantity;
+    }
+  }
+  const credited = credits.reduce((sum, line) => sum - (Number(line.quantity) || 0), 0);
+  return { original, credited, reissued, returned: Math.max(0, credited - reissued) };
 }
 
 // Once matchInkoopVeilingLines nets a Klokfactuur/Connect correction, its
@@ -8560,7 +8608,7 @@ async function reclassifyInkoopConfirmedReturns(result, customerMap) {
   const dispatchByLot = new Map(dispatchLots.map((lot) => [String(lot.lot), lot]));
   const toPromote = new Set();
   for (const { item } of candidates) {
-    const { status } = inkoopOverallCorrectionRetourStatus(item.erp_row, dispatchByLot, customerMap);
+    const { status } = inkoopOverallCorrectionRetourStatus(item.erp_row, dispatchByLot, customerMap, inkoopCorrectionBreakdown(item).returned);
     if (status === "confirmed_return") {
       toPromote.add(item);
     }
@@ -8616,8 +8664,11 @@ async function computeInkoopCorrectionRetourChecks(state, { from, to }) {
   const dispatchLots = await getInkoopDispatchLotsByLots([...allLotNumbers]);
   const dispatchByLot = new Map(dispatchLots.map((lot) => [String(lot.lot), lot]));
   return corrections.map((item) => {
-    const { status, lots } = inkoopOverallCorrectionRetourStatus(inkoopCorrectionLotSource(item), dispatchByLot, state.customer_map);
+    const breakdown = inkoopCorrectionBreakdown(item);
+    const { status, lots, retour_pieces: retourPieces } = inkoopOverallCorrectionRetourStatus(inkoopCorrectionLotSource(item), dispatchByLot, state.customer_map, breakdown.returned);
     return {
+      ...breakdown,
+      retour_pieces: retourPieces,
       bucket: item.bucket,
       invoice_number: item.invoice_number,
       invoice_numbers: [...new Set((Array.isArray(item.correction_lines) && item.correction_lines.length
