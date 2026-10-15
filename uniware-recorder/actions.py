@@ -788,9 +788,14 @@ class ActionRun:
             time.sleep(0.5)
             _, _, _, _, _, layout = self._read(hwnd, timeout=1.5)
         distinct = list(dict.fromkeys(values))
+        # SnappySjaak takes the LAST number in the dump's file name as the
+        # invoice number (ukdocsInvoiceNumberFromFileName): it has to be one
+        # value, digits only -- otherwise it would quietly pick the wrong one.
         if len(distinct) > 1:
-            self.say(f"{label}: '{column}' has {len(distinct)} different values ({', '.join(distinct)}); all go in the name")
-        self.values[field] = "_".join(distinct)
+            raise RuntimeError(f"{label}: '{column}' has {len(distinct)} different values ({', '.join(distinct)}) -- SnappySjaak expects one invoice number per file. Stopped.")
+        if field == "invoiceres" and not distinct[0].isdigit():
+            raise RuntimeError(f"{label}: '{column}' reads '{distinct[0]}', not just digits -- SnappySjaak would take only part of it as the invoice number. Stopped.")
+        self.values[field] = distinct[0]
         self.say(f"{label}: {column} = {self.values[field]} -> {{{field}}}")
 
     def _take_window_dump(self, hwnd, windows_before: dict, step: dict, label: str):
