@@ -863,7 +863,10 @@ export async function deleteInkoopDaySummaries({ from, to } = {}) {
   }
 }
 
-export async function getInkoopInvoiceSummaryLines({ from, to } = {}) {
+// One row per invoice with its totals already added up in the database --
+// a month holds hundreds of thousands of detail lines, which used to be
+// sent to Node one by one just to be summed.
+export async function getInkoopInvoiceSummaryInvoices({ from, to } = {}) {
   if (!pool || !from || !to) {
     return [];
   }
@@ -873,7 +876,8 @@ export async function getInkoopInvoiceSummaryLines({ from, to } = {}) {
       -- month here matches the month of invoices finance receives -- not
       -- the sale/service date of each line (a Diensten factuur of 08-10
       -- carries lines from 01-10 on). Invoices without a stored header fall
-      -- back to their earliest line date.
+      -- back to their earliest line date: only invoices with a line in the
+      -- range and none before it.
       WITH invoice_dates AS (
         SELECT invoice_number, invoice_date AS factuur_date
         FROM inkoop_invoice_headers
@@ -881,18 +885,84 @@ export async function getInkoopInvoiceSummaryLines({ from, to } = {}) {
         UNION ALL
         SELECT l.invoice_number, MIN(l.invoice_date) AS factuur_date
         FROM inkoop_invoice_lines l
-        WHERE NOT EXISTS (SELECT 1 FROM inkoop_invoice_headers h WHERE h.invoice_number = l.invoice_number)
+        WHERE l.invoice_date >= $1::date AND l.invoice_date <= $2::date
+          AND NOT EXISTS (SELECT 1 FROM inkoop_invoice_headers h WHERE h.invoice_number = l.invoice_number)
         GROUP BY l.invoice_number
-        HAVING MIN(l.invoice_date) >= $1::date AND MIN(l.invoice_date) <= $2::date
+        HAVING NOT EXISTS (
+          SELECT 1 FROM inkoop_invoice_lines earlier
+          WHERE earlier.invoice_number = l.invoice_number AND earlier.invoice_date < $1::date
+        )
       )
-      SELECT l.company_number, l.company_name, l.invoice_number, l.invoice_type,
-        to_char(d.factuur_date, 'YYYY-MM-DD') AS invoice_date, l.description, l.quantity, l.total
+      SELECT l.invoice_number, l.invoice_type,
+        MAX(l.company_number) AS company_number, MAX(l.company_name) AS company_name,
+        to_char(MIN(d.factuur_date), 'YYYY-MM-DD') AS invoice_date,
+        COUNT(*)::int AS line_count,
+        COUNT(*) FILTER (WHERE l.quantity IS NULL)::int AS summary_line_count,
+        COALESCE(SUM(l.total) FILTER (WHERE l.quantity IS NULL AND btrim(l.description) ~* '^product aankopen'), 0)::float8 AS products,
+        COALESCE(SUM(l.total) FILTER (WHERE l.quantity IS NULL AND btrim(l.description) ~* '^emballage'), 0)::float8 AS emballage,
+        COALESCE(SUM(l.total) FILTER (WHERE l.quantity IS NULL AND NOT btrim(COALESCE(l.description, '')) ~* '^(product aankopen|emballage)'), 0)::float8 AS fees,
+        COALESCE(SUM(l.total) FILTER (WHERE l.quantity IS NOT NULL), 0)::float8 AS detail_total
       FROM inkoop_invoice_lines l
       JOIN invoice_dates d ON d.invoice_number = l.invoice_number
+      GROUP BY l.invoice_number, l.invoice_type
     `,
     [from, to],
   );
   return result.rows;
+}
+
+// Inkoop Controle "Search invoices": the invoices' own product lines (not
+// the ERP), filtered by line date and any of product, grower/supplier,
+// invoice, company and the customer codes the lot was dispatched to (from
+// the dispatch dump, linked by PAV). Capped at `limit` rows.
+export async function searchInkoopInvoiceLines({ from, to, product, supplier, invoice, company, customerCodes, limit = 500 } = {}) {
+  if (!pool || !from || !to) {
+    return { rows: [], truncated: false };
+  }
+  const conditions = ["l.invoice_date >= $1::date", "l.invoice_date <= $2::date", "l.quantity IS NOT NULL"];
+  const values = [from, to];
+  const like = (value) => `%${String(value).replace(/[\\%_]/g, (match) => `\\${match}`)}%`;
+  if (product) {
+    values.push(like(product));
+    conditions.push(`l.description ILIKE $${values.length}`);
+  }
+  if (supplier) {
+    values.push(like(supplier));
+    conditions.push(`(l.supplier_name ILIKE $${values.length} OR l.supplier_fh_number ILIKE $${values.length} OR l.supplier_gln ILIKE $${values.length})`);
+  }
+  if (invoice) {
+    values.push(like(invoice));
+    conditions.push(`(l.invoice_number ILIKE $${values.length} OR l.reference_bt ILIKE $${values.length})`);
+  }
+  if (company) {
+    values.push(company);
+    conditions.push(`l.company_number = $${values.length}`);
+  }
+  if (Array.isArray(customerCodes)) {
+    values.push(customerCodes.map((code) => String(code).toUpperCase()));
+    conditions.push(`EXISTS (
+      SELECT 1 FROM inkoop_dispatch_lots dl, jsonb_array_elements(dl.dispatches) dispatch
+      WHERE dl.pav = l.reference_bt AND upper(dispatch->>'code') = ANY($${values.length}::text[])
+    )`);
+  }
+  values.push(Math.max(1, Math.min(2000, Number(limit) || 500)) + 1);
+  const result = await pool.query(
+    `
+      SELECT l.invoice_number, l.invoice_type, l.company_number, l.company_name,
+        to_char(l.invoice_date, 'YYYY-MM-DD') AS line_date,
+        l.reference_bt AS pav, l.description, l.supplier_name, l.supplier_fh_number,
+        l.quantity::float8 AS quantity, l.unit_price::float8 AS unit_price, l.total::float8 AS total,
+        (SELECT COALESCE(jsonb_agg(dl.dispatches), '[]'::jsonb) FROM inkoop_dispatch_lots dl
+          WHERE l.reference_bt IS NOT NULL AND l.reference_bt <> '' AND dl.pav = l.reference_bt) AS dispatch_sets
+      FROM inkoop_invoice_lines l
+      WHERE ${conditions.join(" AND ")}
+      ORDER BY l.invoice_date DESC, l.invoice_number, l.id
+      LIMIT $${values.length}
+    `,
+    values,
+  );
+  const max = values[values.length - 1] - 1;
+  return { rows: result.rows.slice(0, max), truncated: result.rows.length > max };
 }
 
 export async function getInkoopCompanies() {
@@ -2384,6 +2454,10 @@ const BACKGROUND_INDEXES = [
   // Every day-based Inkoop match looks invoice lines up by date -- without
   // this each lookup scanned every invoice line ever uploaded.
   { name: "inkoop_invoice_lines_date_idx", sql: "CREATE INDEX CONCURRENTLY IF NOT EXISTS inkoop_invoice_lines_date_idx ON inkoop_invoice_lines (invoice_date)" },
+  // The Overview sums lines per invoice number; the search links lines to
+  // the dispatch dump by PAV.
+  { name: "inkoop_invoice_lines_invoice_number_idx", sql: "CREATE INDEX CONCURRENTLY IF NOT EXISTS inkoop_invoice_lines_invoice_number_idx ON inkoop_invoice_lines (invoice_number)" },
+  { name: "inkoop_dispatch_lots_pav_idx", sql: "CREATE INDEX CONCURRENTLY IF NOT EXISTS inkoop_dispatch_lots_pav_idx ON inkoop_dispatch_lots (pav)" },
 ];
 
 export async function ensureBackgroundIndexes() {

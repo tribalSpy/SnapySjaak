@@ -37,7 +37,8 @@ import {
   getDatabaseStatus,
   getInkoopCompanies,
   clearInkoopUploads,
-  getInkoopInvoiceSummaryLines,
+  getInkoopInvoiceSummaryInvoices,
+  searchInkoopInvoiceLines,
   saveInkoopInvoiceHeaders,
   getInkoopInvoiceHeaders,
   getInkoopDaySummaries,
@@ -7936,54 +7937,28 @@ function inkoopRoundEuro(value) {
   return Math.round((Number(value) || 0) * 100) / 100;
 }
 
-function buildInkoopInvoiceSummary(lines) {
-  const invoices = new Map();
-  for (const line of Array.isArray(lines) ? lines : []) {
-    const invoiceNumber = normalizeUkdocsText(line?.invoice_number);
+// From getInkoopInvoiceSummaryInvoices: one row per invoice, its line
+// totals already added up in the database.
+function buildInkoopInvoiceSummaryFromInvoices(invoiceRows) {
+  const companies = new Map();
+  for (const row of Array.isArray(invoiceRows) ? invoiceRows : []) {
+    const invoiceNumber = normalizeUkdocsText(row?.invoice_number);
     if (!invoiceNumber) {
       continue;
     }
-    const key = `${invoiceNumber}|${line?.invoice_type || ""}`;
-    if (!invoices.has(key)) {
-      invoices.set(key, {
-        invoice_number: invoiceNumber,
-        invoice_type: normalizeUkdocsText(line?.invoice_type),
-        company_number: normalizeUkdocsText(line?.company_number) || (invoiceNumber.match(/^(\d{6})/) || [])[1] || "",
-        company_name: "",
-        invoice_date: "",
-        line_count: 0,
-        detail_total: 0,
-        summary_line_count: 0,
-        products: 0,
-        emballage: 0,
-        fees: 0,
-      });
-    }
-    const invoice = invoices.get(key);
-    invoice.company_name = invoice.company_name || normalizeUkdocsText(line?.company_name);
-    const date = String(line?.invoice_date || "").slice(0, 10);
-    if (date && (!invoice.invoice_date || date < invoice.invoice_date)) {
-      invoice.invoice_date = date;
-    }
-    invoice.line_count += 1;
-    const total = Number(line?.total) || 0;
-    const description = String(line?.description || "").trim();
-    if (line?.quantity === null || line?.quantity === undefined) {
-      invoice.summary_line_count += 1;
-      if (/^product aankopen/i.test(description)) {
-        invoice.products += total;
-      } else if (/^emballage/i.test(description)) {
-        invoice.emballage += total;
-      } else {
-        invoice.fees += total;
-      }
-    } else {
-      invoice.detail_total += total;
-    }
-  }
-
-  const companies = new Map();
-  for (const invoice of invoices.values()) {
+    const invoice = {
+      invoice_number: invoiceNumber,
+      invoice_type: normalizeUkdocsText(row?.invoice_type),
+      company_number: normalizeUkdocsText(row?.company_number) || (invoiceNumber.match(/^(\d{6})/) || [])[1] || "",
+      company_name: normalizeUkdocsText(row?.company_name),
+      invoice_date: String(row?.invoice_date || "").slice(0, 10),
+      line_count: Number(row?.line_count) || 0,
+      detail_total: Number(row?.detail_total) || 0,
+      summary_line_count: Number(row?.summary_line_count) || 0,
+      products: Number(row?.products) || 0,
+      emballage: Number(row?.emballage) || 0,
+      fees: Number(row?.fees) || 0,
+    };
     if (!invoice.summary_line_count) {
       // AI2 (or any invoice without summary lines): the lines are the bill.
       invoice.products = invoice.detail_total;
@@ -8188,9 +8163,13 @@ let inkoopMatchVersion = 0;
 let inkoopMatchLock = Promise.resolve();
 const inkoopMatchCache = new Map();
 
+// Overview summaries per period (from|to), dropped with every upload.
+const inkoopSummaryCache = new Map();
+
 function bumpInkoopMatchVersion() {
   inkoopMatchVersion += 1;
   inkoopMatchCache.clear();
+  inkoopSummaryCache.clear();
 }
 
 function inkoopCachedCompute(kind, range, compute) {
@@ -21337,8 +21316,77 @@ async function handleApi(req, res, url) {
     }
     const to = String(url.searchParams.get("to") || localDateIso()).slice(0, 10);
     const from = String(url.searchParams.get("from") || addDaysToIsoDate(to, -30)).slice(0, 10);
-    const lines = await getInkoopInvoiceSummaryLines({ from, to });
-    sendJson(res, 200, { from, to, companies: buildInkoopInvoiceSummary(lines) });
+    const cacheKey = `${from}|${to}`;
+    if (!inkoopSummaryCache.has(cacheKey)) {
+      const invoices = await getInkoopInvoiceSummaryInvoices({ from, to });
+      if (inkoopSummaryCache.size >= 40) {
+        inkoopSummaryCache.delete(inkoopSummaryCache.keys().next().value);
+      }
+      inkoopSummaryCache.set(cacheKey, buildInkoopInvoiceSummaryFromInvoices(invoices));
+    }
+    sendJson(res, 200, { from, to, companies: inkoopSummaryCache.get(cacheKey) });
+    return;
+  }
+
+  // Inkoop Controle "Search invoices": the invoices' own product lines (what
+  // the controle tries to match), by line date plus product, grower /
+  // supplier, invoice or PAV, company and customer (code or name, via the
+  // dispatch dump). At most 3 months per search, 500 rows shown.
+  if (url.pathname === "/api/inkoop/invoice-lines/search" && req.method === "GET") {
+    if (!requirePermission(res, requestUser, PERMISSIONS.INKOOP_VIEW)) {
+      return;
+    }
+    const to = String(url.searchParams.get("to") || localDateIso()).slice(0, 10);
+    let from = String(url.searchParams.get("from") || addDaysToIsoDate(to, -6)).slice(0, 10);
+    if (from > to) {
+      from = to;
+    }
+    let limitedFrom = "";
+    if (from < addDaysToIsoDate(to, -92)) {
+      limitedFrom = from;
+      from = addDaysToIsoDate(to, -92);
+    }
+    const text = (name) => normalizeUkdocsText(url.searchParams.get(name)).slice(0, 80);
+    const customer = text("customer");
+    const state = await readInkoopState();
+    const customerMap = state.customer_map || {};
+    let customerCodes;
+    if (customer) {
+      const term = customer.toUpperCase();
+      customerCodes = Object.entries(customerMap)
+        .filter(([code, info]) => code === term || code.startsWith(term) || String(info?.name || "").toUpperCase().includes(term))
+        .map(([code]) => code);
+      if (!customerCodes.includes(term)) {
+        customerCodes.push(term); // a dispatch code not in the klant gegevens (yet)
+      }
+    }
+    const { rows, truncated } = await searchInkoopInvoiceLines({
+      from,
+      to,
+      product: text("product"),
+      supplier: text("supplier"),
+      invoice: text("invoice"),
+      company: text("company"),
+      customerCodes,
+      limit: 500,
+    });
+    const lines = rows.map(({ dispatch_sets: dispatchSets, ...row }) => {
+      const pieces = new Map();
+      for (const set of Array.isArray(dispatchSets) ? dispatchSets : []) {
+        for (const dispatch of Array.isArray(set) ? set : []) {
+          const code = normalizeUkdocsText(dispatch?.code).toUpperCase();
+          if (code) {
+            pieces.set(code, (pieces.get(code) || 0) + (Number(dispatch?.pieces) || 0));
+          }
+        }
+      }
+      const dispatches = [...pieces.entries()].map(([code, count]) => {
+        const info = resolveInkoopCustomer(code, customerMap);
+        return { code, pieces: Math.round(count * 100) / 100, name: info?.name || "", land: info?.land || "" };
+      });
+      return { ...row, dispatches };
+    });
+    sendJson(res, 200, { from, to, limited_from: limitedFrom, lines, truncated });
     return;
   }
 
@@ -21485,6 +21533,7 @@ async function handleApi(req, res, url) {
         ...erpRows.map((row) => row?.date),
       ]);
       await saveInkoopInvoiceHeaders(buildInkoopInvoiceHeaders(veiling.invoices, body?.veiling_zip?.name));
+      inkoopSummaryCache.clear(); // the Overview dates invoices by these headers
       await saveInkoopInvoicePdfs(veiling.pdfs);
       // A big upload arrives in parts (the page splits it); only the last
       // part runs the -- heavy -- match over everything accumulated.

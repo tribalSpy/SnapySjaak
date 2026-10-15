@@ -15331,8 +15331,11 @@ function InkoopOverviewTab() {
           Invoices are listed by their <strong>factuurdatum</strong> (the date on the invoice itself), not by the dates of the products or services on it. Each invoice's total is taken from its own summary lines (Product aankopen, Emballage, fees), so the detail lines behind them are not counted twice. AI2 Productnota's have no summary lines, so there the line totals are used.
         </div>
         {error && <div className="notice danger">{error}</div>}
+        {/* Another period was picked: say so right away and fade the old
+            figures, so nobody reads them as the new period's. */}
+        {loading && data && <div className="notice info">Loading {fustOverviewDate(fromDate)} - {fustOverviewDate(toDate)}... the figures below are still those of {fustOverviewDate(data.from)} - {fustOverviewDate(data.to)}.</div>}
         {loading && !data ? <div className="notice">Loading invoices...</div> : (
-          <div className="table-wrap">
+          <div className="table-wrap" style={loading ? { opacity: 0.35, pointerEvents: "none" } : undefined} aria-busy={loading}>
             <table className="data-table">
               <thead>
                 <tr>
@@ -15376,8 +15379,118 @@ function InkoopOverviewTab() {
           </div>
         )}
       </div>
-      {companies.map((company) => <InkoopCompanyInvoiceList key={company.company_number || "unknown"} company={company} />)}
+      {!loading && companies.map((company) => <InkoopCompanyInvoiceList key={company.company_number || "unknown"} company={company} />)}
     </>
+  );
+}
+
+const INKOOP_SEARCH_FIELDS = [
+  { key: "product", label: "Product", placeholder: "e.g. Rosa Naomi" },
+  { key: "supplier", label: "Grower / supplier", placeholder: "name or FH / GLN number" },
+  { key: "customer", label: "Customer / dispatch code", placeholder: "code or name" },
+  { key: "invoice", label: "Invoice / PAV", placeholder: "invoice or PAV number" },
+];
+
+function inkoopSearchCsv(lines) {
+  const cell = (value) => {
+    const text = String(value ?? "");
+    return /[";\n]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text;
+  };
+  const header = ["Date", "Invoice", "Type", "Company", "PAV", "Product", "Grower / supplier", "FH number", "Quantity", "Price", "Total", "Dispatched to"];
+  const rows = lines.map((line) => [
+    line.line_date, line.invoice_number, INKOOP_INVOICE_TYPE_LABELS[line.invoice_type] || line.invoice_type, line.company_number, line.pav,
+    line.description, line.supplier_name, line.supplier_fh_number, line.quantity, line.unit_price, line.total,
+    line.dispatches.map((dispatch) => `${dispatch.code}${dispatch.name ? ` ${dispatch.name}` : ""} (${dispatch.pieces})`).join(", "),
+  ]);
+  return [header, ...rows].map((row) => row.map(cell).join(";")).join("\n");
+}
+
+// Every product line of the uploaded invoices (not the ERP), searchable by
+// date, product, grower/supplier, customer/dispatch code and invoice/PAV.
+function InkoopInvoiceSearchTab({ company }) {
+  const [filters, setFilters] = useState(() => ({ from: addDaysToIso(todayIso(), -6), to: todayIso(), product: "", supplier: "", customer: "", invoice: "" }));
+  const [result, setResult] = useState(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState("");
+  const setFilter = (key, value) => setFilters((current) => ({ ...current, [key]: value }));
+
+  async function search(event) {
+    event?.preventDefault();
+    setLoading(true);
+    setError("");
+    try {
+      const params = new URLSearchParams();
+      for (const [key, value] of Object.entries(filters)) {
+        if (String(value).trim()) {
+          params.set(key, String(value).trim());
+        }
+      }
+      if (company) {
+        params.set("company", company);
+      }
+      setResult(await apiJson(`/api/inkoop/invoice-lines/search?${params}`));
+    } catch (searchError) {
+      setError(searchError.message);
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  const lines = result?.lines || [];
+  return (
+    <div className="data-table-card">
+      <div className="section-header"><h2>Search invoices</h2></div>
+      <form className="form-grid" onSubmit={search}>
+        <label><span>From (product date)</span><input type="date" value={filters.from} onChange={(event) => setFilter("from", event.target.value)} /></label>
+        <label><span>To</span><input type="date" value={filters.to} onChange={(event) => setFilter("to", event.target.value)} /></label>
+        {INKOOP_SEARCH_FIELDS.map((field) => (
+          <label key={field.key}>
+            <span>{field.label}</span>
+            <input value={filters[field.key]} placeholder={field.placeholder} onChange={(event) => setFilter(field.key, event.target.value)} />
+          </label>
+        ))}
+        <div className="row-actions">
+          <button type="submit" className="primary" disabled={loading}>{loading ? "Searching..." : "Search"}</button>
+          {!!lines.length && (
+            <button type="button" onClick={() => downloadTextFile(`invoice-lines_${result.from}_${result.to}.csv`, `﻿${inkoopSearchCsv(lines)}`)}>Download CSV</button>
+          )}
+        </div>
+      </form>
+      <div className="notice">
+        The product lines of the uploaded FloraHolland invoices -- what the controle tries to match -- not the ERP. Every field is optional and searches on part of the text; the period is at most 3 months. Customer / dispatch code comes from the dispatch dump (who the lot was sent to), so it only works for days whose ERP / dispatch file was uploaded.{company ? ` Only company ${company} (the company choice above).` : ""}
+      </div>
+      {error && <div className="notice danger">{error}</div>}
+      {result?.limited_from && <div className="notice info">Searched {fustOverviewDate(result.from)} - {fustOverviewDate(result.to)} only (3 months at most).</div>}
+      {result && (
+        <div className="table-wrap" style={loading ? { opacity: 0.35 } : undefined}>
+          <p className="muted">{lines.length}{result.truncated ? "+ lines -- only the first 500 are shown, narrow the search" : ` line${lines.length === 1 ? "" : "s"}`}</p>
+          <table className="data-table">
+            <thead>
+              <tr><th>Date</th><th>Invoice</th><th>Company</th><th>PAV</th><th>Product</th><th>Grower / supplier</th><th>Qty</th><th>Price</th><th>Total</th><th>Dispatched to</th></tr>
+            </thead>
+            <tbody>
+              {lines.map((line, index) => (
+                <tr key={`${line.invoice_number}-${index}`}>
+                  <td>{fustOverviewDate(line.line_date)}</td>
+                  <td><InkoopInvoiceLink invoiceNumber={line.invoice_number} /><div className="muted">{INKOOP_INVOICE_TYPE_LABELS[line.invoice_type] || line.invoice_type}</div></td>
+                  <td>{line.company_number}</td>
+                  <td>{line.pav || "-"}</td>
+                  <td>{line.description}</td>
+                  <td>{line.supplier_name || "-"}{line.supplier_fh_number ? <div className="muted">FH {line.supplier_fh_number}</div> : null}</td>
+                  <td>{line.quantity}</td>
+                  <td>{line.unit_price === null ? "-" : formatInkoopEuro(line.unit_price)}</td>
+                  <td>{formatInkoopEuro(line.total)}</td>
+                  <td>{line.dispatches.length ? line.dispatches.map((dispatch) => (
+                    <div key={dispatch.code}>{dispatch.code}{dispatch.name ? ` - ${dispatch.name}` : ""}{dispatch.land ? ` (${dispatch.land})` : ""}: {dispatch.pieces}</div>
+                  )) : <span className="muted">-</span>}</td>
+                </tr>
+              ))}
+              {!lines.length && <tr><td colSpan={10}>No invoice lines found.</td></tr>}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
   );
 }
 
@@ -16203,6 +16316,7 @@ function InkoopControlePage({ currentUser }) {
         <button type="button" className={activeTab === "dashboard" ? "active" : ""} onClick={() => setActiveTab("dashboard")}>Financial Dashboard</button>
         <button type="button" className={activeTab === "followup" ? "active" : ""} onClick={() => setActiveTab("followup")}>Follow-up</button>
         <button type="button" className={activeTab === "destinations" ? "active" : ""} onClick={() => setActiveTab("destinations")}>Destinations</button>
+        <button type="button" className={activeTab === "search" ? "active" : ""} onClick={() => setActiveTab("search")}>Search invoices</button>
         <button type="button" className={activeTab === "king" ? "active" : ""} onClick={() => setActiveTab("king")}>Import naar King</button>
         <button type="button" className={activeTab === "settings" ? "active" : ""} onClick={() => setActiveTab("settings")}>Settings</button>
       </div>
@@ -16337,6 +16451,8 @@ function InkoopControlePage({ currentUser }) {
       {activeTab === "overview" && <InkoopOverviewTab />}
 
       {activeTab === "king" && <InkoopKingTab />}
+
+      {activeTab === "search" && <InkoopInvoiceSearchTab company={selectedCompany} />}
 
       {activeTab === "compare" && (
       <>
