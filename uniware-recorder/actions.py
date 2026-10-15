@@ -761,18 +761,33 @@ class ActionRun:
 
     def _read_column_value(self, hwnd, step: dict, label: str, layout: list):
         """Read a column (e.g. invoiceRes) off the screen into a field for
-        the dump file name. Read twice from separate screenshots; both must
-        agree, or the run stops -- a misread number must never end up in a
-        file name that SnappySjaak takes as the invoice number."""
+        the dump file name. The value can appear a moment after the key
+        (Shift+F5 makes the invoice), so it waits -- up to the step's max
+        wait -- until the column is filled and two separate screenshots
+        read the same: a misread number must never end up in a file name
+        that SnappySjaak takes as the invoice number."""
         column, field = step["read_column"], step["read_field"]
-        first = [clean_number(value) for value in read_column(layout, column)]
-        _, _, _, _, _, again_layout = self._read(hwnd, timeout=1.5)
-        second = [clean_number(value) for value in read_column(again_layout, column)]
-        distinct = list(dict.fromkeys(first))
-        if not distinct:
-            raise RuntimeError(f"{label}: column '{column}' is empty or not on this screen -- nothing to put in {{{field}}}.")
-        if first != second:
-            raise RuntimeError(f"{label}: column '{column}' read differently twice ({', '.join(distinct)} / {', '.join(dict.fromkeys(second))}). Stopped to be safe.")
+        max_wait = float(step.get("max_wait") or 60)
+        started = time.time()
+        next_note = started + 5
+        previous = None
+        while True:
+            self._check(hwnd)
+            values = [clean_number(value) for value in read_column(layout, column)]
+            if values and values == previous:
+                break
+            previous = values or None
+            waited = time.time() - started
+            if waited > max_wait:
+                if not values:
+                    raise RuntimeError(f"{label}: column '{column}' stayed empty for {max_wait:.0f}s (or isn't on this screen) -- nothing to put in {{{field}}}.")
+                raise RuntimeError(f"{label}: column '{column}' kept reading differently ({', '.join(dict.fromkeys(values))}). Stopped to be safe.")
+            if time.time() > next_note:
+                self.say(f"{label}: waiting for '{column}' to be filled ({waited:.0f}s of max {max_wait:.0f}s)")
+                next_note = time.time() + 10
+            time.sleep(0.5)
+            _, _, _, _, _, layout = self._read(hwnd, timeout=1.5)
+        distinct = list(dict.fromkeys(values))
         if len(distinct) > 1:
             self.say(f"{label}: '{column}' has {len(distinct)} different values ({', '.join(distinct)}); all go in the name")
         self.values[field] = "_".join(distinct)
