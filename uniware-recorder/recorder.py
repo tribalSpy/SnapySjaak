@@ -92,7 +92,7 @@ def describe_screen(image):
     footer_limit = image.height - 45
     body = [line for line in lines if header_limit <= line["y"] < footer_limit]
     selected = [line["text"] for line in body if line["highlighted"]]
-    layout = [{"x": line["x"], "y": line["y"], "text": line["text"], "highlighted": line["highlighted"]} for line in body]
+    layout = [{"x": line["x"], "y": line["y"], "text": line["text"], "highlighted": line["highlighted"], "cursor": line.get("cursor", False)} for line in body]
     return screen_id, title, selected, [line["text"] for line in body], layout
 
 

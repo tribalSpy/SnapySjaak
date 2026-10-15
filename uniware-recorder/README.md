@@ -79,6 +79,19 @@ until it says Finished. **Stop** or **Ctrl+Alt+Q** stops at any time.
 Captured screens are saved in `outputs\` as text, CSV (with positions, for
 tables) and JSON.
 
+**Ctrl+P (data opens in a new window)**: a key that opens another program's
+window is marked by itself while recording ("opens the dump in a new
+window", also a tick box under Edit). When running, it waits for that
+window, finds the file it shows (from the program's command line, or the
+file name in its title), copies it with the dump file name to the folder you
+give, closes the window and brings Uniware back.
+
+**Enter in a list without arrowing** = Enter on whatever row is selected
+(e.g. the first order) -- never looked for by its text. Arrowing first and
+then Enter = "find row with" (e.g. tour 508); empty that box under Edit to
+go back to "the selected row". In lists the selected row is the teal row;
+in menus it's the blue item.
+
 **Uniware's own dump file** (Edit, per action): Uniware saves its export
 itself with a generic name (`dump.filipe.2026-10-14_16_57_30.csv`). Fill in
 the folder it saves to (e.g. the OneDrive folder) and the name to give it

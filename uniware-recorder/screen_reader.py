@@ -19,7 +19,7 @@ from ctypes import wintypes
 from statistics import median
 
 import mss
-from PIL import Image
+from PIL import Image, ImageChops
 from winsdk.windows.graphics.imaging import BitmapDecoder
 from winsdk.windows.media.ocr import OcrEngine
 from winsdk.windows.storage.streams import DataWriter, InMemoryRandomAccessStream
@@ -89,10 +89,24 @@ def _print_window(hwnd: int):
         user32.ReleaseDC(hwnd, window_dc)
 
 
+def _crop_empty_margin(image: Image.Image) -> Image.Image:
+    """With display scaling (or a maximised window on another screen)
+    PrintWindow can return a bitmap twice the size of what the program
+    drew, the rest pure black (never drawn) -- then the title / status bar
+    aren't where the screen reading expects them. Keep just the drawn part."""
+    drawn = image.getbbox()  # everything that isn't exactly black
+    if not drawn:
+        return image
+    left, top, right, bottom = drawn
+    if right - left > image.width * 0.92 and bottom - top > image.height * 0.92:
+        return image
+    return image.crop((0, 0, min(image.width, right + 2), min(image.height, bottom + 2)))
+
+
 def capture_window(hwnd: int) -> Image.Image:
     image = _print_window(hwnd)
     if image is not None:
-        return image
+        return _crop_empty_margin(image)
     left, top, right, bottom = window_rect(hwnd)
     with mss.mss() as grabber:
         shot = grabber.grab({"left": left, "top": top, "width": max(1, right - left), "height": max(1, bottom - top)})
@@ -157,9 +171,32 @@ def _is_highlighted(image: Image.Image, box) -> bool:
     return blue > max(8, dark * 0.5)
 
 
+def _cursor_mask(image: Image.Image) -> Image.Image:
+    """Where the list cursor is: Uniware marks the selected row of a list
+    with a teal background (0,153,153) -- menus use blue text instead."""
+    red, green, blue = image.convert("RGB").split()
+    return ImageChops.multiply(
+        ImageChops.multiply(red.point(lambda value: 255 if value < 60 else 0), green.point(lambda value: 255 if value > 110 else 0)),
+        blue.point(lambda value: 255 if value > 110 else 0),
+    )
+
+
+def _on_cursor(mask: Image.Image, box) -> bool:
+    left, top, right, bottom = (int(value) for value in box)
+    region = mask.crop((max(0, left), max(0, top), min(mask.width, right), min(mask.height, bottom)))
+    histogram = region.histogram()
+    total = sum(histogram)
+    return bool(total) and histogram[255] > total * 0.3
+
+
 def read_screen(image: Image.Image) -> list[dict]:
     """The screen's text lines, top to bottom: {y, x, text, highlighted}."""
-    words = asyncio.run(_ocr(image))
+    # Text on the teal cursor row reads badly ("COL C122" for "EC COL
+    # EC1227"): read a copy with that background made grey.
+    cursor = _cursor_mask(image)
+    readable = image.convert("RGB").copy()
+    readable.paste((192, 192, 192), mask=cursor)
+    words = asyncio.run(_ocr(readable))
     if not words:
         return []
     char_width = median(word["w"] / max(1, len(word["text"])) for word in words)
@@ -195,6 +232,7 @@ def read_screen(image: Image.Image) -> list[dict]:
                 "x": round(field["x"]),
                 "text": field["text"].strip(),
                 "highlighted": _is_highlighted(image, box),
+                "cursor": _on_cursor(cursor, box),
                 "words": field["words"],
             })
     # OCR sometimes reports one visual line as several lines ("Uitstaand" +
@@ -216,19 +254,20 @@ def read_screen(image: Image.Image) -> list[dict]:
             previous["text"] += " " + line["text"]
             previous["_right"] = line["x"] + len(line["text"]) * char_width
             previous["highlighted"] = previous["highlighted"] or line["highlighted"]
+            previous["cursor"] = previous.get("cursor") or line.get("cursor")
             previous["words"] = previous["words"] + line["words"]
             continue
         merged.append({**line, "_right": line["x"] + len(line["text"]) * char_width})
     for line in merged:
         line.pop("_right", None)
-    merged = _split_at_columns(image, merged, char_width)
+    merged = _split_at_columns(image, merged, char_width, cursor)
     for line in merged:
         line.pop("words", None)
     merged.sort(key=lambda line: (line["y"] // 8, line["x"]))
     return merged
 
 
-def _split_at_columns(image, lines: list[dict], char_width: float) -> list[dict]:
+def _split_at_columns(image, lines: list[dict], char_width: float, cursor) -> list[dict]:
     """Menu levels sit side by side and the longest item of one level can end
     close to the next level ("Alternatieve vt_control" + "Factuur"), so OCR
     glues them into one line. A line holding a word that starts exactly where
@@ -256,7 +295,8 @@ def _split_at_columns(image, lines: list[dict], char_width: float) -> list[dict]
                 gap = word["x"] - (part[index - 1]["x"] + part[index - 1]["w"]) if index else 0
                 text += ("" if not index or gap < char_width * 0.45 else " ") + word["text"]
             result.append({"y": round(top), "x": round(left), "text": text.strip(),
-                           "highlighted": _is_highlighted(image, (left, top, right, bottom))})
+                           "highlighted": _is_highlighted(image, (left, top, right, bottom)),
+                           "cursor": _on_cursor(cursor, (left, top, right, bottom))})
     return result
 
 

@@ -17,8 +17,10 @@ import ctypes
 import difflib
 import datetime
 import json
+import os
 import queue
 import re
+import subprocess
 import threading
 import time
 from ctypes import wintypes
@@ -151,9 +153,17 @@ def screen_rows(layout: list) -> list[dict]:
         if rows and abs(line["y"] - rows[-1]["y"]) <= 8:
             rows[-1]["parts"].append(line)
             rows[-1]["highlighted"] = rows[-1]["highlighted"] or line.get("highlighted", False)
+            rows[-1]["cursor"] = rows[-1]["cursor"] or line.get("cursor", False)
         else:
-            rows.append({"y": line["y"], "parts": [line], "highlighted": line.get("highlighted", False)})
-    return [{"y": row["y"], "highlighted": row["highlighted"],
+            rows.append({"y": line["y"], "parts": [line], "highlighted": line.get("highlighted", False), "cursor": line.get("cursor", False)})
+    # The selected row of a list is the teal cursor row -- the one teal
+    # across the most fields (a page counter "(1) 1-15 of 15" is teal too);
+    # only a screen without one falls back to blue text (blue is also used
+    # for column headers).
+    for row in rows:
+        row["cursor_parts"] = sum(1 for part in row["parts"] if part.get("cursor"))
+    most = max((row["cursor_parts"] for row in rows), default=0)
+    return [{"y": row["y"], "highlighted": (row["cursor_parts"] == most) if most else row["highlighted"],
              "text": " ".join(part["text"] for part in sorted(row["parts"], key=lambda part: part["x"]))} for row in rows]
 
 
@@ -201,6 +211,116 @@ def bring_to_front(hwnd: int) -> bool:
     user32.SetForegroundWindow(hwnd)
     time.sleep(0.4)
     return screen_reader.foreground_window() == hwnd
+
+
+# ------------------------------------------------------------------ other windows
+# Uniware's Ctrl+P (print) doesn't save a file where we want it: it opens the
+# data in a new window of another program. The run waits for that window,
+# finds the file it shows and copies it as the dump.
+def window_pid(hwnd: int) -> int:
+    pid = wintypes.DWORD()
+    user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
+    return pid.value
+
+
+def process_exe(pid: int) -> str:
+    handle = ctypes.windll.kernel32.OpenProcess(0x1000, False, pid)  # PROCESS_QUERY_LIMITED_INFORMATION
+    if not handle:
+        return ""
+    try:
+        buffer = ctypes.create_unicode_buffer(1024)
+        size = wintypes.DWORD(len(buffer))
+        if ctypes.windll.kernel32.QueryFullProcessImageNameW(handle, 0, buffer, ctypes.byref(size)):
+            return buffer.value
+        return ""
+    finally:
+        ctypes.windll.kernel32.CloseHandle(handle)
+
+
+def visible_windows() -> dict:
+    """hwnd -> (pid, title) of every visible top-level window with a title."""
+    found = {}
+
+    @ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
+    def callback(hwnd, _):
+        if user32.IsWindowVisible(hwnd):
+            title = screen_reader.window_title(hwnd)
+            if title.strip():
+                found[hwnd] = (window_pid(hwnd), title)
+        return True
+
+    user32.EnumWindows(callback, 0)
+    return found
+
+
+def process_command_line(pid: int) -> str:
+    try:
+        result = subprocess.run(
+            ["powershell", "-NoProfile", "-Command", f"(Get-CimInstance Win32_Process -Filter 'ProcessId={int(pid)}').CommandLine"],
+            capture_output=True, text=True, timeout=15, creationflags=0x08000000,  # CREATE_NO_WINDOW
+        )
+        return result.stdout.strip()
+    except (OSError, subprocess.SubprocessError):
+        return ""
+
+
+DUMP_SEARCH_DEPTH = 4
+
+
+def _search_dirs(extra: list[str]) -> list[Path]:
+    home = Path.home()
+    dirs = [Path(path) for path in extra if path]
+    for name in ("TEMP", "TMP", "OneDrive", "OneDriveCommercial", "OneDriveConsumer"):
+        if os.environ.get(name):
+            dirs.append(Path(os.environ[name]))
+    dirs += [home / "Downloads", home / "Documents", home / "Desktop", home / "AppData" / "Local" / "Temp"]
+    unique = []
+    for folder in dirs:
+        if folder.is_dir() and folder not in unique:
+            unique.append(folder)
+    return unique
+
+
+def _find_named_file(name: str, since: float, folders: list[Path]) -> Path | None:
+    wanted = name.lower()
+    best = None
+    for folder in folders:
+        base_depth = len(folder.parts)
+        for root, dirnames, filenames in os.walk(folder):
+            if len(Path(root).parts) - base_depth >= DUMP_SEARCH_DEPTH:
+                dirnames[:] = []
+            for filename in filenames:
+                if filename.lower() != wanted:
+                    continue
+                path = Path(root) / filename
+                try:
+                    modified = path.stat().st_mtime
+                except OSError:
+                    continue
+                if modified >= since - 300 and (best is None or modified > best[0]):
+                    best = (modified, path)
+    return best[1] if best else None
+
+
+def dump_file_of_window(pid: int, title: str, since: float, extra_dirs: list[str]) -> Path | None:
+    """The file a just-opened window shows: from its program's command line
+    (e.g. notepad.exe "C:\\...\\dump.filipe.csv"), else by the file name in
+    its title ("dump.filipe....csv - Excel") searched in the usual folders."""
+    command = process_command_line(pid)
+    candidates = []
+    for quoted, bare in re.findall(r'"([^"]+)"|(\S+)', command):
+        text = quoted or bare
+        path = Path(text)
+        if path.suffix.lower() != ".exe" and path.is_file():
+            candidates.append(path)
+    if candidates:
+        return max(candidates, key=lambda path: path.stat().st_mtime)
+    name = re.sub(r"\s*\[[^\]]*\]\s*$", "", title.split(" - ")[0]).strip(" *")
+    if not name:
+        return None
+    if Path(name).is_file():
+        return Path(name)
+    return _find_named_file(name, since, _search_dirs(extra_dirs))
 
 
 # ------------------------------------------------------------------ keys
@@ -257,6 +377,8 @@ class ActionRecorder:
         self._listener = None
         self._thread = None
         self._open = None  # (step, pressed at) until its screen is known
+        self.uniware_pid = 0
+        self.known_windows: set = set()
         self.screen_id = ""
         self.layout: list = []
         self._typed: list[str] = []
@@ -275,6 +397,8 @@ class ActionRecorder:
         self.screen_id, self.layout = screen_id, layout
         self.action["start_screen"] = screen_id
         self.action["start_title"] = title
+        self.uniware_pid = window_pid(self.hwnd)
+        self.known_windows = set(visible_windows())
         self.selected = selected
         self.active = True
         self.status = f"Recording -- start screen: {title}"
@@ -343,6 +467,14 @@ class ActionRecorder:
         })
         self.action["steps"].append(step)
         self.status = f"Step {len(self.action['steps'])}: {step.get('key') or 'type ' + repr(step['text'])} -> {title} (took {waited:.0f}s)"
+        windows = visible_windows()
+        opened = [(pid, window_title) for hwnd, (pid, window_title) in windows.items()
+                  if hwnd not in self.known_windows and pid != self.uniware_pid]
+        self.known_windows = set(windows)
+        if opened and "key" in step:
+            pid, window_title = opened[0]
+            step["opens_window"] = {"title": window_title, "exe": Path(process_exe(pid)).name}
+            self.status = f"Step {len(self.action['steps'])}: {step['key']} opened '{window_title}' -- the run takes that file as the dump"
 
     def _close_typing(self, at: float):
         if self._typed:
@@ -402,8 +534,9 @@ class ActionRecorder:
                     step["pick"] = row_key(highlighted[0]["text"])
                     step["pick_row"] = highlighted[0]["text"]
                     self.status = f"List: will look for the row with '{step['pick']}' ({highlighted[0]['text'][:50]}), not count {arrows} key(s) -- change it under Edit if needed"
-                elif self.selected:
-                    step["enter_on"] = self.selected[0]
+                # Plain Enter in a list (no arrows): on whatever row is
+                # selected then -- its text (an order, a customer) differs
+                # every day, so it's never looked for.
             self._open = (step, at)
 
 
@@ -469,6 +602,56 @@ class ActionRun:
                 self.say(f"{label}: Uniware still busy, waiting for {expected_title}" + (f" / '{wait_text}'" if wait_text else "") + f" ({waited:.0f}s of max {max_wait:.0f}s)")
                 next_note = time.time() + 10
             time.sleep(0.5)
+
+    def _take_window_dump(self, hwnd, windows_before: dict, step: dict, label: str):
+        """The key opened the data in another program's window (Uniware's
+        Ctrl+P): wait for that window, find its file, copy it as the dump
+        (renamed, to the dump folder) and close the window."""
+        uniware_pid = window_pid(hwnd)
+        max_wait = float(step.get("max_wait") or 60)
+        started = time.time()
+        window = None
+        while window is None:
+            if self.stop_requested:
+                raise RuntimeError("Stopped by you.")
+            for other, (pid, title) in visible_windows().items():
+                if other not in windows_before and pid != uniware_pid:
+                    window = (other, pid, title)
+                    break
+            if window is None:
+                if time.time() - started > max_wait:
+                    raise RuntimeError(f"{label}: no new window opened within {max_wait:.0f}s after {step['key']}.")
+                time.sleep(0.5)
+        other, pid, title = window
+        time.sleep(1.5)  # let the program put the file name in its title
+        title = screen_reader.window_title(other) or title
+        self.say(f"{label}: {step['key']} opened '{title}' ({Path(process_exe(pid)).name})")
+        source = None
+        extra = [self.action.get("uniware_dump_dir") or "", self.action.get("export_dir") or ""]
+        while source is None:
+            source = dump_file_of_window(pid, screen_reader.window_title(other) or title, self.started.timestamp(), extra)
+            if source is None:
+                if time.time() - started > max_wait + 30:
+                    raise RuntimeError(f"{label}: could not find the file shown in '{title}'. Tell which folder it is in under Edit (Uniware saves its dump in).")
+                time.sleep(1)
+        previous_size = -1
+        while True:  # still being written?
+            size = source.stat().st_size
+            if size > 0 and size == previous_size:
+                break
+            previous_size = size
+            time.sleep(1)
+        target_dir = Path((self.action.get("export_dir") or "").strip() or (self.action.get("uniware_dump_dir") or "").strip() or OUTPUTS_DIR)
+        target_dir.mkdir(parents=True, exist_ok=True)
+        target = target_dir / f"{self.export_name()}{source.suffix or '.txt'}"
+        temp = target_dir / f"~{target.name}.tmp"
+        temp.write_bytes(source.read_bytes())  # copy: the program may still hold it open
+        temp.replace(target)
+        self.exported_files.append(str(target))
+        self.say(f"{label}: dump {source} -> {target}")
+        if self.action.get("close_dump_window", True):
+            user32.PostMessageW(other, 0x0010, 0, 0)  # WM_CLOSE
+            time.sleep(1)
 
     def _back_to_menu(self, hwnd, controller, reading):
         """From inside a program, press the back key (Esc by default, Edit:
@@ -630,7 +813,8 @@ class ActionRun:
             elif self.action.get("start_screen") and screen_id != self.action["start_screen"]:
                 raise RuntimeError(f"Uniware is on '{title}', but this action starts on '{self.action.get('start_title') or self.action['start_screen']}'. Go there first.")
             self.say(f"Start: {title}")
-            dump_before = self._dump_files_now()
+            opens_window = any(step.get("opens_window") for step in steps)
+            dump_before = None if opens_window else self._dump_files_now()
             if self.action.get("capture_start"):
                 self._capture(hwnd, 0, False, controller, (screen_id, title, selected, text, layout))
             for number, step in enumerate(self.action.get("steps", []), start=1):
@@ -655,7 +839,12 @@ class ActionRun:
                             _, _, _, selected, _, _ = self._read(hwnd, timeout=1.5)
                         else:
                             raise RuntimeError(f"Menu item '{step['enter_on']}' not found.")
+                    windows_before = visible_windows() if step.get("opens_window") else None
                     send_combo(controller, step["key"])
+                    if windows_before is not None:
+                        self._take_window_dump(hwnd, windows_before, step, f"Step {number}")
+                        if not bring_to_front(hwnd):
+                            raise RuntimeError("Could not bring Uniware back to the front after the dump window.")
                     self.say(f"Step {number}: {step['key']}" + (f" on '{step['pick']}'" if step.get("pick") else f" on '{step['enter_on']}'" if step.get("enter_on") else ""))
                 reading = self._wait_for(hwnd, step, f"Step {number}")
                 screen_id, title, selected, text, layout = reading

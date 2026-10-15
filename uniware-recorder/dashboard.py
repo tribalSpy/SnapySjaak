@@ -155,10 +155,17 @@ class Handler(BaseHTTPRequestHandler):
                     except (TypeError, ValueError):
                         action["uniware_dump_wait"] = 180
                     action["back_key"] = str(body.get("back_key") or action.get("back_key") or "Esc").strip()
+                    if "close_dump_window" in body:
+                        action["close_dump_window"] = bool(body.get("close_dump_window"))
                     for index, change in enumerate(body.get("steps") or []):
                         if index < len(action["steps"]):
                             step = action["steps"][index]
                             step["capture"] = bool(change.get("capture"))
+                            if "key" in step and change.get("opens_window") is not None:
+                                if change.get("opens_window"):
+                                    step["opens_window"] = step.get("opens_window") or {"title": "", "exe": ""}
+                                else:
+                                    step.pop("opens_window", None)
                             step["capture_pages"] = bool(change.get("capture_pages"))
                             step["wait_text"] = str(change.get("wait_text") or "").strip()
                             try:
@@ -174,6 +181,7 @@ class Handler(BaseHTTPRequestHandler):
                                     step.pop("enter_on", None)
                                 else:
                                     step.pop("pick", None)
+                                    step.pop("enter_on", None)
                             if "text" in step and change.get("field") is not None:
                                 # A field name: typed text becomes "{field}",
                                 # asked at start; empty: the recorded text.
@@ -268,17 +276,19 @@ function edit(slug) {
     <p><input id="editDesc" size="70" value="${esc(a.description || "")}"></p>
     <p class="row"><label>Back key (from a program back to the menu) <input id="editBackKey" size="8" value="${esc(a.back_key || "Esc")}"></label></p>
     <h3>Dump file</h3>
+    <p class="muted">Uniware's Ctrl+P opens the data in a new window: tick <strong>opens the dump in a new window</strong> on that step (done by itself when recorded). The run then waits for that window, finds the file it shows, copies it with the name below to the folder below, and closes the window.</p>
+    <p class="row"><label><input type="checkbox" id="editCloseWindow" ${a.close_dump_window === false ? "" : "checked"}> close that window afterwards</label></p>
     <p class="row"><label>Uniware saves its dump in <input id="editUniwareDir" size="60" placeholder="paste the folder path (e.g. the OneDrive folder)" value="${esc(a.uniware_dump_dir || "")}"></label>
       <label>Its name looks like <input id="editUniwarePattern" size="14" value="${esc(a.uniware_dump_pattern || "dump.*.csv")}"></label>
       <label>Max wait (s) <input id="editUniwareWait" size="4" value="${esc(a.uniware_dump_wait || 180)}"></label></p>
     <p class="row"><label>Rename it to <input id="editExportName" size="28" placeholder="{action}_{date}_{time}" value="${esc(a.export_name || "")}"></label>
-      <label>and move it to <input id="editExportDir" size="50" placeholder="(empty: stays in the same folder)" value="${esc(a.export_dir || "")}"></label></p>
+      <label>and put it in <input id="editExportDir" size="50" placeholder="e.g. the OneDrive folder" value="${esc(a.export_dir || "")}"></label></p>
     <p class="muted">At the end of the run it waits for the new dump file Uniware writes (e.g. dump.filipe.2026-10-14_16_57_30.csv), waits until it is completely written, then renames it, e.g. <code>tour-508_{date}</code> gives tour-508_20261014.csv. You can use {date}, {time}, {action} and the fields. Same name again = replaced. No new file within Max wait = the run fails and the file is left alone.</p>
     <table><tr><th>#</th><th>Step</th><th>Goes to</th><th>Field (typed text) / list row</th><th>Wait until screen shows</th><th>Max wait (s)</th><th>Capture screen</th><th>All pages</th></tr>
     ${a.steps.map((s, i) => `<tr><td>${i + 1}</td>
-      <td>${s.text !== undefined ? `type <code>${esc(s.text)}</code>` : `${s.menu ? `menu <strong>${s.menu.map(esc).join(" &rsaquo; ")}</strong>, then ` : ""}<code>${esc(s.key)}</code>${s.enter_on ? ` on "${esc(s.enter_on)}"` : ""}`}</td>
+      <td>${s.text !== undefined ? `type <code>${esc(s.text)}</code>` : `${s.menu ? `menu <strong>${s.menu.map(esc).join(" &rsaquo; ")}</strong>, then ` : ""}<code>${esc(s.key)}</code>${s.enter_on ? ` on "${esc(s.enter_on)}"` : ""}${s.key ? `<div><label><input type="checkbox" data-step-window="${i}" ${s.opens_window ? "checked" : ""}> opens the dump in a new window</label>${s.opens_window && s.opens_window.title ? `<div class="muted">recorded: ${esc(s.opens_window.title)}${s.opens_window.exe ? ` (${esc(s.opens_window.exe)})` : ""}</div>` : ""}</div>` : ""}`}</td>
       <td>${esc(s.to_title || s.to)}${s.recorded_wait ? `<div class="muted">took ${esc(s.recorded_wait)}s when recorded</div>` : ""}</td>
-      <td>${s.text !== undefined ? `<input data-step-field="${i}" placeholder="e.g. invoice" value="${esc((s.text.match(/^\\{(.+)\\}$/) || [])[1] || "")}" size="12"><div class="muted">recorded: ${esc(s.recorded_text || s.text)}</div>` : s.key === "Enter" ? `find row with <input data-step-pick="${i}" placeholder="e.g. 508 or {tour}" value="${esc(s.pick || "")}" size="10">${s.pick_row ? `<div class="muted">recorded row: ${esc(s.pick_row)}</div>` : ""}` : ""}</td>
+      <td>${s.text !== undefined ? `<input data-step-field="${i}" placeholder="e.g. invoice" value="${esc((s.text.match(/^\\{(.+)\\}$/) || [])[1] || "")}" size="12"><div class="muted">recorded: ${esc(s.recorded_text || s.text)}</div>` : s.key === "Enter" ? `find row with <input data-step-pick="${i}" placeholder="empty = selected row" value="${esc(s.pick || "")}" size="12">${s.pick_row ? `<div class="muted">recorded row: ${esc(s.pick_row)}</div>` : ""}` : ""}</td>
       <td><input data-step-wait="${i}" size="16" placeholder="(optional) e.g. Totaal" value="${esc(s.wait_text || "")}"></td>
       <td><input data-step-max="${i}" size="4" value="${esc(s.max_wait || 30)}"></td>
       <td><input type="checkbox" data-step-capture="${i}" ${s.capture ? "checked" : ""}></td>
@@ -296,8 +306,9 @@ function saveEdit() {
     max_wait: document.querySelector(`[data-step-max="${i}"]`).value,
     field: s.text !== undefined ? document.querySelector(`[data-step-field="${i}"]`).value : null,
     pick: s.key === "Enter" ? document.querySelector(`[data-step-pick="${i}"]`).value : null,
+    opens_window: s.key ? document.querySelector(`[data-step-window="${i}"]`).checked : null,
   }));
-  api(`/api/actions/${editing}/update`, { description: $("editDesc").value, export_dir: $("editExportDir").value, back_key: $("editBackKey").value, export_name: $("editExportName").value, uniware_dump_dir: $("editUniwareDir").value, uniware_dump_pattern: $("editUniwarePattern").value, uniware_dump_wait: $("editUniwareWait").value, steps });
+  api(`/api/actions/${editing}/update`, { description: $("editDesc").value, export_dir: $("editExportDir").value, back_key: $("editBackKey").value, close_dump_window: $("editCloseWindow").checked, export_name: $("editExportName").value, uniware_dump_dir: $("editUniwareDir").value, uniware_dump_pattern: $("editUniwarePattern").value, uniware_dump_wait: $("editUniwareWait").value, steps });
 }
 api("/api/state");
 setInterval(() => { if (state && (state.recording.active || state.run.active)) api("/api/state"); }, 1000);
