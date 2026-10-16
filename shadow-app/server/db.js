@@ -3321,10 +3321,16 @@ const SNAPSHOT_BATCH_BYTES = 8 * 1024 * 1024;
 
 const quoteIdent = (name) => `"${String(name).replace(/"/g, '""')}"`;
 
+// Worked out from the other tables (the stored Inkoop comparison and its
+// totals): not in the backup -- a day's result can be MBs, read 200 rows at
+// a time that ran the server out of memory -- and rebuilt where it's loaded
+// (a restore empties them, the comparison pipeline fills them again).
+const SNAPSHOT_DERIVED_TABLES = new Set(["inkoop_match_days", "inkoop_match_rows", "inkoop_invoice_totals"]);
+
 async function listPublicTablesParentsFirst(client) {
   const tables = (await client.query(
     `SELECT table_name FROM information_schema.tables WHERE table_schema = 'public' AND table_type = 'BASE TABLE' ORDER BY table_name`,
-  )).rows.map((row) => row.table_name);
+  )).rows.map((row) => row.table_name).filter((table) => !SNAPSHOT_DERIVED_TABLES.has(table));
   const deps = (await client.query(`
     SELECT child.relname AS child, parent.relname AS parent
     FROM pg_constraint c
@@ -3430,7 +3436,9 @@ export async function importDatabaseSnapshot(lines) {
     )).rows.map((row) => row.table_name));
     const tables = (header.tables || []).filter((table) => localTables.has(table));
     if (tables.length) {
-      await client.query(`TRUNCATE ${tables.map(quoteIdent).join(", ")} RESTART IDENTITY CASCADE`);
+      // The derived tables go too: they describe the data being replaced.
+      const derived = [...SNAPSHOT_DERIVED_TABLES].filter((table) => localTables.has(table) && !tables.includes(table));
+      await client.query(`TRUNCATE ${[...tables, ...derived].map(quoteIdent).join(", ")} RESTART IDENTITY CASCADE`);
     }
     const columnsOf = async (table) => (await client.query(
       `SELECT column_name FROM information_schema.columns WHERE table_schema = 'public' AND table_name = $1 AND is_generated = 'NEVER'`,

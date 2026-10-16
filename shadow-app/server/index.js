@@ -520,6 +520,11 @@ async function runPostgresRestoreCycle() {
     if (!migrationResult.ok) {
       return { ok: true, migrations_error: migrationResult.error };
     }
+    // The stored Inkoop comparison isn't in the backup: rebuild it here.
+    markInkoopInvoiceTotalsFilled(false);
+    inkoopStateCache = null;
+    bumpInkoopMatchVersion();
+    startInkoopMatchPipeline();
     if (loaded) {
       const rows = Object.values(loaded.tables).reduce((sum, count) => sum + count, 0);
       return { ok: true, snapshot_from: loaded.snapshot_created_at, tables: Object.keys(loaded.tables).length, rows };
