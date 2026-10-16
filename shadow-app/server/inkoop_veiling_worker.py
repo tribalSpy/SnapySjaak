@@ -475,6 +475,9 @@ AI2_COL_PRIJS_MAX = 585
 AI2_COL_BEDRAG_MAX = 615
 
 
+AI2_NUMBER_RE = re.compile(r"-?[0-9][0-9.]*(,[0-9]+)?")
+
+
 def parse_ai2_row(row_words, year, is_credit):
     # Lists, not single values -- the tighter x_tolerance above means a
     # column can now legitimately contain more than one pdfplumber word
@@ -508,6 +511,15 @@ def parse_ai2_row(row_words, year, is_credit):
             columns["bedrag"].append(text)
         # else: Emb./Dep/Rent/Costs/Order/Buyer reference columns -- not
         # needed for matching, intentionally ignored.
+    # Aantal / ApE / Total / Prijs / Bedrag are right-aligned numbers: a wide
+    # price ("14,500") starts left of the Prijs boundary and fell into the
+    # Total column, so the row didn't add up and was silently dropped (Mos
+    # tillandsia, EUR 14,50). After the supplier name they always come in
+    # this order -- take them by position in that run, not by x.
+    numbers = [word["text"] for word in sorted(row_words, key=lambda w: w["x0"])
+               if word["x0"] >= AI2_COL_NUMNAME_MAX - 5 and AI2_NUMBER_RE.fullmatch(word["text"])]
+    if len(numbers) >= 5:
+        columns["total_pieces"], columns["prijs"], columns["bedrag"] = [numbers[2]], [numbers[3]], [numbers[4]]
     datum = " ".join(columns["datum"]) or None
     referentie = " ".join(columns["referentie"]) or None
     vbn_desc = " ".join(columns["vbn_desc"]) or None
@@ -621,6 +633,63 @@ def ai2_king_summary(xml_bytes):
     ]
 
 
+AI2_SUMMARY_ROWS = [
+    # (text the row starts with, summary line description, BTW, kingkoppel key)
+    ("Artikel totaal L", "Product aankopen AI2 (BTW laag)", "S", "AI2"),
+    ("Artikel totaal H", "Product aankopen AI2 (BTW hoog)", "H", "AI2"),
+    ("Emballage meermalig statiegeld totaal", "Emballage meermalig statiegeld", "O", "AI2_CT"),
+    ("Emballage meermalig huur totaal", "Emballage meermalig huur", "H", "AI2_PC"),
+    ("Emballage eenmalig totaal", "Emballage eenmalig", "S", "AI2_PE"),
+]
+
+
+def ai2_financial_summary(pdf, product_lines, year):
+    """The Productnota's "Financieel overzicht veilingincasso": article
+    totals per BTW and the emballage (statiegeld, huur, eenmalig) as summary
+    lines without quantity -- the same shape as a FloraHolland invoice's
+    "Product aankopen" / "Emballage" lines, so the Overview shows products
+    AND emballage for AI2 too (it had no emballage at all). Also checks the
+    product lines add up to the article totals."""
+    text = "\n".join(page.extract_text() or "" for page in pdf.pages)
+    section = text.split("Financieel overzicht", 1)[1] if "Financieel overzicht" in text else ""
+    summary = []
+    article_total = None
+    for line in section.splitlines():
+        line = line.strip()
+        for start, description, vat, king_key in AI2_SUMMARY_ROWS:
+            # The PDF text glues words ("Artikeltotaal L", "Emballage-
+            # meermaligstatiegeldtotaal"): compare without spaces.
+            if not line.replace(" ", "").lower().startswith(start.replace(" ", "").lower()):
+                continue
+            amounts = [parse_decimal_comma(value) for value in re.findall(r"-?[0-9][0-9.]*,[0-9]{2}", line)]
+            if not amounts or amounts[-1] is None:
+                continue
+            saldo = amounts[-1]  # Te incasseren - Te ontvangen
+            if start.startswith("Artikel"):
+                article_total = (article_total or 0.0) + saldo
+            if round(saldo, 2) != 0:
+                summary.append({
+                    "description": description,
+                    "quantity": None,
+                    "unit_price": None,
+                    "total": round(saldo, 2),
+                    "reference_bt": "",
+                    "supplier_gln": "",
+                    "supplier_fh_number": "",
+                    "supplier_name": "Ai2",
+                    "line_date": product_lines[0]["line_date"] if product_lines else None,
+                    "product_type_code": "57" if start.startswith("Artikel") else "67",
+                    "vat_category": vat,
+                    "prd_id": king_key,
+                    "trigger_code": "0",
+                    "is_credit": saldo < 0,
+                })
+            break
+    lines_total = round(sum(line["total"] for line in product_lines), 2)
+    check = {"lines_total": lines_total, "article_total": round(article_total, 2) if article_total is not None else None}
+    return summary, check
+
+
 def parse_ai2_productnota(pdf_bytes):
     with pdfplumber.open(io.BytesIO(pdf_bytes)) as pdf:
         first_page_text = pdf.pages[0].extract_text() or ""
@@ -667,7 +736,11 @@ def parse_ai2_productnota(pdf_bytes):
                 elif any(AI2_DATE_TOKEN_RE.match(w["text"]) for w in row_words if w["x0"] < AI2_COL_DATUM_MAX):
                     skipped_rows += 1
 
+        summary_lines, check = ai2_financial_summary(pdf, lines, year)
+
     return {
+        "summary_lines": summary_lines,
+        "check": check,
         "klantnummer": klantnummer_match.group(1).strip() if klantnummer_match else "",
         "klantnaam": _insert_camel_boundaries(klantnaam_match.group(1).strip()).strip() if klantnaam_match else "",
         "notanummer": notanummer_match.group(1).strip() if notanummer_match else "",
@@ -993,6 +1066,9 @@ def _parse_veiling_from(input_path: Path, extract_dir: Path):
                     skipped.append({"file_name": msg_path.name, "reason": "AI2 Productnota: could not parse any line items"})
                     continue
                 invoice_number = f"AI2-{parsed['klantnummer']}-{parsed['notanummer'] or msg_path.stem}"
+                check = parsed.get("check") or {}
+                if check.get("article_total") is not None and abs(check["article_total"] - check["lines_total"]) > 0.01:
+                    skipped.append({"file_name": msg_path.name, "reason": f"{invoice_number}: product lines add up to {check['lines_total']:.2f}, the nota says {check['article_total']:.2f} -- {parsed.get('skipped_rows', 0)} row(s) could not be read, check this nota"})
                 pdfs[invoice_number] = base64.b64encode(pdf_bytes).decode("ascii")
                 # King export: total/BTW and the booking lines from the
                 # Dagnota XML in the same email (absent = not exportable).
@@ -1011,7 +1087,7 @@ def _parse_veiling_from(input_path: Path, extract_dir: Path):
                     "supplier_number": f"AI2-{parsed['klantnummer']}",
                     "subject": subject,
                     "company_name_override": parsed["klantnaam"],
-                    "lines": parsed["lines"],
+                    "lines": parsed["lines"] + parsed.get("summary_lines", []),
                     "header": ai2_header,
                 })
                 continue

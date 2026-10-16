@@ -15328,7 +15328,7 @@ function InkoopOverviewTab() {
           <label><span>To factuurdatum</span><input type="date" value={toDate} onChange={(event) => setToDate(event.target.value)} /></label>
         </div>
         <div className="notice">
-          Invoices are listed by their <strong>factuurdatum</strong> (the date on the invoice itself), not by the dates of the products or services on it. Each invoice's total is taken from its own summary lines (Product aankopen, Emballage, fees), so the detail lines behind them are not counted twice. AI2 Productnota's have no summary lines, so there the line totals are used.
+          Invoices are listed by their <strong>factuurdatum</strong> (the date on the invoice itself), not by the dates of the products or services on it. Each invoice's total is taken from its own summary lines (Product aankopen, Emballage, fees), so the detail lines behind them are not counted twice. For AI2 Productnota's the products and emballage come from the nota's own "Financieel overzicht".
         </div>
         {error && <div className="notice danger">{error}</div>}
         {/* Another period was picked: say so right away and fade the old
