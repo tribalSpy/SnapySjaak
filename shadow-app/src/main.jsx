@@ -16402,9 +16402,10 @@ function InkoopControlePage({ currentUser }) {
     }
   }
 
-  if (loading) {
-    return <div className="notice">Loading Inkoop Controle...</div>;
-  }
+  // The page opens at once: the Overview loads its own figures; only the
+  // import history / master-data counts below wait for this (was: nothing
+  // shown until it arrived).
+  const pageDataNote = loading ? <div className="notice info">Loading import history and master data...</div> : null;
 
   return (
     <section className="overview-stack">
@@ -16455,6 +16456,7 @@ function InkoopControlePage({ currentUser }) {
 
       {activeTab === "settings" && (
       <>
+      {pageDataNote}
       {canClearUploads && (
         <div className="data-table-card">
           <div className="section-header"><h2>Start fresh</h2></div>
@@ -16570,6 +16572,7 @@ function InkoopControlePage({ currentUser }) {
 
       {activeTab === "compare" && (
       <>
+      {pageDataNote}
       <div className="data-table-card">
         <div className="section-header"><h2>Compare a day</h2></div>
         <div className="notice">

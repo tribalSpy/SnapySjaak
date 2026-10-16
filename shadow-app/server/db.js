@@ -1041,17 +1041,27 @@ export async function searchInkoopErpLines({ from, to, product, supplier, pav, c
   return { rows: result.rows.slice(0, max), truncated: result.rows.length > max };
 }
 
+// The few distinct companies, found by jumping through the company_number
+// index (one lookup per company) instead of grouping every invoice line ever
+// uploaded -- that ran on every opening of Inkoop Controle.
 export async function getInkoopCompanies() {
   if (!pool) {
     return [];
   }
   const result = await pool.query(
     `
-      SELECT company_number, MAX(company_name) AS company_name
-      FROM inkoop_invoice_lines
-      WHERE company_number IS NOT NULL AND company_number <> ''
-      GROUP BY company_number
-      ORDER BY company_number
+      WITH RECURSIVE companies AS (
+        SELECT MIN(company_number) AS company_number FROM inkoop_invoice_lines WHERE company_number > ''
+        UNION ALL
+        SELECT (SELECT MIN(l.company_number) FROM inkoop_invoice_lines l WHERE l.company_number > c.company_number)
+        FROM companies c WHERE c.company_number IS NOT NULL
+      )
+      SELECT c.company_number,
+        (SELECT l.company_name FROM inkoop_invoice_lines l
+          WHERE l.company_number = c.company_number AND l.company_name IS NOT NULL AND l.company_name <> '' LIMIT 1) AS company_name
+      FROM companies c
+      WHERE c.company_number IS NOT NULL
+      ORDER BY c.company_number
     `,
   );
   return result.rows;

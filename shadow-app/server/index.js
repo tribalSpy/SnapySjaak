@@ -8167,10 +8167,14 @@ const inkoopMatchCache = new Map();
 // Overview summaries per period (from|to), dropped with every upload.
 const inkoopSummaryCache = new Map();
 
+// The company choice at the top of Inkoop Controle; changes only with uploads.
+let inkoopCompaniesCache = null;
+
 function bumpInkoopMatchVersion() {
   inkoopMatchVersion += 1;
   inkoopMatchCache.clear();
   inkoopSummaryCache.clear();
+  inkoopCompaniesCache = null;
 }
 
 function inkoopCachedCompute(kind, range, compute) {
@@ -9063,12 +9067,29 @@ function inkoopGrowerNameForInvoiceLine(line, codeToName, supplierMap, supplierN
   return normalizeInkoopSupplierName(line?.supplier_name);
 }
 
+// inkoop-state.json holds every grower / supplier / customer map -- several
+// MB, read and normalised on every Inkoop request (also just opening the
+// page). Kept in memory while the file is unchanged; callers get their own
+// copy, since many change the state they read before writing it back.
+let inkoopStateCache = null;
+
 async function readInkoopState() {
-  const payload = await readJsonFile(inkoopStatePath, defaultInkoopState);
-  return normalizeInkoopState(payload);
+  let stat = null;
+  try {
+    stat = await fs.stat(inkoopStatePath);
+  } catch {
+    stat = null;
+  }
+  if (stat && inkoopStateCache && inkoopStateCache.mtimeMs === stat.mtimeMs && inkoopStateCache.size === stat.size) {
+    return structuredClone(inkoopStateCache.state);
+  }
+  const state = normalizeInkoopState(await readJsonFile(inkoopStatePath, defaultInkoopState));
+  inkoopStateCache = stat ? { mtimeMs: stat.mtimeMs, size: stat.size, state: structuredClone(state) } : null;
+  return state;
 }
 
 async function writeInkoopState(state) {
+  inkoopStateCache = null;
   await writeJsonFile(inkoopStatePath, normalizeInkoopState(state));
   bumpInkoopMatchVersion();
 }
@@ -21163,8 +21184,10 @@ async function handleApi(req, res, url) {
     if (!requirePermission(res, requestUser, PERMISSIONS.INKOOP_VIEW)) {
       return;
     }
-    const companies = await getInkoopCompanies();
-    sendJson(res, 200, { companies });
+    if (!inkoopCompaniesCache) {
+      inkoopCompaniesCache = await getInkoopCompanies();
+    }
+    sendJson(res, 200, { companies: inkoopCompaniesCache });
     return;
   }
 
@@ -21557,7 +21580,9 @@ async function handleApi(req, res, url) {
       : null;
     sendJson(res, 200, {
       date,
-      imports: state.imports,
+      // The history table only: the latest uploads, without their skipped-
+      // files lists (the bulk of it).
+      imports: state.imports.slice(0, 30).map(({ skipped_files: _skipped, ...record }) => record),
       result,
       window_days: INKOOP_MATCH_WINDOW_DAYS,
       supplier_count: Object.keys(state.supplier_map).length,
