@@ -17498,7 +17498,9 @@ const INKOOP_BW_LABELS = {
 };
 
 const INKOOP_RETOUR_STATUS_LABELS = {
-  confirmed_return: "Confirmed return",
+  confirmed_return: "OK -- credited and returned",
+  credited: "OK -- credited",
+  over_invoiced: "Invoiced more than received - investigate",
   partial_return: "Partially returned",
   not_return: "Not returned - investigate",
   no_dispatch_data: "No dispatch data yet",
@@ -17507,8 +17509,8 @@ const INKOOP_RETOUR_STATUS_LABELS = {
 };
 
 function InkoopRetourStatusBadge({ status }) {
-  const tone = status === "confirmed_return" ? "success"
-    : status === "no_dispatch_data" || status === "no_return_expected" ? "muted"
+  const tone = status === "confirmed_return" || status === "credited" || status === "no_return_expected" ? "success"
+    : status === "no_dispatch_data" ? "muted"
     : "danger";
   return <span className={`ukdocs-status-badge ${tone}`}>{INKOOP_RETOUR_STATUS_LABELS[status] || status}</span>;
 }
@@ -17632,12 +17634,12 @@ function InkoopDestinationsTab() {
       <div style={loadingCorrections && corrections ? { opacity: 0.35, pointerEvents: "none" } : undefined}>
       <InkoopCollapsibleCard title={corrections ? `Corrections check -- ${fustOverviewDate(corrections.from)} - ${fustOverviewDate(corrections.to)}` : "Corrections check"} count={correctionRows.length}>
         <div className="notice">
-          A correction credits the whole invoiced lot and invoices the right amount again. Only what we <strong>received</strong> (the ERP lot) more than what is finally invoiced has to go back: received 250, credited 250, invoiced again 200 -&gt; <strong>50 returned</strong>, to be found at a "retour" customer (Tgrp B/P 119) in the dispatch dump. Received 100, invoiced 200, credited 200, invoiced again 100 -&gt; the invoice was just corrected to what came in: OK, no return needed. Internal XX codes (bunches, mix, ...) are labelled but don't confirm a return.
+          A correction credits the whole invoiced lot and invoices the right amount again. What counts is whether what we <strong>pay</strong> is explained by what we <strong>received</strong> (the ERP lot): paying exactly for what came in (invoiced 200, credited 200, again 100, received 100) or less (invoiced 170, credited 50, again 40, received 170: 10 credited) is OK -- credited pieces don't have to go back to a retour customer; if they did, it says "credited and returned". Only <strong>paying for more than was received</strong> needs a look.
         </div>
         <div className="table-wrap">
           <table className="data-table">
             <thead>
-              <tr><th>Date</th><th>Invoice</th><th>PAV</th><th>Description</th><th>Invoiced</th><th>Credited</th><th>Invoiced again</th><th>Received (ERP)</th><th>To return</th><th>At retour</th><th>Net value</th><th>Status</th><th>Destination(s)</th></tr>
+              <tr><th>Date</th><th>Invoice</th><th>PAV</th><th>Description</th><th>Invoiced</th><th>Credited</th><th>Invoiced again</th><th>Received (ERP)</th><th>Credited pieces</th><th>At retour</th><th>Net value</th><th>Status</th><th>Destination(s)</th></tr>
             </thead>
             <tbody>
               {!corrections && <tr><td colSpan={13}>Loading corrections...</td></tr>}
@@ -17651,7 +17653,7 @@ function InkoopDestinationsTab() {
                   <td>{item.credited ? `-${item.credited}` : "-"}</td>
                   <td>{item.reissued || "-"}</td>
                   <td>{item.received || "-"}</td>
-                  <td><strong>{item.returned || 0}</strong></td>
+                  <td><strong>{item.over_invoiced ? `+${item.over_invoiced} paid too much` : item.returned || 0}</strong></td>
                   <td>{item.retour_pieces || 0}</td>
                   <td>{formatInkoopEuro(item.total)}</td>
                   <td><InkoopRetourStatusBadge status={item.status} /></td>

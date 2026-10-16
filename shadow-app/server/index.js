@@ -8525,7 +8525,7 @@ const INKOOP_RETOUR_STATUS_RANK = {
 // where even one of its lots did NOT confirm a return is exactly the case
 // worth surfacing, never letting one clean lot mask a real discrepancy on
 // another.
-function inkoopOverallCorrectionRetourStatus(erpRow, dispatchByLot, customerMap, expectedReturn) {
+function inkoopOverallCorrectionRetourStatus(erpRow, dispatchByLot, customerMap, expectedReturn, overInvoiced = 0) {
   const lotNumbers = inkoopCorrectionLotNumbers(erpRow);
   const lots = lotNumbers.length
     ? lotNumbers.map((lotNumber) => ({ lot: lotNumber, ...inkoopCorrectionRetourStatusForLot(dispatchByLot.get(lotNumber), customerMap) }))
@@ -8537,22 +8537,23 @@ function inkoopOverallCorrectionRetourStatus(erpRow, dispatchByLot, customerMap,
     return { status, lots, retour_pieces: retourPieces };
   }
   // A correction credits the whole invoiced lot and invoices the right
-  // amount again (bought 5x50, one bunch bad: -250 then +200), so only the
-  // difference -- 50 -- went back, and only that has to show up at a
-  // retour (119) customer in the dispatch dump; the rest of the lot was
-  // sold normally. (Was: every piece of the lot had to go to retour, so a
-  // partial return never confirmed.)
+  // amount again. What matters is whether what we PAY is explained by what
+  // we RECEIVED (user-confirmed): paying exactly for what came in, or less
+  // (the difference was credited -- bad quality, a claim; the pieces don't
+  // have to physically go back to a retour customer), is fine. Only paying
+  // for more than we received needs a look. Pieces that did go to a retour
+  // (119) customer are shown as "credited and returned".
   let status;
-  if (!destinations.length) {
+  if (overInvoiced > INKOOP_MATCH_TOLERANCE) {
+    status = "over_invoiced";
+  } else if (!destinations.length && expectedReturn === null) {
     status = "no_dispatch_data";
   } else if (expectedReturn <= INKOOP_MATCH_TOLERANCE) {
-    status = "no_return_expected"; // credited and invoiced again in full: a price/fust correction
-  } else if (retourPieces <= 0) {
-    status = "not_return";
-  } else if (!inkoopValuesDiffer(retourPieces, expectedReturn)) {
+    status = "no_return_expected"; // invoice corrected to what came in
+  } else if (retourPieces > 0 && retourPieces >= expectedReturn - INKOOP_MATCH_TOLERANCE) {
     status = "confirmed_return";
   } else {
-    status = retourPieces < expectedReturn ? "partial_return" : "extra_return";
+    status = "credited"; // received more than finally invoiced: credited, kept / destroyed
   }
   return { status, lots, retour_pieces: retourPieces };
 }
@@ -8572,7 +8573,9 @@ function inkoopCorrectionBreakdown(item) {
   for (const line of lines) {
     const quantity = Number(line?.quantity) || 0;
     if (quantity <= 0) continue;
-    if (creditInvoices.has(line.invoice_number) || (firstCreditDate && String(line.invoice_date || "") > firstCreditDate)) {
+    // From the day of the credit on = invoiced again (also on another
+    // invoice that day: credited on FK.0480, invoiced again on FK.0483).
+    if (creditInvoices.has(line.invoice_number) || (firstCreditDate && String(line.invoice_date || "") >= firstCreditDate)) {
       reissued += quantity;
     } else {
       original += quantity;
@@ -8589,14 +8592,27 @@ function inkoopCorrectionBreakdown(item) {
 // (user-confirmed); bought 250, credited 250, invoiced again 200 with 250
 // received means 50 went back. Without any ERP / dispatch figure: credited
 // minus invoiced again.
+function inkoopFinallyInvoiced(breakdown) {
+  const positives = breakdown.original + breakdown.reissued;
+  // All lines net, when the purchase being credited is among them; less than
+  // the credit invoiced in all = the original lies outside the window, so
+  // what was invoiced again is the final amount.
+  return Math.max(0, positives >= breakdown.credited - INKOOP_MATCH_TOLERANCE ? positives - breakdown.credited : breakdown.reissued);
+}
+
+// Paying for more than we received: the case that needs a look.
+function inkoopOverInvoiced(breakdown, receivedPieces) {
+  if (!(Number(receivedPieces) > 0)) {
+    return 0;
+  }
+  return Math.max(0, Math.round((inkoopFinallyInvoiced(breakdown) - Number(receivedPieces)) * 100) / 100);
+}
+
 function inkoopExpectedReturn(breakdown, receivedPieces) {
   if (!(Number(receivedPieces) > 0)) {
     return breakdown.returned;
   }
-  const finallyInvoiced = breakdown.original > 0
-    ? breakdown.original - breakdown.credited + breakdown.reissued
-    : breakdown.reissued; // the original purchase lies outside the window
-  return Math.max(0, Math.round((Number(receivedPieces) - Math.max(0, finallyInvoiced)) * 100) / 100);
+  return Math.max(0, Math.round((Number(receivedPieces) - inkoopFinallyInvoiced(breakdown)) * 100) / 100);
 }
 
 // Once matchInkoopVeilingLines nets a Klokfactuur/Connect correction, its
@@ -8631,8 +8647,9 @@ async function reclassifyInkoopConfirmedReturns(result, customerMap) {
   const dispatchByLot = new Map(dispatchLots.map((lot) => [String(lot.lot), lot]));
   const toPromote = new Set();
   for (const { item } of candidates) {
-    const { status } = inkoopOverallCorrectionRetourStatus(item.erp_row, dispatchByLot, customerMap, inkoopExpectedReturn(inkoopCorrectionBreakdown(item), item.erp_row?.pieces));
-    if (status === "confirmed_return") {
+    const breakdown = inkoopCorrectionBreakdown(item);
+    const { status } = inkoopOverallCorrectionRetourStatus(item.erp_row, dispatchByLot, customerMap, inkoopExpectedReturn(breakdown, item.erp_row?.pieces), inkoopOverInvoiced(breakdown, item.erp_row?.pieces));
+    if (["confirmed_return", "credited", "no_return_expected"].includes(status)) {
       toPromote.add(item);
     }
   }
@@ -8713,7 +8730,9 @@ async function computeInkoopCorrectionRetourChecks(state, { from, to }) {
       .reduce((sum, dispatch) => sum + (Number(dispatch?.pieces) || 0), 0);
     const received = item.erp_pieces || dispatched;
     breakdown.returned = inkoopExpectedReturn(breakdown, received);
-    const { status, lots, retour_pieces: retourPieces } = inkoopOverallCorrectionRetourStatus(item.lot_source, dispatchByLot, state.customer_map, breakdown.returned);
+    breakdown.finally_invoiced = inkoopFinallyInvoiced(breakdown);
+    breakdown.over_invoiced = inkoopOverInvoiced(breakdown, received);
+    const { status, lots, retour_pieces: retourPieces } = inkoopOverallCorrectionRetourStatus(item.lot_source, dispatchByLot, state.customer_map, received > 0 ? breakdown.returned : null, breakdown.over_invoiced);
     return {
       ...breakdown,
       received,
