@@ -668,11 +668,11 @@ export async function clearInkoopUploads() {
     return { cleared: false };
   }
   const counts = {};
-  for (const table of ["inkoop_erp_lines", "inkoop_invoice_lines", "inkoop_invoice_headers", "inkoop_dispatch_lots", "inkoop_issue_status"]) {
+  for (const table of ["inkoop_erp_lines", "inkoop_invoice_lines", "inkoop_invoice_headers", "inkoop_dispatch_lots", "inkoop_issue_status", "inkoop_match_rows"]) {
     const result = await pool.query(`SELECT COUNT(*)::int AS count FROM ${table}`);
     counts[table] = result.rows[0]?.count || 0;
   }
-  await pool.query("TRUNCATE inkoop_erp_lines, inkoop_invoice_lines, inkoop_invoice_headers, inkoop_dispatch_lots, inkoop_issue_status, inkoop_day_summaries");
+  await pool.query("TRUNCATE inkoop_erp_lines, inkoop_invoice_lines, inkoop_invoice_headers, inkoop_dispatch_lots, inkoop_issue_status, inkoop_day_summaries, inkoop_match_days, inkoop_match_rows, inkoop_invoice_totals");
   return { cleared: true, counts };
 }
 
@@ -872,6 +872,30 @@ export async function getInkoopInvoiceSummaryInvoices({ from, to } = {}) {
   if (!pool || !from || !to) {
     return [];
   }
+  if (await inkoopInvoiceTotalsFilled()) {
+    const totals = await pool.query(
+      `
+        WITH invoice_dates AS (
+          SELECT invoice_number, invoice_date AS factuur_date
+          FROM inkoop_invoice_headers
+          WHERE invoice_date >= $1::date AND invoice_date <= $2::date
+          UNION ALL
+          SELECT t.invoice_number, MIN(t.first_line_date)
+          FROM inkoop_invoice_totals t
+          WHERE t.first_line_date >= $1::date AND t.first_line_date <= $2::date
+            AND NOT EXISTS (SELECT 1 FROM inkoop_invoice_headers h WHERE h.invoice_number = t.invoice_number)
+          GROUP BY t.invoice_number
+        )
+        SELECT t.invoice_number, t.invoice_type, t.company_number, t.company_name,
+          to_char(d.factuur_date, 'YYYY-MM-DD') AS invoice_date, t.line_count, t.summary_line_count,
+          t.products::float8 AS products, t.emballage::float8 AS emballage, t.fees::float8 AS fees, t.detail_total::float8 AS detail_total
+        FROM inkoop_invoice_totals t
+        JOIN invoice_dates d ON d.invoice_number = t.invoice_number
+      `,
+      [from, to],
+    );
+    return totals.rows;
+  }
   const result = await pool.query(
     `
       -- By factuurdatum (the invoice's own date, from its XML header) so a
@@ -990,6 +1014,267 @@ export async function searchInkoopInvoiceLines({ from, to, product, supplier, in
   const max = rowValues[rowValues.length - 1] - 1;
   const rows = result.rows.slice(0, max).map(({ sort_date: _date, sort_id: _id, ...row }) => row);
   return { rows, truncated: result.rows.length > max, kinds };
+}
+
+// ---- Stored comparison (inkoop_match_days / inkoop_match_rows) ----------
+
+export async function getInkoopMatchDays({ from, to, withData = true } = {}) {
+  if (!pool || !from || !to) {
+    return [];
+  }
+  const result = await pool.query(
+    `SELECT to_char(match_date, 'YYYY-MM-DD') AS date, status, generation, fingerprint,
+       ${withData ? "result, aggregate," : ""} counts, error_text, computed_at
+     FROM inkoop_match_days WHERE match_date >= $1::date AND match_date <= $2::date
+     ORDER BY match_date`,
+    [from, to],
+  );
+  return result.rows;
+}
+
+// Days to (re)compare: inserted as pending, or bumped to pending with a new
+// generation (a running computation of the old data then won't mark it
+// ready). priority > 0 moves them to the front of the queue.
+export async function markInkoopMatchDaysPending(dates, { priority = 0 } = {}) {
+  const days = [...new Set((dates || []).filter(Boolean))];
+  if (!pool || !days.length) {
+    return 0;
+  }
+  const result = await pool.query(
+    `INSERT INTO inkoop_match_days (match_date, status, priority, queued_at)
+     SELECT day::date, 'pending', $2, now() FROM unnest($1::text[]) AS day
+     ON CONFLICT (match_date) DO UPDATE SET
+       status = 'pending',
+       generation = inkoop_match_days.generation + 1,
+       priority = GREATEST(inkoop_match_days.priority, EXCLUDED.priority),
+       attempts = CASE WHEN inkoop_match_days.status = 'failed' THEN 0 ELSE inkoop_match_days.attempts END,
+       queued_at = now()`,
+    [days, priority],
+  );
+  return result.rowCount;
+}
+
+// Someone is looking at these days: do them first (no new generation --
+// nothing changed, just the order).
+export async function prioritizeInkoopMatchDays(dates) {
+  const days = [...new Set((dates || []).filter(Boolean))];
+  if (!pool || !days.length) {
+    return;
+  }
+  await pool.query(
+    "UPDATE inkoop_match_days SET priority = 1 WHERE match_date = ANY($1::date[]) AND status IN ('pending', 'failed')",
+    [days],
+  );
+}
+
+// Master data changed: every day compared with other master data is to do.
+export async function markStaleInkoopMatchDays(fingerprint) {
+  if (!pool) {
+    return 0;
+  }
+  const result = await pool.query(
+    `UPDATE inkoop_match_days SET status = 'pending', generation = generation + 1, queued_at = now()
+     WHERE status IN ('ready', 'failed') AND fingerprint <> $1`,
+    [fingerprint],
+  );
+  return result.rowCount;
+}
+
+// Every day that has invoice or ERP lines gets a row (pending) -- the first
+// time, and for data from before this table existed.
+export async function ensureInkoopMatchDaysForData() {
+  if (!pool) {
+    return 0;
+  }
+  const result = await pool.query(
+    `INSERT INTO inkoop_match_days (match_date, status)
+     SELECT day, 'pending' FROM (
+       SELECT DISTINCT invoice_date AS day FROM inkoop_invoice_lines WHERE invoice_date IS NOT NULL
+       UNION
+       SELECT DISTINCT erp_date FROM inkoop_erp_lines WHERE erp_date IS NOT NULL
+     ) days
+     WHERE day <= CURRENT_DATE
+     ON CONFLICT (match_date) DO NOTHING`,
+  );
+  return result.rowCount;
+}
+
+// After a restart nothing is running any more.
+export async function resetRunningInkoopMatchDays() {
+  if (!pool) {
+    return;
+  }
+  await pool.query("UPDATE inkoop_match_days SET status = 'pending' WHERE status = 'running'");
+}
+
+export async function claimNextInkoopMatchDay() {
+  if (!pool) {
+    return null;
+  }
+  const result = await pool.query(
+    `UPDATE inkoop_match_days SET status = 'running', attempts = attempts + 1
+     WHERE match_date = (
+       SELECT match_date FROM inkoop_match_days WHERE status = 'pending'
+       ORDER BY priority DESC, match_date DESC LIMIT 1 FOR UPDATE SKIP LOCKED
+     )
+     RETURNING to_char(match_date, 'YYYY-MM-DD') AS date, generation`,
+  );
+  return result.rows[0] || null;
+}
+
+// Store one day's comparison (and its rows for the Data tab) -- ready, unless
+// it was queued again while running (then it stays pending, with this
+// result to show meanwhile).
+export async function saveInkoopMatchDay({ date, generation, fingerprint, result, aggregate, counts, rows, durationMs }) {
+  if (!pool || !date) {
+    return;
+  }
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    await client.query(
+      `INSERT INTO inkoop_match_days (match_date, status, generation, fingerprint, result, aggregate, counts, error_text, duration_ms, computed_at, priority)
+       VALUES ($1::date, 'ready', $2, $3, $4::jsonb, $5::jsonb, $6::jsonb, '', $7, now(), 0)
+       ON CONFLICT (match_date) DO UPDATE SET
+         status = CASE WHEN inkoop_match_days.generation = EXCLUDED.generation THEN 'ready' ELSE 'pending' END,
+         fingerprint = EXCLUDED.fingerprint, result = EXCLUDED.result, aggregate = EXCLUDED.aggregate,
+         counts = EXCLUDED.counts, error_text = '', duration_ms = EXCLUDED.duration_ms, computed_at = now(),
+         priority = CASE WHEN inkoop_match_days.generation = EXCLUDED.generation THEN 0 ELSE inkoop_match_days.priority END,
+         attempts = CASE WHEN inkoop_match_days.generation = EXCLUDED.generation THEN 0 ELSE inkoop_match_days.attempts END`,
+      [date, generation ?? 0, fingerprint || "", JSON.stringify(result || {}), JSON.stringify(aggregate || {}), JSON.stringify(counts || {}), durationMs ?? null],
+    );
+    await client.query("DELETE FROM inkoop_match_rows WHERE match_date = $1::date", [date]);
+    const columns = ["match_date", "list", "company_number", "invoice_number", "invoice_type", "pav", "lot", "supplier_code", "supplier_name", "description",
+      "invoice_quantity", "invoice_price", "invoice_total", "erp_quantity", "erp_price", "erp_total", "difference_total", "note"];
+    for (const chunk of chunkArray(rows || [], 400)) {
+      const values = [];
+      const placeholders = chunk.map((row) => {
+        const base = values.length;
+        values.push(date, ...columns.slice(1).map((column) => row[column] ?? (column.endsWith("quantity") || column.endsWith("price") || column.endsWith("total") ? null : "")));
+        return `(${columns.map((_, index) => `$${base + index + 1}`).join(", ")})`;
+      });
+      await client.query(`INSERT INTO inkoop_match_rows (${columns.join(", ")}) VALUES ${placeholders.join(", ")}`, values);
+    }
+    await client.query("COMMIT");
+  } catch (error) {
+    await client.query("ROLLBACK").catch(() => {});
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
+export async function failInkoopMatchDay(date, generation, errorText) {
+  if (!pool || !date) {
+    return;
+  }
+  // Three tries, then failed (shown in the Pipeline Monitor with a retry).
+  await pool.query(
+    `UPDATE inkoop_match_days SET
+       status = CASE WHEN generation <> $2 THEN 'pending' WHEN attempts >= 3 THEN 'failed' ELSE 'pending' END,
+       error_text = $3, priority = 0
+     WHERE match_date = $1::date`,
+    [date, generation ?? 0, String(errorText || "").slice(0, 500)],
+  );
+}
+
+export async function retryFailedInkoopMatchDays() {
+  if (!pool) {
+    return 0;
+  }
+  const result = await pool.query("UPDATE inkoop_match_days SET status = 'pending', attempts = 0, priority = 1 WHERE status = 'failed'");
+  return result.rowCount;
+}
+
+export async function getInkoopMatchStatus() {
+  if (!pool) {
+    return { counts: {}, running: [], failed: [], last_computed_at: null };
+  }
+  const [counts, running, failed, last] = await Promise.all([
+    pool.query("SELECT status, COUNT(*)::int AS count FROM inkoop_match_days GROUP BY status"),
+    pool.query("SELECT to_char(match_date, 'YYYY-MM-DD') AS date FROM inkoop_match_days WHERE status = 'running' ORDER BY match_date DESC"),
+    pool.query("SELECT to_char(match_date, 'YYYY-MM-DD') AS date, error_text, attempts FROM inkoop_match_days WHERE status = 'failed' ORDER BY match_date DESC LIMIT 20"),
+    pool.query("SELECT max(computed_at) AS last_computed_at, avg(duration_ms)::int AS avg_ms FROM inkoop_match_days WHERE status = 'ready'"),
+  ]);
+  return {
+    counts: Object.fromEntries(counts.rows.map((row) => [row.status, row.count])),
+    running: running.rows.map((row) => row.date),
+    failed: failed.rows,
+    last_computed_at: last.rows[0]?.last_computed_at || null,
+    average_ms: last.rows[0]?.avg_ms || null,
+  };
+}
+
+// ---- Invoice totals (Overview) ------------------------------------------
+
+const INVOICE_TOTALS_SELECT = `
+  SELECT l.invoice_number, l.invoice_type,
+    COALESCE(MAX(l.company_number), '') AS company_number, COALESCE(MAX(l.company_name), '') AS company_name,
+    MIN(l.invoice_date) AS first_line_date,
+    COUNT(*)::int AS line_count,
+    COUNT(*) FILTER (WHERE l.quantity IS NULL)::int AS summary_line_count,
+    COALESCE(SUM(l.total) FILTER (WHERE l.quantity IS NULL AND btrim(l.description) ~* '^product aankopen'), 0) AS products,
+    COALESCE(SUM(l.total) FILTER (WHERE l.quantity IS NULL AND btrim(l.description) ~* '^emballage'), 0) AS emballage,
+    COALESCE(SUM(l.total) FILTER (WHERE l.quantity IS NULL AND NOT btrim(COALESCE(l.description, '')) ~* '^(product aankopen|emballage)'), 0) AS fees,
+    COALESCE(SUM(l.total) FILTER (WHERE l.quantity IS NOT NULL), 0) AS detail_total,
+    now() AS updated_at
+  FROM inkoop_invoice_lines l`;
+
+// Recompute the totals of these invoices (after an upload) -- or, without a
+// list, of every invoice (the first time).
+export async function refreshInkoopInvoiceTotals(invoiceNumbers = null) {
+  if (!pool) {
+    return 0;
+  }
+  const numbers = Array.isArray(invoiceNumbers) ? [...new Set(invoiceNumbers.filter(Boolean))] : null;
+  if (numbers && !numbers.length) {
+    return 0;
+  }
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    if (numbers) {
+      await client.query("DELETE FROM inkoop_invoice_totals WHERE invoice_number = ANY($1::text[])", [numbers]);
+    } else {
+      await client.query("DELETE FROM inkoop_invoice_totals");
+    }
+    const result = await client.query(
+      `INSERT INTO inkoop_invoice_totals (invoice_number, invoice_type, company_number, company_name, first_line_date, line_count,
+         summary_line_count, products, emballage, fees, detail_total, updated_at)
+       ${INVOICE_TOTALS_SELECT}
+       ${numbers ? "WHERE l.invoice_number = ANY($1::text[])" : ""}
+       GROUP BY l.invoice_number, l.invoice_type`,
+      numbers ? [numbers] : [],
+    );
+    await client.query("COMMIT");
+    return result.rowCount;
+  } catch (error) {
+    await client.query("ROLLBACK").catch(() => {});
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
+let invoiceTotalsKnownFilled = false;
+
+async function inkoopInvoiceTotalsFilled() {
+  if (!invoiceTotalsKnownFilled) {
+    invoiceTotalsKnownFilled = (await countInkoopInvoiceTotals()) > 0;
+  }
+  return invoiceTotalsKnownFilled;
+}
+
+export function markInkoopInvoiceTotalsFilled(filled) {
+  invoiceTotalsKnownFilled = Boolean(filled);
+}
+
+export async function countInkoopInvoiceTotals() {
+  if (!pool) {
+    return 0;
+  }
+  const result = await pool.query("SELECT COUNT(*)::int AS count FROM inkoop_invoice_totals");
+  return result.rows[0]?.count || 0;
 }
 
 // Destinations "Corrections check" straight from the tables (it ran the
@@ -2374,6 +2659,82 @@ const databaseMigrations = [
       computed_at timestamptz NOT NULL DEFAULT now(),
       PRIMARY KEY (summary_date, company)
     )
+  `,
+  // The invoice-vs-ERP comparison, done once per day in the background and
+  // stored -- every tab reads these instead of matching again on each page
+  // load. status: pending (to do) / running / ready / failed; generation goes
+  // up on every "do it again" (an upload, changed master data), so a result
+  // computed from older data never ends up as ready; priority puts a day
+  // someone is looking at first.
+  `
+    CREATE TABLE IF NOT EXISTS inkoop_match_days (
+      match_date date PRIMARY KEY,
+      status text NOT NULL DEFAULT 'pending',
+      generation integer NOT NULL DEFAULT 0,
+      priority smallint NOT NULL DEFAULT 0,
+      fingerprint text NOT NULL DEFAULT '',
+      result jsonb,
+      aggregate jsonb,
+      counts jsonb,
+      error_text text NOT NULL DEFAULT '',
+      attempts integer NOT NULL DEFAULT 0,
+      duration_ms integer,
+      queued_at timestamptz NOT NULL DEFAULT now(),
+      computed_at timestamptz
+    )
+  `,
+  `
+    CREATE INDEX IF NOT EXISTS inkoop_match_days_queue_idx ON inkoop_match_days (status, priority DESC, match_date DESC)
+  `,
+  // Every comparison result line as a row (the Data tab filters these
+  // across days: "all differences in September for grower X").
+  `
+    CREATE TABLE IF NOT EXISTS inkoop_match_rows (
+      id bigserial PRIMARY KEY,
+      match_date date NOT NULL,
+      list text NOT NULL,
+      company_number text NOT NULL DEFAULT '',
+      invoice_number text NOT NULL DEFAULT '',
+      invoice_type text NOT NULL DEFAULT '',
+      pav text NOT NULL DEFAULT '',
+      lot text NOT NULL DEFAULT '',
+      supplier_code text NOT NULL DEFAULT '',
+      supplier_name text NOT NULL DEFAULT '',
+      description text NOT NULL DEFAULT '',
+      invoice_quantity numeric,
+      invoice_price numeric,
+      invoice_total numeric,
+      erp_quantity numeric,
+      erp_price numeric,
+      erp_total numeric,
+      difference_total numeric,
+      note text NOT NULL DEFAULT ''
+    )
+  `,
+  `
+    CREATE INDEX IF NOT EXISTS inkoop_match_rows_date_idx ON inkoop_match_rows (match_date, list)
+  `,
+  // One row per invoice with its totals, written at upload -- the Overview
+  // reads these instead of adding up every line of the month.
+  `
+    CREATE TABLE IF NOT EXISTS inkoop_invoice_totals (
+      invoice_number text NOT NULL,
+      invoice_type text NOT NULL DEFAULT '',
+      company_number text NOT NULL DEFAULT '',
+      company_name text NOT NULL DEFAULT '',
+      first_line_date date,
+      line_count integer NOT NULL DEFAULT 0,
+      summary_line_count integer NOT NULL DEFAULT 0,
+      products numeric NOT NULL DEFAULT 0,
+      emballage numeric NOT NULL DEFAULT 0,
+      fees numeric NOT NULL DEFAULT 0,
+      detail_total numeric NOT NULL DEFAULT 0,
+      updated_at timestamptz NOT NULL DEFAULT now(),
+      PRIMARY KEY (invoice_number, invoice_type)
+    )
+  `,
+  `
+    CREATE INDEX IF NOT EXISTS inkoop_invoice_totals_date_idx ON inkoop_invoice_totals (first_line_date)
   `,
   `
     CREATE TABLE IF NOT EXISTS inkoop_issue_status (

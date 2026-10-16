@@ -7913,6 +7913,73 @@ function ShelfCountMonitorCard({ date }) {
   );
 }
 
+// The background invoice-vs-ERP comparison (one day at a time, stored):
+// how many days are waiting / running / failed. Polls faster while busy.
+function useInkoopMatchStatus() {
+  const [status, setStatus] = useState(null);
+  useEffect(() => {
+    let cancelled = false;
+    let timer = null;
+    const load = () => apiJson("/api/inkoop/match-status")
+      .then((payload) => { if (!cancelled) setStatus(payload); return payload; })
+      .catch(() => null)
+      .then((payload) => {
+        if (cancelled) return;
+        const busy = payload && ((payload.counts?.pending || 0) + (payload.counts?.running || 0)) > 0;
+        timer = setTimeout(load, busy ? 5000 : 30000);
+      });
+    load();
+    return () => { cancelled = true; clearTimeout(timer); };
+  }, []);
+  return [status, setStatus];
+}
+
+function inkoopMatchBusyCount(status) {
+  return (status?.counts?.pending || 0) + (status?.counts?.running || 0);
+}
+
+function InkoopMatchMonitorCard() {
+  const [status, setStatus] = useInkoopMatchStatus();
+  const [retrying, setRetrying] = useState(false);
+  if (!status) return null;
+  const counts = status.counts || {};
+  async function retry() {
+    setRetrying(true);
+    try {
+      setStatus(await apiJson("/api/inkoop/match-retry", { method: "POST", body: "{}" }));
+    } finally {
+      setRetrying(false);
+    }
+  }
+  return (
+    <div className="data-table-card">
+      <div className="section-header"><h2>Inkoop Controle -- background comparison</h2></div>
+      <div className="notice">
+        Every day is compared (invoices vs ERP) once in the background and stored; the Inkoop tabs only read it. An upload or a master-data change queues the days it affects.
+      </div>
+      <div className="row-actions">
+        <span className="ukdocs-status-badge success">{counts.ready || 0} ready</span>
+        <span className={`ukdocs-status-badge ${inkoopMatchBusyCount(status) ? "info" : "muted"}`}>{counts.pending || 0} waiting</span>
+        <span className={`ukdocs-status-badge ${counts.running ? "info" : "muted"}`}>{counts.running ? `busy: ${status.running.join(", ")}` : "nothing running"}</span>
+        <span className={`ukdocs-status-badge ${counts.failed ? "danger" : "muted"}`}>{counts.failed || 0} failed</span>
+        {status.average_ms ? <span className="muted">about {Math.max(1, Math.round(status.average_ms / 1000))} s per day</span> : null}
+        {status.last_computed_at ? <span className="muted">last: {formatTimestamp(status.last_computed_at)}</span> : null}
+        {!!counts.failed && <button type="button" onClick={retry} disabled={retrying}>{retrying ? "Retrying..." : "Retry failed days"}</button>}
+      </div>
+      {!!status.failed?.length && (
+        <div className="table-wrap">
+          <table className="data-table">
+            <thead><tr><th>Day</th><th>Tries</th><th>Error</th></tr></thead>
+            <tbody>
+              {status.failed.map((row) => <tr key={row.date}><td>{fustOverviewDate(row.date)}</td><td>{row.attempts}</td><td>{row.error_text}</td></tr>)}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function UkdocsPipelineMonitorPage({ onNavigate }) {
   const [date, setDate] = useState(() => localDateIso());
   const [data, setData] = useState(null);
@@ -7967,6 +8034,8 @@ function UkdocsPipelineMonitorPage({ onNavigate }) {
       {error && <div className="notice danger">{error}</div>}
 
       <ShelfCountMonitorCard date={date} />
+
+      <InkoopMatchMonitorCard />
 
       {data && (
         <div className="notice">
@@ -16122,6 +16191,17 @@ function InkoopControlePage({ currentUser }) {
   const [savingFacturationGroup, setSavingFacturationGroup] = useState(false);
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
+  const [dayStatus, setDayStatus] = useState(null);
+  const [matchStatus] = useInkoopMatchStatus();
+  // Goes up when the background comparison finishes: the tabs that read
+  // stored days (Dashboard, Follow-up) load again.
+  const [matchRound, setMatchRound] = useState(0);
+  const wasBusyRef = useRef(false);
+  useEffect(() => {
+    const busy = inkoopMatchBusyCount(matchStatus) > 0;
+    if (wasBusyRef.current && !busy) setMatchRound((round) => round + 1);
+    wasBusyRef.current = busy;
+  }, [matchStatus]);
 
   function loadInkoopData() {
     const params = new URLSearchParams();
@@ -16130,6 +16210,7 @@ function InkoopControlePage({ currentUser }) {
     return apiJson(`/api/inkoop/veiling/runs${params.toString() ? `?${params}` : ""}`).then((payload) => {
       setImports(payload.imports || []);
       setLiveResult(payload.result || null);
+      setDayStatus(payload.day_status || null);
       setSupplierCount(payload.supplier_count || 0);
       setSupplierNameCount(payload.supplier_name_count || 0);
       setSupplierFhCount(payload.supplier_fh_count || 0);
@@ -16210,6 +16291,15 @@ function InkoopControlePage({ currentUser }) {
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedCompany, compareDate]);
+
+  // The compared day is being compared again (after an upload / master data
+  // change): show the previous result and look again every few seconds.
+  useEffect(() => {
+    if (!compareDate || !dayStatus?.stale) return undefined;
+    const timer = setTimeout(() => { loadInkoopData().catch(() => {}); }, 4000);
+    return () => clearTimeout(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [dayStatus, compareDate]);
 
   async function runComparison() {
     // Either file on its own is enough (invoices only, or the ERP export
@@ -16302,13 +16392,10 @@ function InkoopControlePage({ currentUser }) {
       setLiveResult(payload.result || null);
       if (payload.result_date) setCompareDate(payload.result_date);
       setLastSkippedFiles(payload.import?.skipped_files || []);
-      const r = payload.result || {};
       setMessage(
         `Imported ${erpRows} ERP rows and ${invoiceLines} invoice lines${parts.length > 1 ? ` (${messages.length} emails in ${parts.length} parts)` : ""}`
         + `${payload.dispatch_lot_count ? ` (${payload.dispatch_lot_count} of them with dispatch destinations, see the Destinations tab)` : ""}. `
-        + `${payload.result_date ? `Result for ${payload.result_date}` : "Result"}: ${inkoopResultCount(r, "matched_ok")} matched, ${inkoopResultCount(r, "matched_mismatch")} mismatches, `
-        + `${inkoopResultCount(r, "only_in_invoice")} only in invoice, ${inkoopResultCount(r, "only_in_erp")} only in ERP, `
-        + `${inkoopResultCount(r, "supplier_not_linked")} supplier not linked, ${inkoopResultCount(r, "ambiguous_matches")} ambiguous.`,
+        + `The comparison of the days this touched runs in the background${payload.result_date ? ` -- ${fustOverviewDate(payload.result_date)} first, its result appears below by itself` : ""}.`,
       );
       loadCompanies().catch(() => {});
     } catch (compareError) {
@@ -16434,6 +16521,14 @@ function InkoopControlePage({ currentUser }) {
         <button type="button" className={activeTab === "king" ? "active" : ""} onClick={() => setActiveTab("king")}>Import naar King</button>
         <button type="button" className={activeTab === "settings" ? "active" : ""} onClick={() => setActiveTab("settings")}>Settings</button>
       </div>
+      {inkoopMatchBusyCount(matchStatus) > 0 && (
+        <div className="notice info">
+          Comparing in the background: {inkoopMatchBusyCount(matchStatus)} day{inkoopMatchBusyCount(matchStatus) === 1 ? "" : "s"} waiting{matchStatus.running?.length ? ` (now: ${matchStatus.running.map(fustOverviewDate).join(", ")})` : ""}. The tabs show the last comparison meanwhile and update by themselves when it's done.
+        </div>
+      )}
+      {!!matchStatus?.counts?.failed && (
+        <div className="notice danger">{matchStatus.counts.failed} day(s) could not be compared -- see the Pipeline Monitor (Retry failed days).</div>
+      )}
 
       {message && <div className="notice">{message}</div>}
       {error && <div className="notice danger">{error}</div>}
@@ -16448,9 +16543,9 @@ function InkoopControlePage({ currentUser }) {
         />
       )}
 
-      {activeTab === "followup" && <InkoopFollowUpTab company={selectedCompany} />}
+      {activeTab === "followup" && <InkoopFollowUpTab key={`followup-${matchRound}`} company={selectedCompany} />}
 
-      {activeTab === "dashboard" && <InkoopDashboardTab company={selectedCompany} />}
+      {activeTab === "dashboard" && <InkoopDashboardTab key={`dashboard-${matchRound}`} company={selectedCompany} />}
 
       {activeTab === "destinations" && <InkoopDestinationsTab />}
 
@@ -16639,6 +16734,9 @@ function InkoopControlePage({ currentUser }) {
           </label>
         </div>
         {!compareDate && <div className="notice">Pick a day to see how its invoices match the ERP.</div>}
+        {compareDate && dayStatus?.stale && (
+          <div className="notice info">{fustOverviewDate(compareDate)} is being compared again (new upload or master data) -- this is the previous comparison{dayStatus.computed_at ? ` of ${formatTimestamp(dayStatus.computed_at)}` : ""}; it refreshes by itself.</div>
+        )}
       </div>
 
       {liveResult && compareDate && (

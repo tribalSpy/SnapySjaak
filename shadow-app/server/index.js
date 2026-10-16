@@ -41,11 +41,24 @@ import {
   searchInkoopInvoiceLines,
   searchInkoopErpLines,
   getInkoopCorrectionLines,
+  getInkoopMatchDays,
+  markInkoopMatchDaysPending,
+  prioritizeInkoopMatchDays,
+  markStaleInkoopMatchDays,
+  ensureInkoopMatchDaysForData,
+  resetRunningInkoopMatchDays,
+  claimNextInkoopMatchDay,
+  saveInkoopMatchDay,
+  failInkoopMatchDay,
+  retryFailedInkoopMatchDays,
+  getInkoopMatchStatus,
+  refreshInkoopInvoiceTotals,
+  countInkoopInvoiceTotals,
+  markInkoopInvoiceTotalsFilled,
   saveInkoopInvoiceHeaders,
   getInkoopInvoiceHeaders,
   getInkoopDaySummaries,
   saveInkoopDaySummaries,
-  deleteInkoopDaySummaries,
   getInkoopInvoiceLinesByInvoiceNumbers,
   getKingExports,
   saveKingExports,
@@ -8237,7 +8250,9 @@ function inkoopResultOnDay(result, date) {
   return out;
 }
 
-async function computeInkoopDay(state, date) {
+// A day compared now, from the lines (the stored comparison is read by
+// computeInkoopDay / computeInkoopDays below).
+async function computeInkoopDayFresh(state, date) {
   const window = inkoopDayWindow(date);
   const match = await computeInkoopLiveMatch(state, window);
   const aggregateContext = await buildInkoopAggregateContextCached(state, window);
@@ -8273,27 +8288,22 @@ function inkoopDatesInRange(from, to) {
   return dates;
 }
 
-async function computeInkoopDays(state, from, to) {
-  const days = [];
-  for (const date of inkoopDatesInRange(from, to)) {
-    days.push(await computeInkoopDay(state, date));
-  }
-  return days;
-}
-
-// --- Stored day figures for the Calendar -----------------------------------
-// A day's calendar bucket (per company) is computed once and kept in
-// inkoop_day_summaries; the Calendar reads those. Missing ones (new days,
-// days an upload touched, master data changed since) are filled in the
-// background, one day at a time, and the Calendar shows them as they land.
+// --- Stored comparison ------------------------------------------------------
+// Each day is compared once, in the background, and stored in
+// inkoop_match_days (result + grower-day aggregate + counts) with its rows in
+// inkoop_match_rows and its Calendar figures in inkoop_day_summaries. The
+// tabs read those. An upload marks the days it touched (plus the match
+// tolerance either side) as pending, changed master data marks every day
+// compared with other master data as pending; the worker below does them one
+// at a time, days someone is looking at first, then newest first. The queue
+// is the table itself, so it survives a restart.
 const INKOOP_EMPTY_DAY_BUCKET = {
   purchase_value: 0, invoice_value: 0, mismatch_count: 0, mismatch_value: 0,
   gap_count: 0, gap_value: 0, embalage_value: 0, product_count: 0,
 };
 
 // Which master data a stored day was computed with -- changing supplier
-// links, facturation groups, BW codes etc. changes the matching, so those
-// days count as missing again.
+// links, facturation groups, BW codes etc. changes the matching.
 function inkoopStateFingerprint(state) {
   return crypto.createHash("sha1").update(JSON.stringify([
     state.supplier_map, state.supplier_name_map, state.supplier_fh_map, state.supplier_bw_map,
@@ -8301,63 +8311,301 @@ function inkoopStateFingerprint(state) {
   ])).digest("hex");
 }
 
-async function computeAndStoreInkoopDaySummary(state, date, fingerprint) {
-  const day = await computeInkoopDay(state, date);
+// The fingerprint of the current inkoop-state.json, worked out once per
+// version of the file (it hashes every master data map).
+async function inkoopCurrentFingerprint() {
+  const state = await readInkoopState();
+  if (inkoopStateCache) {
+    inkoopStateCache.fingerprint = inkoopStateCache.fingerprint || inkoopStateFingerprint(inkoopStateCache.state);
+    return inkoopStateCache.fingerprint;
+  }
+  return inkoopStateFingerprint(state);
+}
+
+// The master-data part of a day's aggregate context, rebuilt from the state
+// (only the computed grower-day aggregate is stored).
+let inkoopAggregateMapsMemo = null;
+function inkoopAggregateMaps(state, fingerprint) {
+  if (inkoopAggregateMapsMemo?.fingerprint === fingerprint) {
+    return inkoopAggregateMapsMemo.maps;
+  }
+  const maps = {
+    codeToName: buildInkoopCodeNameMap(state.supplier_map, state.supplier_name_map, state.supplier_fh_map, state.facturation_groups),
+    validSupplierCodes: new Set(
+      [...Object.values(state.supplier_map || {}), ...Object.values(state.supplier_name_map || {}), ...Object.values(state.supplier_fh_map || {})]
+        .map((entry) => normalizeInkoopKey(entry?.code))
+        .filter(Boolean),
+    ),
+    supplierMap: state.supplier_map,
+    supplierNameMap: state.supplier_name_map,
+    manualLinks: state.manual_supplier_links,
+    supplierFhMap: state.supplier_fh_map,
+  };
+  inkoopAggregateMapsMemo = { fingerprint, maps };
+  return maps;
+}
+
+// Only the day's own part of the grower-day aggregate is kept (its gaps and
+// mismatches are looked up by their own date); Sets become arrays.
+function serializeInkoopAggregate(aggregateResult, date) {
+  const ofDay = (key) => String(key).split("|")[1] === date;
+  return {
+    reconciledGrowerDays: [...(aggregateResult?.reconciledGrowerDays || [])].filter(ofDay),
+    reconciledProducts: [...(aggregateResult?.reconciledProducts || [])].filter(ofDay),
+    mismatches: (aggregateResult?.mismatches || []).filter((mismatch) => mismatch.date === date),
+  };
+}
+
+function deserializeInkoopAggregate(stored) {
+  return {
+    reconciledGrowerDays: new Set(stored?.reconciledGrowerDays || []),
+    reconciledProducts: new Set(stored?.reconciledProducts || []),
+    mismatches: stored?.mismatches || [],
+  };
+}
+
+function inkoopNumberOrNull(value) {
+  const number = typeof value === "string" ? parseFloat(value) : Number(value);
+  return Number.isFinite(number) ? number : null;
+}
+
+// The result lines as table rows (the Data tab).
+function buildInkoopMatchRows(result) {
+  const rows = [];
+  for (const list of INKOOP_RESULT_LISTS) {
+    for (const row of Array.isArray(result?.[list]) ? result[list] : []) {
+      const erp = list === "only_in_erp" ? row : row?.erp_row || null;
+      const invoice = list === "only_in_erp" ? null : row;
+      const invoiceTotal = inkoopNumberOrNull(invoice?.total);
+      const erpTotal = inkoopNumberOrNull(erp?.t_price);
+      const notes = [];
+      if (Array.isArray(row?.diffs)) notes.push(...row.diffs.map((diff) => `${diff.field}: ERP ${diff.erp} / invoice ${diff.invoice}`));
+      if (row?.matched_as_correction) notes.push("correction");
+      if (row?.confirmed_return) notes.push("confirmed return");
+      if (row?.matched_as_split_delivery) notes.push("split delivery");
+      if (row?.matched_as_group) notes.push("matched as group");
+      if (row?.supplier_bw_name) notes.push(`supplier: ${row.supplier_bw_name}`);
+      rows.push({
+        list,
+        company_number: normalizeUkdocsText(row?.company_number),
+        invoice_number: normalizeUkdocsText(invoice?.invoice_number),
+        invoice_type: normalizeUkdocsText(invoice?.invoice_type),
+        pav: normalizeUkdocsText(row?.pav || row?.reference_bt || erp?.pav),
+        lot: erp?.lot !== undefined && erp?.lot !== null ? String(erp.lot) : "",
+        supplier_code: normalizeUkdocsText(row?.supplier_code || erp?.suppl),
+        supplier_name: normalizeUkdocsText(invoice?.supplier_name || row?.supplier_bw_name),
+        description: normalizeUkdocsText(row?.description || erp?.description),
+        invoice_quantity: inkoopNumberOrNull(invoice?.quantity),
+        invoice_price: inkoopNumberOrNull(invoice?.unit_price),
+        invoice_total: invoiceTotal,
+        erp_quantity: inkoopNumberOrNull(erp?.pieces),
+        erp_price: inkoopNumberOrNull(erp?.price),
+        erp_total: erpTotal,
+        difference_total: invoiceTotal !== null && erpTotal !== null ? Math.round((invoiceTotal - erpTotal) * 100) / 100 : null,
+        note: notes.join("; ").slice(0, 500),
+      });
+    }
+  }
+  return rows;
+}
+
+function inkoopDayCounts(result) {
+  const counts = {};
+  for (const list of INKOOP_RESULT_LISTS) {
+    counts[list] = Array.isArray(result?.[list]) ? result[list].length : 0;
+  }
+  return counts;
+}
+
+// The Calendar's figures of one day, per company (and "" = all).
+async function storeInkoopDaySummaryFromBundle(bundle, fingerprint) {
   const companies = new Set([""]);
   for (const key of INKOOP_RESULT_LISTS) {
-    for (const row of day.result[key] || []) {
+    for (const row of bundle.result[key] || []) {
       const company = normalizeUkdocsText(row?.company_number);
       if (company) companies.add(company);
     }
   }
   const buckets = {};
   for (const company of companies) {
-    const bucket = bucketInkoopResultsByDate(filterInkoopResultsByCompany(day.result, company || null), day.aggregateContext).get(date);
-    buckets[company] = bucket || { date, ...INKOOP_EMPTY_DAY_BUCKET };
+    const bucket = bucketInkoopResultsByDate(filterInkoopResultsByCompany(bundle.result, company || null), bundle.aggregateContext).get(bundle.date);
+    buckets[company] = bucket || { date: bundle.date, ...INKOOP_EMPTY_DAY_BUCKET };
   }
-  await saveInkoopDaySummaries(date, buckets, fingerprint);
+  await saveInkoopDaySummaries(bundle.date, buckets, fingerprint);
 }
 
-const inkoopDaySummaryQueue = new Set();
-let inkoopDaySummaryWorker = null;
+async function storeInkoopMatchBundle(bundle, fingerprint, generation, durationMs) {
+  await saveInkoopMatchDay({
+    date: bundle.date,
+    generation,
+    fingerprint,
+    result: bundle.result,
+    aggregate: serializeInkoopAggregate(bundle.aggregateContext?.aggregateResult, bundle.date),
+    counts: inkoopDayCounts(bundle.result),
+    rows: buildInkoopMatchRows(bundle.result),
+    durationMs,
+  });
+  await storeInkoopDaySummaryFromBundle(bundle, fingerprint);
+}
 
-// Queue days to (re)compute in the background; returns at once.
-function queueInkoopDaySummaries(dates) {
-  for (const date of dates) inkoopDaySummaryQueue.add(date);
-  if (inkoopDaySummaryWorker) return;
-  inkoopDaySummaryWorker = (async () => {
+function inkoopEmptyDayBundle(date, maps) {
+  const result = {};
+  for (const key of INKOOP_RESULT_LISTS) result[key] = [];
+  return { date, result, aggregateContext: { ...maps, aggregateResult: deserializeInkoopAggregate(null) }, status: "empty", stale: false, computed: false };
+}
+
+// Stored days of a range as day bundles ({ date, result, aggregateContext,
+// status, stale }) -- one query. A day without a row has no data at all.
+async function loadStoredInkoopDays(state, from, to) {
+  const fingerprint = await inkoopCurrentFingerprint();
+  const maps = inkoopAggregateMaps(state, fingerprint);
+  const rows = await getInkoopMatchDays({ from, to });
+  const byDate = new Map(rows.map((row) => [row.date, row]));
+  return inkoopDatesInRange(from, to).map((date) => {
+    const row = byDate.get(date);
+    if (!row) return inkoopEmptyDayBundle(date, maps);
+    if (!row.result) return { ...inkoopEmptyDayBundle(date, maps), status: row.status, stale: true, computed: false };
+    return {
+      date,
+      result: row.result,
+      aggregateContext: { ...maps, aggregateResult: deserializeInkoopAggregate(row.aggregate) },
+      status: row.status,
+      stale: row.status !== "ready" || row.fingerprint !== fingerprint,
+      computed: true,
+      computed_at: row.computed_at,
+    };
+  });
+}
+
+// One day for the Compare tab: stored if there is one (also while it's being
+// updated -- then shown with stale: true and moved to the front of the
+// queue); a day never compared is compared now and stored.
+async function computeInkoopDay(state, date) {
+  const [bundle] = await loadStoredInkoopDays(state, date, date);
+  if (bundle.computed) {
+    if (bundle.stale) {
+      await prioritizeInkoopMatchDays([date]);
+      kickInkoopMatchWorker();
+    }
+    return bundle;
+  }
+  const started = Date.now();
+  const fresh = await computeInkoopDayFresh(state, date);
+  if (bundle.status !== "empty") {
+    // Has data: store it (the worker then skips it).
+    const fingerprint = await inkoopCurrentFingerprint();
+    const current = (await getInkoopMatchDays({ from: date, to: date, withData: false }))[0];
+    await storeInkoopMatchBundle(fresh, fingerprint, current?.generation ?? 0, Date.now() - started);
+  }
+  return { ...fresh, status: "ready", stale: false, computed: true };
+}
+
+// A range (Dashboard, Follow-up): only what's stored; days not compared yet
+// are queued first and reported in pending_days, nothing is compared while
+// the page waits.
+async function computeInkoopDays(state, from, to) {
+  const days = await loadStoredInkoopDays(state, from, to);
+  const waiting = days.filter((day) => day.stale && day.status !== "empty").map((day) => day.date);
+  if (waiting.length) {
+    await prioritizeInkoopMatchDays(waiting);
+    kickInkoopMatchWorker();
+  }
+  days.pending_days = waiting;
+  return days;
+}
+
+let inkoopMatchWorker = null;
+let inkoopMatchWorkerAgain = false;
+let inkoopMatchWorkerCurrent = "";
+
+// The background comparison: claim the next pending day, compare, store --
+// until nothing is pending. A short pause between days keeps the app
+// responsive while a long backlog (first run, master data change) is done.
+function kickInkoopMatchWorker() {
+  if (!isDatabaseEnabled()) return;
+  if (inkoopMatchWorker) {
+    inkoopMatchWorkerAgain = true;
+    return;
+  }
+  inkoopMatchWorker = (async () => {
     try {
-      while (inkoopDaySummaryQueue.size) {
-        const date = [...inkoopDaySummaryQueue].sort().pop(); // newest first
-        inkoopDaySummaryQueue.delete(date);
-        try {
-          const state = await readInkoopState();
-          await computeAndStoreInkoopDaySummary(state, date, inkoopStateFingerprint(state));
-        } catch (error) {
-          console.error(`Inkoop day summary ${date} failed:`, error instanceof Error ? error.message : error);
+      do {
+        inkoopMatchWorkerAgain = false;
+        for (;;) {
+          const job = await claimNextInkoopMatchDay();
+          if (!job) break;
+          inkoopMatchWorkerCurrent = job.date;
+          const started = Date.now();
+          try {
+            const state = await readInkoopState();
+            const fingerprint = await inkoopCurrentFingerprint();
+            const bundle = await computeInkoopDayFresh(state, job.date);
+            await storeInkoopMatchBundle(bundle, fingerprint, job.generation, Date.now() - started);
+          } catch (error) {
+            console.error(`Inkoop comparison of ${job.date} failed:`, error instanceof Error ? error.message : error);
+            await failInkoopMatchDay(job.date, job.generation, error instanceof Error ? error.message : String(error)).catch(() => {});
+          }
+          inkoopMatchWorkerCurrent = "";
+          await new Promise((resolve) => setTimeout(resolve, 150));
         }
-      }
+      } while (inkoopMatchWorkerAgain);
+    } catch (error) {
+      console.error("Inkoop comparison worker stopped:", error instanceof Error ? error.message : error);
     } finally {
-      inkoopDaySummaryWorker = null;
+      inkoopMatchWorker = null;
+      inkoopMatchWorkerCurrent = "";
     }
   })();
 }
 
-// After an upload: the days it touched (plus the match tolerance either
-// side) are stale -- remove and recompute them in the background.
+// After an upload: the days it touched plus the match tolerance either side
+// are to do again.
 async function refreshInkoopDaySummariesForDates(dates) {
   const days = [...new Set((dates || []).map(inkoopIsoDate).filter(Boolean))].sort();
   if (!days.length) return;
   const from = addDaysToIsoDate(days[0], -INKOOP_DAY_TOLERANCE_DAYS);
   const to = addDaysToIsoDate(days[days.length - 1], INKOOP_DAY_TOLERANCE_DAYS);
-  await deleteInkoopDaySummaries({ from, to });
   const lastDay = to < localDateIso() ? to : localDateIso();
   if (from <= lastDay) {
-    // Only the most recent ~2 months right away; older days fill in when
-    // their month is opened in the Calendar.
-    const recentFrom = addDaysToIsoDate(lastDay, -62) > from ? addDaysToIsoDate(lastDay, -62) : from;
-    queueInkoopDaySummaries(inkoopDatesInRange(recentFrom, lastDay));
+    await markInkoopMatchDaysPending(inkoopDatesBetween(from, lastDay));
+    kickInkoopMatchWorker();
   }
+}
+
+// Every date from..to (no 31-day cap, for an upload spanning months).
+function inkoopDatesBetween(from, to) {
+  const dates = [];
+  for (let date = from; date <= to && dates.length < 3700; date = addDaysToIsoDate(date, 1)) {
+    dates.push(date);
+  }
+  return dates;
+}
+
+// Startup: running days were cut off by the restart, days with data that
+// have no row yet are added, days compared with other master data are to do
+// again, invoice totals are filled the first time -- then the worker starts.
+async function startInkoopMatchPipeline() {
+  try {
+    await resetRunningInkoopMatchDays();
+    const added = await ensureInkoopMatchDaysForData();
+    const stale = await markStaleInkoopMatchDays(await inkoopCurrentFingerprint());
+    if (added || stale) console.log(`Inkoop comparison: ${added} new day(s), ${stale} to redo with current master data.`);
+    if (!(await countInkoopInvoiceTotals())) {
+      const filled = await refreshInkoopInvoiceTotals(null);
+      markInkoopInvoiceTotalsFilled(filled > 0);
+      console.log(`Inkoop invoice totals filled: ${filled} invoice(s).`);
+    }
+  } catch (error) {
+    console.error("Starting the Inkoop comparison pipeline failed:", error instanceof Error ? error.message : error);
+  }
+  kickInkoopMatchWorker();
+}
+
+// Master data written: days compared with the old master data are to do.
+async function markInkoopMatchDaysStaleForCurrentState() {
+  if (!isDatabaseEnabled()) return;
+  const stale = await markStaleInkoopMatchDays(await inkoopCurrentFingerprint());
+  if (stale) kickInkoopMatchWorker();
 }
 
 function mergeInkoopDayResults(results) {
@@ -9158,6 +9406,9 @@ async function writeInkoopState(state) {
   inkoopStateCache = null;
   await writeJsonFile(inkoopStatePath, normalizeInkoopState(state));
   bumpInkoopMatchVersion();
+  // Changed master data: the stored comparison of every day is redone in
+  // the background (nothing happens when only the import history changed).
+  markInkoopMatchDaysStaleForCurrentState().catch((error) => console.error("Marking Inkoop days to redo failed:", error instanceof Error ? error.message : error));
 }
 
 function mergeUkdocsStatePatch(currentState, patch) {
@@ -21246,6 +21497,27 @@ async function handleApi(req, res, url) {
 
   // Distinct (company_number, company_name) pairs seen on any uploaded
   // invoice line -- populates the page-level company filter dropdown.
+  // The background comparison: how many days are waiting / running / ready /
+  // failed (Pipeline Monitor and the banner in Inkoop Controle).
+  if (url.pathname === "/api/inkoop/match-status" && req.method === "GET") {
+    if (!requireAnyPermission(res, requestUser, [PERMISSIONS.INKOOP_VIEW, PERMISSIONS.UKDOCS_VIEW])) {
+      return;
+    }
+    const status = await getInkoopMatchStatus();
+    sendJson(res, 200, { ...status, current: inkoopMatchWorkerCurrent, worker_running: Boolean(inkoopMatchWorker) });
+    return;
+  }
+
+  if (url.pathname === "/api/inkoop/match-retry" && req.method === "POST") {
+    if (!requireAnyPermission(res, requestUser, [PERMISSIONS.INKOOP_VIEW, PERMISSIONS.UKDOCS_VIEW])) {
+      return;
+    }
+    const retried = await retryFailedInkoopMatchDays();
+    kickInkoopMatchWorker();
+    sendJson(res, 200, { retried, ...(await getInkoopMatchStatus()), current: inkoopMatchWorkerCurrent });
+    return;
+  }
+
   if (url.pathname === "/api/inkoop/companies" && req.method === "GET") {
     if (!requirePermission(res, requestUser, PERMISSIONS.INKOOP_VIEW)) {
       return;
@@ -21585,6 +21857,7 @@ async function handleApi(req, res, url) {
     }
     try {
       const result = await clearInkoopUploads();
+      markInkoopInvoiceTotalsFilled(false);
       bumpInkoopMatchVersion();
       let pdfCount = 0;
       const pdfFiles = await fs.readdir(inkoopInvoicePdfFilesDir).catch(() => []);
@@ -21641,11 +21914,13 @@ async function handleApi(req, res, url) {
     // Only the chosen day is matched (none chosen: just the import history
     // and master-data counts -- nothing heavy on opening the page).
     const date = inkoopIsoDate(url.searchParams.get("date"));
-    const result = date
-      ? limitInkoopResultForPage(filterInkoopResultsByCompany((await computeInkoopDay(state, date)).result, url.searchParams.get("company")))
-      : null;
+    const day = date ? await computeInkoopDay(state, date) : null;
+    const result = day ? limitInkoopResultForPage(filterInkoopResultsByCompany(day.result, url.searchParams.get("company"))) : null;
     sendJson(res, 200, {
       date,
+      // stale: shown from the previous comparison while this day is being
+      // compared again (the page asks again until it is fresh).
+      day_status: day ? { status: day.status, stale: Boolean(day.stale), computed_at: day.computed_at || null } : null,
       // The history table only: the latest uploads, without their skipped-
       // files lists (the bulk of it).
       imports: state.imports.slice(0, 30).map(({ skipped_files: _skipped, ...record }) => record),
@@ -21708,15 +21983,19 @@ async function handleApi(req, res, url) {
         dispatchLotCount = 0;
       }
       await saveInkoopInvoiceLines(flatInvoiceLines);
+      // The per-invoice totals (Overview) of the invoices in this upload.
+      await refreshInkoopInvoiceTotals(flatInvoiceLines.map((line) => line?.invoice_number));
       bumpInkoopMatchVersion();
-      // Calendar figures of the days this upload touched: recompute.
+      await saveInkoopInvoiceHeaders(buildInkoopInvoiceHeaders(veiling.invoices, body?.veiling_zip?.name));
+      inkoopSummaryCache.clear(); // the Overview dates invoices by these headers
+      await saveInkoopInvoicePdfs(veiling.pdfs);
+      // Everything saved: the days this upload touched (plus the match
+      // tolerance either side) are compared again in the background --
+      // nothing is compared while the upload waits.
       await refreshInkoopDaySummariesForDates([
         ...flatInvoiceLines.map((line) => line?.invoice_date),
         ...erpRows.map((row) => row?.date),
       ]);
-      await saveInkoopInvoiceHeaders(buildInkoopInvoiceHeaders(veiling.invoices, body?.veiling_zip?.name));
-      inkoopSummaryCache.clear(); // the Overview dates invoices by these headers
-      await saveInkoopInvoicePdfs(veiling.pdfs);
       // A big upload arrives in parts (the page splits it); only the last
       // part runs the -- heavy -- match over everything accumulated.
       const skipMatch = body?.skip_match === true;
@@ -21728,9 +22007,11 @@ async function handleApi(req, res, url) {
         if (day) dateCounts.set(day, (dateCounts.get(day) || 0) + 1);
       }
       const resultDate = [...dateCounts.entries()].sort((left, right) => right[1] - left[1])[0]?.[0] || inkoopIsoDate(runDate) || localDateIso();
-      const result = skipMatch
-        ? null
-        : filterInkoopResultsByCompany((await computeInkoopDay(state, resultDate)).result, body?.company);
+      if (!skipMatch) {
+        await prioritizeInkoopMatchDays([resultDate]);
+        kickInkoopMatchWorker();
+      }
+      const result = null;
 
       const importRecord = normalizeInkoopImportRecord({
         run_date: runDate,
@@ -21781,6 +22062,7 @@ async function handleApi(req, res, url) {
         days,
         from: range.from,
         to: range.to,
+        pending_days: dayBundles.pending_days || [],
         ...summary,
         day_report: dayReport,
         week_report: weekReport,
@@ -21821,17 +22103,32 @@ async function handleApi(req, res, url) {
       const buckets = new Map();
       const pending = [];
       if (monthStart <= lastDay) {
-        const fingerprint = inkoopStateFingerprint(state);
-        const stored = await getInkoopDaySummaries({ from: monthStart, to: lastDay });
-        const fresh = stored.filter((row) => row.state_fingerprint === fingerprint);
-        const computedDays = new Set(fresh.filter((row) => row.company === "").map((row) => row.date));
-        for (const row of fresh) {
+        // The stored figures (also while a day is being redone -- then it is
+        // listed in pending_days and the page asks again shortly); a day
+        // without a comparison row has no data at all.
+        const fingerprint = await inkoopCurrentFingerprint();
+        const [stored, matchDays] = await Promise.all([
+          getInkoopDaySummaries({ from: monthStart, to: lastDay }),
+          getInkoopMatchDays({ from: monthStart, to: lastDay, withData: false }),
+        ]);
+        const summarized = new Set(stored.filter((row) => row.company === "").map((row) => row.date));
+        for (const row of stored) {
           if (row.company === company) buckets.set(row.date, { ...row.bucket, date: row.date });
         }
-        for (const date of inkoopDatesInRange(monthStart, lastDay)) {
-          if (!computedDays.has(date)) pending.push(date);
+        const missingSummary = [];
+        for (const day of matchDays) {
+          if (day.status !== "ready" || day.fingerprint !== fingerprint) {
+            pending.push(day.date);
+          } else if (!summarized.has(day.date)) {
+            missingSummary.push(day.date);
+            pending.push(day.date);
+          }
         }
-        if (pending.length) queueInkoopDaySummaries(pending);
+        if (missingSummary.length) await markInkoopMatchDaysPending(missingSummary);
+        if (pending.length) {
+          await prioritizeInkoopMatchDays(pending);
+          kickInkoopMatchWorker();
+        }
       }
       const days = [];
       for (let day = 1; day <= daysInMonth; day += 1) {
@@ -21987,7 +22284,7 @@ async function handleApi(req, res, url) {
       });
       const filtered = showResolved ? merged : merged.filter((issue) => issue.status !== "resolved");
       filtered.sort((left, right) => right.value - left.value);
-      sendJson(res, 200, { issues: filtered, from: range.from, to: range.to });
+      sendJson(res, 200, { issues: filtered, from: range.from, to: range.to, pending_days: dayBundles.pending_days || [] });
     } catch (error) {
       sendJson(res, 400, { error: error instanceof Error ? error.message : String(error) });
     }
@@ -23525,6 +23822,7 @@ async function startServer() {
       ensureBackgroundIndexes()
         .then((built) => { if (built.length) console.log(`Built database index(es): ${built.join(", ")}`); })
         .catch((error) => console.error("Building background database indexes failed:", error instanceof Error ? error.message : error));
+      startInkoopMatchPipeline();
     }
     console.log("SnappySjaak shadow app is running.");
     console.log("Open on this PC:");
