@@ -8582,6 +8582,23 @@ function inkoopCorrectionBreakdown(item) {
   return { original, credited, reissued, returned: Math.max(0, credited - reissued) };
 }
 
+// How much should have gone back to retour: what we RECEIVED (the ERP lot's
+// pieces; else what the dispatch dump sent out) minus what is finally
+// invoiced. Invoiced 200, credited 200, invoiced again 100 with an ERP lot of
+// 100 is just the invoice corrected to what came in -- nothing to return
+// (user-confirmed); bought 250, credited 250, invoiced again 200 with 250
+// received means 50 went back. Without any ERP / dispatch figure: credited
+// minus invoiced again.
+function inkoopExpectedReturn(breakdown, receivedPieces) {
+  if (!(Number(receivedPieces) > 0)) {
+    return breakdown.returned;
+  }
+  const finallyInvoiced = breakdown.original > 0
+    ? breakdown.original - breakdown.credited + breakdown.reissued
+    : breakdown.reissued; // the original purchase lies outside the window
+  return Math.max(0, Math.round((Number(receivedPieces) - Math.max(0, finallyInvoiced)) * 100) / 100);
+}
+
 // Once matchInkoopVeilingLines nets a Klokfactuur/Connect correction, its
 // invoice-side total often still won't equal the ERP row it matched
 // against -- a straight return leaves the ERP showing the original
@@ -8614,7 +8631,7 @@ async function reclassifyInkoopConfirmedReturns(result, customerMap) {
   const dispatchByLot = new Map(dispatchLots.map((lot) => [String(lot.lot), lot]));
   const toPromote = new Set();
   for (const { item } of candidates) {
-    const { status } = inkoopOverallCorrectionRetourStatus(item.erp_row, dispatchByLot, customerMap, inkoopCorrectionBreakdown(item).returned);
+    const { status } = inkoopOverallCorrectionRetourStatus(item.erp_row, dispatchByLot, customerMap, inkoopExpectedReturn(inkoopCorrectionBreakdown(item), item.erp_row?.pieces));
     if (status === "confirmed_return") {
       toPromote.add(item);
     }
@@ -8652,10 +8669,12 @@ async function computeInkoopCorrectionRetourChecks(state, { from, to }) {
     linesByPav.get(pav).push(line);
   }
   const lotsByPav = new Map();
+  const erpPiecesByPav = new Map();
   for (const row of erpLots) {
     const pav = normalizeInkoopKey(row.pav);
     if (!lotsByPav.has(pav)) lotsByPav.set(pav, []);
     lotsByPav.get(pav).push(String(row.lot));
+    erpPiecesByPav.set(pav, (erpPiecesByPav.get(pav) || 0) + (Number(row.pieces) || 0));
   }
   const items = [];
   const seenPavs = new Set();
@@ -8676,6 +8695,7 @@ async function computeInkoopCorrectionRetourChecks(state, { from, to }) {
         total: Math.round(group.reduce((sum, line) => sum + (Number(line.total) || 0), 0) * 100) / 100,
         correction_lines: group,
         lot_source: { lot: (lotsByPav.get(pav) || []).join("+") },
+        erp_pieces: erpPiecesByPav.get(pav) || 0,
       });
     } else {
       // Handel / AI2 credit: no PAV, so no ERP lot to follow.
@@ -8687,9 +8707,16 @@ async function computeInkoopCorrectionRetourChecks(state, { from, to }) {
   const dispatchByLot = new Map(dispatchLots.map((lot) => [String(lot.lot), lot]));
   const checks = items.map((item) => {
     const breakdown = inkoopCorrectionBreakdown(item);
+    // Received: the ERP lot(s); without them, what the dispatch dump sent out.
+    const dispatched = inkoopCorrectionLotNumbers(item.lot_source)
+      .flatMap((lotNumber) => dispatchByLot.get(lotNumber)?.dispatches || [])
+      .reduce((sum, dispatch) => sum + (Number(dispatch?.pieces) || 0), 0);
+    const received = item.erp_pieces || dispatched;
+    breakdown.returned = inkoopExpectedReturn(breakdown, received);
     const { status, lots, retour_pieces: retourPieces } = inkoopOverallCorrectionRetourStatus(item.lot_source, dispatchByLot, state.customer_map, breakdown.returned);
     return {
       ...breakdown,
+      received,
       retour_pieces: retourPieces,
       invoice_number: item.invoice_number,
       invoice_numbers: [...new Set(item.correction_lines.map((line) => line.invoice_number).filter(Boolean))],

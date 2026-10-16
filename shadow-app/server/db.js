@@ -1029,7 +1029,7 @@ export async function getInkoopCorrectionLines({ from, to, marginDays = 4 } = {}
     [pavs, from, to, marginDays],
   );
   const erpLots = await pool.query(
-    "SELECT lot::text AS lot, pav FROM inkoop_erp_lines WHERE pav = ANY($1::text[])",
+    "SELECT lot::text AS lot, pav, pieces::float8 AS pieces FROM inkoop_erp_lines WHERE pav = ANY($1::text[])",
     [pavs],
   );
   return { credits: credits.rows, pavLines: pavLines.rows, erpLots: erpLots.rows };

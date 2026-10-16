@@ -17502,7 +17502,7 @@ const INKOOP_RETOUR_STATUS_LABELS = {
   partial_return: "Partially returned",
   not_return: "Not returned - investigate",
   no_dispatch_data: "No dispatch data yet",
-  no_return_expected: "No return (price / fust correction)",
+  no_return_expected: "OK -- no return needed",
   extra_return: "More returned than credited",
 };
 
@@ -17632,15 +17632,15 @@ function InkoopDestinationsTab() {
       <div style={loadingCorrections && corrections ? { opacity: 0.35, pointerEvents: "none" } : undefined}>
       <InkoopCollapsibleCard title={corrections ? `Corrections check -- ${fustOverviewDate(corrections.from)} - ${fustOverviewDate(corrections.to)}` : "Corrections check"} count={correctionRows.length}>
         <div className="notice">
-          A correction credits the whole invoiced lot and invoices the right amount again: bought 5x50, one bunch bad -&gt; credited 250, invoiced again 200, so <strong>50 returned</strong>. That returned amount has to show up at a "retour" customer (Tgrp B/P 119) in the dispatch dump; the rest of the lot was sold normally. Credited and invoiced again in full = a price or fust correction, nothing returned. Internal XX codes (bunches, mix, ...) are labelled but don't confirm a return.
+          A correction credits the whole invoiced lot and invoices the right amount again. Only what we <strong>received</strong> (the ERP lot) more than what is finally invoiced has to go back: received 250, credited 250, invoiced again 200 -&gt; <strong>50 returned</strong>, to be found at a "retour" customer (Tgrp B/P 119) in the dispatch dump. Received 100, invoiced 200, credited 200, invoiced again 100 -&gt; the invoice was just corrected to what came in: OK, no return needed. Internal XX codes (bunches, mix, ...) are labelled but don't confirm a return.
         </div>
         <div className="table-wrap">
           <table className="data-table">
             <thead>
-              <tr><th>Date</th><th>Invoice</th><th>PAV</th><th>Description</th><th>Invoiced</th><th>Credited</th><th>Invoiced again</th><th>Returned</th><th>At retour</th><th>Net value</th><th>Status</th><th>Destination(s)</th></tr>
+              <tr><th>Date</th><th>Invoice</th><th>PAV</th><th>Description</th><th>Invoiced</th><th>Credited</th><th>Invoiced again</th><th>Received (ERP)</th><th>To return</th><th>At retour</th><th>Net value</th><th>Status</th><th>Destination(s)</th></tr>
             </thead>
             <tbody>
-              {!corrections && <tr><td colSpan={12}>Loading corrections...</td></tr>}
+              {!corrections && <tr><td colSpan={13}>Loading corrections...</td></tr>}
               {correctionRows.map((item, index) => (
                 <tr key={`${item.invoice_number}-${item.pav}-${index}`}>
                   <td>{inkoopShortDate(item.invoice_date)}</td>
@@ -17650,6 +17650,7 @@ function InkoopDestinationsTab() {
                   <td>{item.original || "-"}</td>
                   <td>{item.credited ? `-${item.credited}` : "-"}</td>
                   <td>{item.reissued || "-"}</td>
+                  <td>{item.received || "-"}</td>
                   <td><strong>{item.returned || 0}</strong></td>
                   <td>{item.retour_pieces || 0}</td>
                   <td>{formatInkoopEuro(item.total)}</td>
@@ -17666,7 +17667,7 @@ function InkoopDestinationsTab() {
                 </tr>
               ))}
               {corrections && !correctionRows.length && (
-                <tr><td colSpan={12}>No open corrections in the current matching window.</td></tr>
+                <tr><td colSpan={13}>No corrections in this period.</td></tr>
               )}
             </tbody>
           </table>
