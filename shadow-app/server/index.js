@@ -42,6 +42,8 @@ import {
   searchInkoopErpLines,
   getInkoopCorrectionLines,
   getInkoopMatchDays,
+  inkoopDataTableDefinitions,
+  queryInkoopDataTable,
   markInkoopMatchDaysPending,
   prioritizeInkoopMatchDays,
   markStaleInkoopMatchDays,
@@ -21509,6 +21511,68 @@ async function handleApi(req, res, url) {
 
   // Distinct (company_number, company_name) pairs seen on any uploaded
   // invoice line -- populates the page-level company filter dropdown.
+  // Inkoop Controle "Data" tab: Excel-like tables, filtered / sorted / paged
+  // in the database (see queryInkoopDataTable).
+  if (url.pathname === "/api/inkoop/data/tables" && req.method === "GET") {
+    if (!requirePermission(res, requestUser, PERMISSIONS.INKOOP_VIEW)) {
+      return;
+    }
+    sendJson(res, 200, { tables: inkoopDataTableDefinitions() });
+    return;
+  }
+
+  if ((url.pathname === "/api/inkoop/data" || url.pathname === "/api/inkoop/data/csv") && req.method === "GET") {
+    if (!requirePermission(res, requestUser, PERMISSIONS.INKOOP_VIEW)) {
+      return;
+    }
+    const table = String(url.searchParams.get("table") || "");
+    const definitions = inkoopDataTableDefinitions();
+    if (!definitions[table]) {
+      sendJson(res, 400, { error: "Unknown table" });
+      return;
+    }
+    let filters = {};
+    try {
+      filters = JSON.parse(url.searchParams.get("filters") || "{}") || {};
+    } catch {
+      filters = {};
+    }
+    const csv = url.pathname.endsWith("/csv");
+    const result = await queryInkoopDataTable({
+      table,
+      filters,
+      sort: url.searchParams.get("sort") || "",
+      dir: url.searchParams.get("dir") || "desc",
+      page: Number(url.searchParams.get("page")) || 1,
+      size: Number(url.searchParams.get("size")) || 100,
+      company: normalizeUkdocsText(url.searchParams.get("company")),
+      limit: csv ? 50000 : null,
+    });
+    if (table === "dispatches") {
+      const state = await readInkoopState();
+      for (const row of result.rows) {
+        row.customer_name = resolveInkoopCustomer(row.customer_code, state.customer_map)?.name || "";
+      }
+    }
+    if (!csv) {
+      sendJson(res, 200, result);
+      return;
+    }
+    const columns = definitions[table].columns;
+    const cell = (value) => {
+      const text = value === null || value === undefined ? "" : typeof value === "number" ? String(value).replace(".", ",") : String(value);
+      return /[";\n]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text;
+    };
+    const lines = [columns.map((column) => cell(column.label)).join(";"), ...result.rows.map((row) => columns.map((column) => cell(row[column.key])).join(";"))];
+    res.writeHead(200, {
+      "content-type": "text/csv; charset=utf-8",
+      "content-disposition": `attachment; filename="${table}_${localDateIso()}.csv"`,
+      "cache-control": "no-store",
+    });
+    res.end(`\ufeff${lines.join("\r\n")}`);
+    return;
+  }
+
   // The background comparison: how many days are waiting / running / ready /
   // failed (Pipeline Monitor and the banner in Inkoop Controle).
   if (url.pathname === "/api/inkoop/match-status" && req.method === "GET") {

@@ -15676,6 +15676,186 @@ function InkoopSearchTab({ company }) {
   );
 }
 
+// Inkoop Controle "Data": every stored table, Excel-like -- a filter under
+// each column header, click a header to sort, pages of rows. The database
+// does the filtering, sorting and counting (GET /api/inkoop/data), so it
+// stays quick with millions of rows; each table keeps its own filters.
+const INKOOP_DATA_DEFAULT_SORT = { invoices: "invoice_date", invoice_lines: "invoice_date", erp_lines: "erp_date", dispatches: "erp_date", match_rows: "match_date" };
+
+function inkoopDataCell(column, value) {
+  if (value === null || value === undefined || value === "") return "";
+  if (column.type === "date") return fustOverviewDate(value);
+  if (column.type === "number") {
+    const number = Number(value);
+    if (!Number.isFinite(number)) return String(value);
+    // Amounts always with 2 decimals; counts as whole numbers.
+    const money = /total|price|products|emballage|fees|difference/.test(column.key);
+    return Number.isInteger(number) && !money ? number.toLocaleString("nl-NL") : number.toLocaleString("nl-NL", { minimumFractionDigits: 2, maximumFractionDigits: money && !/price/.test(column.key) ? 2 : 4 });
+  }
+  if (column.options) {
+    const option = column.options.find(([key]) => key === value);
+    return option ? option[1] : String(value);
+  }
+  return String(value);
+}
+
+function InkoopDataFilter({ column, value, onChange }) {
+  const set = (patch) => onChange({ ...(value || {}), ...patch });
+  if (!column.filterable) return null;
+  if (column.options) {
+    return (
+      <select value={(value?.in || [])[0] || ""} onChange={(event) => onChange(event.target.value ? { in: [event.target.value] } : null)}>
+        <option value="">(all)</option>
+        {column.options.map(([key, label]) => <option key={key} value={key}>{label}</option>)}
+      </select>
+    );
+  }
+  if (column.type === "number") {
+    return (
+      <div className="data-filter-range">
+        <input value={value?.min ?? ""} placeholder="min" onChange={(event) => set({ min: event.target.value })} />
+        <input value={value?.max ?? ""} placeholder="max" onChange={(event) => set({ max: event.target.value })} />
+      </div>
+    );
+  }
+  if (column.type === "date") {
+    return (
+      <div className="data-filter-range">
+        <input type="date" value={value?.from || ""} onChange={(event) => set({ from: event.target.value })} title="from" />
+        <input type="date" value={value?.to || ""} onChange={(event) => set({ to: event.target.value })} title="to" />
+      </div>
+    );
+  }
+  return <input value={value?.text || ""} placeholder="contains..." onChange={(event) => set({ text: event.target.value })} title='Part of the text; several words all have to be there. "=x": exactly x, "!x": not containing x.' />;
+}
+
+function InkoopDataTab({ company }) {
+  const [tables, setTables] = useState(null);
+  const [table, setTable] = useState("invoice_lines");
+  // Per table: { filters, sort, dir, page, size }
+  const [views, setViews] = useState({});
+  const [data, setData] = useState(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState("");
+  const requestRef = useRef(0);
+
+  useEffect(() => {
+    apiJson("/api/inkoop/data/tables").then((payload) => setTables(payload.tables)).catch((loadError) => setError(loadError.message));
+  }, []);
+
+  const view = views[table] || { filters: {}, sort: INKOOP_DATA_DEFAULT_SORT[table], dir: "desc", page: 1, size: 100 };
+  const setView = (patch) => setViews((current) => ({ ...current, [table]: { ...view, ...patch } }));
+  const definition = tables?.[table];
+
+  const params = () => {
+    const query = new URLSearchParams({ table, sort: view.sort || "", dir: view.dir, page: String(view.page), size: String(view.size) });
+    const filters = Object.fromEntries(Object.entries(view.filters || {}).filter(([, value]) => value && Object.values(value).some((part) => (Array.isArray(part) ? part.length : String(part ?? "").trim()))));
+    if (Object.keys(filters).length) query.set("filters", JSON.stringify(filters));
+    if (company) query.set("company", company);
+    return query;
+  };
+
+  // Typing in a filter waits half a second before asking the database.
+  useEffect(() => {
+    if (!definition) return undefined;
+    const request = ++requestRef.current;
+    const timer = setTimeout(() => {
+      setLoading(true);
+      setError("");
+      apiJson(`/api/inkoop/data?${params()}`)
+        .then((payload) => { if (request === requestRef.current) setData({ ...payload, table }); })
+        .catch((loadError) => { if (request === requestRef.current) setError(loadError.message); })
+        .finally(() => { if (request === requestRef.current) setLoading(false); });
+    }, 450);
+    return () => clearTimeout(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [definition, table, JSON.stringify(view), company]);
+
+  if (!tables) {
+    return <div className="notice">{error || "Loading tables..."}</div>;
+  }
+  const rows = data?.table === table ? data.rows : [];
+  const total = data?.table === table ? data.total : 0;
+  const pages = Math.max(1, Math.ceil(total / view.size));
+  const anyFilter = Object.values(view.filters || {}).some(Boolean);
+
+  return (
+    <div className="data-table-card">
+      <div className="section-header"><h2>Data</h2></div>
+      <div className="tab-strip">
+        {Object.entries(tables).map(([key, entry]) => (
+          <button key={key} type="button" className={table === key ? "active" : ""} onClick={() => setTable(key)}>{entry.label}</button>
+        ))}
+      </div>
+      <div className="notice">
+        Filter under every column header (text: part of it, several words all have to be there, <code>=x</code> exactly x, <code>!x</code> not containing x; numbers and dates: from - to), click a header to sort. The database does the work, one page at a time -- also for millions of rows. Download CSV gives every row of the filter (up to 50,000).{company ? ` Only company ${company} where the table has a company.` : ""}
+      </div>
+      <div className="row-actions spread-actions">
+        <span className="muted">
+          {loading ? "Loading..." : `${total.toLocaleString("nl-NL")}${data?.total_capped ? "+" : ""} row${total === 1 ? "" : "s"}`}
+        </span>
+        <div className="row-actions">
+          {anyFilter && <button type="button" onClick={() => setView({ filters: {}, page: 1 })}>Clear filters</button>}
+          <a className="button" href={`/api/inkoop/data/csv?${params()}`}>Download CSV</a>
+        </div>
+      </div>
+      {error && <div className="notice danger">{error}</div>}
+      <div className="table-wrap" style={loading ? { opacity: 0.55 } : undefined}>
+        <table className="data-table">
+          <thead>
+            <tr>
+              {definition.columns.map((column) => (
+                <th
+                  key={column.key}
+                  style={{ cursor: column.sortable ? "pointer" : "default", whiteSpace: "nowrap" }}
+                  onClick={() => column.sortable && setView({ sort: column.key, dir: view.sort === column.key && view.dir === "desc" ? "asc" : "desc", page: 1 })}
+                >
+                  {column.label}{view.sort === column.key ? (view.dir === "desc" ? " ▼" : " ▲") : ""}
+                </th>
+              ))}
+            </tr>
+            <tr>
+              {definition.columns.map((column) => (
+                <th key={column.key}>
+                  <InkoopDataFilter
+                    column={column}
+                    value={view.filters?.[column.key]}
+                    onChange={(value) => setView({ filters: { ...view.filters, [column.key]: value }, page: 1 })}
+                  />
+                </th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map((row, index) => (
+              <tr key={index}>
+                {definition.columns.map((column) => (
+                  <td key={column.key} style={column.type === "number" ? { textAlign: "right", whiteSpace: "nowrap" } : undefined}>
+                    {column.key === "invoice_number" && row[column.key] ? <InkoopInvoiceLink invoiceNumber={row[column.key]} /> : inkoopDataCell(column, row[column.key])}
+                  </td>
+                ))}
+              </tr>
+            ))}
+            {!rows.length && !loading && <tr><td colSpan={definition.columns.length}>No rows{anyFilter ? " for this filter" : ""}.</td></tr>}
+          </tbody>
+        </table>
+      </div>
+      <div className="row-actions">
+        <button type="button" disabled={view.page <= 1} onClick={() => setView({ page: 1 })}>&laquo;</button>
+        <button type="button" disabled={view.page <= 1} onClick={() => setView({ page: view.page - 1 })}>&lsaquo; Previous</button>
+        <span>Page {view.page} of {pages.toLocaleString("nl-NL")}{data?.total_capped ? "+" : ""}</span>
+        <button type="button" disabled={view.page >= pages} onClick={() => setView({ page: view.page + 1 })}>Next &rsaquo;</button>
+        <label>
+          <span>Rows per page</span>
+          <select value={view.size} onChange={(event) => setView({ size: Number(event.target.value), page: 1 })}>
+            {[50, 100, 250, 500].map((size) => <option key={size} value={size}>{size}</option>)}
+          </select>
+        </label>
+      </div>
+    </div>
+  );
+}
+
 const KING_EXPORT_STATUS_LABELS = { queued: "Sent, waiting for delivery", delivered: "Delivered to King", failed: "Delivery failed" };
 
 function kingPostStatus(post) {
@@ -16518,6 +16698,7 @@ function InkoopControlePage({ currentUser }) {
         <button type="button" className={activeTab === "followup" ? "active" : ""} onClick={() => setActiveTab("followup")}>Follow-up</button>
         <button type="button" className={activeTab === "destinations" ? "active" : ""} onClick={() => setActiveTab("destinations")}>Destinations</button>
         <button type="button" className={activeTab === "search" ? "active" : ""} onClick={() => setActiveTab("search")}>Search</button>
+        <button type="button" className={activeTab === "data" ? "active" : ""} onClick={() => setActiveTab("data")}>Data</button>
         <button type="button" className={activeTab === "king" ? "active" : ""} onClick={() => setActiveTab("king")}>Import naar King</button>
         <button type="button" className={activeTab === "settings" ? "active" : ""} onClick={() => setActiveTab("settings")}>Settings</button>
       </div>
@@ -16664,6 +16845,7 @@ function InkoopControlePage({ currentUser }) {
 
       {/* Kept mounted: results stay when you look at another tab and come back. */}
       <div style={activeTab === "search" ? undefined : { display: "none" }}><InkoopSearchTab company={selectedCompany} /></div>
+      {activeTab === "data" && <InkoopDataTab company={selectedCompany} />}
 
       {activeTab === "compare" && (
       <>

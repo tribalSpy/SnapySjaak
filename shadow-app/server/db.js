@@ -1298,6 +1298,208 @@ export async function countInkoopInvoiceTotals() {
   return result.rows[0]?.count || 0;
 }
 
+// ---- Inkoop Controle "Data" tab: Excel-like tables ------------------------
+// Filtering, sorting, counting and paging all happen in the database, so a
+// table of millions of rows still answers with one page at a time. Only the
+// columns listed here can be shown, filtered or sorted (each with its own
+// SQL expression -- nothing from the request ends up in SQL text).
+const INKOOP_LINE_LISTS = [
+  ["matched_ok", "OK"], ["matched_mismatch", "Difference"], ["only_in_invoice", "Only on invoice"], ["only_in_erp", "Only in ERP"],
+  ["supplier_not_linked", "Supplier not linked"], ["ambiguous_matches", "Ambiguous"], ["fee_lines", "Fee / other line"], ["embalage_lines", "Emballage"],
+];
+const INKOOP_LINE_KINDS = [["product", "Product"], ["fust", "Fust & packaging"], ["fee", "Heffing"], ["emballage", "Emballage"], ["admin", "Administrative"], ["service", "Service (FD / HV)"], ["no_value", "No value"]];
+const INKOOP_INVOICE_TYPES = [["klokfactuur", "Klokfactuur"], ["connect", "Connect"], ["handel", "Handel"], ["handel_verkoop", "Handel verkoop"], ["dienst", "Dienst"], ["ai2", "AI2"]];
+
+const INKOOP_DATA_TABLES = {
+  invoices: {
+    label: "Invoices",
+    from: `inkoop_invoice_totals t LEFT JOIN inkoop_invoice_headers h ON h.invoice_number = t.invoice_number`,
+    order: "t.invoice_number",
+    company: "t.company_number",
+    columns: [
+      { key: "invoice_date", label: "Factuurdatum", type: "date", sql: "COALESCE(h.invoice_date, t.first_line_date)" },
+      { key: "invoice_number", label: "Invoice", type: "text", sql: "t.invoice_number" },
+      { key: "invoice_type", label: "Type", type: "text", sql: "t.invoice_type", options: INKOOP_INVOICE_TYPES },
+      { key: "company_number", label: "Company", type: "text", sql: "t.company_number" },
+      { key: "company_name", label: "Company name", type: "text", sql: "t.company_name" },
+      { key: "products", label: "Products", type: "number", sql: "(CASE WHEN t.summary_line_count = 0 THEN t.detail_total ELSE t.products END)" },
+      { key: "emballage", label: "Emballage", type: "number", sql: "t.emballage" },
+      { key: "fees", label: "Fees", type: "number", sql: "t.fees" },
+      { key: "total", label: "Total excl. BTW", type: "number", sql: "(CASE WHEN t.summary_line_count = 0 THEN t.detail_total ELSE t.products END + t.emballage + t.fees)" },
+      { key: "grand_total", label: "Total incl. BTW", type: "number", sql: "h.grand_total" },
+      { key: "line_count", label: "Lines", type: "number", sql: "t.line_count" },
+    ],
+  },
+  invoice_lines: {
+    label: "Invoice lines",
+    from: "inkoop_invoice_lines l",
+    order: "l.id",
+    company: "l.company_number",
+    columns: [
+      { key: "invoice_date", label: "Date", type: "date", sql: "l.invoice_date" },
+      { key: "invoice_number", label: "Invoice", type: "text", sql: "l.invoice_number" },
+      { key: "invoice_type", label: "Type", type: "text", sql: "l.invoice_type", options: INKOOP_INVOICE_TYPES },
+      { key: "company_number", label: "Company", type: "text", sql: "l.company_number" },
+      { key: "kind", label: "Kind", type: "text", sql: `(${INKOOP_LINE_KIND_SQL})`, options: INKOOP_LINE_KINDS },
+      { key: "pav", label: "PAV", type: "text", sql: "l.reference_bt" },
+      { key: "description", label: "Product", type: "text", sql: "l.description" },
+      { key: "supplier_name", label: "Grower / supplier", type: "text", sql: "l.supplier_name" },
+      { key: "supplier_fh_number", label: "FH number", type: "text", sql: "l.supplier_fh_number" },
+      { key: "quantity", label: "Quantity", type: "number", sql: "l.quantity" },
+      { key: "unit_price", label: "Price", type: "number", sql: "l.unit_price" },
+      { key: "total", label: "Total", type: "number", sql: "l.total" },
+    ],
+  },
+  erp_lines: {
+    label: "ERP lines",
+    from: "inkoop_erp_lines e",
+    order: "e.lot",
+    columns: [
+      { key: "erp_date", label: "Date", type: "date", sql: "e.erp_date" },
+      { key: "lot", label: "Lot", type: "number", sql: "e.lot" },
+      { key: "pav", label: "PAV", type: "text", sql: "e.pav" },
+      { key: "description", label: "Product", type: "text", sql: "e.description" },
+      { key: "suppl", label: "Supplier", type: "text", sql: "e.suppl" },
+      { key: "avc", label: "AVC", type: "text", sql: "e.avc" },
+      { key: "transp", label: "Transport", type: "text", sql: "e.transp" },
+      { key: "pieces", label: "Pieces", type: "number", sql: "e.pieces" },
+      { key: "price", label: "Price", type: "number", sql: "e.price" },
+      { key: "t_price", label: "Total", type: "number", sql: "e.t_price" },
+      { key: "deb_no", label: "Deb. no.", type: "text", sql: "e.deb_no" },
+      { key: "inv_no", label: "Inv. no.", type: "text", sql: "e.inv_no" },
+    ],
+  },
+  dispatches: {
+    label: "Dispatches",
+    from: "inkoop_dispatch_lots d CROSS JOIN LATERAL jsonb_array_elements(COALESCE(d.dispatches, '[]'::jsonb)) WITH ORDINALITY AS x(dispatch, position)",
+    order: "d.lot, x.position",
+    columns: [
+      { key: "erp_date", label: "Date", type: "date", sql: "d.erp_date" },
+      { key: "lot", label: "Lot", type: "number", sql: "d.lot" },
+      { key: "pav", label: "PAV", type: "text", sql: "d.pav" },
+      { key: "description", label: "Product", type: "text", sql: "d.description" },
+      { key: "suppl", label: "Supplier", type: "text", sql: "d.suppl" },
+      { key: "customer_code", label: "Customer / dispatch code", type: "text", sql: "upper(btrim(x.dispatch->>'code'))" },
+      { key: "customer_name", label: "Customer name", type: "text", sql: null },
+      { key: "dispatched_pieces", label: "Pieces sent", type: "number", sql: "NULLIF(x.dispatch->>'pieces', '')::numeric" },
+      { key: "lot_pieces", label: "Lot pieces", type: "number", sql: "d.pieces" },
+      { key: "lot_total", label: "Lot total", type: "number", sql: "d.t_price" },
+    ],
+  },
+  match_rows: {
+    label: "Comparison results",
+    from: "inkoop_match_rows m",
+    order: "m.id",
+    company: "m.company_number",
+    columns: [
+      { key: "match_date", label: "Date", type: "date", sql: "m.match_date" },
+      { key: "list", label: "Result", type: "text", sql: "m.list", options: INKOOP_LINE_LISTS },
+      { key: "company_number", label: "Company", type: "text", sql: "m.company_number" },
+      { key: "invoice_number", label: "Invoice", type: "text", sql: "m.invoice_number" },
+      { key: "pav", label: "PAV", type: "text", sql: "m.pav" },
+      { key: "lot", label: "Lot", type: "text", sql: "m.lot" },
+      { key: "supplier_code", label: "Supplier code", type: "text", sql: "m.supplier_code" },
+      { key: "supplier_name", label: "Grower / supplier", type: "text", sql: "m.supplier_name" },
+      { key: "description", label: "Product", type: "text", sql: "m.description" },
+      { key: "invoice_quantity", label: "Invoice qty", type: "number", sql: "m.invoice_quantity" },
+      { key: "invoice_total", label: "Invoice total", type: "number", sql: "m.invoice_total" },
+      { key: "erp_quantity", label: "ERP qty", type: "number", sql: "m.erp_quantity" },
+      { key: "erp_total", label: "ERP total", type: "number", sql: "m.erp_total" },
+      { key: "difference_total", label: "Difference", type: "number", sql: "m.difference_total" },
+      { key: "note", label: "Note", type: "text", sql: "m.note" },
+    ],
+  },
+};
+
+export function inkoopDataTableDefinitions() {
+  return Object.fromEntries(Object.entries(INKOOP_DATA_TABLES).map(([key, table]) => [key, {
+    label: table.label,
+    columns: table.columns.map(({ key: column, label, type, options, sql }) => ({ key: column, label, type, options: options || null, filterable: Boolean(sql), sortable: Boolean(sql) })),
+  }]));
+}
+
+const INKOOP_DATA_COUNT_CAP = 100000;
+
+// filters: { column: { text } | { min, max } | { from, to } | { in: [...] } }
+//   text: part of the value (case-insensitive); "=x" exactly x; "!x" not containing x;
+//   several words must all be there.
+export async function queryInkoopDataTable({ table, filters = {}, sort, dir, page = 1, size = 100, company = "", limit = null } = {}) {
+  const definition = INKOOP_DATA_TABLES[table];
+  if (!pool || !definition) {
+    return { rows: [], total: 0, total_capped: false };
+  }
+  const values = [];
+  const add = (value) => { values.push(value); return `$${values.length}`; };
+  const like = (value) => `%${String(value).replace(/[\\%_]/g, (match) => `\\${match}`)}%`;
+  const conditions = [];
+  for (const column of definition.columns) {
+    const filter = filters?.[column.key];
+    if (!filter || !column.sql) continue;
+    if (Array.isArray(filter.in) && filter.in.length) {
+      conditions.push(`${column.sql} = ANY(${add(filter.in.map(String))}::text[])`);
+    }
+    if (column.type === "text" && String(filter.text || "").trim()) {
+      const text = String(filter.text).trim();
+      if (text.startsWith("=")) {
+        conditions.push(`lower(COALESCE(${column.sql}::text, '')) = lower(${add(text.slice(1).trim())})`);
+      } else if (text.startsWith("!")) {
+        conditions.push(`COALESCE(${column.sql}::text, '') NOT ILIKE ${add(like(text.slice(1).trim()))}`);
+      } else {
+        for (const word of text.split(/\s+/).filter(Boolean).slice(0, 8)) {
+          conditions.push(`${column.sql}::text ILIKE ${add(like(word))}`);
+        }
+      }
+    }
+    if (column.type === "number") {
+      const min = Number.parseFloat(String(filter.min ?? "").replace(",", "."));
+      const max = Number.parseFloat(String(filter.max ?? "").replace(",", "."));
+      if (Number.isFinite(min)) conditions.push(`${column.sql} >= ${add(min)}`);
+      if (Number.isFinite(max)) conditions.push(`${column.sql} <= ${add(max)}`);
+    }
+    if (column.type === "date") {
+      if (/^\d{4}-\d{2}-\d{2}$/.test(String(filter.from || ""))) conditions.push(`${column.sql} >= ${add(filter.from)}::date`);
+      if (/^\d{4}-\d{2}-\d{2}$/.test(String(filter.to || ""))) conditions.push(`${column.sql} <= ${add(filter.to)}::date`);
+    }
+  }
+  if (company && definition.company) {
+    conditions.push(`${definition.company} = ${add(String(company))}`);
+  }
+  const where = conditions.length ? `WHERE ${conditions.join(" AND ")}` : "";
+  const sortColumn = definition.columns.find((column) => column.key === sort && column.sql) || definition.columns[0];
+  const direction = String(dir).toLowerCase() === "asc" ? "ASC" : "DESC";
+  const select = definition.columns.map((column) => (column.sql ? (column.type === "date" ? `to_char(${column.sql}, 'YYYY-MM-DD') AS "${column.key}"` : `${column.sql} AS "${column.key}"`) : `NULL AS "${column.key}"`)).join(", ");
+  const pageSize = Math.max(1, Math.min(limit ? 50000 : 500, Number(limit || size) || 100));
+  const offset = limit ? 0 : Math.max(0, (Math.max(1, Number(page) || 1) - 1) * pageSize);
+  const queryValues = [...values];
+  const rowsResult = await pool.query(
+    `SELECT ${select} FROM ${definition.from} ${where}
+     ORDER BY ${sortColumn.sql} ${direction} NULLS LAST, ${definition.order}
+     LIMIT ${pageSize} OFFSET ${offset}`,
+    queryValues,
+  );
+  let total = null;
+  let totalCapped = false;
+  if (!limit) {
+    const countResult = await pool.query(
+      `SELECT COUNT(*)::int AS count FROM (SELECT 1 FROM ${definition.from} ${where} LIMIT ${INKOOP_DATA_COUNT_CAP + 1}) capped`,
+      values,
+    );
+    total = countResult.rows[0]?.count || 0;
+    totalCapped = total > INKOOP_DATA_COUNT_CAP;
+    if (totalCapped) total = INKOOP_DATA_COUNT_CAP;
+  }
+  const rows = rowsResult.rows.map((row) => {
+    const out = { ...row };
+    for (const column of definition.columns) {
+      const value = out[column.key];
+      if (value instanceof Date) out[column.key] = value.toISOString().slice(0, 10);
+      else if (column.type === "number" && value !== null && value !== undefined) out[column.key] = Number(value);
+    }
+    return out;
+  });
+  return { rows, total, total_capped: totalCapped, page: Math.max(1, Number(page) || 1), size: pageSize };
+}
+
 // Destinations "Corrections check" straight from the tables (it ran the
 // whole invoice-vs-ERP match for every day of the period just to pick out
 // these few lines): the product lines with a negative quantity or amount in
