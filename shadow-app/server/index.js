@@ -8252,8 +8252,20 @@ function inkoopResultOnDay(result, date) {
 
 // A day compared now, from the lines (the stored comparison is read by
 // computeInkoopDay / computeInkoopDays below).
-async function computeInkoopDayFresh(state, date) {
+async function computeInkoopDayFresh(state, date, { cache = true } = {}) {
   const window = inkoopDayWindow(date);
+  if (!cache) {
+    // The background worker: not through the in-memory cache (a long backlog
+    // would fill it with results nobody asks for again), but still one
+    // computation at a time together with the pages.
+    const run = inkoopMatchLock.then(async () => {
+      const match = await computeInkoopLiveMatchFresh(state, window);
+      const aggregateContext = await buildInkoopAggregateContext(state, window);
+      return { date, result: inkoopResultOnDay(match, date), aggregateContext };
+    });
+    inkoopMatchLock = run.catch(() => {});
+    return run;
+  }
   const match = await computeInkoopLiveMatch(state, window);
   const aggregateContext = await buildInkoopAggregateContextCached(state, window);
   return { date, result: inkoopResultOnDay(match, date), aggregateContext };
@@ -8539,7 +8551,7 @@ function kickInkoopMatchWorker() {
           try {
             const state = await readInkoopState();
             const fingerprint = await inkoopCurrentFingerprint();
-            const bundle = await computeInkoopDayFresh(state, job.date);
+            const bundle = await computeInkoopDayFresh(state, job.date, { cache: false });
             await storeInkoopMatchBundle(bundle, fingerprint, job.generation, Date.now() - started);
           } catch (error) {
             console.error(`Inkoop comparison of ${job.date} failed:`, error instanceof Error ? error.message : error);
