@@ -42,6 +42,7 @@ import {
   searchInkoopErpLines,
   getInkoopCorrectionLines,
   getInkoopMatchDays,
+  getInkoopPeriodReport,
   inkoopDataTableDefinitions,
   queryInkoopDataTable,
   markInkoopMatchDaysPending,
@@ -22117,6 +22118,22 @@ async function handleApi(req, res, url) {
   // report / week report and a dedicated (never matched) Emballage summary
   // -- all pure aggregation of what matchInkoopVeilingLines already
   // produces, no new matching logic.
+  // Month and year report (Financial Dashboard): from the stored day
+  // figures, independent of the dashboard's period.
+  if (url.pathname === "/api/inkoop/dashboard/periods" && req.method === "GET") {
+    if (!requirePermission(res, requestUser, PERMISSIONS.INKOOP_VIEW)) {
+      return;
+    }
+    const company = normalizeUkdocsText(url.searchParams.get("company"));
+    const [months, years, status] = await Promise.all([
+      getInkoopPeriodReport({ unit: "month", company }),
+      getInkoopPeriodReport({ unit: "year", company }),
+      getInkoopMatchStatus(),
+    ]);
+    sendJson(res, 200, { months, years, pending_days: (status.counts?.pending || 0) + (status.counts?.running || 0) });
+    return;
+  }
+
   if (url.pathname === "/api/inkoop/dashboard/summary" && req.method === "GET") {
     if (!requirePermission(res, requestUser, PERMISSIONS.INKOOP_VIEW)) {
       return;

@@ -839,6 +839,28 @@ export async function updateKingExportBatchStatus(batchId, status, errorText = "
 
 // Just the columns the per-company invoice summary needs (not the full raw
 // line), for every line in the date range.
+// Financial Dashboard month / year report: the stored day figures (the
+// same ones the Calendar and the week report show) added up per month or
+// year, over everything stored -- one query, nothing compared again.
+export async function getInkoopPeriodReport({ unit = "month", company = "" } = {}) {
+  if (!pool) {
+    return [];
+  }
+  const format = unit === "year" ? "YYYY" : "YYYY-MM";
+  const sum = (field) => `COALESCE(SUM(NULLIF(bucket->>'${field}', '')::numeric), 0)::float8 AS ${field}`;
+  const result = await pool.query(
+    `SELECT to_char(summary_date, '${format}') AS period,
+       COUNT(DISTINCT summary_date)::int AS days,
+       ${["purchase_value", "invoice_value", "erp_value", "mismatch_count", "mismatch_value", "gap_count", "gap_value", "embalage_value", "product_count"].map(sum).join(",\n       ")}
+     FROM inkoop_day_summaries
+     WHERE company = $1
+     GROUP BY 1
+     ORDER BY 1 DESC`,
+    [company || ""],
+  );
+  return result.rows;
+}
+
 export async function getInkoopDaySummaries({ from, to } = {}) {
   if (!pool || !from || !to) {
     return [];
