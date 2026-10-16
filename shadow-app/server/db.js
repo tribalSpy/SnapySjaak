@@ -221,6 +221,27 @@ function dedupeByKeyKeepingLast(items, keyFn) {
 // multi-row INSERT ... ON CONFLICT instead.
 const INKOOP_UPSERT_CHUNK_SIZE = 500;
 
+// The raw jsonb of a line used to repeat every column (descriptions,
+// supplier names, invoice numbers, file names) -- about half of each row.
+// New rows keep only what isn't a column; reading puts the columns back, so
+// every reader gets the full line, from old and new rows alike.
+const ERP_LINE_COLUMN_KEYS = ["pav", "suppl", "transp", "avc", "description", "date", "deb_no", "inv_no"];
+const INVOICE_LINE_COLUMN_KEYS = ["invoice_number", "invoice_type", "reference_bt", "supplier_gln", "supplier_fh_number", "supplier_name",
+  "description", "source_file_name", "invoice_date", "company_number", "company_name"];
+
+function withoutKeys(object, keys) {
+  const copy = { ...(object || {}) };
+  for (const key of keys) delete copy[key];
+  return copy;
+}
+
+const ERP_LINE_RAW_SQL = `(raw || jsonb_build_object('pav', pav, 'suppl', suppl, 'transp', transp, 'avc', avc,
+  'description', description, 'date', to_char(erp_date, 'YYYY-MM-DD'), 'deb_no', deb_no, 'inv_no', inv_no))`;
+const INVOICE_LINE_RAW_SQL = `(raw || jsonb_build_object('invoice_number', invoice_number, 'invoice_type', invoice_type,
+  'reference_bt', reference_bt, 'supplier_gln', supplier_gln, 'supplier_fh_number', supplier_fh_number, 'supplier_name', supplier_name,
+  'description', description, 'source_file_name', source_file_name, 'invoice_date', to_char(invoice_date, 'YYYY-MM-DD'),
+  'company_number', company_number, 'company_name', company_name))`;
+
 export async function saveInkoopErpLines(rows) {
   if (!pool || !Array.isArray(rows) || !rows.length) {
     return;
@@ -246,7 +267,7 @@ export async function saveInkoopErpLines(rows) {
         numberOrNull(row.t_price),
         row.deb_no || "",
         row.inv_no || "",
-        JSON.stringify(row),
+        JSON.stringify(withoutKeys(row, ERP_LINE_COLUMN_KEYS)),
       );
       return `($${base + 1}, $${base + 2}::date, $${base + 3}, $${base + 4}, $${base + 5}, $${base + 6}, $${base + 7}, $${base + 8}, $${base + 9}, $${base + 10}, $${base + 11}, $${base + 12}, $${base + 13}::jsonb)`;
     });
@@ -299,7 +320,7 @@ export async function saveInkoopInvoiceLines(lines) {
         numberOrNull(line.quantity),
         numberOrNull(line.unit_price),
         numberOrNull(line.total),
-        JSON.stringify(line),
+        JSON.stringify(withoutKeys(line, INVOICE_LINE_COLUMN_KEYS)),
         line.source_file_name || "",
         line.invoice_date || null,
         line.company_number || "",
@@ -634,7 +655,7 @@ export async function getInkoopErpLines({ from, to } = {}) {
   }
   const result = await pool.query(
     `
-      SELECT raw - ARRAY['cont','cr','deb_no','inv_no','ite_date','ite_no','ite_t','items','keur','po_no','verd','fust']::text[] AS raw
+      SELECT ${ERP_LINE_RAW_SQL} - ARRAY['cont','cr','deb_no','inv_no','ite_date','ite_no','ite_t','items','keur','po_no','verd','fust']::text[] AS raw
       FROM inkoop_erp_lines
       WHERE erp_date IS NULL OR (erp_date >= $1 AND erp_date <= $2)
       ORDER BY lot
@@ -650,7 +671,7 @@ export async function getInkoopInvoiceLines({ from, to } = {}) {
   }
   const result = await pool.query(
     `
-      SELECT raw - ARRAY['source_file_name','account_id','line_id','market_form_code','marketplace_id','marketplace_name','summary_ref','trigger_code','vat_category']::text[] AS raw
+      SELECT ${INVOICE_LINE_RAW_SQL} - ARRAY['source_file_name','account_id','line_id','market_form_code','marketplace_id','marketplace_name','summary_ref','trigger_code','vat_category']::text[] AS raw
       FROM inkoop_invoice_lines
       WHERE invoice_date IS NULL OR (invoice_date >= $1 AND invoice_date <= $2)
       ORDER BY invoice_number
@@ -745,7 +766,7 @@ export async function getInkoopInvoiceLinesByInvoiceNumbers(invoiceNumbers) {
     return [];
   }
   const result = await pool.query(
-    "SELECT raw FROM inkoop_invoice_lines WHERE invoice_number = ANY($1::text[]) ORDER BY invoice_number, id",
+    `SELECT ${INVOICE_LINE_RAW_SQL} AS raw FROM inkoop_invoice_lines WHERE invoice_number = ANY($1::text[]) ORDER BY invoice_number, id`,
     [invoiceNumbers],
   );
   return result.rows.map((row) => row.raw);
@@ -2948,6 +2969,13 @@ const BACKGROUND_INDEXES = [
   // the dispatch dump by PAV.
   { name: "inkoop_invoice_lines_invoice_number_idx", sql: "CREATE INDEX CONCURRENTLY IF NOT EXISTS inkoop_invoice_lines_invoice_number_idx ON inkoop_invoice_lines (invoice_number)" },
   { name: "inkoop_dispatch_lots_pav_idx", sql: "CREATE INDEX CONCURRENTLY IF NOT EXISTS inkoop_dispatch_lots_pav_idx ON inkoop_dispatch_lots (pav)" },
+  // "Contains" search (Search tab, Data tab filters).
+  { name: "inkoop_invoice_lines_description_trgm", trigram: true, sql: "CREATE INDEX CONCURRENTLY IF NOT EXISTS inkoop_invoice_lines_description_trgm ON inkoop_invoice_lines USING gin (description gin_trgm_ops)" },
+  { name: "inkoop_invoice_lines_supplier_trgm", trigram: true, sql: "CREATE INDEX CONCURRENTLY IF NOT EXISTS inkoop_invoice_lines_supplier_trgm ON inkoop_invoice_lines USING gin (supplier_name gin_trgm_ops)" },
+  { name: "inkoop_erp_lines_description_trgm", trigram: true, sql: "CREATE INDEX CONCURRENTLY IF NOT EXISTS inkoop_erp_lines_description_trgm ON inkoop_erp_lines USING gin (description gin_trgm_ops)" },
+  { name: "inkoop_match_rows_description_trgm", trigram: true, sql: "CREATE INDEX CONCURRENTLY IF NOT EXISTS inkoop_match_rows_description_trgm ON inkoop_match_rows USING gin (description gin_trgm_ops)" },
+  { name: "inkoop_match_rows_supplier_idx", sql: "CREATE INDEX CONCURRENTLY IF NOT EXISTS inkoop_match_rows_supplier_idx ON inkoop_match_rows (supplier_code, match_date)" },
+  { name: "inkoop_invoice_lines_reference_date_idx", sql: "CREATE INDEX CONCURRENTLY IF NOT EXISTS inkoop_invoice_lines_reference_date_idx ON inkoop_invoice_lines (reference_bt, invoice_date)" },
 ];
 
 export async function ensureBackgroundIndexes() {
@@ -2955,7 +2983,19 @@ export async function ensureBackgroundIndexes() {
     return [];
   }
   const built = [];
+  // Trigram indexes make "contains" searches (ILIKE '%naomi%') fast; they
+  // need the pg_trgm extension -- without it those indexes are skipped.
+  let trigram = true;
+  try {
+    await pool.query("CREATE EXTENSION IF NOT EXISTS pg_trgm");
+  } catch (error) {
+    trigram = false;
+    console.warn(`pg_trgm not available, skipping the search indexes: ${error instanceof Error ? error.message : error}`);
+  }
   for (const index of BACKGROUND_INDEXES) {
+    if (index.trigram && !trigram) {
+      continue;
+    }
     const existing = await pool.query(
       "SELECT i.indisvalid FROM pg_class c JOIN pg_index i ON i.indexrelid = c.oid WHERE c.relname = $1",
       [index.name],
@@ -2966,8 +3006,13 @@ export async function ensureBackgroundIndexes() {
     if (existing.rows.length) {
       await pool.query(`DROP INDEX CONCURRENTLY IF EXISTS ${index.name}`);
     }
-    await pool.query(index.sql);
-    built.push(index.name);
+    try {
+      await pool.query(index.sql);
+      built.push(index.name);
+    } catch (error) {
+      // One index failing never blocks the others (retried next start).
+      console.error(`Building index ${index.name} failed: ${error instanceof Error ? error.message : error}`);
+    }
   }
   return built;
 }
