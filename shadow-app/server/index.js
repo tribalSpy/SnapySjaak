@@ -40,6 +40,7 @@ import {
   getInkoopInvoiceSummaryInvoices,
   searchInkoopInvoiceLines,
   searchInkoopErpLines,
+  getInkoopCorrectionLines,
   saveInkoopInvoiceHeaders,
   getInkoopInvoiceHeaders,
   getInkoopDaySummaries,
@@ -8174,6 +8175,7 @@ function bumpInkoopMatchVersion() {
   inkoopMatchVersion += 1;
   inkoopMatchCache.clear();
   inkoopSummaryCache.clear();
+  inkoopCorrectionsCache.clear();
   inkoopCompaniesCache = null;
 }
 
@@ -8628,56 +8630,69 @@ async function reclassifyInkoopConfirmedReturns(result, customerMap) {
   };
 }
 
-// Cross-checks every correction matchInkoopVeilingLines already netted
-// (see the PAV-grouping fix) against the dispatch dump: did it actually get
-// sent back, per FloraHolland's own retour-account data? Only meaningful
-// once a dispatch dump has been uploaded for the relevant dates. By the
-// time this runs, computeInkoopLiveMatch has already reclassified any
-// confirmed_return correction into matched_ok -- this still finds it there
-// (it stays tagged matched_as_correction) and reports it the same way.
-// A matched correction's lots come from its ERP row; a fully cancelled one
-// (net zero, never matched) carries them as correction_lots instead.
-function inkoopCorrectionLotSource(item) {
-  if (item?.erp_row) {
-    return item.erp_row;
-  }
-  return { lot: (Array.isArray(item?.correction_lots) ? item.correction_lots : []).join("+") };
-}
+// Every negative value on an invoice gets checked (user-confirmed): a
+// Klokfactuur/Connect correction (all lines of its PAV around it -- original,
+// credit, invoiced again -- with the PAV's ERP lots) and a plain negative
+// Handel/AI2 credit line. Read straight from the tables (getInkoopCorrection-
+// Lines): it used to run the full invoice-vs-ERP match for every day of the
+// period first, which made the Destinations tab slow. Cached per period
+// until the next upload.
+const inkoopCorrectionsCache = new Map();
 
-// Every negative value coming in gets checked (user-confirmed) -- not just a
-// netted Klokfactuur/Connect PAV group, but also a full cancellation (sits
-// in fee_lines, nothing left to match) and a plain negative Handel/AI2
-// credit line.
 async function computeInkoopCorrectionRetourChecks(state, { from, to }) {
-  const result = mergeInkoopDayResults((await computeInkoopDays(state, from, to)).map((day) => day.result));
-  const corrections = [];
-  for (const bucketName of ["matched_ok", "matched_mismatch", "only_in_invoice", "fee_lines"]) {
-    for (const item of Array.isArray(result?.[bucketName]) ? result[bucketName] : []) {
-      const isNegativeLine = Number(item?.quantity) < 0 || Number(item?.total) < 0;
-      if (item?.matched_as_correction || (bucketName !== "fee_lines" && isNegativeLine)) {
-        corrections.push({ ...item, bucket: bucketName });
-      }
+  const cacheKey = `${from}|${to}`;
+  if (inkoopCorrectionsCache.has(cacheKey)) {
+    return inkoopCorrectionsCache.get(cacheKey);
+  }
+  const { credits, pavLines, erpLots } = await getInkoopCorrectionLines({ from, to, marginDays: INKOOP_DAY_TOLERANCE_DAYS });
+  const linesByPav = new Map();
+  for (const line of pavLines) {
+    const pav = normalizeInkoopKey(line.pav);
+    if (!linesByPav.has(pav)) linesByPav.set(pav, []);
+    linesByPav.get(pav).push(line);
+  }
+  const lotsByPav = new Map();
+  for (const row of erpLots) {
+    const pav = normalizeInkoopKey(row.pav);
+    if (!lotsByPav.has(pav)) lotsByPav.set(pav, []);
+    lotsByPav.get(pav).push(String(row.lot));
+  }
+  const items = [];
+  const seenPavs = new Set();
+  for (const credit of credits) {
+    const pav = normalizeInkoopKey(credit.pav);
+    if (pav) {
+      if (seenPavs.has(pav)) continue;
+      seenPavs.add(pav);
+      const group = linesByPav.get(pav) || [credit];
+      const creditLines = group.filter((line) => Number(line.quantity) < 0 || Number(line.total) < 0);
+      const latestCredit = creditLines.reduce((a, b) => (String(b.invoice_date || "") > String(a.invoice_date || "") ? b : a), creditLines[0] || credit);
+      items.push({
+        invoice_number: [...new Set(group.map((line) => line.invoice_number).filter(Boolean))].join(" + "),
+        invoice_date: latestCredit.invoice_date,
+        pav: credit.pav,
+        description: credit.description,
+        quantity: Math.round(group.reduce((sum, line) => sum + (Number(line.quantity) || 0), 0) * 100) / 100,
+        total: Math.round(group.reduce((sum, line) => sum + (Number(line.total) || 0), 0) * 100) / 100,
+        correction_lines: group,
+        lot_source: { lot: (lotsByPav.get(pav) || []).join("+") },
+      });
+    } else {
+      // Handel / AI2 credit: no PAV, so no ERP lot to follow.
+      items.push({ ...credit, correction_lines: [credit], lot_source: { lot: "" } });
     }
   }
-  const allLotNumbers = new Set();
-  for (const item of corrections) {
-    for (const lotNumber of inkoopCorrectionLotNumbers(inkoopCorrectionLotSource(item))) {
-      allLotNumbers.add(lotNumber);
-    }
-  }
+  const allLotNumbers = new Set(items.flatMap((item) => inkoopCorrectionLotNumbers(item.lot_source)));
   const dispatchLots = await getInkoopDispatchLotsByLots([...allLotNumbers]);
   const dispatchByLot = new Map(dispatchLots.map((lot) => [String(lot.lot), lot]));
-  return corrections.map((item) => {
+  const checks = items.map((item) => {
     const breakdown = inkoopCorrectionBreakdown(item);
-    const { status, lots, retour_pieces: retourPieces } = inkoopOverallCorrectionRetourStatus(inkoopCorrectionLotSource(item), dispatchByLot, state.customer_map, breakdown.returned);
+    const { status, lots, retour_pieces: retourPieces } = inkoopOverallCorrectionRetourStatus(item.lot_source, dispatchByLot, state.customer_map, breakdown.returned);
     return {
       ...breakdown,
       retour_pieces: retourPieces,
-      bucket: item.bucket,
       invoice_number: item.invoice_number,
-      invoice_numbers: [...new Set((Array.isArray(item.correction_lines) && item.correction_lines.length
-        ? item.correction_lines.map((line) => line.invoice_number)
-        : [item.invoice_number]).filter(Boolean))],
+      invoice_numbers: [...new Set(item.correction_lines.map((line) => line.invoice_number).filter(Boolean))],
       invoice_date: item.invoice_date,
       pav: item.pav,
       description: item.description,
@@ -8687,7 +8702,12 @@ async function computeInkoopCorrectionRetourChecks(state, { from, to }) {
       lots,
       status,
     };
-  });
+  }).sort((left, right) => String(right.invoice_date || "").localeCompare(String(left.invoice_date || "")));
+  if (inkoopCorrectionsCache.size >= 40) {
+    inkoopCorrectionsCache.delete(inkoopCorrectionsCache.keys().next().value);
+  }
+  inkoopCorrectionsCache.set(cacheKey, checks);
+  return checks;
 }
 
 // Once a company is selected, every category that carries an invoice side

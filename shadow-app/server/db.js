@@ -992,6 +992,49 @@ export async function searchInkoopInvoiceLines({ from, to, product, supplier, in
   return { rows, truncated: result.rows.length > max, kinds };
 }
 
+// Destinations "Corrections check" straight from the tables (it ran the
+// whole invoice-vs-ERP match for every day of the period just to pick out
+// these few lines): the product lines with a negative quantity or amount in
+// the period, every product line sharing their PAV a few days around it
+// (original purchase, credit, invoiced again), and the ERP lots of those
+// PAVs.
+export async function getInkoopCorrectionLines({ from, to, marginDays = 4 } = {}) {
+  if (!pool || !from || !to) {
+    return { credits: [], pavLines: [], erpLots: [] };
+  }
+  const select = `
+    SELECT l.id, l.invoice_number, l.invoice_type, l.company_number, to_char(l.invoice_date, 'YYYY-MM-DD') AS invoice_date,
+      l.reference_bt AS pav, l.description, l.supplier_name, l.quantity::float8 AS quantity,
+      l.unit_price::float8 AS unit_price, l.total::float8 AS total
+    FROM inkoop_invoice_lines l`;
+  const credits = await pool.query(
+    `${select}
+     WHERE l.invoice_date >= $1::date AND l.invoice_date <= $2::date
+       AND l.quantity IS NOT NULL AND (l.quantity < 0 OR l.total < 0)
+       AND ${INKOOP_LINE_KIND_SQL} = 'product'
+     ORDER BY l.invoice_date, l.invoice_number, l.id`,
+    [from, to],
+  );
+  const pavs = [...new Set(credits.rows.map((row) => String(row.pav || "").trim()).filter(Boolean))];
+  if (!pavs.length) {
+    return { credits: credits.rows, pavLines: [], erpLots: [] };
+  }
+  const pavLines = await pool.query(
+    `${select}
+     WHERE l.reference_bt = ANY($1::text[])
+       AND l.invoice_date >= ($2::date - $4::int) AND l.invoice_date <= ($3::date + $4::int)
+       AND l.quantity IS NOT NULL
+       AND ${INKOOP_LINE_KIND_SQL} = 'product'
+     ORDER BY l.invoice_date, l.invoice_number, l.id`,
+    [pavs, from, to, marginDays],
+  );
+  const erpLots = await pool.query(
+    "SELECT lot::text AS lot, pav FROM inkoop_erp_lines WHERE pav = ANY($1::text[])",
+    [pavs],
+  );
+  return { credits: credits.rows, pavLines: pavLines.rows, erpLots: erpLots.rows };
+}
+
 // Inkoop Controle "Search" -- ERP side: the ERP's purchase lots by ERP date
 // and any of product, supplier code, PAV / lot and the customers the lot was
 // dispatched to ("Dispatched to : <code>" rows of the dump, stored per lot
