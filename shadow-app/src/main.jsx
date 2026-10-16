@@ -7962,7 +7962,7 @@ function InkoopMatchMonitorCard() {
         <span className={`ukdocs-status-badge ${inkoopMatchBusyCount(status) ? "info" : "muted"}`}>{counts.pending || 0} waiting</span>
         <span className={`ukdocs-status-badge ${counts.running ? "info" : "muted"}`}>{counts.running ? `busy: ${status.running.join(", ")}` : "nothing running"}</span>
         <span className={`ukdocs-status-badge ${counts.failed ? "danger" : "muted"}`}>{counts.failed || 0} failed</span>
-        {status.average_ms ? <span className="muted">about {Math.max(1, Math.round(status.average_ms / 1000))} s per day</span> : null}
+        {status.average_ms ? <span className="muted">{status.average_ms < 1000 ? "under 1 s per day" : `about ${Math.round(status.average_ms / 1000)} s per day`}</span> : null}
         {status.last_computed_at ? <span className="muted">last: {formatTimestamp(status.last_computed_at)}</span> : null}
         {!!counts.failed && <button type="button" onClick={retry} disabled={retrying}>{retrying ? "Retrying..." : "Retry failed days"}</button>}
       </div>
