@@ -1303,7 +1303,12 @@ let invoiceTotalsKnownFilled = false;
 
 async function inkoopInvoiceTotalsFilled() {
   if (!invoiceTotalsKnownFilled) {
-    invoiceTotalsKnownFilled = (await countInkoopInvoiceTotals()) > 0;
+    try {
+      invoiceTotalsKnownFilled = (await countInkoopInvoiceTotals()) > 0;
+    } catch {
+      // Table not there (yet): the Overview adds up the lines instead.
+      invoiceTotalsKnownFilled = false;
+    }
   }
   return invoiceTotalsKnownFilled;
 }

@@ -22066,7 +22066,8 @@ async function handleApi(req, res, url) {
       }
       await saveInkoopInvoiceLines(flatInvoiceLines);
       // The per-invoice totals (Overview) of the invoices in this upload.
-      await refreshInkoopInvoiceTotals(flatInvoiceLines.map((line) => line?.invoice_number));
+      await refreshInkoopInvoiceTotals(flatInvoiceLines.map((line) => line?.invoice_number))
+        .catch((totalsError) => console.error("Refreshing invoice totals failed:", totalsError instanceof Error ? totalsError.message : totalsError));
       bumpInkoopMatchVersion();
       await saveInkoopInvoiceHeaders(buildInkoopInvoiceHeaders(veiling.invoices, body?.veiling_zip?.name));
       inkoopSummaryCache.clear(); // the Overview dates invoices by these headers
@@ -22077,7 +22078,7 @@ async function handleApi(req, res, url) {
       await refreshInkoopDaySummariesForDates([
         ...flatInvoiceLines.map((line) => line?.invoice_date),
         ...erpRows.map((row) => row?.date),
-      ]);
+      ]).catch((queueError) => console.error("Queueing the Inkoop comparison failed:", queueError instanceof Error ? queueError.message : queueError));
       // A big upload arrives in parts (the page splits it); only the last
       // part runs the -- heavy -- match over everything accumulated.
       const skipMatch = body?.skip_match === true;
