@@ -3309,6 +3309,12 @@ export async function initializeDatabase() {
   }
 
   try {
+    // A retry after a failed start replaces the pool of that attempt.
+    if (pool) {
+      const previous = pool;
+      pool = null;
+      await previous.end().catch(() => {});
+    }
     pool = createPool();
     await pool.query("select 1");
     const migrationResult = await applyDatabaseMigrations();

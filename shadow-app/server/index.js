@@ -23680,13 +23680,40 @@ server.on("error", (error) => {
   process.exit(1);
 });
 
+// The database not reachable at start (Render restarting it, e.g. after a
+// plan change: "connect ECONNREFUSED"): try again every 30 seconds, and once
+// it's there do what the start would have done -- tables, indexes, the
+// Inkoop comparison pipeline.
+async function connectDatabaseAtStart() {
+  try {
+    await initializeDatabase();
+    console.log("Postgres is connected and ready.");
+    return true;
+  } catch (error) {
+    console.error("Postgres initialization failed:", error instanceof Error ? error.message : String(error));
+    return false;
+  }
+}
+
+function retryDatabaseUntilReady() {
+  setTimeout(async () => {
+    if (!(await connectDatabaseAtStart())) {
+      retryDatabaseUntilReady();
+      return;
+    }
+    ensureBackgroundIndexes()
+      .then((built) => { if (built.length) console.log(`Built database index(es): ${built.join(", ")}`); })
+      .catch((error) => console.error("Building background database indexes failed:", error instanceof Error ? error.message : error));
+    startInkoopMatchPipeline();
+  }, 30 * 1000);
+}
+
 async function startServer() {
+  let databaseStarted = false;
   if (isDatabaseEnabled()) {
-    try {
-      await initializeDatabase();
-      console.log("Postgres is connected and ready.");
-    } catch (error) {
-      console.error("Postgres initialization failed:", error instanceof Error ? error.message : String(error));
+    databaseStarted = await connectDatabaseAtStart();
+    if (!databaseStarted) {
+      retryDatabaseUntilReady();
     }
   } else {
     console.log("Postgres is not configured yet. DATABASE_URL is not set.");
@@ -23916,7 +23943,8 @@ async function startServer() {
 
   server.listen(port, host, () => {
     // Big-table indexes after the port is open (see ensureBackgroundIndexes).
-    if (isDatabaseEnabled()) {
+    // (Database not there yet: retryDatabaseUntilReady does this later.)
+    if (isDatabaseEnabled() && databaseStarted) {
       ensureBackgroundIndexes()
         .then((built) => { if (built.length) console.log(`Built database index(es): ${built.join(", ")}`); })
         .catch((error) => console.error("Building background database indexes failed:", error instanceof Error ? error.message : error));
