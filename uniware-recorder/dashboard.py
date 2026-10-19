@@ -160,6 +160,8 @@ class Handler(BaseHTTPRequestHandler):
                     for index, change in enumerate(body.get("steps") or []):
                         if index < len(action["steps"]):
                             step = action["steps"][index]
+                            if step.get("loop") and isinstance(change.get("loop"), dict):
+                                step["loop"] = actions.normalize_list_loop(change["loop"])
                             step["capture"] = bool(change.get("capture"))
                             if "key" in step and change.get("opens_window") is not None:
                                 if change.get("opens_window"):
@@ -209,6 +211,20 @@ class Handler(BaseHTTPRequestHandler):
                         action["steps"] = [step for index, step in enumerate(action["steps"]) if index not in removed]
                     actions.save_action(action)
                     STATE["message"] = f"Saved changes to '{action['name']}'."
+                elif path.startswith("/api/actions/") and path.endswith("/add-loop"):
+                    # A list loop step (go through a list row by row, press a
+                    # key depending on what the screen shows) after step N.
+                    slug = path.split("/")[3]
+                    action = actions.load_action(slug)
+                    if not action:
+                        raise RuntimeError("Action not found.")
+                    after = max(0, min(len(action["steps"]), int(body.get("after") or 0)))
+                    action["steps"].insert(after, {
+                        "loop": actions.normalize_list_loop({"dry_run": True}),
+                        "to": "", "to_title": "list loop", "capture": False, "capture_pages": False,
+                    })
+                    actions.save_action(action)
+                    STATE["message"] = f"List loop added as step {after + 1} of '{action['name']}' (trial run on) -- fill in the words and keys, then Save."
                 elif path.startswith("/api/actions/") and path.endswith("/copy"):
                     # A copy to change (e.g. tour 515 from tour 508) without
                     # recording it again.
@@ -328,7 +344,7 @@ function edit(slug) {
     <p class="muted">At the end of the run it waits for the new dump file Uniware writes (e.g. dump.filipe.2026-10-14_16_57_30.csv), waits until it is completely written, then renames it, e.g. <code>tour-508_{date}</code> gives tour-508_20261014.csv. You can use {date}, {time}, {action} and the fields. Same name again = replaced. No new file within Max wait = the run fails and the file is left alone.</p>
     <table><tr><th>#</th><th>Step</th><th>Goes to</th><th>Field (typed text) / list row</th><th>Wait until screen shows</th><th>Max wait (s)</th><th>Read column (into field)</th><th>Capture screen</th><th>All pages</th><th>Remove</th></tr>
     ${a.steps.map((s, i) => `<tr><td>${i + 1}</td>
-      <td>${s.text !== undefined ? `type <code>${esc(s.text)}</code>` : `${s.menu ? `menu <strong>${s.menu.map(esc).join(" &rsaquo; ")}</strong>, then ` : ""}<input data-step-key="${i}" value="${esc(s.key)}" size="9" title="The key this step presses -- change it (e.g. Left instead of Right) without recording again">${s.enter_on ? ` on "${esc(s.enter_on)}"` : ""}${s.key ? `<div><label><input type="checkbox" data-step-window="${i}" ${s.opens_window ? "checked" : ""}> opens the dump in a new window</label>${s.opens_window && s.opens_window.title ? `<div class="muted">recorded: ${esc(s.opens_window.title)}${s.opens_window.exe ? ` (${esc(s.opens_window.exe)})` : ""}</div>` : ""}</div>` : ""}`}</td>
+      <td>${s.loop ? loopEditor(s.loop, i) : s.text !== undefined ? `type <code>${esc(s.text)}</code>` : `${s.menu ? `menu <strong>${s.menu.map(esc).join(" &rsaquo; ")}</strong>, then ` : ""}<input data-step-key="${i}" value="${esc(s.key)}" size="9" title="The key this step presses -- change it (e.g. Left instead of Right) without recording again">${s.enter_on ? ` on "${esc(s.enter_on)}"` : ""}${s.key ? `<div><label><input type="checkbox" data-step-window="${i}" ${s.opens_window ? "checked" : ""}> opens the dump in a new window</label>${s.opens_window && s.opens_window.title ? `<div class="muted">recorded: ${esc(s.opens_window.title)}${s.opens_window.exe ? ` (${esc(s.opens_window.exe)})` : ""}</div>` : ""}</div>` : ""}`}</td>
       <td>${esc(s.to_title || s.to)}${s.recorded_wait ? `<div class="muted">took ${esc(s.recorded_wait)}s when recorded</div>` : ""}</td>
       <td>${s.text !== undefined ? `<input data-step-field="${i}" placeholder="e.g. invoice" value="${esc((s.text.match(/^\\{(.+)\\}$/) || [])[1] || "")}" size="12"><div class="muted">recorded: ${esc(s.recorded_text || s.text)}</div>` : s.key === "Enter" ? `find row with <input data-step-pick="${i}" placeholder="empty = selected row" value="${esc(s.pick || "")}" size="12">${s.pick_row ? `<div class="muted">recorded row: ${esc(s.pick_row)}</div>` : ""}` : ""}</td>
       <td><input data-step-wait="${i}" size="16" placeholder="(optional) e.g. Totaal" value="${esc(s.wait_text || "")}"></td>
@@ -338,8 +354,24 @@ function edit(slug) {
       <td><input type="checkbox" data-step-pages="${i}" ${s.capture_pages ? "checked" : ""}></td>
       <td><input type="checkbox" data-step-remove="${i}"></td></tr>`).join("")}
     </table><p class="row"><button class="primary" onclick="saveEdit()">Save</button><button onclick="$('editCard').style.display='none'">Close</button></p>
+    <p class="row"><label>Add a list loop after step <input id="loopAfter" size="3" value="${a.steps.length}"></label><button onclick="addLoop()">Add list loop</button>
+      <span class="muted">e.g. go through the orders of a tour and Delete the ones that aren't flowers -- save your other changes first.</span></p>
     <p class="muted">Field: the typed text becomes a value you fill in when starting (leave empty to always type the recorded text). All pages: Page Down until the list ends. Key: change what a step presses (e.g. Left instead of Right) without recording again. Read column: after this step, read that column of the table on screen (e.g. invoiceRes) into a field -- use it in the dump file name as {invoiceres}; it is read twice and must agree, otherwise the run stops. Remove: drop the step. Find row with: in a list (e.g. the tours after F1) the run reads the list, finds the row with this value and moves the highlight there -- the position may differ every day. Arrowing in a list and pressing Enter while recording fills this in by itself (the first number of the row).<br>
     Waiting: after each step the run waits until Uniware shows that screen and has stopped changing (finished loading), up to Max wait -- then it stops with a screenshot. If data appears on the same screen later (e.g. after typing the tour), put a word that only shows once the data is there in "Wait until screen shows".</p>`;
+}
+function loopEditor(loop, i) {
+  return `<div><strong>List loop</strong> -- goes through the list row by row</div>
+    <div class="row"><label>When the screen shows <input data-loop-match="${i}" size="22" placeholder="e.g. Accessoire, Planten" value="${esc((loop.match || []).join(", "))}"></label>
+      <label>press <input data-loop-key="${i}" size="7" value="${esc(loop.match_key || "Delete")}"></label></div>
+    <div class="row"><label>Keep when it shows <input data-loop-keep="${i}" size="16" placeholder="e.g. Bloemen" value="${esc((loop.keep || []).join(", "))}"></label>
+      <label>otherwise press <input data-loop-next="${i}" size="7" value="${esc(loop.next_key || "Down")}"></label></div>
+    <div class="row"><label>at most <input data-loop-max="${i}" size="4" value="${esc(loop.max_rows || 500)}"> rows</label>
+      <label><input type="checkbox" data-loop-dry="${i}" ${loop.dry_run ? "checked" : ""}> trial run (only log what it would do)</label></div>
+    <div class="muted">A row whose type can't be read clearly (none of these words) is skipped, never deleted. Stops at the end of the list, or when a row is still there after the key (a confirmation question?).</div>`;
+}
+function addLoop() {
+  const after = Number($("loopAfter").value || 0);
+  api(`/api/actions/${editing}/add-loop`, { after }).then((payload) => { if (payload) edit(editing); });
 }
 function saveEdit() {
   const a = state.actions.find((x) => x.slug === editing);
@@ -355,6 +387,14 @@ function saveEdit() {
     read_column: document.querySelector(`[data-step-readcol="${i}"]`).value,
     read_field: document.querySelector(`[data-step-readfield="${i}"]`).value,
     remove: document.querySelector(`[data-step-remove="${i}"]`).checked,
+    loop: s.loop ? {
+      match: document.querySelector(`[data-loop-match="${i}"]`).value.split(","),
+      keep: document.querySelector(`[data-loop-keep="${i}"]`).value.split(","),
+      match_key: document.querySelector(`[data-loop-key="${i}"]`).value,
+      next_key: document.querySelector(`[data-loop-next="${i}"]`).value,
+      max_rows: document.querySelector(`[data-loop-max="${i}"]`).value,
+      dry_run: document.querySelector(`[data-loop-dry="${i}"]`).checked,
+    } : null,
   }));
   api(`/api/actions/${editing}/update`, { description: $("editDesc").value, export_dir: $("editExportDir").value, back_key: $("editBackKey").value, close_dump_window: $("editCloseWindow").checked, export_name: $("editExportName").value, uniware_dump_dir: $("editUniwareDir").value, uniware_dump_pattern: $("editUniwarePattern").value, uniware_dump_wait: $("editUniwareWait").value, steps });
 }

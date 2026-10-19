@@ -136,6 +136,19 @@ into field `invoiceres` -- and the dump file name can use it:
 stops if they differ (a misread number must never end up as an invoice
 number); look-alike letters in numbers are corrected (483S236 -> 4835236).
 
+**List loop -- go through a list and act per row** (Edit, "Add list loop
+after step N"): the run goes through the list row by row, reads the screen
+for each row and presses one key when it shows one of the match words,
+another when not. Example, tour 508 = flowers: when the screen shows
+"Accessoire, Planten" press **Delete** (out of the tour), keep "Bloemen",
+otherwise **Down**. And in tour 515: "Accessoire" -> **Enter** (add).
+- A row whose type can't be read clearly (none of the words) is skipped,
+  never deleted, and listed in the log.
+- Stops at the end of the list, after "at most N rows", or when a row is
+  still there after the key (Uniware asking a confirmation?).
+- A new loop starts as a **trial run**: it only logs what it would do --
+  check the log, then untick "trial run".
+
 **Tours (UKdocs)**: record one action per tour (508 flowers, 515
 accessories, 1000 BQ, ...) -- some tours need an extra key, so each has its
 own recording -- each with its own dump file name.

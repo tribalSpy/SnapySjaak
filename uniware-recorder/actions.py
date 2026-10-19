@@ -172,6 +172,30 @@ def same_item(seen: str, wanted: str) -> bool:
     return difflib.SequenceMatcher(None, left, right).ratio() >= 0.85
 
 
+# ------------------------------------------------------------------ list loop
+def normalize_list_loop(loop: dict) -> dict:
+    """Settings of a list loop step (see ActionRun._run_list_loop)."""
+    words = lambda value: [word.strip() for word in (value if isinstance(value, list) else str(value or "").split(",")) if str(word).strip()]
+    key = lambda value, default: str(value or "").strip() or default
+    for name, default in (("match_key", "Delete"), ("next_key", "Down")):
+        try:
+            parse_combo(key(loop.get(name), default))  # must be a key the run can press
+        except (AttributeError, KeyError, ValueError):
+            raise RuntimeError(f"List loop: '{key(loop.get(name), default)}' is not a key (e.g. Delete, Enter, Down).")
+    try:
+        max_rows = max(1, min(2000, int(float(loop.get("max_rows") or 500))))
+    except (TypeError, ValueError):
+        max_rows = 500
+    return {
+        "match": words(loop.get("match")),
+        "keep": words(loop.get("keep")),
+        "match_key": key(loop.get("match_key"), "Delete"),
+        "next_key": key(loop.get("next_key"), "Down"),
+        "max_rows": max_rows,
+        "dry_run": bool(loop.get("dry_run")),
+    }
+
+
 # ------------------------------------------------------------------ lists
 ARROW_KEYS = {"Down", "Up", "Page Down", "Page Up"}
 
@@ -913,6 +937,100 @@ class ActionRun:
             last_depth = None
         raise RuntimeError(f"{label}: could not reach {route} in the menu. Stopped.")
 
+    def _read_stable(self, hwnd):
+        """Read until two screenshots in a row give the same text (the info
+        panel next to a list updates a moment after the cursor moves)."""
+        previous = None
+        reading = None
+        for _ in range(8):
+            reading = self._read(hwnd, timeout=1.5)
+            if previous is not None and reading[4] == previous:
+                return reading
+            previous = reading[4]
+        return reading
+
+    def _run_list_loop(self, hwnd, controller, loop: dict, label: str):
+        """Go through a list row by row: when the screen shows one of the
+        match words (e.g. the order type "Accessoire" next to the list), press
+        the match key (Delete: out of the tour / Enter: into it), otherwise
+        the next key (Down). Only acts when the type is clearly readable --
+        one of the match or keep words, read the same twice; an unreadable
+        row is skipped and logged. Stops at the end of the list (the cursor
+        row no longer changes) or after max_rows. dry_run: only logs what it
+        would do and moves on with the next key."""
+        match_words = [word.strip() for word in loop.get("match", []) if word.strip()]
+        keep_words = [word.strip() for word in loop.get("keep", []) if word.strip()]
+        match_key = loop.get("match_key") or "Delete"
+        next_key = loop.get("next_key") or "Down"
+        dry_run = bool(loop.get("dry_run"))
+        max_rows = max(1, min(2000, int(loop.get("max_rows") or 500)))
+        if not match_words:
+            raise RuntimeError(f"{label}: the list loop has no match words (Edit).")
+
+        def found(words, text):
+            for word in words:
+                if re.search(rf"(?<![\w]){re.escape(word)}(?![\w])", text, re.IGNORECASE):
+                    return word
+            return None
+
+        def cursor_row(layout):
+            rows = screen_rows(layout)
+            highlighted = [row["text"] for row in rows if row["highlighted"]]
+            return highlighted[0] if highlighted else ""
+
+        def same_row(left, right):
+            return bool(left) and bool(right) and difflib.SequenceMatcher(None, left, right).ratio() >= 0.9
+
+        counts = {"matched": 0, "kept": 0, "unreadable": 0}
+        last_row, last_action = None, None
+        handled = []
+        for row_number in range(1, max_rows + 1):
+            self._check(hwnd)
+            _, _, _, _, text, layout = self._read_stable(hwnd)
+            joined = "\n".join(text)
+            row = cursor_row(layout)
+            if last_action == "match" and same_row(row, last_row):
+                raise RuntimeError(f"{label}: '{last_row[:50]}' is still there after {match_key} -- does Uniware ask for a confirmation? Stopped to be safe.")
+            if last_action == "next" and same_row(row, last_row):
+                break  # the cursor no longer moves: end of the list
+            if last_action == "match" and any(same_row(row, done) for done in handled):
+                # The last row was taken out: the cursor went back to one
+                # already handled -- move on (and find the end) quietly.
+                send_combo(controller, next_key)
+                last_row, last_action = row, "next"
+                continue
+            handled.append(row)
+            matched = found(match_words, joined)
+            kept = found(keep_words, joined) if not matched else None
+            if not matched and not kept:
+                # Read once more before giving up on this row.
+                _, _, _, _, text, layout = self._read_stable(hwnd)
+                joined = "\n".join(text)
+                matched = found(match_words, joined)
+                kept = found(keep_words, joined) if not matched else None
+            short = row[:60] or f"row {row_number}"
+            if matched and not dry_run:
+                counts["matched"] += 1
+                self.say(f"{label}: {short}: {matched} -> {match_key}")
+                send_combo(controller, match_key)
+                last_row, last_action = row, "match"
+            else:
+                if matched:
+                    counts["matched"] += 1
+                    self.say(f"{label}: {short}: {matched} -> would press {match_key} (trial run)")
+                elif kept:
+                    counts["kept"] += 1
+                    self.say(f"{label}: {short}: {kept} -> keep")
+                else:
+                    counts["unreadable"] += 1
+                    self.say(f"{label}: {short}: type not readable -> skipped (check this one)")
+                send_combo(controller, next_key)
+                last_row, last_action = row, "next"
+            time.sleep(0.3)
+        else:
+            self.say(f"{label}: stopped after {max_rows} rows (the most this loop may do).")
+        self.say(f"{label}: list done -- {counts['matched']} {'would be ' if dry_run else ''}{match_key}, {counts['kept']} kept, {counts['unreadable']} not readable.")
+
     def _press(self, controller, key: str, times: int):
         for _ in range(times):
             send_combo(controller, key)
@@ -1014,6 +1132,10 @@ class ActionRun:
                 self._capture(hwnd, 0, False, controller, (screen_id, title, selected, text, layout))
             for number, step in enumerate(self.action.get("steps", []), start=1):
                 self._check(hwnd)
+                if step.get("loop"):
+                    self._run_list_loop(hwnd, controller, step["loop"], f"Step {number}")
+                    _, screen_id, title, selected, text, layout = self._read(hwnd)
+                    continue
                 if "text" in step:
                     typed = re.sub(r"\{([a-z0-9_]+)\}", lambda match: self.values.get(match.group(1), ""), step["text"])
                     controller.type(typed)
