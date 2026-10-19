@@ -425,7 +425,8 @@ def screen_identity(lines: list[dict], image_height: int, image_width: int = 0) 
         if not text:
             left = [other for other in top if abs(other["y"] - line["y"]) <= 6 and other["x"] < line["x"] and other["x"] > width * 0.45]
             text = left[-1]["text"] if left else ""
-        if text and not DATE_TIME_RE.search(text):
+        # Never a date ("20-10- [26]" is 20-10-2026 cut off by a popup).
+        if text and not DATE_TIME_RE.search(text) and re.search(r"[A-Za-z]{2}", text):
             return f"scr-{number}", f"{text} [{number}]"
     header = [line for line in lines if line["y"] < image_height * 0.15]
     parts = []
