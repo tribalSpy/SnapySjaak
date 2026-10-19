@@ -243,6 +243,17 @@ def row_order_number(text: str) -> str | None:
     return glued[0][-7:] if glued else None
 
 
+def list_row_order(text: str) -> str | None:
+    """The order number of a list row that starts with a customer code:
+    "EF317 4841449 0.00 0.11 ..." / "508 EC1211 4840711 0.00" -> the number
+    after the code, before the first amount (None for any other line)."""
+    found = re.search(r"(?<!\S)([A-Za-z][A-Za-z0-9]{2,7})\s+(\S{7})(?:\s+\S*\d[.,]\d\d|\s*$)", text)
+    if not found:
+        return None
+    number = found.group(2).translate(_DIGIT_LOOKALIKES)
+    return number if number.isdigit() else None
+
+
 def normalize_foreach(settings: dict) -> dict:
     try:
         count = max(1, min(50, int(float(settings.get("count") or 1))))
@@ -1100,6 +1111,20 @@ class ActionRun:
         if use_list and not use_label:
             raise RuntimeError(f"{label}: the list loop acts on day list '{use_list}' but has no label (e.g. 516).")
         collected = {"name": collect_into, "items": []} if collect_into else None
+        # Collect mode reads every list row on screen, not only the cursor row
+        # (OCR misreads digits on the teal cursor: 4841449 -> "4 41449"); a
+        # number counts once it was read the same way twice.
+        sightings: dict[str, dict] = {}
+
+        def note_rows(layout, joined):
+            for screen_row in screen_rows(layout):
+                order = list_row_order(screen_row["text"])
+                if not order:
+                    continue
+                seen = sightings.setdefault(order, {"count": 0, "row": screen_row["text"][:80], "type": ""})
+                seen["count"] += 1
+                if screen_row["highlighted"] and not seen["type"]:
+                    seen["type"] = found(match_words, joined) or found(keep_words, joined) or ""
         list_data = load_day_list(use_list) if use_list else None
 
         def found(words, text):
@@ -1135,6 +1160,8 @@ class ActionRun:
             _, _, _, _, text, layout = self._read_stable(hwnd)
             joined = "\n".join(text)
             row = cursor_row(layout)
+            if collected is not None:
+                note_rows(layout, joined)
             if last_action == "match" and same_row(row, last_row):
                 raise RuntimeError(f"{label}: '{last_row[:50]}' is still there after {match_key} -- does Uniware ask for a confirmation? Stopped to be safe.")
             if last_action == "next" and same_row(row, last_row):
@@ -1165,16 +1192,8 @@ class ActionRun:
                 time.sleep(0.3)
                 continue
             if collected is not None:
-                # Collect mode: write the row down, press only the next key.
-                order = row_order_number(row)
-                kind = found(match_words, joined) or found(keep_words, joined) or ""
-                if order and not day_list_item(collected, order):
-                    collected["items"].append({"key": order, "row": row[:80], "type": kind, "label": "", "note": "", "warning": False})
-                    self.say(f"{label}: collected {order} ({kind or 'type ?'})")
-                    if len(collected["items"]) % 10 == 0:
-                        save_day_list(collected)
-                elif not order:
-                    self.say(f"{label}: {row[:60] or f'row {row_number} (no cursor row read)'}: no order number read -- not collected")
+                # Collect mode: the rows are noted from the whole screen
+                # (note_rows); only the next key is pressed.
                 for part in list_loop_keys(next_key):
                     send_combo(controller, part)
                 last_row, last_action = row, "next"
@@ -1184,6 +1203,13 @@ class ActionRun:
                 # Act on the day list: the row's order number decides.
                 order = row_order_number(row)
                 entry = day_list_item(list_data, order) if order else None
+                if entry is None:
+                    # The teal cursor row's digits are often misread ("4 41449"):
+                    # the one day-list order that reads almost the same.
+                    digits = re.sub(r"\D", "", " ".join(row.translate(_DIGIT_LOOKALIKES).split()[1:3]))
+                    close = [item for item in list_data.get("items", [])
+                             if len(digits) >= 5 and difflib.SequenceMatcher(None, digits, item["key"]).ratio() >= 0.85]
+                    entry = close[0] if len(close) == 1 else None
                 matched = f"{use_list}: {use_label}" if entry and entry.get("label") == use_label else None
                 kept = None if matched else (f"{use_list}: {entry.get('label') or 'no label'}" if entry else "not on the day list")
             else:
@@ -1248,6 +1274,12 @@ class ActionRun:
         else:
             self.say(f"{label}: stopped after {max_rows} rows (the most this loop may do).")
         if collected is not None:
+            for order, seen in sightings.items():
+                if seen["count"] < 2:
+                    self.say(f"{label}: {order} read only once ('{seen['row'][:50]}') -- not collected, check by hand")
+                    continue
+                collected["items"].append({"key": order, "row": seen["row"], "type": seen["type"], "label": "", "note": "", "warning": False})
+                self.say(f"{label}: collected {order} ({seen['type'] or 'type ?'})")
             save_day_list(collected)
             self.say(f"{label}: {len(collected['items'])} order(s) collected into day list '{collect_into}'.")
             return
