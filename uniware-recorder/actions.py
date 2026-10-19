@@ -183,6 +183,11 @@ def same_item(seen: str, wanted: str) -> bool:
 
 
 # ------------------------------------------------------------------ list loop
+# A list loop ends after this many presses of the next key in a row that
+# don't bring a new row (one can be a slow screen).
+LIST_LOOP_END_TRIES = 3
+
+
 def list_loop_keys(value: str) -> list[str]:
     """ "Delete, Right, Enter" -> ["Delete", "Right", "Enter"] (a comma inside
     a combo like "Ctrl+," is not supported)."""
@@ -1022,6 +1027,7 @@ class ActionRun:
         counts = {"matched": 0, "kept": 0, "unreadable": 0}
         last_row, last_action = None, None
         handled = []
+        unchanged = 0
         for row_number in range(1, max_rows + 1):
             self._check(hwnd)
             _, _, _, _, text, layout = self._read_stable(hwnd)
@@ -1030,7 +1036,17 @@ class ActionRun:
             if last_action == "match" and same_row(row, last_row):
                 raise RuntimeError(f"{label}: '{last_row[:50]}' is still there after {match_key} -- does Uniware ask for a confirmation? Stopped to be safe.")
             if last_action == "next" and same_row(row, last_row):
-                break  # the cursor no longer moves: end of the list
+                # No new order after the key: once can be a slow screen --
+                # LIST_LOOP_END_TRIES times in a row is the end of the list.
+                unchanged += 1
+                if unchanged >= LIST_LOOP_END_TRIES:
+                    self.say(f"{label}: no new row after {LIST_LOOP_END_TRIES} tries -- end of the list.")
+                    break
+                for part in list_loop_keys(next_key):
+                    send_combo(controller, part)
+                time.sleep(0.6)
+                continue
+            unchanged = 0
             if last_action == "match" and any(same_row(row, done) for done in handled):
                 # The last row was taken out: the cursor went back to one
                 # already handled -- move on (and find the end) quietly.
