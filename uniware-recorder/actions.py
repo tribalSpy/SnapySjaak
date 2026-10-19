@@ -35,6 +35,8 @@ APP_DIR = Path(__file__).resolve().parent
 ACTIONS_DIR = APP_DIR / "actions"
 OUTPUTS_DIR = APP_DIR / "outputs"
 DUMP_PARTS_DIR = OUTPUTS_DIR / "dump-parts"
+# Uniware's "loading" box: "Gegevens verzamelen ... / Moment geduld aub..."
+BUSY_RE = re.compile(r"moment\s*geduld|gegevens\s*verzamelen", re.IGNORECASE)
 
 
 def _relative_sheet_paths(path: Path):
@@ -944,7 +946,7 @@ class ActionRun:
             joined = "\n".join([title, *text]).lower()
             # No screen name (a popup without a stable one): only the
             # "wait until" text decides.
-            if (not expected or same_screen(expected, expected_title, screen_id, title)) and wait_text.lower() in joined:
+            if (not expected or same_screen(expected, expected_title, screen_id, title)) and wait_text.lower() in joined and not BUSY_RE.search(joined):
                 if text == previous_text:
                     return screen_id, title, selected, text, layout
                 previous_text = text
@@ -1613,7 +1615,28 @@ class ActionRun:
         save_day_list(data)
         self.say(f"{label}: {item[1]} -> {result or 'WARNING'} ({note})")
 
+    def _wait_not_busy(self, hwnd, label: str, max_wait: float = 300):
+        """Uniware shows "Gegevens verzamelen ... Moment geduld aub..." while
+        it loads, on the same screen (the screen name doesn't change): no key
+        until that is gone."""
+        started = time.time()
+        next_note = started + 5
+        while True:
+            self._check(hwnd)
+            _, _, title, _, text, _ = self._read(hwnd, timeout=1.5)
+            if not BUSY_RE.search("\n".join([title, *text])):
+                return
+            waited = time.time() - started
+            if waited > max_wait:
+                raise RuntimeError(f"{label}: Uniware still says 'Moment geduld' after {max_wait:.0f}s. Stopped.")
+            if time.time() > next_note:
+                self.say(f"{label}: Uniware is loading (Moment geduld) -- waiting ({waited:.0f}s)")
+                next_note = time.time() + 10
+            time.sleep(0.5)
+
     def _run_one_step(self, hwnd, controller, step: dict, number: int, selected):
+        if not step.get("foreach") and not step.get("classify"):
+            self._wait_not_busy(hwnd, f"Step {number}")
         if step.get("loop"):
             self._run_list_loop(hwnd, controller, step["loop"], f"Step {number}")
             return self._read(hwnd)[3]
