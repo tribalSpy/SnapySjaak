@@ -399,19 +399,51 @@ function edit(slug) {
     <p class="muted">Field: the typed text becomes a value you fill in when starting (leave empty to always type the recorded text). All pages: Page Down until the list ends. Key: change what a step presses (e.g. Left instead of Right) without recording again. Read column: after this step, read that column of the table on screen (e.g. invoiceRes) into a field -- use it in the dump file name as {invoiceres}; it is read twice and must agree, otherwise the run stops. Remove: drop the step. Find row with: in a list (e.g. the tours after F1) the run reads the list, finds the row with this value and moves the highlight there -- the position may differ every day. Arrowing in a list and pressing Enter while recording fills this in by itself (the first number of the row).<br>
     Waiting: after each step the run waits until Uniware shows that screen and has stopped changing (finished loading), up to Max wait -- then it stops with a screenshot. If data appears on the same screen later (e.g. after typing the tour), put a word that only shows once the data is there in "Wait until screen shows".</p>`;
 }
+function loopMode(loop) { return loop.collect_into ? "collect" : loop.use_list ? "daylist" : "words"; }
+function showLoopMode(i, mode) {
+  document.querySelectorAll(`[data-loop-show="${i}"]`).forEach((part) => {
+    part.style.display = part.dataset.modes.split(" ").includes(mode) ? "" : "none";
+  });
+}
 function loopEditor(loop, i) {
+  const mode = loopMode(loop);
+  const part = (modes, html) => `<div class="row" data-loop-show="${i}" data-modes="${modes}"${modes.split(" ").includes(mode) ? "" : ' style="display:none"'}>${html}</div>`;
   return `<div><strong>List loop</strong> -- goes through the list row by row</div>
-    <div class="row"><label>When the screen shows <input data-loop-match="${i}" size="22" placeholder="e.g. Accessoire, Planten" value="${esc((loop.match || []).join(", "))}"></label>
-      <label>press <input data-loop-key="${i}" size="18" placeholder="e.g. Delete, Right, Enter" value="${esc(loop.match_key || "Delete")}" title="Several keys one after another, separated by commas -- e.g. Delete, then Right and Enter to answer the confirmation"></label></div>
-    <div class="row"><label>Keep when it shows <input data-loop-keep="${i}" size="16" placeholder="e.g. Bloemen" value="${esc((loop.keep || []).join(", "))}"></label>
-      <label>otherwise press <input data-loop-next="${i}" size="7" value="${esc(loop.next_key || "Down")}"></label></div>
-    <div class="row"><label>at most <input data-loop-max="${i}" size="4" value="${esc(loop.max_rows || 500)}"> rows</label>
-      <label><input type="checkbox" data-loop-dry="${i}" ${loop.dry_run ? "checked" : ""}> trial run (only log what it would do)</label></div>
-    <div class="row"><label><input type="checkbox" data-loop-stays="${i}" ${loop.row_stays ? "checked" : ""}> the row stays in the list after the key (e.g. only its tour number is cleared) -- then go on with the otherwise-key</label></div>
-    <div class="row"><label>collect into day list <input data-loop-collect="${i}" size="18" placeholder="(off) e.g. accessoires vandaag" value="${esc(loop.collect_into || "")}"></label><span class="muted">only writes every row's order number down (empties the list first), presses only the otherwise-key</span></div>
-    <div class="row"><label>or act on day list <input data-loop-uselist="${i}" size="18" placeholder="(off) e.g. accessoires vandaag" value="${esc(loop.use_list || "")}"></label><label>orders marked <input data-loop-uselabel="${i}" size="5" placeholder="516" value="${esc(loop.use_label || "")}"></label><span class="muted">instead of words on screen: press the key for orders with this result</span></div>
-    <div class="row"><label>only rows that contain <input data-loop-only="${i}" size="8" placeholder="e.g. 508" value="${esc(loop.only_rows_with || "")}"></label><span class="muted">other rows (e.g. already cleared) are passed by -- safe to run again</span></div>
-    <div class="muted">A row whose type can't be read clearly (none of these words) is skipped, never deleted. Stops at the end of the list, or when a row is still there after the key (a confirmation question?).</div>`;
+    <div class="row"><label>What it does <select data-loop-mode="${i}" onchange="showLoopMode(${i}, this.value)">
+      <option value="words" ${mode === "words" ? "selected" : ""}>press a key when the screen shows a word (e.g. Accessoire -> Delete)</option>
+      <option value="collect" ${mode === "collect" ? "selected" : ""}>collect the orders into a day list (presses only Down)</option>
+      <option value="daylist" ${mode === "daylist" ? "selected" : ""}>press a key for the orders with a result in a day list (e.g. 516 -> Enter)</option>
+    </select></label></div>
+    ${part("words", `<label>When the screen shows <input data-loop-match="${i}" size="22" placeholder="e.g. Accessoire, Planten" value="${esc((loop.match || []).join(", "))}"></label>
+      <label>keep when it shows <input data-loop-keep="${i}" size="16" placeholder="e.g. Bloemen" value="${esc((loop.keep || []).join(", "))}"></label>`)}
+    ${part("collect", `<label>Day list <input data-loop-collect="${i}" size="20" placeholder="e.g. accessoires vandaag" value="${esc(loop.collect_into || "")}"></label><span class="muted">emptied first, then every row's order number is written down</span>`)}
+    ${part("daylist", `<label>Day list <input data-loop-uselist="${i}" size="20" placeholder="e.g. accessoires vandaag" value="${esc(loop.use_list || "")}"></label><label>orders with result <input data-loop-uselabel="${i}" size="5" placeholder="516" value="${esc(loop.use_label || "")}"></label>`)}
+    ${part("words daylist", `<label>press <input data-loop-key="${i}" size="18" placeholder="e.g. Delete, Right, Enter" value="${esc(loop.match_key || "Delete")}" title="Several keys one after another, separated by commas -- e.g. Delete, then Right and Enter to answer the confirmation"></label>`)}
+    <div class="row"><label>to the next row press <input data-loop-next="${i}" size="7" value="${esc(loop.next_key || "Down")}"></label>
+      <label>at most <input data-loop-max="${i}" size="4" value="${esc(loop.max_rows || 500)}"> rows</label></div>
+    ${part("words daylist", `<label><input type="checkbox" data-loop-dry="${i}" ${loop.dry_run ? "checked" : ""}> <strong>trial run</strong> (only log what it would do)</label>`)}
+    ${part("words daylist", `<label><input type="checkbox" data-loop-stays="${i}" ${loop.row_stays ? "checked" : ""}> the row stays in the list after the key (e.g. only its tour number is cleared)</label>`)}
+    ${part("words daylist", `<label>only rows that contain <input data-loop-only="${i}" size="8" placeholder="e.g. 508" value="${esc(loop.only_rows_with || "")}"></label><span class="muted">other rows are passed by -- safe to run again</span>`)}
+    <div class="muted">Stops at the end of the list (no new row after 3 tries), or when a row is still there after the key (a confirmation question?).</div>`;
+}
+function loopValues(i) {
+  // Only the fields of the chosen kind of loop count; the others are cleared.
+  const value = (name) => document.querySelector(`[data-loop-${name}="${i}"]`).value;
+  const checked = (name) => document.querySelector(`[data-loop-${name}="${i}"]`).checked;
+  const mode = value("mode");
+  return {
+    match: mode === "words" ? value("match").split(",") : [],
+    keep: mode === "words" ? value("keep").split(",") : [],
+    match_key: value("key"),
+    next_key: value("next"),
+    max_rows: value("max"),
+    dry_run: mode !== "collect" && checked("dry"),
+    row_stays: mode !== "collect" && checked("stays"),
+    only_rows_with: mode !== "collect" ? value("only") : "",
+    collect_into: mode === "collect" ? value("collect") : "",
+    use_list: mode === "daylist" ? value("uselist") : "",
+    use_label: mode === "daylist" ? value("uselabel") : "",
+  };
 }
 function foreachEditor(settings, i) {
   return `<div><strong>For each order</strong> of a day list -- repeats the steps after it</div>
@@ -476,19 +508,7 @@ function saveEdit() {
       label_if: document.querySelector(`[data-cl-if="${i}"]`).value,
       label_else: document.querySelector(`[data-cl-else="${i}"]`).value,
     } : null,
-    loop: s.loop ? {
-      match: document.querySelector(`[data-loop-match="${i}"]`).value.split(","),
-      keep: document.querySelector(`[data-loop-keep="${i}"]`).value.split(","),
-      match_key: document.querySelector(`[data-loop-key="${i}"]`).value,
-      next_key: document.querySelector(`[data-loop-next="${i}"]`).value,
-      max_rows: document.querySelector(`[data-loop-max="${i}"]`).value,
-      dry_run: document.querySelector(`[data-loop-dry="${i}"]`).checked,
-      row_stays: document.querySelector(`[data-loop-stays="${i}"]`).checked,
-      only_rows_with: document.querySelector(`[data-loop-only="${i}"]`).value,
-      collect_into: document.querySelector(`[data-loop-collect="${i}"]`).value,
-      use_list: document.querySelector(`[data-loop-uselist="${i}"]`).value,
-      use_label: document.querySelector(`[data-loop-uselabel="${i}"]`).value,
-    } : null,
+    loop: s.loop ? loopValues(i) : null,
   }));
   // Show the saved steps right away: an Edit table that still showed the old
   // steps looked like nothing happened, and saving it again changed the
