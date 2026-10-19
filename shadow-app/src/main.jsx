@@ -8093,8 +8093,15 @@ function UkdocsPipelineMonitorPage({ onNavigate }) {
                   </td>
                   <td>
                     {row.papers_sent
-                      ? <span className="ukdocs-status-badge success">Sent</span>
-                      : <span className="ukdocs-status-badge muted">Not sent</span>}
+                      ? <span className="ukdocs-status-badge success" title={row.papers_note || ""}>Sent</span>
+                      : (
+                        <>
+                          <span className={`ukdocs-status-badge ${row.papers_status === "failed" ? "danger" : "muted"}`} title={row.papers_note || ""}>
+                            {row.papers_status === "failed" ? "Send failed" : row.papers_status === "off" ? "Off for customer" : row.papers_status === "queued" ? "Sending soon" : "Not sent"}
+                          </span>
+                          {row.papers_note ? <small className="ukdocs-papers-note">{row.papers_note}</small> : null}
+                        </>
+                      )}
                   </td>
                   <td>
                     {row.needs_attention

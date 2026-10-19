@@ -2265,3 +2265,12 @@ tr.step-plan-row > td {
 .data-table thead tr + tr th select { width: 100%; min-width: 70px; font-size: 12px; padding: 3px 5px; }
 .data-filter-range { display: flex; gap: 3px; }
 .data-filter-range input { min-width: 0; width: 50%; }
+
+.ukdocs-papers-note {
+  display: block;
+  margin-top: 4px;
+  max-width: 260px;
+  color: #64748b;
+  font-size: 11px;
+  line-height: 1.3;
+}

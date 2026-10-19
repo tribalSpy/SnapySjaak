@@ -11023,6 +11023,29 @@ function buildPdStepPlan(state, targetDate) {
   return { date: targetDate, rows, summary: { total: rows.length, at_step: perStep.slice(0, 4), complete: perStep[4] } };
 }
 
+// Why a zending's "papers ready" email has (not) gone out -- the same check
+// runUkdocsPrintAutoSend makes, so the monitor never says "Complete" while
+// the auto-send quietly skips it.
+function ukdocsPapersStatus(collection, state) {
+  if (collection.delivery_email?.ok) {
+    return { papers_status: "sent", papers_note: `Sent ${collection.delivery_email.sent_at || ""}`.trim() };
+  }
+  if (ukdocsPrintInspectionMode(collection) === "stock_control") {
+    return { papers_status: "off", papers_note: "Stock control -- no papers email" };
+  }
+  const requirements = getUkdocsPrintCollectionRequirements(collection, state.customers, state.print_collections, { requireInspectionListForReinspection: false });
+  if (requirements.customer?.send_ready_email === false) {
+    return { papers_status: "off", papers_note: "Papers ready email is turned off for this customer (Customers settings) -- send it by hand" };
+  }
+  if (!requirements.complete) {
+    return { papers_status: "waiting", papers_note: `Auto-send waits for: ${requirements.missing.join(", ")}` };
+  }
+  if (collection.delivery_email?.error) {
+    return { papers_status: "failed", papers_note: `Last attempt failed: ${collection.delivery_email.error}` };
+  }
+  return { papers_status: "queued", papers_note: "Complete -- the auto-send checks every 3 minutes" };
+}
+
 async function buildUkdocsPipelineMonitor(state, targetDate) {
   const collections = (state.print_collections || []).filter((item) => (
     item?.collection_type !== "stock_control"
@@ -11094,6 +11117,7 @@ async function buildUkdocsPipelineMonitor(state, targetDate) {
       csi_orphaned: csiOrphaned,
       papers_sent: collection.delivery_email?.ok === true,
       papers_sent_at: collection.delivery_email?.sent_at || "",
+      ...ukdocsPapersStatus(collection, state),
       active_jobs: activeJobs,
       needs_attention: attentionReasons.length > 0,
       attention_reasons: attentionReasons,
@@ -23915,10 +23939,13 @@ async function startServer() {
     runIfOnline("UKdocs Zendingen Gmail auto-sync", serializedGmailAutoSync).catch(() => {});
   }, 15 * 60 * 1000);
 
+  // Every 3 minutes: a zending that just became complete gets its papers
+  // soon, not up to 15+ minutes later (the run only reads state when
+  // nothing is eligible).
   runIfOnline("UKdocs Zendingen auto-send", serializedAutoSend).catch(() => {});
   setInterval(() => {
     runIfOnline("UKdocs Zendingen auto-send", serializedAutoSend).catch(() => {});
-  }, 15 * 60 * 1000);
+  }, 3 * 60 * 1000);
 
   runIfOnline("PD Keuring sheet reconcile", serializedPdKeuringReconcile).catch(() => {});
   setInterval(() => {
