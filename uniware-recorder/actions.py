@@ -212,6 +212,12 @@ def normalize_list_loop(loop: dict) -> dict:
         "next_key": key(loop.get("next_key"), "Down"),
         "max_rows": max_rows,
         "dry_run": bool(loop.get("dry_run")),
+        # The key doesn't take the row out of the list (e.g. Delete only
+        # clears its tour number): move on with the next key afterwards.
+        "row_stays": bool(loop.get("row_stays")),
+        # Only rows whose text contains this (e.g. "508") are looked at --
+        # a row already cleared is passed by (safe to run again).
+        "only_rows_with": str(loop.get("only_rows_with") or "").strip(),
     }
 
 
@@ -982,6 +988,8 @@ class ActionRun:
         match_key = loop.get("match_key") or "Delete"
         next_key = loop.get("next_key") or "Down"
         dry_run = bool(loop.get("dry_run"))
+        row_stays = bool(loop.get("row_stays"))
+        only_rows_with = str(loop.get("only_rows_with") or "").strip()
         max_rows = max(1, min(2000, int(loop.get("max_rows") or 500)))
         if not match_words:
             raise RuntimeError(f"{label}: the list loop has no match words (Edit).")
@@ -1020,6 +1028,13 @@ class ActionRun:
                 last_row, last_action = row, "next"
                 continue
             handled.append(row)
+            if only_rows_with and not value_matches(row, only_rows_with):
+                self.say(f"{label}: {row[:60] or f'row {row_number}'}: no '{only_rows_with}' -> passed by")
+                for part in list_loop_keys(next_key):
+                    send_combo(controller, part)
+                last_row, last_action = row, "next"
+                time.sleep(0.3)
+                continue
             matched = found(match_words, joined)
             kept = found(keep_words, joined) if not matched else None
             if not matched and not kept:
@@ -1029,7 +1044,24 @@ class ActionRun:
                 matched = found(match_words, joined)
                 kept = found(keep_words, joined) if not matched else None
             short = row[:60] or f"row {row_number}"
-            if matched and not dry_run:
+            if matched and not dry_run and row_stays:
+                counts["matched"] += 1
+                self.say(f"{label}: {short}: {matched} -> {match_key}")
+                for index, part in enumerate(list_loop_keys(match_key)):
+                    if index:
+                        self._read_stable(hwnd)
+                        self._check(hwnd)
+                    send_combo(controller, part)
+                # The row stays: it must have changed (e.g. its tour number
+                # cleared), then on to the next row.
+                _, _, _, _, _, after_layout = self._read_stable(hwnd)
+                after = cursor_row(after_layout)
+                if after == row:
+                    raise RuntimeError(f"{label}: '{row[:50]}' did not change after {match_key}. Stopped to be safe.")
+                for part in list_loop_keys(next_key):
+                    send_combo(controller, part)
+                last_row, last_action = after, "next"
+            elif matched and not dry_run:
                 counts["matched"] += 1
                 self.say(f"{label}: {short}: {matched} -> {match_key}")
                 # The key(s) one after another, the screen settled in

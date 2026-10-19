@@ -367,6 +367,8 @@ function loopEditor(loop, i) {
       <label>otherwise press <input data-loop-next="${i}" size="7" value="${esc(loop.next_key || "Down")}"></label></div>
     <div class="row"><label>at most <input data-loop-max="${i}" size="4" value="${esc(loop.max_rows || 500)}"> rows</label>
       <label><input type="checkbox" data-loop-dry="${i}" ${loop.dry_run ? "checked" : ""}> trial run (only log what it would do)</label></div>
+    <div class="row"><label><input type="checkbox" data-loop-stays="${i}" ${loop.row_stays ? "checked" : ""}> the row stays in the list after the key (e.g. only its tour number is cleared) -- then go on with the otherwise-key</label></div>
+    <div class="row"><label>only rows that contain <input data-loop-only="${i}" size="8" placeholder="e.g. 508" value="${esc(loop.only_rows_with || "")}"></label><span class="muted">other rows (e.g. already cleared) are passed by -- safe to run again</span></div>
     <div class="muted">A row whose type can't be read clearly (none of these words) is skipped, never deleted. Stops at the end of the list, or when a row is still there after the key (a confirmation question?).</div>`;
 }
 function addLoop() {
@@ -394,6 +396,8 @@ function saveEdit() {
       next_key: document.querySelector(`[data-loop-next="${i}"]`).value,
       max_rows: document.querySelector(`[data-loop-max="${i}"]`).value,
       dry_run: document.querySelector(`[data-loop-dry="${i}"]`).checked,
+      row_stays: document.querySelector(`[data-loop-stays="${i}"]`).checked,
+      only_rows_with: document.querySelector(`[data-loop-only="${i}"]`).value,
     } : null,
   }));
   // Show the saved steps right away: an Edit table that still showed the old
