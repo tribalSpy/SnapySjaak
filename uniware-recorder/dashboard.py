@@ -396,7 +396,10 @@ function saveEdit() {
       dry_run: document.querySelector(`[data-loop-dry="${i}"]`).checked,
     } : null,
   }));
-  api(`/api/actions/${editing}/update`, { description: $("editDesc").value, export_dir: $("editExportDir").value, back_key: $("editBackKey").value, close_dump_window: $("editCloseWindow").checked, export_name: $("editExportName").value, uniware_dump_dir: $("editUniwareDir").value, uniware_dump_pattern: $("editUniwarePattern").value, uniware_dump_wait: $("editUniwareWait").value, steps });
+  // Show the saved steps right away: an Edit table that still showed the old
+  // steps looked like nothing happened, and saving it again changed the
+  // wrong (renumbered) steps.
+  api(`/api/actions/${editing}/update`, { description: $("editDesc").value, export_dir: $("editExportDir").value, back_key: $("editBackKey").value, close_dump_window: $("editCloseWindow").checked, export_name: $("editExportName").value, uniware_dump_dir: $("editUniwareDir").value, uniware_dump_pattern: $("editUniwarePattern").value, uniware_dump_wait: $("editUniwareWait").value, steps }).then((payload) => { if (payload) edit(editing); });
 }
 api("/api/state");
 setInterval(() => { if (state && (state.recording.active || state.run.active)) api("/api/state"); }, 1000);
