@@ -183,15 +183,24 @@ def same_item(seen: str, wanted: str) -> bool:
 
 
 # ------------------------------------------------------------------ list loop
+def list_loop_keys(value: str) -> list[str]:
+    """ "Delete, Right, Enter" -> ["Delete", "Right", "Enter"] (a comma inside
+    a combo like "Ctrl+," is not supported)."""
+    return [part.strip() for part in str(value or "").split(",") if part.strip()]
+
+
 def normalize_list_loop(loop: dict) -> dict:
     """Settings of a list loop step (see ActionRun._run_list_loop)."""
     words = lambda value: [word.strip() for word in (value if isinstance(value, list) else str(value or "").split(",")) if str(word).strip()]
     key = lambda value, default: str(value or "").strip() or default
     for name, default in (("match_key", "Delete"), ("next_key", "Down")):
-        try:
-            parse_combo(key(loop.get(name), default))  # must be a key the run can press
-        except (AttributeError, KeyError, ValueError):
-            raise RuntimeError(f"List loop: '{key(loop.get(name), default)}' is not a key (e.g. Delete, Enter, Down).")
+        # Several keys in a row, comma-separated ("Delete, Right, Enter":
+        # Delete, then answer Uniware's confirmation) -- each must be a key.
+        for part in list_loop_keys(key(loop.get(name), default)):
+            try:
+                parse_combo(part)
+            except (AttributeError, KeyError, ValueError):
+                raise RuntimeError(f"List loop: '{part}' is not a key (e.g. Delete, Right, Enter, Down).")
     try:
         max_rows = max(1, min(2000, int(float(loop.get("max_rows") or 500))))
     except (TypeError, ValueError):
@@ -1006,7 +1015,8 @@ class ActionRun:
             if last_action == "match" and any(same_row(row, done) for done in handled):
                 # The last row was taken out: the cursor went back to one
                 # already handled -- move on (and find the end) quietly.
-                send_combo(controller, next_key)
+                for part in list_loop_keys(next_key):
+                    send_combo(controller, part)
                 last_row, last_action = row, "next"
                 continue
             handled.append(row)
@@ -1022,7 +1032,14 @@ class ActionRun:
             if matched and not dry_run:
                 counts["matched"] += 1
                 self.say(f"{label}: {short}: {matched} -> {match_key}")
-                send_combo(controller, match_key)
+                # The key(s) one after another, the screen settled in
+                # between (a confirmation question has to be there before
+                # it's answered).
+                for index, part in enumerate(list_loop_keys(match_key)):
+                    if index:
+                        self._read_stable(hwnd)
+                        self._check(hwnd)
+                    send_combo(controller, part)
                 last_row, last_action = row, "match"
             else:
                 if matched:
@@ -1034,7 +1051,8 @@ class ActionRun:
                 else:
                     counts["unreadable"] += 1
                     self.say(f"{label}: {short}: type not readable -> skipped (check this one)")
-                send_combo(controller, next_key)
+                for part in list_loop_keys(next_key):
+                    send_combo(controller, part)
                 last_row, last_action = row, "next"
             time.sleep(0.3)
         else:

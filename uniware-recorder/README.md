@@ -146,6 +146,9 @@ otherwise **Down**. And in tour 515: "Accessoire" -> **Enter** (add).
   never deleted, and listed in the log.
 - Stops at the end of the list, after "at most N rows", or when a row is
   still there after the key (Uniware asking a confirmation?).
+- Several keys in a row, separated by commas -- e.g. `Delete, Right, Enter`
+  when Uniware asks a confirmation after Delete (the screen settles between
+  the keys, so the question is there before it's answered).
 - A new loop starts as a **trial run**: it only logs what it would do --
   check the log, then untick "trial run".
 

@@ -362,7 +362,7 @@ function edit(slug) {
 function loopEditor(loop, i) {
   return `<div><strong>List loop</strong> -- goes through the list row by row</div>
     <div class="row"><label>When the screen shows <input data-loop-match="${i}" size="22" placeholder="e.g. Accessoire, Planten" value="${esc((loop.match || []).join(", "))}"></label>
-      <label>press <input data-loop-key="${i}" size="7" value="${esc(loop.match_key || "Delete")}"></label></div>
+      <label>press <input data-loop-key="${i}" size="18" placeholder="e.g. Delete, Right, Enter" value="${esc(loop.match_key || "Delete")}" title="Several keys one after another, separated by commas -- e.g. Delete, then Right and Enter to answer the confirmation"></label></div>
     <div class="row"><label>Keep when it shows <input data-loop-keep="${i}" size="16" placeholder="e.g. Bloemen" value="${esc((loop.keep || []).join(", "))}"></label>
       <label>otherwise press <input data-loop-next="${i}" size="7" value="${esc(loop.next_key || "Down")}"></label></div>
     <div class="row"><label>at most <input data-loop-max="${i}" size="4" value="${esc(loop.max_rows || 500)}"> rows</label>
