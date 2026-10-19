@@ -152,6 +152,22 @@ otherwise **Down**. And in tour 515: "Accessoire" -> **Enter** (add).
 - A new loop starts as a **trial run**: it only logs what it would do --
   check the log, then untick "trial run".
 
+**Day lists -- information from one action to the next** (e.g. accessoires:
+SPICER -> tour 516, other -> 515). Three actions, each ending on the main
+menu; the list in between is shown under "Day lists" in the dashboard:
+1. **Collect** -- tour 515 "In te delen", a list loop with "collect into day
+   list" = `accessoires vandaag`: every row's order number is written down
+   (the list is emptied first), only Down is pressed.
+2. **Check** -- "Add for each order" (day list `accessoires vandaag`, the
+   next N steps), then those steps: Ctrl+F, type `{order}`, Enter, F11, a
+   **check** step (a line shows `SPICER` -> `516`, lines without -> `515`),
+   back. An order with both kinds gets a warning "multiple types of
+   accessoires" and no result -- set it by hand in the Day lists block.
+   "Only orders without a result yet" lets a stopped run continue.
+3. **Assign** -- a list loop with "act on day list" `accessoires vandaag`,
+   orders marked `516` -> Enter (in tour 516's list), otherwise Down. Done
+   orders get a time in the "Done" column.
+
 **Tours (UKdocs)**: record one action per tour (508 flowers, 515
 accessories, 1000 BQ, ...) -- some tours need an extra key, so each has its
 own recording -- each with its own dump file name.

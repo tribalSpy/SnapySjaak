@@ -32,6 +32,7 @@ def state_payload() -> dict:
             {**action, "fields": actions.action_fields(action)}
             for action in actions.list_actions()
         ],
+        "day_lists": actions.list_day_lists(),
         "recording": {
             "active": bool(recorder and recorder.active),
             "name": recorder.action["name"] if recorder else "",
@@ -162,6 +163,10 @@ class Handler(BaseHTTPRequestHandler):
                             step = action["steps"][index]
                             if step.get("loop") and isinstance(change.get("loop"), dict):
                                 step["loop"] = actions.normalize_list_loop(change["loop"])
+                            if step.get("foreach") and isinstance(change.get("foreach"), dict):
+                                step["foreach"] = actions.normalize_foreach(change["foreach"])
+                            if step.get("classify") and isinstance(change.get("classify"), dict):
+                                step["classify"] = actions.normalize_classify(change["classify"])
                             step["capture"] = bool(change.get("capture"))
                             if "key" in step and change.get("opens_window") is not None:
                                 if change.get("opens_window"):
@@ -211,6 +216,37 @@ class Handler(BaseHTTPRequestHandler):
                         action["steps"] = [step for index, step in enumerate(action["steps"]) if index not in removed]
                     actions.save_action(action)
                     STATE["message"] = f"Saved changes to '{action['name']}'."
+                elif path.startswith("/api/actions/") and (path.endswith("/add-foreach") or path.endswith("/add-check")):
+                    # "For each order of a day list" (repeats the steps after
+                    # it) or a check step ("the screen shows SPICER -> 516").
+                    slug = path.split("/")[3]
+                    action = actions.load_action(slug)
+                    if not action:
+                        raise RuntimeError("Action not found.")
+                    after = max(0, min(len(action["steps"]), int(body.get("after") or 0)))
+                    if path.endswith("/add-foreach"):
+                        step = {"foreach": actions.normalize_foreach({"list": body.get("list") or "", "count": 1}), "to": "", "to_title": "for each order"}
+                    else:
+                        step = {"classify": actions.normalize_classify({}), "to": "", "to_title": "check"}
+                    step.update({"capture": False, "capture_pages": False})
+                    action["steps"].insert(after, step)
+                    actions.save_action(action)
+                    STATE["message"] = f"Step {after + 1} added to '{action['name']}' -- fill it in, then Save."
+                elif path.startswith("/api/daylists/") and path.endswith("/label"):
+                    # A person sets / corrects an order's result in a day list.
+                    data = actions.load_day_list(str(body.get("list") or ""))
+                    entry = actions.day_list_item(data, str(body.get("key") or ""))
+                    if entry is None:
+                        raise RuntimeError("Order not in this day list.")
+                    entry["label"] = str(body.get("label") or "").strip()
+                    entry["warning"] = not entry["label"]
+                    entry["note"] = (entry.get("note") or "") + (" -- set by hand" if "set by hand" not in (entry.get("note") or "") else "")
+                    actions.save_day_list(data)
+                    STATE["message"] = f"{entry['key']} set to {entry['label'] or '(none)'}."
+                elif path.startswith("/api/daylists/") and path.endswith("/delete"):
+                    name = str(body.get("list") or "")
+                    (actions.DAYLISTS_DIR / f"{actions.day_list_slug(name)}.json").unlink(missing_ok=True)
+                    STATE["message"] = f"Day list '{name}' deleted."
                 elif path.startswith("/api/actions/") and path.endswith("/add-loop"):
                     # A list loop step (go through a list row by row, press a
                     # key depending on what the screen shows) after step N.
@@ -278,6 +314,7 @@ PAGE = """<!doctype html>
 <div class="card" id="recordCard"></div>
 <div class="card" id="runCard"></div>
 <div class="card"><h2>Actions</h2><div id="actions"></div></div>
+<div class="card"><h2>Day lists</h2><div class="muted">Information one action collects for the next (e.g. the accessoire orders of tour 515 and whether they are SPICER). Set a result by hand before the assigning action runs.</div><div id="dayLists"></div></div>
 <div class="card" id="editCard" style="display:none"></div>
 <script>
 let state = null, editing = null;
@@ -292,6 +329,7 @@ async function api(path, body) {
 function render() {
   if (!state) return;
   $("msg").innerHTML = state.message ? `<div class="msg">${esc(state.message)}</div>` : "";
+  if (!document.activeElement || !document.activeElement.closest("#dayLists")) renderDayLists();
   const rec = state.recording;
   $("recordCard").innerHTML = rec.active
     ? `<h2>Recording: ${esc(rec.name)}</h2><p>${esc(rec.status)} -- ${rec.steps} step(s)</p>
@@ -344,7 +382,7 @@ function edit(slug) {
     <p class="muted">At the end of the run it waits for the new dump file Uniware writes (e.g. dump.filipe.2026-10-14_16_57_30.csv), waits until it is completely written, then renames it, e.g. <code>tour-508_{date}</code> gives tour-508_20261014.csv. You can use {date}, {time}, {action} and the fields. Same name again = replaced. No new file within Max wait = the run fails and the file is left alone.</p>
     <table><tr><th>#</th><th>Step</th><th>Goes to</th><th>Field (typed text) / list row</th><th>Wait until screen shows</th><th>Max wait (s)</th><th>Read column (into field)</th><th>Capture screen</th><th>All pages</th><th>Remove</th></tr>
     ${a.steps.map((s, i) => `<tr><td>${i + 1}</td>
-      <td>${s.loop ? loopEditor(s.loop, i) : s.text !== undefined ? `type <code>${esc(s.text)}</code>` : `${s.menu ? `menu <strong>${s.menu.map(esc).join(" &rsaquo; ")}</strong>, then ` : ""}<input data-step-key="${i}" value="${esc(s.key)}" size="9" title="The key this step presses -- change it (e.g. Left instead of Right) without recording again">${s.enter_on ? ` on "${esc(s.enter_on)}"` : ""}${s.key ? `<div><label><input type="checkbox" data-step-window="${i}" ${s.opens_window ? "checked" : ""}> opens the dump in a new window</label>${s.opens_window && s.opens_window.title ? `<div class="muted">recorded: ${esc(s.opens_window.title)}${s.opens_window.exe ? ` (${esc(s.opens_window.exe)})` : ""}</div>` : ""}</div>` : ""}`}</td>
+      <td>${s.foreach ? foreachEditor(s.foreach, i) : s.classify ? classifyEditor(s.classify, i) : s.loop ? loopEditor(s.loop, i) : s.text !== undefined ? `type <code>${esc(s.text)}</code>` : `${s.menu ? `menu <strong>${s.menu.map(esc).join(" &rsaquo; ")}</strong>, then ` : ""}<input data-step-key="${i}" value="${esc(s.key)}" size="9" title="The key this step presses -- change it (e.g. Left instead of Right) without recording again">${s.enter_on ? ` on "${esc(s.enter_on)}"` : ""}${s.key ? `<div><label><input type="checkbox" data-step-window="${i}" ${s.opens_window ? "checked" : ""}> opens the dump in a new window</label>${s.opens_window && s.opens_window.title ? `<div class="muted">recorded: ${esc(s.opens_window.title)}${s.opens_window.exe ? ` (${esc(s.opens_window.exe)})` : ""}</div>` : ""}</div>` : ""}`}</td>
       <td>${esc(s.to_title || s.to)}${s.recorded_wait ? `<div class="muted">took ${esc(s.recorded_wait)}s when recorded</div>` : ""}</td>
       <td>${s.text !== undefined ? `<input data-step-field="${i}" placeholder="e.g. invoice" value="${esc((s.text.match(/^\\{(.+)\\}$/) || [])[1] || "")}" size="12"><div class="muted">recorded: ${esc(s.recorded_text || s.text)}</div>` : s.key === "Enter" ? `find row with <input data-step-pick="${i}" placeholder="empty = selected row" value="${esc(s.pick || "")}" size="12">${s.pick_row ? `<div class="muted">recorded row: ${esc(s.pick_row)}</div>` : ""}` : ""}</td>
       <td><input data-step-wait="${i}" size="16" placeholder="(optional) e.g. Totaal" value="${esc(s.wait_text || "")}"></td>
@@ -354,6 +392,8 @@ function edit(slug) {
       <td><input type="checkbox" data-step-pages="${i}" ${s.capture_pages ? "checked" : ""}></td>
       <td><input type="checkbox" data-step-remove="${i}"></td></tr>`).join("")}
     </table><p class="row"><button class="primary" onclick="saveEdit()">Save</button><button onclick="$('editCard').style.display='none'">Close</button></p>
+    <p class="row"><label>Add "for each order" after step <input id="foreachAfter" size="3" value="${a.steps.length}"></label><button onclick="addStep('foreach')">Add for each order</button>
+      <label>Add a check step after step <input id="checkAfter" size="3" value="${a.steps.length}"></label><button onclick="addStep('check')">Add check</button></p>
     <p class="row"><label>Add a list loop after step <input id="loopAfter" size="3" value="${a.steps.length}"></label><button onclick="addLoop()">Add list loop</button>
       <span class="muted">e.g. go through the orders of a tour and Delete the ones that aren't flowers -- save your other changes first.</span></p>
     <p class="muted">Field: the typed text becomes a value you fill in when starting (leave empty to always type the recorded text). All pages: Page Down until the list ends. Key: change what a step presses (e.g. Left instead of Right) without recording again. Read column: after this step, read that column of the table on screen (e.g. invoiceRes) into a field -- use it in the dump file name as {invoiceres}; it is read twice and must agree, otherwise the run stops. Remove: drop the step. Find row with: in a list (e.g. the tours after F1) the run reads the list, finds the row with this value and moves the highlight there -- the position may differ every day. Arrowing in a list and pressing Enter while recording fills this in by itself (the first number of the row).<br>
@@ -368,8 +408,43 @@ function loopEditor(loop, i) {
     <div class="row"><label>at most <input data-loop-max="${i}" size="4" value="${esc(loop.max_rows || 500)}"> rows</label>
       <label><input type="checkbox" data-loop-dry="${i}" ${loop.dry_run ? "checked" : ""}> trial run (only log what it would do)</label></div>
     <div class="row"><label><input type="checkbox" data-loop-stays="${i}" ${loop.row_stays ? "checked" : ""}> the row stays in the list after the key (e.g. only its tour number is cleared) -- then go on with the otherwise-key</label></div>
+    <div class="row"><label>collect into day list <input data-loop-collect="${i}" size="18" placeholder="(off) e.g. accessoires vandaag" value="${esc(loop.collect_into || "")}"></label><span class="muted">only writes every row's order number down (empties the list first), presses only the otherwise-key</span></div>
+    <div class="row"><label>or act on day list <input data-loop-uselist="${i}" size="18" placeholder="(off) e.g. accessoires vandaag" value="${esc(loop.use_list || "")}"></label><label>orders marked <input data-loop-uselabel="${i}" size="5" placeholder="516" value="${esc(loop.use_label || "")}"></label><span class="muted">instead of words on screen: press the key for orders with this result</span></div>
     <div class="row"><label>only rows that contain <input data-loop-only="${i}" size="8" placeholder="e.g. 508" value="${esc(loop.only_rows_with || "")}"></label><span class="muted">other rows (e.g. already cleared) are passed by -- safe to run again</span></div>
     <div class="muted">A row whose type can't be read clearly (none of these words) is skipped, never deleted. Stops at the end of the list, or when a row is still there after the key (a confirmation question?).</div>`;
+}
+function foreachEditor(settings, i) {
+  return `<div><strong>For each order</strong> of a day list -- repeats the steps after it</div>
+    <div class="row"><label>day list <input data-fe-list="${i}" size="18" placeholder="accessoires vandaag" value="${esc(settings.list || "")}"></label>
+      <label>the next <input data-fe-count="${i}" size="3" value="${esc(settings.count || 1)}"> step(s)</label>
+      <label>order number as field <input data-fe-field="${i}" size="7" value="${esc(settings.field || "order")}"></label></div>
+    <div class="row"><label><input type="checkbox" data-fe-open="${i}" ${settings.only_open !== false ? "checked" : ""}> only orders without a result yet (a stopped run continues where it was)</label></div>
+    <div class="muted">In those steps, typed text {${esc(settings.field || "order")}} is the order number, e.g. Ctrl+F, then type {${esc(settings.field || "order")}}, Enter, F11, a check step, back.</div>`;
+}
+function classifyEditor(settings, i) {
+  return `<div><strong>Check</strong> the current order's product lines (inside "for each order")</div>
+    <div class="row"><label>a line shows <input data-cl-word="${i}" size="10" placeholder="SPICER" value="${esc(settings.word || "")}"></label>
+      <label>-> result <input data-cl-if="${i}" size="5" placeholder="516" value="${esc(settings.label_if || "")}"></label>
+      <label>lines without it -> <input data-cl-else="${i}" size="5" placeholder="515" value="${esc(settings.label_else || "")}"></label></div>
+    <div class="muted">Both kinds of lines in one order -> warning "multiple types of accessoires" (no result, a person decides). Product lines = lines with a quantity like "1 x 50".</div>`;
+}
+function addStep(kind) {
+  const after = Number($(kind === "foreach" ? "foreachAfter" : "checkAfter").value || 0);
+  api(`/api/actions/${editing}/add-${kind === "foreach" ? "foreach" : "check"}`, { after }).then((payload) => { if (payload) edit(editing); });
+}
+function setDayLabel(list, key, label) { api(`/api/daylists/x/label`, { list, key, label }); }
+function deleteDayList(list) { if (confirm(`Delete day list '${list}'?`)) api(`/api/daylists/x/delete`, { list }); }
+function renderDayLists() {
+  const lists = state.day_lists || [];
+  $("dayLists").innerHTML = lists.length ? lists.map((list) => {
+    const items = list.items || [];
+    const counts = items.reduce((acc, item) => { const key = item.label || (item.warning ? "warning" : "open"); acc[key] = (acc[key] || 0) + 1; return acc; }, {});
+    return `<h3>${esc(list.name)} <span class="muted">-- ${items.length} order(s): ${Object.entries(counts).map(([key, count]) => `${count} ${esc(key)}`).join(", ")}${list.updated ? ` -- ${esc(list.updated.replace("T", " "))}` : ""}</span> <button class="danger" onclick="deleteDayList('${esc(list.name)}')">Delete list</button></h3>
+      <table><tr><th>Order</th><th>Row</th><th>Type</th><th>Result</th><th>Note</th><th>Done</th></tr>
+      ${items.map((item) => `<tr${item.warning ? ' style="background:#fff7ed"' : ""}><td>${esc(item.key)}</td><td class="muted">${esc(item.row || "")}</td><td>${esc(item.type || "")}</td>
+        <td><input size="5" value="${esc(item.label || "")}" onchange="setDayLabel('${esc(list.name)}', '${esc(item.key)}', this.value)"></td>
+        <td>${item.warning ? "<strong>" : ""}${esc(item.note || "")}${item.warning ? "</strong>" : ""}</td><td>${item.done ? esc(String(item.done).replace("T", " ")) : ""}</td></tr>`).join("")}</table>`;
+  }).join("") : `<p class="muted">No day lists yet -- a list loop with "collect into day list" makes one.</p>`;
 }
 function addLoop() {
   const after = Number($("loopAfter").value || 0);
@@ -389,6 +464,17 @@ function saveEdit() {
     read_column: document.querySelector(`[data-step-readcol="${i}"]`).value,
     read_field: document.querySelector(`[data-step-readfield="${i}"]`).value,
     remove: document.querySelector(`[data-step-remove="${i}"]`).checked,
+    foreach: s.foreach ? {
+      list: document.querySelector(`[data-fe-list="${i}"]`).value,
+      count: document.querySelector(`[data-fe-count="${i}"]`).value,
+      field: document.querySelector(`[data-fe-field="${i}"]`).value,
+      only_open: document.querySelector(`[data-fe-open="${i}"]`).checked,
+    } : null,
+    classify: s.classify ? {
+      word: document.querySelector(`[data-cl-word="${i}"]`).value,
+      label_if: document.querySelector(`[data-cl-if="${i}"]`).value,
+      label_else: document.querySelector(`[data-cl-else="${i}"]`).value,
+    } : null,
     loop: s.loop ? {
       match: document.querySelector(`[data-loop-match="${i}"]`).value.split(","),
       keep: document.querySelector(`[data-loop-keep="${i}"]`).value.split(","),
@@ -398,6 +484,9 @@ function saveEdit() {
       dry_run: document.querySelector(`[data-loop-dry="${i}"]`).checked,
       row_stays: document.querySelector(`[data-loop-stays="${i}"]`).checked,
       only_rows_with: document.querySelector(`[data-loop-only="${i}"]`).value,
+      collect_into: document.querySelector(`[data-loop-collect="${i}"]`).value,
+      use_list: document.querySelector(`[data-loop-uselist="${i}"]`).value,
+      use_label: document.querySelector(`[data-loop-uselabel="${i}"]`).value,
     } : null,
   }));
   // Show the saved steps right away: an Edit table that still showed the old

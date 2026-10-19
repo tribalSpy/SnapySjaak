@@ -78,9 +78,11 @@ def save_action(action: dict):
 
 def action_fields(action: dict) -> list[str]:
     fields = []
+    # Filled per order by a "for each order" step -- not asked at start.
+    filled = {step["foreach"].get("field") or "order" for step in action.get("steps", []) if step.get("foreach")}
     for step in action.get("steps", []):
         for name in re.findall(r"\{([a-z0-9_]+)\}", (step.get("text") or "") + (step.get("pick") or "")):
-            if name not in fields:
+            if name not in fields and name not in filled:
                 fields.append(name)
     return fields
 
@@ -182,6 +184,87 @@ def same_item(seen: str, wanted: str) -> bool:
     return difflib.SequenceMatcher(None, left, right).ratio() >= 0.85
 
 
+# ------------------------------------------------------------------ day lists
+# A day list carries information from one action to the next (e.g. the
+# accessoire orders of tour 515: collected by one action, checked for SPICER
+# by the next, assigned to tour 515 / 516 by the last). One JSON file per list
+# in daylists/; each item is keyed by its order number.
+DAYLISTS_DIR = APP_DIR / "daylists"
+
+
+def day_list_slug(name: str) -> str:
+    return slugify(name) or "list"
+
+
+def load_day_list(name: str) -> dict:
+    path = DAYLISTS_DIR / f"{day_list_slug(name)}.json"
+    if path.exists():
+        try:
+            return json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            pass
+    return {"name": name, "updated": "", "items": []}
+
+
+def save_day_list(data: dict):
+    DAYLISTS_DIR.mkdir(parents=True, exist_ok=True)
+    data["updated"] = datetime.datetime.now().isoformat(timespec="seconds")
+    path = DAYLISTS_DIR / f"{day_list_slug(data['name'])}.json"
+    temp = path.with_suffix(".tmp")
+    temp.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
+    temp.replace(path)
+
+
+def list_day_lists() -> list[dict]:
+    DAYLISTS_DIR.mkdir(parents=True, exist_ok=True)
+    lists = []
+    for path in sorted(DAYLISTS_DIR.glob("*.json")):
+        try:
+            lists.append(json.loads(path.read_text(encoding="utf-8")))
+        except (OSError, json.JSONDecodeError):
+            continue
+    return lists
+
+
+def day_list_item(data: dict, key: str) -> dict | None:
+    return next((item for item in data.get("items", []) if item.get("key") == key), None)
+
+
+def row_order_number(text: str) -> str | None:
+    """The order number of a list row (6-8 digits, look-alike letters read as
+    digits): 4840711 in "508 EC1211 4840711 0.00 0.05"."""
+    numbers = re.findall(r"(?<![\w.,])\d{6,8}(?![\w.,])", text.translate(_DIGIT_LOOKALIKES))
+    return numbers[0] if numbers else None
+
+
+def normalize_foreach(settings: dict) -> dict:
+    try:
+        count = max(1, min(50, int(float(settings.get("count") or 1))))
+    except (TypeError, ValueError):
+        count = 1
+    field = re.sub(r"[^a-z0-9_]+", "_", str(settings.get("field") or "order").lower()).strip("_") or "order"
+    return {
+        "list": str(settings.get("list") or "").strip(),
+        "field": field,
+        "count": count,
+        # Only items that have no label yet (a run can be repeated / resumed).
+        "only_open": settings.get("only_open", True) is not False,
+    }
+
+
+def normalize_classify(settings: dict) -> dict:
+    return {
+        "list": str(settings.get("list") or "").strip(),
+        "word": str(settings.get("word") or "").strip(),
+        "label_if": str(settings.get("label_if") or "").strip(),
+        "label_else": str(settings.get("label_else") or "").strip(),
+    }
+
+
+# A product line on an order screen has a quantity like "1 x 50" / "2 x1".
+PRODUCT_LINE_RE = re.compile(r"\d+\s*x\s*\d+", re.IGNORECASE)
+
+
 # ------------------------------------------------------------------ list loop
 # A list loop ends after this many presses of the next key in a row that
 # don't bring a new row (one can be a slow screen).
@@ -223,6 +306,13 @@ def normalize_list_loop(loop: dict) -> dict:
         # Only rows whose text contains this (e.g. "508") are looked at --
         # a row already cleared is passed by (safe to run again).
         "only_rows_with": str(loop.get("only_rows_with") or "").strip(),
+        # Collect mode: no keys but the next key -- every row's order number
+        # (with the type word seen) goes into this day list (emptied first).
+        "collect_into": str(loop.get("collect_into") or "").strip(),
+        # Act on a day list instead of words on screen: a row matches when its
+        # order number has this label in that list (e.g. 516).
+        "use_list": str(loop.get("use_list") or "").strip(),
+        "use_label": str(loop.get("use_label") or "").strip(),
     }
 
 
@@ -996,8 +1086,15 @@ class ActionRun:
         row_stays = bool(loop.get("row_stays"))
         only_rows_with = str(loop.get("only_rows_with") or "").strip()
         max_rows = max(1, min(2000, int(loop.get("max_rows") or 500)))
-        if not match_words:
+        collect_into = str(loop.get("collect_into") or "").strip()
+        use_list = str(loop.get("use_list") or "").strip()
+        use_label = str(loop.get("use_label") or "").strip()
+        if not match_words and not collect_into and not use_list:
             raise RuntimeError(f"{label}: the list loop has no match words (Edit).")
+        if use_list and not use_label:
+            raise RuntimeError(f"{label}: the list loop acts on day list '{use_list}' but has no label (e.g. 516).")
+        collected = {"name": collect_into, "items": []} if collect_into else None
+        list_data = load_day_list(use_list) if use_list else None
 
         def found(words, text):
             for word in words:
@@ -1062,9 +1159,30 @@ class ActionRun:
                 last_row, last_action = row, "next"
                 time.sleep(0.3)
                 continue
-            matched = found(match_words, joined)
-            kept = found(keep_words, joined) if not matched else None
-            if not matched and not kept:
+            if collected is not None:
+                # Collect mode: write the row down, press only the next key.
+                order = row_order_number(row)
+                kind = found(match_words, joined) or found(keep_words, joined) or ""
+                if order and not day_list_item(collected, order):
+                    collected["items"].append({"key": order, "row": row[:80], "type": kind, "label": "", "note": "", "warning": False})
+                    self.say(f"{label}: collected {order} ({kind or 'type ?'})")
+                    if len(collected["items"]) % 10 == 0:
+                        save_day_list(collected)
+                for part in list_loop_keys(next_key):
+                    send_combo(controller, part)
+                last_row, last_action = row, "next"
+                time.sleep(0.3)
+                continue
+            if list_data is not None:
+                # Act on the day list: the row's order number decides.
+                order = row_order_number(row)
+                entry = day_list_item(list_data, order) if order else None
+                matched = f"{use_list}: {use_label}" if entry and entry.get("label") == use_label else None
+                kept = None if matched else (f"{use_list}: {entry.get('label') or 'no label'}" if entry else "not on the day list")
+            else:
+                matched = found(match_words, joined)
+                kept = found(keep_words, joined) if not matched else None
+            if list_data is None and not matched and not kept:
                 # Read once more before giving up on this row.
                 _, _, _, _, text, layout = self._read_stable(hwnd)
                 joined = "\n".join(text)
@@ -1074,6 +1192,9 @@ class ActionRun:
             if matched and not dry_run and row_stays:
                 counts["matched"] += 1
                 self.say(f"{label}: {short}: {matched} -> {match_key}")
+                if list_data is not None and entry is not None:
+                    entry["done"] = datetime.datetime.now().isoformat(timespec="seconds")
+                    save_day_list(list_data)
                 for index, part in enumerate(list_loop_keys(match_key)):
                     if index:
                         self._read_stable(hwnd)
@@ -1091,6 +1212,9 @@ class ActionRun:
             elif matched and not dry_run:
                 counts["matched"] += 1
                 self.say(f"{label}: {short}: {matched} -> {match_key}")
+                if list_data is not None and entry is not None:
+                    entry["done"] = datetime.datetime.now().isoformat(timespec="seconds")
+                    save_day_list(list_data)
                 # The key(s) one after another, the screen settled in
                 # between (a confirmation question has to be there before
                 # it's answered).
@@ -1116,6 +1240,10 @@ class ActionRun:
             time.sleep(0.3)
         else:
             self.say(f"{label}: stopped after {max_rows} rows (the most this loop may do).")
+        if collected is not None:
+            save_day_list(collected)
+            self.say(f"{label}: {len(collected['items'])} order(s) collected into day list '{collect_into}'.")
+            return
         self.say(f"{label}: list done -- {counts['matched']} {'would be ' if dry_run else ''}{match_key}, {counts['kept']} kept, {counts['unreadable']} not readable.")
 
     def _press(self, controller, key: str, times: int):
@@ -1217,45 +1345,8 @@ class ActionRun:
             dump_before = None if opens_window else self._dump_files_now()
             if self.action.get("capture_start"):
                 self._capture(hwnd, 0, False, controller, (screen_id, title, selected, text, layout))
-            for number, step in enumerate(self.action.get("steps", []), start=1):
-                self._check(hwnd)
-                if step.get("loop"):
-                    self._run_list_loop(hwnd, controller, step["loop"], f"Step {number}")
-                    _, screen_id, title, selected, text, layout = self._read(hwnd)
-                    continue
-                if "text" in step:
-                    typed = re.sub(r"\{([a-z0-9_]+)\}", lambda match: self.values.get(match.group(1), ""), step["text"])
-                    controller.type(typed)
-                    self.say(f"Step {number}: typed {typed!r}")
-                else:
-                    if step.get("menu"):
-                        self._go_menu(hwnd, controller, step["menu"], f"Step {number}")
-                    elif step.get("pick"):
-                        target = re.sub(r"\{([a-z0-9_]+)\}", lambda match: self.values.get(match.group(1), ""), step["pick"])
-                        self._choose_row(hwnd, controller, target, f"Step {number}")
-                    elif step.get("enter_on"):
-                        # Arrow to the recorded menu item first if the
-                        # highlight is somewhere else.
-                        for _ in range(30):
-                            if selected and selected[0] == step["enter_on"]:
-                                break
-                            send_combo(controller, "Down")
-                            _, _, _, selected, _, _ = self._read(hwnd, timeout=1.5)
-                        else:
-                            raise RuntimeError(f"Menu item '{step['enter_on']}' not found.")
-                    windows_before = visible_windows() if step.get("opens_window") else None
-                    send_combo(controller, step["key"])
-                    if windows_before is not None:
-                        self._take_window_dump(hwnd, windows_before, step, f"Step {number}")
-                        if not bring_to_front(hwnd):
-                            raise RuntimeError("Could not bring Uniware back to the front after the dump window.")
-                    self.say(f"Step {number}: {step['key']}" + (f" on '{step['pick']}'" if step.get("pick") else f" on '{step['enter_on']}'" if step.get("enter_on") else ""))
-                reading = self._wait_for(hwnd, step, f"Step {number}")
-                screen_id, title, selected, text, layout = reading
-                if step.get("read_column") and step.get("read_field"):
-                    self._read_column_value(hwnd, step, f"Step {number}", layout)
-                if step.get("capture"):
-                    self._capture(hwnd, number, bool(step.get("capture_pages")), controller, reading)
+            steps = self.action.get("steps", [])
+            selected = self._run_steps(hwnd, controller, steps, 0, len(steps), selected)
             if dump_before is not None:
                 self._collect_uniware_dump(dump_before)
             self.result = "done"
@@ -1270,6 +1361,116 @@ class ActionRun:
                 self.result = "failed"
                 self.say(f"Could not write the output: {error}")
             self.active = False
+
+    def _run_steps(self, hwnd, controller, steps: list, start: int, end: int, selected):
+        """Steps start..end-1; a "for each" step repeats the steps after it
+        once per day-list item."""
+        index = start
+        while index < end:
+            step = steps[index]
+            number = index + 1
+            self._check(hwnd)
+            if step.get("foreach"):
+                settings = step["foreach"]
+                block_end = min(end, index + 1 + int(settings.get("count") or 1))
+                self._run_foreach(hwnd, controller, steps, index + 1, block_end, settings, f"Step {number}")
+                selected = self._read(hwnd)[3]
+                index = block_end
+                continue
+            selected = self._run_one_step(hwnd, controller, step, number, selected)
+            index += 1
+        return selected
+
+    def _run_foreach(self, hwnd, controller, steps, start, end, settings, label):
+        data = load_day_list(settings["list"])
+        items = [item for item in data.get("items", []) if not settings.get("only_open", True) or not item.get("label")]
+        self.say(f"{label}: for each of {len(items)} order(s) in '{settings['list']}' -- steps {start + 1}-{end}")
+        for position, item in enumerate(items, start=1):
+            self.values[settings["field"]] = item["key"]
+            self.current_item = (settings["list"], item["key"])
+            self.say(f"{label}: ({position}/{len(items)}) {settings['field']} = {item['key']}")
+            try:
+                self._run_steps(hwnd, controller, steps, start, end, None)
+            except Exception as error:
+                data = load_day_list(settings["list"])
+                entry = day_list_item(data, item["key"])
+                if entry is not None:
+                    entry["note"] = f"stopped: {error}"[:300]
+                    save_day_list(data)
+                raise
+        self.current_item = None
+
+    def _classify(self, hwnd, settings: dict, label: str):
+        """The screen of the current day-list order (e.g. its product lines
+        after F11): the word on a product line -> label_if, product lines
+        without it -> label_else, both -> a warning (left for a person)."""
+        item = getattr(self, "current_item", None)
+        list_name = settings.get("list") or (item[0] if item else "")
+        if not item:
+            raise RuntimeError(f"{label}: a check step only works inside a 'for each order' block.")
+        word = settings["word"]
+        _, _, _, _, _, layout = self._read_stable(hwnd)
+        product_rows = [row["text"] for row in screen_rows(layout) if PRODUCT_LINE_RE.search(row["text"])]
+        with_word = [row for row in product_rows if re.search(re.escape(word), row, re.IGNORECASE)]
+        without_word = [row for row in product_rows if row not in with_word]
+        if with_word and without_word:
+            result, note = "", f"order {item[1]} has multiple types of accessoires ({len(with_word)} {word}, {len(without_word)} other) -- check by hand"
+        elif with_word:
+            result, note = settings["label_if"], f"{word} ({len(with_word)} line(s))"
+        elif without_word:
+            result, note = settings["label_else"], f"no {word} ({len(without_word)} line(s))"
+        else:
+            result, note = "", "no product lines readable on this screen -- check by hand"
+        data = load_day_list(list_name)
+        entry = day_list_item(data, item[1])
+        if entry is None:
+            entry = {"key": item[1], "row": "", "type": ""}
+            data.setdefault("items", []).append(entry)
+        entry.update({"label": result, "note": note, "warning": not result, "checked": datetime.datetime.now().isoformat(timespec="seconds")})
+        save_day_list(data)
+        self.say(f"{label}: {item[1]} -> {result or 'WARNING'} ({note})")
+
+    def _run_one_step(self, hwnd, controller, step: dict, number: int, selected):
+        if step.get("loop"):
+            self._run_list_loop(hwnd, controller, step["loop"], f"Step {number}")
+            return self._read(hwnd)[3]
+        if step.get("classify"):
+            self._classify(hwnd, step["classify"], f"Step {number}")
+            return selected
+        if "text" in step:
+            typed = re.sub(r"\{([a-z0-9_]+)\}", lambda match: self.values.get(match.group(1), ""), step["text"])
+            controller.type(typed)
+            self.say(f"Step {number}: typed {typed!r}")
+        else:
+            if step.get("menu"):
+                self._go_menu(hwnd, controller, step["menu"], f"Step {number}")
+            elif step.get("pick"):
+                target = re.sub(r"\{([a-z0-9_]+)\}", lambda match: self.values.get(match.group(1), ""), step["pick"])
+                self._choose_row(hwnd, controller, target, f"Step {number}")
+            elif step.get("enter_on"):
+                # Arrow to the recorded menu item first if the
+                # highlight is somewhere else.
+                for _ in range(30):
+                    if selected and selected[0] == step["enter_on"]:
+                        break
+                    send_combo(controller, "Down")
+                    _, _, _, selected, _, _ = self._read(hwnd, timeout=1.5)
+                else:
+                    raise RuntimeError(f"Menu item '{step['enter_on']}' not found.")
+            windows_before = visible_windows() if step.get("opens_window") else None
+            send_combo(controller, step["key"])
+            if windows_before is not None:
+                self._take_window_dump(hwnd, windows_before, step, f"Step {number}")
+                if not bring_to_front(hwnd):
+                    raise RuntimeError("Could not bring Uniware back to the front after the dump window.")
+            self.say(f"Step {number}: {step['key']}" + (f" on '{step['pick']}'" if step.get("pick") else f" on '{step['enter_on']}'" if step.get("enter_on") else ""))
+        reading = self._wait_for(hwnd, step, f"Step {number}")
+        screen_id, title, selected, text, layout = reading
+        if step.get("read_column") and step.get("read_field"):
+            self._read_column_value(hwnd, step, f"Step {number}", layout)
+        if step.get("capture"):
+            self._capture(hwnd, number, bool(step.get("capture_pages")), controller, reading)
+        return selected
 
     def export_name(self) -> str:
         """The dump file name from the action's template: {date}, {time},
