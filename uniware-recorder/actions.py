@@ -422,12 +422,13 @@ def _words_with_x(line: dict) -> list[tuple[float, float, str]]:
             for match in re.finditer(r"\S+", line["text"])]
 
 
-def read_column(layout: list, header: str) -> list[str]:
+def read_column(layout: list, header: str, row_with: str = "") -> list[str]:
     """The values under a table column, e.g. "invoiceRes", one per row
     (empty cells left out). The column runs from the end of the header
     before it to the start of the header after it (headers can be narrower
     than their column, right-aligned like "order"). A header cut to the
-    column width ("invoiceRe") is found too."""
+    column width ("invoiceRe") is found too. row_with: only rows whose text
+    contains that (e.g. "LTD" -- one company of several)."""
     wanted = header.strip().lower()
     best = None
     for line in layout:
@@ -447,13 +448,19 @@ def read_column(layout: list, header: str) -> list[str]:
     left = max(before) + 4 if before else head_left
     right = min(after) - 4 if after else head_right
     rows = {}
+    row_texts = {}
     for line in layout:
         if line["y"] <= head_y + 8:
             continue
+        row_texts.setdefault(round(line["y"] / 8), []).append(line["text"])
         for word_left, word_right, word in _words_with_x(line):
             middle = (word_left + word_right) / 2
             if left <= middle <= right:
                 rows.setdefault(round(line["y"] / 8), []).append((word_left, word))
+    if row_with:
+        wanted_row = row_with.strip().lower()
+        rows = {key: words for key, words in rows.items()
+                if any(wanted_row in " ".join(row_texts.get(near, [])).lower() for near in (key - 1, key, key + 1))}
     return [" ".join(word for _, word in sorted(rows[key])) for key in sorted(rows)]
 
 
@@ -976,7 +983,7 @@ class ActionRun:
         previous = None
         while True:
             self._check(hwnd)
-            values = [clean_number(value) for value in read_column(layout, column)]
+            values = [clean_number(value) for value in read_column(layout, column, step.get("read_row_with") or "")]
             if values and values == previous:
                 break
             previous = values or None

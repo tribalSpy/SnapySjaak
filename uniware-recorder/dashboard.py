@@ -215,9 +215,11 @@ class Handler(BaseHTTPRequestHandler):
                             field = re.sub(r"[^a-z0-9_]+", "_", str(change.get("read_field") or "").lower()).strip("_")
                             if column and field:
                                 step["read_column"], step["read_field"] = column, field
+                                step["read_row_with"] = str(change.get("read_row_with") or "").strip()
                             else:
                                 step.pop("read_column", None)
                                 step.pop("read_field", None)
+                                step.pop("read_row_with", None)
                     removed = {index for index, change in enumerate(body.get("steps") or []) if change.get("remove")}
                     if removed:
                         action["steps"] = [step for index, step in enumerate(action["steps"]) if index not in removed]
@@ -395,7 +397,7 @@ function edit(slug) {
       <td>${s.text !== undefined ? `<input data-step-field="${i}" placeholder="field, or text e.g. 516" title="A name (e.g. order): asked at start / filled by 'for each'. Text starting with a digit (e.g. 516): typed as it is. Empty: the recorded text." value="${esc((s.text.match(/^\\{(.+)\\}$/) || [])[1] || (s.text !== (s.recorded_text ?? s.text) ? s.text : ""))}" size="12"><div class="muted">recorded: ${esc(s.recorded_text || s.text)}</div>` : s.key === "Enter" ? `find row with <input data-step-pick="${i}" placeholder="empty = selected row" value="${esc(s.pick || "")}" size="12">${s.pick_row ? `<div class="muted">recorded row: ${esc(s.pick_row)}</div>` : ""}` : ""}</td>
       <td><input data-step-wait="${i}" size="16" placeholder="(optional) e.g. Totaal" value="${esc(s.wait_text || "")}"></td>
       <td><input data-step-max="${i}" size="4" value="${esc(s.max_wait || 30)}"></td>
-      <td><input data-step-readcol="${i}" size="10" placeholder="e.g. invoiceRes" value="${esc(s.read_column || "")}"> &rarr; <input data-step-readfield="${i}" size="9" placeholder="invoiceres" value="${esc(s.read_field || "")}"></td>
+      <td><input data-step-readcol="${i}" size="10" placeholder="e.g. invoiceRes" value="${esc(s.read_column || "")}"> &rarr; <input data-step-readfield="${i}" size="9" placeholder="invoiceres" value="${esc(s.read_field || "")}"><br><input data-step-readrow="${i}" size="10" placeholder="only row with e.g. LTD" title="Only the row(s) containing this text -- e.g. LTD when the screen has a row per company" value="${esc(s.read_row_with || "")}"></td>
       <td><input type="checkbox" data-step-capture="${i}" ${s.capture ? "checked" : ""}></td>
       <td><input type="checkbox" data-step-pages="${i}" ${s.capture_pages ? "checked" : ""}></td>
       <td><input type="checkbox" data-step-remove="${i}"></td></tr>`).join("")}
@@ -504,6 +506,7 @@ function saveEdit() {
     key: s.key ? document.querySelector(`[data-step-key="${i}"]`).value : null,
     read_column: document.querySelector(`[data-step-readcol="${i}"]`).value,
     read_field: document.querySelector(`[data-step-readfield="${i}"]`).value,
+    read_row_with: document.querySelector(`[data-step-readrow="${i}"]`).value,
     remove: document.querySelector(`[data-step-remove="${i}"]`).checked,
     foreach: s.foreach ? {
       list: document.querySelector(`[data-fe-list="${i}"]`).value,
