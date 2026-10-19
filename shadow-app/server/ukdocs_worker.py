@@ -139,7 +139,9 @@ def parse_xlsx_rows(raw_bytes):
         rel_map = {rel.attrib["Id"]: rel.attrib["Target"] for rel in rels}
         first_sheet = workbook.find(f"{{{NS_MAIN}}}sheets")[0]
         target = rel_map[first_sheet.attrib[f"{{{NS_REL}}}id"]]
-        worksheet = ET.fromstring(zf.read(f"xl/{target}"))
+        # Relative ("worksheets/sheet1.xml", Uniware) or absolute
+        # ("/xl/worksheets/sheet1.xml", e.g. files saved by openpyxl).
+        worksheet = ET.fromstring(zf.read(target.lstrip("/") if target.startswith("/") else f"xl/{target}"))
         sheet_data = worksheet.find(f"{{{NS_MAIN}}}sheetData")
         rows = []
         for row in sheet_data.findall(f"{{{NS_MAIN}}}row"):
