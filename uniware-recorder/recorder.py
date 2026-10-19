@@ -116,6 +116,10 @@ def remember_screen(data: dict, screen_id: str, title: str, text: list, layout: 
     return entry
 
 
+# Numeric keypad keys (Windows virtual-key codes 96-111) as what they type.
+NUMPAD_CHARACTERS = {**{96 + digit: str(digit) for digit in range(10)}, 106: "*", 107: "+", 109: "-", 110: ".", 111: "/"}
+
+
 class Recorder:
     def __init__(self):
         self.config = load_config()
@@ -141,6 +145,10 @@ class Recorder:
             char = key.char
             if char and char.isprintable() and not ({"Ctrl", "Alt"} & self.held):
                 base, printable = char, True
+            elif getattr(key, "vk", None) in NUMPAD_CHARACTERS and not ({"Ctrl", "Alt"} & self.held):
+                # The numeric keypad has no character of its own here: 508
+                # typed on it came out as "vk101 vk96 vk104".
+                base, printable = NUMPAD_CHARACTERS[key.vk], True
             elif getattr(key, "vk", None):
                 base, printable = chr(key.vk) if 0x30 <= key.vk <= 0x5A else f"vk{key.vk}", False
             else:

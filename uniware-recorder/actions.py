@@ -113,10 +113,20 @@ def menu_levels(layout: list) -> list[dict]:
     return result
 
 
+# The main menu's items: a real menu screen always shows them as its first
+# column (a program screen such as Prg. 423 Transport afspraken has a Prg
+# number and a long first column too, and was taken for a menu).
+MAIN_MENU_ITEMS = ["Offertes", "Bestellingen", "Inkoop", "Verkoop", "Voorraad", "Productie", "Expeditie", "Fust administratie",
+                   "Communicatie", "Onderhoud gegevens", "Afdrukken gegevens", "Financieel", "Systeem onderhoud"]
+
+
 def is_menu(screen_id: str, layout: list) -> bool:
     """A menu screen: a Prg number and the main menu as the first column."""
     levels = menu_levels(layout)
-    return screen_id.startswith("prg-") and bool(levels) and len(levels[0]["items"]) >= 8 and levels[0]["selected"] is not None
+    if not (screen_id.startswith("prg-") and levels and len(levels[0]["items"]) >= 8 and levels[0]["selected"] is not None):
+        return False
+    known = sum(1 for item in levels[0]["items"] if any(same_item(item, name) for name in MAIN_MENU_ITEMS))
+    return known >= 6
 
 
 def menu_path(layout: list) -> list[str]:
