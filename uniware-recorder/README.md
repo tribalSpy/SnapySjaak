@@ -152,6 +152,19 @@ otherwise **Down**. And in tour 515: "Accessoire" -> **Enter** (add).
 - A new loop starts as a **trial run**: it only logs what it would do --
   check the log, then untick "trial run".
 
+**Week plan -- several actions in a row, per day** (card "Week plan"):
+every action has a number (#1, #2, ... in the Actions list; type another
+number to change it -- an action that had it gets the old one). Per day
+(Monday-Sunday) put actions in order -- "Add", or type the numbers
+(`5, 8, 6`) -- and per action choose what happens **if it fails** (stop the
+plan / go on with the next / try once more, then stop) and how many minutes
+to **wait** before the next. Fields (e.g. a tour) are filled in per action.
+"Run the ... plan now" starts it; "start by itself at" a time starts today's
+plan once a day while the dashboard is open (up to 2 hours after the time,
+so a PC switched on in the afternoon doesn't run the morning plan).
+Ctrl+Alt+Q stops the plan too. "Copy this day to" fills another day (that
+copy doesn't start by itself until you tick it). Saved in `plans.json`.
+
 **Two dumps, one file** (e.g. tour 508 with two companies, 4EADMI and LTD):
 record both Ctrl+P's in one action and tick "join all dumps of a run into one
 file" under Dump file. Each dump is kept in `outputs/dump-parts/`; at the end

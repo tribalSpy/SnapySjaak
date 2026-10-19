@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import re
 import threading
+import time
 import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -18,16 +19,54 @@ from urllib.parse import unquote, urlparse
 from pynput import keyboard
 
 import actions
+import plans
 
 PORT = 8765
-STATE = {"recorder": None, "run": None, "message": ""}
+STATE = {"recorder": None, "run": None, "plan": None, "message": ""}
 LOCK = threading.Lock()
+
+
+def busy() -> bool:
+    return any(STATE[name] and STATE[name].active for name in ("run", "recorder", "plan"))
+
+
+def set_current_run(run):
+    STATE["run"] = run
+
+
+def start_plan(day: str, started_by: str):
+    plan = plans.load_plans()["days"][day]
+    if not plan["items"]:
+        raise RuntimeError(f"The {plans.DAY_NAMES[day]} plan has no actions.")
+    plan_run = plans.PlanRun(day, plan, set_current_run, started_by)
+    STATE["plan"] = plan_run
+    threading.Thread(target=plan_run.run, daemon=True).start()
+    STATE["message"] = f"Running the {plans.DAY_NAMES[day]} plan ({len(plan['items'])} actions) -- don't touch keyboard or mouse until it's done (Ctrl+Alt+Q stops)."
+
+
+def plan_scheduler():
+    """Starts today's plan by itself at its start time (when that is on)."""
+    while True:
+        time.sleep(20)
+        try:
+            day = plans.due_auto_day()
+            if day:
+                with LOCK:
+                    if not busy():
+                        plans.mark_auto_started(day)
+                        start_plan(day, "its start time")
+        except Exception as error:  # noqa: BLE001 -- never stop the scheduler
+            STATE["message"] = f"Week plan could not start: {error}"
 
 
 def state_payload() -> dict:
     recorder = STATE["recorder"]
     run = STATE["run"]
+    plan_run = STATE["plan"]
     return {
+        "plans": plans.load_plans(),
+        "today": plans.today_key(),
+        "plan_run": plan_run.status() if plan_run else None,
         "actions": [
             {**action, "fields": actions.action_fields(action)}
             for action in actions.list_actions()
@@ -60,8 +99,11 @@ def stop_hotkey_listener():
             held.add("ctrl")
         elif key in (keyboard.Key.alt, keyboard.Key.alt_l, keyboard.Key.alt_r, keyboard.Key.alt_gr):
             held.add("alt")
-        elif getattr(key, "vk", None) == 0x51 and {"ctrl", "alt"} <= held and STATE["run"] and STATE["run"].active:
-            STATE["run"].stop_requested = True
+        elif getattr(key, "vk", None) == 0x51 and {"ctrl", "alt"} <= held:
+            if STATE["plan"] and STATE["plan"].active:
+                STATE["plan"].stop_requested = True
+            if STATE["run"] and STATE["run"].active:
+                STATE["run"].stop_requested = True
 
     def on_release(key):
         if key in (keyboard.Key.ctrl, keyboard.Key.ctrl_l, keyboard.Key.ctrl_r):
@@ -111,7 +153,7 @@ class Handler(BaseHTTPRequestHandler):
             body = self.body()
             with LOCK:
                 if path == "/api/record/start":
-                    if (STATE["run"] and STATE["run"].active) or (STATE["recorder"] and STATE["recorder"].active):
+                    if busy():
                         raise RuntimeError("Something is already running.")
                     name = str(body.get("name") or "").strip()
                     if not name:
@@ -129,7 +171,7 @@ class Handler(BaseHTTPRequestHandler):
                         STATE["message"] = f"Saved '{action['name']}' with {len(action['steps'])} steps."
                 elif path.startswith("/api/actions/") and path.endswith("/run"):
                     slug = path.split("/")[3]
-                    if (STATE["run"] and STATE["run"].active) or (STATE["recorder"] and STATE["recorder"].active):
+                    if busy():
                         raise RuntimeError("Something is already running.")
                     action = actions.load_action(slug)
                     if not action:
@@ -139,8 +181,24 @@ class Handler(BaseHTTPRequestHandler):
                     threading.Thread(target=run.run, daemon=True).start()
                     STATE["message"] = f"Running '{action['name']}' -- don't touch keyboard or mouse until it's done (Ctrl+Alt+Q stops)."
                 elif path == "/api/run/stop":
+                    if STATE["plan"] and STATE["plan"].active:
+                        STATE["plan"].stop_requested = True
                     if STATE["run"] and STATE["run"].active:
                         STATE["run"].stop_requested = True
+                elif path == "/api/plans/day":
+                    day = str(body.get("day") or "")
+                    plans.set_day(day, body)
+                    STATE["message"] = f"{plans.DAY_NAMES.get(day, day)} plan saved."
+                elif path == "/api/plans/number":
+                    plans.set_number(str(body.get("slug") or ""), int(body.get("number") or 0))
+                    STATE["message"] = "Number saved."
+                elif path == "/api/plans/run":
+                    if busy():
+                        raise RuntimeError("Something is already running.")
+                    day = str(body.get("day") or plans.today_key())
+                    if day not in plans.DAYS:
+                        raise RuntimeError("Unknown day.")
+                    start_plan(day, "you")
                 elif path.startswith("/api/actions/") and path.endswith("/update"):
                     slug = path.split("/")[3]
                     action = actions.load_action(slug)
@@ -316,12 +374,17 @@ PAGE = """<!doctype html>
   pre { background: #111827; color: #e5e7eb; padding: 10px; border-radius: 6px; max-height: 320px; overflow: auto; white-space: pre-wrap; }
   .msg { background: #fffbeb; border: 1px solid #f59e0b; border-radius: 8px; padding: 8px 12px; }
   .err { background: #fef2f2; border-color: var(--bad); }
+  .tabs { display: flex; gap: 4px; flex-wrap: wrap; margin: 8px 0; }
+  .tabs button.on { background: var(--accent); border-color: var(--accent); color: #fff; font-weight: 700; }
+  .num { display: inline-block; min-width: 28px; padding: 1px 6px; border-radius: 6px; background: #e8f3ee; color: var(--accent); font-weight: 700; text-align: center; }
+  select { font: inherit; padding: 5px 6px; border: 1px solid #b8c2cc; border-radius: 6px; }
 </style></head><body>
 <h1>Uniware actions</h1>
 <div class="muted">Record an action once in Uniware, start it from here. Runs on this PC only.</div>
 <div id="msg"></div>
 <div class="card" id="recordCard"></div>
 <div class="card" id="runCard"></div>
+<div class="card" id="planCard"></div>
 <div class="card"><h2>Actions</h2><div id="actions"></div></div>
 <div class="card"><h2>Day lists</h2><div class="muted">Information one action collects for the next (e.g. the accessoire orders of tour 515 and whether they are SPICER). Set a result by hand before the assigning action runs.</div><div id="dayLists"></div></div>
 <div class="card" id="editCard" style="display:none"></div>
@@ -339,6 +402,7 @@ function render() {
   if (!state) return;
   $("msg").innerHTML = state.message ? `<div class="msg">${esc(state.message)}</div>` : "";
   if (!document.activeElement || !document.activeElement.closest("#dayLists")) renderDayLists();
+  if (!document.activeElement || !document.activeElement.closest("#planCard")) renderPlan();
   const rec = state.recording;
   $("recordCard").innerHTML = rec.active
     ? `<h2>Recording: ${esc(rec.name)}</h2><p>${esc(rec.status)} -- ${rec.steps} step(s)</p>
@@ -354,12 +418,100 @@ function render() {
       <pre>${esc(run.log.join("\\n"))}</pre>
       ${run.outputs.map((f) => `<a href="/outputs/${encodeURIComponent(f)}" target="_blank">${esc(f)}</a>`).join(" &middot; ")}
       ${run.exported.length ? `<p>Dump: ${run.exported.map(esc).join("<br>")}</p>` : ""}` : "";
-  $("actions").innerHTML = state.actions.length ? `<table><tr><th>Action</th><th>Steps</th><th>Fields</th><th></th></tr>${state.actions.map((a) => `
-      <tr><td><strong>${esc(a.name)}</strong><div class="muted">${esc(a.description || "")}</div><div class="muted">starts on: ${a.steps.length && a.steps[0].menu ? `any menu position (goes back with ${esc(a.back_key || "Esc")} if needed)` : esc(a.start_title || a.start_screen)}</div>${a.uniware_dump_dir ? `<div class="muted">dump file &rarr; ${esc(a.export_name || "{action}_{date}_{time}")}.csv</div>` : a.export_dir ? `<div class="muted">dump to: ${esc(a.export_dir)} &rarr; ${esc(a.export_name || "{action}_{date}_{time}")}.csv</div>` : ""}</td>
+  $("actions").innerHTML = state.actions.length ? `<table><tr><th>#</th><th>Action</th><th>Steps</th><th>Fields</th><th></th></tr>${state.actions.slice().sort((x, y) => (state.plans.numbers[x.slug] || 0) - (state.plans.numbers[y.slug] || 0)).map((a) => `
+      <tr><td><input size="2" value="${esc(state.plans.numbers[a.slug] || "")}" title="This action's number in the week plan (another action with that number gets this one's)" onchange="setNumber('${a.slug}', this.value)"></td><td><strong>${esc(a.name)}</strong><div class="muted">${esc(a.description || "")}</div><div class="muted">starts on: ${a.steps.length && a.steps[0].menu ? `any menu position (goes back with ${esc(a.back_key || "Esc")} if needed)` : esc(a.start_title || a.start_screen)}</div>${a.uniware_dump_dir ? `<div class="muted">dump file &rarr; ${esc(a.export_name || "{action}_{date}_{time}")}.csv</div>` : a.export_dir ? `<div class="muted">dump to: ${esc(a.export_dir)} &rarr; ${esc(a.export_name || "{action}_{date}_{time}")}.csv</div>` : ""}</td>
       <td>${a.steps.length} (${a.steps.filter((s) => s.capture).length} capture)</td>
       <td>${a.fields.map((f) => `<label>${esc(f)} <input data-field="${esc(a.slug)}:${esc(f)}" size="14"></label>`).join("<br>") || "-"}</td>
       <td class="row"><button class="primary" onclick="runAction('${a.slug}')">Start</button><button onclick="edit('${a.slug}')">Edit</button><button onclick="copyAction('${a.slug}')">Copy</button><button class="danger" onclick="del('${a.slug}')">Delete</button></td></tr>`).join("")}</table>`
     : `<p class="muted">No actions yet -- record one above.</p>`;
+}
+const DAY_KEYS = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"];
+const DAY_LABELS = { mon: "Monday", tue: "Tuesday", wed: "Wednesday", thu: "Thursday", fri: "Friday", sat: "Saturday", sun: "Sunday" };
+let planDay = null;
+function actionBySlug(slug) { return state.actions.find((a) => a.slug === slug); }
+function actionLabel(slug) {
+  const a = actionBySlug(slug);
+  return `#${state.plans.numbers[slug] || "?"} ${a ? a.name : slug + " (deleted)"}`;
+}
+function dayDraft(day) { return JSON.parse(JSON.stringify(state.plans.days[day])); }
+function saveDay(day, draft) { api("/api/plans/day", { day, ...draft }); }
+function setNumber(slug, value) { api("/api/plans/number", { slug, number: Number(value) }); }
+function planChange(day, change) { const draft = dayDraft(day); change(draft); saveDay(day, draft); }
+function planMove(day, index, by) {
+  planChange(day, (draft) => {
+    const target = index + by;
+    if (target < 0 || target >= draft.items.length) return;
+    [draft.items[index], draft.items[target]] = [draft.items[target], draft.items[index]];
+  });
+}
+function planAdd(day) {
+  const slug = $("planAddAction").value;
+  if (slug) planChange(day, (draft) => draft.items.push({ action: slug, on_fail: "stop", wait_minutes: 0, values: {} }));
+}
+function planSetNumbers(day) {
+  const bySlug = Object.entries(state.plans.numbers);
+  const wanted = $("planNumbers").value.split(/[^0-9]+/).filter(Boolean).map(Number);
+  const unknown = wanted.filter((number) => !bySlug.some(([, value]) => value === number));
+  if (unknown.length) { $("msg").innerHTML = `<div class="msg err">No action with number ${unknown.join(", ")}.</div>`; return; }
+  planChange(day, (draft) => {
+    const old = draft.items;
+    draft.items = wanted.map((number) => {
+      const slug = bySlug.find(([, value]) => value === number)[0];
+      return old.find((item) => item.action === slug) || { action: slug, on_fail: "stop", wait_minutes: 0, values: {} };
+    });
+  });
+}
+function planCopyTo(day) {
+  const target = $("planCopyTo").value;
+  if (!target || target === day) return;
+  if (state.plans.days[target].items.length && !confirm(`Replace the ${DAY_LABELS[target]} plan with this one?`)) return;
+  const draft = dayDraft(day);
+  draft.auto = false;  // a copied plan never starts by itself until you say so
+  saveDay(target, draft);
+  planDay = target;
+}
+function planRun(day) {
+  if (!confirm(`Run the ${DAY_LABELS[day]} plan now (${state.plans.days[day].items.length} actions)? Don't touch keyboard or mouse until it's done.`)) return;
+  api("/api/plans/run", { day });
+}
+function planSetValue(day, i, field, value) {
+  planChange(day, (d) => { d.items[i].values = { ...(d.items[i].values || {}), [field]: value }; });
+}
+function renderPlan() {
+  const plans = state.plans;
+  const day = planDay || state.today;
+  const plan = plans.days[day];
+  const run = state.plan_run;
+  const onFail = (item, i) => `<select onchange="planChange('${day}', (d) => { d.items[${i}].on_fail = this.value; })">
+      <option value="stop" ${item.on_fail === "stop" ? "selected" : ""}>stop the plan</option>
+      <option value="continue" ${item.on_fail === "continue" ? "selected" : ""}>go on with the next</option>
+      <option value="retry" ${item.on_fail === "retry" ? "selected" : ""}>try once more, then stop</option></select>`;
+  const fields = (item, i) => {
+    const a = actionBySlug(item.action);
+    return a && a.fields.length
+      ? a.fields.map((field) => `<label>${esc(field)} <input size="8" value="${esc((item.values || {})[field] || "")}" data-plan-field="${esc(field)}" onchange="planSetValue('${day}', ${i}, this.dataset.planField, this.value)"></label>`).join("<br>")
+      : `<span class="muted">-</span>`;
+  };
+  const options = state.actions.slice().sort((x, y) => (plans.numbers[x.slug] || 0) - (plans.numbers[y.slug] || 0))
+    .map((a) => `<option value="${esc(a.slug)}">${esc(actionLabel(a.slug))}</option>`).join("");
+  $("planCard").innerHTML = `<h2>Week plan</h2>
+    <div class="muted">Per day the actions in your order (the numbers are in the Actions list). Each action ends on the main menu, so the next one starts from there.</div>
+    <div class="tabs">${DAY_KEYS.map((key) => `<button class="${key === day ? "on" : ""}" onclick="planDay='${key}'; renderPlan()">${DAY_LABELS[key]}${key === state.today ? " (today)" : ""} <span class="muted">${plans.days[key].items.length || ""}</span>${plans.days[key].auto ? " &#9200;" : ""}</button>`).join("")}</div>
+    ${run ? `<div class="card" style="margin:6px 0"><strong>${run.active ? "Running" : "Last plan"}: ${esc(DAY_LABELS[run.day])}</strong> -- ${run.active ? `action ${run.index + 1} of ${run.total}` : esc(run.result)} <span class="muted">(started by ${esc(run.started_by)})</span>
+      ${run.active ? ` <button class="danger" onclick="api('/api/run/stop',{})">Stop the plan (Ctrl+Alt+Q)</button>` : ""}<pre>${esc(run.log.join(String.fromCharCode(10)))}</pre></div>` : ""}
+    ${plan.items.length ? `<table><tr><th></th><th>Action</th><th>Fields</th><th>If it fails</th><th>Then wait</th><th></th></tr>
+      ${plan.items.map((item, i) => `<tr><td>${i + 1}.</td><td><span class="num">#${esc(plans.numbers[item.action] || "?")}</span> ${esc((actionBySlug(item.action) || {}).name || item.action + " (deleted)")}</td>
+        <td>${fields(item, i)}</td><td>${onFail(item, i)}</td>
+        <td><input size="3" value="${esc(item.wait_minutes || 0)}" onchange="planChange('${day}', (d) => { d.items[${i}].wait_minutes = Number(this.value) || 0; })"> min</td>
+        <td class="row"><button onclick="planMove('${day}', ${i}, -1)" ${i ? "" : "disabled"}>&uarr;</button><button onclick="planMove('${day}', ${i}, 1)" ${i < plan.items.length - 1 ? "" : "disabled"}>&darr;</button><button class="danger" onclick="planChange('${day}', (d) => d.items.splice(${i}, 1))">Remove</button></td></tr>`).join("")}</table>`
+      : `<p class="muted">No actions on ${DAY_LABELS[day]} yet.</p>`}
+    <div class="row" style="margin-top:8px"><label>Add <select id="planAddAction">${options}</select></label><button onclick="planAdd('${day}')">Add to ${DAY_LABELS[day]}</button>
+      <span class="muted">or type the numbers in order:</span><input id="planNumbers" size="14" placeholder="e.g. 3, 7, 4" value="${esc(plan.items.map((item) => plans.numbers[item.action]).join(", "))}"><button onclick="planSetNumbers('${day}')">Set ${DAY_LABELS[day]}</button></div>
+    <div class="row" style="margin-top:8px"><label>Start at <input type="time" value="${esc(plan.start)}" onchange="planChange('${day}', (d) => { d.start = this.value; if (!this.value) d.auto = false; })"></label>
+      <label><input type="checkbox" ${plan.auto ? "checked" : ""} ${plan.start ? "" : "disabled"} onchange="planChange('${day}', (d) => { d.auto = this.checked; })"> start by itself at that time</label>
+      <span class="muted">(this dashboard must be open and Uniware logged in on the main menu; it starts once a day, up to 2 hours after the time)</span></div>
+    <div class="row" style="margin-top:8px"><button class="primary" onclick="planRun('${day}')" ${plan.items.length ? "" : "disabled"}>Run the ${DAY_LABELS[day]} plan now</button>
+      <label>Copy this day to <select id="planCopyTo"><option value=""></option>${DAY_KEYS.filter((key) => key !== day).map((key) => `<option value="${key}">${DAY_LABELS[key]}</option>`).join("")}</select></label><button onclick="planCopyTo('${day}')">Copy</button></div>`;
 }
 function startRecording() { api("/api/record/start", { name: $("newName").value, description: $("newDesc").value }); }
 function runAction(slug) {
@@ -527,7 +679,9 @@ function saveEdit() {
   api(`/api/actions/${editing}/update`, { description: $("editDesc").value, export_dir: $("editExportDir").value, back_key: $("editBackKey").value, close_dump_window: $("editCloseWindow").checked, join_dumps: $("editJoinDumps").checked, export_name: $("editExportName").value, uniware_dump_dir: $("editUniwareDir").value, uniware_dump_pattern: $("editUniwarePattern").value, uniware_dump_wait: $("editUniwareWait").value, steps }).then((payload) => { if (payload) edit(editing); });
 }
 api("/api/state");
-setInterval(() => { if (state && (state.recording.active || state.run.active)) api("/api/state"); }, 1000);
+setInterval(() => { if (state && (state.recording.active || state.run.active || (state.plan_run && state.plan_run.active))) api("/api/state"); }, 1000);
+// Now and then also when idle: a plan that started by itself shows up.
+setInterval(() => { if (state && !document.activeElement.closest("input, select, textarea")) api("/api/state"); }, 15000);
 </script></body></html>"""
 
 
@@ -548,6 +702,7 @@ def main():
         input("Press Enter to close this window...")
         return
     stop_hotkey_listener()
+    threading.Thread(target=plan_scheduler, daemon=True).start()
     print(f"Uniware actions dashboard: {url}  (close this window to stop it)")
     webbrowser.open(url)
     server.serve_forever()

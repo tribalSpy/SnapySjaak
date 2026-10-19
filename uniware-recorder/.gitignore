@@ -5,3 +5,5 @@ config.json
 actions/
 outputs/
 daylists/
+plans.json
+plans.tmp
