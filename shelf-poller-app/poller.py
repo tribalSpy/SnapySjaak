@@ -54,6 +54,9 @@ def load_config():
         "version": str(env_or_config("SHELF_POLLER_VERSION", config, "version", "1.0.0")).strip(),
         "poll_interval_seconds": int(env_or_config("SHELF_POLLER_INTERVAL_SECONDS", config, "poll_interval_seconds", 10) or 10),
         "ollama_url": str(env_or_config("OLLAMA_URL", config, "ollama_url", "http://127.0.0.1:11434")).rstrip("/"),
+        # One model call may take long at night (thinking, several photos):
+        # an hour before giving up.
+        "ollama_timeout_seconds": int(env_or_config("SHELF_OLLAMA_TIMEOUT_SECONDS", config, "ollama_timeout_seconds", 3600) or 3600),
         # Optional side-by-side count with the trained YOLO model
         # (shelf-training/models/infer.py, run with the training venv's own
         # python so this poller never needs torch/ultralytics). Empty = off.
@@ -240,11 +243,16 @@ def ollama_chat(config: dict, payload: dict):
         data=json.dumps(request_body).encode("utf-8"),
     )
     try:
-        with urllib.request.urlopen(request, timeout=600) as response:
+        with urllib.request.urlopen(request, timeout=config.get("ollama_timeout_seconds") or 3600) as response:
             body = response.read().decode("utf-8")
             return json.loads(body) if body else {}
     except urllib.error.HTTPError as error:
         body = error.read().decode("utf-8", errors="replace")
+        # A model without thinking support refuses think=true: count without.
+        if request_body.get("think") and "think" in body.lower():
+            print(f"  model {model_name} does not support thinking -- counting without it")
+            retry = dict(payload, think=False)
+            return ollama_chat(config, retry)
         raise RuntimeError(f"Ollama HTTP {error.code}: {body}") from error
     except urllib.error.URLError as error:
         raise RuntimeError(f"Ollama network error: {error}") from error
@@ -258,11 +266,20 @@ def run_job(config: dict, job: dict):
         # than silently mishandling an unexpected type if that ever changes.
         raise RuntimeError(f"Unexpected job type for the shelf-count poller: {job_type}")
     payload = job.get("payload_json") or {}
-    ollama_response = ollama_chat(config, payload)
+    # The night run counts each reference several times (payload "passes");
+    # the server takes the majority answer and lowers the confidence when
+    # the passes disagree. Quality over speed.
+    passes = max(1, min(5, int(payload.get("passes") or 1)))
+    responses = []
+    for number in range(passes):
+        if passes > 1:
+            print(f"  pass {number + 1}/{passes}")
+        responses.append(ollama_chat(config, payload))
     result = {
         "job_type": job_type,
         "model": payload.get("model") or config["model_name"],
-        "ollama_response": ollama_response,
+        "ollama_response": responses[0],
+        "ollama_responses": responses,
     }
     trained = run_trained_model(config, payload)
     if trained is not None:

@@ -53,6 +53,16 @@ photos together under ~24,000 tokens: with Pillow installed
 factor; without it, it sends an even selection and tells the model so.
 The trained model (below) always gets the full-size photos.
 
+## Careful night counts (thinking, several passes)
+
+The night run is about getting it right, not fast: every reference is
+counted 3 times with the model thinking before it answers (a model without
+thinking support is counted without it automatically). The server takes the
+majority answer; when the counts disagree the confidence drops and the
+reference goes to "needs review". One model call may take up to
+`ollama_timeout_seconds` (default 3600 = 1 hour). The number of passes is set
+on the server (`SHELF_COUNT_PASSES`, default 3; 1 = one quick count).
+
 ## Optional: trained model side by side
 
 Set `trained_model_python` (e.g. `...\shelf-training\.venv\Scripts\python.exe`)

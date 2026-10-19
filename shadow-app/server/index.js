@@ -9888,6 +9888,8 @@ async function runUkdocsCsiAuditRetry() {
 // later training/derivation phase fills them in from accumulated real
 // counts.
 const SHELF_COUNT_CONFIDENCE_THRESHOLD = Number(process.env.SHELF_COUNT_CONFIDENCE_THRESHOLD || 0.6);
+// Independent counts per reference in the night run (majority wins).
+const SHELF_COUNT_PASSES = Math.max(1, Math.min(5, Number(process.env.SHELF_COUNT_PASSES || 3)));
 const SHELF_COUNT_DEADLINE_HOUR = Number(process.env.SHELF_COUNT_DEADLINE_HOUR || 6);
 const SHELF_COUNT_NIGHTLY_CHECK_INTERVAL_MS = 5 * 60 * 1000;
 
@@ -10298,7 +10300,45 @@ function summarizeShelfTrainedModel(trained, trolleyCount) {
   };
 }
 
+// Several independent counts of one reference (the poller's passes): the
+// middle value of the levels and the most common extensions answer win; the
+// pass that gave exactly that is returned, with the confidence capped by how
+// many passes agreed (3/3 -> unchanged, 2/3 -> 0.67, all different -> 0.33,
+// below the review threshold).
 function parseShelfCountJobResult(job) {
+  const responses = Array.isArray(job?.result_json?.ollama_responses) ? job.result_json.ollama_responses : [];
+  if (responses.length < 2) {
+    return parseShelfCountSingleResult(job);
+  }
+  const parsed = responses.map((response) => parseShelfCountSingleResult({ ...job, result_json: { ...job.result_json, ollama_response: response, ollama_responses: undefined } }));
+  const usable = parsed.filter((entry) => entry.levels !== null);
+  if (!usable.length) {
+    return { ...parsed[0], parse_note: `None of the ${responses.length} counts could be read. ${parsed[0].parse_note}` };
+  }
+  const sortedLevels = usable.map((entry) => entry.levels).sort((left, right) => left - right);
+  const medianLevels = sortedLevels[Math.floor((sortedLevels.length - 1) / 2)];
+  const extensionVotes = new Map();
+  for (const entry of usable) {
+    const key = String(entry.extensions);
+    extensionVotes.set(key, (extensionVotes.get(key) || 0) + 1);
+  }
+  const majorityExtensions = [...extensionVotes.entries()].sort((left, right) => right[1] - left[1])[0][0];
+  const chosen = usable.find((entry) => entry.levels === medianLevels && String(entry.extensions) === majorityExtensions)
+    || usable.find((entry) => entry.levels === medianLevels)
+    || usable[0];
+  const agreeing = usable.filter((entry) => entry.levels === chosen.levels && String(entry.extensions) === String(chosen.extensions)).length;
+  const agreement = agreeing / responses.length;
+  const confidence = chosen.confidence === null ? agreement : Math.min(chosen.confidence, agreement);
+  const summary = `${responses.length} counts: levels ${parsed.map((entry) => entry.levels ?? "?").join("/")}, extensions ${parsed.map((entry) => entry.extensions ?? "?").join("/")} -- ${agreeing} agree.`;
+  return {
+    ...chosen,
+    confidence,
+    passes: parsed.map((entry) => ({ levels: entry.levels, extensions: entry.extensions, confidence: entry.confidence })),
+    parse_note: [agreeing === responses.length ? "" : summary, chosen.parse_note].filter(Boolean).join(" "),
+  };
+}
+
+function parseShelfCountSingleResult(job) {
   const contentText = String(job?.result_json?.ollama_response?.message?.content || job?.result_json?.response || "").trim();
   const thinkingText = String(job?.result_json?.ollama_response?.message?.thinking || "").trim();
   const fromContent = extractJsonObjectFromText(contentText);
@@ -10443,14 +10483,21 @@ function buildShelfCountJobPayload({ photoCount, trolleyCount }) {
       },
     ],
     format: "json",
-    think: false,
+    // The night run is about getting it right, not fast (user-confirmed: 2-3
+    // hours is fine): the model thinks before answering, and each reference
+    // is counted SHELF_COUNT_PASSES times -- the majority answer is taken
+    // and disagreement between passes lowers the confidence (see
+    // parseShelfCountJobResult). A model without thinking support is retried
+    // without it by the poller.
+    think: true,
+    passes: SHELF_COUNT_PASSES,
     options: {
-      temperature: 0,
-      // Room for one per_trolley entry per trolley next to the totals --
-      // generous: 200 + 60 per trolley cut answers off mid-JSON ("Could not
-      // parse JSON" on every reference). With format json the model stops by
-      // itself once the JSON is complete, so a high limit costs nothing.
-      num_predict: 1000 + 100 * trolleys,
+      // A little variation, so the passes are independent looks rather than
+      // the same answer three times.
+      temperature: SHELF_COUNT_PASSES > 1 ? 0.3 : 0,
+      // Room for the thinking plus one per_trolley entry per trolley next to
+      // the totals (200 + 60 per trolley cut answers off mid-JSON).
+      num_predict: 6000 + 1500 * trolleys,
     },
   };
 }
