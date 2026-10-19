@@ -913,7 +913,8 @@ class ActionRun:
         while True:
             self._check(hwnd)
             image, screen_id, title, selected, text, layout = self._read(hwnd)
-            joined = "\n".join(text).lower()
+            # The top of the screen too (a popup such as "Search" sits there).
+            joined = "\n".join([title, *text]).lower()
             # No screen name (a popup without a stable one): only the
             # "wait until" text decides.
             if (not expected or same_screen(expected, expected_title, screen_id, title)) and wait_text.lower() in joined:
