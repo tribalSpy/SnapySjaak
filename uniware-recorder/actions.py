@@ -1141,6 +1141,23 @@ class ActionRun:
                 if screen_row["highlighted"] and not seen["type"]:
                     seen["type"] = found(match_words, joined) or found(keep_words, joined) or ""
         list_data = load_day_list(use_list) if use_list else None
+        # Acting on a day list: the orders still to do -- after the last one
+        # the loop ends right away (a Down more can open another screen).
+        todo = {item["key"] for item in list_data.get("items", []) if item.get("label") == use_label and not item.get("done")} if list_data is not None else set()
+        if list_data is not None and not todo:
+            self.say(f"{label}: no orders with result {use_label} left to do in '{use_list}'.")
+            return
+        if list_data is not None:
+            self.say(f"{label}: {len(todo)} order(s) with result {use_label} to do: {', '.join(sorted(todo))}")
+
+        def finished(entry) -> bool:
+            if list_data is None or entry is None:
+                return False
+            todo.discard(entry["key"])
+            if todo:
+                return False
+            self.say(f"{label}: all orders with result {use_label} done -- end of the loop.")
+            return True
 
         def found(words, text):
             for word in words:
@@ -1170,11 +1187,21 @@ class ActionRun:
         last_row, last_action = None, None
         handled = []
         unchanged = 0
+        list_screen = None
         for row_number in range(1, max_rows + 1):
             self._check(hwnd)
-            _, _, _, _, text, layout = self._read_stable(hwnd)
+            _, screen_id, screen_title, _, text, layout = self._read_stable(hwnd)
             joined = "\n".join(text)
             row = cursor_row(layout)
+            # Never go on outside the list: a key that left its screen (into
+            # a menu, another program) would otherwise be pressed there.
+            if list_screen is None:
+                list_screen = (screen_id, screen_title)
+            elif not same_screen(list_screen[0], list_screen[1], screen_id, screen_title) or difflib.SequenceMatcher(
+                    None, re.sub(r"[^a-z]+", "", list_screen[1].lower()), re.sub(r"[^a-z]+", "", (screen_title or "").lower())).ratio() < 0.85:
+                # (Same program, other part: "Transport afspraken (In te
+                # delen" -> "Transport afspraken" is not the list any more.)
+                raise RuntimeError(f"{label}: Uniware left the list ('{list_screen[1]}' -> '{screen_title}') -- stopped to be safe.")
             if collected is not None:
                 note_rows(layout, joined)
             if last_action == "match" and same_row(row, last_row):
@@ -1214,6 +1241,7 @@ class ActionRun:
                 last_row, last_action = row, "next"
                 time.sleep(0.3)
                 continue
+            entry = None
             if list_data is not None:
                 # Act on the day list: the row's order number decides.
                 order = row_order_number(row)
@@ -1254,6 +1282,8 @@ class ActionRun:
                 after = cursor_row(after_layout)
                 if after == row:
                     raise RuntimeError(f"{label}: '{row[:50]}' did not change after {match_key}. Stopped to be safe.")
+                if finished(entry):
+                    break
                 for part in list_loop_keys(next_key):
                     send_combo(controller, part)
                 last_row, last_action = after, "next"
@@ -1271,11 +1301,15 @@ class ActionRun:
                         self._read_stable(hwnd)
                         self._check(hwnd)
                     send_combo(controller, part)
+                if finished(entry):
+                    break
                 last_row, last_action = row, "match"
             else:
                 if matched:
                     counts["matched"] += 1
                     self.say(f"{label}: {short}: {matched} -> would press {match_key} (trial run)")
+                    if finished(entry):
+                        break
                 elif kept:
                     counts["kept"] += 1
                     self.say(f"{label}: {short}: {kept} -> keep")
