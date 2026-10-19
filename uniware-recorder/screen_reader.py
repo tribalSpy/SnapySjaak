@@ -281,6 +281,7 @@ def read_screen(image: Image.Image) -> list[dict]:
         line.pop("_right", None)
     merged = _split_at_columns(image, merged, char_width, cursor)
     _read_missing_program_numbers(readable, merged, char_width)
+    _read_gapped_numbers(readable, merged)
     for line in merged:
         line.pop("words", None)
     merged.sort(key=lambda line: (line["y"] // 8, line["x"]))
@@ -313,6 +314,23 @@ def _read_missing_program_numbers(image: Image.Image, lines: list[dict], char_wi
         digits = "".join(re.sub(r"[^0-9]", "", _fix_zeros(word["text"]) if _ZERO_WORD_RE.fullmatch(word["text"]) else word["text"]) for word in words)
         if digits:
             line["text"] = f"Prg. {digits}"
+
+
+def _read_gapped_numbers(image: Image.Image, lines: list[dict]):
+    """Windows' text recognition sometimes loses a digit inside a number and
+    leaves a gap: order 4841449 -> "4 41449". Read such a field again,
+    enlarged; take it when the gaps came back as digits."""
+    for line in lines:
+        text = line["text"]
+        if not re.fullmatch(r"\d+(?: \d+)+", text) or not 5 <= len(text) <= 10 or not line.get("w"):
+            continue
+        box = (int(max(0, line["x"] - 6)), int(max(0, line["y"] - 6)),
+               int(min(image.width, line["x"] + line["w"] + 8)), int(min(image.height, line["y"] + 24)))
+        crop = image.crop(box)
+        crop = crop.resize((crop.width * 3, crop.height * 3), Image.LANCZOS)
+        digits = "".join(re.sub(r"[^0-9]", "", word["text"]) for word in asyncio.run(_ocr(crop)))
+        if len(digits) == len(text):
+            line["text"] = digits
 
 
 def _split_at_columns(image, lines: list[dict], char_width: float, cursor) -> list[dict]:
