@@ -643,25 +643,45 @@ def _find_named_file(name: str, since: float, folders: list[Path]) -> Path | Non
     return best[1] if best else None
 
 
-def dump_file_of_window(pid: int, title: str, since: float, extra_dirs: list[str]) -> Path | None:
-    """The file a just-opened window shows: from its program's command line
-    (e.g. notepad.exe "C:\\...\\dump.filipe.csv"), else by the file name in
-    its title ("dump.filipe....csv - Excel") searched in the usual folders."""
-    command = process_command_line(pid)
-    candidates = []
-    for quoted, bare in re.findall(r'"([^"]+)"|(\S+)', command):
-        text = quoted or bare
-        path = Path(text)
-        if path.suffix.lower() != ".exe" and path.is_file():
-            candidates.append(path)
-    if candidates:
-        return max(candidates, key=lambda path: path.stat().st_mtime)
+def window_file_name(title: str) -> str:
+    """The file name in a window title ("table_export_data_1.xlsx  -
+    Beveiligde weergave - Excel" -> "table_export_data_1.xlsx"); "" when the
+    title has none ("Openen -Excel" while Excel is still starting)."""
     name = re.sub(r"\s*\[[^\]]*\]\s*$", "", title.split(" - ")[0]).strip(" *")
-    if not name:
-        return None
-    if Path(name).is_file():
-        return Path(name)
-    return _find_named_file(name, since, _search_dirs(extra_dirs))
+    return name if re.search(r"\.[A-Za-z0-9]{2,5}$", name) else ""
+
+
+def dump_file_of_window(pid: int, title: str, since: float, extra_dirs: list[str], used: set | None = None) -> Path | None:
+    """The file a just-opened window shows. The file name in its title wins
+    ("dump.filipe....csv - Excel"): an Excel that was already running still
+    has an older file on its command line. Without a name in the title: a
+    file on the command line (e.g. notepad.exe "C:\\...\\dump.csv") written
+    since the run started. Never a file this run already took (used)."""
+    used = used or set()
+    candidates, folders = [], []
+    for quoted, bare in re.findall(r'"([^"]+)"|(\S+)', process_command_line(pid)):
+        path = Path(quoted or bare)
+        if path.suffix.lower() != ".exe" and path.is_file():
+            if path.parent not in folders:
+                folders.append(path.parent)  # e.g. \\10.1.21.4\Excel (Uniware's share)
+            if str(path).lower() not in used:
+                candidates.append(path)
+    name = window_file_name(title)
+    if name:
+        for path in candidates:
+            if path.name.lower() == name.lower():
+                return path
+        # The same folder as the file Excel was started with.
+        for folder in folders:
+            path = folder / name
+            if path.is_file() and str(path).lower() not in used:
+                return path
+        if Path(name).is_file() and str(Path(name)).lower() not in used:
+            return Path(name)
+        found = _find_named_file(name, since, _search_dirs(extra_dirs))
+        return found if found is not None and str(found).lower() not in used else None
+    recent = [path for path in candidates if path.stat().st_mtime >= since - 2]
+    return max(recent, key=lambda path: path.stat().st_mtime) if recent else None
 
 
 # ------------------------------------------------------------------ keys
@@ -915,6 +935,7 @@ class ActionRun:
         self.output_files: list[str] = []
         self.exported_files: list[str] = []
         self.dump_parts: list[Path] = []  # "join the dumps": one per Ctrl+P
+        self.used_dump_files: set[str] = set()  # never the same file twice
         self.captures: list[dict] = []
         self.started = datetime.datetime.now()
 
@@ -1029,12 +1050,23 @@ class ActionRun:
                 time.sleep(0.5)
         other, pid, title = window
         time.sleep(1.5)  # let the program put the file name in its title
-        title = screen_reader.window_title(other) or title
+
+        def program_windows():
+            # The program's new windows: Excel first shows "Openen", then
+            # the workbook in another window.
+            return {handle: info[1] for handle, info in visible_windows().items() if handle not in windows_before and info[0] == pid}
+
+        def shown_title():
+            titles = [screen_reader.window_title(handle) or text for handle, text in program_windows().items()]
+            return next((text for text in titles if window_file_name(text)), titles[0] if titles else title)
+
+        title = shown_title()
         self.say(f"{label}: {step['key']} opened '{title}' ({Path(process_exe(pid)).name})")
         source = None
         extra = [self.action.get("uniware_dump_dir") or "", self.action.get("export_dir") or ""]
         while source is None:
-            source = dump_file_of_window(pid, screen_reader.window_title(other) or title, self.started.timestamp(), extra)
+            title = shown_title()
+            source = dump_file_of_window(pid, title, self.started.timestamp(), extra, self.used_dump_files)
             if source is None:
                 if time.time() - started > max_wait + 30:
                     raise RuntimeError(f"{label}: could not find the file shown in '{title}'. Tell which folder it is in under Edit (Uniware saves its dump in).")
@@ -1046,6 +1078,7 @@ class ActionRun:
                 break
             previous_size = size
             time.sleep(1)
+        self.used_dump_files.add(str(source).lower())
         if self.action.get("join_dumps"):
             # Several dumps in one run (e.g. tour 508: one per company) become
             # one file at the end -- named then, so a value read later (the
@@ -1054,7 +1087,13 @@ class ActionRun:
             part = DUMP_PARTS_DIR / f"{self.action['slug']}_{self.started:%Y%m%d_%H%M%S}_part{len(self.dump_parts) + 1}{source.suffix or '.txt'}"
             part.write_bytes(source.read_bytes())
             self.dump_parts.append(part)
-            self.say(f"{label}: dump {len(self.dump_parts)} kept ({source.name}) -- joined into one file at the end")
+            self.say(f"{label}: dump {len(self.dump_parts)} kept ({source.name})")
+            window_steps = [item for item in self.action.get("steps", []) if item.get("opens_window")]
+            if window_steps and step is window_steps[-1]:
+                # The last dump of the action: join now, not only at the
+                # end -- a problem on the way back must not lose the file.
+                self._join_dump_parts()
+                self.dump_parts = []
         else:
             target_dir = self._export_dir()
             target = target_dir / f"{self.export_name()}{source.suffix or '.txt'}"
@@ -1064,8 +1103,22 @@ class ActionRun:
             self.exported_files.append(str(target))
             self.say(f"{label}: dump {source} -> {target}")
         if self.action.get("close_dump_window", True):
-            user32.PostMessageW(other, 0x0010, 0, 0)  # WM_CLOSE
-            time.sleep(1)
+            # Close every new window of that program -- also one that only
+            # appears now (the workbook after Excel's "Openen") -- until none
+            # is left for 2 seconds.
+            quiet_since = None
+            close_started = time.time()
+            while time.time() - close_started < 20:
+                windows = program_windows()
+                for handle in windows:
+                    user32.PostMessageW(handle, 0x0010, 0, 0)  # WM_CLOSE
+                if windows:
+                    quiet_since = None
+                elif quiet_since is None:
+                    quiet_since = time.time()
+                elif time.time() - quiet_since >= 2:
+                    break
+                time.sleep(0.5)
 
     def _export_dir(self) -> Path:
         target_dir = Path((self.action.get("export_dir") or "").strip() or (self.action.get("uniware_dump_dir") or "").strip() or OUTPUTS_DIR)
