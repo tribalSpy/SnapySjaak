@@ -487,6 +487,12 @@ def row_key(row_text: str) -> str:
 
 
 # ------------------------------------------------------------------ window
+def _window_process(hwnd: int) -> int:
+    process = wintypes.DWORD()
+    ctypes.windll.user32.GetWindowThreadProcessId(wintypes.HWND(hwnd), ctypes.byref(process))
+    return process.value
+
+
 def find_uniware_window(title_part: str = DEFAULT_WINDOW_TITLE) -> int | None:
     found = []
 
@@ -882,7 +888,11 @@ class ActionRun:
     def _check(self, hwnd):
         if self.stop_requested:
             raise RuntimeError("Stopped by you.")
-        if screen_reader.foreground_window() != hwnd:
+        front = screen_reader.foreground_window()
+        if front != hwnd:
+            if _window_process(front) == _window_process(hwnd):
+                title = screen_reader.window_title(front)
+                raise RuntimeError(f"Uniware opened another window ('{title}' -- a message or question?) -- stopped for safety.")
             raise RuntimeError("Uniware lost focus (another window was clicked) -- stopped for safety.")
 
     def _read(self, hwnd, timeout: float = 3.0):

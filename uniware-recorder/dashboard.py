@@ -417,6 +417,7 @@ function foreachEditor(settings, i) {
   return `<div><strong>For each order</strong> of a day list -- repeats the steps after it</div>
     <div class="row"><label>day list <input data-fe-list="${i}" size="18" placeholder="accessoires vandaag" value="${esc(settings.list || "")}"></label>
       <label>the next <input data-fe-count="${i}" size="3" value="${esc(settings.count || 1)}"> step(s)</label>
+      <strong>= steps ${i + 2} to ${i + 1 + Number(settings.count || 1)}</strong>
       <label>order number as field <input data-fe-field="${i}" size="7" value="${esc(settings.field || "order")}"></label></div>
     <div class="row"><label><input type="checkbox" data-fe-open="${i}" ${settings.only_open !== false ? "checked" : ""}> only orders without a result yet (a stopped run continues where it was)</label></div>
     <div class="muted">In those steps, typed text {${esc(settings.field || "order")}} is the order number, e.g. Ctrl+F, then type {${esc(settings.field || "order")}}, Enter, F11, a check step, back.</div>`;
