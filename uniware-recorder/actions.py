@@ -1005,8 +1005,19 @@ class ActionRun:
             highlighted = [row["text"] for row in rows if row["highlighted"]]
             return highlighted[0] if highlighted else ""
 
+        def row_number_key(text):
+            """The row's order number (6-8 digits, look-alike letters read
+            as digits) -- neighbouring orders are up to ~87% alike as text."""
+            numbers = re.findall(r"(?<![\w.,])\d{6,8}(?![\w.,])", text.translate(_DIGIT_LOOKALIKES))
+            return numbers[0] if numbers else None
+
         def same_row(left, right):
-            return bool(left) and bool(right) and difflib.SequenceMatcher(None, left, right).ratio() >= 0.9
+            if not left or not right:
+                return False
+            left_key, right_key = row_number_key(left), row_number_key(right)
+            if left_key and right_key:
+                return left_key == right_key
+            return difflib.SequenceMatcher(None, left, right).ratio() >= 0.95
 
         counts = {"matched": 0, "kept": 0, "unreadable": 0}
         last_row, last_action = None, None
