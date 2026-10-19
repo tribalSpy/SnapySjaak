@@ -233,8 +233,14 @@ def day_list_item(data: dict, key: str) -> dict | None:
 def row_order_number(text: str) -> str | None:
     """The order number of a list row (6-8 digits, look-alike letters read as
     digits): 4840711 in "508 EC1211 4840711 0.00 0.05"."""
-    numbers = re.findall(r"(?<![\w.,])\d{6,8}(?![\w.,])", text.translate(_DIGIT_LOOKALIKES))
-    return numbers[0] if numbers else None
+    text = text.translate(_DIGIT_LOOKALIKES)
+    numbers = re.findall(r"(?<![\w.,])\d{6,8}(?![\w.,])", text)
+    if numbers:
+        return numbers[0]
+    # OCR sometimes glues the customer code to it: "EF3174841449" -> the
+    # last 7 digits of the first long digit run.
+    glued = re.findall(r"(?<![.,])\d{9,12}(?![\w.,])", text)
+    return glued[0][-7:] if glued else None
 
 
 def normalize_foreach(settings: dict) -> dict:
@@ -1110,8 +1116,7 @@ class ActionRun:
         def row_number_key(text):
             """The row's order number (6-8 digits, look-alike letters read
             as digits) -- neighbouring orders are up to ~87% alike as text."""
-            numbers = re.findall(r"(?<![\w.,])\d{6,8}(?![\w.,])", text.translate(_DIGIT_LOOKALIKES))
-            return numbers[0] if numbers else None
+            return row_order_number(text)
 
         def same_row(left, right):
             if not left or not right:
@@ -1168,6 +1173,8 @@ class ActionRun:
                     self.say(f"{label}: collected {order} ({kind or 'type ?'})")
                     if len(collected["items"]) % 10 == 0:
                         save_day_list(collected)
+                elif not order:
+                    self.say(f"{label}: {row[:60] or f'row {row_number} (no cursor row read)'}: no order number read -- not collected")
                 for part in list_loop_keys(next_key):
                     send_combo(controller, part)
                 last_row, last_action = row, "next"
