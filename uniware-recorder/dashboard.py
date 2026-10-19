@@ -158,6 +158,8 @@ class Handler(BaseHTTPRequestHandler):
                     action["back_key"] = str(body.get("back_key") or action.get("back_key") or "Esc").strip()
                     if "close_dump_window" in body:
                         action["close_dump_window"] = bool(body.get("close_dump_window"))
+                    if "join_dumps" in body:
+                        action["join_dumps"] = bool(body.get("join_dumps"))
                     for index, change in enumerate(body.get("steps") or []):
                         if index < len(action["steps"]):
                             step = action["steps"][index]
@@ -378,7 +380,8 @@ function edit(slug) {
     <p class="row"><label>Back key (from a program back to the menu) <input id="editBackKey" size="8" value="${esc(a.back_key || "Esc")}"></label></p>
     <h3>Dump file</h3>
     <p class="muted">Uniware's Ctrl+P opens the data in a new window: tick <strong>opens the dump in a new window</strong> on that step (done by itself when recorded). The run then waits for that window, finds the file it shows, copies it with the name below to the folder below, and closes the window.</p>
-    <p class="row"><label><input type="checkbox" id="editCloseWindow" ${a.close_dump_window === false ? "" : "checked"}> close that window afterwards</label></p>
+    <p class="row"><label><input type="checkbox" id="editCloseWindow" ${a.close_dump_window === false ? "" : "checked"}> close that window afterwards</label>
+      <label><input type="checkbox" id="editJoinDumps" ${a.join_dumps ? "checked" : ""}> <strong>join all dumps of a run into one file</strong> (e.g. tour 508: two companies, two Ctrl+P) -- named at the end, so the file name can use a value read after the first dump</label></p>
     <p class="row"><label>Uniware saves its dump in <input id="editUniwareDir" size="60" placeholder="paste the folder path (e.g. the OneDrive folder)" value="${esc(a.uniware_dump_dir || "")}"></label>
       <label>Its name looks like <input id="editUniwarePattern" size="14" value="${esc(a.uniware_dump_pattern || "dump.*.csv")}"></label>
       <label>Max wait (s) <input id="editUniwareWait" size="4" value="${esc(a.uniware_dump_wait || 180)}"></label></p>
@@ -518,7 +521,7 @@ function saveEdit() {
   // Show the saved steps right away: an Edit table that still showed the old
   // steps looked like nothing happened, and saving it again changed the
   // wrong (renumbered) steps.
-  api(`/api/actions/${editing}/update`, { description: $("editDesc").value, export_dir: $("editExportDir").value, back_key: $("editBackKey").value, close_dump_window: $("editCloseWindow").checked, export_name: $("editExportName").value, uniware_dump_dir: $("editUniwareDir").value, uniware_dump_pattern: $("editUniwarePattern").value, uniware_dump_wait: $("editUniwareWait").value, steps }).then((payload) => { if (payload) edit(editing); });
+  api(`/api/actions/${editing}/update`, { description: $("editDesc").value, export_dir: $("editExportDir").value, back_key: $("editBackKey").value, close_dump_window: $("editCloseWindow").checked, join_dumps: $("editJoinDumps").checked, export_name: $("editExportName").value, uniware_dump_dir: $("editUniwareDir").value, uniware_dump_pattern: $("editUniwarePattern").value, uniware_dump_wait: $("editUniwareWait").value, steps }).then((payload) => { if (payload) edit(editing); });
 }
 api("/api/state");
 setInterval(() => { if (state && (state.recording.active || state.run.active)) api("/api/state"); }, 1000);

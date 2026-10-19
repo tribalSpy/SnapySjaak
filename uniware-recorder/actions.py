@@ -34,6 +34,30 @@ import screen_reader
 APP_DIR = Path(__file__).resolve().parent
 ACTIONS_DIR = APP_DIR / "actions"
 OUTPUTS_DIR = APP_DIR / "outputs"
+DUMP_PARTS_DIR = OUTPUTS_DIR / "dump-parts"
+
+
+def _relative_sheet_paths(path: Path):
+    """openpyxl writes the workbook's sheet links as "/xl/worksheets/..."; the
+    files from Uniware (and what SnappySjaak's reader expects) have them
+    relative: "worksheets/...". Rewrite them that way."""
+    import zipfile
+    name = "xl/_rels/workbook.xml.rels"
+    with zipfile.ZipFile(path) as source:
+        entries = [(info, source.read(info.filename)) for info in source.infolist()]
+    with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED) as target:
+        for info, data in entries:
+            if info.filename == name:
+                data = data.replace(b'Target="/xl/', b'Target="')
+            target.writestr(info, data)
+
+
+def _trimmed(row) -> list:
+    """A spreadsheet row without its empty cells at the end."""
+    values = list(row)
+    while values and values[-1] in (None, ""):
+        values.pop()
+    return values
 user32 = ctypes.windll.user32
 
 # The Uniware window: "Connect (C Uniware Computer Systems BV) (Session 1: ...)".
@@ -881,6 +905,7 @@ class ActionRun:
         self.result = ""
         self.output_files: list[str] = []
         self.exported_files: list[str] = []
+        self.dump_parts: list[Path] = []  # "join the dumps": one per Ctrl+P
         self.captures: list[dict] = []
         self.started = datetime.datetime.now()
 
@@ -1012,17 +1037,85 @@ class ActionRun:
                 break
             previous_size = size
             time.sleep(1)
-        target_dir = Path((self.action.get("export_dir") or "").strip() or (self.action.get("uniware_dump_dir") or "").strip() or OUTPUTS_DIR)
-        target_dir.mkdir(parents=True, exist_ok=True)
-        target = target_dir / f"{self.export_name()}{source.suffix or '.txt'}"
-        temp = target_dir / f"~{target.name}.tmp"
-        temp.write_bytes(source.read_bytes())  # copy: the program may still hold it open
-        temp.replace(target)
-        self.exported_files.append(str(target))
-        self.say(f"{label}: dump {source} -> {target}")
+        if self.action.get("join_dumps"):
+            # Several dumps in one run (e.g. tour 508: one per company) become
+            # one file at the end -- named then, so a value read later (the
+            # LTD invoiceRes) can be in the name.
+            DUMP_PARTS_DIR.mkdir(parents=True, exist_ok=True)
+            part = DUMP_PARTS_DIR / f"{self.action['slug']}_{self.started:%Y%m%d_%H%M%S}_part{len(self.dump_parts) + 1}{source.suffix or '.txt'}"
+            part.write_bytes(source.read_bytes())
+            self.dump_parts.append(part)
+            self.say(f"{label}: dump {len(self.dump_parts)} kept ({source.name}) -- joined into one file at the end")
+        else:
+            target_dir = self._export_dir()
+            target = target_dir / f"{self.export_name()}{source.suffix or '.txt'}"
+            temp = target_dir / f"~{target.name}.tmp"
+            temp.write_bytes(source.read_bytes())  # copy: the program may still hold it open
+            temp.replace(target)
+            self.exported_files.append(str(target))
+            self.say(f"{label}: dump {source} -> {target}")
         if self.action.get("close_dump_window", True):
             user32.PostMessageW(other, 0x0010, 0, 0)  # WM_CLOSE
             time.sleep(1)
+
+    def _export_dir(self) -> Path:
+        target_dir = Path((self.action.get("export_dir") or "").strip() or (self.action.get("uniware_dump_dir") or "").strip() or OUTPUTS_DIR)
+        target_dir.mkdir(parents=True, exist_ok=True)
+        return target_dir
+
+    def _join_dump_parts(self):
+        """The run's dumps as one file: the first one's header, then the rows
+        of all of them (same columns required; itemNumber numbered on)."""
+        suffixes = {part.suffix.lower() for part in self.dump_parts}
+        if len(suffixes) != 1:
+            raise RuntimeError(f"The dumps are different kinds of file ({', '.join(sorted(suffixes))}) -- can't join them.")
+        suffix = suffixes.pop()
+        target = self._export_dir() / f"{self.export_name()}{suffix}"
+        temp = target.parent / f"~{target.name}.tmp"
+        counts = []
+        if suffix == ".xlsx":
+            import openpyxl  # only needed here
+            workbook = openpyxl.load_workbook(self.dump_parts[0])
+            sheet = workbook.active
+            header = [cell.value for cell in sheet[1]]
+            counts.append(sheet.max_row - 1)
+            number_column = header.index("itemNumber") if "itemNumber" in header else None
+            last_number = max((row[number_column] for row in sheet.iter_rows(min_row=2, values_only=True)
+                               if number_column is not None and isinstance(row[number_column], (int, float))), default=0)
+            for part in self.dump_parts[1:]:
+                other_book = openpyxl.load_workbook(part, read_only=True)
+                rows = list(other_book.active.iter_rows(values_only=True))
+                other_book.close()  # read-only keeps the file open otherwise
+                if not rows or _trimmed(rows[0]) != _trimmed(header):
+                    raise RuntimeError(f"Dump {part.name} has other columns than the first one -- not joined (the parts are in {DUMP_PARTS_DIR}).")
+                for row in rows[1:]:
+                    if not any(value not in (None, "") for value in row):
+                        continue
+                    row = list(row)
+                    if number_column is not None and isinstance(row[number_column], (int, float)):
+                        last_number += 1
+                        row[number_column] = last_number
+                    sheet.append(row)
+                counts.append(len(rows) - 1)
+            workbook.save(temp)
+            _relative_sheet_paths(temp)
+        else:
+            lines_out, header = [], None
+            for part in self.dump_parts:
+                lines = part.read_text(encoding="utf-8-sig", errors="replace").splitlines()
+                if not lines:
+                    continue
+                if header is None:
+                    header = lines[0]
+                    lines_out.append(header)
+                elif lines[0] != header:
+                    raise RuntimeError(f"Dump {part.name} has other columns than the first one -- not joined (the parts are in {DUMP_PARTS_DIR}).")
+                lines_out.extend(line for line in lines[1:] if line.strip())
+                counts.append(len(lines) - 1)
+            temp.write_text("\n".join(lines_out) + "\n", encoding="utf-8")
+        temp.replace(target)
+        self.exported_files.append(str(target))
+        self.say(f"{len(self.dump_parts)} dumps joined ({' + '.join(str(count) for count in counts)} rows) -> {target}")
 
     def _back_to_menu(self, hwnd, controller, reading):
         """From inside a program, press the back key (Esc by default, Edit:
@@ -1437,6 +1530,8 @@ class ActionRun:
             selected = self._run_steps(hwnd, controller, steps, 0, len(steps), selected)
             if dump_before is not None:
                 self._collect_uniware_dump(dump_before)
+            if self.dump_parts:
+                self._join_dump_parts()
             self.result = "done"
             self.say("Finished.")
         except Exception as error:  # noqa: BLE001 -- shown in the dashboard

@@ -152,6 +152,14 @@ otherwise **Down**. And in tour 515: "Accessoire" -> **Enter** (add).
 - A new loop starts as a **trial run**: it only logs what it would do --
   check the log, then untick "trial run".
 
+**Two dumps, one file** (e.g. tour 508 with two companies, 4EADMI and LTD):
+record both Ctrl+P's in one action and tick "join all dumps of a run into one
+file" under Dump file. Each dump is kept in `outputs/dump-parts/`; at the end
+of the run they become one file (one header, all rows, itemNumber numbered
+on), named then -- so `data_tour-508_{invoiceres}` takes the invoiceRes read
+on the LTD screen even though that comes after the first dump. Read
+invoiceRes into `invoiceres` only on the screen whose number counts.
+
 **Day lists -- information from one action to the next** (e.g. accessoires:
 SPICER -> tour 516, other -> 515). Three actions, each ending on the main
 menu; the list in between is shown under "Day lists" in the dashboard:

@@ -3,3 +3,4 @@ pynput>=1.7
 mss>=9.0
 pillow>=10.0
 winsdk>=1.0.0b10
+openpyxl>=3.1
