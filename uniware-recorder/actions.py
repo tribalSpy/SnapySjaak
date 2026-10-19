@@ -278,8 +278,10 @@ def normalize_classify(settings: dict) -> dict:
     }
 
 
-# A product line on an order screen has a quantity like "1 x 50" / "2 x1".
-PRODUCT_LINE_RE = re.compile(r"\d+\s*x\s*\d+", re.IGNORECASE)
+# A product line on an order screen starts with its line number and article
+# number ("1 44752669a ...") or has a quantity like "1 x 50" / "2 x1" (OCR
+# reads x1 as "xl").
+PRODUCT_LINE_RE = re.compile(r"^\s*\d{1,3}\s+\d{6,9}[a-z]?\s|\d+\s*x\s*[\dlI|]", re.IGNORECASE)
 
 
 # ------------------------------------------------------------------ list loop
