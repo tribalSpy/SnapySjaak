@@ -10364,11 +10364,16 @@ function parseShelfCountJobResult(job) {
   // Only a genuine parse failure is worth surfacing in the UI's Error column
   // -- recovering the answer from thinking text is a normal, successful
   // outcome (same numbers either way), not something wrong with this row.
+  // Why it failed, so the Error column says what to fix: cut off at the
+  // token limit, or what the model wrote instead of JSON.
+  const ollama = job?.result_json?.ollama_response || {};
+  const cutOff = ollama.done_reason === "length";
+  const sample = (contentText || thinkingText).replace(/\s+/g, " ").slice(0, 160);
   const parseNote = fromContent || fromThinking
     ? ""
     : (contentText || thinkingText)
-      ? "Could not parse JSON from either the model's content or thinking text."
-      : "Model returned no content and no thinking text at all.";
+      ? `Could not parse JSON from either the model's content or thinking text${cutOff ? ` -- the answer was cut off at the token limit (${ollama.eval_count || "?"} tokens)` : ""}. Model wrote: "${sample}${(contentText || thinkingText).length > 160 ? "..." : ""}"`
+      : `Model returned no content and no thinking text at all${ollama.done_reason ? ` (done_reason: ${ollama.done_reason})` : ""}.`;
   return {
     shelves,
     levels,
@@ -10441,8 +10446,11 @@ function buildShelfCountJobPayload({ photoCount, trolleyCount }) {
     think: false,
     options: {
       temperature: 0,
-      // Room for one per_trolley entry per trolley next to the totals.
-      num_predict: 200 + 60 * trolleys,
+      // Room for one per_trolley entry per trolley next to the totals --
+      // generous: 200 + 60 per trolley cut answers off mid-JSON ("Could not
+      // parse JSON" on every reference). With format json the model stops by
+      // itself once the JSON is complete, so a high limit costs nothing.
+      num_predict: 1000 + 100 * trolleys,
     },
   };
 }
@@ -10594,7 +10602,11 @@ async function runShelfCountNightlyTrigger(explicitDate, options = {}) {
       issues.push({ type: "halindeling_unavailable", message: `Main codes not loaded (${mainCodeError}); combined references may show as missing photos.` });
     }
 
-    for (const row of completedReferences) {
+    // One reference: combined member / already done / photos found or not
+    // -> a shelf_count job. Used for the completed references of the
+    // warehouse log and for photo folders the log doesn't have but the Fust
+    // Planning does.
+    const handleReference = async (row) => {
       const folderName = shelfCountFolderName(row.customer_reference, runDate);
       expectedFolderBases.add(folderName);
       const referenceKey = String(row.customer_reference || "").toUpperCase();
@@ -10611,11 +10623,11 @@ async function runShelfCountNightlyTrigger(explicitDate, options = {}) {
           combined_into: memberToMain.get(referenceKey),
           error_text: "",
         });
-        continue;
+        return;
       }
       if (doneReferences.has(referenceKey) || queuedReferences.has(referenceKey)) {
         totals.checked += 1;
-        continue;
+        return;
       }
 
       const found = await findShelfCountFoldersAcrossAccounts(driveAccounts, folderName);
@@ -10623,7 +10635,7 @@ async function runShelfCountNightlyTrigger(explicitDate, options = {}) {
       if (!found && !row.photos_complete) {
         // Photos weren't required/complete for this reference and none were
         // taken -- nothing to count, nothing to report.
-        continue;
+        return;
       }
       totals.checked += 1;
       if (!found) {
@@ -10637,7 +10649,7 @@ async function runShelfCountNightlyTrigger(explicitDate, options = {}) {
           photo_count: 0,
           status: "missing_photos",
         });
-        continue;
+        return;
       }
       const { account: matchedAccount, photoFiles } = found;
 
@@ -10675,6 +10687,10 @@ async function runShelfCountNightlyTrigger(explicitDate, options = {}) {
       // Progress heartbeat (bumps updated_at): a run that stops reporting
       // progress is what the watchdog treats as interrupted.
       await upsertShelfCountNightlyRun({ run_date: runDate, status: "running", totals, issues });
+    };
+
+    for (const row of completedReferences) {
+      await handleReference(row);
     }
 
     // Any Drive folder for this date with no matching completed reference at
@@ -10687,7 +10703,20 @@ async function runShelfCountNightlyTrigger(explicitDate, options = {}) {
     // run-suffix comes after it, e.g. "..._20260929_01"), not just a
     // trailing one, so this checks for "_<date>" as a whole segment anywhere
     // in the name, not only at the very end.
+    // A photo folder of this day without a completed scan in the warehouse
+    // log (the RFID scan was missed) is still counted when its reference is
+    // in the Fust Planning of the same day -- with Fust's number of trolleys.
+    // Only folders that are in neither stay "unmatched".
     const compactDate = String(runDate || "").replace(/-/g, "");
+    let fustByCode = new Map();
+    try {
+      fustByCode = new Map((await getFustReferenceActions({ from: runDate, to: runDate }))
+        .map((fustRow) => [String(fustRow.code || "").trim().toUpperCase(), fustRow])
+        .filter(([code]) => code));
+    } catch (error) {
+      issues.push({ type: "fust_planning_unavailable", message: `Fust Planning not loaded (${error instanceof Error ? error.message : error}); photo folders without a warehouse scan stay unmatched.` });
+    }
+    const viaFust = new Set();
     for (const account of driveAccounts) {
       for (const entry of account.entries) {
         const name = String(entry.name || "").trim();
@@ -10697,6 +10726,18 @@ async function runShelfCountNightlyTrigger(explicitDate, options = {}) {
         }
         const isExpected = [...expectedFolderBases].some((base) => shelfCountFolderMatchesBase(name, base));
         if (isExpected) {
+          continue;
+        }
+        const reference = name.split(`_${compactDate}`)[0].trim();
+        const fustRow = fustByCode.get(reference.toUpperCase());
+        if (fustRow) {
+          if (!viaFust.has(reference.toUpperCase())) {
+            viaFust.add(reference.toUpperCase());
+            expectedFolderBases.add(shelfCountFolderName(reference, runDate));
+            totals.via_fust = (totals.via_fust || 0) + 1;
+            issues.push({ type: "counted_via_fust_planning", customer_reference: reference, folder_name: name, drive_account: account.account_name });
+            await handleReference({ customer_reference: reference, trolley_count: fustShadowTrolleyExpectedValue(fustRow), photos_complete: true });
+          }
           continue;
         }
         totals.unmatched_folder += 1;
