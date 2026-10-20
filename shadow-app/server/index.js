@@ -7198,11 +7198,25 @@ function matchInkoopVeilingLines(erpRows, invoices, supplierMap = {}, supplierNa
       ambiguousMatches.push({ ...context, supplier_code: codesLabel, supplier_match_type: resolved.match_type, candidates: picked.candidates });
       return;
     }
-    if (!picked.row) {
+    // The one lot left of this supplier when nothing matches exactly: without
+    // a brief number to tie them, both pieces AND price different means
+    // another product, not this one (it used to be taken -- and called OK).
+    const quantityDiffers = picked.row && inkoopValuesDiffer(picked.row.pieces, line.quantity);
+    const priceDiffers = picked.row && inkoopValuesDiffer(parseFloat(picked.row.price), line.unit_price);
+    if (!picked.row || (quantityDiffers && priceDiffers)) {
       onlyInInvoice.push({ ...context, supplier_code: codesLabel, supplier_match_type: resolved.match_type });
       return;
     }
     consumedErpRows.add(picked.row);
+    if (quantityDiffers || priceDiffers) {
+      const diffs = [];
+      if (quantityDiffers) diffs.push({ field: "quantity", erp: picked.row.pieces, invoice: line.quantity });
+      if (priceDiffers) diffs.push({ field: "unit_price", erp: parseFloat(picked.row.price), invoice: line.unit_price });
+      if (inkoopValuesDiffer(parseFloat(picked.row.t_price), line.total)) diffs.push({ field: "total", erp: parseFloat(picked.row.t_price), invoice: line.total });
+      const mismatchCode = resolveErpRowSupplierCode(picked.row, validSupplierCodes) || codesLabel;
+      matchedMismatch.push({ ...context, supplier_code: mismatchCode, supplier_match_type: resolved.match_type, erp_row: picked.row, diffs });
+      return;
+    }
     // The ERP row's own code (which one of resolved.codes it actually
     // belonged to) makes a more precise transcript than the whole candidate
     // list once a specific row is picked.
@@ -7427,6 +7441,41 @@ function matchInkoopVeilingLines(erpRows, invoices, supplierMap = {}, supplierNa
   const onlyInErp = [...erpByPav.values(), ...erpBySupplierCode.values()]
     .flat()
     .filter((row) => !consumedErpRows.has(row));
+
+  // Why a supplier-matched line (Handel / AI2 / Connect without PAV) found
+  // nothing: that supplier's Connect lots around its date with the same
+  // pieces or price -- already taken by another line, carrying a brief
+  // number (so matched by PAV instead), or free but different.
+  const takenBy = new Map();
+  for (const item of [...matchedOk, ...matchedMismatch]) {
+    if (item?.erp_row) takenBy.set(item.erp_row, item);
+  }
+  const dayDistance = (left, right) => Math.abs((Date.parse(String(left || "").slice(0, 10)) - Date.parse(String(right || "").slice(0, 10))) / 86400000);
+  for (const item of onlyInInvoice) {
+    if (!item?.supplier_code) continue;
+    const codes = new Set(String(item.supplier_code).split("/").map((code) => normalizeInkoopKey(code)).filter(Boolean));
+    const date = String(item.invoice_date || "").slice(0, 10);
+    const ofSupplier = (Array.isArray(erpRows) ? erpRows : []).filter((row) => codes.has(resolveErpRowSupplierCode(row, validSupplierCodes)));
+    const near = ofSupplier.filter((row) => !date || !row?.date || dayDistance(row.date, date) <= INKOOP_DAY_TOLERANCE_DAYS);
+    const similar = near.filter((row) => !inkoopValuesDiffer(row.pieces, item.quantity) || !inkoopValuesDiffer(parseFloat(row.price), item.unit_price));
+    item.connect_check = {
+      supplier_lots: ofSupplier.length,
+      near_lots: near.length,
+      candidates: similar.slice(0, 6).map((row) => {
+        const taker = takenBy.get(row);
+        const pav = normalizeInkoopKey(row?.pav);
+        return {
+          lot: row.lot,
+          date: String(row.date || "").slice(0, 10),
+          pieces: row.pieces,
+          price: row.price,
+          description: row.description || "",
+          pav: isRealInkoopPav(pav) ? pav : "",
+          taken_by: taker ? `${taker.invoice_number || ""} ${taker.description || ""}`.trim() : (consumedErpRows.has(row) ? "another line (group / split)" : ""),
+        };
+      }),
+    };
+  }
 
   return {
     matched_ok: matchedOk,

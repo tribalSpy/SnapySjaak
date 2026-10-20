@@ -17359,7 +17359,10 @@ function InkoopResultTables({ result, windowDays, manualLinkDrafts, setManualLin
                       <td>{inkoopCompanyLabel(row)}</td>
                       <td><InkoopInvoiceLink invoiceNumber={row.invoice_number} /></td>
                       <td>{row.reference_bt || row.supplier_code || "-"}{row.supplier_match_type === "name" ? " (name match)" : ""}</td>
-                      <td>{row.description}</td>
+                      <td>
+                        {row.description}
+                        <InkoopConnectCheck check={row.connect_check} code={row.supplier_code} quantity={row.quantity} price={row.unit_price} />
+                      </td>
                       <td>{row.quantity}</td>
                       <td>{row.unit_price}</td>
                       <td>{row.total}</td>
@@ -18004,6 +18007,35 @@ const INKOOP_RETOUR_STATUS_LABELS = {
   no_change: "OK -- no real correction (credited and invoiced again the same)",
   price_corrected: "OK -- price corrected (same pieces)",
 };
+
+// Why a supplier-matched invoice line (Handel / AI2 / Connect without
+// brief number) found no Connect lot: the supplier's lots around its date
+// with the same pieces or price, and what happened to each.
+function InkoopConnectCheck({ check, code, quantity, price }) {
+  if (!check) return null;
+  const style = { display: "block", fontSize: "0.78rem", color: "#6b7280", marginTop: 2 };
+  if (!check.supplier_lots) {
+    return <small style={{ ...style, color: "#b45309" }}>No Connect lots of {code} around this date -- is the Connect export of this day uploaded, or is it booked under another code?</small>;
+  }
+  if (!check.candidates?.length) {
+    return <small style={style}>{check.near_lots} Connect lot(s) of {code} around this date, none with {quantity} pieces or price {price}.</small>;
+  }
+  return (
+    <small style={style}>
+      Connect {code}:{" "}
+      {check.candidates.map((candidate) => (
+        <span key={candidate.lot} style={{ display: "block" }}>
+          lot {candidate.lot} ({inkoopShortDate(candidate.date)}) {candidate.pieces} x {candidate.price} {candidate.description ? `"${candidate.description}"` : ""} --{" "}
+          {candidate.taken_by
+            ? <span style={{ color: "#b45309" }}>already matched to {candidate.taken_by}</span>
+            : candidate.pav
+              ? <span style={{ color: "#b45309" }}>has brief number {candidate.pav} (matched by brief number, not by supplier)</span>
+              : Number(candidate.pieces) !== Number(quantity) ? "different pieces" : Number(candidate.price) !== Number(price) ? "different price" : "free -- should have matched, tell support"}
+        </span>
+      ))}
+    </small>
+  );
+}
 
 function InkoopRetourStatusBadge({ status }) {
   const tone = status === "confirmed_return" || status === "credited" || status === "no_return_expected" || status === "no_change" || status === "price_corrected" ? "success"
