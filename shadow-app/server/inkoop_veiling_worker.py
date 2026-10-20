@@ -319,6 +319,14 @@ def king_line_fields(item):
         "your_reference": find_reference(item, "AAG") or "",
         "delivery_reference": find_reference(item, "VN") or "",
         "note": direct_path_text(item, "AdditionalInformationTradeNote", "Content"),
+        # More references per line: the order number (ON, Connect -- Uniware
+        # shows it with 3 digits added), the brief number without its letter
+        # (ACE: the last 6 digits of the Connect lot's EPP when it is numeric),
+        # and the other transaction / logistics numbers.
+        "order_number": find_reference(item, "ON") or "",
+        "brief_base": find_reference(item, "ACE") or "",
+        "ref_ss": find_reference(item, "SS") or "",
+        "ref_adj": find_reference(item, "ADJ") or "",
     }
 
 

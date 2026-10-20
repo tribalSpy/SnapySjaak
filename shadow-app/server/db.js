@@ -386,6 +386,58 @@ export async function applyInkoopLeveringBbBridge() {
   return result.rows;
 }
 
+export async function saveInkoopLotEpp(rows, sourceFileName = "") {
+  if (!pool || !Array.isArray(rows) || !rows.length) {
+    return 0;
+  }
+  const valid = dedupeByKeyKeepingLast(rows.filter((row) => row?.lot && row?.epp), (row) => String(row.lot));
+  for (const chunk of chunkArray(valid, INKOOP_UPSERT_CHUNK_SIZE)) {
+    const values = [];
+    const placeholders = chunk.map((row) => {
+      const base = values.length;
+      values.push(row.lot, row.epp, sourceFileName);
+      return `($${base + 1}, $${base + 2}, $${base + 3})`;
+    });
+    await pool.query(
+      `INSERT INTO inkoop_lot_epp (lot, epp, source_file_name) VALUES ${placeholders.join(", ")}
+       ON CONFLICT (lot) DO UPDATE SET epp = EXCLUDED.epp, source_file_name = EXCLUDED.source_file_name, imported_at = now()`,
+      values,
+    );
+  }
+  return valid.length;
+}
+
+// Connect lots without a PAV that have an EPP: the invoice line (Klok /
+// Connect, 4 days either side) whose brief number is the EPP's last 6
+// digits plus a letter gets them -- only when exactly one line fits.
+export async function applyInkoopEppBridge() {
+  if (!pool) {
+    return [];
+  }
+  const result = await pool.query(`
+    WITH candidates AS (
+      SELECT e.lot, min(i.reference_bt) AS pav, count(DISTINCT i.reference_bt) AS options, max(b.epp) AS epp
+        FROM inkoop_erp_lines e
+        JOIN inkoop_lot_epp b ON b.lot = e.lot
+        JOIN inkoop_invoice_lines i
+          ON i.reference_bt ~ '^[0-9]{6}[A-Za-z]?$'
+         AND left(i.reference_bt, 6) = right(b.epp, 6)
+         AND i.invoice_type IN ('klokfactuur', 'connect')
+         AND i.invoice_date BETWEEN e.erp_date - 4 AND e.erp_date + 4
+       WHERE COALESCE(btrim(e.pav), '') = '' OR e.pav ~ '^0+[A-Za-z]?$'
+       GROUP BY e.lot
+    )
+    UPDATE inkoop_erp_lines e
+       SET pav = c.pav,
+           raw = e.raw || jsonb_build_object('pav_from', 'epp', 'epp', c.epp),
+           updated_at = now()
+      FROM candidates c
+     WHERE e.lot = c.lot AND c.options = 1
+    RETURNING e.lot::text AS lot, to_char(e.erp_date, 'YYYY-MM-DD') AS erp_date
+  `);
+  return result.rows;
+}
+
 // For the upload message: of these lots, how many Connect already has with
 // its own PAV, with the bridge's PAV, and not at all (not uploaded yet).
 export async function getInkoopLeveringBbStatus(lots) {
@@ -3058,6 +3110,17 @@ const databaseMigrations = [
   `,
   `
     CREATE INDEX IF NOT EXISTS inkoop_erp_lines_pav_idx ON inkoop_erp_lines (pav)
+  `,
+  // EPP list (read from Uniware by the recorder): per Connect lot its EPP
+  // number; the last 6 digits are the brief number of the invoice line
+  // when that one is numeric ("445726a" <- EPP 9100185445726).
+  `
+    CREATE TABLE IF NOT EXISTS inkoop_lot_epp (
+      lot bigint PRIMARY KEY,
+      epp text NOT NULL,
+      source_file_name text,
+      imported_at timestamptz NOT NULL DEFAULT now()
+    )
   `,
   // "Levering BB" (a Connect Screen export of deliveries): per Connect lot
   // ("Prt") the FloraHolland brief number ("Info", F9NKFJ/F -> F9NKFJf) and

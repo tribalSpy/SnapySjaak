@@ -16457,6 +16457,7 @@ function InkoopControlePage({ currentUser }) {
   const [erpFile, setErpFile] = useState(null);
   const [leveringFile, setLeveringFile] = useState(null);
   const [leveringBusy, setLeveringBusy] = useState(false);
+  const [eppFile, setEppFile] = useState(null);
   // One or more .zip files and/or loose .msg files -- split into parts on
   // upload (see runComparison).
   const [veilingFiles, setVeilingFiles] = useState([]);
@@ -16607,6 +16608,26 @@ function InkoopControlePage({ currentUser }) {
       });
       setMessage(`Levering BB: ${payload.lines} lines -- ${payload.bridges} with a Connect lot (bridge), ${payload.already_linked} already linked in Connect${payload.cancelled ? `, ${payload.cancelled} cancelled` : ""}. `
         + `Connect lots filled in now: ${payload.filled_now} (in all ${payload.bridged}); ${payload.own_pav} had their own brief number; ${payload.not_in_connect} not in the uploaded Connect data yet (filled in when that is uploaded). The days affected are compared again.`);
+    } catch (uploadError) {
+      setError(uploadError.message);
+    } finally {
+      setLeveringBusy(false);
+    }
+  }
+
+  // EPP list (from the Uniware recorder): per Connect lot its EPP number --
+  // the last 6 digits are the brief number of the clock invoice line.
+  async function uploadEppList() {
+    if (!eppFile) return;
+    setLeveringBusy(true);
+    setError("");
+    setMessage("");
+    try {
+      const payload = await apiJson("/api/inkoop/epp-list", {
+        method: "POST",
+        body: JSON.stringify({ file: { name: eppFile.name, content_base64: await fileToBase64(eppFile) } }),
+      });
+      setMessage(`EPP list: ${payload.lines} lot(s) with an EPP. Connect lots that got the invoice's brief number now: ${payload.filled_now}. The rest is tried again with every new upload.`);
     } catch (uploadError) {
       setError(uploadError.message);
     } finally {
@@ -17026,6 +17047,16 @@ function InkoopControlePage({ currentUser }) {
           <button type="button" onClick={uploadLeveringBb} disabled={leveringBusy || !leveringFile}>
             {leveringBusy ? "Uploading..." : "Upload Levering BB"}
           </button>
+        </div>
+        <div className="row-actions">
+          <label>
+            <span>EPP list (.csv: lot ; EPP -- from the Uniware recorder)</span>
+            <input type="file" accept=".csv,.txt" onChange={(event) => setEppFile(event.target.files?.[0] || null)} />
+          </label>
+          <button type="button" onClick={uploadEppList} disabled={leveringBusy || !eppFile}>
+            {leveringBusy ? "Uploading..." : "Upload EPP list"}
+          </button>
+          <span className="muted">A Connect lot without a brief number gets the one of the clock invoice line whose brief number is its EPP's last 6 digits.</span>
         </div>
       </div>
 

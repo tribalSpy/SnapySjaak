@@ -98,6 +98,8 @@ import {
   saveInkoopLeveringBb,
   applyInkoopLeveringBbBridge,
   getInkoopLeveringBbStatus,
+  saveInkoopLotEpp,
+  applyInkoopEppBridge,
   getInkoopGrowerPavPairs,
   getInkoopConnectCodeStats,
   getInkoopInvoiceSuppliers,
@@ -6836,6 +6838,20 @@ function inkoopDescriptionsShareName(invoiceDescription, connectDescription) {
     if (connectWords.has(word)) return true;
   }
   return false;
+}
+
+// EPP list (from the Uniware recorder, or typed): per line a Connect lot and
+// its EPP number ("44759254;9100185445726"). Separators ; , tab or spaces.
+function parseInkoopEppList(base64) {
+  const text = Buffer.from(String(base64 || ""), "base64").toString("utf8");
+  const rows = [];
+  for (const line of text.split(/\r?\n/)) {
+    const cells = line.split(/[;,\t ]+/).map((cell) => cell.trim().replace(/^"|"$/g, ""));
+    const epp = cells.find((cell) => /^\d{12,14}$/.test(cell));
+    const lot = cells.find((cell) => /^\d{6,10}$/.test(cell));
+    if (epp && lot) rows.push({ lot: Number(lot), epp });
+  }
+  return rows;
 }
 
 // A brief number without the letter FloraHolland changes when it splits a
@@ -22746,6 +22762,33 @@ async function handleApi(req, res, url) {
   // captured from the veiling zip's PDF-only .msg companion (Klok/Connect/
   // Handel) or the AI2 Productnota itself, stored under a deterministic
   // filename keyed by invoice number (see saveInkoopInvoicePdfs).
+  // Upload an EPP list (lot ; EPP per line): body { file: { name, content_base64 } }.
+  if (url.pathname === "/api/inkoop/epp-list" && req.method === "POST") {
+    if (!requirePermission(res, requestUser, PERMISSIONS.INKOOP_VIEW)) {
+      return;
+    }
+    if (!isDatabaseEnabled()) {
+      sendJson(res, 503, { error: "Database is not configured" });
+      return;
+    }
+    const body = await readRequestJson(req, 20 * 1024 * 1024);
+    const rows = parseInkoopEppList(body?.file?.content_base64);
+    if (!rows.length) {
+      sendJson(res, 400, { error: "No lines with a Connect lot and an EPP number (e.g. 44759254;9100185445726) found." });
+      return;
+    }
+    const saved = await saveInkoopLotEpp(rows, String(body?.file?.name || ""));
+    const filled = await applyInkoopEppBridge();
+    if (filled.length) {
+      bumpInkoopMatchVersion();
+      await refreshInkoopDaySummariesForDates(filled.map((row) => row.erp_date))
+        .catch((queueError) => console.error("Queueing the Inkoop comparison failed:", queueError instanceof Error ? queueError.message : queueError));
+      kickInkoopMatchWorker();
+    }
+    sendJson(res, 200, { ok: true, lines: rows.length, saved, filled_now: filled.length });
+    return;
+  }
+
   // Upload a "Levering BB" file: body { file: { name, content_base64 } }.
   if (url.pathname === "/api/inkoop/levering-bb" && req.method === "POST") {
     if (!requirePermission(res, requestUser, PERMISSIONS.INKOOP_VIEW)) {
@@ -22898,6 +22941,10 @@ async function handleApi(req, res, url) {
         return [];
       });
       await saveInkoopInvoiceLines(flatInvoiceLines);
+      // New Connect lots or invoice lines: an EPP may now find its brief number.
+      if (erpRows.length || flatInvoiceLines.length) {
+        await applyInkoopEppBridge().catch((bridgeError) => console.error("EPP bridge failed:", bridgeError instanceof Error ? bridgeError.message : bridgeError));
+      }
       // The per-invoice totals (Overview) of the invoices in this upload.
       await refreshInkoopInvoiceTotals(flatInvoiceLines.map((line) => line?.invoice_number))
         .catch((totalsError) => console.error("Refreshing invoice totals failed:", totalsError instanceof Error ? totalsError.message : totalsError));
