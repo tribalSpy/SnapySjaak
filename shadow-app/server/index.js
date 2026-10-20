@@ -94,6 +94,7 @@ import {
   saveInkoopDispatchLots,
   saveInkoopErpLines,
   saveInkoopInvoiceLines,
+  deleteInkoopInvoiceCopies,
   saveInkoopIssueStatus,
   upsertLlmAgentHeartbeat,
   upsertShelfCountNightlyRun,
@@ -22263,7 +22264,13 @@ async function handleApi(req, res, url) {
       return;
     }
     const invoiceNumber = decodeURIComponent(url.pathname.slice("/api/inkoop/invoice-pdf/".length));
-    const resolvedPath = path.resolve(inkoopInvoicePdfPath(invoiceNumber));
+    let resolvedPath = path.resolve(inkoopInvoicePdfPath(invoiceNumber));
+    // "057390.FK.2026.1057 (2)": the second copy of an invoice number in one
+    // upload (different lines) -- its PDF is the invoice's own.
+    const baseNumber = invoiceNumber.replace(/\s*\(\d+\)\s*$/, "");
+    if (!existsSync(resolvedPath) && baseNumber !== invoiceNumber) {
+      resolvedPath = path.resolve(inkoopInvoicePdfPath(baseNumber));
+    }
     if (!resolvedPath.startsWith(path.resolve(inkoopInvoicePdfFilesDir)) || !existsSync(resolvedPath)) {
       sendText(res, 404, "Invoice PDF not found -- not captured yet, or this invoice has no PDF companion");
       return;
@@ -22357,6 +22364,15 @@ async function handleApi(req, res, url) {
       } catch {
         dispatchLotCount = 0;
       }
+      // Old " (2)" copies of this upload's invoices / files go (see
+      // deleteInkoopInvoiceCopies); their days are compared again below.
+      const removedCopies = await deleteInkoopInvoiceCopies({
+        invoiceNumbers: flatInvoiceLines.map((line) => line?.invoice_number),
+        sourceFileNames: flatInvoiceLines.map((line) => line?.source_file_name),
+      }).catch((cleanupError) => {
+        console.error("Removing invoice copies failed:", cleanupError instanceof Error ? cleanupError.message : cleanupError);
+        return [];
+      });
       await saveInkoopInvoiceLines(flatInvoiceLines);
       // The per-invoice totals (Overview) of the invoices in this upload.
       await refreshInkoopInvoiceTotals(flatInvoiceLines.map((line) => line?.invoice_number))
@@ -22370,6 +22386,7 @@ async function handleApi(req, res, url) {
       // nothing is compared while the upload waits.
       await refreshInkoopDaySummariesForDates([
         ...flatInvoiceLines.map((line) => line?.invoice_date),
+        ...removedCopies.map((row) => row?.invoice_date),
         ...erpRows.map((row) => row?.date),
       ]).catch((queueError) => console.error("Queueing the Inkoop comparison failed:", queueError instanceof Error ? queueError.message : queueError));
       // A big upload arrives in parts (the page splits it); only the last

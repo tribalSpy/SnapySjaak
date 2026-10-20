@@ -1104,7 +1104,10 @@ def _parse_veiling_from(input_path: Path, extract_dir: Path):
 
             lines = parse_invoice_xml(xml_bytes)
             header = parse_invoice_header(xml_bytes)
-            invoice_number = extract_invoice_number(subject)
+            # The invoice's own number (in its XML) first: a forward or a
+            # correction email can name another invoice in its subject, and
+            # then got filed under that number ("1057 (2)").
+            invoice_number = extract_invoice_number(header.get("billing_id") or "") or extract_invoice_number(subject)
             invoices.append({
                 "file_name": msg_path.name,
                 "type": kind,

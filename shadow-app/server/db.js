@@ -297,6 +297,36 @@ export async function saveInkoopErpLines(rows) {
   }
 }
 
+// "057390.FK.2026.1057 (2)": a second invoice under a number already in an
+// upload (an email whose subject named another invoice). Uploading again
+// files those under their own number; the old copies -- of the invoice
+// numbers or source files of this upload -- go. Returns their dates.
+export async function deleteInkoopInvoiceCopies({ invoiceNumbers = [], sourceFileNames = [] } = {}) {
+  if (!pool) {
+    return [];
+  }
+  const numbers = [...new Set(invoiceNumbers.map((number) => String(number || "").replace(/\s*\(\d+\)\s*$/, "")).filter(Boolean))];
+  const files = [...new Set(sourceFileNames.map((name) => String(name || "")).filter(Boolean))];
+  if (!numbers.length && !files.length) {
+    return [];
+  }
+  const result = await pool.query(
+    `
+      DELETE FROM inkoop_invoice_lines
+       WHERE invoice_number ~ ' \\(\\d+\\)$'
+         AND (regexp_replace(invoice_number, '\\s*\\(\\d+\\)$', '') = ANY($1::text[]) OR source_file_name = ANY($2::text[]))
+      RETURNING invoice_number, to_char(invoice_date, 'YYYY-MM-DD') AS invoice_date
+    `,
+    [numbers, files],
+  );
+  const removed = [...new Set(result.rows.map((row) => row.invoice_number))];
+  if (removed.length) {
+    await pool.query("DELETE FROM inkoop_invoice_headers WHERE invoice_number = ANY($1::text[])", [removed]);
+    await pool.query("DELETE FROM inkoop_invoice_totals WHERE invoice_number = ANY($1::text[])", [removed]);
+  }
+  return result.rows;
+}
+
 export async function saveInkoopInvoiceLines(lines) {
   if (!pool || !Array.isArray(lines) || !lines.length) {
     return;
