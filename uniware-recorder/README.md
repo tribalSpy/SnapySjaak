@@ -60,8 +60,11 @@ only).
 4. Click **Stop and save** (or Ctrl+Alt+Q).
 
 **Edit** (per step): tick *Capture screen* / *All pages* (Page Down until the
-list ends), or give typed text a **field name** (e.g. `invoice`) -- then the
-dashboard asks that value every time you start the action.
+list ends), or change what a step **types**: plain text is typed as it is
+(`ltd` instead of a recorded `td`); a **field in braces** (`{invoice}`, also
+mixed: `#{pd_code}`) is asked every time you start the action (or filled in by
+"for each" / the week plan). Empty = the recorded text, also when a field is
+left empty at the start.
 
 **Slow screens / loading**: while recording, just wait until a screen has
 finished loading before pressing the next key -- the screen you see at that
@@ -153,9 +156,9 @@ otherwise **Down**. And in tour 515: "Accessoire" -> **Enter** (add).
   check the log, then untick "trial run".
 
 **Dates** -- a typed date (e.g. Transport tijd) can be the date of the run:
-Field `today`, `tomorrow` or `next_workday` (Monday-Friday), written like the
+`{today}`, `{tomorrow}` or `{next_workday}` (Monday-Friday), written like the
 date typed while recording (20-10-2026 / 201026 / ...; a time typed after it
-stays). Or Field `date`, and fill in `today` / `tomorrow` when starting (or
+stays). Or `{date}`, and fill in `today` / `tomorrow` when starting (or
 per action in the week plan) -- one action for both days. Type the date and
 the time as separate steps if Uniware lets you; then each is replaced cleanly.
 

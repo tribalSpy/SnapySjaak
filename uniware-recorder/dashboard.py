@@ -250,15 +250,16 @@ class Handler(BaseHTTPRequestHandler):
                                     step.pop("pick", None)
                                     step.pop("enter_on", None)
                             if "text" in step and change.get("field") is not None:
-                                # A field name: typed text becomes "{field}",
-                                # asked at start; something else (e.g. 516):
-                                # typed as it is; empty: the recorded text.
-                                value = str(change["field"]).strip().strip("{}")
-                                field = re.sub(r"[^a-z0-9_]+", "_", value.lower()).strip("_")
-                                if value and not re.match(r"[A-Za-z]", value):
-                                    step["text"] = value
+                                # What this step types: plain text as it is
+                                # ("ltd" for a recorded "td"); a field in
+                                # braces -- "{order}", "{date}", "#{pd_code}"
+                                # -- filled in when it runs; empty: the
+                                # recorded text.
+                                value = str(change["field"])
+                                if value.strip() == "":
+                                    step["text"] = step.get("recorded_text", step["text"])
                                 else:
-                                    step["text"] = f"{{{field}}}" if field else step.get("recorded_text", step["text"])
+                                    step["text"] = re.sub(r"\{([^{}]*)\}", lambda match: "{" + (re.sub(r"[^a-z0-9_]+", "_", match.group(1).lower()).strip("_") or "field") + "}", value)
                             if "key" in step and str(change.get("key") or "").strip() and change["key"].strip() != step["key"]:
                                 # Another key for this step (e.g. Left instead of
                                 # Right) without recording again -- must be a key
@@ -546,7 +547,7 @@ function edit(slug) {
     ${a.steps.map((s, i) => `<tr><td>${i + 1}</td>
       <td>${s.foreach ? foreachEditor(s.foreach, i) : s.classify ? classifyEditor(s.classify, i) : s.loop ? loopEditor(s.loop, i) : s.text !== undefined ? `type <code>${esc(s.text)}</code>` : `${s.menu ? `menu <strong>${s.menu.map(esc).join(" &rsaquo; ")}</strong>, then ` : ""}<input data-step-key="${i}" value="${esc(s.key)}" size="9" title="The key this step presses -- change it (e.g. Left instead of Right) without recording again">${s.enter_on ? ` on "${esc(s.enter_on)}"` : ""}${s.key ? `<div><label><input type="checkbox" data-step-window="${i}" ${s.opens_window ? "checked" : ""}> opens the dump in a new window</label>${s.opens_window && s.opens_window.title ? `<div class="muted">recorded: ${esc(s.opens_window.title)}${s.opens_window.exe ? ` (${esc(s.opens_window.exe)})` : ""}</div>` : ""}</div>` : ""}`}</td>
       <td>${esc(s.to_title || s.to)}${s.recorded_wait ? `<div class="muted">took ${esc(s.recorded_wait)}s when recorded</div>` : ""}</td>
-      <td>${s.text !== undefined ? `<input data-step-field="${i}" placeholder="field, or text e.g. 516" title="A name (e.g. order): asked at start / filled by 'for each'. today / tomorrow / next_workday: that date, written like the recorded one (a field filled in with one of those words works too). Text starting with a digit (e.g. 516): typed as it is. Empty: the recorded text." value="${esc((s.text.match(/^\\{(.+)\\}$/) || [])[1] || (s.text !== (s.recorded_text ?? s.text) ? s.text : ""))}" size="12"><div class="muted">recorded: ${esc(s.recorded_text || s.text)}</div>` : s.key === "Enter" ? `find row with <input data-step-pick="${i}" placeholder="empty = selected row" value="${esc(s.pick || "")}" size="12">${s.pick_row ? `<div class="muted">recorded row: ${esc(s.pick_row)}</div>` : ""}` : ""}</td>
+      <td>${s.text !== undefined ? `<input data-step-field="${i}" placeholder="text, or {field}" title="What this step types. Plain text is typed as it is (e.g. ltd instead of the recorded td). A field in braces is filled in when it runs: {order} (asked at start / filled by 'for each'), {today} / {tomorrow} / {next_workday} (that date, written like the recorded one), also mixed: #{pd_code}. Empty: the recorded text." value="${esc(s.text !== (s.recorded_text ?? s.text) ? s.text : "")}" size="12"><div class="muted">recorded: ${esc(s.recorded_text || s.text)}</div>` : s.key === "Enter" ? `find row with <input data-step-pick="${i}" placeholder="empty = selected row" value="${esc(s.pick || "")}" size="12">${s.pick_row ? `<div class="muted">recorded row: ${esc(s.pick_row)}</div>` : ""}` : ""}</td>
       <td><input data-step-wait="${i}" size="16" placeholder="(optional) e.g. Totaal" value="${esc(s.wait_text || "")}"></td>
       <td><input data-step-max="${i}" size="4" value="${esc(s.max_wait || 30)}"></td>
       <td><input data-step-readcol="${i}" size="10" placeholder="e.g. invoiceRes" value="${esc(s.read_column || "")}"> &rarr; <input data-step-readfield="${i}" size="9" placeholder="invoiceres" value="${esc(s.read_field || "")}"><br><input data-step-readrow="${i}" size="10" placeholder="only row with e.g. LTD" title="Only the row(s) containing this text -- e.g. LTD when the screen has a row per company" value="${esc(s.read_row_with || "")}"></td>
