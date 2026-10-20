@@ -1717,7 +1717,11 @@ class ActionRun:
         becomes that date -- written like the date typed while recording."""
         value = self.values.get(name, "")
         day = date_for_word(name) or date_for_word(value)
-        return format_date_like(day, step.get("recorded_text") or "") if day else value
+        if day:
+            return format_date_like(day, step.get("recorded_text") or "")
+        # Left empty when starting: what was typed while recording (a field
+        # that types nothing at all made Uniware stop at an empty input).
+        return value if value != "" else str(step.get("recorded_text") or "")
 
     def _wait_not_busy(self, hwnd, label: str, max_wait: float = 300):
         """Uniware shows "Gegevens verzamelen ... Moment geduld aub..." while
