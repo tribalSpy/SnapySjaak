@@ -242,6 +242,80 @@ const INVOICE_LINE_RAW_SQL = `(raw || jsonb_build_object('invoice_number', invoi
   'description', description, 'source_file_name', source_file_name, 'invoice_date', to_char(invoice_date, 'YYYY-MM-DD'),
   'company_number', company_number, 'company_name', company_name))`;
 
+export async function saveInkoopLeveringBb(rows, sourceFileName = "") {
+  if (!pool || !Array.isArray(rows) || !rows.length) {
+    return 0;
+  }
+  const valid = dedupeByKeyKeepingLast(rows.filter((row) => row?.lot && row?.pav), (row) => String(row.lot));
+  for (const chunk of chunkArray(valid, INKOOP_UPSERT_CHUNK_SIZE)) {
+    const values = [];
+    const placeholders = chunk.map((row) => {
+      const base = values.length;
+      values.push(row.lot, row.pav, row.info || "", row.order_nr || "", row.vbn || "", row.description || "",
+        numberOrNull(row.quantity), numberOrNull(row.price), row.fust || "", sourceFileName);
+      return `($${base + 1}, $${base + 2}, $${base + 3}, $${base + 4}, $${base + 5}, $${base + 6}, $${base + 7}, $${base + 8}, $${base + 9}, $${base + 10})`;
+    });
+    await pool.query(
+      `
+        INSERT INTO inkoop_levering_bb (lot, pav, info, order_nr, vbn, description, quantity, price, fust, source_file_name)
+        VALUES ${placeholders.join(", ")}
+        ON CONFLICT (lot) DO UPDATE SET
+          pav = EXCLUDED.pav, info = EXCLUDED.info, order_nr = EXCLUDED.order_nr, vbn = EXCLUDED.vbn,
+          description = EXCLUDED.description, quantity = EXCLUDED.quantity, price = EXCLUDED.price,
+          fust = EXCLUDED.fust, source_file_name = EXCLUDED.source_file_name, imported_at = now()
+      `,
+      values,
+    );
+  }
+  return valid.length;
+}
+
+// Connect lots without a PAV get the brief number from the Levering BB
+// bridge (never one Connect already has). Run after a Levering BB upload and
+// after every Connect upload -- that one rewrites the PAV from its own file.
+// Returns the lots filled in, with their Connect date.
+export async function applyInkoopLeveringBbBridge() {
+  if (!pool) {
+    return [];
+  }
+  const result = await pool.query(`
+    UPDATE inkoop_erp_lines e
+       SET pav = b.pav,
+           raw = e.raw || jsonb_build_object('pav_from', 'levering bb', 'levering_order_nr', b.order_nr),
+           updated_at = now()
+      FROM inkoop_levering_bb b
+     WHERE e.lot = b.lot AND COALESCE(btrim(e.pav), '') = ''
+    RETURNING e.lot::text AS lot, to_char(e.erp_date, 'YYYY-MM-DD') AS erp_date
+  `);
+  return result.rows;
+}
+
+// For the upload message: of these lots, how many Connect already has with
+// its own PAV, with the bridge's PAV, and not at all (not uploaded yet).
+export async function getInkoopLeveringBbStatus(lots) {
+  if (!pool || !Array.isArray(lots) || !lots.length) {
+    return { own_pav: 0, bridged: 0, not_in_connect: 0 };
+  }
+  const result = await pool.query(
+    `
+      SELECT b.lot,
+             e.lot IS NOT NULL AS in_connect,
+             COALESCE(e.raw->>'pav_from', '') = 'levering bb' AS bridged
+        FROM inkoop_levering_bb b
+        LEFT JOIN inkoop_erp_lines e ON e.lot = b.lot
+       WHERE b.lot = ANY($1::bigint[])
+    `,
+    [lots],
+  );
+  const status = { own_pav: 0, bridged: 0, not_in_connect: 0 };
+  for (const row of result.rows) {
+    if (!row.in_connect) status.not_in_connect += 1;
+    else if (row.bridged) status.bridged += 1;
+    else status.own_pav += 1;
+  }
+  return status;
+}
+
 export async function saveInkoopErpLines(rows) {
   if (!pool || !Array.isArray(rows) || !rows.length) {
     return;
@@ -2888,6 +2962,24 @@ const databaseMigrations = [
   `,
   `
     CREATE INDEX IF NOT EXISTS inkoop_erp_lines_pav_idx ON inkoop_erp_lines (pav)
+  `,
+  // "Levering BB" (a Connect Screen export of deliveries): per Connect lot
+  // ("Prt") the FloraHolland brief number ("Info", F9NKFJ/F -> F9NKFJf) and
+  // order number. A bridge for Connect lots that have no PAV of their own.
+  `
+    CREATE TABLE IF NOT EXISTS inkoop_levering_bb (
+      lot bigint PRIMARY KEY,
+      pav text NOT NULL,
+      info text,
+      order_nr text,
+      vbn text,
+      description text,
+      quantity numeric,
+      price numeric,
+      fust text,
+      source_file_name text,
+      imported_at timestamptz NOT NULL DEFAULT now()
+    )
   `,
   `
     CREATE INDEX IF NOT EXISTS inkoop_erp_lines_suppl_idx ON inkoop_erp_lines (suppl)

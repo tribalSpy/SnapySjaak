@@ -16455,6 +16455,8 @@ function InkoopControlePage({ currentUser }) {
   const [selectedCompany, setSelectedCompany] = useState("");
   const [runDate, setRunDate] = useState(() => localDateIso());
   const [erpFile, setErpFile] = useState(null);
+  const [leveringFile, setLeveringFile] = useState(null);
+  const [leveringBusy, setLeveringBusy] = useState(false);
   // One or more .zip files and/or loose .msg files -- split into parts on
   // upload (see runComparison).
   const [veilingFiles, setVeilingFiles] = useState([]);
@@ -16587,6 +16589,30 @@ function InkoopControlePage({ currentUser }) {
     return () => clearTimeout(timer);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [dayStatus, compareDate]);
+
+  // "Levering BB": per Connect lot the FloraHolland brief number -- fills
+  // the PAV of Connect lots that have none, so they can be matched.
+  async function uploadLeveringBb() {
+    if (!leveringFile) {
+      setError("Choose the Levering BB file (.csv).");
+      return;
+    }
+    setLeveringBusy(true);
+    setError("");
+    setMessage("");
+    try {
+      const payload = await apiJson("/api/inkoop/levering-bb", {
+        method: "POST",
+        body: JSON.stringify({ file: { name: leveringFile.name, content_base64: await fileToBase64(leveringFile) } }),
+      });
+      setMessage(`Levering BB: ${payload.lines} lines -- ${payload.bridges} with a Connect lot (bridge), ${payload.already_linked} already linked in Connect${payload.cancelled ? `, ${payload.cancelled} cancelled` : ""}. `
+        + `Connect lots filled in now: ${payload.filled_now} (in all ${payload.bridged}); ${payload.own_pav} had their own brief number; ${payload.not_in_connect} not in the uploaded Connect data yet (filled in when that is uploaded). The days affected are compared again.`);
+    } catch (uploadError) {
+      setError(uploadError.message);
+    } finally {
+      setLeveringBusy(false);
+    }
+  }
 
   async function runComparison() {
     // Either file on its own is enough (invoices only, or the ERP export
@@ -16982,6 +17008,20 @@ function InkoopControlePage({ currentUser }) {
         <div className="row-actions spread-actions">
           <button type="button" className="primary" onClick={runComparison} disabled={comparing}>
             {comparing ? "Uploading..." : erpFile && veilingZip ? "Upload both and compare" : veilingZip ? "Upload invoices only" : erpFile ? "Upload Connect only" : "Compare"}
+          </button>
+        </div>
+        <div className="notice" style={{ marginTop: 12 }}>
+          <strong>Levering BB</strong> (Connect Screen export of deliveries: VBN, Omschrijving, ..., Info, OrderNr, Prt) -- a bridge, no dispatch data:
+          for every line with a Connect lot in "Prt" it gives the FloraHolland brief number ("Info", F9NKFJ/F = PAV F9NKFJf).
+          Connect lots without a PAV get it from here, so they can be matched to the invoice. A PAV Connect already has is never changed.
+        </div>
+        <div className="row-actions">
+          <label>
+            <span>Levering BB (.csv)</span>
+            <input type="file" accept=".csv,.txt" onChange={(event) => setLeveringFile(event.target.files?.[0] || null)} />
+          </label>
+          <button type="button" onClick={uploadLeveringBb} disabled={leveringBusy || !leveringFile}>
+            {leveringBusy ? "Uploading..." : "Upload Levering BB"}
           </button>
         </div>
       </div>

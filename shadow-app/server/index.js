@@ -95,6 +95,9 @@ import {
   saveInkoopErpLines,
   saveInkoopInvoiceLines,
   deleteInkoopInvoiceCopies,
+  saveInkoopLeveringBb,
+  applyInkoopLeveringBbBridge,
+  getInkoopLeveringBbStatus,
   saveInkoopIssueStatus,
   upsertLlmAgentHeartbeat,
   upsertShelfCountNightlyRun,
@@ -6769,6 +6772,48 @@ function normalizeInkoopSupplierName(name) {
 // (trade purchase) lines have no comparable reference in the ERP dump and
 // are reported separately rather than guessed at by date/qty/price.
 const INKOOP_MATCH_TOLERANCE = 0.01;
+
+// "Levering BB" -- a Connect Screen export of deliveries, ";"-separated:
+//   VBN; Omschrijving; (sizes x3); Aant ("4 x"); per; Prs; Fst; Info (brief
+//   number "F9NKFJ/F"); OrderNr; M; Prt (the Connect lot, or "gekoppel" /
+//   "Afgemeld"); V
+// Only lines with a Connect lot are a bridge; "F9NKFJ/F" is PAV "F9NKFJf"
+// (the brief number as invoices and Connect write it).
+function parseInkoopLeveringBb(base64) {
+  const text = Buffer.from(String(base64 || ""), "base64").toString("latin1");
+  const rows = [];
+  const counts = { lines: 0, linked: 0, cancelled: 0, other: 0 };
+  for (const rawLine of text.split(/\r?\n/)) {
+    const cells = rawLine.split(";").map((cell) => cell.trim());
+    if (cells.length < 13 || !/^\d+$/.test(cells[0])) {
+      continue;
+    }
+    counts.lines += 1;
+    const info = cells[9].toUpperCase();
+    const prt = cells[12];
+    const brief = info.match(/^([A-Z0-9]{5,7})\/([A-Z])$/);
+    if (!/^\d{6,10}$/.test(prt) || !brief) {
+      if (/gekoppel/i.test(prt)) counts.linked += 1;
+      else if (/afgemeld/i.test(prt)) counts.cancelled += 1;
+      else counts.other += 1;
+      continue;
+    }
+    const items = Number(String(cells[5]).replace(/[^\d.]/g, "")) || 0;
+    const perItem = Number(String(cells[6]).replace(/[^\d.]/g, "")) || 0;
+    rows.push({
+      lot: Number(prt),
+      pav: `${brief[1]}${brief[2].toLowerCase()}`,
+      info,
+      order_nr: cells[10],
+      vbn: cells[0],
+      description: cells[1],
+      quantity: items && perItem ? items * perItem : null,
+      price: Number(String(cells[7]).replace(",", ".")) || null,
+      fust: cells[8],
+    });
+  }
+  return { rows, counts };
+}
 
 // A brief number without the letter FloraHolland changes when it splits a
 // lot for delivery: "F9H9CDa" / "F9H9CDb" -> "F9H9CD" (only a lower-case
@@ -22284,6 +22329,38 @@ async function handleApi(req, res, url) {
   // captured from the veiling zip's PDF-only .msg companion (Klok/Connect/
   // Handel) or the AI2 Productnota itself, stored under a deterministic
   // filename keyed by invoice number (see saveInkoopInvoicePdfs).
+  // Upload a "Levering BB" file: body { file: { name, content_base64 } }.
+  if (url.pathname === "/api/inkoop/levering-bb" && req.method === "POST") {
+    if (!requirePermission(res, requestUser, PERMISSIONS.INKOOP_VIEW)) {
+      return;
+    }
+    if (!isDatabaseEnabled()) {
+      sendJson(res, 503, { error: "Database is not configured" });
+      return;
+    }
+    const body = await readRequestJson(req, 20 * 1024 * 1024);
+    if (!body?.file?.content_base64) {
+      sendJson(res, 400, { error: "Choose the Levering BB file (.csv)." });
+      return;
+    }
+    const { rows, counts } = parseInkoopLeveringBb(body.file.content_base64);
+    if (!counts.lines) {
+      sendJson(res, 400, { error: "No delivery lines found -- is this the Levering BB Screen export (VBN; Omschrijving; ...; Info; OrderNr; M; Prt; V)?" });
+      return;
+    }
+    const saved = await saveInkoopLeveringBb(rows, String(body.file.name || ""));
+    const filled = await applyInkoopLeveringBbBridge();
+    const status = await getInkoopLeveringBbStatus(rows.map((row) => row.lot));
+    if (filled.length) {
+      bumpInkoopMatchVersion();
+      await refreshInkoopDaySummariesForDates(filled.map((row) => row.erp_date))
+        .catch((queueError) => console.error("Queueing the Inkoop comparison failed:", queueError instanceof Error ? queueError.message : queueError));
+      kickInkoopMatchWorker();
+    }
+    sendJson(res, 200, { ok: true, lines: counts.lines, bridges: saved, already_linked: counts.linked, cancelled: counts.cancelled, other: counts.other, filled_now: filled.length, ...status });
+    return;
+  }
+
   if (url.pathname.startsWith("/api/inkoop/invoice-pdf/") && req.method === "GET") {
     if (!requirePermission(res, requestUser, PERMISSIONS.INKOOP_VIEW)) {
       return;
@@ -22372,6 +22449,11 @@ async function handleApi(req, res, url) {
       // everything accumulated so far (not just this upload's pair) -- this
       // is what lets an invoice find a purchase recorded on a different day.
       await saveInkoopErpLines(erpRows);
+      // The new Connect rows have their own (often empty) PAV again: fill the
+      // empty ones from the Levering BB bridge.
+      if (erpRows.length) {
+        await applyInkoopLeveringBbBridge().catch((bridgeError) => console.error("Levering BB bridge failed:", bridgeError instanceof Error ? bridgeError.message : bridgeError));
+      }
       // The exact same ERP export now also carries "Dispatched to : <code>"
       // rows after each purchase lot (confirmed real: byte-for-byte the same
       // column format as the ERP file itself, just with these extra rows
