@@ -8891,7 +8891,7 @@ function PdStepPlanPage({ onNavigate }) {
   const rows = plan?.rows || [];
   const summary = plan?.summary;
   const day = plan?.day;
-  const stepTitles = ["1. PD Keuring", "2-10. Day steps", "11. Connect / truck / plate (/ pieces)", "12. Tour data dumps", "13. Invoices & export docs", "14. CSI / Eric Docs", "15. e-Cert finish + signature"];
+  const stepTitles = ["1. PD Keuring", "2-9. Day steps", "10. Connect / truck / plate (/ pieces)", "11. Tour data dumps + IPAFFS", "12. Invoices & export docs", "13. CSI / Eric Docs", "14. e-Cert finish + signature"];
   const markInfo = (mark) => (mark ? `${mark.not_needed ? "not needed" : "done"} by ${mark.by || "?"}${mark.at ? `, ${formatTimestamp(mark.at)}` : ""}` : "");
 
   return (
@@ -8906,10 +8906,10 @@ function PdStepPlanPage({ onNavigate }) {
 
       <div className="notice">
         The whole day in order. <strong>1</strong> set up the PD keuringen (the stock control too);{" "}
-        <strong>2-10</strong> the day steps, once per day: phyto inspection docs, tours in Connect, the BQ order, stock control finished,
-        order dumps, phyto shipments and e-Cert; then per shipment <strong>11</strong> connect number, truck and licence plate,{" "}
-        <strong>12</strong> the tour data dumps, <strong>13</strong> invoices and export documents, <strong>14</strong> the papers through
-        UKDocs CSI (export) or Eric Docs (nakeuring) and <strong>15</strong> finish it in e-Cert with the digital signature.
+        <strong>2-9</strong> the day steps, once per day: phyto inspection docs, tours in Connect, the BQ order, stock control finished,
+        phyto shipments and e-Cert; then per shipment <strong>10</strong> connect number, truck and licence plate,{" "}
+        <strong>11</strong> the tour data dumps and IPAFFS, <strong>12</strong> invoices and export documents, <strong>13</strong> the papers through
+        UKDocs CSI (export) or Eric Docs (nakeuring) and <strong>14</strong> finish it in e-Cert with the digital signature.
         A step opens when the one before it is done; <strong>Go to</strong> opens the menu for that step, <strong>Mark done</strong> is for a step
         done in another program (Uniware, e-Cert).
       </div>
@@ -8935,14 +8935,14 @@ function PdStepPlanPage({ onNavigate }) {
         <div className="data-table-card" id="pd-day-steps">
           <div className="row-actions spread-actions">
             <div>
-              <strong>Day steps 1-10 -- once for {date}</strong>
+              <strong>Day steps 1-9 -- once for {date}</strong>
               <div className="muted">
                 {day.stock_name ? `Kept on the stock control row (${day.stock_name}).` : "Start with the stock control (Voorraad) PD keuring -- the day steps are kept on it."}
-                {" "}The shipments' step 11 opens when these are done.
+                {" "}The shipments' step 10 opens when these are done.
               </div>
             </div>
             <span className={`ukdocs-status-badge ${day.complete ? "success" : "info"}`}>
-              {day.complete ? "✓ Day steps done" : `Step ${day.steps[day.current_step].number} of 10`}
+              {day.complete ? "✓ Day steps done" : `Step ${day.steps[day.current_step].number} of 9`}
             </span>
           </div>
           <div className="table-wrap">

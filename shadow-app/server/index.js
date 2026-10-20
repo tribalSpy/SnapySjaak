@@ -2360,15 +2360,15 @@ const PD_STEP_PLAN_SKIP_CODES = ["city_name", "pd_type", "pd_form", "reference_c
 
 // PD Step Plan, the whole day in order (numbers as shown in the plan):
 //   1      PD Keuring set up (per shipment; the stock control row too)
-//   2-10   Day steps, once per day, marked on the stock control (Voorraad)
+//   2-9    Day steps, once per day, marked on the stock control (Voorraad)
 //          row: phyto inspection docs, Connect tours, the BQ order, stock
-//          control finished, order dumps, phyto shipments, e-Cert
-//   11     Connect number / truck / licence plate (/ pieces) per shipment
-//   12     Tour data dumps (flowers / acc / plants) per shipment
-//   13     Invoices + export documents
-//   14     Papers: UKdocs CSI or Eric Docs
-//   15     e-Cert: finish the shipment, ask for the digital signature
-// Steps 2-10, 12 and 15 happen in other programs (Uniware, e-Cert): done is
+//          control finished, phyto shipments, e-Cert
+//   10     Connect number / truck / licence plate (/ pieces) per shipment
+//   11     Tour data dumps (flowers / acc / plants) and IPAFFS per shipment
+//   12     Invoices + export documents
+//   13     Papers: UKdocs CSI or Eric Docs
+//   14     e-Cert: finish the shipment, ask for the digital signature
+// Steps 2-9, 11 and 14 happen in other programs (Uniware, e-Cert): done is
 // marked by hand here (who / when) -- later an Uniware action can mark them.
 const PD_STEP_PLAN_DAY_STEPS = [
   { key: "stock_docs", number: 2, label: "Fill in the docs in the phyto inspection menu (stock control)" },
@@ -2377,9 +2377,8 @@ const PD_STEP_PLAN_DAY_STEPS = [
   { key: "bq_purchase", number: 5, label: "Purchase for the BQ order" },
   { key: "bq_divide", number: 6, label: "Divide the BQ order" },
   { key: "stock_finished", number: 7, label: "Confirm stock control is finished" },
-  { key: "order_dumps", number: 8, label: "Order dumps for the phytos of this sending" },
-  { key: "phyto_from_orders", number: 9, label: "Create the phyto shipments from the orders (order status)" },
-  { key: "ecert_send", number: 10, label: "Send to e-Cert and finish them there" },
+  { key: "phyto_from_orders", number: 8, label: "Create the phyto shipments from the orders (order status)" },
+  { key: "ecert_send", number: 9, label: "Send to e-Cert and finish them there" },
 ];
 const PD_STEP_PLAN_SHIPMENT_MARKS = ["tour_dumps", "ecert_finish"];
 const PD_STEP_PLAN_MARK_CODES = [...PD_STEP_PLAN_DAY_STEPS.map((step) => step.key), ...PD_STEP_PLAN_SHIPMENT_MARKS];
@@ -11132,7 +11131,7 @@ function buildPdStepPlan(state, targetDate) {
       },
       { key: "references", label: route === "ericdocs" ? "Connect / truck / plate / pieces" : "Connect / truck / plate", page: "pdkeuring", done: refs.missing.length === 0, missing: refs.missing, skippable: refs.skippable, skipped: refs.skipped, warnings: refs.warnings },
       // Invoices made means the dumps were there (or weren't needed).
-      markStep("tour_dumps", "Tour data dumps (flowers / acc / plants)", docs.missing.length === 0 && docsMissingRaw.length === 0),
+      markStep("tour_dumps", "Tour data dumps (flowers / acc / plants) and IPAFFS", docs.missing.length === 0 && docsMissingRaw.length === 0),
       { key: "documents", label: "Invoices & export docs", page: "ukdocs", done: docs.missing.length === 0, missing: docs.missing, skippable: docs.skippable, skipped: docs.skipped, warnings: docs.warnings },
       { key: "papers", label: route === "ericdocs" ? "Eric Docs" : "UKdocs CSI", page: route, done: papers.missing.length === 0, missing: papers.missing, skippable: papers.skippable, skipped: papers.skipped, warnings: papers.warnings, status: finalStatus },
       markStep("ecert_finish", "e-Cert: finish the shipment, ask for the digital signature"),
