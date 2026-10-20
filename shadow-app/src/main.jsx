@@ -252,7 +252,7 @@ function pageHeading(page) {
     case "inkoop":
       return {
         title: "Inkoop Controle",
-        caption: "Match veiling invoices against the ERP purchase records and review price/quantity differences.",
+        caption: "Match veiling invoices against the Connect purchase records and review price/quantity differences.",
       };
     default:
       return {
@@ -7955,7 +7955,7 @@ function InkoopMatchMonitorCard() {
     <div className="data-table-card">
       <div className="section-header"><h2>Inkoop Controle -- background comparison</h2></div>
       <div className="notice">
-        Every day is compared (invoices vs ERP) once in the background and stored; the Inkoop tabs only read it. An upload or a master-data change queues the days it affects.
+        Every day is compared (invoices vs Connect) once in the background and stored; the Inkoop tabs only read it. An upload or a master-data change queues the days it affects.
       </div>
       <div className="row-actions">
         <span className="ukdocs-status-badge success">{counts.ready || 0} ready</span>
@@ -15275,13 +15275,13 @@ function inkoopAggregateMismatchTranscript(detail) {
     return "-";
   }
   const pieceDiff = detail.piece_diff > 0 ? `+${detail.piece_diff}` : String(detail.piece_diff);
-  return `ERP ${detail.erp_pieces} pcs / ${formatInkoopEuro(detail.erp_value)}  vs  Invoice ${detail.invoice_pieces} pcs / ${formatInkoopEuro(detail.invoice_value)}  (${pieceDiff} pcs)`;
+  return `Connect ${detail.erp_pieces} pcs / ${formatInkoopEuro(detail.erp_value)}  vs  Invoice ${detail.invoice_pieces} pcs / ${formatInkoopEuro(detail.invoice_value)}  (${pieceDiff} pcs)`;
 }
 
 function inkoopIssueTypeLabel(type) {
   if (type === "mismatch") return "Mismatch";
   if (type === "gap_erp") return "Missing from invoice";
-  if (type === "gap_invoice") return "Missing from ERP";
+  if (type === "gap_invoice") return "Missing from Connect";
   if (type === "aggregate_mismatch") return "Grower total off";
   return type;
 }
@@ -15498,7 +15498,7 @@ const INKOOP_SEARCH_KINDS = {
       { key: "supplier", label: "Grower / supplier", placeholder: "name or FH / GLN number" },
       { key: "invoice", label: "Invoice / PAV", placeholder: "invoice or PAV number" },
     ],
-    notice: "The product lines of the uploaded FloraHolland invoices -- what the controle tries to match. The invoices have no customer or dispatch codes; search those in the ERP below.",
+    notice: "The product lines of the uploaded FloraHolland invoices -- what the controle tries to match. The invoices have no customer or dispatch codes; search those in Connect below.",
     empty: "No invoice lines found.",
     columns: ["Date", "Invoice", "Company", "PAV", "Product", "Grower / supplier", "Qty", "Price", "Total"],
     csvName: "invoice-lines",
@@ -15521,9 +15521,9 @@ const INKOOP_SEARCH_KINDS = {
     ],
   },
   erp: {
-    title: "ERP",
+    title: "Connect",
     endpoint: "/api/inkoop/erp-lines/search",
-    dateLabel: "From (ERP date)",
+    dateLabel: "From (Connect date)",
     pavField: "pav",
     fields: [
       { key: "product", label: "Product", placeholder: "e.g. Rosa Naomi" },
@@ -15531,8 +15531,8 @@ const INKOOP_SEARCH_KINDS = {
       { key: "customer", label: "Customer / dispatch code", placeholder: "code or customer name" },
       { key: "pav", label: "PAV / lot", placeholder: "PAV or lot number" },
     ],
-    notice: "The purchase lots of the uploaded ERP files. Customer / dispatch code is who the lot was sent to (the \"Dispatched to\" rows of the ERP dump); a name searches the klant gegevens.",
-    empty: "No ERP lines found.",
+    notice: "The purchase lots of the uploaded Connect files. Customer / dispatch code is who the lot was sent to (the \"Dispatched to\" rows of the Connect dump); a name searches the klant gegevens.",
+    empty: "No Connect lines found.",
     columns: ["Date", "Lot", "PAV", "Product", "Supplier", "Pieces", "Price", "Total", "Dispatched to"],
     csvName: "erp-lines",
     csv: (lines) => inkoopCsv(
@@ -15620,7 +15620,7 @@ function InkoopSearchPanel({ kind, company, request, onFindOther, otherTitle }) 
           </label>
         )}
         <div className="row-actions">
-          <button type="submit" className="primary" disabled={loading}>{loading ? "Searching..." : `Search ${config.title.toLowerCase() === "erp" ? "ERP" : "invoices"}`}</button>
+          <button type="submit" className="primary" disabled={loading}>{loading ? "Searching..." : `Search ${config.title === "Connect" ? "Connect" : "invoices"}`}</button>
           <button type="button" onClick={() => { setFilters(blank()); setResult(null); setError(""); }}>Clear</button>
           {!!lines.length && (
             <button type="button" onClick={() => downloadTextFile(`${config.csvName}_${result.from}_${result.to}.csv`, `﻿${config.csv(lines)}`)}>Download CSV</button>
@@ -15677,7 +15677,7 @@ function InkoopSearchTab({ company }) {
   const [erpRequest, setErpRequest] = useState(null);
   return (
     <>
-      <InkoopSearchPanel kind="invoices" company={company} request={invoiceRequest} otherTitle="ERP" onFindOther={(request) => setErpRequest({ ...request, at: Date.now() })} />
+      <InkoopSearchPanel kind="invoices" company={company} request={invoiceRequest} otherTitle="Connect" onFindOther={(request) => setErpRequest({ ...request, at: Date.now() })} />
       <InkoopSearchPanel kind="erp" company={company} request={erpRequest} otherTitle="invoices" onFindOther={(request) => setInvoiceRequest({ ...request, at: Date.now() })} />
     </>
   );
@@ -16492,7 +16492,7 @@ function InkoopControlePage({ currentUser }) {
     // Either file on its own is enough (invoices only, or the ERP export
     // only) -- the match runs over everything uploaded so far.
     if (!veilingZip && !erpFile) {
-      setError("Choose the veiling emails (zip or .msg files), the ERP export, or both.");
+      setError("Choose the veiling emails (zip or .msg files), the Connect export, or both.");
       return;
     }
     setComparing(true);
@@ -16534,7 +16534,7 @@ function InkoopControlePage({ currentUser }) {
         currentBytes += message.data.length;
       }
       if (current.length) parts.push(current);
-      if (!parts.length) parts.push(null); // ERP only
+      if (!parts.length) parts.push(null); // Connect only
 
       const erpBase64 = erpFile ? await fileToBase64(erpFile) : null;
       const baseName = veilingFiles.length === 1 ? veilingFiles[0].name.replace(/\.(zip|msg)$/i, "") : `veiling ${runDate}`;
@@ -16580,7 +16580,7 @@ function InkoopControlePage({ currentUser }) {
       if (payload.result_date) setCompareDate(payload.result_date);
       setLastSkippedFiles(payload.import?.skipped_files || []);
       setMessage(
-        `Imported ${erpRows} ERP rows and ${invoiceLines} invoice lines${parts.length > 1 ? ` (${messages.length} emails in ${parts.length} parts)` : ""}`
+        `Imported ${erpRows} Connect rows and ${invoiceLines} invoice lines${parts.length > 1 ? ` (${messages.length} emails in ${parts.length} parts)` : ""}`
         + `${payload.dispatch_lot_count ? ` (${payload.dispatch_lot_count} of them with dispatch destinations, see the Destinations tab)` : ""}. `
         + `The comparison of the days this touched runs in the background${payload.result_date ? ` -- ${fustOverviewDate(payload.result_date)} first, its result appears below by itself` : ""}.`,
       );
@@ -16593,7 +16593,7 @@ function InkoopControlePage({ currentUser }) {
   }
 
   async function clearAllUploads() {
-    const typed = window.prompt('This deletes ALL uploaded Inkoop data (ERP, invoices, dispatch, Follow-up notes, PDFs, import history). Master data and links are kept. It cannot be undone.\n\nType CLEAR to confirm.');
+    const typed = window.prompt('This deletes ALL uploaded Inkoop data (Connect, invoices, dispatch, Follow-up notes, PDFs, import history). Master data and links are kept. It cannot be undone.\n\nType CLEAR to confirm.');
     if (typed !== "CLEAR") {
       return;
     }
@@ -16603,7 +16603,7 @@ function InkoopControlePage({ currentUser }) {
     try {
       const payload = await apiJson("/api/inkoop/reset-uploads", { method: "POST", body: JSON.stringify({ confirm: "CLEAR" }) });
       const counts = payload.counts || {};
-      setMessage(`Cleared: ${counts.inkoop_invoice_lines || 0} invoice lines, ${counts.inkoop_erp_lines || 0} ERP lines, ${counts.inkoop_dispatch_lots || 0} dispatch lots, ${counts.inkoop_issue_status || 0} follow-up statuses, ${payload.pdf_count || 0} PDFs, ${payload.import_count || 0} import records. Master data kept.`);
+      setMessage(`Cleared: ${counts.inkoop_invoice_lines || 0} invoice lines, ${counts.inkoop_erp_lines || 0} Connect lines, ${counts.inkoop_dispatch_lots || 0} dispatch lots, ${counts.inkoop_issue_status || 0} follow-up statuses, ${payload.pdf_count || 0} PDFs, ${payload.import_count || 0} import records. Master data kept.`);
       await loadInkoopData();
     } catch (clearError) {
       setError(clearError.message);
@@ -16744,7 +16744,7 @@ function InkoopControlePage({ currentUser }) {
         <div className="data-table-card">
           <div className="section-header"><h2>Start fresh</h2></div>
           <div className="notice">
-            Deletes every uploaded ERP line, invoice line, dispatch data, Follow-up status/note, stored invoice PDF and the import history. Master data, manual supplier links and facturation groups are kept. This cannot be undone.
+            Deletes every uploaded Connect line, invoice line, dispatch data, Follow-up status/note, stored invoice PDF and the import history. Master data, manual supplier links and facturation groups are kept. This cannot be undone.
           </div>
           <div className="row-actions">
             <button type="button" className="danger" onClick={clearAllUploads} disabled={clearingUploads}>
@@ -16759,7 +16759,7 @@ function InkoopControlePage({ currentUser }) {
           Upload each file once here -- it's remembered from then on. Re-upload any of them any time it's refreshed; entries merge in, nothing is removed.
           {" "}{supplierCount} suppliers linked by GLN, {supplierFhCount} more by grower number (Kwekercod), {supplierNameCount} more only by name (from "kwekers stamgegevens"/"leveranciers stamgegevens").
           {" "}{customerCount} customers loaded from "klant gegevens" (used to resolve dispatch destinations on the Destinations tab).
-          {" "}{supplierBwCount} codes with a betaalwijze (BW) from "kwekers/leveranciers met betaalwijze" -- complements the stamgegevens above; BW=B (bunches, internal) ERP rows are never matched.
+          {" "}{supplierBwCount} codes with a betaalwijze (BW) from "kwekers/leveranciers met betaalwijze" -- complements the stamgegevens above; BW=B (bunches, internal) Connect rows are never matched.
         </div>
         <div className="form-grid">
           <label>
@@ -16808,7 +16808,7 @@ function InkoopControlePage({ currentUser }) {
       <div className="data-table-card">
         <div className="section-header"><h2>Facturation groups</h2></div>
         <div className="notice">
-          For a facturation umbrella that bills under one invoice identity for many member locations (e.g. Zentoo: one invoice, 20+ internal codes each with its own GLN/FH number) -- without this, grower+day reconciliation scatters the ERP side across every member's own name while the invoice lands under just one of them, so it can never balance even when the money is all there. Define the group once here with every member code, and the Calendar/Follow-up/Financial Dashboard aggregate checks will treat them as a single combined party.
+          For a facturation umbrella that bills under one invoice identity for many member locations (e.g. Zentoo: one invoice, 20+ internal codes each with its own GLN/FH number) -- without this, grower+day reconciliation scatters the Connect side across every member's own name while the invoice lands under just one of them, so it can never balance even when the money is all there. Define the group once here with every member code, and the Calendar/Follow-up/Financial Dashboard aggregate checks will treat them as a single combined party.
         </div>
         <div className="form-grid">
           <label>
@@ -16860,9 +16860,9 @@ function InkoopControlePage({ currentUser }) {
       <div className="data-table-card">
         <div className="section-header"><h2>Compare a day</h2></div>
         <div className="notice">
-          No live mailbox yet -- for now, save the day's veiling emails (Klokfactuur, Connect factuur, Factuur handel aankopen, AI2 Dagnota) as .msg files -- both the XML and PDF version of each -- zip them all together, and upload that zip with the ERP "Screen" export (.xlsx or .csv) for the same period. The PDF companions are what let you open the original invoice from a mismatch later.
+          No live mailbox yet -- for now, save the day's veiling emails (Klokfactuur, Connect factuur, Factuur handel aankopen, AI2 Dagnota) as .msg files -- both the XML and PDF version of each -- zip them all together, and upload that zip with the Connect "Screen" export (.xlsx or .csv) for the same period. The PDF companions are what let you open the original invoice from a mismatch later.
           Every line's real date is read straight from the invoice, so the date below is only used as a fallback and for the import history log.
-          If the ERP export includes "Dispatched to" rows, they're read from this same file too -- see the Destinations tab.
+          If the Connect export includes "Dispatched to" rows, they're read from this same file too -- see the Destinations tab.
         </div>
         <div className="form-grid">
           <label>
@@ -16870,7 +16870,7 @@ function InkoopControlePage({ currentUser }) {
             <input type="date" value={runDate} onChange={(event) => setRunDate(event.target.value)} />
           </label>
           <label>
-            <span>ERP export (.xlsx or .csv) -- optional</span>
+            <span>Connect export (.xlsx or .csv) -- optional</span>
             <input type="file" accept=".xlsx,.csv" onChange={(event) => setErpFile(event.target.files?.[0] || null)} />
           </label>
           <label>
@@ -16881,7 +16881,7 @@ function InkoopControlePage({ currentUser }) {
         </div>
         <div className="row-actions spread-actions">
           <button type="button" className="primary" onClick={runComparison} disabled={comparing}>
-            {comparing ? "Uploading..." : erpFile && veilingZip ? "Upload both and compare" : veilingZip ? "Upload invoices only" : erpFile ? "Upload ERP only" : "Compare"}
+            {comparing ? "Uploading..." : erpFile && veilingZip ? "Upload both and compare" : veilingZip ? "Upload invoices only" : erpFile ? "Upload Connect only" : "Compare"}
           </button>
         </div>
       </div>
@@ -16890,12 +16890,12 @@ function InkoopControlePage({ currentUser }) {
         <div className="data-table-card">
           <div className="section-header"><h2>Import history</h2></div>
           <div className="notice">
-            Matching is per day: a day's invoice lines against that day's ERP purchases (up to 4 days either side, e.g. over a weekend). A gap closes on its own once the missing file for that day is uploaded.
+            Matching is per day: a day's invoice lines against that day's Connect purchases (up to 4 days either side, e.g. over a weekend). A gap closes on its own once the missing file for that day is uploaded.
           </div>
           <div className="table-wrap">
             <table className="data-table">
               <thead>
-                <tr><th>Date</th><th>ERP file</th><th>Veiling file</th><th>ERP rows imported</th><th>Invoice lines imported</th><th>By</th><th>When</th></tr>
+                <tr><th>Date</th><th>Connect file</th><th>Veiling file</th><th>Connect rows imported</th><th>Invoice lines imported</th><th>By</th><th>When</th></tr>
               </thead>
               <tbody>
                 {imports.map((record) => (
@@ -16922,7 +16922,7 @@ function InkoopControlePage({ currentUser }) {
             <input type="date" value={compareDate} onChange={(event) => setCompareDate(event.target.value)} />
           </label>
         </div>
-        {!compareDate && <div className="notice">Pick a day to see how its invoices match the ERP.</div>}
+        {!compareDate && <div className="notice">Pick a day to see how its invoices match the Connect.</div>}
         {compareDate && dayStatus?.stale && (
           <div className="notice info">{fustOverviewDate(compareDate)} is being compared again (new upload or master data) -- this is the previous comparison{dayStatus.computed_at ? ` of ${formatTimestamp(dayStatus.computed_at)}` : ""}; it refreshes by itself.</div>
         )}
@@ -17000,7 +17000,7 @@ function InkoopMatchedTable({ rows }) {
       <div className="table-wrap">
         <table className="data-table">
           <thead>
-            <tr><th>Date</th><th>Company</th><th>Invoice</th><th>PAV / supplier</th><th>Grower</th><th>Description</th><th>Qty</th><th>Price</th><th>Total</th><th>Matched ERP line</th><th>Matched by</th></tr>
+            <tr><th>Date</th><th>Company</th><th>Invoice</th><th>PAV / supplier</th><th>Grower</th><th>Description</th><th>Qty</th><th>Price</th><th>Total</th><th>Matched Connect line</th><th>Matched by</th></tr>
           </thead>
           <tbody>
             {filtered.slice(0, limit).map((row, index) => (
@@ -17111,7 +17111,7 @@ function InkoopResultTables({ result, windowDays, manualLinkDrafts, setManualLin
           <div className="table-wrap">
             <table className="data-table">
               <thead>
-                <tr><th>Date</th><th>Company</th><th>Invoice</th><th>PAV</th><th>Description</th><th>ERP line</th><th>Field</th><th>Connect value</th><th>FH invoice value</th></tr>
+                <tr><th>Date</th><th>Company</th><th>Invoice</th><th>PAV</th><th>Description</th><th>Connect line</th><th>Field</th><th>Connect value</th><th>FH invoice value</th></tr>
               </thead>
               <tbody>
                 {result.matched_mismatch.map((row, index) => (
@@ -17175,11 +17175,11 @@ function InkoopResultTables({ result, windowDays, manualLinkDrafts, setManualLin
         <InkoopCollapsibleCard title="Ambiguous matches" count={inkoopResultCount(result, "ambiguous_matches")}>
           <InkoopTruncatedNote result={result} list="ambiguous_matches" />
           <div className="notice">
-            Handel Aankopen has no unique reference number -- these lines have more than one ERP purchase from the same supplier with the exact same quantity and price, so which one it actually is can't be told apart automatically.
+            Handel Aankopen has no unique reference number -- these lines have more than one Connect purchase from the same supplier with the exact same quantity and price, so which one it actually is can't be told apart automatically.
           </div>
           <div className="table-wrap">
             <table className="data-table">
-              <thead><tr><th>Date</th><th>Company</th><th>Invoice</th><th>Supplier</th><th>Quantity</th><th>Unit price</th><th>Candidate lots (ERP)</th></tr></thead>
+              <thead><tr><th>Date</th><th>Company</th><th>Invoice</th><th>Supplier</th><th>Quantity</th><th>Unit price</th><th>Candidate lots (Connect)</th></tr></thead>
               <tbody>
                 {result.ambiguous_matches.map((row, index) => (
                   <tr key={index}>
@@ -17202,7 +17202,7 @@ function InkoopResultTables({ result, windowDays, manualLinkDrafts, setManualLin
         <InkoopCollapsibleCard title="Only in invoice" count={inkoopResultCount(result, "only_in_invoice")}>
           <InkoopTruncatedNote result={result} list="only_in_invoice" />
           <div className="notice">
-            FloraHolland charged for these but no matching purchase was found in the ERP export{windowDays ? ` within the last ${windowDays} days` : ""}.
+            FloraHolland charged for these but no matching purchase was found in the Connect export{windowDays ? ` within the last ${windowDays} days` : ""}.
             A Handel Aankopen/AI2 row here sometimes means the grower resolved to the wrong of several look-alike codes in the master data (confirmed real case: "DUTCH GREEN CENTRE" exists twice, under different codes) -- link the correct code below if so.
             This list is unfiltered, unlike Calendar/Follow-up: it includes rows those views hide because the grower's day (or day+product) total already reconciles overall -- see Settings &gt; Facturation groups if a facturation umbrella (e.g. Zentoo) is the reason a batch of these look unexplained here.
           </div>
@@ -17243,10 +17243,10 @@ function InkoopResultTables({ result, windowDays, manualLinkDrafts, setManualLin
       )}
 
       {!!result.only_in_erp.length && (
-        <InkoopCollapsibleCard title="Only in ERP" count={inkoopResultCount(result, "only_in_erp")}>
+        <InkoopCollapsibleCard title="Only in Connect" count={inkoopResultCount(result, "only_in_erp")}>
           <InkoopTruncatedNote result={result} list="only_in_erp" />
           <div className="notice">
-            Recorded as a purchase but no invoice line referenced this PAV{windowDays ? ` within the last ${windowDays} days` : ""} -- invoice not received yet, or a data entry mistake. No company can be attributed here -- the ERP export has no such field.
+            Recorded as a purchase but no invoice line referenced this PAV{windowDays ? ` within the last ${windowDays} days` : ""} -- invoice not received yet, or a data entry mistake. No company can be attributed here -- the Connect export has no such field.
             This list is unfiltered, unlike Calendar/Follow-up: it includes rows those views hide because the grower's day (or day+product) total already reconciles overall.
             {result.internal_bunches_skipped ? ` ${result.internal_bunches_skipped} internal bunch rows (BW=B) are left out entirely -- they never get an auction invoice.` : ""}
           </div>
@@ -17272,7 +17272,7 @@ function InkoopResultTables({ result, windowDays, manualLinkDrafts, setManualLin
         <InkoopCollapsibleCard title="Emballage (packaging) costs" count={inkoopResultCount(result, "embalage_lines")}>
           <InkoopTruncatedNote result={result} list="embalage_lines" />
           <div className="notice">
-            {result.embalage_lines.length} lines, {formatInkoopEuro(embalageTotal)} total. Only ever appears on the invoice, never in the ERP export -- collected here for visibility, not reconciled against anything. See the Financial Dashboard for a day/company breakdown.
+            {result.embalage_lines.length} lines, {formatInkoopEuro(embalageTotal)} total. Only ever appears on the invoice, never in the Connect export -- collected here for visibility, not reconciled against anything. See the Financial Dashboard for a day/company breakdown.
           </div>
         </InkoopCollapsibleCard>
       )}
@@ -17451,7 +17451,7 @@ function InkoopDashboardTab({ company }) {
           {todaySummary && (
             <InkoopCollapsibleCard title={<>Today ({todaySummary.date})</>}>
               <div className="notice">
-                Whole-day totals -- no grower/product matching involved, just "did the money invoiced add up to what the ERP recorded" for the day as a whole. A facturation umbrella (one invoice identity billing many ERP-side locations, e.g. Zentoo) can still show a gap at the grower level even when these two totals line up.
+                Whole-day totals -- no grower/product matching involved, just "did the money invoiced add up to what the Connect recorded" for the day as a whole. A facturation umbrella (one invoice identity billing many Connect-side locations, e.g. Zentoo) can still show a gap at the grower level even when these two totals line up.
               </div>
               <div className="inkoop-summary-cards">
                 <div className="inkoop-summary-card">
@@ -17549,7 +17549,7 @@ function InkoopDashboardTab({ company }) {
           {embalageSummary && (
             <InkoopCollapsibleCard title="Emballage (packaging) costs">
               <div className="notice">
-                {formatInkoopEuro(embalageSummary.total_value)} total in this window. Only ever appears on the invoice, never in the ERP export -- collected for visibility, never reconciled against anything.
+                {formatInkoopEuro(embalageSummary.total_value)} total in this window. Only ever appears on the invoice, never in the Connect export -- collected for visibility, never reconciled against anything.
               </div>
               <div className="table-wrap">
                 <table className="data-table">
@@ -17801,7 +17801,7 @@ function InkoopFollowUpTab({ company }) {
         <div className="table-wrap">
           <table className="data-table">
             <thead>
-              <tr><th>Date</th><th>Type</th><th>Invoice</th><th>Description</th><th>ERP line</th><th>Value</th><th>Status</th><th>Assigned to</th><th>Note</th><th></th></tr>
+              <tr><th>Date</th><th>Type</th><th>Invoice</th><th>Description</th><th>Connect line</th><th>Value</th><th>Status</th><th>Assigned to</th><th>Note</th><th></th></tr>
             </thead>
             <tbody>
               {issues.map((issue) => {
@@ -17921,7 +17921,7 @@ function InkoopDestinationsTab() {
   return (
     <>
       <div className="notice">
-        No separate upload here -- the same ERP export you upload on Compare &amp; Reconcile now also carries a "Dispatched to : &lt;code&gt;" row after every purchase lot, showing where that lot's stock actually went. It's read from that one upload automatically; nothing extra to do.
+        No separate upload here -- the same Connect export you upload on Compare &amp; Reconcile now also carries a "Dispatched to : &lt;code&gt;" row after every purchase lot, showing where that lot's stock actually went. It's read from that one upload automatically; nothing extra to do.
       </div>
 
       <div className="row-actions spread-actions">
@@ -17991,12 +17991,12 @@ function InkoopDestinationsTab() {
       <div style={loadingCorrections && corrections ? { opacity: 0.35, pointerEvents: "none" } : undefined}>
       <InkoopCollapsibleCard title={corrections ? `Corrections check -- ${fustOverviewDate(corrections.from)} - ${fustOverviewDate(corrections.to)}` : "Corrections check"} count={correctionRows.length}>
         <div className="notice">
-          A correction credits the whole invoiced lot and invoices the right amount again. What counts is whether what we <strong>pay</strong> is explained by what we <strong>received</strong> (the ERP lot): paying exactly for what came in (invoiced 200, credited 200, again 100, received 100) or less (invoiced 170, credited 50, again 40, received 170: 10 credited) is OK -- credited pieces don't have to go back to a retour customer; if they did, it says "credited and returned". Only <strong>paying for more than was received</strong> needs a look.
+          A correction credits the whole invoiced lot and invoices the right amount again. What counts is whether what we <strong>pay</strong> is explained by what we <strong>received</strong> (the Connect lot): paying exactly for what came in (invoiced 200, credited 200, again 100, received 100) or less (invoiced 170, credited 50, again 40, received 170: 10 credited) is OK -- credited pieces don't have to go back to a retour customer; if they did, it says "credited and returned". Only <strong>paying for more than was received</strong> needs a look.
         </div>
         <div className="table-wrap">
           <table className="data-table">
             <thead>
-              <tr><th>Date</th><th>Invoice</th><th>PAV</th><th>Description</th><th>Invoiced</th><th>Credited</th><th>Invoiced again</th><th>Received (ERP)</th><th>Credited pieces</th><th>At retour</th><th>Net value</th><th>Status</th><th>Destination(s)</th></tr>
+              <tr><th>Date</th><th>Invoice</th><th>PAV</th><th>Description</th><th>Invoiced</th><th>Credited</th><th>Invoiced again</th><th>Received (Connect)</th><th>Credited pieces</th><th>At retour</th><th>Net value</th><th>Status</th><th>Destination(s)</th></tr>
             </thead>
             <tbody>
               {!corrections && <tr><td colSpan={13}>Loading corrections...</td></tr>}

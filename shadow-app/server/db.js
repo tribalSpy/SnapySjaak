@@ -1331,7 +1331,7 @@ export async function countInkoopInvoiceTotals() {
 // columns listed here can be shown, filtered or sorted (each with its own
 // SQL expression -- nothing from the request ends up in SQL text).
 const INKOOP_LINE_LISTS = [
-  ["matched_ok", "OK"], ["matched_mismatch", "Difference"], ["only_in_invoice", "Only on invoice"], ["only_in_erp", "Only in ERP"],
+  ["matched_ok", "OK"], ["matched_mismatch", "Difference"], ["only_in_invoice", "Only on invoice"], ["only_in_erp", "Only in Connect"],
   ["supplier_not_linked", "Supplier not linked"], ["ambiguous_matches", "Ambiguous"], ["fee_lines", "Fee / other line"], ["embalage_lines", "Emballage"],
 ];
 const INKOOP_LINE_KINDS = [["product", "Product"], ["fust", "Fust & packaging"], ["fee", "Heffing"], ["emballage", "Emballage"], ["admin", "Administrative"], ["service", "Service (FD / HV)"], ["no_value", "No value"]];
@@ -1378,7 +1378,7 @@ const INKOOP_DATA_TABLES = {
     ],
   },
   erp_lines: {
-    label: "ERP lines",
+    label: "Connect lines",
     from: "inkoop_erp_lines e",
     order: "e.lot",
     columns: [
@@ -1430,8 +1430,8 @@ const INKOOP_DATA_TABLES = {
       { key: "description", label: "Product", type: "text", sql: "m.description" },
       { key: "invoice_quantity", label: "Invoice qty", type: "number", sql: "m.invoice_quantity" },
       { key: "invoice_total", label: "Invoice total", type: "number", sql: "m.invoice_total" },
-      { key: "erp_quantity", label: "ERP qty", type: "number", sql: "m.erp_quantity" },
-      { key: "erp_total", label: "ERP total", type: "number", sql: "m.erp_total" },
+      { key: "erp_quantity", label: "Connect qty", type: "number", sql: "m.erp_quantity" },
+      { key: "erp_total", label: "Connect total", type: "number", sql: "m.erp_total" },
       { key: "difference_total", label: "Difference", type: "number", sql: "m.difference_total" },
       { key: "note", label: "Note", type: "text", sql: "m.note" },
     ],

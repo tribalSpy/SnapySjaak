@@ -8399,7 +8399,7 @@ function buildInkoopMatchRows(result) {
       const invoiceTotal = inkoopNumberOrNull(invoice?.total);
       const erpTotal = inkoopNumberOrNull(erp?.t_price);
       const notes = [];
-      if (Array.isArray(row?.diffs)) notes.push(...row.diffs.map((diff) => `${diff.field}: ERP ${diff.erp} / invoice ${diff.invoice}`));
+      if (Array.isArray(row?.diffs)) notes.push(...row.diffs.map((diff) => `${diff.field}: Connect ${diff.erp} / invoice ${diff.invoice}`));
       if (row?.matched_as_correction) notes.push("correction");
       if (row?.confirmed_return) notes.push("confirmed return");
       if (row?.matched_as_split_delivery) notes.push("split delivery");
@@ -22201,7 +22201,7 @@ async function handleApi(req, res, url) {
       const hasErpFile = Boolean(body?.erp_file?.content_base64);
       const hasVeilingZip = Boolean(body?.veiling_zip?.content_base64);
       if (!hasErpFile && !hasVeilingZip) {
-        throw new Error("Choose the veiling emails zip, the ERP export, or both.");
+        throw new Error("Choose the veiling emails zip, the Connect export, or both.");
       }
       const erpRows = hasErpFile ? await parseInkoopErpUpload(body?.erp_file) : [];
       const veiling = hasVeilingZip ? await parseInkoopVeilingUpload(body?.veiling_zip) : { invoices: [], skipped: [], pdfs: {} };
