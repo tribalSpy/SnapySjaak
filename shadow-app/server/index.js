@@ -11004,14 +11004,26 @@ function buildPdStepPlanDay(state, targetDate) {
     && ukdocsPrintInspectionMode(item) === "stock_control"
   ));
   const marks = stock?.step_plan_marks || {};
+  // Step 2 is done by itself once Phyto Inspection has the stock control's
+  // papers (inspection list + locations file) -- its "Complete".
+  const stockRequirements = stock
+    ? getUkdocsPrintCollectionRequirements(stock, state.customers, state.print_collections || [])
+    : null;
   const steps = [
     {
       key: "stock_setup", number: 1, label: "Stock control PD keuring set up (Voorraad)", page: "pdkeuring", manual: false,
       done: Boolean(stock), missing: stock ? [] : ["No stock control (Voorraad) PD keuring for this date yet"],
     },
-    ...PD_STEP_PLAN_DAY_STEPS.map((step) => ({
-      ...step, page: "", manual: true, done: Boolean(marks[step.key]), mark: marks[step.key] || null, missing: [],
-    })),
+    ...PD_STEP_PLAN_DAY_STEPS.map((step) => {
+      const entry = { ...step, page: "", manual: true, done: Boolean(marks[step.key]), mark: marks[step.key] || null, missing: [] };
+      if (step.key === "stock_docs") {
+        entry.page = "ukdocsinspection";
+        entry.auto_done = Boolean(stockRequirements?.complete);
+        entry.done = entry.done || entry.auto_done;
+        entry.missing = stockRequirements && !stockRequirements.complete ? stockRequirements.missing.map((item) => `Phyto Inspection still needs: ${item}`) : [];
+      }
+      return entry;
+    }),
   ];
   const currentIndex = steps.findIndex((step) => !step.done);
   return {

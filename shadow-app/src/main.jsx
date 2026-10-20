@@ -8959,15 +8959,21 @@ function PdStepPlanPage({ onNavigate }) {
                         </div>
                         {state === "current" && step.missing.map((item) => <div key={item} className="muted">• {item}</div>)}
                         {step.mark && <div className="muted">{markInfo(step.mark)}</div>}
+                        {step.auto_done && !step.mark && <div className="muted">complete in Phyto Inspection</div>}
                       </td>
-                      <td style={{ width: 220 }}>
+                      <td style={{ width: 260 }}>
                         {state === "current" && !step.manual && (
                           <button type="button" className="primary" onClick={createPdKeuring}>Go to PD Keuring</button>
                         )}
-                        {state === "current" && step.manual && (
-                          <button type="button" className="primary" onClick={() => markStep(step, null, true)} disabled={busy}>Mark done</button>
+                        {state === "current" && step.page === "ukdocsinspection" && (
+                          <button type="button" className="primary" onClick={() => { setPdStepPlanFocus(step.page, date, day.collection_id); onNavigate(step.page); }}>
+                            Go to Phyto Inspection
+                          </button>
                         )}
-                        {step.done && step.manual && (
+                        {state === "current" && step.manual && (
+                          <button type="button" className={step.page ? "" : "primary"} onClick={() => markStep(step, null, true)} disabled={busy}>Mark done</button>
+                        )}
+                        {step.done && step.manual && step.mark && (
                           <button type="button" className="link-button" onClick={() => markStep(step, null, false)} disabled={busy}>undo</button>
                         )}
                       </td>
