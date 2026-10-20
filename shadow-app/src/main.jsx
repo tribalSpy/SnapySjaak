@@ -18016,16 +18016,36 @@ const INKOOP_RETOUR_STATUS_LABELS = {
 function InkoopLearnedSupplierLinks() {
   const [data, setData] = useState(null);
   const [open, setOpen] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [note, setNote] = useState("");
   useEffect(() => {
     if (!open || data) return;
     apiJson("/api/inkoop/suppliers/learned").then(setData).catch(() => setData({ links: [], generic_codes: [] }));
   }, [open, data]);
+  async function relearn() {
+    if (!window.confirm("Learn the supplier links again from all stored invoices and Connect data, and compare every day again in the background?")) return;
+    setBusy(true);
+    try {
+      const payload = await apiJson("/api/inkoop/suppliers/relearn", { method: "POST" });
+      setNote(`Learned ${payload.learned} GLN and ${payload.learned_fh} FH number link(s). ${payload.days} day(s) are being compared again in the background -- see the comparison status at the top.`);
+      setData(null);
+      setOpen(true);
+    } catch (relearnError) {
+      setNote(relearnError.message);
+    } finally {
+      setBusy(false);
+    }
+  }
   return (
     <>
       <div className="section-header">
         <h3>Learned supplier links</h3>
-        <button type="button" onClick={() => setOpen((value) => !value)}>{open ? "Hide" : "Show"}</button>
+        <div className="row-actions">
+          <button type="button" onClick={relearn} disabled={busy}>{busy ? "Learning..." : "Learn again and compare all days"}</button>
+          <button type="button" onClick={() => setOpen((value) => !value)}>{open ? "Hide" : "Show"}</button>
+        </div>
       </div>
+      {note && <div className="notice">{note}</div>}
       {open && (
         <>
           <div className="notice">

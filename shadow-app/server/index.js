@@ -23036,6 +23036,21 @@ async function handleApi(req, res, url) {
     return;
   }
 
+  // Learn the supplier links again from everything stored and compare every
+  // day again in the background (older days use what newer uploads taught).
+  if (url.pathname === "/api/inkoop/suppliers/relearn" && req.method === "POST") {
+    if (!requirePermission(res, requestUser, PERMISSIONS.INKOOP_VIEW)) {
+      return;
+    }
+    inkoopLearnedSupplierCache = null;
+    bumpInkoopMatchVersion();
+    const maps = await inkoopLearnedSupplierMaps();
+    const days = isDatabaseEnabled() ? await markStaleInkoopMatchDays(`relearn-${Date.now()}`) : 0;
+    kickInkoopMatchWorker();
+    sendJson(res, 200, { learned: Object.keys(maps.gln).length, learned_fh: Object.keys(maps.fh).length, days });
+    return;
+  }
+
   if (url.pathname === "/api/inkoop/suppliers/manual" && req.method === "POST") {
     if (!requirePermission(res, requestUser, PERMISSIONS.INKOOP_VIEW)) {
       return;
