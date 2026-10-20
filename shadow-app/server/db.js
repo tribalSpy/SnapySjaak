@@ -242,22 +242,98 @@ const INVOICE_LINE_RAW_SQL = `(raw || jsonb_build_object('invoice_number', invoi
   'description', description, 'source_file_name', source_file_name, 'invoice_date', to_char(invoice_date, 'YYYY-MM-DD'),
   'company_number', company_number, 'company_name', company_name))`;
 
-// Supplier links learned from the brief-number matches: a Klokfactuur /
-// Connect line (supplier GLN + FH number) and the Connect lot with the same
-// brief number (supplier code). Per GLN / FH number / code: how often.
-export async function getInkoopLearnedSupplierLinks() {
+// ---- Grower links (the "Growers" tab) -------------------------------------
+// Everything the data says about which Connect grower code a FloraHolland
+// supplier (GLN / FH number) is.
+
+// Brief-number matches: the invoice line's supplier (GLN, FH number, name)
+// and the three code positions of the Connect lot with that brief number.
+export async function getInkoopGrowerPavPairs() {
   if (!pool) {
     return [];
   }
   const result = await pool.query(`
-    SELECT btrim(i.supplier_gln) AS gln, btrim(i.supplier_fh_number) AS fh_number, max(i.supplier_name) AS name,
-           upper(btrim(e.suppl)) AS code, count(*)::int AS matches
+    SELECT btrim(COALESCE(i.supplier_gln, '')) AS gln, btrim(COALESCE(i.supplier_fh_number, '')) AS fh_number,
+           max(i.supplier_name) AS name,
+           upper(btrim(COALESCE(e.suppl, ''))) AS suppl, upper(btrim(COALESCE(e.avc, ''))) AS avc, upper(btrim(COALESCE(e.transp, ''))) AS transp,
+           count(*)::int AS matches
       FROM inkoop_invoice_lines i
       JOIN inkoop_erp_lines e ON e.pav = i.reference_bt
-     WHERE btrim(i.reference_bt) <> '' AND btrim(COALESCE(e.suppl, '')) <> ''
-       AND i.invoice_type IN ('klokfactuur', 'connect')
+     WHERE btrim(COALESCE(i.reference_bt, '')) <> ''
        AND (btrim(COALESCE(i.supplier_gln, '')) <> '' OR btrim(COALESCE(i.supplier_fh_number, '')) <> '')
-     GROUP BY 1, 2, 4
+     GROUP BY 1, 2, 4, 5, 6
+  `);
+  return result.rows;
+}
+
+// Connect's own codes: how often each appears as supplier and as route
+// (Transp), with lots without a brief number (those need a GLN / FH link
+// to be matched to a Handel / AI2 / Connect invoice line).
+export async function getInkoopConnectCodeStats() {
+  if (!pool) {
+    return { suppliers: [], routes: [] };
+  }
+  const suppliers = await pool.query(`
+    SELECT upper(btrim(suppl)) AS code, count(*)::int AS lots,
+           count(*) FILTER (WHERE COALESCE(btrim(pav), '') = '' OR pav ~ '^0+[A-Za-z]?$')::int AS lots_without_pav,
+           count(*) FILTER (WHERE upper(btrim(COALESCE(avc, ''))) = upper(btrim(suppl)))::int AS avc_same,
+           count(DISTINCT upper(btrim(COALESCE(avc, ''))))::int AS avc_distinct,
+           to_char(max(erp_date), 'YYYY-MM-DD') AS last_date
+      FROM inkoop_erp_lines
+     WHERE btrim(COALESCE(suppl, '')) <> ''
+     GROUP BY 1
+  `);
+  const routes = await pool.query(`
+    SELECT upper(btrim(transp)) AS code, count(*)::int AS lots
+      FROM inkoop_erp_lines
+     WHERE btrim(COALESCE(transp, '')) <> ''
+     GROUP BY 1
+  `);
+  return { suppliers: suppliers.rows, routes: routes.rows };
+}
+
+// Evidence for a link without a brief number: Handel / AI2 lines of a
+// supplier and Connect lots without a brief number with the same pieces and
+// price within 4 days -- per supplier and Connect code, how many lines.
+export async function getInkoopHandelCodeEvidence() {
+  if (!pool) {
+    return [];
+  }
+  const result = await pool.query(`
+    SELECT btrim(COALESCE(i.supplier_gln, '')) AS gln, btrim(COALESCE(i.supplier_fh_number, '')) AS fh_number,
+           upper(btrim(e.suppl)) AS code, count(DISTINCT i.id)::int AS lines
+      FROM inkoop_invoice_lines i
+      JOIN inkoop_erp_lines e
+        ON e.pieces = i.quantity AND e.price = i.unit_price
+       AND e.erp_date BETWEEN i.invoice_date - 4 AND i.invoice_date + 4
+       AND (COALESCE(btrim(e.pav), '') = '' OR e.pav ~ '^0+[A-Za-z]?$')
+       AND btrim(COALESCE(e.suppl, '')) <> ''
+     WHERE i.invoice_type IN ('handel', 'ai2') AND i.quantity IS NOT NULL AND COALESCE(i.unit_price, 0) <> 0
+       AND (btrim(COALESCE(i.supplier_gln, '')) <> '' OR btrim(COALESCE(i.supplier_fh_number, '')) <> '')
+     GROUP BY 1, 2, 3
+  `);
+  return result.rows;
+}
+
+// Every supplier on the purchase invoices (not FD / HV): GLN + FH number as
+// they come together on a line, with what was bought from them.
+export async function getInkoopInvoiceSuppliers() {
+  if (!pool) {
+    return [];
+  }
+  const result = await pool.query(`
+    SELECT btrim(COALESCE(l.supplier_gln, '')) AS gln, btrim(COALESCE(l.supplier_fh_number, '')) AS fh_number,
+           max(l.supplier_name) AS name,
+           array_agg(DISTINCT l.invoice_type) AS invoice_types,
+           count(*)::int AS lines,
+           count(*) FILTER (WHERE btrim(COALESCE(l.reference_bt, '')) <> '')::int AS lines_with_pav,
+           round(sum(COALESCE(l.total, 0))::numeric, 2)::float8 AS total,
+           to_char(max(l.invoice_date), 'YYYY-MM-DD') AS last_date
+      FROM inkoop_invoice_lines l
+     WHERE (btrim(COALESCE(l.supplier_gln, '')) <> '' OR btrim(COALESCE(l.supplier_fh_number, '')) <> '')
+       AND l.quantity IS NOT NULL
+       AND ${INKOOP_LINE_KIND_SQL} = 'product'
+     GROUP BY 1, 2
   `);
   return result.rows;
 }

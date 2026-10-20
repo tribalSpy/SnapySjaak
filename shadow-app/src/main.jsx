@@ -16833,6 +16833,7 @@ function InkoopControlePage({ currentUser }) {
         <button type="button" className={activeTab === "search" ? "active" : ""} onClick={() => setActiveTab("search")}>Search</button>
         <button type="button" className={activeTab === "data" ? "active" : ""} onClick={() => setActiveTab("data")}>Data</button>
         <button type="button" className={activeTab === "king" ? "active" : ""} onClick={() => setActiveTab("king")}>Import naar King</button>
+        <button type="button" className={activeTab === "growers" ? "active" : ""} onClick={() => setActiveTab("growers")}>Growers</button>
         <button type="button" className={activeTab === "settings" ? "active" : ""} onClick={() => setActiveTab("settings")}>Settings</button>
       </div>
       {inkoopMatchBusyCount(matchStatus) > 0 && (
@@ -16929,7 +16930,6 @@ function InkoopControlePage({ currentUser }) {
             </div>
           </>
         )}
-        <InkoopLearnedSupplierLinks />
       </div>
 
       <div className="data-table-card">
@@ -16976,6 +16976,8 @@ function InkoopControlePage({ currentUser }) {
       {activeTab === "overview" && <InkoopOverviewTab />}
 
       {activeTab === "king" && <InkoopKingTab />}
+
+      {activeTab === "growers" && <InkoopGrowersTab />}
 
       {/* Kept mounted: results stay when you look at another tab and come back. */}
       <div style={activeTab === "search" ? undefined : { display: "none" }}><InkoopSearchTab company={selectedCompany} /></div>
@@ -18009,67 +18011,234 @@ const INKOOP_RETOUR_STATUS_LABELS = {
   price_corrected: "OK -- price corrected (same pieces)",
 };
 
-// Supplier links the app learned itself: a grower's GLN on Klokfactuur /
-// Connect lines, and the Connect supplier code of the lots with the same
-// brief number. Used for Handel / AI2 lines when the stamgegevens have no
-// such GLN (the stamgegevens and manual links always win).
-function InkoopLearnedSupplierLinks() {
+// "Growers" tab: which Connect grower code every FloraHolland supplier
+// (GLN / FH number) on the invoices is -- and for the ones that aren't
+// linked yet, why not and what's needed. A separate tab so it can go once
+// every grower is linked.
+const INKOOP_GROWER_SOURCE_LABELS = {
+  manual: "manual",
+  stamgegevens: "stamgegevens",
+  "brief number": "brief number",
+  "same invoice line": "same line",
+  "Handel evidence": "Handel evidence",
+};
+
+function InkoopGrowersTab() {
   const [data, setData] = useState(null);
-  const [open, setOpen] = useState(false);
+  const [error, setError] = useState("");
+  const [message, setMessage] = useState("");
   const [busy, setBusy] = useState(false);
-  const [note, setNote] = useState("");
-  useEffect(() => {
-    if (!open || data) return;
-    apiJson("/api/inkoop/suppliers/learned").then(setData).catch(() => setData({ links: [], generic_codes: [] }));
-  }, [open, data]);
+  const [search, setSearch] = useState("");
+  const [codeSearch, setCodeSearch] = useState("");
+  const [drafts, setDrafts] = useState({});
+  const [showLinked, setShowLinked] = useState(false);
+
+  function load() {
+    return apiJson("/api/inkoop/growers").then((payload) => { setData(payload); setError(""); }).catch((loadError) => setError(loadError.message));
+  }
+  useEffect(() => { load(); }, []);
+
   async function relearn() {
-    if (!window.confirm("Learn the supplier links again from all stored invoices and Connect data, and compare every day again in the background?")) return;
+    if (!window.confirm("Build the grower links again from all stored invoices and Connect data, and compare every day again in the background?")) return;
     setBusy(true);
     try {
-      const payload = await apiJson("/api/inkoop/suppliers/relearn", { method: "POST" });
-      setNote(`Learned ${payload.learned} GLN and ${payload.learned_fh} FH number link(s). ${payload.days} day(s) are being compared again in the background -- see the comparison status at the top.`);
-      setData(null);
-      setOpen(true);
+      const payload = await apiJson("/api/inkoop/growers/relearn", { method: "POST" });
+      setMessage(`${payload.linked} supplier(s) linked, ${payload.not_linked} still need a link. ${payload.days} day(s) are being compared again in the background.`);
+      await load();
     } catch (relearnError) {
-      setNote(relearnError.message);
+      setError(relearnError.message);
     } finally {
       setBusy(false);
     }
   }
+
+  async function link(supplier, code) {
+    const value = String(code || "").trim();
+    if (!value) return;
+    setBusy(true);
+    try {
+      await apiJson("/api/inkoop/suppliers/manual", {
+        method: "POST",
+        body: JSON.stringify({ gln: supplier.gln, fh_number: supplier.fh_number, name: supplier.name, code: value }),
+      });
+      setMessage(`${supplier.name || supplier.gln || supplier.fh_number} linked to ${value.toUpperCase()}. The days are compared again in the background.`);
+      await load();
+    } catch (linkError) {
+      setError(linkError.message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  const matches = (text, query) => !query || String(text || "").toLowerCase().includes(query.toLowerCase());
+  const suppliers = data?.suppliers || [];
+  const needLink = suppliers.filter((supplier) => !supplier.codes.length && supplier.needs_link);
+  const noLinkNeeded = suppliers.filter((supplier) => !supplier.codes.length && !supplier.needs_link).length;
+  const notLinked = needLink
+    .filter((supplier) => matches(`${supplier.name} ${supplier.gln} ${supplier.fh_number}`, search))
+    .sort((left, right) => (right.total || 0) - (left.total || 0));
+  const linked = suppliers.filter((supplier) => supplier.codes.length)
+    .filter((supplier) => matches(`${supplier.name} ${supplier.gln} ${supplier.fh_number} ${supplier.codes.join(" ")}`, search));
+  const codes = (data?.codes || []).filter((entry) => matches(`${entry.code} ${entry.name} ${entry.glns.map((item) => item.value).join(" ")} ${entry.fh_numbers.map((item) => item.value).join(" ")}`, codeSearch));
+  const keyOf = (supplier) => `${supplier.gln}|${supplier.fh_number}`;
+  const identityList = (items) => (items.length
+    ? items.map((item) => <div key={item.value}>{item.value} <small className="muted">({INKOOP_GROWER_SOURCE_LABELS[item.source] || item.source})</small></div>)
+    : <span className="muted">-</span>);
+
   return (
-    <>
-      <div className="section-header">
-        <h3>Learned supplier links</h3>
-        <div className="row-actions">
-          <button type="button" onClick={relearn} disabled={busy}>{busy ? "Learning..." : "Learn again and compare all days"}</button>
-          <button type="button" onClick={() => setOpen((value) => !value)}>{open ? "Hide" : "Show"}</button>
-        </div>
-      </div>
-      {note && <div className="notice">{note}</div>}
-      {open && (
-        <>
-          <div className="notice">
-            Learned from the data: a grower's GLN on Klokfactuur / Connect invoice lines, and the Connect supplier code of the lots with the same brief number.
-            Used to find the supplier of Handel Aankopen / AI2 lines whose GLN isn't in the stamgegevens. The stamgegevens and manual links always win.
-            Codes that stand for many growers are never learned{data?.generic_codes?.length ? ` (${data.generic_codes.join(", ")})` : ""}.
+    <section className="overview-stack">
+      <div className="data-table-card">
+        <div className="row-actions spread-actions">
+          <div>
+            <h2>Growers</h2>
+            <div className="muted">
+              Which Connect grower code each FloraHolland supplier on the invoices is. Built from everything stored -- no import needed:
+              manual links, the stamgegevens, brief-number matches (a Klokfactuur / Connect line and its Connect lot: the grower code in Suppl., Avc. or Transp)
+              and GLN + FH number on the same invoice line (Handel and AI2 too). A grower can have several GLNs and FH numbers.
+            </div>
           </div>
-          {!data && <p className="muted">Loading...</p>}
-          {data && (
+          <button type="button" className="primary" onClick={relearn} disabled={busy}>{busy ? "Working..." : "Build again and compare all days"}</button>
+        </div>
+        {error && <div className="notice danger">{error}</div>}
+        {message && <div className="notice">{message}</div>}
+        {data && (
+          <div className="row-actions">
+            <span className="ukdocs-status-badge success">Linked: {suppliers.filter((supplier) => supplier.codes.length).length}</span>
+            <span className={`ukdocs-status-badge ${needLink.length ? "danger" : "success"}`}>Need a link: {needLink.length}</span>
+            <span className="ukdocs-status-badge muted" title="Every line of theirs has a brief number (clock purchases booked under WEST / VBA ...) -- matched without a grower code">No link needed: {noLinkNeeded}</span>
+            <span className="ukdocs-status-badge muted">Connect grower codes: {(data.codes || []).length}</span>
+            {!!data.conflicts?.length && <span className="ukdocs-status-badge danger">Stamgegevens contradicted: {data.conflicts.length}</span>}
+          </div>
+        )}
+        {!data && !error && <p className="muted">Loading...</p>}
+      </div>
+
+      {data && (
+        <div className="data-table-card">
+          <div className="row-actions spread-actions">
+            <h3>Need a link ({notLinked.length})</h3>
+            <input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Search name, GLN or FH number" />
+          </div>
+          <div className="notice">Suppliers with invoice lines without a brief number (Handel Aankopen, AI2, Connect) -- those need the grower code to be matched. Biggest purchase value first. Type the Connect code (several: "CODE1, CODE2") and Link -- every day is compared again. A suggestion comes from a matching name in the stamgegevens.</div>
+          <div className="table-wrap">
+            <table className="data-table">
+              <thead><tr><th>Supplier</th><th>GLN</th><th>FH number</th><th>On</th><th>Lines without brief number</th><th>Value</th><th>Last</th><th>Why not linked</th><th>Connect code</th><th></th></tr></thead>
+              <tbody>
+                {notLinked.map((supplier) => (
+                  <tr key={keyOf(supplier)}>
+                    <td><strong>{supplier.name || "-"}</strong></td>
+                    <td>{supplier.gln || "-"}</td>
+                    <td>{supplier.fh_number || "-"}</td>
+                    <td>{supplier.invoice_types.join(", ")}</td>
+                    <td>{supplier.lines_without_pav} <small className="muted">of {supplier.lines}</small></td>
+                    <td>{formatInkoopEuro(supplier.total)}</td>
+                    <td>{inkoopShortDate(supplier.last_date)}</td>
+                    <td>
+                      {supplier.reason}
+                      {!!supplier.suggestions.length && (
+                        <div className="row-actions" style={{ marginTop: 4 }}>
+                          {supplier.suggestions.map((suggestion) => (
+                            <button key={suggestion.code} type="button" className="link-button" title={suggestion.name} onClick={() => setDrafts((current) => ({ ...current, [keyOf(supplier)]: suggestion.code }))}>
+                              {suggestion.code}?{" "}
+                              <small className="muted">
+                                {suggestion.evidence_lines ? `${suggestion.evidence_lines} of ${supplier.lines_without_pav} lines have a ${suggestion.code} lot with the same pieces + price` : suggestion.name}
+                              </small>
+                            </button>
+                          ))}
+                        </div>
+                      )}
+                    </td>
+                    <td><input size={10} value={drafts[keyOf(supplier)] || ""} onChange={(event) => setDrafts((current) => ({ ...current, [keyOf(supplier)]: event.target.value }))} placeholder="e.g. LBURG" /></td>
+                    <td><button type="button" onClick={() => link(supplier, drafts[keyOf(supplier)])} disabled={busy || !drafts[keyOf(supplier)]}>Link</button></td>
+                  </tr>
+                ))}
+                {!notLinked.length && <tr><td colSpan={10}>Every supplier on the invoices is linked.</td></tr>}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+
+      {data && (
+        <div className="data-table-card">
+          <div className="row-actions spread-actions">
+            <h3>Linked ({linked.length})</h3>
+            <button type="button" onClick={() => setShowLinked((value) => !value)}>{showLinked ? "Hide" : "Show"}</button>
+          </div>
+          {showLinked && (
             <div className="table-wrap">
               <table className="data-table">
-                <thead><tr><th>GLN</th><th>Name</th><th>Connect code</th><th>Also in stamgegevens</th></tr></thead>
+                <thead><tr><th>Supplier</th><th>GLN</th><th>FH number</th><th>Connect code(s)</th><th>Linked via</th><th>Lines</th><th>Value</th></tr></thead>
                 <tbody>
-                  {data.links.map((link) => (
-                    <tr key={link.gln}><td>{link.gln}</td><td>{link.name}</td><td>{link.code}</td><td>{link.in_master_data ? "yes" : <strong>no -- learned</strong>}</td></tr>
+                  {linked.map((supplier) => (
+                    <tr key={keyOf(supplier)}>
+                      <td>{supplier.name || "-"}</td><td>{supplier.gln || "-"}</td><td>{supplier.fh_number || "-"}</td>
+                      <td><strong>{supplier.codes.join(", ")}</strong></td><td className="muted">{supplier.via}</td>
+                      <td>{supplier.lines}</td><td>{formatInkoopEuro(supplier.total)}</td>
+                    </tr>
                   ))}
-                  {!data.links.length && <tr><td colSpan={4}>Nothing learned yet.</td></tr>}
                 </tbody>
               </table>
             </div>
           )}
-        </>
+        </div>
       )}
-    </>
+
+      {data && (
+        <div className="data-table-card">
+          <div className="row-actions spread-actions">
+            <h3>Connect grower codes ({codes.length})</h3>
+            <input value={codeSearch} onChange={(event) => setCodeSearch(event.target.value)} placeholder="Search code, name, GLN, FH" />
+          </div>
+          <div className="notice">
+            Every grower code in the Connect data with the GLNs and FH numbers known for it.
+            <strong> No GLN / FH</strong> with lots without a brief number means: a Handel / AI2 invoice line of that grower can't find these lots.
+            {!!data.route_codes?.length && <> Auction / route codes, never a grower: {data.route_codes.join(", ")}.</>}
+          </div>
+          <div className="table-wrap">
+            <table className="data-table">
+              <thead><tr><th>Code</th><th>Name</th><th>GLN(s)</th><th>FH number(s)</th><th>Connect lots</th><th>Without brief number</th><th>Last</th></tr></thead>
+              <tbody>
+                {codes.map((entry) => {
+                  const unreachable = !entry.glns.length && !entry.fh_numbers.length && entry.lots_without_pav > 0;
+                  return (
+                    <tr key={entry.code} style={unreachable ? { background: "#fff7ed" } : undefined}>
+                      <td><strong>{entry.code}</strong></td>
+                      <td>{entry.name || <span className="muted">-</span>}</td>
+                      <td>{identityList(entry.glns)}</td>
+                      <td>{identityList(entry.fh_numbers)}</td>
+                      <td>{entry.lots}</td>
+                      <td>{entry.lots_without_pav}{unreachable && <div style={{ color: "#b45309" }}>No GLN / FH known</div>}</td>
+                      <td>{inkoopShortDate(entry.last_date)}</td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+
+      {!!data?.conflicts?.length && (
+        <div className="data-table-card">
+          <h3>Stamgegevens contradicted by the data ({data.conflicts.length})</h3>
+          <div className="notice">The stamgegevens link this GLN / FH number to one code, but its brief-number matches in Connect go to another. The stamgegevens are used; check which is right.</div>
+          <div className="table-wrap">
+            <table className="data-table">
+              <thead><tr><th>GLN / FH</th><th>Name</th><th>Stamgegevens</th><th>Brief-number matches</th><th>Matches</th></tr></thead>
+              <tbody>
+                {data.conflicts.map((conflict) => (
+                  <tr key={`${conflict.kind}-${conflict.value}`}>
+                    <td>{conflict.kind.toUpperCase()} {conflict.value}</td><td>{conflict.name}</td><td>{conflict.master_code}</td>
+                    <td><strong>{conflict.data_codes.join(", ")}</strong></td><td>{conflict.matches}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+    </section>
   );
 }
 
