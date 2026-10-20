@@ -316,6 +316,28 @@ def list_row_order(text: str) -> str | None:
     return number if number.isdigit() else None
 
 
+def list_row_lot(text: str) -> str | None:
+    """The Connect lot in a list row: an 8-digit number starting with 4
+    ("... 44759254 J 2271237 ..."), look-alike letters read as digits."""
+    for token in str(text or "").split():
+        digits = token.translate(_DIGIT_LOOKALIKES)
+        if re.fullmatch(r"4\d{7}", digits):
+            return digits
+    return None
+
+
+def read_screen_value(label: str, lines: list[str]) -> str | None:
+    """The number after a label on the screen: "EPP: [9100185445726]" ->
+    "9100185445726" (look-alike letters read as digits)."""
+    if not label:
+        return None
+    found = re.search(re.escape(label) + r"\s*[:=]?\s*\[?\s*([0-9OoSsIlBDZ]{6,16})", "\n".join(lines), re.IGNORECASE)
+    if not found:
+        return None
+    digits = found.group(1).translate(_DIGIT_LOOKALIKES)
+    return digits if digits.isdigit() else None
+
+
 def normalize_foreach(settings: dict) -> dict:
     try:
         count = max(1, min(50, int(float(settings.get("count") or 1))))
@@ -390,6 +412,12 @@ def normalize_list_loop(loop: dict) -> dict:
         # Collect mode: no keys but the next key -- every row's order number
         # (with the type word seen) goes into this day list (emptied first).
         "collect_into": str(loop.get("collect_into") or "").strip(),
+        # What a collected row is known by: its order number (the 7 digits
+        # after the customer code) or its Connect lot (8 digits, 44...).
+        "collect_key": "lot" if loop.get("collect_key") == "lot" else "order",
+        # Also read per row from the screen, e.g. "EPP" -> the number after
+        # "EPP:" in the bottom bar for the cursor row; saved as a CSV too.
+        "collect_value": str(loop.get("collect_value") or "").strip(),
         # Act on a day list instead of words on screen: a row matches when its
         # order number has this label in that list (e.g. 516).
         "use_list": str(loop.get("use_list") or "").strip(),
@@ -1321,10 +1349,15 @@ class ActionRun:
         # (OCR misreads digits on the teal cursor: 4841449 -> "4 41449"); a
         # number counts once it was read the same way twice.
         sightings: dict[str, dict] = {}
+        row_key = list_row_lot if loop.get("collect_key") == "lot" else list_row_order
+        value_label = str(loop.get("collect_value") or "").strip()
+        # The value (e.g. EPP) belongs to the cursor row only: key -> values read.
+        row_values: dict[str, list[str]] = {}
+        keys_by_position: dict[int, str] = {}  # screen row -> key, from the previous look
 
         def note_rows(layout, joined):
             for screen_row in screen_rows(layout):
-                order = list_row_order(screen_row["text"])
+                order = row_key(screen_row["text"])
                 if not order:
                     continue
                 seen = sightings.setdefault(order, {"count": 0, "row": screen_row["text"][:80], "type": ""})
@@ -1395,6 +1428,22 @@ class ActionRun:
                 raise RuntimeError(f"{label}: Uniware left the list ('{list_screen[1]}' -> '{screen_title}') -- stopped to be safe.")
             if collected is not None:
                 note_rows(layout, joined)
+                if value_label:
+                    rows_now = screen_rows(layout)
+                    cursor_entry = next((entry for entry in rows_now if entry["highlighted"]), None)
+                    cursor_key = row_key(row)
+                    if not cursor_key and cursor_entry is not None:
+                        # The teal cursor row misread: the same screen row
+                        # on the previous look (not under the cursor then).
+                        cursor_key = keys_by_position.get(round(cursor_entry["y"] / 8))
+                    value = read_screen_value(value_label, [line.get("text", "") for line in layout])
+                    if cursor_key and value:
+                        row_values.setdefault(cursor_key, []).append(value)
+                    keys_by_position.clear()
+                    for entry in rows_now:
+                        key = row_key(entry["text"]) if not entry["highlighted"] else None
+                        if key:
+                            keys_by_position[round(entry["y"] / 8)] = key
             if last_action == "match" and same_row(row, last_row):
                 raise RuntimeError(f"{label}: '{last_row[:50]}' is still there after {match_key} -- does Uniware ask for a confirmation? Stopped to be safe.")
             if last_action == "next" and same_row(row, last_row):
@@ -1514,16 +1563,51 @@ class ActionRun:
         else:
             self.say(f"{label}: stopped after {max_rows} rows (the most this loop may do).")
         if collected is not None:
+            # Cursor-row keys are read from the teal row (digits misread more
+            # often there): one that isn't among the well-read keys goes to
+            # the one well-read key it is nearly the same as.
+            good_keys = [order for order, seen in sightings.items() if seen["count"] >= 2]
+            values_by_key: dict[str, str] = {}
+            for cursor_key, values in row_values.items():
+                key = cursor_key if cursor_key in good_keys else None
+                if key is None:
+                    close = [order for order in good_keys if difflib.SequenceMatcher(None, cursor_key, order).ratio() >= 0.85]
+                    key = close[0] if len(close) == 1 else None
+                if key:
+                    # The value read most often for that row (it is read on every look).
+                    values_by_key[key] = max(set(values), key=values.count)
             for order, seen in sightings.items():
                 if seen["count"] < 2:
                     self.say(f"{label}: {order} read only once ('{seen['row'][:50]}') -- not collected, check by hand")
                     continue
-                collected["items"].append({"key": order, "row": seen["row"], "type": seen["type"], "label": "", "note": "", "warning": False})
-                self.say(f"{label}: collected {order} ({seen['type'] or 'type ?'})")
+                item = {"key": order, "row": seen["row"], "type": seen["type"], "label": "", "note": "", "warning": False}
+                if value_label:
+                    item["value"] = values_by_key.get(order, "")
+                    if not item["value"]:
+                        item["note"] = f"no {value_label} read"
+                collected["items"].append(item)
+                self.say(f"{label}: collected {order}" + (f" {value_label} {item.get('value') or '?'}" if value_label else f" ({seen['type'] or 'type ?'})"))
             save_day_list(collected)
-            self.say(f"{label}: {len(collected['items'])} order(s) collected into day list '{collect_into}'.")
+            self.say(f"{label}: {len(collected['items'])} row(s) collected into day list '{collect_into}'.")
+            if value_label:
+                self._write_collected_csv(collected, value_label, label)
             return
         self.say(f"{label}: list done -- {counts['matched']} {'would be ' if dry_run else ''}{match_key}, {counts['kept']} kept, {counts['unreadable']} not readable.")
+
+    def _write_collected_csv(self, collected: dict, value_label: str, label: str):
+        """The collected rows with their value as a CSV ("lot;epp"), in the
+        action's dump folder (else outputs/) -- the file for SnappySjaak's
+        EPP list upload."""
+        rows = [item for item in collected.get("items", []) if item.get("value")]
+        if not rows:
+            self.say(f"{label}: no {value_label} read on any row -- no CSV written.")
+            return
+        target_dir = self._export_dir()
+        target = target_dir / f"{day_list_slug(collected['name'])}_{self.started:%Y%m%d}.csv"
+        lines = [f"lot;{value_label.lower()}"] + [f"{item['key']};{item['value']}" for item in rows]
+        target.write_text("\r\n".join(lines) + "\r\n", encoding="utf-8")
+        self.exported_files.append(str(target))
+        self.say(f"{label}: {len(rows)} row(s) with {value_label} -> {target}")
 
     def _press(self, controller, key: str, times: int):
         for _ in range(times):

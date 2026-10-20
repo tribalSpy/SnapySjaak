@@ -183,6 +183,15 @@ on), named then -- so `data_tour-508_{invoiceres}` takes the invoiceRes read
 on the LTD screen even though that comes after the first dump. Read
 invoiceRes into `invoiceres` only on the screen whose number counts.
 
+**Read a value per row (e.g. the EPP)**: a "collect" list loop can know each
+row by its **Connect lot** (8 digits, 44...) and also read a number from the
+screen for the cursor row -- "also read from the screen: EPP" takes the
+number after "EPP:" in the bottom bar. The rows go into the day list and a
+CSV `lot;epp` is written to the action's dump folder (else `outputs/`) --
+upload it in SnappySjaak, Inkoop controle -> Compare -> "EPP list": a Connect
+lot without a brief number then gets the clock invoice line whose brief
+number is the EPP's last 6 digits.
+
 **Day lists -- information from one action to the next** (e.g. accessoires:
 SPICER -> tour 516, other -> 515). Three actions, each ending on the main
 menu; the list in between is shown under "Day lists" in the dashboard:

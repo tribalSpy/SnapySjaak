@@ -579,7 +579,9 @@ function loopEditor(loop, i) {
     </select></label></div>
     ${part("words", `<label>When the screen shows <input data-loop-match="${i}" size="22" placeholder="e.g. Accessoire, Planten" value="${esc((loop.match || []).join(", "))}"></label>
       <label>keep when it shows <input data-loop-keep="${i}" size="16" placeholder="e.g. Bloemen" value="${esc((loop.keep || []).join(", "))}"></label>`)}
-    ${part("collect", `<label>Day list <input data-loop-collect="${i}" size="20" placeholder="e.g. accessoires vandaag" value="${esc(loop.collect_into || "")}"></label><span class="muted">emptied first, then every row's order number is written down</span>`)}
+    ${part("collect", `<label>Day list <input data-loop-collect="${i}" size="20" placeholder="e.g. accessoires vandaag" value="${esc(loop.collect_into || "")}"></label><span class="muted">emptied first, then every row is written down</span>`)}
+    ${part("collect", `<label>Each row is known by <select data-loop-collectkey="${i}"><option value="order" ${loop.collect_key !== "lot" ? "selected" : ""}>its order number (7 digits after the customer code)</option><option value="lot" ${loop.collect_key === "lot" ? "selected" : ""}>its Connect lot (8 digits, 44...)</option></select></label>
+      <label>also read from the screen <input data-loop-collectvalue="${i}" size="8" placeholder="e.g. EPP" value="${esc(loop.collect_value || "")}"></label><span class="muted">the number after this label (e.g. "EPP: [9100185445726]" in the bottom bar) for each row -- saved as a CSV (lot;epp) in the dump folder</span>`)}
     ${part("daylist", `<label>Day list <input data-loop-uselist="${i}" size="20" placeholder="e.g. accessoires vandaag" value="${esc(loop.use_list || "")}"></label><label>orders with result <input data-loop-uselabel="${i}" size="5" placeholder="516" value="${esc(loop.use_label || "")}"></label>`)}
     ${part("words daylist", `<label>press <input data-loop-key="${i}" size="18" placeholder="e.g. Delete, Right, Enter" value="${esc(loop.match_key || "Delete")}" title="Several keys one after another, separated by commas -- e.g. Delete, then Right and Enter to answer the confirmation"></label>`)}
     <div class="row"><label>to the next row press <input data-loop-next="${i}" size="7" value="${esc(loop.next_key || "Down")}"></label>
@@ -604,6 +606,8 @@ function loopValues(i) {
     row_stays: mode !== "collect" && checked("stays"),
     only_rows_with: mode !== "collect" ? value("only") : "",
     collect_into: mode === "collect" ? value("collect") : "",
+    collect_key: mode === "collect" ? value("collectkey") : "order",
+    collect_value: mode === "collect" ? value("collectvalue") : "",
     use_list: mode === "daylist" ? value("uselist") : "",
     use_label: mode === "daylist" ? value("uselabel") : "",
   };
@@ -636,8 +640,8 @@ function renderDayLists() {
     const items = list.items || [];
     const counts = items.reduce((acc, item) => { const key = item.label || (item.warning ? "warning" : "open"); acc[key] = (acc[key] || 0) + 1; return acc; }, {});
     return `<h3>${esc(list.name)} <span class="muted">-- ${items.length} order(s): ${Object.entries(counts).map(([key, count]) => `${count} ${esc(key)}`).join(", ")}${list.updated ? ` -- ${esc(list.updated.replace("T", " "))}` : ""}</span> <button class="danger" onclick="deleteDayList('${esc(list.name)}')">Delete list</button></h3>
-      <table><tr><th>Order</th><th>Row</th><th>Type</th><th>Result</th><th>Note</th><th>Done</th></tr>
-      ${items.map((item) => `<tr${item.warning ? ' style="background:#fff7ed"' : ""}><td>${esc(item.key)}</td><td class="muted">${esc(item.row || "")}</td><td>${esc(item.type || "")}</td>
+      <table><tr><th>Order / lot</th><th>Row</th><th>Type</th>${items.some((item) => item.value !== undefined) ? "<th>Value read</th>" : ""}<th>Result</th><th>Note</th><th>Done</th></tr>
+      ${items.map((item) => `<tr${item.warning ? ' style="background:#fff7ed"' : ""}><td>${esc(item.key)}</td><td class="muted">${esc(item.row || "")}</td><td>${esc(item.type || "")}</td>${items.some((entry) => entry.value !== undefined) ? `<td>${esc(item.value || "-")}</td>` : ""}
         <td><input size="5" value="${esc(item.label || "")}" onchange="setDayLabel('${esc(list.name)}', '${esc(item.key)}', this.value)"></td>
         <td>${item.warning ? "<strong>" : ""}${esc(item.note || "")}${item.warning ? "</strong>" : ""}</td><td>${item.done ? esc(String(item.done).replace("T", " ")) : ""}</td></tr>`).join("")}</table>`;
   }).join("") : `<p class="muted">No day lists yet -- a list loop with "collect into day list" makes one.</p>`;
