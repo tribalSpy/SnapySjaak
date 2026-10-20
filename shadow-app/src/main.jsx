@@ -17052,13 +17052,13 @@ function InkoopControlePage({ currentUser }) {
         </div>
         <div className="row-actions">
           <label>
-            <span>EPP list (.csv: lot ; EPP ; info -- the Uniware recorder's night action)</span>
-            <input type="file" accept=".csv,.txt" onChange={(event) => setEppFile(event.target.files?.[0] || null)} />
+            <span>EPP list -- the night action's CSV (lot ; EPP ; info) or the Communications dump (.xlsx with Prt, EPP, Info)</span>
+            <input type="file" accept=".csv,.txt,.xlsx" onChange={(event) => setEppFile(event.target.files?.[0] || null)} />
           </label>
           <button type="button" onClick={uploadEppList} disabled={leveringBusy || !eppFile}>
             {leveringBusy ? "Uploading..." : "Upload EPP list"}
           </button>
-          <span className="muted">A Connect lot without a brief number gets the one of the clock invoice line whose brief number is its EPP's last 6 digits.</span>
+          <span className="muted">Matched by Prt (the Connect lot) only: it never adds Connect lots, it only adds EPP / order number / GLN to the ones the Connect export brought -- uploading again just overwrites them.</span>
         </div>
       </div>
 

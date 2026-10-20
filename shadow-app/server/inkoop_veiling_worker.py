@@ -87,6 +87,10 @@ def parse_erp(input_path: Path):
     headers, data_rows = find_erp_header(all_rows)
 
     if headers is None:
+        # The Communications dump (Prt / Info / OrderNr, no PAV) is not a
+        # Connect purchase export -- it only adds to the lots it names.
+        if any("prt" in [clean_text(value).lower() for value in row] for row in all_rows[:30]):
+            return {"rows": [], "error": "This looks like the Communications dump (a Prt column, no PAV) -- upload it under 'EPP list' instead: it only adds EPP / order number / GLN to the Connect lots, matched by Prt."}
         return {"rows": [], "error": "Could not find a header row containing PAV in this file"}
 
     rows = []
@@ -1208,6 +1212,32 @@ def drop_duplicate_invoices(invoices, skipped):
     return kept
 
 
+# The Communications dump with the night action's columns (Prt, EPP, Info)
+# as the "lot;epp;info" lines the EPP list upload reads. Matched by Prt only.
+def parse_lot_table(input_path: Path):
+    is_csv = str(input_path).lower().endswith(".csv")
+    all_rows = load_erp_csv_rows(input_path) if is_csv else load_erp_xlsx_rows(input_path)
+    for index, row in enumerate(all_rows[:40]):
+        headers = [clean_text(value).lower() for value in row]
+        if "prt" not in headers:
+            continue
+        prt = headers.index("prt")
+        epp = headers.index("epp") if "epp" in headers else None
+        info = headers.index("info", prt + 1) if "info" in headers[prt + 1:] else None
+        lines = ["lot;epp;info"]
+        for data in all_rows[index + 1:]:
+            lot = clean_text(data[prt] if prt < len(data) else "")
+            lot = lot[:-2] if lot.endswith(".0") else lot
+            if not lot.isdigit():
+                continue
+            value = clean_text(data[epp]) if epp is not None and epp < len(data) else ""
+            value = value[:-2] if value.endswith(".0") else value
+            text = clean_text(data[info]) if info is not None and info < len(data) else ""
+            lines.append(f"{lot};{value};{text.replace(';', ',')}")
+        return {"csv": "\n".join(lines), "rows": len(lines) - 1}
+    return {"csv": "", "rows": 0, "error": "No Prt column found -- is this the Communications dump?"}
+
+
 def main():
     parser = argparse.ArgumentParser()
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -1228,6 +1258,9 @@ def main():
     dispatch_parser = subparsers.add_parser("parse-dispatch-dump")
     dispatch_parser.add_argument("--input", required=True)
 
+    lot_table_parser = subparsers.add_parser("parse-lot-table")
+    lot_table_parser.add_argument("--input", required=True)
+
     betaalwijze_parser = subparsers.add_parser("parse-betaalwijze")
     betaalwijze_parser.add_argument("--kwekers", required=False, default="")
     betaalwijze_parser.add_argument("--leveranciers", required=False, default="")
@@ -1246,6 +1279,8 @@ def main():
         print(json.dumps(parse_klant_gegevens(Path(args.input))))
     elif args.command == "parse-dispatch-dump":
         print(json.dumps(parse_dispatch_dump(Path(args.input))))
+    elif args.command == "parse-lot-table":
+        print(json.dumps(parse_lot_table(Path(args.input))))
     elif args.command == "parse-betaalwijze":
         # Kwekers first so the leveranciers entry wins on a shared code, same
         # precedence as parse_suppliers.

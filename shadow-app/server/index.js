@@ -22844,7 +22844,23 @@ async function handleApi(req, res, url) {
       return;
     }
     const body = await readRequestJson(req, 20 * 1024 * 1024);
-    const rows = parseInkoopEppList(body?.file?.content_base64);
+    let listBase64 = body?.file?.content_base64;
+    // The Communications dump itself (.xlsx with Prt, EPP, Info): read to
+    // "lot;epp;info" lines first -- matched by Prt only.
+    if (/\.xlsx?$/i.test(String(body?.file?.name || "")) && listBase64) {
+      const inputPath = await writeInkoopUploadToTempFile(body.file, "inkoop-lots-", ".xlsx");
+      try {
+        const parsed = JSON.parse((await runInkoopVeilingWorker(["parse-lot-table", "--input", inputPath])).toString("utf8"));
+        if (parsed?.error) {
+          sendJson(res, 400, { error: parsed.error });
+          return;
+        }
+        listBase64 = Buffer.from(parsed.csv || "", "utf8").toString("base64");
+      } finally {
+        await removeInkoopTempFile(inputPath);
+      }
+    }
+    const rows = parseInkoopEppList(listBase64);
     if (!rows.length) {
       sendJson(res, 400, { error: "No lines with a Connect lot and an EPP number (e.g. 44759254;9100185445726) found." });
       return;
