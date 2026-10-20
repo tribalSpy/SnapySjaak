@@ -68,7 +68,9 @@ window.WD = (function () {
           rfidStatus: item.rfidStatus || '',
           photoStatus: item.photoStatus || '',
           lastScannedBy: item.lastScannedBy || '',
-          lastScannedAt: item.lastScannedAt || ''
+          lastScannedAt: item.lastScannedAt || '',
+          groupedWith: item.groupedWith || '',
+          coveredBy: item.coveredBy || ''
         });
       }
     }
@@ -79,7 +81,7 @@ window.WD = (function () {
   // from the live backend state; for any other date, rebuilds purely from the
   // activity log (expected_reference / split_update / scan_complete events on
   // that date), same as the Python version.
-  function buildStateForDate(liveStatus, events, selectedDateStr) {
+  function buildStateForDate(liveStatus, events, selectedDateStr, groups) {
     const useLiveFallback = selectedDateStr === todayStr();
     let byRef = {};
 
@@ -199,7 +201,49 @@ window.WD = (function () {
       item.locations = (item.locations && item.locations.length) ? item.locations.slice(-1) : [];
     }
 
+    applyFustGroups(byRef, groups);
     return rowsFromReferenceMap(byRef);
+  }
+
+  // The Fust Planning's "Group with": a member reference travels with its
+  // leader (only the leader's code gets scanned). The member counts as
+  // scanned as far as its leader is -- leader scanned: member scanned too;
+  // leader partly scanned: member partial; leader not yet: member as is.
+  function leaderOf(reference, groups) {
+    let leader = groups[reference];
+    const seen = new Set([reference]);
+    while (leader && groups[leader] && !seen.has(leader)) {  // A -> B -> C: C leads
+      seen.add(leader);
+      leader = groups[leader];
+    }
+    return leader || '';
+  }
+
+  function applyFustGroups(byRef, groups) {
+    if (!groups || typeof groups !== 'object') return;
+    for (const item of Object.values(byRef)) {
+      const ref = String(item.reference || '').toUpperCase();
+      const leaderRef = leaderOf(ref, groups);
+      if (!leaderRef) continue;
+      item.groupedWith = leaderRef;
+      const leader = byRef[leaderRef];
+      if (!leader || item.status === 'not_required') continue;
+      const leaderDone = leader.status === 'scanned' || leader.status === 'extra';
+      const leaderStarted = leaderDone || leader.status === 'partial';
+      const ownDone = item.status === 'scanned' || item.status === 'extra';
+      if (!leaderStarted || ownDone) continue;
+      item.coveredBy = leaderRef;
+      if (leaderDone) {
+        item.scannedCount = Math.max(Number(item.scannedCount) || 0, Number(item.trolleyCount) || 0, 1);
+        item.status = 'scanned';
+        if (item.photoStatus === 'pending' || item.photoStatus === 'partial') item.photoStatus = leader.photoStatus;
+        if (item.rfidStatus === 'pending' || item.rfidStatus === 'partial') item.rfidStatus = leader.rfidStatus;
+      } else {
+        item.status = 'partial';
+      }
+      item.lastScannedBy = item.lastScannedBy || `with ${leaderRef}` + (leader.lastScannedBy ? ` (${leader.lastScannedBy})` : '');
+      item.lastScannedAt = item.lastScannedAt || leader.lastScannedAt || '';
+    }
   }
 
   function dedupeByReference(rows) {

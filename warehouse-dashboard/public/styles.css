@@ -166,3 +166,5 @@ tbody tr:hover{ background:var(--surface-2); }
 .btn-primary{ background:var(--accent); border-color:var(--accent); color:#fff; }
 .settings-actions{ display:flex; gap:10px; margin:12px 0; }
 #settings-hidden{ width:100%; }
+
+small.muted{ font-size:0.74rem; color:var(--text-muted); white-space:nowrap; }

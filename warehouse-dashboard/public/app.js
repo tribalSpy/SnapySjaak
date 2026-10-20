@@ -5,6 +5,7 @@
     liveStatus: {},
     events: [],
     excludedReferences: new Set(),
+    groups: {}, groupsDate: '',
     filters: { date: D.todayStr(), truck: 'All', group: 'All', status: 'All' }
   };
 
@@ -45,6 +46,18 @@
       setConnected(true);
     } catch (err) {
       setConnected(false, err.message);
+    }
+  }
+
+  // Fust Planning "Group with" of the shown day: { member: leader }.
+  async function loadGroups(date) {
+    try {
+      const res = await fetch('api/groups?date=' + encodeURIComponent(date));
+      const payload = await res.json();
+      state.groups = payload.groups || {};
+      state.groupsDate = date;
+    } catch {
+      // keep whatever we had
     }
   }
 
@@ -180,10 +193,10 @@
     el.expectedEmpty.hidden = filteredState.length > 0;
     renderTable(el.tblExpected, [
       { key: 'location', label: 'Location' },
-      { key: 'reference', label: 'Reference' },
+      { key: 'reference', label: 'Reference', render: r => escapeHtml(r.reference) + (r.groupedWith ? ` <small class="muted" title="Fust Planning: grouped with ${escapeHtml(r.groupedWith)} -- scanned with it">&rarr; ${escapeHtml(r.groupedWith)}</small>` : '') },
       { key: 'truck', label: 'Truck' },
       { key: 'group', label: 'Group' },
-      { key: 'status', label: 'Status', render: r => statusPill(r.status) },
+      { key: 'status', label: 'Status', render: r => statusPill(r.status) + (r.coveredBy ? ` <small class="muted">with ${escapeHtml(r.coveredBy)}</small>` : '') },
       { key: 'photoStatus', label: 'Photo', render: r => `${statusPill(r.photoStatus)} ${r.photoCount}/${r.trolleyCount}` },
       { key: 'rfidStatus', label: 'RFID', render: r => `${statusPill(r.rfidStatus)} ${r.rfidCount}/${r.trolleyCount}` },
       { key: 'scannedCount', label: 'Scanned', render: r => `${r.scannedCount} / ${r.trolleyCount}` },
@@ -566,7 +579,11 @@
   // ---------------------------------------------------------------
   function recomputeAndRender() {
     const selectedDate = el.filterDate.value || D.todayStr();
-    const availableStateRows = D.buildStateForDate(state.liveStatus, state.events, selectedDate);
+    if (state.groupsDate !== selectedDate) {
+      state.groupsDate = selectedDate;  // load once per day shown, then render again
+      loadGroups(selectedDate).then(recomputeAndRender);
+    }
+    const availableStateRows = D.buildStateForDate(state.liveStatus, state.events, selectedDate, state.groupsDate === selectedDate ? state.groups : {});
     const stateRows = D.applyReferenceExclusions(availableStateRows, state.excludedReferences);
     const visibleRefs = new Set(stateRows.map(r => String(r.reference || '').toUpperCase()));
 
@@ -627,4 +644,6 @@
 
   setInterval(async () => { await loadStatus(); recomputeAndRender(); }, 5000);
   setInterval(async () => { await loadActivity(); recomputeAndRender(); }, 20000);
+  // The Fust Planning import can add / change groups during the day.
+  setInterval(async () => { await loadGroups(el.filterDate.value || D.todayStr()); recomputeAndRender(); }, 120000);
 })();

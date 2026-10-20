@@ -23733,6 +23733,31 @@ async function handleApi(req, res, url) {
     return;
   }
 
+  // The Fust Planning's "Group with" for a day (imported into
+  // fust_reference_actions): { member code: leader code }. Grouped references
+  // travel with their leader, so only the leader gets scanned -- the
+  // dashboard counts the members as scanned with it.
+  if (url.pathname === "/warehouse/api/groups") {
+    if (!requirePermission(res, requestUser, PERMISSIONS.WAREHOUSE_VIEW)) {
+      return;
+    }
+    const date = String(url.searchParams.get("date") || "").trim();
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(date) || !isDatabaseEnabled()) {
+      sendJson(res, 200, { ok: true, date, groups: {} });
+      return;
+    }
+    const groups = {};
+    for (const row of await getFustReferenceActions({ from: date, to: date })) {
+      const member = String(row?.code || "").trim().toUpperCase();
+      const leader = String(row?.group_with || "").trim().toUpperCase();
+      if (member && leader && leader !== member) {
+        groups[member] = leader;
+      }
+    }
+    sendJson(res, 200, { ok: true, date, groups });
+    return;
+  }
+
   if (url.pathname === "/warehouse/api/activity-log") {
     if (!requirePermission(res, requestUser, PERMISSIONS.WAREHOUSE_VIEW)) {
       return;
