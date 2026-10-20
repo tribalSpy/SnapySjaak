@@ -418,6 +418,10 @@ def normalize_list_loop(loop: dict) -> dict:
         # Also read per row from the screen, e.g. "EPP" -> the number after
         # "EPP:" in the bottom bar for the cursor row; saved as a CSV too.
         "collect_value": str(loop.get("collect_value") or "").strip(),
+        # Per row, before the next key: open a popup (e.g. "Shift+?" -- the
+        # supplier info), keep every line it shows, close it (e.g. "Esc").
+        "row_popup_keys": str(loop.get("row_popup_keys") or "").strip(),
+        "row_close_keys": str(loop.get("row_close_keys") or "").strip() or "Esc",
         # Act on a day list instead of words on screen: a row matches when its
         # order number has this label in that list (e.g. 516).
         "use_list": str(loop.get("use_list") or "").strip(),
@@ -1354,6 +1358,10 @@ class ActionRun:
         # The value (e.g. EPP) belongs to the cursor row only: key -> values read.
         row_values: dict[str, list[str]] = {}
         keys_by_position: dict[int, str] = {}  # screen row -> key, from the previous look
+        popup_keys = str(loop.get("row_popup_keys") or "").strip()
+        close_keys = str(loop.get("row_close_keys") or "").strip() or "Esc"
+        row_popups: dict[str, list[str]] = {}  # key -> the popup's lines
+        keys_by_position_before: dict[int, str] = {}
 
         def note_rows(layout, joined):
             for screen_row in screen_rows(layout):
@@ -1439,6 +1447,8 @@ class ActionRun:
                     value = read_screen_value(value_label, [line.get("text", "") for line in layout])
                     if cursor_key and value:
                         row_values.setdefault(cursor_key, []).append(value)
+                    keys_by_position_before.clear()
+                    keys_by_position_before.update(keys_by_position)
                     keys_by_position.clear()
                     for entry in rows_now:
                         key = row_key(entry["text"]) if not entry["highlighted"] else None
@@ -1475,7 +1485,10 @@ class ActionRun:
                 continue
             if collected is not None:
                 # Collect mode: the rows are noted from the whole screen
-                # (note_rows); only the next key is pressed.
+                # (note_rows); only the next key is pressed -- after opening
+                # and reading the row's popup, when one is set.
+                if popup_keys:
+                    self._read_row_popup(hwnd, controller, row, layout, popup_keys, close_keys, row_key, keys_by_position_before, row_popups, label)
                 for part in list_loop_keys(next_key):
                     send_combo(controller, part)
                 last_row, last_action = row, "next"
@@ -1585,29 +1598,95 @@ class ActionRun:
                     item["value"] = values_by_key.get(order, "")
                     if not item["value"]:
                         item["note"] = f"no {value_label} read"
+                if popup_keys:
+                    item["info"] = " | ".join(row_popups.get(order, []))
+                    if not item["info"]:
+                        item["note"] = (item.get("note", "") + "; " if item.get("note") else "") + "popup not read"
                 collected["items"].append(item)
                 self.say(f"{label}: collected {order}" + (f" {value_label} {item.get('value') or '?'}" if value_label else f" ({seen['type'] or 'type ?'})"))
             save_day_list(collected)
             self.say(f"{label}: {len(collected['items'])} row(s) collected into day list '{collect_into}'.")
-            if value_label:
-                self._write_collected_csv(collected, value_label, label)
+            if value_label or popup_keys:
+                self._write_collected_csv(collected, value_label or "value", label)
             return
         self.say(f"{label}: list done -- {counts['matched']} {'would be ' if dry_run else ''}{match_key}, {counts['kept']} kept, {counts['unreadable']} not readable.")
 
-    def _write_collected_csv(self, collected: dict, value_label: str, label: str):
-        """The collected rows with their value as a CSV ("lot;epp"), in the
-        action's dump folder (else outputs/) -- the file for SnappySjaak's
-        EPP list upload."""
-        rows = [item for item in collected.get("items", []) if item.get("value")]
-        if not rows:
-            self.say(f"{label}: no {value_label} read on any row -- no CSV written.")
+    def _read_row_popup(self, hwnd, controller, row, layout, popup_keys, close_keys, row_key, keys_before, row_popups, label):
+        """Open the cursor row's popup (e.g. Shift+? -- the supplier info),
+        keep every line it shows (what wasn't on the screen before), close it
+        and wait until the list is back."""
+        key = row_key(row)
+        if not key:
+            cursor_entry = next((entry for entry in screen_rows(layout) if entry["highlighted"]), None)
+            key = keys_before.get(round(cursor_entry["y"] / 8)) if cursor_entry else None
+        if not key or key in row_popups:
             return
+        before = {line.get("text", "") for line in layout}
+        for part in list_loop_keys(popup_keys):
+            send_combo(controller, part)
+        _, _, _, _, _, after_layout = self._read_stable(hwnd)
+        shown = [line for line in after_layout if line.get("text", "") and line.get("text", "") not in before]
+        lines = [entry["text"] for entry in screen_rows(shown)] if shown else []
+        for part in list_loop_keys(close_keys):
+            send_combo(controller, part)
+        self._read_stable(hwnd)
+        row_popups[key] = lines
+        if not lines:
+            self.say(f"{label}: {key}: the popup ({popup_keys}) showed nothing new")
+
+    def _write_collected_csv(self, collected: dict, value_label: str, label: str):
+        """The collected rows with their value and popup info as a CSV
+        ("lot;epp;info"), in the action's dump folder (else outputs/) -- the
+        file for SnappySjaak's EPP list upload. The same columns are added to
+        the run's dump file (Ctrl+P), matched by lot."""
+        rows = [item for item in collected.get("items", []) if item.get("value") or item.get("info")]
+        if not rows:
+            self.say(f"{label}: no {value_label} / popup read on any row -- no CSV written.")
+            return
+        with_info = any(item.get("info") for item in rows)
         target_dir = self._export_dir()
         target = target_dir / f"{day_list_slug(collected['name'])}_{self.started:%Y%m%d}.csv"
-        lines = [f"lot;{value_label.lower()}"] + [f"{item['key']};{item['value']}" for item in rows]
+        header = f"lot;{value_label.lower()}" + (";info" if with_info else "")
+        lines = [header] + [
+            f"{item['key']};{item.get('value', '')}" + (f";{str(item.get('info', '')).replace(';', ',')}" if with_info else "")
+            for item in rows
+        ]
         target.write_text("\r\n".join(lines) + "\r\n", encoding="utf-8")
         self.exported_files.append(str(target))
-        self.say(f"{label}: {len(rows)} row(s) with {value_label} -> {target}")
+        self.say(f"{label}: {len(rows)} row(s) -> {target}")
+        self._merge_into_dump(rows, value_label, with_info, label)
+
+    def _merge_into_dump(self, rows: list[dict], value_label: str, with_info: bool, label: str):
+        """Add the collected columns to this run's dump (the Excel file from
+        Ctrl+P): the row whose cell is the lot gets them."""
+        dumps = [Path(path) for path in self.exported_files if str(path).lower().endswith(".xlsx")]
+        if not dumps:
+            return
+        dump = dumps[-1]
+        try:
+            import openpyxl  # only needed here
+            book = openpyxl.load_workbook(dump)
+            sheet = book.active
+            by_lot = {str(item["key"]): item for item in rows}
+            first_free = sheet.max_column + 1
+            sheet.cell(row=1, column=first_free, value=value_label)
+            if with_info:
+                sheet.cell(row=1, column=first_free + 1, value="Info")
+            filled = 0
+            for row_cells in sheet.iter_rows(min_row=2):
+                lot = next((str(cell.value).strip() for cell in row_cells if cell.value is not None and str(cell.value).strip() in by_lot), None)
+                if not lot:
+                    continue
+                item = by_lot[lot]
+                sheet.cell(row=row_cells[0].row, column=first_free, value=item.get("value", ""))
+                if with_info:
+                    sheet.cell(row=row_cells[0].row, column=first_free + 1, value=item.get("info", ""))
+                filled += 1
+            book.save(dump)
+            _relative_sheet_paths(dump)
+            self.say(f"{label}: {filled} row(s) of the dump {dump.name} got {value_label}" + (" and Info" if with_info else ""))
+        except Exception as error:  # noqa: BLE001 -- the CSV is there anyway
+            self.say(f"{label}: could not add the columns to the dump {dump.name}: {error}")
 
     def _press(self, controller, key: str, times: int):
         for _ in range(times):

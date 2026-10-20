@@ -192,6 +192,13 @@ upload it in SnappySjaak, Inkoop controle -> Compare -> "EPP list": a Connect
 lot without a brief number then gets the clock invoice line whose brief
 number is the EPP's last 6 digits.
 
+**Night action: the popup per row** -- in the same collect loop, "per row open
+a popup with" (e.g. `Shift+?`, the supplier info) and "close it with" (`Esc`):
+for every row the loop reads the EPP, opens the popup, keeps every line it
+shows (order number, GLN, transaction ...), closes it and goes Down. The CSV
+gets `lot;epp;info`, and the run's Ctrl+P dump (made earlier in the same
+action) gets the columns EPP and Info next to each lot. Slow -- fine at night.
+
 **Day lists -- information from one action to the next** (e.g. accessoires:
 SPICER -> tour 516, other -> 515). Three actions, each ending on the main
 menu; the list in between is shown under "Day lists" in the dashboard:
