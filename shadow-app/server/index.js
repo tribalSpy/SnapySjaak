@@ -7059,20 +7059,14 @@ function tryInkoopSplitDeliveryMatch(candidates, quantity, unitPrice, total, con
 // own supplier code, so a row that stays keyed under raw location/transport
 // text just sits in a bucket nothing will ever query, same as it already
 // does today for a genuinely unlinked supplier.
+// Codes that are never a grower (auctions, routes, transaction methods like
+// KVV PL -- the Growers tab's skip list), set for each comparison: the
+// grower is then looked for in the lot's other code positions.
+let inkoopNonGrowerCodes = new Set();
+
 function resolveErpRowSupplierCode(row, validSupplierCodes) {
-  const suppl = normalizeInkoopKey(row?.suppl);
-  if (suppl && validSupplierCodes.has(suppl)) {
-    return suppl;
-  }
-  const avc = normalizeInkoopKey(row?.avc);
-  if (avc && validSupplierCodes.has(avc)) {
-    return avc;
-  }
-  const transp = normalizeInkoopKey(row?.transp);
-  if (transp && validSupplierCodes.has(transp)) {
-    return transp;
-  }
-  return suppl || avc || transp;
+  const positions = [row?.suppl, row?.avc, row?.transp].map((value) => normalizeInkoopKey(value)).filter((code) => code && !inkoopNonGrowerCodes.has(code));
+  return positions.find((code) => validSupplierCodes.has(code)) || positions[0] || normalizeInkoopKey(row?.suppl);
 }
 
 // A line that carries no value at all (no unit price, no total) can't be
@@ -7525,7 +7519,7 @@ function matchInkoopVeilingLines(erpRows, invoices, supplierMap = {}, supplierNa
   };
 }
 
-const defaultInkoopState = { imports: [], supplier_map: {}, supplier_name_map: {}, supplier_fh_map: {}, supplier_bw_map: {}, customer_map: {}, manual_supplier_links: [], facturation_groups: [], king_ledger_map: null, king_settings: {} };
+const defaultInkoopState = { imports: [], supplier_map: {}, supplier_name_map: {}, supplier_fh_map: {}, supplier_bw_map: {}, customer_map: {}, manual_supplier_links: [], facturation_groups: [], king_ledger_map: null, king_settings: {}, grower_skip_codes: [] };
 
 // Every compare/upload used to be matched in isolation and its full result
 // (every matched/mismatched/unmatched line) pushed onto this list forever --
@@ -7707,6 +7701,11 @@ function normalizeInkoopState(state) {
     // finance's PDF until first edited) and the King settings.
     king_ledger_map: normalizeKingLedgerMap(state?.king_ledger_map),
     king_settings: normalizeKingSettings(state?.king_settings),
+    // Connect codes that are never a grower (a transaction method like
+    // KVV PL "klok voor verkoop planten", or WW12): chosen in the Growers
+    // tab; the grower is then looked for in the lot's other code positions.
+    grower_skip_codes: [...new Set((Array.isArray(state?.grower_skip_codes) ? state.grower_skip_codes : [])
+      .map((code) => normalizeInkoopKey(code)).filter(Boolean))].sort(),
   };
 }
 
@@ -8510,7 +8509,7 @@ function inkoopStateFingerprint(state) {
   return crypto.createHash("sha1").update(JSON.stringify([
     INKOOP_MATCH_RULES_VERSION,
     state.supplier_map, state.supplier_name_map, state.supplier_fh_map, state.supplier_bw_map,
-    state.manual_supplier_links, state.facturation_groups, state.customer_map,
+    state.manual_supplier_links, state.facturation_groups, state.customer_map, state.grower_skip_codes || [],
   ])).digest("hex");
 }
 
@@ -8871,6 +8870,9 @@ function buildInkoopGrowerDirectory(state, { pavPairs, codeStats, invoiceSupplie
   for (const row of codeStats.suppliers || []) {
     if (row.lots >= 50 && (row.avc_same || 0) / row.lots < 0.05 && (row.avc_distinct || 0) >= 10) routeCodes.add(row.code);
   }
+  const autoRouteCodes = new Set(routeCodes);
+  const skipCodes = new Set(state.grower_skip_codes || []);
+  for (const code of skipCodes) routeCodes.add(code);
   const growerCode = (pair) => {
     const candidates = pairCandidates(pair).filter((code) => !routeCodes.has(code));
     return candidates.find((code) => masterCodes.has(code)) || candidates[0] || "";
@@ -9096,7 +9098,22 @@ function buildInkoopGrowerDirectory(state, { pavPairs, codeStats, invoiceSupplie
     }
   }
 
-  return { matcherMaps, suppliers, codes: codeList, route_codes: [...routeCodes].sort(), conflicts };
+  // Codes worth a look for the skip list: ones that bring in for many
+  // suppliers but aren't skipped (yet).
+  const skipCandidates = codeList
+    .filter((entry) => !routeCodes.has(entry.code) && (entry.supplier_names || []).length >= 5)
+    .map((entry) => ({ code: entry.code, name: entry.name, suppliers: entry.supplier_names.length }))
+    .sort((left, right) => right.suppliers - left.suppliers);
+  return {
+    matcherMaps,
+    skipCodes: [...routeCodes],
+    suppliers,
+    codes: codeList,
+    route_codes: [...autoRouteCodes].sort(),
+    skip_codes: [...skipCodes].sort(),
+    skip_candidates: skipCandidates,
+    conflicts,
+  };
 }
 
 async function inkoopGrowerDirectory(state) {
@@ -9125,6 +9142,7 @@ async function computeInkoopLiveMatchFresh(state, { from, to }) {
   // The stamgegevens (and manual links) always win over a learned link.
   const supplierMap = { ...directory.matcherMaps.gln, ...state.supplier_map };
   const supplierFhMap = { ...directory.matcherMaps.fh, ...state.supplier_fh_map };
+  inkoopNonGrowerCodes = new Set(directory.skipCodes || []);
   const result = matchInkoopVeilingLines(erpRows, invoices, supplierMap, state.supplier_name_map, state.manual_supplier_links, supplierFhMap);
   const withReturns = await reclassifyInkoopConfirmedReturns(result, state.customer_map);
   // Tagged in place (fresh rows from this request's own query) so every
@@ -23283,8 +23301,30 @@ async function handleApi(req, res, url) {
     }
     const state = await readInkoopState();
     const directory = await inkoopGrowerDirectory(state);
-    const { matcherMaps, ...view } = directory;
+    const { matcherMaps, skipCodes, ...view } = directory;
     sendJson(res, 200, view);
+    return;
+  }
+
+  // Add / remove a code on the "never a grower" list: body { code, skip }.
+  // Saving the Inkoop settings compares every day again in the background.
+  if (url.pathname === "/api/inkoop/growers/skip-codes" && req.method === "POST") {
+    if (!requirePermission(res, requestUser, PERMISSIONS.INKOOP_VIEW)) {
+      return;
+    }
+    const body = await readRequestJson(req);
+    const code = normalizeInkoopKey(body?.code);
+    if (!code) {
+      sendJson(res, 400, { error: "Which code?" });
+      return;
+    }
+    const state = await readInkoopState();
+    const codes = new Set(state.grower_skip_codes || []);
+    if (body?.skip === false) codes.delete(code);
+    else codes.add(code);
+    await writeInkoopState({ ...state, grower_skip_codes: [...codes] });
+    inkoopGrowerDirectoryCache = null;
+    sendJson(res, 200, { skip_codes: [...codes].sort() });
     return;
   }
 

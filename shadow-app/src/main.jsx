@@ -18032,6 +18032,7 @@ function InkoopGrowersTab() {
   const [codeSearch, setCodeSearch] = useState("");
   const [drafts, setDrafts] = useState({});
   const [showLinked, setShowLinked] = useState(false);
+  const [skipDraft, setSkipDraft] = useState("");
 
   function load() {
     return apiJson("/api/inkoop/growers").then((payload) => { setData(payload); setError(""); }).catch((loadError) => setError(loadError.message));
@@ -18047,6 +18048,21 @@ function InkoopGrowersTab() {
       await load();
     } catch (relearnError) {
       setError(relearnError.message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function setSkip(code, skip) {
+    const value = String(code || "").trim().toUpperCase();
+    if (!value) return;
+    setBusy(true);
+    try {
+      await apiJson("/api/inkoop/growers/skip-codes", { method: "POST", body: JSON.stringify({ code: value, skip }) });
+      setMessage(skip ? `${value} is skipped as grower code -- every day is compared again in the background.` : `${value} counts as a grower code again.`);
+      await load();
+    } catch (skipError) {
+      setError(skipError.message);
     } finally {
       setBusy(false);
     }
@@ -18234,6 +18250,42 @@ function InkoopGrowersTab() {
               </tbody>
             </table>
           </div>
+        </div>
+      )}
+
+      {data && (
+        <div className="data-table-card">
+          <h3>Codes that are never a grower</h3>
+          <div className="notice">
+            A Connect lot has three code positions (Suppl., Avc., Transp). A code on this list is skipped there -- the grower is looked for in the other two.
+            Use it for transaction methods and routes, e.g. KVV PL (klok voor verkoop planten) or WW12. Changing the list compares every day again in the background.
+          </div>
+          <div className="row-actions">
+            <strong>Found by themselves:</strong>
+            {(data.route_codes || []).map((code) => <span key={code} className="ukdocs-status-badge muted" title="An auction: its lots carry buyer plates, never its own code">{code}</span>)}
+          </div>
+          <div className="row-actions" style={{ marginTop: 8 }}>
+            <strong>Chosen:</strong>
+            {(data.skip_codes || []).map((code) => (
+              <span key={code} className="ukdocs-status-badge info">
+                {code}{" "}
+                <button type="button" className="link-button" onClick={() => setSkip(code, false)} disabled={busy} title="Take it off the list">x</button>
+              </span>
+            ))}
+            {!(data.skip_codes || []).length && <span className="muted">none yet</span>}
+            <input size={10} value={skipDraft} onChange={(event) => setSkipDraft(event.target.value)} placeholder="e.g. KVV PL" />
+            <button type="button" onClick={() => { setSkip(skipDraft, true); setSkipDraft(""); }} disabled={busy || !skipDraft.trim()}>Add</button>
+          </div>
+          {!!data.skip_candidates?.length && (
+            <div className="row-actions" style={{ marginTop: 8 }}>
+              <strong>Worth a look</strong> <span className="muted">(bring in for 5+ suppliers):</span>
+              {data.skip_candidates.slice(0, 15).map((candidate) => (
+                <button key={candidate.code} type="button" onClick={() => setSkip(candidate.code, true)} disabled={busy} title={candidate.name || ""}>
+                  Skip {candidate.code} <small className="muted">({candidate.suppliers})</small>
+                </button>
+              ))}
+            </div>
+          )}
         </div>
       )}
 
