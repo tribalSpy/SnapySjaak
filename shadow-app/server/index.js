@@ -100,6 +100,9 @@ import {
   getInkoopLeveringBbStatus,
   saveInkoopLotEpp,
   applyInkoopEppBridge,
+  applyInkoopOrderBridge,
+  applyInkoopLotInfo,
+  getInkoopLotGlnPairs,
   getInkoopGrowerPavPairs,
   getInkoopConnectCodeStats,
   getInkoopInvoiceSuppliers,
@@ -6840,16 +6843,47 @@ function inkoopDescriptionsShareName(invoiceDescription, connectDescription) {
   return false;
 }
 
-// EPP list (from the Uniware recorder, or typed): per line a Connect lot and
-// its EPP number ("44759254;9100185445726"). Separators ; , tab or spaces.
+// EPP list -- the Uniware recorder's night action: per line a Connect lot,
+// its EPP and the Shift+? popup's lines ("lot;epp;info"), or just
+// "lot;epp". From the popup: the order number (the line after "Klant code":
+// the invoice's ON plus up to 3 digits) and the supplier's GLN (13 digits,
+// 87...).
+function parseInkoopLotInfo(info) {
+  const lines = String(info || "").split("|").map((line) => line.trim()).filter(Boolean);
+  let orderNumber = "";
+  const customerCode = lines.findIndex((line) => /klant\s*code/i.test(line));
+  if (customerCode >= 0) {
+    const next = lines.slice(customerCode + 1).find((line) => /^[A-Z]{0,3}\d{6,24}$/i.test(line.replace(/\s+/g, "")));
+    if (next) orderNumber = next.replace(/\s+/g, "");
+  }
+  if (!orderNumber) {
+    orderNumber = (lines.map((line) => line.replace(/\s+/g, "")).find((line) => /^\d{15,24}$/.test(line))) || "";
+  }
+  const gln = lines.map((line) => line.replace(/\s+/g, "")).find((line) => /^87\d{11}$/.test(line) && line !== orderNumber) || "";
+  return { order_number: orderNumber, gln };
+}
+
 function parseInkoopEppList(base64) {
   const text = Buffer.from(String(base64 || ""), "base64").toString("utf8");
+  const lines = text.split(/\r?\n/).filter((line) => line.trim());
+  const header = (lines[0] || "").toLowerCase().split(/[;\t]/).map((cell) => cell.trim());
+  const hasHeader = header.includes("lot");
   const rows = [];
-  for (const line of text.split(/\r?\n/)) {
+  for (const line of hasHeader ? lines.slice(1) : lines) {
+    if (hasHeader) {
+      const cells = line.split(/[;\t]/).map((cell) => cell.trim().replace(/^"|"$/g, ""));
+      const value = (name) => cells[header.indexOf(name)] || "";
+      const lot = value("lot");
+      if (!/^\d{6,10}$/.test(lot)) continue;
+      const epp = /^\d{12,14}$/.test(value("epp")) ? value("epp") : "";
+      const info = header.includes("info") ? value("info") : "";
+      rows.push({ lot: Number(lot), epp, info, ...parseInkoopLotInfo(info) });
+      continue;
+    }
     const cells = line.split(/[;,\t ]+/).map((cell) => cell.trim().replace(/^"|"$/g, ""));
     const epp = cells.find((cell) => /^\d{12,14}$/.test(cell));
     const lot = cells.find((cell) => /^\d{6,10}$/.test(cell));
-    if (epp && lot) rows.push({ lot: Number(lot), epp });
+    if (epp && lot) rows.push({ lot: Number(lot), epp, info: "", order_number: "", gln: "" });
   }
   return rows;
 }
@@ -7149,6 +7183,20 @@ function matchInkoopVeilingLines(erpRows, invoices, supplierMap = {}, supplierNa
   // placeholder PAV, so there is no overlap with erpByPav to worry about
   // double-claiming.
   const erpBySupplierCode = new Map();
+  // The night action's order number on a Connect lot ("18699274279648800030")
+  // under every prefix it can stand for: the invoice's ON is it without its
+  // last 0-3 digits.
+  const erpByOrderPrefix = new Map();
+  for (const row of Array.isArray(erpRows) ? erpRows : []) {
+    // Lots with a brief number are matched by it (see erpByPav below).
+    if (isRealInkoopPav(normalizeInkoopKey(row?.pav))) continue;
+    const order = normalizeUkdocsText(row?.uniware_order);
+    for (let cut = 0; order && cut <= 3 && order.length - cut >= 6; cut += 1) {
+      const prefix = order.slice(0, order.length - cut);
+      if (!erpByOrderPrefix.has(prefix)) erpByOrderPrefix.set(prefix, []);
+      erpByOrderPrefix.get(prefix).push(row);
+    }
+  }
   for (const row of Array.isArray(erpRows) ? erpRows : []) {
     const pav = normalizeInkoopKey(row?.pav);
     if (isRealInkoopPav(pav)) {
@@ -7206,6 +7254,23 @@ function matchInkoopVeilingLines(erpRows, invoices, supplierMap = {}, supplierNa
   // (GLN/FH number/name) and matched by quantity+price, since neither has
   // anything more specific than that to go on.
   function matchInkoopLineBySupplierCode(context, line) {
+    // The night action's order number (Connect line's ON + up to 3 digits):
+    // an exact pair, before anything by supplier.
+    const orderNumber = normalizeUkdocsText(line?.order_number);
+    if (orderNumber) {
+      const byOrder = (erpByOrderPrefix.get(orderNumber) || []).filter((row) => !consumedErpRows.has(row));
+      if (byOrder.length === 1) {
+        const row = byOrder[0];
+        consumedErpRows.add(row);
+        const diffs = [];
+        if (inkoopValuesDiffer(row.pieces, line.quantity)) diffs.push({ field: "quantity", erp: row.pieces, invoice: line.quantity });
+        if (inkoopValuesDiffer(parseFloat(row.price), line.unit_price)) diffs.push({ field: "unit_price", erp: parseFloat(row.price), invoice: line.unit_price });
+        const pair = { ...context, supplier_code: resolveErpRowSupplierCode(row, validSupplierCodes), supplier_match_type: "order number", erp_row: row };
+        if (diffs.length) matchedMismatch.push({ ...pair, diffs });
+        else matchedOk.push(pair);
+        return;
+      }
+    }
     const resolved = resolveInkoopSupplierCode(line?.supplier_gln, line?.supplier_fh_number, line?.supplier_name, supplierMap, supplierNameMap, manualLinks, supplierFhMap);
     if (!resolved.codes.length) {
       supplierNotLinked.push(context);
@@ -7865,6 +7930,10 @@ function groupInkoopInvoiceLinesByInvoice(flatLines) {
       company_number: line?.company_number || (String(line?.invoice_number || "").match(/^(\d{6})/) || [])[1] || "",
       company_name: line?.company_name || "",
       product_type_code: line?.product_type_code || "",
+      // The Connect line's order number (XML scheme ON): pairs it with the
+      // Connect lot of the same order number (night action) when there is
+      // no brief number.
+      order_number: line?.order_number || "",
     });
   }
   return [...byInvoice.values()];
@@ -9136,12 +9205,15 @@ async function inkoopGrowerDirectory(state) {
   if (inkoopGrowerDirectoryCache?.version === inkoopMatchVersion && inkoopGrowerDirectoryCache.stateFingerprint === inkoopStateFingerprint(state)) {
     return inkoopGrowerDirectoryCache.directory;
   }
-  const [pavPairs, codeStats, invoiceSuppliers, handelEvidence] = await Promise.all([
+  const [briefPairs, lotGlnPairs, codeStats, invoiceSuppliers, handelEvidence] = await Promise.all([
     getInkoopGrowerPavPairs().catch(() => []),
+    getInkoopLotGlnPairs().catch(() => []),
     getInkoopConnectCodeStats().catch(() => ({ suppliers: [], routes: [] })),
     getInkoopInvoiceSuppliers().catch(() => []),
     getInkoopHandelCodeEvidence().catch(() => []),
   ]);
+  // The night action's GLN per Connect lot counts like a brief-number match.
+  const pavPairs = [...briefPairs, ...lotGlnPairs];
   const directory = buildInkoopGrowerDirectory(state, { pavPairs, codeStats, invoiceSuppliers, handelEvidence });
   inkoopGrowerDirectoryCache = { version: inkoopMatchVersion, stateFingerprint: inkoopStateFingerprint(state), directory };
   return directory;
@@ -22778,14 +22850,24 @@ async function handleApi(req, res, url) {
       return;
     }
     const saved = await saveInkoopLotEpp(rows, String(body?.file?.name || ""));
-    const filled = await applyInkoopEppBridge();
+    const fromEpp = await applyInkoopEppBridge();
+    const fromOrder = await applyInkoopOrderBridge();
+    const withInfo = await applyInkoopLotInfo();
+    const filled = [...fromEpp, ...fromOrder, ...withInfo];
+    inkoopGrowerDirectoryCache = null;
     if (filled.length) {
       bumpInkoopMatchVersion();
       await refreshInkoopDaySummariesForDates(filled.map((row) => row.erp_date))
         .catch((queueError) => console.error("Queueing the Inkoop comparison failed:", queueError instanceof Error ? queueError.message : queueError));
       kickInkoopMatchWorker();
     }
-    sendJson(res, 200, { ok: true, lines: rows.length, saved, filled_now: filled.length });
+    sendJson(res, 200, {
+      ok: true, lines: rows.length, saved,
+      filled_now: fromEpp.length + fromOrder.length,
+      from_epp: fromEpp.length, from_order: fromOrder.length,
+      with_order_number: rows.filter((row) => row.order_number).length,
+      with_gln: rows.filter((row) => row.gln).length,
+    });
     return;
   }
 
@@ -22944,6 +23026,8 @@ async function handleApi(req, res, url) {
       // New Connect lots or invoice lines: an EPP may now find its brief number.
       if (erpRows.length || flatInvoiceLines.length) {
         await applyInkoopEppBridge().catch((bridgeError) => console.error("EPP bridge failed:", bridgeError instanceof Error ? bridgeError.message : bridgeError));
+        await applyInkoopOrderBridge().catch((bridgeError) => console.error("Order number bridge failed:", bridgeError instanceof Error ? bridgeError.message : bridgeError));
+        await applyInkoopLotInfo().catch((bridgeError) => console.error("Lot info failed:", bridgeError instanceof Error ? bridgeError.message : bridgeError));
       }
       // The per-invoice totals (Overview) of the invoices in this upload.
       await refreshInkoopInvoiceTotals(flatInvoiceLines.map((line) => line?.invoice_number))

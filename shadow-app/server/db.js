@@ -390,21 +390,93 @@ export async function saveInkoopLotEpp(rows, sourceFileName = "") {
   if (!pool || !Array.isArray(rows) || !rows.length) {
     return 0;
   }
-  const valid = dedupeByKeyKeepingLast(rows.filter((row) => row?.lot && row?.epp), (row) => String(row.lot));
+  const valid = dedupeByKeyKeepingLast(rows.filter((row) => row?.lot && (row?.epp || row?.info)), (row) => String(row.lot));
   for (const chunk of chunkArray(valid, INKOOP_UPSERT_CHUNK_SIZE)) {
     const values = [];
     const placeholders = chunk.map((row) => {
       const base = values.length;
-      values.push(row.lot, row.epp, sourceFileName);
-      return `($${base + 1}, $${base + 2}, $${base + 3})`;
+      values.push(row.lot, row.epp || null, sourceFileName, row.info || null, row.order_number || null, row.gln || null);
+      return `($${base + 1}, $${base + 2}, $${base + 3}, $${base + 4}, $${base + 5}, $${base + 6})`;
     });
     await pool.query(
-      `INSERT INTO inkoop_lot_epp (lot, epp, source_file_name) VALUES ${placeholders.join(", ")}
-       ON CONFLICT (lot) DO UPDATE SET epp = EXCLUDED.epp, source_file_name = EXCLUDED.source_file_name, imported_at = now()`,
+      `INSERT INTO inkoop_lot_epp (lot, epp, source_file_name, info, order_number, gln) VALUES ${placeholders.join(", ")}
+       ON CONFLICT (lot) DO UPDATE SET
+         epp = COALESCE(EXCLUDED.epp, inkoop_lot_epp.epp), source_file_name = EXCLUDED.source_file_name,
+         info = COALESCE(EXCLUDED.info, inkoop_lot_epp.info), order_number = COALESCE(EXCLUDED.order_number, inkoop_lot_epp.order_number),
+         gln = COALESCE(EXCLUDED.gln, inkoop_lot_epp.gln), imported_at = now()`,
       values,
     );
   }
   return valid.length;
+}
+
+// The order number and GLN of the night action on the Connect lots (raw:
+// uniware_order / uniware_gln) -- the matcher pairs a Connect invoice line by
+// its order number (ON), and the grower directory learns the GLN. Returns
+// the lots changed, with their Connect date.
+export async function applyInkoopLotInfo() {
+  if (!pool) {
+    return [];
+  }
+  const result = await pool.query(`
+    UPDATE inkoop_erp_lines e
+       SET raw = e.raw || jsonb_strip_nulls(jsonb_build_object('uniware_order', b.order_number, 'uniware_gln', b.gln)),
+           updated_at = now()
+      FROM inkoop_lot_epp b
+     WHERE e.lot = b.lot AND (b.order_number IS NOT NULL OR b.gln IS NOT NULL)
+       AND (COALESCE(e.raw->>'uniware_order', '') IS DISTINCT FROM COALESCE(b.order_number, '')
+         OR COALESCE(e.raw->>'uniware_gln', '') IS DISTINCT FROM COALESCE(b.gln, ''))
+    RETURNING e.lot::text AS lot, to_char(e.erp_date, 'YYYY-MM-DD') AS erp_date
+  `);
+  return result.rows;
+}
+
+// Connect lots without a PAV whose order number (from the popup: the
+// invoice's ON plus up to 3 digits) is on exactly one Connect invoice line
+// with a brief number (4 days either side): that brief number.
+export async function applyInkoopOrderBridge() {
+  if (!pool) {
+    return [];
+  }
+  const result = await pool.query(`
+    WITH candidates AS (
+      SELECT e.lot, min(i.reference_bt) AS pav, count(DISTINCT i.reference_bt) AS options
+        FROM inkoop_erp_lines e
+        JOIN inkoop_lot_epp b ON b.lot = e.lot AND btrim(COALESCE(b.order_number, '')) <> ''
+        JOIN inkoop_invoice_lines i
+          ON btrim(COALESCE(i.raw->>'order_number', '')) <> ''
+         AND left(b.order_number, length(i.raw->>'order_number')) = i.raw->>'order_number'
+         AND length(b.order_number) - length(i.raw->>'order_number') BETWEEN 0 AND 3
+         AND btrim(COALESCE(i.reference_bt, '')) <> ''
+         AND i.invoice_date BETWEEN e.erp_date - 4 AND e.erp_date + 4
+       WHERE COALESCE(btrim(e.pav), '') = '' OR e.pav ~ '^0+[A-Za-z]?$'
+       GROUP BY e.lot
+    )
+    UPDATE inkoop_erp_lines e
+       SET pav = c.pav, raw = e.raw || jsonb_build_object('pav_from', 'order number'), updated_at = now()
+      FROM candidates c
+     WHERE e.lot = c.lot AND c.options = 1
+    RETURNING e.lot::text AS lot, to_char(e.erp_date, 'YYYY-MM-DD') AS erp_date
+  `);
+  return result.rows;
+}
+
+// The night action's GLN per Connect lot, with the lot's three code
+// positions -- for the grower directory, like a brief-number match.
+export async function getInkoopLotGlnPairs() {
+  if (!pool) {
+    return [];
+  }
+  const result = await pool.query(`
+    SELECT btrim(b.gln) AS gln, '' AS fh_number, '' AS name,
+           upper(btrim(COALESCE(e.suppl, ''))) AS suppl, upper(btrim(COALESCE(e.avc, ''))) AS avc, upper(btrim(COALESCE(e.transp, ''))) AS transp,
+           count(*)::int AS matches, max(e.lot)::text AS example_pav
+      FROM inkoop_lot_epp b
+      JOIN inkoop_erp_lines e ON e.lot = b.lot
+     WHERE btrim(COALESCE(b.gln, '')) <> ''
+     GROUP BY 1, 4, 5, 6
+  `);
+  return result.rows;
 }
 
 // Connect lots without a PAV that have an EPP: the invoice line (Klok /
@@ -3122,6 +3194,12 @@ const databaseMigrations = [
       imported_at timestamptz NOT NULL DEFAULT now()
     )
   `,
+  // The night action's popup (Shift+?) per lot: all its lines, the order
+  // number (without the 3 digits Uniware adds) and the supplier's GLN.
+  `ALTER TABLE IF EXISTS inkoop_lot_epp ADD COLUMN IF NOT EXISTS info text`,
+  `ALTER TABLE IF EXISTS inkoop_lot_epp ADD COLUMN IF NOT EXISTS order_number text`,
+  `ALTER TABLE IF EXISTS inkoop_lot_epp ADD COLUMN IF NOT EXISTS gln text`,
+  `ALTER TABLE IF EXISTS inkoop_lot_epp ALTER COLUMN epp DROP NOT NULL`,
   // "Levering BB" (a Connect Screen export of deliveries): per Connect lot
   // ("Prt") the FloraHolland brief number ("Info", F9NKFJ/F -> F9NKFJf) and
   // order number. A bridge for Connect lots that have no PAV of their own.

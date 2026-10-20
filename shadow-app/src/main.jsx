@@ -16627,7 +16627,9 @@ function InkoopControlePage({ currentUser }) {
         method: "POST",
         body: JSON.stringify({ file: { name: eppFile.name, content_base64: await fileToBase64(eppFile) } }),
       });
-      setMessage(`EPP list: ${payload.lines} lot(s) with an EPP. Connect lots that got the invoice's brief number now: ${payload.filled_now}. The rest is tried again with every new upload.`);
+      setMessage(`EPP list: ${payload.lines} lot(s) -- ${payload.with_order_number} with an order number, ${payload.with_gln} with a GLN. `
+        + `Connect lots that got the invoice's brief number now: ${payload.filled_now} (${payload.from_epp} by EPP, ${payload.from_order} by order number). `
+        + `Order numbers also pair Connect lines without a brief number, and the GLNs go to the Growers tab. The rest is tried again with every new upload.`);
     } catch (uploadError) {
       setError(uploadError.message);
     } finally {
@@ -17050,7 +17052,7 @@ function InkoopControlePage({ currentUser }) {
         </div>
         <div className="row-actions">
           <label>
-            <span>EPP list (.csv: lot ; EPP -- from the Uniware recorder)</span>
+            <span>EPP list (.csv: lot ; EPP ; info -- the Uniware recorder's night action)</span>
             <input type="file" accept=".csv,.txt" onChange={(event) => setEppFile(event.target.files?.[0] || null)} />
           </label>
           <button type="button" onClick={uploadEppList} disabled={leveringBusy || !eppFile}>
