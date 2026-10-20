@@ -17861,10 +17861,12 @@ const INKOOP_RETOUR_STATUS_LABELS = {
   no_dispatch_data: "No dispatch data yet",
   no_return_expected: "OK -- no return needed",
   extra_return: "More returned than credited",
+  no_change: "OK -- no real correction (credited and invoiced again the same)",
+  price_corrected: "OK -- price corrected (same pieces)",
 };
 
 function InkoopRetourStatusBadge({ status }) {
-  const tone = status === "confirmed_return" || status === "credited" || status === "no_return_expected" ? "success"
+  const tone = status === "confirmed_return" || status === "credited" || status === "no_return_expected" || status === "no_change" || status === "price_corrected" ? "success"
     : status === "no_dispatch_data" ? "muted"
     : "danger";
   return <span className={`ukdocs-status-badge ${tone}`}>{INKOOP_RETOUR_STATUS_LABELS[status] || status}</span>;

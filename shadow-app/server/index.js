@@ -8831,26 +8831,73 @@ function inkoopOverallCorrectionRetourStatus(erpRow, dispatchByLot, customerMap,
 // and the amount invoiced again -- positive lines on the credit's invoice or
 // after it. Returned = credited - invoiced again. A plain negative Handel /
 // AI2 credit line is credited only.
+// "057390.FK.2026.1062" -> ["057390.FK.2026", 1062]: invoices of one series
+// compare by their sequence number.
+function inkoopInvoiceSequence(invoiceNumber) {
+  const match = String(invoiceNumber || "").match(/^(.*?)[.\s-]?(\d+)$/);
+  return match ? [match[1], Number(match[2])] : [String(invoiceNumber || ""), NaN];
+}
+
+// Was `invoiceNumber` issued before `creditInvoiceNumber` (same series,
+// lower sequence number)? Unknown -> false.
+function inkoopInvoiceIssuedBefore(invoiceNumber, creditInvoiceNumber) {
+  const [series, number] = inkoopInvoiceSequence(invoiceNumber);
+  const [creditSeries, creditNumber] = inkoopInvoiceSequence(creditInvoiceNumber);
+  return series === creditSeries && Number.isFinite(number) && Number.isFinite(creditNumber) && number < creditNumber;
+}
+
 function inkoopCorrectionBreakdown(item) {
   const lines = Array.isArray(item?.correction_lines) && item.correction_lines.length ? item.correction_lines : [item];
   const credits = lines.filter((line) => Number(line?.quantity) < 0);
   const creditInvoices = new Set(credits.map((line) => line.invoice_number));
   const firstCreditDate = credits.map((line) => String(line.invoice_date || "")).sort()[0] || "";
+  const firstCreditInvoice = credits.filter((line) => String(line.invoice_date || "") === firstCreditDate).map((line) => line.invoice_number)[0] || "";
   let original = 0;
   let reissued = 0;
+  let creditedValue = 0;
+  let reissuedValue = 0;
   for (const line of lines) {
     const quantity = Number(line?.quantity) || 0;
-    if (quantity <= 0) continue;
+    if (quantity < 0) {
+      creditedValue -= Number(line?.total) || 0;
+      continue;
+    }
+    if (quantity === 0) continue;
+    const date = String(line.invoice_date || "");
     // From the day of the credit on = invoiced again (also on another
-    // invoice that day: credited on FK.0480, invoiced again on FK.0483).
-    if (creditInvoices.has(line.invoice_number) || (firstCreditDate && String(line.invoice_date || "") >= firstCreditDate)) {
+    // invoice that day: credited on FK.0480, invoiced again on FK.0483) --
+    // but an invoice of that same day issued BEFORE the credit invoice
+    // (FK.1062 bought, FK.1067 credited -50 / again +50) is the original.
+    const sameDayEarlier = date === firstCreditDate && !creditInvoices.has(line.invoice_number) && inkoopInvoiceIssuedBefore(line.invoice_number, firstCreditInvoice);
+    if (!sameDayEarlier && (creditInvoices.has(line.invoice_number) || (firstCreditDate && date >= firstCreditDate))) {
       reissued += quantity;
+      reissuedValue += Number(line?.total) || 0;
     } else {
       original += quantity;
     }
   }
   const credited = credits.reduce((sum, line) => sum - (Number(line.quantity) || 0), 0);
-  return { original, credited, reissued, returned: Math.max(0, credited - reissued) };
+  return {
+    original,
+    credited,
+    reissued,
+    returned: Math.max(0, credited - reissued),
+    credited_value: Math.round(creditedValue * 100) / 100,
+    reissued_value: Math.round(reissuedValue * 100) / 100,
+  };
+}
+
+// Credited and invoiced again for the same pieces: "no_change" when the
+// amount is the same too (nothing really corrected), "price_corrected" when
+// only the amount differs. null otherwise.
+function inkoopSameQuantityCorrection(breakdown) {
+  if (!(breakdown.credited > 0) || inkoopValuesDiffer(breakdown.credited, breakdown.reissued)) {
+    return null;
+  }
+  if (!(breakdown.original > 0) || inkoopValuesDiffer(breakdown.original, breakdown.credited)) {
+    return null;
+  }
+  return Math.abs((breakdown.credited_value || 0) - (breakdown.reissued_value || 0)) <= 0.01 ? "no_change" : "price_corrected";
 }
 
 // How much should have gone back to retour: what we RECEIVED (the ERP lot's
@@ -9000,7 +9047,12 @@ async function computeInkoopCorrectionRetourChecks(state, { from, to }) {
     breakdown.returned = inkoopExpectedReturn(breakdown, received);
     breakdown.finally_invoiced = inkoopFinallyInvoiced(breakdown);
     breakdown.over_invoiced = inkoopOverInvoiced(breakdown, received);
-    const { status, lots, retour_pieces: retourPieces } = inkoopOverallCorrectionRetourStatus(item.lot_source, dispatchByLot, state.customer_map, received > 0 ? breakdown.returned : null, breakdown.over_invoiced);
+    const overall = inkoopOverallCorrectionRetourStatus(item.lot_source, dispatchByLot, state.customer_map, received > 0 ? breakdown.returned : null, breakdown.over_invoiced);
+    const { lots, retour_pieces: retourPieces } = overall;
+    // Credited and invoiced again the same lot: no need for ERP / dispatch
+    // data to know nothing (or only the price) changed.
+    const sameQuantity = inkoopSameQuantityCorrection(breakdown);
+    const status = sameQuantity && overall.status !== "over_invoiced" ? sameQuantity : overall.status;
     return {
       ...breakdown,
       received,
