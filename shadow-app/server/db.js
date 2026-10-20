@@ -1593,9 +1593,17 @@ export async function getInkoopCorrectionLines({ from, to, marginDays = 4 } = {}
      ORDER BY l.invoice_date, l.invoice_number, l.id`,
     [pavs, from, to, marginDays],
   );
+  // FloraHolland splits a lot for delivery by changing the brief number's
+  // last letter (F9H9CDa -> F9H9CDb): the Connect lots of every letter of
+  // the same base count for that purchase.
+  const letters = "abcdefghijklmnopqrstuvwxyz".split("");
+  const pavVariants = [...new Set(pavs.flatMap((pav) => {
+    const base = pav.replace(/[a-z]$/, "");
+    return base === pav ? [pav] : [base, ...letters.map((letter) => base + letter)];
+  }))];
   const erpLots = await pool.query(
     "SELECT lot::text AS lot, pav, pieces::float8 AS pieces, description FROM inkoop_erp_lines WHERE pav = ANY($1::text[])",
-    [pavs],
+    [pavVariants],
   );
   return { credits: credits.rows, pavLines: pavLines.rows, erpLots: erpLots.rows };
 }

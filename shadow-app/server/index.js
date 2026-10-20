@@ -6770,6 +6770,13 @@ function normalizeInkoopSupplierName(name) {
 // are reported separately rather than guessed at by date/qty/price.
 const INKOOP_MATCH_TOLERANCE = 0.01;
 
+// A brief number without the letter FloraHolland changes when it splits a
+// lot for delivery: "F9H9CDa" / "F9H9CDb" -> "F9H9CD" (only a lower-case
+// last letter -- "691672" and "F9VQSSA" stay as they are).
+function inkoopPavBase(value) {
+  return String(value || "").trim().replace(/[a-z]$/, "").toUpperCase();
+}
+
 function normalizeInkoopKey(value) {
   return String(value || "").trim().toUpperCase();
 }
@@ -8883,6 +8890,20 @@ function inkoopCorrectionBreakdown(item) {
   const creditInvoices = new Set(credits.map((line) => line.invoice_number));
   const firstCreditDate = credits.map((line) => String(line.invoice_date || "")).sort()[0] || "";
   const firstCreditInvoice = credits.filter((line) => String(line.invoice_date || "") === firstCreditDate).map((line) => line.invoice_number)[0] || "";
+  // The line's place on its invoice ("<invoice>#17"): on the credit invoice
+  // itself, purchases before the first credit line are the original (bought
+  // 10x75 and 12x75 on FK.0992, its correction -12x75 / +11x75 below them).
+  const lineIndex = (line) => {
+    const match = String(line?.id || "").match(/#(\d+)$/);
+    return match ? Number(match[1]) : null;
+  };
+  const firstCreditIndex = new Map();
+  for (const line of credits) {
+    const index = lineIndex(line);
+    if (index === null) continue;
+    const known = firstCreditIndex.get(line.invoice_number);
+    if (known === undefined || index < known) firstCreditIndex.set(line.invoice_number, index);
+  }
   let original = 0;
   let reissued = 0;
   let creditedValue = 0;
@@ -8900,7 +8921,10 @@ function inkoopCorrectionBreakdown(item) {
     // but an invoice of that same day issued BEFORE the credit invoice
     // (FK.1062 bought, FK.1067 credited -50 / again +50) is the original.
     const sameDayEarlier = date === firstCreditDate && !creditInvoices.has(line.invoice_number) && inkoopInvoiceIssuedBefore(line.invoice_number, firstCreditInvoice);
-    if (!sameDayEarlier && (creditInvoices.has(line.invoice_number) || (firstCreditDate && date >= firstCreditDate))) {
+    const index = lineIndex(line);
+    const beforeCreditOnItsInvoice = creditInvoices.has(line.invoice_number) && index !== null
+      && firstCreditIndex.has(line.invoice_number) && index < firstCreditIndex.get(line.invoice_number);
+    if (!sameDayEarlier && !beforeCreditOnItsInvoice && (creditInvoices.has(line.invoice_number) || (firstCreditDate && date >= firstCreditDate))) {
       reissued += quantity;
       reissuedValue += Number(line?.total) || 0;
     } else {
@@ -9035,7 +9059,8 @@ async function computeInkoopCorrectionRetourChecks(state, { from, to }) {
   const erpPiecesByPav = new Map();
   const erpDescriptionByPav = new Map();
   for (const row of erpLots) {
-    const pav = normalizeInkoopKey(row.pav);
+    // Keyed by the brief number without its split letter (F9H9CDa/b).
+    const pav = inkoopPavBase(row.pav);
     if (!lotsByPav.has(pav)) lotsByPav.set(pav, []);
     lotsByPav.get(pav).push(String(row.lot));
     erpPiecesByPav.set(pav, (erpPiecesByPav.get(pav) || 0) + (Number(row.pieces) || 0));
@@ -9059,12 +9084,12 @@ async function computeInkoopCorrectionRetourChecks(state, { from, to }) {
         // invoice lines (the original purchase), else the Connect lot.
         description: String(credit.description || "").trim()
           || group.map((line) => String(line.description || "").trim()).find(Boolean)
-          || erpDescriptionByPav.get(pav) || "",
+          || erpDescriptionByPav.get(inkoopPavBase(credit.pav)) || "",
         quantity: Math.round(group.reduce((sum, line) => sum + (Number(line.quantity) || 0), 0) * 100) / 100,
         total: Math.round(group.reduce((sum, line) => sum + (Number(line.total) || 0), 0) * 100) / 100,
         correction_lines: group,
-        lot_source: { lot: (lotsByPav.get(pav) || []).join("+") },
-        erp_pieces: erpPiecesByPav.get(pav) || 0,
+        lot_source: { lot: (lotsByPav.get(inkoopPavBase(credit.pav)) || []).join("+") },
+        erp_pieces: erpPiecesByPav.get(inkoopPavBase(credit.pav)) || 0,
       });
     } else {
       // Handel / AI2 credit: no PAV, so no ERP lot to follow.
