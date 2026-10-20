@@ -17336,7 +17336,7 @@ function InkoopPeriodReportTable({ rows }) {
   return (
     <div className="table-wrap">
       <table className="data-table">
-        <thead><tr><th>Period</th><th>Days</th><th>Invoiced</th><th>Recorded in ERP</th><th>Difference</th><th>Mismatches</th><th>Mismatch value</th><th>Gaps</th><th>Gap value</th><th>Emballage</th><th>Products</th></tr></thead>
+        <thead><tr><th>Period</th><th>Days</th><th>Invoiced</th><th>Connect Data</th><th>Difference</th><th>Mismatches</th><th>Mismatch value</th><th>Gaps</th><th>Gap value</th><th>Emballage</th><th>Products</th></tr></thead>
         <tbody>
           {rows.map((row) => (
             <tr key={row.period}>
@@ -17460,7 +17460,7 @@ function InkoopDashboardTab({ company }) {
                 </div>
                 <div className="inkoop-summary-card">
                   <div className="inkoop-summary-value">{formatInkoopEuro(todaySummary.erp_value)}</div>
-                  <div className="inkoop-summary-label">Recorded in ERP</div>
+                  <div className="inkoop-summary-label">Connect Data</div>
                 </div>
                 <div className="inkoop-summary-card">
                   <div className="inkoop-summary-value">{formatInkoopEuro(todaySummary.purchase_value - todaySummary.erp_value)}</div>
@@ -17480,11 +17480,11 @@ function InkoopDashboardTab({ company }) {
 
           <InkoopCollapsibleCard title="Day report">
             <div className="notice">
-              "Invoiced" vs "Recorded in ERP" are plain day-wide totals, matched by date only -- not by grower or product. Use this first to see whether the day balanced financially at all before drilling into Compare &amp; Reconcile or Follow-up for the specific lines.
+              "Invoiced" vs "Connect Data" are plain day-wide totals, matched by date only -- not by grower or product. Use this first to see whether the day balanced financially at all before drilling into Compare &amp; Reconcile or Follow-up for the specific lines.
             </div>
             <div className="table-wrap">
               <table className="data-table">
-                <thead><tr><th>Date</th><th>Invoiced</th><th>Recorded in ERP</th><th>Difference</th><th>Mismatches</th><th>Mismatch value</th><th>Gaps</th><th>Gap value</th><th>Emballage</th><th>Products</th></tr></thead>
+                <thead><tr><th>Date</th><th>Invoiced</th><th>Connect Data</th><th>Difference</th><th>Mismatches</th><th>Mismatch value</th><th>Gaps</th><th>Gap value</th><th>Emballage</th><th>Products</th></tr></thead>
                 <tbody>
                   {dayReport.map((day) => (
                     <tr key={day.date}>
@@ -17509,7 +17509,7 @@ function InkoopDashboardTab({ company }) {
           <InkoopCollapsibleCard title="Week report">
             <div className="table-wrap">
               <table className="data-table">
-                <thead><tr><th>Week of</th><th>Invoiced</th><th>Recorded in ERP</th><th>Difference</th><th>Mismatches</th><th>Mismatch value</th><th>Gaps</th><th>Gap value</th><th>Emballage</th><th>Products</th></tr></thead>
+                <thead><tr><th>Week of</th><th>Invoiced</th><th>Connect Data</th><th>Difference</th><th>Mismatches</th><th>Mismatch value</th><th>Gaps</th><th>Gap value</th><th>Emballage</th><th>Products</th></tr></thead>
                 <tbody>
                   {weekReport.map((week) => (
                     <tr key={week.week_start}>
