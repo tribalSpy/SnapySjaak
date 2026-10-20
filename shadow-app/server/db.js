@@ -256,7 +256,7 @@ export async function getInkoopGrowerPavPairs() {
     SELECT btrim(COALESCE(i.supplier_gln, '')) AS gln, btrim(COALESCE(i.supplier_fh_number, '')) AS fh_number,
            max(i.supplier_name) AS name,
            upper(btrim(COALESCE(e.suppl, ''))) AS suppl, upper(btrim(COALESCE(e.avc, ''))) AS avc, upper(btrim(COALESCE(e.transp, ''))) AS transp,
-           count(*)::int AS matches
+           count(*)::int AS matches, max(i.reference_bt) AS example_pav
       FROM inkoop_invoice_lines i
       JOIN inkoop_erp_lines e ON e.pav = i.reference_bt
      WHERE btrim(COALESCE(i.reference_bt, '')) <> ''

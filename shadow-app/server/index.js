@@ -8878,6 +8878,9 @@ function buildInkoopGrowerDirectory(state, { pavPairs, codeStats, invoiceSupplie
 
   // Brief-number tallies per GLN / FH number.
   const tally = { gln: new Map(), fh: new Map() };
+  // Per GLN / FH number and code: the supplier name on the invoice, how many
+  // matches and one brief number -- shown so a link can be checked.
+  const pairDetail = { gln: new Map(), fh: new Map() };
   const pavSeen = { gln: new Map(), fh: new Map() }; // matches, and whether all were under a route code
   for (const pair of pavPairs) {
     const code = growerCode(pair);
@@ -8890,6 +8893,10 @@ function buildInkoopGrowerDirectory(state, { pavPairs, codeStats, invoiceSupplie
       if (!code) continue;
       if (!tally[kind].has(value)) tally[kind].set(value, new Map());
       tally[kind].get(value).set(code, (tally[kind].get(value).get(code) || 0) + pair.matches);
+      const detailKey = `${value}|${code}`;
+      const detail = pairDetail[kind].get(detailKey) || { name: pair.name || "", matches: 0, example_pav: pair.example_pav || "" };
+      detail.matches += pair.matches;
+      pairDetail[kind].set(detailKey, detail);
     }
   }
   const learned = { gln: {}, fh: {} };
@@ -9030,11 +9037,24 @@ function buildInkoopGrowerDirectory(state, { pavPairs, codeStats, invoiceSupplie
 
   // Connect grower codes: every GLN / FH number known for each.
   const codes = new Map();
+  const supplierNameBy = { gln: new Map(), fh: new Map() };
+  for (const supplier of invoiceSuppliers) {
+    if (supplier.gln) supplierNameBy.gln.set(normalizeInkoopKey(supplier.gln), supplier.name || "");
+    const fhKey = normalizeInkoopFhKey(supplier.fh_number);
+    if (fhKey) supplierNameBy.fh.set(fhKey, supplier.name || "");
+  }
   const addIdentity = (code, kind, value, source) => {
     if (!code || !value) return;
     if (!codes.has(code)) codes.set(code, { code, name: masterNames.get(code) || "", gln: new Map(), fh: new Map() });
     const target = codes.get(code)[kind];
-    if (!target.has(value)) target.set(value, source);
+    if (target.has(value)) return;
+    const detail = pairDetail[kind].get(`${value}|${code}`);
+    target.set(value, {
+      source,
+      supplier_name: detail?.name || supplierNameBy[kind].get(value) || "",
+      matches: source === "brief number" ? detail?.matches || 0 : 0,
+      example_pav: source === "brief number" ? detail?.example_pav || "" : "",
+    });
   };
   for (const [gln, entry] of Object.entries(master.gln)) addIdentity(normalizeInkoopKey(entry?.code), "gln", gln, "stamgegevens");
   for (const [fh, entry] of Object.entries(master.fh)) addIdentity(normalizeInkoopKey(entry?.code), "fh", fh, "stamgegevens");
@@ -9053,8 +9073,11 @@ function buildInkoopGrowerDirectory(state, { pavPairs, codeStats, invoiceSupplie
     return {
       code: entry.code,
       name: entry.name,
-      glns: [...entry.gln.entries()].map(([value, source]) => ({ value, source })),
-      fh_numbers: [...entry.fh.entries()].map(([value, source]) => ({ value, source })),
+      glns: [...entry.gln.entries()].map(([value, info]) => ({ value, ...info })),
+      fh_numbers: [...entry.fh.entries()].map(([value, info]) => ({ value, ...info })),
+      // Different supplier names under this code: an aanvoerder / collector
+      // bringing in for other growers (or one company's several numbers).
+      supplier_names: [...new Set([...entry.gln.values(), ...entry.fh.values()].map((info) => info.supplier_name).filter(Boolean))],
       lots: stats.lots || 0,
       lots_without_pav: stats.lots_without_pav || 0,
       last_date: stats.last_date || "",

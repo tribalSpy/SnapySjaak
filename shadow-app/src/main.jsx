@@ -18082,7 +18082,17 @@ function InkoopGrowersTab() {
   const codes = (data?.codes || []).filter((entry) => matches(`${entry.code} ${entry.name} ${entry.glns.map((item) => item.value).join(" ")} ${entry.fh_numbers.map((item) => item.value).join(" ")}`, codeSearch));
   const keyOf = (supplier) => `${supplier.gln}|${supplier.fh_number}`;
   const identityList = (items) => (items.length
-    ? items.map((item) => <div key={item.value}>{item.value} <small className="muted">({INKOOP_GROWER_SOURCE_LABELS[item.source] || item.source})</small></div>)
+    ? items.map((item) => (
+      <div key={item.value} style={{ marginBottom: 3 }}>
+        {item.value} <small className="muted">({INKOOP_GROWER_SOURCE_LABELS[item.source] || item.source})</small>
+        {(item.supplier_name || item.matches) && (
+          <div style={{ fontSize: "0.76rem", color: "#6b7280" }}>
+            {item.supplier_name}
+            {item.matches ? ` -- ${item.matches} match${item.matches === 1 ? "" : "es"}${item.example_pav ? `, e.g. brief number ${item.example_pav}` : ""}` : ""}
+          </div>
+        )}
+      </div>
+    ))
     : <span className="muted">-</span>);
 
   return (
@@ -18191,7 +18201,8 @@ function InkoopGrowersTab() {
             <input value={codeSearch} onChange={(event) => setCodeSearch(event.target.value)} placeholder="Search code, name, GLN, FH" />
           </div>
           <div className="notice">
-            Every grower code in the Connect data with the GLNs and FH numbers known for it.
+            Every grower code in the Connect data with the GLNs and FH numbers known for it -- with the supplier name on the invoice, and for a
+            brief-number link how many matches and one brief number (look it up in Search to check).
             <strong> No GLN / FH</strong> with lots without a brief number means: a Handel / AI2 invoice line of that grower can't find these lots.
             {!!data.route_codes?.length && <> Auction / route codes, never a grower: {data.route_codes.join(", ")}.</>}
           </div>
@@ -18204,7 +18215,14 @@ function InkoopGrowersTab() {
                   return (
                     <tr key={entry.code} style={unreachable ? { background: "#fff7ed" } : undefined}>
                       <td><strong>{entry.code}</strong></td>
-                      <td>{entry.name || <span className="muted">-</span>}</td>
+                      <td>
+                        {entry.name || <span className="muted">-</span>}
+                        {(entry.supplier_names || []).length > 1 && (
+                          <div style={{ fontSize: "0.78rem", color: "#b45309", marginTop: 4 }} title={entry.supplier_names.join(", ")}>
+                            Brings in for {entry.supplier_names.length} suppliers (aanvoerder / collector, or one company's several numbers)
+                          </div>
+                        )}
+                      </td>
                       <td>{identityList(entry.glns)}</td>
                       <td>{identityList(entry.fh_numbers)}</td>
                       <td>{entry.lots}</td>
