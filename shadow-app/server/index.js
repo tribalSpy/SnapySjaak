@@ -8488,8 +8488,14 @@ const INKOOP_EMPTY_DAY_BUCKET = {
 
 // Which master data a stored day was computed with -- changing supplier
 // links, facturation groups, BW codes etc. changes the matching.
+// Raise this when the matching rules change: every stored day is then
+// compared again once (at start-up), not only days whose data changed.
+// 2026-10-20: Handel/AI2 by product name, other pieces/price = difference.
+const INKOOP_MATCH_RULES_VERSION = "2026-10-20";
+
 function inkoopStateFingerprint(state) {
   return crypto.createHash("sha1").update(JSON.stringify([
+    INKOOP_MATCH_RULES_VERSION,
     state.supplier_map, state.supplier_name_map, state.supplier_fh_map, state.supplier_bw_map,
     state.manual_supplier_links, state.facturation_groups, state.customer_map,
   ])).digest("hex");
