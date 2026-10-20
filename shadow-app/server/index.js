@@ -9032,11 +9032,13 @@ async function computeInkoopCorrectionRetourChecks(state, { from, to }) {
   }
   const lotsByPav = new Map();
   const erpPiecesByPav = new Map();
+  const erpDescriptionByPav = new Map();
   for (const row of erpLots) {
     const pav = normalizeInkoopKey(row.pav);
     if (!lotsByPav.has(pav)) lotsByPav.set(pav, []);
     lotsByPav.get(pav).push(String(row.lot));
     erpPiecesByPav.set(pav, (erpPiecesByPav.get(pav) || 0) + (Number(row.pieces) || 0));
+    if (row.description && !erpDescriptionByPav.has(pav)) erpDescriptionByPav.set(pav, String(row.description).trim());
   }
   const items = [];
   const seenPavs = new Set();
@@ -9052,7 +9054,11 @@ async function computeInkoopCorrectionRetourChecks(state, { from, to }) {
         invoice_number: [...new Set(group.map((line) => line.invoice_number).filter(Boolean))].join(" + "),
         invoice_date: latestCredit.invoice_date,
         pav: credit.pav,
-        description: credit.description,
+        // A credit line can come without a product name: the PAV's other
+        // invoice lines (the original purchase), else the Connect lot.
+        description: String(credit.description || "").trim()
+          || group.map((line) => String(line.description || "").trim()).find(Boolean)
+          || erpDescriptionByPav.get(pav) || "",
         quantity: Math.round(group.reduce((sum, line) => sum + (Number(line.quantity) || 0), 0) * 100) / 100,
         total: Math.round(group.reduce((sum, line) => sum + (Number(line.total) || 0), 0) * 100) / 100,
         correction_lines: group,
