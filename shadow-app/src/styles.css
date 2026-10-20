@@ -335,6 +335,9 @@ h1 {
   min-width: 0;
   padding: 28px;
   padding-left: 46px;
+  /* Room below the last row: the Windows taskbar (or a full-screen
+     browser) can cover the bottom of the page. */
+  padding-bottom: 140px;
 }
 
 .public-clock-workspace {
