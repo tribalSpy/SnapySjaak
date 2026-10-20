@@ -242,6 +242,26 @@ const INVOICE_LINE_RAW_SQL = `(raw || jsonb_build_object('invoice_number', invoi
   'description', description, 'source_file_name', source_file_name, 'invoice_date', to_char(invoice_date, 'YYYY-MM-DD'),
   'company_number', company_number, 'company_name', company_name))`;
 
+// Supplier links learned from the brief-number matches: a Klokfactuur /
+// Connect line (supplier GLN + FH number) and the Connect lot with the same
+// brief number (supplier code). Per GLN / FH number / code: how often.
+export async function getInkoopLearnedSupplierLinks() {
+  if (!pool) {
+    return [];
+  }
+  const result = await pool.query(`
+    SELECT btrim(i.supplier_gln) AS gln, btrim(i.supplier_fh_number) AS fh_number, max(i.supplier_name) AS name,
+           upper(btrim(e.suppl)) AS code, count(*)::int AS matches
+      FROM inkoop_invoice_lines i
+      JOIN inkoop_erp_lines e ON e.pav = i.reference_bt
+     WHERE btrim(i.reference_bt) <> '' AND btrim(COALESCE(e.suppl, '')) <> ''
+       AND i.invoice_type IN ('klokfactuur', 'connect')
+       AND (btrim(COALESCE(i.supplier_gln, '')) <> '' OR btrim(COALESCE(i.supplier_fh_number, '')) <> '')
+     GROUP BY 1, 2, 4
+  `);
+  return result.rows;
+}
+
 export async function saveInkoopLeveringBb(rows, sourceFileName = "") {
   if (!pool || !Array.isArray(rows) || !rows.length) {
     return 0;

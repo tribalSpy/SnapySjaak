@@ -98,6 +98,7 @@ import {
   saveInkoopLeveringBb,
   applyInkoopLeveringBbBridge,
   getInkoopLeveringBbStatus,
+  getInkoopLearnedSupplierLinks,
   saveInkoopIssueStatus,
   upsertLlmAgentHeartbeat,
   upsertShelfCountNightlyRun,
@@ -6915,14 +6916,14 @@ function resolveInkoopSupplierCode(gln, fhNumber, name, supplierMap, supplierNam
   if (normalizedGln) {
     const masterMatch = supplierMap?.[gln] || supplierMap?.[normalizedGln];
     if (masterMatch?.code) {
-      return { codes: [normalizeInkoopKey(masterMatch.code)], match_type: "gln" };
+      return { codes: [normalizeInkoopKey(masterMatch.code)], match_type: masterMatch.source === "learned" ? "learned" : "gln" };
     }
   }
   const fhKey = normalizeInkoopFhKey(fhNumber);
   if (fhKey) {
     const fhMatch = supplierFhMap?.[fhKey];
     if (fhMatch?.code) {
-      return { codes: [normalizeInkoopKey(fhMatch.code)], match_type: "fh_number" };
+      return { codes: [normalizeInkoopKey(fhMatch.code)], match_type: fhMatch.source === "learned" ? "learned" : "fh_number" };
     }
   }
   const normalizedName = normalizeInkoopSupplierName(name);
@@ -8806,14 +8807,71 @@ function mergeInkoopDayResults(results) {
   return merged;
 }
 
+// Supplier links learned from the data itself (see
+// getInkoopLearnedSupplierLinks): a GLN / FH number whose brief-number
+// matches go to one Connect supplier code. The stamgegevens are often
+// incomplete; these fill the gaps for Handel / AI2 lines. Skipped: codes
+// that stand for many growers -- the auction locations (WEST, VBA, KVV PL,
+// FLORA) a clock purchase is booked under -- and GLNs without a clear code.
+let inkoopLearnedSupplierCache = null;
+
+function buildInkoopLearnedSupplierMaps(rows) {
+  const keysPerCode = new Map();
+  for (const row of rows) {
+    const key = row.gln || `FH:${normalizeInkoopFhKey(row.fh_number)}`;
+    if (!keysPerCode.has(row.code)) keysPerCode.set(row.code, new Set());
+    keysPerCode.get(row.code).add(key);
+  }
+  const generic = new Set([...keysPerCode.entries()].filter(([, keys]) => keys.size > 3).map(([code]) => code));
+  const pick = (groups) => {
+    const map = {};
+    for (const [key, entries] of groups) {
+      const usable = entries.filter((entry) => !generic.has(entry.code));
+      const total = entries.reduce((sum, entry) => sum + entry.matches, 0);
+      const best = usable.sort((left, right) => right.matches - left.matches)[0];
+      if (best && best.matches >= 2 && best.matches / total >= 0.8) {
+        map[key] = { code: best.code, name: best.name || "", source: "learned" };
+      }
+    }
+    return map;
+  };
+  const byGln = new Map();
+  const byFh = new Map();
+  for (const row of rows) {
+    if (row.gln) {
+      if (!byGln.has(row.gln)) byGln.set(row.gln, []);
+      byGln.get(row.gln).push(row);
+    }
+    const fhKey = normalizeInkoopFhKey(row.fh_number);
+    if (fhKey) {
+      if (!byFh.has(fhKey)) byFh.set(fhKey, []);
+      byFh.get(fhKey).push(row);
+    }
+  }
+  return { gln: pick(byGln), fh: pick(byFh), generic_codes: [...generic] };
+}
+
+async function inkoopLearnedSupplierMaps() {
+  if (inkoopLearnedSupplierCache?.version === inkoopMatchVersion) {
+    return inkoopLearnedSupplierCache.maps;
+  }
+  const maps = buildInkoopLearnedSupplierMaps(await getInkoopLearnedSupplierLinks().catch(() => []));
+  inkoopLearnedSupplierCache = { version: inkoopMatchVersion, maps };
+  return maps;
+}
+
 async function computeInkoopLiveMatchFresh(state, { from, to }) {
-  const [allErpRows, invoiceLines] = await Promise.all([
+  const [allErpRows, invoiceLines, learned] = await Promise.all([
     getInkoopErpLines({ from, to }),
     getInkoopInvoiceLines({ from, to }),
+    inkoopLearnedSupplierMaps(),
   ]);
   const erpRows = excludeInkoopInternalBunchRows(allErpRows, state.supplier_bw_map);
   const invoices = groupInkoopInvoiceLinesByInvoice(invoiceLines);
-  const result = matchInkoopVeilingLines(erpRows, invoices, state.supplier_map, state.supplier_name_map, state.manual_supplier_links, state.supplier_fh_map);
+  // The stamgegevens (and manual links) always win over a learned link.
+  const supplierMap = { ...learned.gln, ...state.supplier_map };
+  const supplierFhMap = { ...learned.fh, ...state.supplier_fh_map };
+  const result = matchInkoopVeilingLines(erpRows, invoices, supplierMap, state.supplier_name_map, state.manual_supplier_links, supplierFhMap);
   const withReturns = await reclassifyInkoopConfirmedReturns(result, state.customer_map);
   // Tagged in place (fresh rows from this request's own query) so every
   // view showing an only-in-ERP gap can say what kind of party it is --
@@ -22963,6 +23021,21 @@ async function handleApi(req, res, url) {
   // cover (e.g. a Handel Aankopen partner with no GLN on record at all,
   // like "KONKOP") -- staff fill in the internal code once, using the
   // FloraHolland number/name shown in a "supplier not linked" result row.
+  // The supplier links learned from the brief-number matches (to check them).
+  if (url.pathname === "/api/inkoop/suppliers/learned" && req.method === "GET") {
+    if (!requirePermission(res, requestUser, PERMISSIONS.INKOOP_VIEW)) {
+      return;
+    }
+    const maps = await inkoopLearnedSupplierMaps();
+    const state = await readInkoopState();
+    const links = Object.entries(maps.gln).map(([gln, entry]) => ({
+      gln, name: entry.name, code: entry.code,
+      in_master_data: Boolean(state.supplier_map?.[gln]),
+    })).sort((left, right) => left.name.localeCompare(right.name));
+    sendJson(res, 200, { links, fh_links: Object.keys(maps.fh).length, generic_codes: maps.generic_codes });
+    return;
+  }
+
   if (url.pathname === "/api/inkoop/suppliers/manual" && req.method === "POST") {
     if (!requirePermission(res, requestUser, PERMISSIONS.INKOOP_VIEW)) {
       return;

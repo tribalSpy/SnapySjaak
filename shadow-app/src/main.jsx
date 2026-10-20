@@ -16929,6 +16929,7 @@ function InkoopControlePage({ currentUser }) {
             </div>
           </>
         )}
+        <InkoopLearnedSupplierLinks />
       </div>
 
       <div className="data-table-card">
@@ -17358,7 +17359,7 @@ function InkoopResultTables({ result, windowDays, manualLinkDrafts, setManualLin
                       <td>{inkoopShortDate(row.invoice_date)}</td>
                       <td>{inkoopCompanyLabel(row)}</td>
                       <td><InkoopInvoiceLink invoiceNumber={row.invoice_number} /></td>
-                      <td>{row.reference_bt || row.supplier_code || "-"}{row.supplier_match_type === "name" ? " (name match)" : ""}</td>
+                      <td>{row.reference_bt || row.supplier_code || "-"}{row.supplier_match_type === "name" ? " (name match)" : row.supplier_match_type === "learned" ? " (learned link)" : ""}</td>
                       <td>
                         {row.description}
                         <InkoopConnectCheck check={row.connect_check} code={row.supplier_code} quantity={row.quantity} price={row.unit_price} />
@@ -18007,6 +18008,50 @@ const INKOOP_RETOUR_STATUS_LABELS = {
   no_change: "OK -- no real correction (credited and invoiced again the same)",
   price_corrected: "OK -- price corrected (same pieces)",
 };
+
+// Supplier links the app learned itself: a grower's GLN on Klokfactuur /
+// Connect lines, and the Connect supplier code of the lots with the same
+// brief number. Used for Handel / AI2 lines when the stamgegevens have no
+// such GLN (the stamgegevens and manual links always win).
+function InkoopLearnedSupplierLinks() {
+  const [data, setData] = useState(null);
+  const [open, setOpen] = useState(false);
+  useEffect(() => {
+    if (!open || data) return;
+    apiJson("/api/inkoop/suppliers/learned").then(setData).catch(() => setData({ links: [], generic_codes: [] }));
+  }, [open, data]);
+  return (
+    <>
+      <div className="section-header">
+        <h3>Learned supplier links</h3>
+        <button type="button" onClick={() => setOpen((value) => !value)}>{open ? "Hide" : "Show"}</button>
+      </div>
+      {open && (
+        <>
+          <div className="notice">
+            Learned from the data: a grower's GLN on Klokfactuur / Connect invoice lines, and the Connect supplier code of the lots with the same brief number.
+            Used to find the supplier of Handel Aankopen / AI2 lines whose GLN isn't in the stamgegevens. The stamgegevens and manual links always win.
+            Codes that stand for many growers are never learned{data?.generic_codes?.length ? ` (${data.generic_codes.join(", ")})` : ""}.
+          </div>
+          {!data && <p className="muted">Loading...</p>}
+          {data && (
+            <div className="table-wrap">
+              <table className="data-table">
+                <thead><tr><th>GLN</th><th>Name</th><th>Connect code</th><th>Also in stamgegevens</th></tr></thead>
+                <tbody>
+                  {data.links.map((link) => (
+                    <tr key={link.gln}><td>{link.gln}</td><td>{link.name}</td><td>{link.code}</td><td>{link.in_master_data ? "yes" : <strong>no -- learned</strong>}</td></tr>
+                  ))}
+                  {!data.links.length && <tr><td colSpan={4}>Nothing learned yet.</td></tr>}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </>
+      )}
+    </>
+  );
+}
 
 // Why a supplier-matched invoice line (Handel / AI2 / Connect without
 // brief number) found no Connect lot: the supplier's lots around its date
