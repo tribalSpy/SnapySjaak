@@ -247,7 +247,7 @@ function pageHeading(page) {
     case "pdstepplan":
       return {
         title: "PD Step Plan",
-        caption: "Every export shipment from PD keuring to papers sent, one step at a time.",
+        caption: "The whole PD day in order: PD keuringen, the day steps (stock control, Connect, phyto, e-Cert), then per shipment up to the signed phyto in e-Cert.",
       };
     case "inkoop":
       return {
@@ -8854,6 +8854,30 @@ function PdStepPlanPage({ onNavigate }) {
     }
   }
 
+  // A step done in another program (Uniware, e-Cert): mark it (or undo).
+  async function markStep(step, row, done, notNeeded = false) {
+    const what = `${row ? `${row.customer_name} -- ` : ""}${step.number ? `${step.number}. ` : ""}${step.label}`;
+    if (done && !window.confirm(`${what}${String.fromCharCode(10, 10)}${notNeeded ? "Mark as not needed" : "Mark as done"}?`)) {
+      return;
+    }
+    setBusy(true);
+    try {
+      setPlan(await apiJson("/api/pd-step-plan/mark", {
+        method: "POST",
+        body: JSON.stringify({ date, step: step.key, collection_id: row?.collection_id || "", done, not_needed: notNeeded }),
+      }));
+      setError("");
+    } catch (saveError) {
+      setError(saveError.message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  function showDaySteps() {
+    document.getElementById("pd-day-steps")?.scrollIntoView({ behavior: "smooth", block: "start" });
+  }
+
   function openSkipMenu(event, row, step) {
     if (!step?.skippable?.length) return;
     event.preventDefault();
@@ -8866,7 +8890,9 @@ function PdStepPlanPage({ onNavigate }) {
 
   const rows = plan?.rows || [];
   const summary = plan?.summary;
-  const stepTitles = ["1. PD Keuring", "2. Connect / truck / plate (/ pieces)", "3. Invoices & export docs", "4. CSI / Eric Docs"];
+  const day = plan?.day;
+  const stepTitles = ["1. PD Keuring", "2-10. Day steps", "11. Connect / truck / plate (/ pieces)", "12. Tour data dumps", "13. Invoices & export docs", "14. CSI / Eric Docs", "15. e-Cert finish + signature"];
+  const markInfo = (mark) => (mark ? `${mark.not_needed ? "not needed" : "done"} by ${mark.by || "?"}${mark.at ? `, ${formatTimestamp(mark.at)}` : ""}` : "");
 
   return (
     <section className="overview-stack">
@@ -8879,10 +8905,13 @@ function PdStepPlanPage({ onNavigate }) {
       </div>
 
       <div className="notice">
-        Every export shipment of the day, step by step: set up the PD keuring, fill in connect number, truck number and licence plate,
-        create the invoices and export documents, then send the papers through UKDocs CSI (export) or Eric Docs (nakeuring).
-        A step opens when the one before it is done; <strong>Go to</strong> opens the menu for that step on this date.
-        Stock control (Voorraad) needs no papers and isn't listed.
+        The whole day in order. <strong>1</strong> set up the PD keuringen (the stock control too);{" "}
+        <strong>2-10</strong> the day steps, once per day: phyto inspection docs, tours in Connect, the BQ order, stock control finished,
+        order dumps, phyto shipments and e-Cert; then per shipment <strong>11</strong> connect number, truck and licence plate,{" "}
+        <strong>12</strong> the tour data dumps, <strong>13</strong> invoices and export documents, <strong>14</strong> the papers through
+        UKDocs CSI (export) or Eric Docs (nakeuring) and <strong>15</strong> finish it in e-Cert with the digital signature.
+        A step opens when the one before it is done; <strong>Go to</strong> opens the menu for that step, <strong>Mark done</strong> is for a step
+        done in another program (Uniware, e-Cert).
       </div>
       {error && <div className="notice danger">{error}</div>}
 
@@ -8901,6 +8930,55 @@ function PdStepPlanPage({ onNavigate }) {
           </button>
         </div>
       </div>
+
+      {day && (
+        <div className="data-table-card" id="pd-day-steps">
+          <div className="row-actions spread-actions">
+            <div>
+              <strong>Day steps 1-10 -- once for {date}</strong>
+              <div className="muted">
+                {day.stock_name ? `Kept on the stock control row (${day.stock_name}).` : "Start with the stock control (Voorraad) PD keuring -- the day steps are kept on it."}
+                {" "}The shipments' step 11 opens when these are done.
+              </div>
+            </div>
+            <span className={`ukdocs-status-badge ${day.complete ? "success" : "info"}`}>
+              {day.complete ? "✓ Day steps done" : `Step ${day.steps[day.current_step].number} of 10`}
+            </span>
+          </div>
+          <div className="table-wrap">
+            <table className="data-table">
+              <tbody>
+                {day.steps.map((step, index) => {
+                  const state = step.done ? "done" : index === day.current_step ? "current" : "locked";
+                  return (
+                    <tr key={step.key} style={{ background: state === "done" ? "#ecfdf5" : state === "current" ? "#fffbeb" : undefined }}>
+                      <td style={{ width: 40, fontWeight: 700 }}>{step.number}.</td>
+                      <td>
+                        <div style={{ fontWeight: 600, color: state === "done" ? "#15803d" : state === "current" ? "#b45309" : "#9ca3af" }}>
+                          {state === "done" ? "✓ " : state === "current" ? "▶ " : "🔒 "}{step.label}
+                        </div>
+                        {state === "current" && step.missing.map((item) => <div key={item} className="muted">• {item}</div>)}
+                        {step.mark && <div className="muted">{markInfo(step.mark)}</div>}
+                      </td>
+                      <td style={{ width: 220 }}>
+                        {state === "current" && !step.manual && (
+                          <button type="button" className="primary" onClick={createPdKeuring}>Go to PD Keuring</button>
+                        )}
+                        {state === "current" && step.manual && (
+                          <button type="button" className="primary" onClick={() => markStep(step, null, true)} disabled={busy}>Mark done</button>
+                        )}
+                        {step.done && step.manual && (
+                          <button type="button" className="link-button" onClick={() => markStep(step, null, false)} disabled={busy}>undo</button>
+                        )}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
 
       {summary && (
         <div className="row-actions">
@@ -8945,6 +9023,10 @@ function PdStepPlanPage({ onNavigate }) {
                           </div>
                           {state === "current" && step.missing.map((item) => <div key={item} className="muted">• {item}</div>)}
                           {state === "current" && step.status && <div className="muted">{step.status}</div>}
+                          {step.mark && <div className="muted">{markInfo(step.mark)}</div>}
+                          {step.done && step.manual && step.mark && (
+                            <button type="button" className="link-button" onClick={() => markStep(step, row, false)} disabled={busy}>undo</button>
+                          )}
                           {(step.skipped || []).map((item) => (
                             <div key={item.code} style={{ color: "#b45309" }}>
                               ⚠ Without {item.label} <span className="muted">({item.by})</span>{" "}
@@ -8959,9 +9041,20 @@ function PdStepPlanPage({ onNavigate }) {
                         ? <span className="ukdocs-status-badge success">✓ Complete</span>
                         : (
                           <div className="row-actions">
-                            <button type="button" className="primary" onClick={() => goTo(row, current)}>
-                              Go to {PD_STEP_PLAN_PAGE_LABELS[current.page] || current.page}
-                            </button>
+                            {current.day ? (
+                              <button type="button" className="primary" onClick={showDaySteps}>See the day steps</button>
+                            ) : current.manual ? (
+                              <>
+                                <button type="button" className="primary" onClick={() => markStep(current, row, true)} disabled={busy}>Mark done</button>
+                                {current.key === "tour_dumps" && (
+                                  <button type="button" onClick={() => markStep(current, row, true, true)} disabled={busy}>Not needed</button>
+                                )}
+                              </>
+                            ) : (
+                              <button type="button" className="primary" onClick={() => goTo(row, current)}>
+                                Go to {PD_STEP_PLAN_PAGE_LABELS[current.page] || current.page}
+                              </button>
+                            )}
                             {!!current.skippable?.length && (
                               <button type="button" onClick={(event) => openSkipMenu(event, row, current)} disabled={busy} title="Continue this step without a missing item">
                                 Continue without…
@@ -8975,8 +9068,9 @@ function PdStepPlanPage({ onNavigate }) {
               })}
               {!rows.length && !loading && (
                 <tr>
-                  <td colSpan={6}>
-                    No export shipments for {date} yet.{" "}
+                  <td colSpan={stepTitles.length + 2}>
+                    No export shipments for {date} yet.
+{" "}
                     <button type="button" className="primary" onClick={createPdKeuring}>+ Set up PD keuringen</button>
                   </td>
                 </tr>

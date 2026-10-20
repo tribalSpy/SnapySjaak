@@ -2358,6 +2358,32 @@ function deriveUkdocsPrintCollectionStatus(collection) {
 // PD Step Plan items that can be skipped ("continue without ...").
 const PD_STEP_PLAN_SKIP_CODES = ["city_name", "pd_type", "pd_form", "reference_connect", "truck_number", "trailer_number", "expected_pieces", "documents", "papers"];
 
+// PD Step Plan, the whole day in order (numbers as shown in the plan):
+//   1      PD Keuring set up (per shipment; the stock control row too)
+//   2-10   Day steps, once per day, marked on the stock control (Voorraad)
+//          row: phyto inspection docs, Connect tours, the BQ order, stock
+//          control finished, order dumps, phyto shipments, e-Cert
+//   11     Connect number / truck / licence plate (/ pieces) per shipment
+//   12     Tour data dumps (flowers / acc / plants) per shipment
+//   13     Invoices + export documents
+//   14     Papers: UKdocs CSI or Eric Docs
+//   15     e-Cert: finish the shipment, ask for the digital signature
+// Steps 2-10, 12 and 15 happen in other programs (Uniware, e-Cert): done is
+// marked by hand here (who / when) -- later an Uniware action can mark them.
+const PD_STEP_PLAN_DAY_STEPS = [
+  { key: "stock_docs", number: 2, label: "Fill in the docs in the phyto inspection menu (stock control)" },
+  { key: "tours_set", number: 3, label: "Tours correct in Connect (508 or 810, per customer)" },
+  { key: "bq_order", number: 4, label: "Make the BQ order" },
+  { key: "bq_purchase", number: 5, label: "Purchase for the BQ order" },
+  { key: "bq_divide", number: 6, label: "Divide the BQ order" },
+  { key: "stock_finished", number: 7, label: "Confirm stock control is finished" },
+  { key: "order_dumps", number: 8, label: "Order dumps for the phytos of this sending" },
+  { key: "phyto_from_orders", number: 9, label: "Create the phyto shipments from the orders (order status)" },
+  { key: "ecert_send", number: 10, label: "Send to e-Cert and finish them there" },
+];
+const PD_STEP_PLAN_SHIPMENT_MARKS = ["tour_dumps", "ecert_finish"];
+const PD_STEP_PLAN_MARK_CODES = [...PD_STEP_PLAN_DAY_STEPS.map((step) => step.key), ...PD_STEP_PLAN_SHIPMENT_MARKS];
+
 function normalizeUkdocsPrintCollection(collection) {
   const shipmentReference = normalizeUkdocsText(collection?.shipment_reference);
   const invoiceNumbers = String(collection?.invoice_numbers || "").trim() || shipmentReference;
@@ -2453,6 +2479,11 @@ function normalizeUkdocsPrintCollection(collection) {
     step_plan_skips: Object.fromEntries(Object.entries(collection?.step_plan_skips && typeof collection.step_plan_skips === "object" ? collection.step_plan_skips : {})
       .filter(([code, entry]) => PD_STEP_PLAN_SKIP_CODES.includes(code) && entry && typeof entry === "object")
       .map(([code, entry]) => [code, { by: normalizeUkdocsText(entry.by), at: normalizeUkdocsText(entry.at) }])),
+    // PD Step Plan steps done in another program, marked by hand: step key
+    // -> who/when (+ "not needed"). The day steps live on the stock control row.
+    step_plan_marks: Object.fromEntries(Object.entries(collection?.step_plan_marks && typeof collection.step_plan_marks === "object" ? collection.step_plan_marks : {})
+      .filter(([code, entry]) => PD_STEP_PLAN_MARK_CODES.includes(code) && entry && typeof entry === "object")
+      .map(([code, entry]) => [code, { by: normalizeUkdocsText(entry.by), at: normalizeUkdocsText(entry.at), not_needed: entry.not_needed === true }])),
     csi_override: {
       overridden: collection?.csi_override?.overridden === true,
       overridden_at: normalizeUkdocsText(collection?.csi_override?.overridden_at),
@@ -10965,11 +10996,40 @@ function pdStepPlanFormCount(pdForm) {
     .length;
 }
 
+// Steps 1-10 for the day: the stock control (Voorraad) PD keuring, then the
+// day steps marked on it.
+function buildPdStepPlanDay(state, targetDate) {
+  const stock = (state.print_collections || []).find((item) => (
+    String(item?.shipment_date || "").slice(0, 10) === targetDate
+    && ukdocsPrintInspectionMode(item) === "stock_control"
+  ));
+  const marks = stock?.step_plan_marks || {};
+  const steps = [
+    {
+      key: "stock_setup", number: 1, label: "Stock control PD keuring set up (Voorraad)", page: "pdkeuring", manual: false,
+      done: Boolean(stock), missing: stock ? [] : ["No stock control (Voorraad) PD keuring for this date yet"],
+    },
+    ...PD_STEP_PLAN_DAY_STEPS.map((step) => ({
+      ...step, page: "", manual: true, done: Boolean(marks[step.key]), mark: marks[step.key] || null, missing: [],
+    })),
+  ];
+  const currentIndex = steps.findIndex((step) => !step.done);
+  return {
+    collection_id: stock?.id || "",
+    stock_name: stock ? (stock.customer_name || stock.city_name || "Stock control") : "",
+    steps,
+    current_step: currentIndex === -1 ? steps.length : currentIndex,
+    complete: currentIndex === -1,
+  };
+}
+
 function buildPdStepPlan(state, targetDate) {
   const collections = (state.print_collections || []).filter((item) => (
     String(item?.shipment_date || "").slice(0, 10) === targetDate
     && ukdocsPrintInspectionMode(item) !== "stock_control"
   ));
+  const day = buildPdStepPlanDay(state, targetDate);
+  const dayNext = day.steps[day.current_step];
   const rows = collections.map((collection) => {
     const requirements = getUkdocsPrintCollectionRequirements(collection, state.customers, collections, { requireInspectionListForReinspection: false });
     const route = ukdocsPrintInspectionMode(collection) === "reinspection" ? "ericdocs" : "ukdocscsi";
@@ -11047,11 +11107,23 @@ function buildPdStepPlan(state, targetDate) {
 
     const papers = checkItems(finalMissing.map((detail) => ({ code: "papers", label: route === "ericdocs" ? "Eric Docs papers" : "CSI papers", detail, present: false })));
 
+    const marks = collection.step_plan_marks || {};
+    const markStep = (key, label, extraDone = false) => ({
+      key, label, page: "", manual: true, mark: marks[key] || null,
+      done: Boolean(marks[key]) || extraDone, missing: [], skippable: [], skipped: [], warnings: marks[key]?.not_needed ? [`Not needed (by ${marks[key].by || "?"})`] : [],
+    });
     const steps = [
       { key: "setup", label: "PD Keuring", page: "pdkeuring", done: setup.missing.length === 0, missing: setup.missing, skippable: setup.skippable, skipped: setup.skipped, warnings: setup.warnings },
+      {
+        key: "day", label: "Day steps (stock control, Connect, phyto, e-Cert)", page: "day", day: true,
+        done: day.complete, missing: day.complete ? [] : [`Next: ${dayNext.number}. ${dayNext.label}`], skippable: [], skipped: [], warnings: [],
+      },
       { key: "references", label: route === "ericdocs" ? "Connect / truck / plate / pieces" : "Connect / truck / plate", page: "pdkeuring", done: refs.missing.length === 0, missing: refs.missing, skippable: refs.skippable, skipped: refs.skipped, warnings: refs.warnings },
+      // Invoices made means the dumps were there (or weren't needed).
+      markStep("tour_dumps", "Tour data dumps (flowers / acc / plants)", docs.missing.length === 0 && docsMissingRaw.length === 0),
       { key: "documents", label: "Invoices & export docs", page: "ukdocs", done: docs.missing.length === 0, missing: docs.missing, skippable: docs.skippable, skipped: docs.skipped, warnings: docs.warnings },
       { key: "papers", label: route === "ericdocs" ? "Eric Docs" : "UKdocs CSI", page: route, done: papers.missing.length === 0, missing: papers.missing, skippable: papers.skippable, skipped: papers.skipped, warnings: papers.warnings, status: finalStatus },
+      markStep("ecert_finish", "e-Cert: finish the shipment, ask for the digital signature"),
     ];
     const currentIndex = steps.findIndex((step) => !step.done);
     return {
@@ -11070,9 +11142,10 @@ function buildPdStepPlan(state, targetDate) {
     };
   });
   rows.sort((left, right) => left.current_step - right.current_step || left.customer_name.localeCompare(right.customer_name));
-  const perStep = [0, 0, 0, 0, 0];
+  const stepCount = 7;
+  const perStep = new Array(stepCount + 1).fill(0);
   rows.forEach((row) => { perStep[row.current_step] += 1; });
-  return { date: targetDate, rows, summary: { total: rows.length, at_step: perStep.slice(0, 4), complete: perStep[4] } };
+  return { date: targetDate, day, rows, summary: { total: rows.length, at_step: perStep.slice(0, stepCount), complete: perStep[stepCount] } };
 }
 
 // Why a zending's "papers ready" email has (not) gone out -- the same check
@@ -19522,6 +19595,45 @@ async function handleApi(req, res, url) {
     }));
     await writeUkdocsState(state);
     sendJson(res, 200, buildPdStepPlan(state, String(existing.shipment_date || "").slice(0, 10)));
+    return;
+  }
+
+  // Mark a step done in another program (or undo it): body { date, step,
+  // done, not_needed, collection_id }. A day step (2-10) goes on that date's
+  // stock control row; a shipment step (12, 15) on the given shipment.
+  if (url.pathname === "/api/pd-step-plan/mark" && req.method === "POST") {
+    if (!requireAnyPermission(res, requestUser, [PERMISSIONS.PD_KEURING_VIEW, PERMISSIONS.UKDOCS_VIEW])) {
+      return;
+    }
+    const body = await readRequestJson(req);
+    const step = String(body?.step || "");
+    const date = String(body?.date || "").slice(0, 10);
+    const isDayStep = PD_STEP_PLAN_DAY_STEPS.some((item) => item.key === step);
+    if (!PD_STEP_PLAN_MARK_CODES.includes(step)) {
+      sendJson(res, 400, { error: "Unknown step" });
+      return;
+    }
+    const state = await readUkdocsState();
+    const existing = isDayStep
+      ? (state.print_collections || []).find((item) => String(item?.shipment_date || "").slice(0, 10) === date && ukdocsPrintInspectionMode(item) === "stock_control")
+      : ukdocsPrintCollectionById(state.print_collections, String(body?.collection_id || ""));
+    if (!existing) {
+      sendJson(res, 404, { error: isDayStep ? `No stock control (Voorraad) PD keuring for ${date} -- set it up first (step 1).` : "Shipment not found" });
+      return;
+    }
+    const marks = { ...(existing.step_plan_marks || {}) };
+    if (body?.done === false) {
+      delete marks[step];
+    } else {
+      marks[step] = { by: requestUser.username, at: new Date().toISOString(), not_needed: body?.not_needed === true };
+    }
+    state.print_collections = upsertUkdocsPrintCollection(state.print_collections, normalizeUkdocsPrintCollection({
+      ...existing,
+      step_plan_marks: marks,
+      updated_at: new Date().toISOString(),
+    }));
+    await writeUkdocsState(state);
+    sendJson(res, 200, buildPdStepPlan(state, String(existing.shipment_date || date).slice(0, 10)));
     return;
   }
 
