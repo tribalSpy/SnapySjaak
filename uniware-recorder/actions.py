@@ -102,13 +102,49 @@ def save_action(action: dict):
     temp.replace(path)
 
 
+DATE_WORDS = ("today", "tomorrow", "next_workday")
+
+
+def date_for_word(word: str, now: datetime.date | None = None) -> datetime.date | None:
+    """today / tomorrow / next_workday (the next Monday-Friday after today)
+    -> that date; anything else -> None."""
+    word = str(word or "").strip().lower().replace(" ", "_")
+    today = now or datetime.date.today()
+    if word == "today":
+        return today
+    if word == "tomorrow":
+        return today + datetime.timedelta(days=1)
+    if word == "next_workday":
+        day = today + datetime.timedelta(days=1)
+        while day.weekday() >= 5:
+            day += datetime.timedelta(days=1)
+        return day
+    return None
+
+
+def format_date_like(day: datetime.date, recorded: str) -> str:
+    """The date written like the one typed while recording ("20-10-2026",
+    "20102026", "201026", "20-10-26 13:00"...): same separator and year
+    length, and the rest of the recorded text kept. Without a recorded date:
+    dd-mm-yyyy."""
+    # With separators first ("20-10-202613:00:00": the time may follow the
+    # year straight away), then digits only as a whole ("20102026").
+    found = (re.search(r"(?<!\d)(\d{2})([-/.])(\d{2})\2(\d{4}|\d{2}(?!\d))", recorded or "")
+             or re.search(r"(?<!\d)(\d{2})()(\d{2})(\d{4}|\d{2})(?!\d)", recorded or ""))
+    if not found:
+        return day.strftime("%d-%m-%Y")
+    separator, year = found.group(2), found.group(4)
+    text = f"{day:%d}{separator}{day:%m}{separator}{day:%Y}" if len(year) == 4 else f"{day:%d}{separator}{day:%m}{separator}{day:%y}"
+    return recorded[:found.start()] + text + recorded[found.end():]
+
+
 def action_fields(action: dict) -> list[str]:
     fields = []
     # Filled per order by a "for each order" step -- not asked at start.
     filled = {step["foreach"].get("field") or "order" for step in action.get("steps", []) if step.get("foreach")}
     for step in action.get("steps", []):
         for name in re.findall(r"\{([a-z0-9_]+)\}", (step.get("text") or "") + (step.get("pick") or "")):
-            if name not in fields and name not in filled:
+            if name not in fields and name not in filled and name not in DATE_WORDS:
                 fields.append(name)
     return fields
 
@@ -1675,6 +1711,14 @@ class ActionRun:
         save_day_list(data)
         self.say(f"{label}: {item[1]} -> {result or 'WARNING'} ({note})")
 
+    def _field_text(self, name: str, step: dict) -> str:
+        """A field's typed text. {today} / {tomorrow} / {next_workday}, or a
+        field filled in with one of those words (e.g. {date} = "tomorrow"),
+        becomes that date -- written like the date typed while recording."""
+        value = self.values.get(name, "")
+        day = date_for_word(name) or date_for_word(value)
+        return format_date_like(day, step.get("recorded_text") or "") if day else value
+
     def _wait_not_busy(self, hwnd, label: str, max_wait: float = 300):
         """Uniware shows "Gegevens verzamelen ... Moment geduld aub..." while
         it loads, on the same screen (the screen name doesn't change): no key
@@ -1704,7 +1748,7 @@ class ActionRun:
             self._classify(hwnd, step["classify"], f"Step {number}")
             return selected
         if "text" in step:
-            typed = re.sub(r"\{([a-z0-9_]+)\}", lambda match: self.values.get(match.group(1), ""), step["text"])
+            typed = re.sub(r"\{([a-z0-9_]+)\}", lambda match: self._field_text(match.group(1), step), step["text"])
             controller.type(typed)
             self.say(f"Step {number}: typed {typed!r}")
         else:

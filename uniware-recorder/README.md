@@ -152,6 +152,13 @@ otherwise **Down**. And in tour 515: "Accessoire" -> **Enter** (add).
 - A new loop starts as a **trial run**: it only logs what it would do --
   check the log, then untick "trial run".
 
+**Dates** -- a typed date (e.g. Transport tijd) can be the date of the run:
+Field `today`, `tomorrow` or `next_workday` (Monday-Friday), written like the
+date typed while recording (20-10-2026 / 201026 / ...; a time typed after it
+stays). Or Field `date`, and fill in `today` / `tomorrow` when starting (or
+per action in the week plan) -- one action for both days. Type the date and
+the time as separate steps if Uniware lets you; then each is replaced cleanly.
+
 **Week plan -- several actions in a row, per day** (card "Week plan"):
 every action has a number (#1, #2, ... in the Actions list; type another
 number to change it -- an action that had it gets the old one). Per day
