@@ -313,6 +313,12 @@ def king_line_fields(item):
         "marketplace_id": direct_path_text(item, "TradingTerms", "MarketPlace", "ID"),
         "marketplace_name": direct_path_text(item, "TradingTerms", "MarketPlace", "NameText"),
         "market_form_code": direct_path_text(item, "TradingTerms", "MarketFormCode"),
+        # Handel Aankopen extras: the VBN product code, "Uw ref." (scheme
+        # AAG), the delivery reference (scheme VN) and the supplier's note.
+        "vbn_code": direct_path_text(item, "Product", "IndustryAssignedID"),
+        "your_reference": find_reference(item, "AAG") or "",
+        "delivery_reference": find_reference(item, "VN") or "",
+        "note": direct_path_text(item, "AdditionalInformationTradeNote", "Content"),
     }
 
 

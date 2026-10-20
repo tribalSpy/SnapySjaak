@@ -6815,6 +6815,25 @@ function parseInkoopLeveringBb(base64) {
   return { rows, counts };
 }
 
+// Do an invoice description and a Connect description name the same
+// product? Invoice: "CHR S AAA AURINKO" / "R TR FIRST DATE" (product-group
+// codes, then the variety); Connect: "Aurinko" / "First date". A shared
+// word of 4+ letters that isn't a product-group or size word counts.
+const INKOOP_DESCRIPTION_STOPWORDS = new Set(["MINI", "MIDI", "MAXI", "SPRAY", "TROS", "ROSA", "ROSE", "ROSES", "CHRYS", "GERB", "MIXED", "GEMENGD", "COLOR", "COLOUR", "PINK", "WHITE", "WITH", "BLOEM", "BLOEMEN", "PLANT", "DIVERSEN"]);
+
+function inkoopDescriptionWords(text) {
+  return new Set(String(text || "").toUpperCase().split(/[^A-Z]+/).filter((word) => word.length >= 4 && !INKOOP_DESCRIPTION_STOPWORDS.has(word)));
+}
+
+function inkoopDescriptionsShareName(invoiceDescription, connectDescription) {
+  const connectWords = inkoopDescriptionWords(connectDescription);
+  if (!connectWords.size) return false;
+  for (const word of inkoopDescriptionWords(invoiceDescription)) {
+    if (connectWords.has(word)) return true;
+  }
+  return false;
+}
+
 // A brief number without the letter FloraHolland changes when it splits a
 // lot for delivery: "F9H9CDa" / "F9H9CDb" -> "F9H9CD" (only a lower-case
 // last letter -- "691672" and "F9VQSSA" stay as they are).
@@ -7187,7 +7206,20 @@ function matchInkoopVeilingLines(erpRows, invoices, supplierMap = {}, supplierNa
     // actually is, exactly as it already does for several rows under one
     // code.
     const candidates = resolved.codes.flatMap((code) => erpBySupplierCode.get(code) || []);
-    const picked = pickInkoopMatchingErpRow(candidates, line.quantity, line.unit_price, consumedErpRows, normalizeUkdocsText(line?.invoice_date).slice(0, 10));
+    let picked = pickInkoopMatchingErpRow(candidates, line.quantity, line.unit_price, consumedErpRows, normalizeUkdocsText(line?.invoice_date).slice(0, 10));
+    // No brief number to go on: the product name helps ("CHR S AAA
+    // AURINKO" on the invoice, "Aurinko" in Connect). Among several lots
+    // with the same pieces and price, the one with the name; with none
+    // exact, the one lot with the name and the same pieces or price.
+    const nameMatches = (row) => inkoopDescriptionsShareName(line?.description, row?.description);
+    if (picked.ambiguous) {
+      const named = (picked.candidates || []).filter(nameMatches);
+      if (named.length === 1) picked = { row: named[0], ambiguous: false };
+    } else if (!picked.row || (inkoopValuesDiffer(picked.row.pieces, line.quantity) && inkoopValuesDiffer(parseFloat(picked.row.price), line.unit_price) && !nameMatches(picked.row))) {
+      const named = candidates.filter((row) => !consumedErpRows.has(row) && nameMatches(row)
+        && (!inkoopValuesDiffer(row.pieces, line.quantity) || !inkoopValuesDiffer(parseFloat(row.price), line.unit_price)));
+      if (named.length === 1) picked = { row: named[0], ambiguous: false, by_name: true };
+    }
     const codesLabel = resolved.codes.join(" / ");
     if (picked.ambiguous) {
       // No unique per-line reference (unlike PAV) -- quantity+price alone
@@ -7203,7 +7235,7 @@ function matchInkoopVeilingLines(erpRows, invoices, supplierMap = {}, supplierNa
     // another product, not this one (it used to be taken -- and called OK).
     const quantityDiffers = picked.row && inkoopValuesDiffer(picked.row.pieces, line.quantity);
     const priceDiffers = picked.row && inkoopValuesDiffer(parseFloat(picked.row.price), line.unit_price);
-    if (!picked.row || (quantityDiffers && priceDiffers)) {
+    if (!picked.row || (quantityDiffers && priceDiffers && !nameMatches(picked.row))) {
       onlyInInvoice.push({ ...context, supplier_code: codesLabel, supplier_match_type: resolved.match_type });
       return;
     }
