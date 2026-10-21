@@ -18174,6 +18174,42 @@ function InkoopGrowersTab() {
 
       {data && (
         <div className="data-table-card">
+          <h3>Codes that are never a grower</h3>
+          <div className="notice">
+            A Connect lot has three code positions (Suppl., Avc., Transp). A code on this list is skipped there -- the grower is looked for in the other two.
+            Use it for transaction methods and routes, e.g. KVV PL (klok voor verkoop planten) or WW12. Changing the list compares every day again in the background.
+          </div>
+          <div className="row-actions">
+            <strong>Found by themselves:</strong>
+            {(data.route_codes || []).map((code) => <span key={code} className="ukdocs-status-badge muted" title="An auction: its lots carry buyer plates, never its own code">{code}</span>)}
+          </div>
+          <div className="row-actions" style={{ marginTop: 8 }}>
+            <strong>Chosen:</strong>
+            {(data.skip_codes || []).map((code) => (
+              <span key={code} className="ukdocs-status-badge info">
+                {code}{" "}
+                <button type="button" className="link-button" onClick={() => setSkip(code, false)} disabled={busy} title="Take it off the list">x</button>
+              </span>
+            ))}
+            {!(data.skip_codes || []).length && <span className="muted">none yet</span>}
+            <input size={10} value={skipDraft} onChange={(event) => setSkipDraft(event.target.value)} placeholder="e.g. KVV PL" />
+            <button type="button" onClick={() => { setSkip(skipDraft, true); setSkipDraft(""); }} disabled={busy || !skipDraft.trim()}>Add</button>
+          </div>
+          {!!data.skip_candidates?.length && (
+            <div className="row-actions" style={{ marginTop: 8 }}>
+              <strong>Worth a look</strong> <span className="muted">(bring in for 5+ suppliers):</span>
+              {data.skip_candidates.slice(0, 15).map((candidate) => (
+                <button key={candidate.code} type="button" onClick={() => setSkip(candidate.code, true)} disabled={busy} title={candidate.name || ""}>
+                  Skip {candidate.code} <small className="muted">({candidate.suppliers})</small>
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+
+      {data && (
+        <div className="data-table-card">
           <div className="row-actions spread-actions">
             <h3>Need a link ({notLinked.length})</h3>
             <input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Search name, GLN or FH number" />
@@ -18283,42 +18319,6 @@ function InkoopGrowersTab() {
               </tbody>
             </table>
           </div>
-        </div>
-      )}
-
-      {data && (
-        <div className="data-table-card">
-          <h3>Codes that are never a grower</h3>
-          <div className="notice">
-            A Connect lot has three code positions (Suppl., Avc., Transp). A code on this list is skipped there -- the grower is looked for in the other two.
-            Use it for transaction methods and routes, e.g. KVV PL (klok voor verkoop planten) or WW12. Changing the list compares every day again in the background.
-          </div>
-          <div className="row-actions">
-            <strong>Found by themselves:</strong>
-            {(data.route_codes || []).map((code) => <span key={code} className="ukdocs-status-badge muted" title="An auction: its lots carry buyer plates, never its own code">{code}</span>)}
-          </div>
-          <div className="row-actions" style={{ marginTop: 8 }}>
-            <strong>Chosen:</strong>
-            {(data.skip_codes || []).map((code) => (
-              <span key={code} className="ukdocs-status-badge info">
-                {code}{" "}
-                <button type="button" className="link-button" onClick={() => setSkip(code, false)} disabled={busy} title="Take it off the list">x</button>
-              </span>
-            ))}
-            {!(data.skip_codes || []).length && <span className="muted">none yet</span>}
-            <input size={10} value={skipDraft} onChange={(event) => setSkipDraft(event.target.value)} placeholder="e.g. KVV PL" />
-            <button type="button" onClick={() => { setSkip(skipDraft, true); setSkipDraft(""); }} disabled={busy || !skipDraft.trim()}>Add</button>
-          </div>
-          {!!data.skip_candidates?.length && (
-            <div className="row-actions" style={{ marginTop: 8 }}>
-              <strong>Worth a look</strong> <span className="muted">(bring in for 5+ suppliers):</span>
-              {data.skip_candidates.slice(0, 15).map((candidate) => (
-                <button key={candidate.code} type="button" onClick={() => setSkip(candidate.code, true)} disabled={busy} title={candidate.name || ""}>
-                  Skip {candidate.code} <small className="muted">({candidate.suppliers})</small>
-                </button>
-              ))}
-            </div>
-          )}
         </div>
       )}
 
