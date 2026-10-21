@@ -102,23 +102,54 @@ def save_action(action: dict):
     temp.replace(path)
 
 
-DATE_WORDS = ("today", "tomorrow", "next_workday")
+DATE_WORDS = ("today", "tomorrow", "yesterday", "next_workday", "last_workday")
 
 
 def date_for_word(word: str, now: datetime.date | None = None) -> datetime.date | None:
-    """today / tomorrow / next_workday (the next Monday-Friday after today)
-    -> that date; anything else -> None."""
+    """today / tomorrow / yesterday / next_workday / last_workday (the
+    next / previous Monday-Friday) -> that date; anything else -> None."""
     word = str(word or "").strip().lower().replace(" ", "_")
     today = now or datetime.date.today()
     if word == "today":
         return today
     if word == "tomorrow":
         return today + datetime.timedelta(days=1)
-    if word == "next_workday":
-        day = today + datetime.timedelta(days=1)
+    if word == "yesterday":
+        return today - datetime.timedelta(days=1)
+    if word in ("next_workday", "last_workday"):
+        step = 1 if word == "next_workday" else -1
+        day = today + datetime.timedelta(days=step)
         while day.weekday() >= 5:
-            day += datetime.timedelta(days=1)
+            day += datetime.timedelta(days=step)
         return day
+    return None
+
+
+def parse_date_value(value: str, now: datetime.date | None = None) -> datetime.date | None:
+    """A date as someone types it when starting an action: a word (see
+    date_for_word) or 14-10-2026 / 14-10-26 / 2026-10-14 / 14/10/2026 /
+    14102026 / 141026."""
+    text = str(value or "").strip()
+    day = date_for_word(text, now)
+    if day:
+        return day
+    patterns = [
+        (r"(\d{4})-(\d{1,2})-(\d{1,2})", ("y", "m", "d")),
+        (r"(\d{1,2})[-/.](\d{1,2})[-/.](\d{4})", ("d", "m", "y")),
+        (r"(\d{1,2})[-/.](\d{1,2})[-/.](\d{2})", ("d", "m", "y2")),
+        (r"(\d{2})(\d{2})(\d{4})", ("d", "m", "y")),
+        (r"(\d{2})(\d{2})(\d{2})", ("d", "m", "y2")),
+    ]
+    for pattern, order in patterns:
+        found = re.fullmatch(pattern, text)
+        if not found:
+            continue
+        parts = dict(zip(order, (int(group) for group in found.groups())))
+        year = parts.get("y") or 2000 + parts["y2"]
+        try:
+            return datetime.date(year, parts["m"], parts["d"])
+        except ValueError:
+            return None
     return None
 
 
@@ -1645,7 +1676,7 @@ class ActionRun:
             return
         with_info = any(item.get("info") for item in rows)
         target_dir = self._export_dir()
-        target = target_dir / f"{day_list_slug(collected['name'])}_{self.started:%Y%m%d}.csv"
+        target = target_dir / f"{day_list_slug(collected['name'])}_{self.run_date():%Y%m%d}.csv"
         header = f"lot;{value_label.lower()}" + (";info" if with_info else "")
         lines = [header] + [
             f"{item['key']};{item.get('value', '')}" + (f";{str(item.get('info', '')).replace(';', ',')}" if with_info else "")
@@ -1879,9 +1910,15 @@ class ActionRun:
         field filled in with one of those words (e.g. {date} = "tomorrow"),
         becomes that date -- written like the date typed while recording."""
         value = self.values.get(name, "")
+        recorded = step.get("recorded_text") or ""
         day = date_for_word(name) or date_for_word(value)
+        # A date filled in as 14-10-2026 / 2026-10-14 / 141026 ...: written
+        # like the recorded one -- only on a step that typed a date when it
+        # was recorded (never turns an order number into a date).
+        if not day and value and re.search(r"(?<!\d)\d{2}[-/.]?\d{2}[-/.]?\d{2,4}(?!\d)", recorded):
+            day = parse_date_value(value)
         if day:
-            return format_date_like(day, step.get("recorded_text") or "")
+            return format_date_like(day, recorded)
         # Left empty when starting: what was typed while recording (a field
         # that types nothing at all made Uniware stop at an empty input).
         return value if value != "" else str(step.get("recorded_text") or "")
@@ -1949,11 +1986,18 @@ class ActionRun:
             self._capture(hwnd, number, bool(step.get("capture_pages")), controller, reading)
         return selected
 
+    def run_date(self) -> datetime.date:
+        """The day this run is about: the {date} field when it was filled in
+        (14-10-2026, yesterday ...), else the day it runs -- so a backfill of
+        older days names its files after those days."""
+        return parse_date_value(self.values.get("date", "")) or self.started.date()
+
     def export_name(self) -> str:
-        """The dump file name from the action's template: {date}, {time},
-        {action} and any field, e.g. "tour-508_{date}"."""
+        """The dump file name from the action's template: {date} (the run's
+        day, see run_date), {time}, {action} and any field, e.g.
+        "tour-508_{date}"."""
         template = self.action.get("export_name") or "{action}_{date}_{time}"
-        names = {**self.values, "action": self.action["slug"], "date": f"{self.started:%Y%m%d}", "time": f"{self.started:%H%M%S}"}
+        names = {**self.values, "action": self.action["slug"], "date": f"{self.run_date():%Y%m%d}", "time": f"{self.started:%H%M%S}"}
         name = re.sub(r"\{([a-z0-9_]+)\}", lambda match: names.get(match.group(1), ""), template)
         return re.sub(r'[\\/:*?"<>|]+', "-", name).strip(" .") or self.action["slug"]
 

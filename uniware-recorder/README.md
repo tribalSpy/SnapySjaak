@@ -162,6 +162,16 @@ stays). Or `{date}`, and fill in `today` / `tomorrow` when starting (or
 per action in the week plan) -- one action for both days. Type the date and
 the time as separate steps if Uniware lets you; then each is replaced cleanly.
 
+**A date per run, and older days (backfill)** -- in the step where the date is
+typed (e.g. the Communications screen's Datum), put `{date}` in the Field
+box. When starting, fill in a date (`14-10-2026`, `2026-10-14`, `141026`) or
+a word (`yesterday`, `last_workday`, `today` ...): it is typed like the
+recorded one, and the run's files are named after that day (`{date}` in the
+dump name, the CSV). **Run for several days** (next to Start, for an action
+with a `{date}` field): a first and last day, weekends or not -- the action
+runs once per day, one after another (the week plan's card shows it; Ctrl+Alt+Q
+stops). In the week plan, set the field to `yesterday` for the night run.
+
 **Week plan -- several actions in a row, per day** (card "Week plan"):
 every action has a number (#1, #2, ... in the Actions list; type another
 number to change it -- an action that had it gets the old one). Per day

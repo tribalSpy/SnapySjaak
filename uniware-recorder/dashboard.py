@@ -192,6 +192,28 @@ class Handler(BaseHTTPRequestHandler):
                 elif path == "/api/plans/number":
                     plans.set_number(str(body.get("slug") or ""), int(body.get("number") or 0))
                     STATE["message"] = "Number saved."
+                elif path.startswith("/api/actions/") and path.endswith("/run-days"):
+                    # The same action once per day of a range (a backfill):
+                    # its {date} field filled in with each day, one by one.
+                    if busy():
+                        raise RuntimeError("Something is already running.")
+                    slug = path.split("/")[3]
+                    action = actions.load_action(slug)
+                    if not action:
+                        raise RuntimeError("Action not found.")
+                    start = actions.parse_date_value(str(body.get("from") or ""))
+                    end = actions.parse_date_value(str(body.get("to") or "")) or start
+                    if not start or not end or end < start:
+                        raise RuntimeError("Give a first and last day, e.g. 01-09-2026 and 30-09-2026.")
+                    days = plans.days_between(start, end, bool(body.get("weekends")))
+                    if not days:
+                        raise RuntimeError("No days in that range (weekends left out).")
+                    values = dict(body.get("values") or {})
+                    items = [plans.normalize_item({"action": slug, "on_fail": "continue", "values": {**values, "date": f"{day:%d-%m-%Y}"}}) for day in days]
+                    plan_run = plans.PlanRun("range", {"items": items}, set_current_run, "you", f"{action['name']} for {days[0]:%d-%m-%Y} .. {days[-1]:%d-%m-%Y}")
+                    STATE["plan"] = plan_run
+                    threading.Thread(target=plan_run.run, daemon=True).start()
+                    STATE["message"] = f"Running '{action['name']}' for {len(days)} day(s), {days[0]:%d-%m} to {days[-1]:%d-%m} -- one after another (Ctrl+Alt+Q stops)."
                 elif path == "/api/plans/run":
                     if busy():
                         raise RuntimeError("Something is already running.")
@@ -423,7 +445,7 @@ function render() {
       <tr><td><input size="2" value="${esc(state.plans.numbers[a.slug] || "")}" title="This action's number in the week plan (another action with that number gets this one's)" onchange="setNumber('${a.slug}', this.value)"></td><td><strong>${esc(a.name)}</strong><div class="muted">${esc(a.description || "")}</div><div class="muted">starts on: ${a.steps.length && a.steps[0].menu ? `any menu position (goes back with ${esc(a.back_key || "Esc")} if needed)` : esc(a.start_title || a.start_screen)}</div>${a.uniware_dump_dir ? `<div class="muted">dump file &rarr; ${esc(a.export_name || "{action}_{date}_{time}")}.csv</div>` : a.export_dir ? `<div class="muted">dump to: ${esc(a.export_dir)} &rarr; ${esc(a.export_name || "{action}_{date}_{time}")}.csv</div>` : ""}</td>
       <td>${a.steps.length} (${a.steps.filter((s) => s.capture).length} capture)</td>
       <td>${a.fields.map((f) => `<label>${esc(f)} <input data-field="${esc(a.slug)}:${esc(f)}" size="14"></label>`).join("<br>") || "-"}</td>
-      <td class="row"><button class="primary" onclick="runAction('${a.slug}')">Start</button><button onclick="edit('${a.slug}')">Edit</button><button onclick="copyAction('${a.slug}')">Copy</button><button class="danger" onclick="del('${a.slug}')">Delete</button></td></tr>`).join("")}</table>`
+      <td class="row"><button class="primary" onclick="runAction('${a.slug}')">Start</button>${a.fields.includes("date") ? `<button onclick="runDays('${a.slug}')" title="The same action once per day, e.g. to fill in older days">Run for several days</button>` : ""}<button onclick="edit('${a.slug}')">Edit</button><button onclick="copyAction('${a.slug}')">Copy</button><button class="danger" onclick="del('${a.slug}')">Delete</button></td></tr>`).join("")}</table>`
     : `<p class="muted">No actions yet -- record one above.</p>`;
 }
 const DAY_KEYS = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"];
@@ -498,7 +520,7 @@ function renderPlan() {
   $("planCard").innerHTML = `<h2>Week plan</h2>
     <div class="muted">Per day the actions in your order (the numbers are in the Actions list). Each action ends on the main menu, so the next one starts from there.</div>
     <div class="tabs">${DAY_KEYS.map((key) => `<button class="${key === day ? "on" : ""}" onclick="planDay='${key}'; renderPlan()">${DAY_LABELS[key]}${key === state.today ? " (today)" : ""} <span class="muted">${plans.days[key].items.length || ""}</span>${plans.days[key].auto ? " &#9200;" : ""}</button>`).join("")}</div>
-    ${run ? `<div class="card" style="margin:6px 0"><strong>${run.active ? "Running" : "Last plan"}: ${esc(DAY_LABELS[run.day])}</strong> -- ${run.active ? `action ${run.index + 1} of ${run.total}` : esc(run.result)} <span class="muted">(started by ${esc(run.started_by)})</span>
+    ${run ? `<div class="card" style="margin:6px 0"><strong>${run.active ? "Running" : "Last plan"}: ${esc(run.title || DAY_LABELS[run.day])}</strong> -- ${run.active ? `action ${run.index + 1} of ${run.total}` : esc(run.result)} <span class="muted">(started by ${esc(run.started_by)})</span>
       ${run.active ? ` <button class="danger" onclick="api('/api/run/stop',{})">Stop the plan (Ctrl+Alt+Q)</button>` : ""}<pre>${esc(run.log.join(String.fromCharCode(10)))}</pre></div>` : ""}
     ${plan.items.length ? `<table><tr><th></th><th>Action</th><th>Fields</th><th>If it fails</th><th>Then wait</th><th></th></tr>
       ${plan.items.map((item, i) => `<tr><td>${i + 1}.</td><td><span class="num">#${esc(plans.numbers[item.action] || "?")}</span> ${esc((actionBySlug(item.action) || {}).name || item.action + " (deleted)")}</td>
@@ -520,6 +542,17 @@ function runAction(slug) {
   document.querySelectorAll(`[data-field^="${slug}:"]`).forEach((input) => { values[input.dataset.field.split(":")[1]] = input.value; });
   if (!confirm("Start this action? Don't touch keyboard or mouse until it's done.")) return;
   api(`/api/actions/${slug}/run`, { values });
+}
+function runDays(slug) {
+  const from = prompt("First day (e.g. 13-10-2026):");
+  if (!from) return;
+  const to = prompt("Last day (e.g. 17-10-2026):", from);
+  if (!to) return;
+  const weekends = confirm("Include Saturdays and Sundays?  (OK = yes, Cancel = only Monday-Friday)");
+  const values = {};
+  document.querySelectorAll(`[data-field^="${slug}:"]`).forEach((input) => { const name = input.dataset.field.split(":")[1]; if (name !== "date") values[name] = input.value; });
+  if (!confirm(`Run it for every day from ${from} to ${to}${weekends ? "" : " (Mon-Fri)"}, one after another? Don't touch keyboard or mouse until it's done.`)) return;
+  api(`/api/actions/${slug}/run-days`, { from, to, weekends, values });
 }
 function copyAction(slug) {
   const a = state.actions.find((x) => x.slug === slug);

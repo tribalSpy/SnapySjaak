@@ -131,8 +131,10 @@ class PlanRun:
     """Runs one day's plan: the actions one after another (each as a normal
     ActionRun, shown in "Last run"), with the plan's own log."""
 
-    def __init__(self, day: str, plan: dict, set_current_run, started_by: str = "you"):
+    def __init__(self, day: str, plan: dict, set_current_run, started_by: str = "you", title: str = ""):
         self.day = day
+        # What the log calls it: "Monday plan", or e.g. a run over a range of days.
+        self.title = title or f"{DAY_NAMES.get(day, day)} plan"
         self.items = plan["items"]
         self.set_current_run = set_current_run  # shows each action's run in the dashboard
         self.started_by = started_by
@@ -158,10 +160,10 @@ class PlanRun:
         self.active = True
         numbers = load_plans()["numbers"]
         try:
-            self.say(f"{DAY_NAMES[self.day]} plan started by {self.started_by}: {len(self.items)} action(s).")
+            self.say(f"{self.title} started by {self.started_by}: {len(self.items)} action(s).")
             for self.index, item in enumerate(self.items):
                 action = actions.load_action(item["action"])
-                label = f"{self.index + 1}/{len(self.items)} #{numbers.get(item['action'], '?')}"
+                label = f"{self.index + 1}/{len(self.items)} #{numbers.get(item['action'], '?')}" + (f" ({item['values']['date']})" if (item.get("values") or {}).get("date") else "")
                 if not action:
                     self.say(f"{label} '{item['action']}' no longer exists -- skipped.")
                     self.results.append({"action": item["action"], "result": "missing"})
@@ -202,12 +204,25 @@ class PlanRun:
         return {
             "active": self.active,
             "day": self.day,
+            "title": self.title,
             "index": self.index,
             "total": len(self.items),
             "result": self.result,
             "log": self.log[-40:],
             "started_by": self.started_by,
         }
+
+
+def days_between(start: datetime.date, end: datetime.date, weekends: bool) -> list[datetime.date]:
+    """Every day from start to end (both included), without Saturday and
+    Sunday unless weekends."""
+    days = []
+    day = start
+    while day <= end and len(days) < 400:
+        if weekends or day.weekday() < 5:
+            days.append(day)
+        day += datetime.timedelta(days=1)
+    return days
 
 
 def due_auto_day(now: datetime.datetime | None = None) -> str | None:
