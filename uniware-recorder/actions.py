@@ -1035,6 +1035,10 @@ class ActionRun:
         self.exported_files: list[str] = []
         self.dump_parts: list[Path] = []  # "join the dumps": one per Ctrl+P
         self.used_dump_files: set[str] = set()  # never the same file twice
+        # The collected columns waiting for the dump that only arrives at the
+        # end (Uniware's own folder dump, "dump.filipe....csv").
+        self.pending_dump_merge = None
+        self.collected_csv_paths: set[str] = set()
         self.captures: list[dict] = []
         self.started = datetime.datetime.now()
 
@@ -1684,16 +1688,24 @@ class ActionRun:
         ]
         target.write_text("\r\n".join(lines) + "\r\n", encoding="utf-8")
         self.exported_files.append(str(target))
+        self.collected_csv_paths.add(str(target))
         self.say(f"{label}: {len(rows)} row(s) -> {target}")
-        self._merge_into_dump(rows, value_label, with_info, label)
+        if not self._merge_into_dump(rows, value_label, with_info, label):
+            # Uniware's folder dump comes at the end of the run: then.
+            self.pending_dump_merge = (rows, value_label, with_info, label)
 
-    def _merge_into_dump(self, rows: list[dict], value_label: str, with_info: bool, label: str):
-        """Add the collected columns to this run's dump (the Excel file from
-        Ctrl+P): the row whose cell is the lot gets them."""
-        dumps = [Path(path) for path in self.exported_files if str(path).lower().endswith(".xlsx")]
+    def _merge_into_dump(self, rows: list[dict], value_label: str, with_info: bool, label: str) -> bool:
+        """Add the collected columns to this run's dump -- the Excel file from
+        Ctrl+P, or Uniware's own CSV in its dump folder (dump.filipe....csv):
+        the row whose cell is the lot gets them. False: no dump (yet)."""
+        dumps = [Path(path) for path in self.exported_files
+                 if str(path).lower().endswith((".xlsx", ".csv")) and str(path) not in self.collected_csv_paths]
         if not dumps:
-            return
+            return False
         dump = dumps[-1]
+        if dump.suffix.lower() == ".csv":
+            self._merge_into_csv_dump(dump, rows, value_label, with_info, label)
+            return True
         try:
             import openpyxl  # only needed here
             book = openpyxl.load_workbook(dump)
@@ -1702,7 +1714,7 @@ class ActionRun:
             first_free = sheet.max_column + 1
             sheet.cell(row=1, column=first_free, value=value_label)
             if with_info:
-                sheet.cell(row=1, column=first_free + 1, value="Info")
+                sheet.cell(row=1, column=first_free + 1, value="Popup")
             filled = 0
             for row_cells in sheet.iter_rows(min_row=2):
                 lot = next((str(cell.value).strip() for cell in row_cells if cell.value is not None and str(cell.value).strip() in by_lot), None)
@@ -1715,6 +1727,36 @@ class ActionRun:
                 filled += 1
             book.save(dump)
             _relative_sheet_paths(dump)
+            self.say(f"{label}: {filled} row(s) of the dump {dump.name} got {value_label}" + (" and Info" if with_info else ""))
+        except Exception as error:  # noqa: BLE001 -- the CSV is there anyway
+            self.say(f"{label}: could not add the columns to the dump {dump.name}: {error}")
+        return True
+
+    def _merge_into_csv_dump(self, dump: Path, rows: list[dict], value_label: str, with_info: bool, label: str):
+        """Uniware's ";" CSV dump: after its header row (the one with "Prt")
+        every row whose cell is a collected lot gets the value and Info."""
+        try:
+            raw = dump.read_bytes()
+            encoding = "utf-8-sig" if raw.startswith(b"\xef\xbb\xbf") else "cp1252"
+            table = list(csv.reader(raw.decode(encoding, errors="replace").splitlines(), delimiter=";"))
+            header_index = next((index for index, cells in enumerate(table[:40]) if any(cell.strip().lower() == "prt" for cell in cells)), None)
+            if header_index is None:
+                self.say(f"{label}: the dump {dump.name} has no Prt column -- the columns are only in the CSV next to it.")
+                return
+            by_lot = {str(item["key"]): item for item in rows}
+            table[header_index] = table[header_index] + [value_label] + (["Popup"] if with_info else [])
+            filled = 0
+            for cells in table[header_index + 1:]:
+                lot = next((cell.strip() for cell in cells if cell.strip() in by_lot), None)
+                if not lot:
+                    continue
+                item = by_lot[lot]
+                cells.extend([item.get("value", "")] + ([item.get("info", "")] if with_info else []))
+                filled += 1
+            temp = dump.with_suffix(".tmp")
+            with open(temp, "w", encoding=encoding, newline="") as handle:
+                csv.writer(handle, delimiter=";", lineterminator="\r\n").writerows(table)
+            temp.replace(dump)
             self.say(f"{label}: {filled} row(s) of the dump {dump.name} got {value_label}" + (" and Info" if with_info else ""))
         except Exception as error:  # noqa: BLE001 -- the CSV is there anyway
             self.say(f"{label}: could not add the columns to the dump {dump.name}: {error}")
@@ -1822,6 +1864,9 @@ class ActionRun:
             selected = self._run_steps(hwnd, controller, steps, 0, len(steps), selected)
             if dump_before is not None:
                 self._collect_uniware_dump(dump_before)
+                if self.pending_dump_merge:
+                    self._merge_into_dump(*self.pending_dump_merge)
+                    self.pending_dump_merge = None
             if self.dump_parts:
                 self._join_dump_parts()
             self.result = "done"

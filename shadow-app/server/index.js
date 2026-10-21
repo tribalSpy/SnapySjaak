@@ -22847,8 +22847,12 @@ async function handleApi(req, res, url) {
     let listBase64 = body?.file?.content_base64;
     // The Communications dump itself (.xlsx with Prt, EPP, Info): read to
     // "lot;epp;info" lines first -- matched by Prt only.
-    if (/\.xlsx?$/i.test(String(body?.file?.name || "")) && listBase64) {
-      const inputPath = await writeInkoopUploadToTempFile(body.file, "inkoop-lots-", ".xlsx");
+    // A CSV that isn't the short "lot;epp;info" list is Uniware's own dump with
+    // the night action's columns (a Prt column): read it like the .xlsx.
+    const firstLine = listBase64 ? Buffer.from(listBase64, "base64").toString("utf8").split(/\r?\n/).find((line) => line.trim()) || "" : "";
+    const isShortList = /(^|[;\t])\s*lot\s*([;\t]|$)/i.test(firstLine);
+    if (listBase64 && (/\.xlsx?$/i.test(String(body?.file?.name || "")) || !isShortList)) {
+      const inputPath = await writeInkoopUploadToTempFile(body.file, "inkoop-lots-", /\.csv$/i.test(String(body.file.name || "")) ? ".csv" : ".xlsx");
       try {
         const parsed = JSON.parse((await runInkoopVeilingWorker(["parse-lot-table", "--input", inputPath])).toString("utf8"));
         if (parsed?.error) {

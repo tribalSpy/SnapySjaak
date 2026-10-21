@@ -1223,7 +1223,9 @@ def parse_lot_table(input_path: Path):
             continue
         prt = headers.index("prt")
         epp = headers.index("epp") if "epp" in headers else None
-        info = headers.index("info", prt + 1) if "info" in headers[prt + 1:] else None
+        # The night action's popup lines: "Popup" (or an "Info" column after
+        # Prt -- the dump's own Info, before Prt, is the brief number).
+        info = headers.index("popup") if "popup" in headers else (headers.index("info", prt + 1) if "info" in headers[prt + 1:] else None)
         lines = ["lot;epp;info"]
         for data in all_rows[index + 1:]:
             lot = clean_text(data[prt] if prt < len(data) else "")
