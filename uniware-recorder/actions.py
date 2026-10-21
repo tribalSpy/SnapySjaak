@@ -595,19 +595,49 @@ def list_items(layout: list, target: str) -> list[dict]:
     list lies on top of a table (its own teal cell vs the table's teal row):
     then it's the column holding the value with a teal cell in it, or the
     column of a lone teal cell. Otherwise the screen's rows."""
-    for line in layout:
-        if value_matches(line["text"], target):
-            column = _column_of(layout, line)
-            if any(item["highlighted"] for item in column):
-                return column
+    # An open popup list: its lone teal cursor cell. Then only that list
+    # counts -- the unbroken run of rows around the cursor -- never the same
+    # words elsewhere (a field above it showing the last choice,
+    # "[OneDrive CSV", made the run steer at that field).
     cursor_rows = {}
     for line in layout:
         if line.get("cursor"):
             cursor_rows.setdefault(round(line["y"] / 8), []).append(line)
     lone = [lines[0] for lines in cursor_rows.values() if len(lines) == 1 and (lines[0].get("w") or 999) < 200]
     if lone and len(cursor_rows) > 1:
+        # Several single teal cells (small markers like "(4)" or a page
+        # counter too): a real popup is the longest list around one of them,
+        # 5+ rows with that one teal row only.
+        lists = [_contiguous_around_cursor(_column_of(layout, cell), cell["y"]) for cell in lone]
+        popups = [items for items in lists if len(items) >= 5 and sum(1 for item in items if item["highlighted"]) == 1]
+        if popups:
+            return max(popups, key=len)
+    for line in layout:
+        if value_matches(line["text"], target):
+            column = _column_of(layout, line)
+            if any(item["highlighted"] for item in column):
+                return column
+    if lone and len(cursor_rows) > 1:
         return _column_of(layout, lone[0])
     return screen_rows(layout)
+
+
+def _contiguous_around_cursor(items: list[dict], anchor_y: float | None = None) -> list[dict]:
+    """The rows of one list: from the highlighted row up and down while the
+    rows follow each other (a gap of more than about one and a half rows =
+    something else on the screen above or below the list)."""
+    # From the given cursor cell (a table row behind a popup is teal too).
+    cursor = next((index for index, item in enumerate(items) if item["highlighted"] and (anchor_y is None or abs(item["y"] - anchor_y) <= 8)), None)
+    if cursor is None or len(items) < 3:
+        return items
+    gaps = sorted(items[index + 1]["y"] - items[index]["y"] for index in range(len(items) - 1))
+    step = gaps[len(gaps) // 2] or 26
+    start, end = cursor, cursor
+    while start > 0 and items[start]["y"] - items[start - 1]["y"] <= 1.6 * step:
+        start -= 1
+    while end < len(items) - 1 and items[end + 1]["y"] - items[end]["y"] <= 1.6 * step:
+        end += 1
+    return items[start:end + 1]
 
 
 def row_key(row_text: str) -> str:
