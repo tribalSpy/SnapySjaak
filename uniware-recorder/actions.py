@@ -1132,7 +1132,15 @@ class ActionRun:
         self.started = datetime.datetime.now()
 
     def say(self, message: str):
-        self.log.append(f"{datetime.datetime.now():%H:%M:%S} {message}")
+        line = f"{datetime.datetime.now():%H:%M:%S} {message}"
+        self.log.append(line)
+        # The whole log in a file too (the dashboard shows only the last lines).
+        try:
+            OUTPUTS_DIR.mkdir(parents=True, exist_ok=True)
+            with (OUTPUTS_DIR / f"{self.action.get('slug', 'action')}_{self.started:%Y%m%d_%H%M%S}.log").open("a", encoding="utf-8") as handle:
+                handle.write(line + "\n")
+        except (OSError, AttributeError):
+            pass
 
     def _check(self, hwnd):
         if self.stop_requested:
