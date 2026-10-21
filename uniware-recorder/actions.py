@@ -1744,8 +1744,14 @@ class ActionRun:
                 self.say(f"{label}: the dump {dump.name} has no Prt column -- the columns are only in the CSV next to it.")
                 return
             by_lot = {str(item["key"]): item for item in rows}
+            prt = next(index for index, cell in enumerate(table[header_index]) if cell.strip().lower() == "prt")
             table[header_index] = table[header_index] + [value_label] + (["Popup"] if with_info else [])
             filled = 0
+            # The dump has every row: the lots the loop didn't read.
+            dump_lots = [cells[prt].strip() for cells in table[header_index + 1:] if prt < len(cells) and re.fullmatch(r"\d{6,10}", cells[prt].strip())]
+            missing = [lot for lot in dump_lots if lot not in by_lot]
+            self.say(f"{label}: the dump has {len(dump_lots)} lot(s), the loop read {len(dump_lots) - len(missing)}"
+                     + (f" -- not read: {', '.join(missing[:20])}{' ...' if len(missing) > 20 else ''}" if missing else " -- all of them"))
             for cells in table[header_index + 1:]:
                 lot = next((cell.strip() for cell in cells if cell.strip() in by_lot), None)
                 if not lot:
