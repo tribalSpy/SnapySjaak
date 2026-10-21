@@ -298,8 +298,9 @@ def run_trained_model(config: dict, payload: dict):
     infer_path = config.get("trained_model_infer") or ""
     if not python_path or not infer_path:
         return None
-    if not Path(python_path).exists() or not Path(infer_path).exists():
-        return {"error": f"trained model not found (python: {python_path}, infer: {infer_path})"}
+    missing = [f"{name} {path}" for name, path in (("python", python_path), ("infer.py", infer_path)) if not Path(path).exists()]
+    if missing:
+        return {"error": f"trained model: not found on this PC: {', '.join(missing)} (config.json trained_model_python / trained_model_infer; leave both empty to switch it off)"}
     documents = payload.get("vision_documents") or []
     with tempfile.TemporaryDirectory(prefix="shelf-trained-") as temp_dir:
         image_paths = []
