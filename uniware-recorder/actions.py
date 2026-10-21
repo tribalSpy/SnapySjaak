@@ -1727,7 +1727,7 @@ class ActionRun:
                 filled += 1
             book.save(dump)
             _relative_sheet_paths(dump)
-            self.say(f"{label}: {filled} row(s) of the dump {dump.name} got {value_label}" + (" and Info" if with_info else ""))
+            self.say(f"{label}: {filled} row(s) of the dump {dump.name} got {value_label}" + (" and Popup" if with_info else ""))
         except Exception as error:  # noqa: BLE001 -- the CSV is there anyway
             self.say(f"{label}: could not add the columns to the dump {dump.name}: {error}")
         return True
@@ -1763,7 +1763,7 @@ class ActionRun:
             with open(temp, "w", encoding=encoding, newline="") as handle:
                 csv.writer(handle, delimiter=";", lineterminator="\r\n").writerows(table)
             temp.replace(dump)
-            self.say(f"{label}: {filled} row(s) of the dump {dump.name} got {value_label}" + (" and Info" if with_info else ""))
+            self.say(f"{label}: {filled} row(s) of the dump {dump.name} got {value_label}" + (" and Popup" if with_info else ""))
         except Exception as error:  # noqa: BLE001 -- the CSV is there anyway
             self.say(f"{label}: could not add the columns to the dump {dump.name}: {error}")
 
