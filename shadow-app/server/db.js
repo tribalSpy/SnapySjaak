@@ -522,7 +522,7 @@ export async function applyInkoopEppBridge() {
         JOIN inkoop_lot_epp b ON b.lot = e.lot
         JOIN inkoop_invoice_lines i
           ON i.reference_bt ~ '^[0-9]{6}[A-Za-z]?$'
-         AND length(b.epp) BETWEEN 12 AND 14
+         AND length(b.epp) >= 9
          AND left(i.reference_bt, 6) = right(b.epp, 6)
          AND i.invoice_type IN ('klokfactuur', 'connect')
          AND i.invoice_date BETWEEN e.erp_date - 4 AND e.erp_date + 4
