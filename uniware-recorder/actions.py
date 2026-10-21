@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import csv
 import ctypes
+import asyncio
 import difflib
 import datetime
 import json
@@ -30,6 +31,7 @@ from pynput import keyboard
 
 import recorder
 import screen_reader
+from PIL import Image, ImageChops
 
 APP_DIR = Path(__file__).resolve().parent
 ACTIONS_DIR = APP_DIR / "actions"
@@ -365,6 +367,53 @@ def list_row_brief(text: str) -> str | None:
     if not found or not re.search(r"\d", found.group(1)):
         return None
     return found.group(1)
+
+
+def popup_box(before, after):
+    """Where a popup opened: the biggest block of rows that changed between
+    the screenshot before and after its key (x0, y0, x1, y1), or None. Only
+    its lines count -- not the list around it."""
+    if before is None or after is None or before.size != after.size:
+        return None
+    mask = ImageChops.difference(before.convert("RGB"), after.convert("RGB")).convert("L").point(lambda v: 255 if v > 40 else 0)
+    if not mask.getbbox():
+        return None
+    width, height = mask.size
+    # Mean per pixel row: text rows of a popup change a few % of the width;
+    # the blank space between its lines is bridged (up to 18 px).
+    rows = list(mask.resize((1, height), Image.BOX).getdata())
+    best, start, end, gap = (0, -1), None, None, 0
+    for y, value in enumerate(rows + [0] * 20):
+        if value > 3:
+            start = y if start is None else start
+            end, gap = y, 0
+        elif start is not None:
+            gap += 1
+            if gap > 18:
+                if end - start > best[1] - best[0]:
+                    best = (start, end)
+                start = None
+    top, bottom = best
+    if bottom - top < 40:
+        return None
+    columns = list(mask.crop((0, top, width, bottom + 1)).resize((width, 1), Image.BOX).getdata())
+    xs = [x for x, value in enumerate(columns) if value > 3]
+    return (xs[0], top, xs[-1], bottom) if xs else None
+
+
+def read_cursor_row_key(image, entry, row_key):
+    """The teal cursor row read again, enlarged and in grey (OCR misreads
+    digits on teal): its key, or None."""
+    if image is None or entry is None:
+        return None
+    top = max(0, int(entry["y"]) - 6)
+    crop = image.crop((0, top, image.width, min(image.height, int(entry["y"]) + 24))).convert("L")
+    crop = crop.resize((crop.width * 2, crop.height * 2), Image.LANCZOS).convert("RGB")
+    try:
+        words = asyncio.run(screen_reader._ocr(crop))
+    except Exception:  # noqa: BLE001 -- a fallback only
+        return None
+    return row_key(" ".join(word["text"] for word in words))
 
 
 def read_screen_value(label: str, lines: list[str]) -> str | None:
@@ -1436,7 +1485,9 @@ class ActionRun:
         popup_keys = str(loop.get("row_popup_keys") or "").strip()
         close_keys = str(loop.get("row_close_keys") or "").strip() or "Esc"
         row_popups: dict[str, list[str]] = {}  # key -> the popup's lines
-        keys_by_position_before: dict[int, str] = {}
+        cursor_keys_done: set[str] = set()  # rows the cursor was on
+        cursor_key = None
+        last_others = None
 
         def note_rows(layout, joined):
             for screen_row in screen_rows(layout):
@@ -1499,7 +1550,7 @@ class ActionRun:
         list_screen = None
         for row_number in range(1, max_rows + 1):
             self._check(hwnd)
-            _, screen_id, screen_title, _, text, layout = self._read_stable(hwnd)
+            image, screen_id, screen_title, _, text, layout = self._read_stable(hwnd)
             joined = "\n".join(text)
             row = cursor_row(layout)
             # Never go on outside the list: a key that left its screen (into
@@ -1513,24 +1564,27 @@ class ActionRun:
                 raise RuntimeError(f"{label}: Uniware left the list ('{list_screen[1]}' -> '{screen_title}') -- stopped to be safe.")
             if collected is not None:
                 note_rows(layout, joined)
+                rows_now = screen_rows(layout)
+                cursor_entry = next((entry for entry in rows_now if entry["highlighted"]), None)
+                cursor_key = row_key(row)
+                if not cursor_key and cursor_entry is not None:
+                    # The teal cursor row misread: the same screen row on
+                    # the previous look (not under the cursor then) -- not
+                    # one the cursor was on already (the list jumped) --
+                    # else the row read again, enlarged.
+                    cursor_key = keys_by_position.get(round(cursor_entry["y"] / 8))
+                    if cursor_key in cursor_keys_done:
+                        cursor_key = None
+                    cursor_key = cursor_key or read_cursor_row_key(image, cursor_entry, row_key)
                 if value_label:
-                    rows_now = screen_rows(layout)
-                    cursor_entry = next((entry for entry in rows_now if entry["highlighted"]), None)
-                    cursor_key = row_key(row)
-                    if not cursor_key and cursor_entry is not None:
-                        # The teal cursor row misread: the same screen row
-                        # on the previous look (not under the cursor then).
-                        cursor_key = keys_by_position.get(round(cursor_entry["y"] / 8))
                     value = read_screen_value(value_label, [line.get("text", "") for line in layout])
                     if cursor_key and value:
                         row_values.setdefault(cursor_key, []).append(value)
-                    keys_by_position_before.clear()
-                    keys_by_position_before.update(keys_by_position)
-                    keys_by_position.clear()
-                    for entry in rows_now:
-                        key = row_key(entry["text"]) if not entry["highlighted"] else None
-                        if key:
-                            keys_by_position[round(entry["y"] / 8)] = key
+                keys_by_position.clear()
+                for entry in rows_now:
+                    key = row_key(entry["text"]) if not entry["highlighted"] else None
+                    if key:
+                        keys_by_position[round(entry["y"] / 8)] = key
             if last_action == "match" and same_row(row, last_row):
                 raise RuntimeError(f"{label}: '{last_row[:50]}' is still there after {match_key} -- does Uniware ask for a confirmation? Stopped to be safe.")
             # Where the cursor row is on the screen: rows that look alike
@@ -1539,7 +1593,12 @@ class ActionRun:
             cursor_entry_now = next((entry for entry in screen_rows(layout) if entry["highlighted"]), None)
             cursor_y = round(cursor_entry_now["y"] / 8) if cursor_entry_now else None
             cursor_moved = cursor_y is not None and last_cursor_y is not None and cursor_y != last_cursor_y
-            last_cursor_y = cursor_y
+            # At the bottom of the screen the cursor stays and the list
+            # scrolls under it (three "LI OT ZAMBESI" rows alike but their
+            # lot): the other rows changed -- a new row too.
+            others = tuple(row_key(entry["text"]) or row_order_number(entry["text"]) or "" for entry in screen_rows(layout) if not entry["highlighted"])
+            cursor_moved = cursor_moved or (last_others is not None and others != last_others)
+            last_cursor_y, last_others = cursor_y, others
             if last_action == "next" and same_row(row, last_row) and not cursor_moved:
                 # No new order after the key: once can be a slow screen --
                 # LIST_LOOP_END_TRIES times in a row is the end of the list.
@@ -1574,7 +1633,9 @@ class ActionRun:
                 if popup_keys:
                     # Every lot, also one with a brief number in Info: that
                     # can be the last digits of its EPP, not the real one.
-                    self._read_row_popup(hwnd, controller, row, layout, popup_keys, close_keys, row_key, keys_by_position_before, row_popups, label)
+                    self._read_row_popup(hwnd, controller, cursor_key, image, popup_keys, close_keys, row_popups, label)
+                if cursor_key:
+                    cursor_keys_done.add(cursor_key)
                 for part in list_loop_keys(next_key):
                     send_combo(controller, part)
                 last_row, last_action = row, "next"
@@ -1699,28 +1760,36 @@ class ActionRun:
             return
         self.say(f"{label}: list done -- {counts['matched']} {'would be ' if dry_run else ''}{match_key}, {counts['kept']} kept, {counts['unreadable']} not readable.")
 
-    def _read_row_popup(self, hwnd, controller, row, layout, popup_keys, close_keys, row_key, keys_before, row_popups, label):
-        """Open the cursor row's popup (e.g. Shift+? -- the supplier info),
-        keep every line it shows (what wasn't on the screen before), close it
-        and wait until the list is back."""
-        key = row_key(row)
-        if not key:
-            cursor_entry = next((entry for entry in screen_rows(layout) if entry["highlighted"]), None)
-            key = keys_before.get(round(cursor_entry["y"] / 8)) if cursor_entry else None
+    def _read_row_popup(self, hwnd, controller, key, image, popup_keys, close_keys, row_popups, label):
+        """Open the cursor row's popup (e.g. ? -- the supplier info), keep the
+        lines inside it (the part of the screen that changed), close it and
+        wait until the list is back."""
         if not key or key in row_popups:
             return
-        before = {line.get("text", "") for line in layout}
         for part in list_loop_keys(popup_keys):
             send_combo(controller, part)
-        _, _, _, _, _, after_layout = self._read_stable(hwnd)
-        shown = [line for line in after_layout if line.get("text", "") and line.get("text", "") not in before]
-        lines = [entry["text"] for entry in screen_rows(shown)] if shown else []
+        box, after_layout = None, []
+        for _ in range(3):
+            after_image, _, _, _, _, after_layout = self._read_stable(hwnd)
+            box = popup_box(image, after_image)
+            if box:
+                break
+            time.sleep(0.5)  # not drawn yet
+        lines = []
+        if box:
+            left, top, right, bottom = box
+            inside = [line for line in after_layout if line.get("text", "").strip()
+                      and left - 6 <= line["x"] + line.get("w", 0) / 2 <= right + 6 and top - 6 <= line["y"] <= bottom + 6]
+            lines = [entry["text"] for entry in screen_rows(inside)]
         for part in list_loop_keys(close_keys):
             send_combo(controller, part)
-        self._read_stable(hwnd)
+        for _ in range(4):
+            if not popup_box(image, self._read_stable(hwnd)[0]):
+                break
+            time.sleep(0.5)  # still closing
         row_popups[key] = lines
         if not lines:
-            self.say(f"{label}: {key}: the popup ({popup_keys}) showed nothing new")
+            self.say(f"{label}: {key}: no popup seen after {popup_keys}")
 
     def _write_collected_csv(self, collected: dict, value_label: str, label: str):
         """The collected rows with their value and popup info as a CSV
@@ -1739,7 +1808,7 @@ class ActionRun:
             f"{item['key']};{item.get('value', '')}" + (f";{str(item.get('info', '')).replace(';', ',')}" if with_info else "")
             for item in rows
         ]
-        target.write_text("\r\n".join(lines) + "\r\n", encoding="utf-8")
+        target.write_text("\r\n".join(lines) + "\r\n", encoding="utf-8", newline="")
         self.exported_files.append(str(target))
         self.collected_csv_paths.add(str(target))
         self.say(f"{label}: {len(rows)} row(s) -> {target}")
