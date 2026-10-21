@@ -401,6 +401,14 @@ def popup_box(before, after):
     return (xs[0], top, xs[-1], bottom) if xs else None
 
 
+def screens_differ(before, after) -> bool:
+    """More changed between two screenshots than a blinking caret."""
+    if before is None or after is None or before.size != after.size:
+        return True
+    box = ImageChops.difference(before.convert("RGB"), after.convert("RGB")).convert("L").point(lambda v: 255 if v > 40 else 0).getbbox()
+    return bool(box) and (box[2] - box[0]) * (box[3] - box[1]) > 600
+
+
 def read_cursor_row_key(image, entry, row_key):
     """The teal cursor row read again, enlarged and in grey (OCR misreads
     digits on teal): its key, or None."""
@@ -1156,6 +1164,26 @@ class ActionRun:
         image = screen_reader.capture_when_settled(hwnd, timeout=timeout)
         return (image, *recorder.describe_screen(image))
 
+    def _capture(self, hwnd):
+        return screen_reader.capture_window(hwnd)
+
+    def _describe(self, image):
+        return recorder.describe_screen(image)
+
+    def _read_settled(self, hwnd, timeout: float = 3.0):
+        """Like _read_stable, but quicker: screenshots only (no text reading)
+        until two in a row 0.25 s apart are the same, then read once."""
+        deadline = time.time() + timeout
+        image = self._capture(hwnd)
+        while time.time() < deadline:
+            time.sleep(0.25)
+            shot = self._capture(hwnd)
+            if not screens_differ(image, shot):
+                image = shot
+                break
+            image = shot
+        return (image, *self._describe(image))
+
     def _wait_for(self, hwnd, step: dict, label: str):
         """Read the screen until it is the step's screen, contains its "wait
         until" text and two reads in a row are the same (finished loading),
@@ -1551,16 +1579,27 @@ class ActionRun:
             return difflib.SequenceMatcher(None, left, right).ratio() >= 0.95
 
         counts = {"matched": 0, "kept": 0, "unreadable": 0}
+        loop_started = time.time()
         last_row, last_action = None, None
         last_cursor_y = None
         handled = []
         unchanged = 0
         list_screen = None
+        last_image = None
         for row_number in range(1, max_rows + 1):
             self._check(hwnd)
-            image, screen_id, screen_title, _, text, layout = self._read_stable(hwnd)
+            if collected is not None and last_image is not None:
+                # After the key: first wait until the screen changed (a slow
+                # screen read too early looks like the end -- the next key
+                # again would skip a row); at the end of the list it doesn't.
+                deadline = time.time() + 2
+                while time.time() < deadline and not screens_differ(last_image, self._capture(hwnd)):
+                    time.sleep(0.1)
+            image, screen_id, screen_title, _, text, layout = (self._read_settled(hwnd) if collected is not None else self._read_stable(hwnd))
             joined = "\n".join(text)
             row = cursor_row(layout)
+            if collected is not None and row_number % 50 == 0:
+                self.say(f"{label}: {row_number} rows, {(time.time() - loop_started) / row_number:.1f} s per row")
             # Never go on outside the list: a key that left its screen (into
             # a menu, another program) would otherwise be pressed there.
             if list_screen is None:
@@ -1647,7 +1686,6 @@ class ActionRun:
                 for part in list_loop_keys(next_key):
                     send_combo(controller, part)
                 last_row, last_action = row, "next"
-                time.sleep(0.3)
                 continue
             entry = None
             if list_data is not None:
@@ -1776,13 +1814,19 @@ class ActionRun:
             return
         for part in list_loop_keys(popup_keys):
             send_combo(controller, part)
-        box, after_layout = None, []
-        for _ in range(3):
-            after_image, _, _, _, _, after_layout = self._read_stable(hwnd)
-            box = popup_box(image, after_image)
-            if box:
+        # Screenshots only until the popup is there and the same twice in a
+        # row (drawn), then its text is read once.
+        box, previous, after_layout = None, None, []
+        deadline = time.time() + 4
+        while time.time() < deadline:
+            time.sleep(0.15)
+            shot = self._capture(hwnd)
+            found = popup_box(image, shot)
+            if found and previous is not None and not screens_differ(previous, shot):
+                box = found
+                after_layout = self._describe(shot)[4]
                 break
-            time.sleep(0.5)  # not drawn yet
+            previous = shot if found else None
         lines = []
         if box:
             left, top, right, bottom = box
@@ -1791,10 +1835,11 @@ class ActionRun:
             lines = [entry["text"] for entry in screen_rows(inside)]
         for part in list_loop_keys(close_keys):
             send_combo(controller, part)
-        for _ in range(4):
-            if not popup_box(image, self._read_stable(hwnd)[0]):
-                break
-            time.sleep(0.5)  # still closing
+        deadline = time.time() + 4
+        while time.time() < deadline:
+            time.sleep(0.15)
+            if not popup_box(image, self._capture(hwnd)):
+                break  # the list is back
         row_popups[key] = lines
         if not lines:
             self.say(f"{label}: {key}: no popup seen after {popup_keys}")
