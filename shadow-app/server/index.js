@@ -6884,7 +6884,8 @@ function parseInkoopEppList(base64) {
       const value = (name) => cells[header.indexOf(name)] || "";
       const lot = value("lot");
       if (!/^\d{6,10}$/.test(lot)) continue;
-      const epp = /^\d{12,14}$/.test(value("epp")) ? value("epp") : "";
+      // Clock lots have a 9-digit EPP, others 13 -- or none at all.
+      const epp = /^\d{6,16}$/.test(value("epp")) ? value("epp") : "";
       const info = header.includes("info") ? value("info") : "";
       rows.push({ lot: Number(lot), epp, info, ...parseInkoopLotInfo(info) });
       continue;

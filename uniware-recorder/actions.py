@@ -357,6 +357,13 @@ def list_row_lot(text: str) -> str | None:
     return None
 
 
+def list_row_brief(text: str) -> str | None:
+    """The brief number in a list row ("... 5 FA3CWD/A 44858309 J 10",
+    "X01907/a") -- a row without one is a lot that can't be matched yet."""
+    found = re.search(r"(?<!\S)([A-Z0-9]{5,7}/[A-Za-z])(?!\S)", str(text or ""))
+    return found.group(1) if found else None
+
+
 def read_screen_value(label: str, lines: list[str]) -> str | None:
     """The number after a label on the screen: "EPP: [9100185445726]" ->
     "9100185445726" (look-alike letters read as digits)."""
@@ -453,6 +460,9 @@ def normalize_list_loop(loop: dict) -> dict:
         # supplier info), keep every line it shows, close it (e.g. "Esc").
         "row_popup_keys": str(loop.get("row_popup_keys") or "").strip(),
         "row_close_keys": str(loop.get("row_close_keys") or "").strip() or "Esc",
+        # Only rows without a brief number get the popup (and are written to
+        # the CSV) -- the ones that can't be matched otherwise.
+        "only_without_brief": loop.get("only_without_brief", True) is not False,
         # Act on a day list instead of words on screen: a row matches when its
         # order number has this label in that list (e.g. 516).
         "use_list": str(loop.get("use_list") or "").strip(),
@@ -1427,14 +1437,16 @@ class ActionRun:
         close_keys = str(loop.get("row_close_keys") or "").strip() or "Esc"
         row_popups: dict[str, list[str]] = {}  # key -> the popup's lines
         keys_by_position_before: dict[int, str] = {}
+        only_without_brief = loop.get("only_without_brief", True) is not False
 
         def note_rows(layout, joined):
             for screen_row in screen_rows(layout):
                 order = row_key(screen_row["text"])
                 if not order:
                     continue
-                seen = sightings.setdefault(order, {"count": 0, "row": screen_row["text"][:80], "type": ""})
+                seen = sightings.setdefault(order, {"count": 0, "row": screen_row["text"][:80], "type": "", "brief": ""})
                 seen["count"] += 1
+                seen["brief"] = seen["brief"] or list_row_brief(screen_row["text"]) or ""
                 if screen_row["highlighted"] and not seen["type"]:
                     seen["type"] = found(match_words, joined) or found(keep_words, joined) or ""
         list_data = load_day_list(use_list) if use_list else None
@@ -1561,7 +1573,8 @@ class ActionRun:
                 # (note_rows); only the next key is pressed -- after opening
                 # and reading the row's popup, when one is set.
                 if popup_keys:
-                    self._read_row_popup(hwnd, controller, row, layout, popup_keys, close_keys, row_key, keys_by_position_before, row_popups, label)
+                    has_brief = (lambda key: bool(sightings.get(key, {}).get("brief"))) if only_without_brief else None
+                    self._read_row_popup(hwnd, controller, row, layout, popup_keys, close_keys, row_key, keys_by_position_before, row_popups, label, has_brief)
                 for part in list_loop_keys(next_key):
                     send_combo(controller, part)
                 last_row, last_action = row, "next"
@@ -1666,33 +1679,44 @@ class ActionRun:
                 if seen["count"] < 2:
                     self.say(f"{label}: {order} read only once ('{seen['row'][:50]}') -- not collected, check by hand")
                     continue
-                item = {"key": order, "row": seen["row"], "type": seen["type"], "label": "", "note": "", "warning": False}
+                item = {"key": order, "row": seen["row"], "type": seen["type"], "label": "", "note": "", "warning": False, "brief": seen.get("brief", "") if only_without_brief else ""}
+                if only_without_brief and item["brief"]:
+                    # Has a brief number: matched without the extras.
+                    collected["items"].append(item)
+                    self.say(f"{label}: collected {order} brief {item['brief']}")
+                    continue
                 if value_label:
+                    # Not every lot has one (e.g. no EPP): left empty.
                     item["value"] = values_by_key.get(order, "")
                     if not item["value"]:
-                        item["note"] = f"no {value_label} read"
+                        item["note"] = f"no {value_label}"
                 if popup_keys:
                     item["info"] = " | ".join(row_popups.get(order, []))
                     if not item["info"]:
                         item["note"] = (item.get("note", "") + "; " if item.get("note") else "") + "popup not read"
                 collected["items"].append(item)
-                self.say(f"{label}: collected {order}" + (f" {value_label} {item.get('value') or '?'}" if value_label else f" ({seen['type'] or 'type ?'})"))
+                self.say(f"{label}: collected {order} (no brief number)" + (f" {value_label} {item.get('value') or 'none'}" if value_label else f" ({seen['type'] or 'type ?'})")
+                         + (f", popup {len(row_popups.get(order, []))} line(s)" if popup_keys else ""))
             save_day_list(collected)
-            self.say(f"{label}: {len(collected['items'])} row(s) collected into day list '{collect_into}'.")
+            without = sum(1 for item in collected["items"] if not item.get("brief"))
+            self.say(f"{label}: {len(collected['items'])} row(s) collected into day list '{collect_into}'"
+                     + (f", {without} without a brief number." if only_without_brief else "."))
             if value_label or popup_keys:
                 self._write_collected_csv(collected, value_label or "value", label)
             return
         self.say(f"{label}: list done -- {counts['matched']} {'would be ' if dry_run else ''}{match_key}, {counts['kept']} kept, {counts['unreadable']} not readable.")
 
-    def _read_row_popup(self, hwnd, controller, row, layout, popup_keys, close_keys, row_key, keys_before, row_popups, label):
+    def _read_row_popup(self, hwnd, controller, row, layout, popup_keys, close_keys, row_key, keys_before, row_popups, label, has_brief=None):
         """Open the cursor row's popup (e.g. Shift+? -- the supplier info),
         keep every line it shows (what wasn't on the screen before), close it
-        and wait until the list is back."""
+        and wait until the list is back. has_brief(key) true: not opened."""
         key = row_key(row)
         if not key:
             cursor_entry = next((entry for entry in screen_rows(layout) if entry["highlighted"]), None)
             key = keys_before.get(round(cursor_entry["y"] / 8)) if cursor_entry else None
         if not key or key in row_popups:
+            return
+        if has_brief is not None and (has_brief(key) or list_row_brief(row)):
             return
         before = {line.get("text", "") for line in layout}
         for part in list_loop_keys(popup_keys):
@@ -1712,7 +1736,7 @@ class ActionRun:
         ("lot;epp;info"), in the action's dump folder (else outputs/) -- the
         file for SnappySjaak's EPP list upload. The same columns are added to
         the run's dump file (Ctrl+P), matched by lot."""
-        rows = [item for item in collected.get("items", []) if item.get("value") or item.get("info")]
+        rows = [item for item in collected.get("items", []) if not item.get("brief") and (item.get("value") or item.get("info"))]
         if not rows:
             self.say(f"{label}: no {value_label} / popup read on any row -- no CSV written.")
             return

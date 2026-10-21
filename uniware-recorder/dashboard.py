@@ -616,7 +616,8 @@ function loopEditor(loop, i) {
     ${part("collect", `<label>Each row is known by <select data-loop-collectkey="${i}"><option value="order" ${loop.collect_key !== "lot" ? "selected" : ""}>its order number (7 digits after the customer code)</option><option value="lot" ${loop.collect_key === "lot" ? "selected" : ""}>its Connect lot (8 digits, 44...)</option></select></label>
       <label>also read from the screen <input data-loop-collectvalue="${i}" size="8" placeholder="e.g. EPP" value="${esc(loop.collect_value || "")}"></label><span class="muted">the number after this label (e.g. "EPP: [9100185445726]" in the bottom bar) for each row -- saved as a CSV (lot;epp) in the dump folder</span>`)}
     ${part("collect", `<label>per row open a popup with <input data-loop-popupkeys="${i}" size="10" placeholder="e.g. Shift+?" value="${esc(loop.row_popup_keys || "")}"></label>
-      <label>and close it with <input data-loop-closekeys="${i}" size="6" placeholder="Esc" value="${esc(loop.row_close_keys || "")}"></label><span class="muted">every line the popup shows is kept (column "Info" in the CSV, and in the run's Ctrl+P dump next to its lot) -- slow, fine for a night action</span>`)}
+      <label>and close it with <input data-loop-closekeys="${i}" size="6" placeholder="Esc" value="${esc(loop.row_close_keys || "")}"></label><span class="muted">every line the popup shows is kept (column "Info" in the CSV, and in the run's Ctrl+P dump next to its lot) -- slow, fine for a night action</span>
+      <label><input type="checkbox" data-loop-nobrief="${i}" ${loop.only_without_brief !== false ? "checked" : ""}> only rows <strong>without a brief number</strong> (popup and CSV -- the lots that can't be matched otherwise)</label>`)}
     ${part("daylist", `<label>Day list <input data-loop-uselist="${i}" size="20" placeholder="e.g. accessoires vandaag" value="${esc(loop.use_list || "")}"></label><label>orders with result <input data-loop-uselabel="${i}" size="5" placeholder="516" value="${esc(loop.use_label || "")}"></label>`)}
     ${part("words daylist", `<label>press <input data-loop-key="${i}" size="18" placeholder="e.g. Delete, Right, Enter" value="${esc(loop.match_key || "Delete")}" title="Several keys one after another, separated by commas -- e.g. Delete, then Right and Enter to answer the confirmation"></label>`)}
     <div class="row"><label>to the next row press <input data-loop-next="${i}" size="7" value="${esc(loop.next_key || "Down")}"></label>
@@ -645,6 +646,7 @@ function loopValues(i) {
     collect_value: mode === "collect" ? value("collectvalue") : "",
     row_popup_keys: mode === "collect" ? value("popupkeys") : "",
     row_close_keys: mode === "collect" ? value("closekeys") : "",
+    only_without_brief: checked("nobrief"),
     use_list: mode === "daylist" ? value("uselist") : "",
     use_label: mode === "daylist" ? value("uselabel") : "",
   };
