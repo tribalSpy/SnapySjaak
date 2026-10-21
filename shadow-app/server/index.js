@@ -101,6 +101,7 @@ import {
   saveInkoopLotEpp,
   applyInkoopEppBridge,
   applyInkoopOrderBridge,
+  applyInkoopRefBridge,
   applyInkoopLotInfo,
   getInkoopLotGlnPairs,
   getInkoopGrowerPavPairs,
@@ -6848,19 +6849,27 @@ function inkoopDescriptionsShareName(invoiceDescription, connectDescription) {
 // "lot;epp". From the popup: the order number (the line after "Klant code":
 // the invoice's ON plus up to 3 digits) and the supplier's GLN (13 digits,
 // 87...).
+// FloraHolland's own GLNs -- the clock locations (Aalsmeer, Naaldwijk,
+// Rijnsburg) and FloraHolland itself: in a clock lot's popup, never the grower.
+const INKOOP_AUCTION_GLNS = new Set(["8713783439043", "8713783439074", "8713783439081", "8718288067623"]);
+
 function parseInkoopLotInfo(info) {
   const lines = String(info || "").split("|").map((line) => line.trim()).filter(Boolean);
+  const compact = lines.map((line) => line.replace(/\s+/g, ""));
   let orderNumber = "";
   const customerCode = lines.findIndex((line) => /klant\s*code/i.test(line));
   if (customerCode >= 0) {
-    const next = lines.slice(customerCode + 1).find((line) => /^[A-Z]{0,3}\d{6,24}$/i.test(line.replace(/\s+/g, "")));
-    if (next) orderNumber = next.replace(/\s+/g, "");
+    const next = compact.slice(customerCode + 1).find((line) => /^[A-Z]{0,3}\d{6,24}$/i.test(line));
+    if (next) orderNumber = next;
   }
   if (!orderNumber) {
-    orderNumber = (lines.map((line) => line.replace(/\s+/g, "")).find((line) => /^\d{15,24}$/.test(line))) || "";
+    orderNumber = compact.find((line) => /^\d{15,24}$/.test(line)) || "";
   }
-  const gln = lines.map((line) => line.replace(/\s+/g, "")).find((line) => /^87\d{11}$/.test(line) && line !== orderNumber) || "";
-  return { order_number: orderNumber, gln };
+  const gln = compact.find((line) => /^87\d{11}$/.test(line) && line !== orderNumber && !INKOOP_AUCTION_GLNS.has(line)) || "";
+  // Every 13-digit number (a clock lot's transaction numbers) -- not the
+  // GLNs: one may be an invoice line's VN / AAG / SS / ADJ reference.
+  const refs = [...new Set(compact.filter((line) => /^\d{13}$/.test(line) && !/^87\d{11}$/.test(line)))];
+  return { order_number: orderNumber, gln, refs };
 }
 
 function parseInkoopEppList(base64) {
@@ -6883,7 +6892,7 @@ function parseInkoopEppList(base64) {
     const cells = line.split(/[;,\t ]+/).map((cell) => cell.trim().replace(/^"|"$/g, ""));
     const epp = cells.find((cell) => /^\d{12,14}$/.test(cell));
     const lot = cells.find((cell) => /^\d{6,10}$/.test(cell));
-    if (epp && lot) rows.push({ lot: Number(lot), epp, info: "", order_number: "", gln: "" });
+    if (epp && lot) rows.push({ lot: Number(lot), epp, info: "", order_number: "", gln: "", refs: [] });
   }
   return rows;
 }
@@ -22872,8 +22881,9 @@ async function handleApi(req, res, url) {
     const saved = await saveInkoopLotEpp(rows, String(body?.file?.name || ""));
     const fromEpp = await applyInkoopEppBridge();
     const fromOrder = await applyInkoopOrderBridge();
+    const fromRefs = await applyInkoopRefBridge();
     const withInfo = await applyInkoopLotInfo();
-    const filled = [...fromEpp, ...fromOrder, ...withInfo];
+    const filled = [...fromEpp, ...fromOrder, ...fromRefs, ...withInfo];
     inkoopGrowerDirectoryCache = null;
     if (filled.length) {
       bumpInkoopMatchVersion();
@@ -22883,8 +22893,8 @@ async function handleApi(req, res, url) {
     }
     sendJson(res, 200, {
       ok: true, lines: rows.length, saved,
-      filled_now: fromEpp.length + fromOrder.length,
-      from_epp: fromEpp.length, from_order: fromOrder.length,
+      filled_now: fromEpp.length + fromOrder.length + fromRefs.length,
+      from_epp: fromEpp.length, from_order: fromOrder.length, from_refs: fromRefs.length,
       with_order_number: rows.filter((row) => row.order_number).length,
       with_gln: rows.filter((row) => row.gln).length,
     });
@@ -23047,6 +23057,7 @@ async function handleApi(req, res, url) {
       if (erpRows.length || flatInvoiceLines.length) {
         await applyInkoopEppBridge().catch((bridgeError) => console.error("EPP bridge failed:", bridgeError instanceof Error ? bridgeError.message : bridgeError));
         await applyInkoopOrderBridge().catch((bridgeError) => console.error("Order number bridge failed:", bridgeError instanceof Error ? bridgeError.message : bridgeError));
+        await applyInkoopRefBridge().catch((bridgeError) => console.error("Popup reference bridge failed:", bridgeError instanceof Error ? bridgeError.message : bridgeError));
         await applyInkoopLotInfo().catch((bridgeError) => console.error("Lot info failed:", bridgeError instanceof Error ? bridgeError.message : bridgeError));
       }
       // The per-invoice totals (Overview) of the invoices in this upload.

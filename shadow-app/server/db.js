@@ -395,15 +395,15 @@ export async function saveInkoopLotEpp(rows, sourceFileName = "") {
     const values = [];
     const placeholders = chunk.map((row) => {
       const base = values.length;
-      values.push(row.lot, row.epp || null, sourceFileName, row.info || null, row.order_number || null, row.gln || null);
-      return `($${base + 1}, $${base + 2}, $${base + 3}, $${base + 4}, $${base + 5}, $${base + 6})`;
+      values.push(row.lot, row.epp || null, sourceFileName, row.info || null, row.order_number || null, row.gln || null, Array.isArray(row.refs) && row.refs.length ? row.refs : null);
+      return `($${base + 1}, $${base + 2}, $${base + 3}, $${base + 4}, $${base + 5}, $${base + 6}, $${base + 7}::text[])`;
     });
     await pool.query(
-      `INSERT INTO inkoop_lot_epp (lot, epp, source_file_name, info, order_number, gln) VALUES ${placeholders.join(", ")}
+      `INSERT INTO inkoop_lot_epp (lot, epp, source_file_name, info, order_number, gln, refs) VALUES ${placeholders.join(", ")}
        ON CONFLICT (lot) DO UPDATE SET
          epp = COALESCE(EXCLUDED.epp, inkoop_lot_epp.epp), source_file_name = EXCLUDED.source_file_name,
          info = COALESCE(EXCLUDED.info, inkoop_lot_epp.info), order_number = COALESCE(EXCLUDED.order_number, inkoop_lot_epp.order_number),
-         gln = COALESCE(EXCLUDED.gln, inkoop_lot_epp.gln), imported_at = now()`,
+         gln = COALESCE(EXCLUDED.gln, inkoop_lot_epp.gln), refs = COALESCE(EXCLUDED.refs, inkoop_lot_epp.refs), imported_at = now()`,
       values,
     );
   }
@@ -454,6 +454,35 @@ export async function applyInkoopOrderBridge() {
     )
     UPDATE inkoop_erp_lines e
        SET pav = c.pav, raw = e.raw || jsonb_build_object('pav_from', 'order number'), updated_at = now()
+      FROM candidates c
+     WHERE e.lot = c.lot AND c.options = 1
+    RETURNING e.lot::text AS lot, to_char(e.erp_date, 'YYYY-MM-DD') AS erp_date
+  `);
+  return result.rows;
+}
+
+// Connect lots without a PAV with a popup number (13 digits) that is a
+// reference of exactly one invoice line with a brief number (VN, AAG, SS or
+// ADJ in its XML, 4 days either side): that brief number.
+export async function applyInkoopRefBridge() {
+  if (!pool) {
+    return [];
+  }
+  const result = await pool.query(`
+    WITH candidates AS (
+      SELECT e.lot, min(i.reference_bt) AS pav, count(DISTINCT i.reference_bt) AS options
+        FROM inkoop_erp_lines e
+        JOIN inkoop_lot_epp b ON b.lot = e.lot AND b.refs IS NOT NULL
+        JOIN inkoop_invoice_lines i
+          ON btrim(COALESCE(i.reference_bt, '')) <> ''
+         AND i.invoice_date BETWEEN e.erp_date - 4 AND e.erp_date + 4
+         AND (i.raw->>'delivery_reference' = ANY(b.refs) OR i.raw->>'your_reference' = ANY(b.refs)
+           OR i.raw->>'ref_ss' = ANY(b.refs) OR i.raw->>'ref_adj' = ANY(b.refs))
+       WHERE COALESCE(btrim(e.pav), '') = '' OR e.pav ~ '^0+[A-Za-z]?$'
+       GROUP BY e.lot
+    )
+    UPDATE inkoop_erp_lines e
+       SET pav = c.pav, raw = e.raw || jsonb_build_object('pav_from', 'popup reference'), updated_at = now()
       FROM candidates c
      WHERE e.lot = c.lot AND c.options = 1
     RETURNING e.lot::text AS lot, to_char(e.erp_date, 'YYYY-MM-DD') AS erp_date
@@ -3200,6 +3229,9 @@ const databaseMigrations = [
   `ALTER TABLE IF EXISTS inkoop_lot_epp ADD COLUMN IF NOT EXISTS order_number text`,
   `ALTER TABLE IF EXISTS inkoop_lot_epp ADD COLUMN IF NOT EXISTS gln text`,
   `ALTER TABLE IF EXISTS inkoop_lot_epp ALTER COLUMN epp DROP NOT NULL`,
+  // Every 13-digit number in the popup (a clock lot's transaction numbers):
+  // one that is an invoice line's reference (VN, AAG, SS, ADJ) links them.
+  `ALTER TABLE IF EXISTS inkoop_lot_epp ADD COLUMN IF NOT EXISTS refs text[]`,
   // "Levering BB" (a Connect Screen export of deliveries): per Connect lot
   // ("Prt") the FloraHolland brief number ("Info", F9NKFJ/F -> F9NKFJf) and
   // order number. A bridge for Connect lots that have no PAV of their own.

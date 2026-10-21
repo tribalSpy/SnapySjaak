@@ -16628,7 +16628,7 @@ function InkoopControlePage({ currentUser }) {
         body: JSON.stringify({ file: { name: eppFile.name, content_base64: await fileToBase64(eppFile) } }),
       });
       setMessage(`EPP list: ${payload.lines} lot(s) -- ${payload.with_order_number} with an order number, ${payload.with_gln} with a GLN. `
-        + `Connect lots that got the invoice's brief number now: ${payload.filled_now} (${payload.from_epp} by EPP, ${payload.from_order} by order number). `
+        + `Connect lots that got the invoice's brief number now: ${payload.filled_now} (${payload.from_epp} by EPP, ${payload.from_order} by order number, ${payload.from_refs} by popup reference). `
         + `Order numbers also pair Connect lines without a brief number, and the GLNs go to the Growers tab. The rest is tried again with every new upload.`);
     } catch (uploadError) {
       setError(uploadError.message);

@@ -1482,6 +1482,7 @@ class ActionRun:
 
         counts = {"matched": 0, "kept": 0, "unreadable": 0}
         last_row, last_action = None, None
+        last_cursor_y = None
         handled = []
         unchanged = 0
         list_screen = None
@@ -1521,7 +1522,14 @@ class ActionRun:
                             keys_by_position[round(entry["y"] / 8)] = key
             if last_action == "match" and same_row(row, last_row):
                 raise RuntimeError(f"{label}: '{last_row[:50]}' is still there after {match_key} -- does Uniware ask for a confirmation? Stopped to be safe.")
-            if last_action == "next" and same_row(row, last_row):
+            # Where the cursor row is on the screen: rows that look alike
+            # (four "PROTEA CYNAROIDES ... Afgemeld" one after another) are
+            # still new rows when the cursor moved down to them.
+            cursor_entry_now = next((entry for entry in screen_rows(layout) if entry["highlighted"]), None)
+            cursor_y = round(cursor_entry_now["y"] / 8) if cursor_entry_now else None
+            cursor_moved = cursor_y is not None and last_cursor_y is not None and cursor_y != last_cursor_y
+            last_cursor_y = cursor_y
+            if last_action == "next" and same_row(row, last_row) and not cursor_moved:
                 # No new order after the key: once can be a slow screen --
                 # LIST_LOOP_END_TRIES times in a row is the end of the list.
                 unchanged += 1
