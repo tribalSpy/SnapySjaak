@@ -358,10 +358,13 @@ def list_row_lot(text: str) -> str | None:
 
 
 def list_row_brief(text: str) -> str | None:
-    """The brief number in a list row ("... 5 FA3CWD/A 44858309 J 10",
-    "X01907/a") -- a row without one is a lot that can't be matched yet."""
-    found = re.search(r"(?<!\S)([A-Z0-9]{5,7}/[A-Za-z])(?!\S)", str(text or ""))
-    return found.group(1) if found else None
+    """The brief number in a list row's Info column ("... 5 FA3CWD/A 44858309
+    J 10", "X01907/a", "407971/-") -- a row without one (Info empty, or not
+    readable) is a lot that can't be matched yet."""
+    found = re.search(r"(?<!\S)([A-Za-z0-9]{5,8}/[A-Za-z~_-]?)(?!\S)", str(text or ""))
+    if not found or not re.search(r"\d", found.group(1)):
+        return None
+    return found.group(1)
 
 
 def read_screen_value(label: str, lines: list[str]) -> str | None:
