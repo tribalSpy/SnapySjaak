@@ -356,7 +356,9 @@ def list_row_lot(text: str) -> str | None:
         digits = token.translate(_DIGIT_LOOKALIKES)
         if re.fullmatch(r"4\d{7}", digits):
             return digits
-    return None
+    # Glued to the text next to it ("051751/D44851484", "44851484J").
+    glued = re.search(r"(?<![0-9])4[0-9]{7}(?![0-9])", str(text or ""))
+    return glued.group(0) if glued else None
 
 
 def list_row_brief(text: str) -> str | None:
@@ -1565,12 +1567,19 @@ class ActionRun:
         row_popups: dict[str, list[str]] = {}  # key -> the popup's lines
         cursor_keys_done: set[str] = set()  # rows the cursor was on
         cursor_key = None
+        below_cursor_key = None  # the row under the cursor on the previous look
+        unread_rows: dict[str, int] = {}  # list rows without a readable lot
         last_others = None
 
         def note_rows(layout, joined):
             for screen_row in screen_rows(layout):
                 order = row_key(screen_row["text"])
                 if not order:
+                    # A list row (brief number in Info) whose lot can't be
+                    # read: kept for the log, to see what OCR made of it.
+                    if list_row_brief(screen_row["text"]) and "fgemeld" not in screen_row["text"]:
+                        sample = screen_row["text"][:90]
+                        unread_rows[sample] = unread_rows.get(sample, 0) + 1
                     continue
                 seen = sightings.setdefault(order, {"count": 0, "row": screen_row["text"][:80], "type": "", "brief": ""})
                 seen["count"] += 1
@@ -1657,14 +1666,22 @@ class ActionRun:
                 cursor_entry = next((entry for entry in rows_now if entry["highlighted"]), None)
                 cursor_key = row_key(row)
                 if not cursor_key and cursor_entry is not None:
-                    # The teal cursor row misread: the same screen row on
-                    # the previous look (not under the cursor then) -- not
-                    # one the cursor was on already (the list jumped) --
-                    # else the row read again, enlarged.
-                    cursor_key = keys_by_position.get(round(cursor_entry["y"] / 8))
-                    if cursor_key in cursor_keys_done:
-                        cursor_key = None
+                    # The teal cursor row misread: after Down the cursor is
+                    # on the row that was right under it on the previous
+                    # look; else the same screen row then (not one the
+                    # cursor was on already -- the list jumped); else the
+                    # row read again, enlarged.
+                    if last_action == "next" and below_cursor_key and below_cursor_key not in cursor_keys_done and last_image is not None and screens_differ(last_image, image):
+                        cursor_key = below_cursor_key
+                    else:
+                        cursor_key = keys_by_position.get(round(cursor_entry["y"] / 8))
+                        if cursor_key in cursor_keys_done:
+                            cursor_key = None
                     cursor_key = cursor_key or read_cursor_row_key(image, cursor_entry, row_key)
+                below_cursor_key = None
+                if cursor_entry is not None:
+                    under = [entry for entry in rows_now if entry["y"] > cursor_entry["y"] + 4]
+                    below_cursor_key = row_key(under[0]["text"]) if under else None
                 if value_label:
                     value = read_screen_value(value_label, [line.get("text", "") for line in layout])
                     if cursor_key and value:
@@ -1843,6 +1860,10 @@ class ActionRun:
                          + (f", popup {len(row_popups.get(order, []))} line(s)" if popup_keys else ""))
             save_day_list(collected)
             self.say(f"{label}: {len(collected['items'])} row(s) collected into day list '{collect_into}'.")
+            if unread_rows:
+                self.say(f"{label}: {len(unread_rows)} list row(s) where no lot could be read, e.g.:")
+                for sample, _ in sorted(unread_rows.items(), key=lambda item: -item[1])[:10]:
+                    self.say(f"{label}:   '{sample}'")
             if value_label or popup_keys:
                 self._write_collected_csv(collected, value_label or "value", label)
             return
