@@ -23155,6 +23155,12 @@ async function handleApi(req, res, url) {
       sendJson(res, 400, { error: "No delivery lines found -- is this the Levering BB Screen export (VBN; Omschrijving; ...; Info; OrderNr; M; Prt; V)?" });
       return;
     }
+    if (!rows.length) {
+      sendJson(res, 400, {
+        error: `All ${counts.lines} delivery lines have no lot in Prt (${counts.linked} "gekoppeld"${counts.cancelled ? `, ${counts.cancelled} Afgemeld` : ""}) -- nothing to add from this file. Export the day before it is gekoppeld (Prt still shows the lot number).`,
+      });
+      return;
+    }
     const saved = await saveInkoopLeveringBb(rows, String(body.file.name || ""));
     const filled = await applyInkoopLeveringBbBridge();
     const status = await getInkoopLeveringBbStatus(rows.map((row) => row.lot));
