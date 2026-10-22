@@ -369,6 +369,48 @@ def list_row_brief(text: str) -> str | None:
     return found.group(1)
 
 
+def vertical_lines(image, min_length: int = 120) -> list[tuple[int, int, int]]:
+    """The long vertical frame / column lines on a screenshot: (x, top,
+    bottom) -- white or dark grey pixels in one column for min_length px or
+    more (text and the teal cursor row are never that long)."""
+    rgb = image.convert("RGB")
+    red, green, blue = rgb.split()
+    grey = ImageChops.lighter(ImageChops.difference(red, green), ImageChops.difference(green, blue)).point(lambda v: 255 if v < 12 else 0)
+    extreme = rgb.convert("L").point(lambda v: 255 if v > 225 or v < 120 else 0)
+    mask = ImageChops.multiply(grey, extreme).transpose(Image.Transpose.TRANSPOSE)
+    width, height = mask.size  # transposed: one pixel row per screen column
+    data = mask.tobytes()
+    found = []
+    for x in range(height):
+        for run in re.finditer(rb"\xff{%d,}" % min_length, data[x * width:(x + 1) * width]):
+            found.append((x, run.start(), run.end()))
+    return found
+
+
+def popup_frame_box(before, after):
+    """Where a popup opened, by its frame: the vertical lines on the screen
+    after its key that weren't there before (the list's own column lines
+    stay), the biggest group starting at the same height -> (x0, y0, x1, y1),
+    or None. Everything that changed is no good: the list redraws around it."""
+    if before is None or after is None or before.size != after.size:
+        return None
+    old = vertical_lines(before)
+    new = [line for line in vertical_lines(after)
+           if not any(abs(line[0] - x) <= 1 and abs(line[1] - top) <= 6 and abs(line[2] - bottom) <= 6 for x, top, bottom in old)]
+    groups: list[list[tuple[int, int, int]]] = []
+    for line in sorted(new, key=lambda line: line[1]):
+        group = next((group for group in groups if abs(group[0][1] - line[1]) <= 8 and abs(group[0][2] - line[2]) <= 8), None)
+        if group is None:
+            groups.append([line])
+        else:
+            group.append(line)
+    groups = [group for group in groups if len({x for x, _, _ in group}) >= 2]
+    if not groups:
+        return None
+    best = max(groups, key=lambda group: (len(group), max(x for x, _, _ in group) - min(x for x, _, _ in group)))
+    return (min(x for x, _, _ in best), min(top for _, top, _ in best), max(x for x, _, _ in best), max(bottom for _, _, bottom in best))
+
+
 def popup_box(before, after):
     """Where a popup opened: the biggest block of rows that changed between
     the screenshot before and after its key (x0, y0, x1, y1), or None. Only
@@ -1808,31 +1850,31 @@ class ActionRun:
 
     def _read_row_popup(self, hwnd, controller, key, image, popup_keys, close_keys, row_popups, label):
         """Open the cursor row's popup (e.g. ? -- the supplier info), keep the
-        lines inside it (the part of the screen that changed), close it and
-        wait until the list is back."""
+        lines inside it (only the inside of its frame is read, enlarged --
+        never the list around it), close it and wait until the list is back."""
         if not key or key in row_popups:
             return
+        # The screen right before the key (not the row's reading from
+        # earlier): what the popup changes is measured against this.
+        image = self._screenshot(hwnd)
         for part in list_loop_keys(popup_keys):
             send_combo(controller, part)
         # Screenshots only until the popup is there and the same twice in a
         # row (drawn), then its text is read once.
-        box, previous, after_layout = None, None, []
+        box, previous, popup_image = None, None, None
         deadline = time.time() + 4
         while time.time() < deadline:
             time.sleep(0.15)
             shot = self._screenshot(hwnd)
             found = popup_box(image, shot)
             if found and previous is not None and not screens_differ(previous, shot):
-                box = found
-                after_layout = self._describe(shot)[4]
+                # Its frame lines when it has them (the list around it is
+                # redrawn too), else what changed.
+                box = popup_frame_box(image, shot) or found
+                popup_image = shot
                 break
             previous = shot if found else None
-        lines = []
-        if box:
-            left, top, right, bottom = box
-            inside = [line for line in after_layout if line.get("text", "").strip()
-                      and left - 6 <= line["x"] + line.get("w", 0) / 2 <= right + 6 and top - 6 <= line["y"] <= bottom + 6]
-            lines = [entry["text"] for entry in screen_rows(inside)]
+        lines = self._read_popup_text(popup_image, box) if box else []
         for part in list_loop_keys(close_keys):
             send_combo(controller, part)
         deadline = time.time() + 4
@@ -1843,6 +1885,16 @@ class ActionRun:
         row_popups[key] = lines
         if not lines:
             self.say(f"{label}: {key}: no popup seen after {popup_keys}")
+
+    def _read_popup_text(self, image, box) -> list[str]:
+        """The lines inside a popup's frame: that part of the screenshot
+        only, read enlarged (short values like "5" / "wit" come through)."""
+        left, top, right, bottom = box
+        crop = image.crop((left + 2, top + 2, max(left + 3, right - 1), max(top + 3, bottom - 1)))
+        crop = crop.resize((crop.width * 2, crop.height * 2), Image.LANCZOS)
+        lines = screen_reader.read_screen(crop)
+        rows = screen_rows([{**line, "y": line["y"] / 2, "highlighted": False} for line in lines if line.get("text", "").strip()])
+        return [row["text"] for row in rows]
 
     def _write_collected_csv(self, collected: dict, value_label: str, label: str):
         """The collected rows with their value and popup info as a CSV
