@@ -16871,6 +16871,7 @@ function InkoopControlePage({ currentUser }) {
         <button type="button" className={activeTab === "data" ? "active" : ""} onClick={() => setActiveTab("data")}>Data</button>
         <button type="button" className={activeTab === "king" ? "active" : ""} onClick={() => setActiveTab("king")}>Import naar King</button>
         <button type="button" className={activeTab === "growers" ? "active" : ""} onClick={() => setActiveTab("growers")}>Growers</button>
+        <button type="button" className={activeTab === "linkgrowers" ? "active" : ""} onClick={() => setActiveTab("linkgrowers")}>Link growers</button>
         <button type="button" className={activeTab === "settings" ? "active" : ""} onClick={() => setActiveTab("settings")}>Settings</button>
       </div>
       {inkoopMatchBusyCount(matchStatus) > 0 && (
@@ -17015,6 +17016,7 @@ function InkoopControlePage({ currentUser }) {
       {activeTab === "king" && <InkoopKingTab />}
 
       {activeTab === "growers" && <InkoopGrowersTab />}
+      {activeTab === "linkgrowers" && <InkoopLinkGrowersTab />}
 
       {/* Kept mounted: results stay when you look at another tab and come back. */}
       <div style={activeTab === "search" ? undefined : { display: "none" }}><InkoopSearchTab company={selectedCompany} /></div>
@@ -18071,6 +18073,267 @@ const INKOOP_GROWER_SOURCE_LABELS = {
   "same invoice line": "same line",
   "Handel evidence": "Handel evidence",
 };
+
+// Link growers: the invoice growers (FloraHolland's GLN / FH number) on the
+// left, the Connect grower codes on the right -- slide a code onto a grower
+// (or click the code, then "+ add" on the grower) to link it; a grower can
+// have several codes (Milessa: MELISS and -MELUK). "Count together" makes
+// them a facturation group, so the grower's day total is compared over all
+// its codes. Goal: every invoice grower at least one code.
+function InkoopLinkGrowersTab() {
+  const [data, setData] = useState(null);
+  const [error, setError] = useState("");
+  const [message, setMessage] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [growerSearch, setGrowerSearch] = useState("");
+  const [codeSearch, setCodeSearch] = useState("");
+  const [onlyOpen, setOnlyOpen] = useState(true);
+  const [onlyFreeCodes, setOnlyFreeCodes] = useState(false);
+  const [selectedCode, setSelectedCode] = useState("");
+  const [dropKey, setDropKey] = useState("");
+
+  function load() {
+    return apiJson("/api/inkoop/growers").then((payload) => { setData(payload); setError(""); }).catch((loadError) => setError(loadError.message));
+  }
+  useEffect(() => { load(); }, []);
+
+  const keyOf = (supplier) => `${supplier.gln}|${supplier.fh_number}`;
+  const groupName = (supplier) => supplier.name || supplier.gln || supplier.fh_number;
+  const groups = data?.facturation_groups || [];
+  const groupOf = (supplier) => groups.find((group) => group.group_name.toLowerCase() === String(groupName(supplier)).toLowerCase()) || null;
+  const manualCodes = (supplier) => {
+    const link = (data?.manual_supplier_links || []).find((item) => (supplier.gln && item.gln === supplier.gln) || (supplier.fh_number && item.fh_number === supplier.fh_number));
+    return link?.codes || [];
+  };
+
+  async function saveCodes(supplier, codes, note) {
+    setBusy(true);
+    setError("");
+    try {
+      if (codes.length) {
+        await apiJson("/api/inkoop/suppliers/manual", {
+          method: "POST",
+          body: JSON.stringify({ gln: supplier.gln, fh_number: supplier.fh_number, name: supplier.name, code: codes.join(", ") }),
+        });
+      } else {
+        await apiJson("/api/inkoop/suppliers/manual", { method: "DELETE", body: JSON.stringify({ gln: supplier.gln, fh_number: supplier.fh_number }) });
+      }
+      // Counted together already: the group follows the codes.
+      const group = groupOf(supplier);
+      if (group) {
+        if (codes.length > 1) {
+          await apiJson("/api/inkoop/facturation-groups", { method: "POST", body: JSON.stringify({ group_name: group.group_name, codes }) });
+        } else {
+          await apiJson("/api/inkoop/facturation-groups", { method: "DELETE", body: JSON.stringify({ group_name: group.group_name }) });
+        }
+      }
+      setMessage(`${note} Every day is compared again in the background.`);
+      setSelectedCode("");
+      await load();
+    } catch (saveError) {
+      setError(saveError.message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  function addCode(supplier, code) {
+    const value = String(code || "").trim().toUpperCase();
+    if (!value || supplier.codes.includes(value)) return;
+    saveCodes(supplier, [...supplier.codes, value], `${value} linked to ${groupName(supplier)}.`);
+  }
+
+  function removeCode(supplier, code) {
+    if (!window.confirm(`Take ${code} off ${groupName(supplier)}?`)) return;
+    saveCodes(supplier, supplier.codes.filter((item) => item !== code), `${code} taken off ${groupName(supplier)}.`);
+  }
+
+  async function setCountTogether(supplier, on) {
+    setBusy(true);
+    setError("");
+    try {
+      if (on) {
+        await apiJson("/api/inkoop/facturation-groups", { method: "POST", body: JSON.stringify({ group_name: groupName(supplier), codes: supplier.codes }) });
+        setMessage(`${supplier.codes.join(" + ")} are counted together as ${groupName(supplier)}.`);
+      } else {
+        await apiJson("/api/inkoop/facturation-groups", { method: "DELETE", body: JSON.stringify({ group_name: groupOf(supplier)?.group_name || groupName(supplier) }) });
+        setMessage(`${groupName(supplier)}: codes counted apart again.`);
+      }
+      await load();
+    } catch (groupError) {
+      setError(groupError.message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  const matches = (text, query) => !query.trim() || String(text || "").toLowerCase().includes(query.trim().toLowerCase());
+  const suppliers = data?.suppliers || [];
+  const linkedCount = suppliers.filter((supplier) => supplier.codes.length).length;
+  const growerRows = suppliers
+    .filter((supplier) => !onlyOpen || !supplier.codes.length)
+    .filter((supplier) => matches(`${supplier.name} ${supplier.gln} ${supplier.fh_number} ${supplier.codes.join(" ")}`, growerSearch))
+    .sort((left, right) => (Boolean(left.codes.length) - Boolean(right.codes.length)) || (right.total || 0) - (left.total || 0));
+  // Per Connect code: the invoice growers it is linked to.
+  const growersByCode = new Map();
+  for (const supplier of suppliers) {
+    for (const code of supplier.codes) {
+      if (!growersByCode.has(code)) growersByCode.set(code, []);
+      growersByCode.get(code).push(groupName(supplier));
+    }
+  }
+  const codeRows = (data?.codes || [])
+    .filter((entry) => !onlyFreeCodes || !growersByCode.has(entry.code))
+    .filter((entry) => matches(`${entry.code} ${entry.name}`, codeSearch))
+    .sort((left, right) => (growersByCode.has(left.code) - growersByCode.has(right.code)) || (right.lots || 0) - (left.lots || 0));
+
+  const chip = (label, extra = {}) => ({
+    display: "inline-flex", alignItems: "center", gap: 4, padding: "3px 9px", borderRadius: 999, fontSize: "0.82rem",
+    border: "1px solid #cbd5e1", background: "#f8fafc", ...extra,
+  });
+
+  return (
+    <section className="overview-stack">
+      <div className="data-table-card">
+        <h2>Link growers</h2>
+        <div className="muted">
+          Slide a Connect code (right) onto an invoice grower (left) to link it -- or click the code, then <strong>+ add</strong> on the grower.
+          A grower can have several codes (e.g. Milessa: MELISS and -MELUK, when one purchase is booked under both); tick
+          <strong> count together</strong> to compare the grower's day total over all its codes. Every change compares all days again in the background.
+        </div>
+        {error && <div className="notice danger">{error}</div>}
+        {message && <div className="notice">{message}</div>}
+        {data && (
+          <div className="row-actions" style={{ marginTop: 8 }}>
+            <span className={`ukdocs-status-badge ${linkedCount === suppliers.length ? "success" : "danger"}`}>
+              Invoice growers with a connection: {linkedCount} of {suppliers.length}
+            </span>
+            <span className="ukdocs-status-badge muted">Without: {suppliers.length - linkedCount}</span>
+            {selectedCode && (
+              <span className="ukdocs-status-badge info">
+                Chosen: {selectedCode}{" "}
+                <button type="button" className="link-button" onClick={() => setSelectedCode("")}>x</button>
+              </span>
+            )}
+          </div>
+        )}
+        {!data && !error && <p className="muted">Loading...</p>}
+      </div>
+
+      {data && (
+        <div style={{ display: "grid", gridTemplateColumns: "minmax(0, 3fr) minmax(260px, 2fr)", gap: 16, alignItems: "start" }}>
+          <div className="data-table-card">
+            <div className="row-actions spread-actions">
+              <h3>Invoice growers ({growerRows.length})</h3>
+              <input value={growerSearch} onChange={(event) => setGrowerSearch(event.target.value)} placeholder="Search name, GLN, FH, code" />
+            </div>
+            <label className="checkbox-label">
+              <input type="checkbox" checked={onlyOpen} onChange={(event) => setOnlyOpen(event.target.checked)} />
+              <span>Only growers without a connection</span>
+            </label>
+            <div style={{ display: "grid", gap: 8, marginTop: 8 }}>
+              {growerRows.slice(0, 300).map((supplier) => {
+                const key = keyOf(supplier);
+                const manual = manualCodes(supplier);
+                const group = groupOf(supplier);
+                return (
+                  <div
+                    key={key}
+                    onDragOver={(event) => { event.preventDefault(); setDropKey(key); }}
+                    onDragLeave={() => setDropKey((current) => (current === key ? "" : current))}
+                    onDrop={(event) => { event.preventDefault(); setDropKey(""); addCode(supplier, event.dataTransfer.getData("text/plain")); }}
+                    style={{
+                      border: `2px ${dropKey === key ? "solid #2563eb" : "dashed #e2e8f0"}`, borderRadius: 8, padding: "8px 10px",
+                      background: dropKey === key ? "#eff6ff" : supplier.codes.length ? "#ffffff" : "#fff7ed",
+                    }}
+                  >
+                    <div className="row-actions spread-actions">
+                      <div>
+                        <strong>{supplier.name || "-"}</strong>{" "}
+                        <small className="muted">
+                          {[supplier.gln && `GLN ${supplier.gln}`, supplier.fh_number && `FH ${supplier.fh_number}`].filter(Boolean).join(" · ")}
+                          {" · "}{supplier.lines} lines · {formatInkoopEuro(supplier.total)} · {supplier.invoice_types.join(", ")}
+                        </small>
+                      </div>
+                      {selectedCode && !supplier.codes.includes(selectedCode) && (
+                        <button type="button" onClick={() => addCode(supplier, selectedCode)} disabled={busy}>+ add {selectedCode}</button>
+                      )}
+                    </div>
+                    <div className="row-actions" style={{ marginTop: 6 }}>
+                      {supplier.codes.map((code) => (
+                        <span key={code} style={chip(code, manual.includes(code) ? { background: "#dcfce7", borderColor: "#86efac" } : {})} title={manual.includes(code) ? "Linked by hand" : `Found: ${supplier.via}`}>
+                          <strong>{code}</strong>
+                          <button type="button" className="link-button" onClick={() => removeCode(supplier, code)} disabled={busy} title="Take this code off">x</button>
+                        </span>
+                      ))}
+                      {!supplier.codes.length && <span className="muted">No connection -- slide a code here.</span>}
+                      {supplier.codes.length > 1 && (
+                        <label className="checkbox-label" style={{ marginLeft: 8 }} title="Facturation group: the grower's day total is compared over all these codes together">
+                          <input type="checkbox" checked={Boolean(group)} onChange={(event) => setCountTogether(supplier, event.target.checked)} disabled={busy} />
+                          <span>count together</span>
+                        </label>
+                      )}
+                    </div>
+                    {!supplier.codes.length && !!supplier.suggestions?.length && (
+                      <div className="row-actions" style={{ marginTop: 6 }}>
+                        <small className="muted">Suggested:</small>
+                        {supplier.suggestions.map((suggestion) => (
+                          <button key={suggestion.code} type="button" className="link-button" onClick={() => addCode(supplier, suggestion.code)} disabled={busy}
+                            title={suggestion.evidence_lines ? `${suggestion.evidence_lines} lines have a ${suggestion.code} lot with the same pieces + price` : suggestion.name}>
+                            + {suggestion.code}
+                          </button>
+                        ))}
+                      </div>
+                    )}
+                    {!supplier.codes.length && supplier.reason && <div className="muted" style={{ fontSize: "0.78rem", marginTop: 4 }}>{supplier.reason}</div>}
+                  </div>
+                );
+              })}
+              {growerRows.length > 300 && <p className="muted">First 300 of {growerRows.length} -- search to narrow.</p>}
+              {!growerRows.length && <p className="muted">{onlyOpen ? "Every invoice grower has a connection." : "No growers."}</p>}
+            </div>
+          </div>
+
+          <div className="data-table-card" style={{ position: "sticky", top: 12, maxHeight: "85vh", overflowY: "auto" }}>
+            <div className="row-actions spread-actions">
+              <h3>Connect codes ({codeRows.length})</h3>
+              <input value={codeSearch} onChange={(event) => setCodeSearch(event.target.value)} placeholder="Search code or name" />
+            </div>
+            <label className="checkbox-label">
+              <input type="checkbox" checked={onlyFreeCodes} onChange={(event) => setOnlyFreeCodes(event.target.checked)} />
+              <span>Only codes not linked to a grower</span>
+            </label>
+            <div style={{ display: "grid", gap: 6, marginTop: 8 }}>
+              {codeRows.slice(0, 400).map((entry) => {
+                const linkedTo = growersByCode.get(entry.code) || [];
+                return (
+                  <div
+                    key={entry.code}
+                    draggable
+                    onDragStart={(event) => { event.dataTransfer.setData("text/plain", entry.code); event.dataTransfer.effectAllowed = "copy"; }}
+                    onClick={() => setSelectedCode((current) => (current === entry.code ? "" : entry.code))}
+                    style={{
+                      cursor: "grab", border: `1px solid ${selectedCode === entry.code ? "#2563eb" : "#e2e8f0"}`, borderRadius: 6, padding: "6px 9px",
+                      background: selectedCode === entry.code ? "#eff6ff" : "#ffffff",
+                    }}
+                    title="Slide onto a grower, or click to choose"
+                  >
+                    <strong>{entry.code}</strong> {entry.name && <span className="muted">{entry.name}</span>}
+                    <div style={{ fontSize: "0.76rem", color: "#6b7280" }}>
+                      {entry.lots} lots{entry.lots_without_pav ? ` (${entry.lots_without_pav} without brief number)` : ""}
+                      {linkedTo.length ? ` · linked to ${linkedTo.slice(0, 3).join(", ")}${linkedTo.length > 3 ? ` +${linkedTo.length - 3}` : ""}` : " · not linked"}
+                    </div>
+                  </div>
+                );
+              })}
+              {codeRows.length > 400 && <p className="muted">First 400 of {codeRows.length} -- search to narrow.</p>}
+            </div>
+          </div>
+        </div>
+      )}
+    </section>
+  );
+}
 
 function InkoopGrowersTab() {
   const [data, setData] = useState(null);

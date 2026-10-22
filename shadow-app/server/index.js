@@ -7190,6 +7190,36 @@ function inkoopInvoiceLineIsNotAPurchase(line) {
     || inkoopInvoiceLineHasNoValue(line);
 }
 
+// 2 to 4 of these lots (same day and price) whose pieces add up to target
+// -- the fewest lots first; null when none, or when sets with different
+// pieces do (then which lots it is can't be told). Sets that look the same
+// (10 + 10 out of three lots of 10): it doesn't matter which, the first.
+function findInkoopPiecesCombination(rows, target) {
+  if (!Number.isFinite(target) || target <= 0 || rows.length < 2) return null;
+  const signature = (set) => set.map((row) => Number(row.pieces) || 0).sort((left, right) => left - right).join(",");
+  for (let size = 2; size <= Math.min(4, rows.length); size += 1) {
+    const found = [];
+    const walk = (start, chosen, sum) => {
+      if (found.length > 20) return;
+      if (chosen.length === size) {
+        if (Math.abs(sum - target) < INKOOP_MATCH_TOLERANCE) found.push([...chosen]);
+        return;
+      }
+      for (let index = start; index < rows.length; index += 1) {
+        const pieces = Number(rows[index].pieces) || 0;
+        if (sum + pieces > target + INKOOP_MATCH_TOLERANCE) continue;
+        chosen.push(rows[index]);
+        walk(index + 1, chosen, sum + pieces);
+        chosen.pop();
+      }
+    };
+    walk(0, [], 0);
+    if (!found.length) continue;
+    return new Set(found.map(signature)).size === 1 ? found[0] : null;
+  }
+  return null;
+}
+
 function matchInkoopVeilingLines(erpRows, invoices, supplierMap = {}, supplierNameMap = {}, manualLinks = [], supplierFhMap = {}) {
   // Every code the uploaded master data actually knows about, regardless of
   // which lookup (GLN/name/FH) it happened to be reachable through --
@@ -7324,6 +7354,30 @@ function matchInkoopVeilingLines(erpRows, invoices, supplierMap = {}, supplierNa
       const named = candidates.filter((row) => !consumedErpRows.has(row) && nameMatches(row)
         && (!inkoopValuesDiffer(row.pieces, line.quantity) || !inkoopValuesDiffer(parseFloat(row.price), line.unit_price)));
       if (named.length === 1) picked = { row: named[0], ambiguous: false, by_name: true };
+    }
+    // One invoice line booked as several lots, also under the grower's
+    // different codes (20 boxes: 10 under MELISS, 10 under -MELUK): free
+    // lots of the same day and price whose pieces add up to the line.
+    if (!picked.ambiguous && (!picked.row || inkoopValuesDiffer(picked.row.pieces, line.quantity))) {
+      const lineDate = normalizeUkdocsText(line?.invoice_date).slice(0, 10);
+      const parts = candidates.filter((row) => !consumedErpRows.has(row)
+        && String(row?.date || "").slice(0, 10) === lineDate
+        && !inkoopValuesDiffer(parseFloat(row.price), line.unit_price)
+        && Number(row.pieces) > 0 && Number(row.pieces) < Number(line.quantity)).slice(0, 14);
+      const combination = findInkoopPiecesCombination(parts, Number(line.quantity));
+      if (combination) {
+        for (const row of combination) consumedErpRows.add(row);
+        const sorted = [...combination].sort((left, right) => Number(left.lot) - Number(right.lot));
+        matchedOk.push({
+          ...context,
+          supplier_code: [...new Set(sorted.map((row) => resolveErpRowSupplierCode(row, validSupplierCodes)).filter(Boolean))].join(" + ") || resolved.codes.join(" / "),
+          supplier_match_type: resolved.match_type,
+          erp_row: { ...sorted[0], lot: sorted.map((row) => row.lot).join("+"), pieces: line.quantity, t_price: sorted.reduce((sum, row) => sum + (parseFloat(row.t_price) || 0), 0) },
+          matched_as_split_delivery: true,
+          split_lots: sorted.map((row) => row.lot),
+        });
+        return;
+      }
     }
     const codesLabel = resolved.codes.join(" / ");
     if (picked.ambiguous) {
@@ -23617,7 +23671,31 @@ async function handleApi(req, res, url) {
     const state = await readInkoopState();
     const directory = await inkoopGrowerDirectory(state);
     const { matcherMaps, skipCodes, ...view } = directory;
-    sendJson(res, 200, view);
+    // For the Link growers tab: which codes were linked by hand, and the
+    // facturation groups (codes counted together).
+    sendJson(res, 200, { ...view, manual_supplier_links: state.manual_supplier_links || [], facturation_groups: state.facturation_groups || [] });
+    return;
+  }
+
+  // A manual link taken away again: body { gln, fh_number } -- the grower is
+  // then linked by what the data teaches (or not at all).
+  if (url.pathname === "/api/inkoop/suppliers/manual" && req.method === "DELETE") {
+    if (!requirePermission(res, requestUser, PERMISSIONS.INKOOP_VIEW)) {
+      return;
+    }
+    const body = await readRequestJson(req);
+    const gln = normalizeUkdocsText(body?.gln);
+    const fhNumber = normalizeUkdocsText(body?.fh_number);
+    if (!gln && !fhNumber) {
+      sendJson(res, 400, { error: "A GLN or an FH number is required" });
+      return;
+    }
+    const state = await readInkoopState();
+    state.manual_supplier_links = state.manual_supplier_links.filter((item) => (
+      (!gln || item.gln !== gln) && (!fhNumber || item.fh_number !== fhNumber)
+    ));
+    await writeInkoopState(state);
+    sendJson(res, 200, { manual_supplier_links: state.manual_supplier_links });
     return;
   }
 
