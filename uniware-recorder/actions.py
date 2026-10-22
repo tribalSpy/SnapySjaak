@@ -1164,7 +1164,7 @@ class ActionRun:
         image = screen_reader.capture_when_settled(hwnd, timeout=timeout)
         return (image, *recorder.describe_screen(image))
 
-    def _capture(self, hwnd):
+    def _screenshot(self, hwnd):
         return screen_reader.capture_window(hwnd)
 
     def _describe(self, image):
@@ -1174,10 +1174,10 @@ class ActionRun:
         """Like _read_stable, but quicker: screenshots only (no text reading)
         until two in a row 0.25 s apart are the same, then read once."""
         deadline = time.time() + timeout
-        image = self._capture(hwnd)
+        image = self._screenshot(hwnd)
         while time.time() < deadline:
             time.sleep(0.25)
-            shot = self._capture(hwnd)
+            shot = self._screenshot(hwnd)
             if not screens_differ(image, shot):
                 image = shot
                 break
@@ -1593,7 +1593,7 @@ class ActionRun:
                 # screen read too early looks like the end -- the next key
                 # again would skip a row); at the end of the list it doesn't.
                 deadline = time.time() + 2
-                while time.time() < deadline and not screens_differ(last_image, self._capture(hwnd)):
+                while time.time() < deadline and not screens_differ(last_image, self._screenshot(hwnd)):
                     time.sleep(0.1)
             image, screen_id, screen_title, _, text, layout = (self._read_settled(hwnd) if collected is not None else self._read_stable(hwnd))
             joined = "\n".join(text)
@@ -1820,7 +1820,7 @@ class ActionRun:
         deadline = time.time() + 4
         while time.time() < deadline:
             time.sleep(0.15)
-            shot = self._capture(hwnd)
+            shot = self._screenshot(hwnd)
             found = popup_box(image, shot)
             if found and previous is not None and not screens_differ(previous, shot):
                 box = found
@@ -1838,7 +1838,7 @@ class ActionRun:
         deadline = time.time() + 4
         while time.time() < deadline:
             time.sleep(0.15)
-            if not popup_box(image, self._capture(hwnd)):
+            if not popup_box(image, self._screenshot(hwnd)):
                 break  # the list is back
         row_popups[key] = lines
         if not lines:
