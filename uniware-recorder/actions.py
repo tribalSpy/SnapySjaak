@@ -31,7 +31,7 @@ from pynput import keyboard
 
 import recorder
 import screen_reader
-from PIL import Image, ImageChops
+from PIL import Image, ImageChops, ImageOps
 
 APP_DIR = Path(__file__).resolve().parent
 ACTIONS_DIR = APP_DIR / "actions"
@@ -453,13 +453,28 @@ def screens_differ(before, after) -> bool:
     return bool(box) and (box[2] - box[0]) * (box[3] - box[1]) > 600
 
 
-def read_cursor_row_key(image, entry, row_key):
+def read_cursor_row_key(image, entry, row_key, column=None):
     """The teal cursor row read again, enlarged and in grey (OCR misreads
-    digits on teal): its key, or None."""
+    digits on teal): its key, or None. column (x0, x1): first only that cell
+    of the row (the Prt column -- "44 1484" in the whole row), 3x."""
     if image is None or entry is None:
         return None
     top = max(0, int(entry["y"]) - 6)
-    crop = image.crop((0, top, image.width, min(image.height, int(entry["y"]) + 24))).convert("L")
+    bottom = min(image.height, int(entry["y"]) + 24)
+    if column:
+        cell = image.crop((max(0, int(column[0]) - 12), top, min(image.width, int(column[1]) + 16), bottom)).convert("L")
+        cell = ImageOps.autocontrast(cell).resize((cell.width * 3, cell.height * 3), Image.LANCZOS).convert("RGB")
+        try:
+            text = "".join(word["text"] for word in asyncio.run(screen_reader._ocr(cell)))
+        except Exception:  # noqa: BLE001 -- a fallback only
+            text = ""
+        # The cell's borders come through as "1" / "}" ("144851479}"): the
+        # one 8-digit lot starting with 4 in its digits.
+        digits = re.sub(r"\D", "", text.translate(_DIGIT_LOOKALIKES))
+        lots = {digits[index:index + 8] for index in range(len(digits) - 7) if digits[index] == "4"}
+        if len(lots) == 1:
+            return lots.pop()
+    crop = image.crop((0, top, image.width, bottom)).convert("L")
     crop = crop.resize((crop.width * 2, crop.height * 2), Image.LANCZOS).convert("RGB")
     try:
         words = asyncio.run(screen_reader._ocr(crop))
@@ -1568,6 +1583,7 @@ class ActionRun:
         cursor_keys_done: set[str] = set()  # rows the cursor was on
         cursor_key = None
         below_cursor_key = None  # the row under the cursor on the previous look
+        lot_column = None  # (x0, x1) of the lot column, from well-read rows
         unread_rows: dict[str, int] = {}  # list rows without a readable lot
         last_others = None
 
@@ -1677,7 +1693,14 @@ class ActionRun:
                         cursor_key = keys_by_position.get(round(cursor_entry["y"] / 8))
                         if cursor_key in cursor_keys_done:
                             cursor_key = None
-                    cursor_key = cursor_key or read_cursor_row_key(image, cursor_entry, row_key)
+                    if not cursor_key:
+                        reread = read_cursor_row_key(image, cursor_entry, row_key, lot_column)
+                        # Only a lot seen in the list (well read on other
+                        # looks), or the one it is nearly the same as.
+                        if reread and reread not in sightings:
+                            close = [order for order in sightings if difflib.SequenceMatcher(None, reread, order).ratio() >= 0.85]
+                            reread = close[0] if len(close) == 1 else None
+                        cursor_key = reread
                 below_cursor_key = None
                 if cursor_entry is not None:
                     under = [entry for entry in rows_now if entry["y"] > cursor_entry["y"] + 4]
@@ -1691,6 +1714,14 @@ class ActionRun:
                     key = row_key(entry["text"]) if not entry["highlighted"] else None
                     if key:
                         keys_by_position[round(entry["y"] / 8)] = key
+                for line in layout:
+                    # A line ending in the lot ("053118/A 44851479" -- OCR
+                    # joins Info and Prt): the lot is its last 8 characters.
+                    text = str(line.get("text", "")).strip()
+                    if not line.get("highlighted") and re.search(r"(?<!\d)4\d{7}$", text) and line.get("w"):
+                        right = line["x"] + line["w"]
+                        left = right - line["w"] * 8 / max(8, len(text))
+                        lot_column = (min(lot_column[0], left), max(lot_column[1], right)) if lot_column else (left, right)
             if last_action == "match" and same_row(row, last_row):
                 raise RuntimeError(f"{label}: '{last_row[:50]}' is still there after {match_key} -- does Uniware ask for a confirmation? Stopped to be safe.")
             # Where the cursor row is on the screen: rows that look alike
@@ -1739,7 +1770,17 @@ class ActionRun:
                 if popup_keys:
                     # Every lot, also one with a brief number in Info: that
                     # can be the last digits of its EPP, not the real one.
-                    self._read_row_popup(hwnd, controller, cursor_key, image, popup_keys, close_keys, row_popups, label)
+                    list_back = self._read_row_popup(hwnd, controller, cursor_key, image, popup_keys, close_keys, row_popups, label)
+                else:
+                    time.sleep(0.4)
+                    list_back = None
+                if value_label and cursor_key:
+                    # A second look at the value, a moment later (the bottom
+                    # bar's EPP comes a little after the cursor): that strip
+                    # of the screen only.
+                    late = self._read_bottom_value(list_back or self._screenshot(hwnd), value_label)
+                    if late:
+                        row_values.setdefault(cursor_key, []).extend([late, late])  # counts more: read later
                 if cursor_key:
                     cursor_keys_done.add(cursor_key)
                 for part in list_loop_keys(next_key):
@@ -1874,7 +1915,7 @@ class ActionRun:
         lines inside it (only the inside of its frame is read, enlarged --
         never the list around it), close it and wait until the list is back."""
         if not key or key in row_popups:
-            return
+            return None
         # The screen right before the key (not the row's reading from
         # earlier): what the popup changes is measured against this.
         image = self._screenshot(hwnd)
@@ -1899,13 +1940,28 @@ class ActionRun:
         for part in list_loop_keys(close_keys):
             send_combo(controller, part)
         deadline = time.time() + 4
+        back = None
         while time.time() < deadline:
             time.sleep(0.15)
-            if not popup_box(image, self._screenshot(hwnd)):
+            back = self._screenshot(hwnd)
+            if not popup_box(image, back):
                 break  # the list is back
         row_popups[key] = lines
         if not lines:
             self.say(f"{label}: {key}: no popup seen after {popup_keys}")
+        return back
+
+    def _read_bottom_value(self, image, value_label: str) -> str | None:
+        """The value after its label (e.g. "EPP: [...]") in the bottom bar --
+        the lowest fifth of the screenshot only."""
+        if image is None:
+            return None
+        crop = image.crop((0, int(image.height * 0.8), image.width, image.height))
+        try:
+            lines = screen_reader.read_screen(crop)
+        except Exception:  # noqa: BLE001 -- a second look only
+            return None
+        return read_screen_value(value_label, [line.get("text", "") for line in lines])
 
     def _read_popup_text(self, image, box) -> list[str]:
         """The lines inside a popup's frame: that part of the screenshot
