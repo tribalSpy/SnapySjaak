@@ -420,12 +420,13 @@ export async function applyInkoopLotInfo() {
   }
   const result = await pool.query(`
     UPDATE inkoop_erp_lines e
-       SET raw = e.raw || jsonb_strip_nulls(jsonb_build_object('uniware_order', b.order_number, 'uniware_gln', b.gln)),
+       SET raw = e.raw || jsonb_strip_nulls(jsonb_build_object('uniware_order', b.order_number, 'uniware_gln', b.gln, 'uniware_epp', b.epp)),
            updated_at = now()
       FROM inkoop_lot_epp b
-     WHERE e.lot = b.lot AND (b.order_number IS NOT NULL OR b.gln IS NOT NULL)
+     WHERE e.lot = b.lot AND (b.order_number IS NOT NULL OR b.gln IS NOT NULL OR b.epp IS NOT NULL)
        AND (COALESCE(e.raw->>'uniware_order', '') IS DISTINCT FROM COALESCE(b.order_number, '')
-         OR COALESCE(e.raw->>'uniware_gln', '') IS DISTINCT FROM COALESCE(b.gln, ''))
+         OR COALESCE(e.raw->>'uniware_gln', '') IS DISTINCT FROM COALESCE(b.gln, '')
+         OR COALESCE(e.raw->>'uniware_epp', '') IS DISTINCT FROM COALESCE(b.epp, ''))
     RETURNING e.lot::text AS lot, to_char(e.erp_date, 'YYYY-MM-DD') AS erp_date
   `);
   return result.rows;

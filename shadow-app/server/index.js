@@ -7562,6 +7562,59 @@ function matchInkoopVeilingLines(erpRows, invoices, supplierMap = {}, supplierNa
     }
   }
 
+  // Second chance with the night action's data (Uniware Communications:
+  // the popup's order number, the bottom bar's EPP) for an invoice line that
+  // found nothing and a Connect lot nobody took -- also a lot WITH a brief
+  // number in Connect, whose Info can be another number than the invoice's.
+  // Pairs only when exactly one free lot (4 days either side) has the line's
+  // order number (+ up to 3 digits: the 20-digit code is the ON plus 3) or
+  // an EPP that ends in the line's brief number (without its letter).
+  const freeErpRows = (Array.isArray(erpRows) ? erpRows : []).filter((row) => !consumedErpRows.has(row));
+  if (freeErpRows.some((row) => row?.uniware_order || row?.uniware_epp)) {
+    const daysApart = (left, right) => Math.abs((Date.parse(String(left || "").slice(0, 10)) - Date.parse(String(right || "").slice(0, 10))) / 86400000);
+    const secondChance = (unmatched) => {
+    const stillOnlyInInvoice = [];
+    for (const item of unmatched) {
+      const lineDate = normalizeUkdocsText(item?.invoice_date).slice(0, 10);
+      const near = (row) => !lineDate || !row?.date || !(daysApart(row.date, lineDate) > 4);
+      const free = freeErpRows.filter((row) => !consumedErpRows.has(row) && near(row));
+      const order = normalizeUkdocsText(item?.order_number);
+      const brief = normalizeInkoopKey(item?.pav || item?.reference_bt).replace(/[A-Z]+$/, "");
+      let found = [];
+      let via = "";
+      if (order.length >= 6) {
+        found = free.filter((row) => {
+          const rowOrder = normalizeUkdocsText(row?.uniware_order);
+          return rowOrder.startsWith(order) && rowOrder.length - order.length <= 3;
+        });
+        via = "order number (night action)";
+      }
+      if (found.length !== 1 && /^\d{6}$/.test(brief)) {
+        found = free.filter((row) => String(row?.uniware_epp || "").trim().endsWith(brief));
+        via = "EPP (night action)";
+      }
+      if (found.length !== 1) {
+        stillOnlyInInvoice.push(item);
+        continue;
+      }
+      const row = found[0];
+      consumedErpRows.add(row);
+      const diffs = [];
+      if (inkoopValuesDiffer(row.pieces, item.quantity)) diffs.push({ field: "quantity", erp: row.pieces, invoice: item.quantity });
+      if (inkoopValuesDiffer(parseFloat(row.price), item.unit_price)) diffs.push({ field: "unit_price", erp: parseFloat(row.price), invoice: item.unit_price });
+      const pair = { ...item, supplier_code: item.supplier_code || resolveErpRowSupplierCode(row, validSupplierCodes), supplier_match_type: via, erp_row: row };
+      if (diffs.length) matchedMismatch.push({ ...pair, diffs });
+      else matchedOk.push(pair);
+    }
+    unmatched.length = 0;
+    unmatched.push(...stillOnlyInInvoice);
+    };
+    // Also a line whose grower isn't linked (it never got as far as
+    // "only in invoice").
+    secondChance(onlyInInvoice);
+    secondChance(supplierNotLinked);
+  }
+
   // Unconsumed rows from both pools are genuine "recorded but nothing
   // claimed it" gaps -- a supplier-code-keyed row (Handel/AI2 lines with no
   // real PAV) that no invoice line ever matched is exactly as real a gap as
@@ -8605,7 +8658,7 @@ const INKOOP_EMPTY_DAY_BUCKET = {
 // compared again once (at start-up), not only days whose data changed.
 // 2026-10-21: grower directory (learned links, Handel evidence), supplier
 // pairs stored on the invoice date.
-const INKOOP_MATCH_RULES_VERSION = "2026-10-21";
+const INKOOP_MATCH_RULES_VERSION = "2026-10-22";
 
 function inkoopStateFingerprint(state) {
   return crypto.createHash("sha1").update(JSON.stringify([
