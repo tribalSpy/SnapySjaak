@@ -6,7 +6,9 @@
     events: [],
     excludedReferences: new Set(),
     groups: {}, groupsDate: '',
-    filters: { date: D.todayStr(), truck: 'All', group: 'All', status: 'All' }
+    filters: { date: D.todayStr(), truck: 'All', group: 'All', status: 'All' },
+    openStat: '',  // the counter whose references are shown under the counters
+    search: ''
   };
 
   const el = {};
@@ -130,21 +132,104 @@
   // ---------------------------------------------------------------
   // Stats + donut
   // ---------------------------------------------------------------
+  const STAT_ITEMS = [
+    ['expected_refs', 'Expected refs', s => s.expected_refs],
+    ['expected_trolleys', 'Expected trolleys', s => s.expected_trolleys],
+    ['scanned_refs', 'Scanned refs', s => s.scanned_refs],
+    ['scanned_trolleys', 'Scanned count', s => s.scanned_trolleys],
+    ['pending_refs', 'Pending refs', s => s.pending_refs],
+    ['pending_trolleys', 'Pending trolleys', s => s.pending_trolleys],
+    ['extra_refs', 'Extra refs', s => s.extra_refs],
+    ['photo', 'Photo done / needed', s => `${s.photo_effective_trolleys} / ${s.photo_expected_trolleys}`],
+    ['rfid', 'RFID done / needed', s => `${s.rfid_effective_trolleys} / ${s.rfid_expected_trolleys}`]
+  ];
+
   function renderStats(summary) {
-    const items = [
-      ['Expected refs', summary.expected_refs],
-      ['Expected trolleys', summary.expected_trolleys],
-      ['Scanned refs', summary.scanned_refs],
-      ['Scanned count', summary.scanned_trolleys],
-      ['Pending refs', summary.pending_refs],
-      ['Pending trolleys', summary.pending_trolleys],
-      ['Extra refs', summary.extra_refs],
-      ['Photo done / needed', `${summary.photo_effective_trolleys} / ${summary.photo_expected_trolleys}`],
-      ['RFID done / needed', `${summary.rfid_effective_trolleys} / ${summary.rfid_expected_trolleys}`]
-    ];
-    el.stats.innerHTML = items.map(([label, val]) =>
-      `<div class="stat"><span class="num">${val}</span><span class="label">${label}</span></div>`
+    el.stats.innerHTML = STAT_ITEMS.map(([key, label, value]) =>
+      `<button type="button" class="stat${state.openStat === key ? ' active' : ''}" data-stat="${key}" title="Show these references">` +
+      `<span class="num">${value(summary)}</span><span class="label">${label}</span></button>`
     ).join('');
+  }
+
+  // A reference's rows (one per location) folded into one: its locations
+  // joined.
+  function referenceInfoRows(refs, rows) {
+    const byRef = {};
+    for (const r of rows) {
+      const key = String(r.reference || '').toUpperCase();
+      (byRef[key] = byRef[key] || []).push(r);
+    }
+    return refs.map(ref => {
+      const all = byRef[String(ref.reference || '').toUpperCase()] || [ref];
+      return { ...ref, locations: D.uniqueSorted(all.map(r => r.location)).join(', ') };
+    });
+  }
+
+  const INFO_COLUMNS = [
+    { key: 'reference', label: 'Reference', render: r => escapeHtml(r.reference) + (r.groupedWith ? ` <small class="muted">&rarr; ${escapeHtml(r.groupedWith)}</small>` : '') },
+    { key: 'locations', label: 'Location' },
+    { key: 'truck', label: 'Truck' },
+    { key: 'group', label: 'Group' },
+    { key: 'status', label: 'Status', render: r => statusPill(r.status) + (r.coveredBy ? ` <small class="muted">with ${escapeHtml(r.coveredBy)}</small>` : '') },
+    { key: 'scannedCount', label: 'Scanned', render: r => `${r.scannedCount} / ${r.trolleyCount}` },
+    { key: 'photoStatus', label: 'Photo', render: r => r.requiresPhoto === false ? '<small class="muted">not needed</small>' : `${statusPill(r.photoStatus)} ${r.photoCount || 0}/${r.trolleyCount}` },
+    { key: 'rfidStatus', label: 'RFID', render: r => r.requiresRfid === false ? '<small class="muted">not needed</small>' : `${statusPill(r.rfidStatus)} ${r.rfidCount || 0}/${r.trolleyCount}` },
+    { key: 'lastScannedBy', label: 'Last scanned by' },
+    { key: 'lastScannedAt', label: 'Last scanned at', render: r => escapeHtml(r.lastScannedAt ? localTime(r.lastScannedAt) : '—') }
+  ];
+
+  function infoTableHtml(rows) {
+    return `<div class="table-wrap"><table><thead><tr>${INFO_COLUMNS.map(c => `<th>${escapeHtml(c.label)}</th>`).join('')}</tr></thead>
+      <tbody>${rows.map(r => `<tr>${INFO_COLUMNS.map(c => `<td>${c.render ? c.render(r) : escapeHtml(fmtCell(r[c.key]))}</td>`).join('')}</tr>`).join('')}</tbody></table></div>`;
+  }
+
+  // The references behind the clicked counter, under the counters.
+  function renderStatDetail(filteredState) {
+    const item = STAT_ITEMS.find(([key]) => key === state.openStat);
+    if (!item) { el.statDetail.hidden = true; el.statDetail.innerHTML = ''; return; }
+    const refs = referenceInfoRows(D.statusSummaryRefs(filteredState)[item[0]] || [], filteredState);
+    el.statDetail.hidden = false;
+    el.statDetail.innerHTML = `<div class="detail-head"><h2 class="panel-title">${escapeHtml(item[1])} (${refs.length} reference${refs.length === 1 ? '' : 's'})</h2>` +
+      `<button type="button" class="link-btn" data-close="stat">Close</button></div>` +
+      (refs.length ? infoTableHtml(refs) : '<p class="panel-caption">No references.</p>');
+  }
+
+  // A reference looked up: its rows on the shown day (also hidden or
+  // filtered-out ones, marked) and its scans / events that day.
+  function renderSearch(availableStateRows, filteredState, selectedDate) {
+    const query = state.search.trim().toUpperCase();
+    if (!query) { el.refSearchResult.hidden = true; el.refSearchResult.innerHTML = ''; return; }
+    const matching = availableStateRows.filter(r => String(r.reference || '').toUpperCase().includes(query));
+    const refs = D.dedupeByReference(matching);
+    const shown = new Set(filteredState.map(r => String(r.reference || '').toUpperCase()));
+    let html = `<div class="detail-head"><h2 class="panel-title">"${escapeHtml(state.search.trim())}" on ${escapeHtml(selectedDate)} -- ${refs.length} reference${refs.length === 1 ? '' : 's'}</h2>` +
+      `<button type="button" class="link-btn" data-close="search">Clear</button></div>`;
+    if (!refs.length) {
+      el.refSearchResult.hidden = false;
+      el.refSearchResult.innerHTML = html + '<p class="panel-caption">Not expected on this day. Try another date on the left.</p>';
+      return;
+    }
+    const notes = refs.map(r => {
+      const key = String(r.reference || '').toUpperCase();
+      if (state.excludedReferences.has(key)) return `${key}: hidden in Settings`;
+      if (!shown.has(key)) return `${key}: not in the current Truck / Group / Status filter`;
+      return '';
+    }).filter(Boolean);
+    html += infoTableHtml(referenceInfoRows(refs, matching));
+    if (notes.length) html += `<p class="panel-caption">${notes.map(escapeHtml).join(' &middot; ')}</p>`;
+    if (refs.length <= 5) {
+      const keys = new Set(refs.map(r => String(r.reference || '').toUpperCase()));
+      const events = state.events.filter(e => e.localDateStr === selectedDate && keys.has(String(e.reference || '').toUpperCase()))
+        .sort((a, b) => (b._localTs?.getTime() || 0) - (a._localTs?.getTime() || 0));
+      html += `<h3 class="section-title">Scans and events that day (${events.length})</h3>`;
+      html += events.length
+        ? '<div class="table-wrap"><table><thead><tr><th>Time</th><th>Type</th><th>Reference</th><th>Scanner</th><th>Details</th></tr></thead><tbody>' +
+          events.map(e => `<tr><td>${escapeHtml(localTime(e.timestamp))}</td><td>${escapeHtml(e.type || '')}</td><td>${escapeHtml(e.reference || '')}</td><td>${escapeHtml(e.scannerId || '—')}</td><td>${escapeHtml(describeEvent(e))}</td></tr>`).join('') +
+          '</tbody></table></div>'
+        : '<p class="panel-caption">No scans yet.</p>';
+    }
+    el.refSearchResult.hidden = false;
+    el.refSearchResult.innerHTML = html;
   }
 
   // effective/expected in trolleys for one dimension (RFID or photo) -- 0
@@ -592,6 +677,8 @@
     const filteredState = D.filterState(stateRows, state.filters.truck, state.filters.group, state.filters.status);
     const summary = D.statusSummary(filteredState);
     renderStats(summary);
+    renderStatDetail(filteredState);
+    renderSearch(availableStateRows, filteredState, selectedDate);
     renderDonutFor(summary);
     renderIssueBanner();
 
@@ -622,6 +709,20 @@
   el.filterGroup.addEventListener('change', () => { state.filters.group = el.filterGroup.value; recomputeAndRender(); });
   el.filterStatus.addEventListener('change', () => { state.filters.status = el.filterStatus.value; recomputeAndRender(); });
   el.truckDetailSelect.addEventListener('change', () => recomputeAndRender());
+  // A counter clicked: its references open under the counters (again: closed).
+  el.stats.addEventListener('click', (e) => {
+    const button = e.target.closest('[data-stat]');
+    if (!button) return;
+    state.openStat = state.openStat === button.dataset.stat ? '' : button.dataset.stat;
+    recomputeAndRender();
+  });
+  el.statDetail.addEventListener('click', (e) => {
+    if (e.target.closest('[data-close="stat"]')) { state.openStat = ''; recomputeAndRender(); }
+  });
+  el.refSearch.addEventListener('input', () => { state.search = el.refSearch.value; recomputeAndRender(); });
+  el.refSearchResult.addEventListener('click', (e) => {
+    if (e.target.closest('[data-close="search"]')) { state.search = ''; el.refSearch.value = ''; recomputeAndRender(); }
+  });
   el.carrierDetailSelect.addEventListener('change', () => recomputeAndRender());
 
   document.querySelectorAll('.tab-btn').forEach(btn => {

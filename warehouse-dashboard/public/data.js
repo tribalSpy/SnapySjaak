@@ -455,6 +455,27 @@ window.WD = (function () {
     return others.concat(collapsed);
   }
 
+  // The references behind each counter of statusSummary -- the same rules,
+  // so a clicked counter lists exactly the references it counts.
+  function statusSummaryRefs(rows) {
+    const perRef = dedupeByReference(rows);
+    const countedRefs = perRef.filter((r) => r.requiresRfid !== false || r.requiresPhoto !== false);
+    const needsPhoto = perRef.filter((r) => r.requiresPhoto !== false);
+    const needsRfid = perRef.filter((r) => r.requiresRfid !== false);
+    const notDoneFirst = (count) => (a, b) => ((count(a) >= a.trolleyCount) - (count(b) >= b.trolleyCount)) || String(a.reference).localeCompare(String(b.reference));
+    return {
+      expected_refs: countedRefs,
+      expected_trolleys: countedRefs,
+      scanned_refs: countedRefs.filter(r => r.scannedCount >= r.trolleyCount),
+      scanned_trolleys: countedRefs.filter(r => r.scannedCount > 0),
+      pending_refs: countedRefs.filter(r => r.scannedCount === 0),
+      pending_trolleys: countedRefs.filter(r => r.trolleyCount - r.scannedCount > 0),
+      extra_refs: perRef.filter(r => String(r.status || '').toLowerCase() === 'extra'),
+      photo: needsPhoto.slice().sort(notDoneFirst(r => r.photoCount || 0)),
+      rfid: needsRfid.slice().sort(notDoneFirst(r => r.rfidCount || 0)),
+    };
+  }
+
   function uniqueSorted(values) {
     return Array.from(new Set(values.filter(v => v))).sort();
   }
@@ -462,7 +483,7 @@ window.WD = (function () {
   return {
     parseTimestamp, localDateStr, todayStr, prepareEvents, normalizeLocations,
     statusFromCounts, rowsFromReferenceMap, buildStateForDate, dedupeByReference,
-    statusSummary, filterState, applyReferenceExclusions, filterEventsToVisibleReferences,
+    statusSummary, statusSummaryRefs, filterState, applyReferenceExclusions, filterEventsToVisibleReferences,
     classifyCanceledScan, enrichScansWithState, truckScanDurations, scanTimeframe,
     carrierScanDurations, carrierTimeframe,
     collapseMissingReferenceEvents, uniqueSorted, formatHms
