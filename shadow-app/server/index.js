@@ -6809,14 +6809,29 @@ function parseInkoopLeveringBb(base64) {
   const text = Buffer.from(String(base64 || ""), "base64").toString("latin1");
   const rows = [];
   const counts = { lines: 0, linked: 0, cancelled: 0, other: 0 };
+  // The columns by their header (the export comes with and without quotes,
+  // and with one size column more or less): Aant (items "1 x", then per
+  // item), Prs, Fst, Info (brief number), OrderNr, Prt (lot).
+  const split = (line) => line.split(";").map((cell) => cell.trim().replace(/^"|"$/g, "").trim());
+  let col = { vbn: 0, description: 1, items: 5, per_item: 6, price: 7, fust: 8, info: 9, order_nr: 10, prt: 12 };
   for (const rawLine of text.split(/\r?\n/)) {
-    const cells = rawLine.split(";").map((cell) => cell.trim());
-    if (cells.length < 13 || !/^\d+$/.test(cells[0])) {
+    const cells = split(rawLine);
+    const header = cells.map((cell) => cell.toLowerCase());
+    if (header.includes("prt") && header.includes("info")) {
+      const at = (name) => header.indexOf(name);
+      col = {
+        vbn: Math.max(0, at("vbn")), description: Math.max(1, at("omschrijving")),
+        items: at("aant"), per_item: at("aant") + 1, price: at("prs"), fust: at("fst"),
+        info: at("info"), order_nr: at("ordernr"), prt: at("prt"),
+      };
+      continue;
+    }
+    if (cells.length <= col.prt || !/^\d+$/.test(cells[col.vbn])) {
       continue;
     }
     counts.lines += 1;
-    const info = cells[9].toUpperCase();
-    const prt = cells[12];
+    const info = String(cells[col.info] || "").toUpperCase();
+    const prt = cells[col.prt];
     const brief = info.match(/^([A-Z0-9]{5,7})\/([A-Z])$/);
     if (!/^\d{6,10}$/.test(prt) || !brief) {
       if (/gekoppel/i.test(prt)) counts.linked += 1;
@@ -6824,18 +6839,18 @@ function parseInkoopLeveringBb(base64) {
       else counts.other += 1;
       continue;
     }
-    const items = Number(String(cells[5]).replace(/[^\d.]/g, "")) || 0;
-    const perItem = Number(String(cells[6]).replace(/[^\d.]/g, "")) || 0;
+    const items = Number(String(cells[col.items] || "").replace(/[^\d.]/g, "")) || 0;
+    const perItem = Number(String(cells[col.per_item] || "").replace(/[^\d.]/g, "")) || 0;
     rows.push({
       lot: Number(prt),
       pav: `${brief[1]}${brief[2].toLowerCase()}`,
       info,
-      order_nr: cells[10],
-      vbn: cells[0],
-      description: cells[1],
+      order_nr: col.order_nr >= 0 ? cells[col.order_nr] : "",
+      vbn: cells[col.vbn],
+      description: cells[col.description],
       quantity: items && perItem ? items * perItem : null,
-      price: Number(String(cells[7]).replace(",", ".")) || null,
-      fust: cells[8],
+      price: Number(String(cells[col.price] || "").replace(",", ".")) || null,
+      fust: cells[col.fust],
     });
   }
   return { rows, counts };
