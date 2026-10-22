@@ -9400,7 +9400,7 @@ function PdKeuringPage({ currentUser }) {
     }
   }
 
-  const INLINE_EDIT_FIELDS = ["reference_connect", "expected_boxes", "expected_pieces", "truck_number", "trailer_number"];
+  const INLINE_EDIT_FIELDS = ["transport_mode", "reference_connect", "expected_boxes", "expected_pieces", "truck_number", "trailer_number"];
 
   function inlineFieldValue(row, field) {
     const edits = inlineEdits[row.id];
@@ -9644,6 +9644,13 @@ function PdKeuringPage({ currentUser }) {
                   <input list="pd-keuring-staff-names" value={rowDraft.pd_keuring_made_by || ""} onChange={(event) => updateRowDraftField("pd_keuring_made_by", event.target.value)} />
                 </label>
                 <label>
+                  <span>Transport</span>
+                  <select value={rowDraft.transport_mode || "Truck"} onChange={(event) => updateRowDraftField("transport_mode", event.target.value)}>
+                    <option value="Truck">Truck</option>
+                    <option value="Airplane">Airplane</option>
+                  </select>
+                </label>
+                <label>
                   <span>Truck number</span>
                   <input value={rowDraft.truck_number || ""} onChange={(event) => updateRowDraftField("truck_number", event.target.value)} placeholder="For example: 1 BHM" />
                 </label>
@@ -9736,6 +9743,7 @@ function PdKeuringPage({ currentUser }) {
                   <th>PD code</th>
                   <th>Reference connect</th>
                   <th>Customer</th>
+                  <th>Transport</th>
                   <th>Truck number</th>
                   <th>Truck / trailer licence plate</th>
                   <th>Boxes</th>
@@ -9757,6 +9765,12 @@ function PdKeuringPage({ currentUser }) {
                       <td>{row.pd_code || "-"}</td>
                       <td><input className={stepNeeded(row, "reference_connect") ? "step-plan-needed" : undefined} value={inlineFieldValue(row, "reference_connect")} onChange={(event) => updateInlineField(row.id, "reference_connect", event.target.value)} /></td>
                       <td>{row.customer_id && customers.some((item) => item.id === row.customer_id) ? (row.customer_name || "-") : <span className="ukdocs-status-badge danger">No customer picked</span>}</td>
+                      <td>
+                        <select value={inlineFieldValue(row, "transport_mode") || "Truck"} onChange={(event) => updateInlineField(row.id, "transport_mode", event.target.value)}>
+                          <option value="Truck">Truck</option>
+                          <option value="Airplane">Airplane</option>
+                        </select>
+                      </td>
                       <td><input className={stepNeeded(row, "truck_number") ? "step-plan-needed" : undefined} value={inlineFieldValue(row, "truck_number")} onChange={(event) => updateInlineField(row.id, "truck_number", event.target.value)} placeholder="Truck number" /></td>
                       <td><input className={stepNeeded(row, "trailer_number") ? "step-plan-needed" : undefined} value={inlineFieldValue(row, "trailer_number")} onChange={(event) => updateInlineField(row.id, "trailer_number", event.target.value)} placeholder="Licence plate" /></td>
                       <td><input value={inlineFieldValue(row, "expected_boxes")} onChange={(event) => updateInlineField(row.id, "expected_boxes", event.target.value)} placeholder="Boxes" /></td>
@@ -9769,7 +9783,7 @@ function PdKeuringPage({ currentUser }) {
                     </tr>
                   );
                 })}
-                {!dayRows.length && <tr><td colSpan="14">No PD Keuring rows for {selectedDate} yet.</td></tr>}
+                {!dayRows.length && <tr><td colSpan="15">No PD Keuring rows for {selectedDate} yet.</td></tr>}
               </tbody>
             </table>
           </div>

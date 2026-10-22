@@ -2397,6 +2397,10 @@ const PD_STEP_PLAN_DAY_STEPS = [
 const PD_STEP_PLAN_SHIPMENT_MARKS = ["tour_dumps", "ecert_finish"];
 const PD_STEP_PLAN_MARK_CODES = [...PD_STEP_PLAN_DAY_STEPS.map((step) => step.key), ...PD_STEP_PLAN_SHIPMENT_MARKS];
 
+function normalizeUkdocsTransportMode(value) {
+  return /^(air|plane|vlieg)/i.test(String(value || "").trim()) ? "Airplane" : "Truck";
+}
+
 function normalizeUkdocsPrintCollection(collection) {
   const shipmentReference = normalizeUkdocsText(collection?.shipment_reference);
   const invoiceNumbers = String(collection?.invoice_numbers || "").trim() || shipmentReference;
@@ -2410,6 +2414,9 @@ function normalizeUkdocsPrintCollection(collection) {
     customer_name: normalizeUkdocsText(collection?.customer_name),
     collection_type: normalizeUkdocsText(collection?.collection_type) || (isHonselersdijkStockControl(collection) ? "stock_control" : "export"),
     invoice_numbers: invoiceNumbers,
+    // How the shipment goes: "Truck" (default) or "Airplane" -- an airplane
+    // shipment has no truck number / licence plate to fill in.
+    transport_mode: normalizeUkdocsTransportMode(collection?.transport_mode),
     truck_number: normalizeUkdocsText(collection?.truck_number),
     trailer_number: normalizeUkdocsText(collection?.trailer_number),
     reference_connect: normalizeUkdocsText(collection?.reference_connect),
@@ -11681,8 +11688,10 @@ function buildPdStepPlan(state, targetDate) {
       : "";
     const refs = checkItems([
       { code: "reference_connect", label: "Connect number", detail: connectDetail || undefined, present: connectCount > 0 && connectCount >= formCount },
-      { code: "truck_number", label: "Truck number", present: has(collection.truck_number) },
-      { code: "trailer_number", label: "Licence plate", present: has(collection.trailer_number) },
+      ...(collection.transport_mode === "Airplane" ? [] : [
+        { code: "truck_number", label: "Truck number", present: has(collection.truck_number) },
+        { code: "trailer_number", label: "Licence plate", present: has(collection.trailer_number) },
+      ]),
       // Eric Docs checks the phyto's pieces against this number -- asked
       // here with the other PD Keuring fields, not discovered at step 4.
       ...(route === "ericdocs" ? [{ code: "expected_pieces", label: "Pieces", present: has(collection.expected_pieces) }] : []),
@@ -20677,6 +20686,7 @@ async function handleApi(req, res, url) {
       day_name: body?.day_name ?? existingCollection.day_name,
       pd_keuring_done: body?.pd_keuring_done ?? existingCollection.pd_keuring_done,
       pd_keuring_made_by: body?.pd_keuring_made_by ?? existingCollection.pd_keuring_made_by,
+      transport_mode: body?.transport_mode ?? existingCollection.transport_mode,
       truck_number: body?.truck_number ?? existingCollection.truck_number,
       trailer_number: body?.trailer_number ?? existingCollection.trailer_number,
       customer_id: body?.customer_id ?? existingCollection.customer_id,
@@ -20756,6 +20766,8 @@ async function handleApi(req, res, url) {
         pd_keuring_made_by: "",
         truck_number: item?.truck_number || "",
         trailer_number: item?.trailer_number || "",
+        // Truck or airplane goes with the route: carried over.
+        transport_mode: item?.transport_mode,
         updated_at: new Date().toISOString(),
       });
       // Brand new, app-original row -- always unambiguous to write, never a
