@@ -674,6 +674,19 @@ export async function deleteDuplicateInkoopInvoiceCopies() {
   return result.rows;
 }
 
+// Connect lines of a virtual supplier (VIRTST): no real purchase.
+export async function deleteInkoopVirtualErpLines(suppliers = []) {
+  if (!pool || !suppliers.length) {
+    return [];
+  }
+  const result = await pool.query(
+    `DELETE FROM inkoop_erp_lines WHERE upper(btrim(COALESCE(suppl, ''))) = ANY($1::text[])
+     RETURNING lot::text AS lot, to_char(erp_date, 'YYYY-MM-DD') AS erp_date`,
+    [suppliers.map((code) => String(code).trim().toUpperCase())],
+  );
+  return result.rows;
+}
+
 export async function deleteInkoopInvoiceCopies({ invoiceNumbers = [], sourceFileNames = [] } = {}) {
   if (!pool) {
     return [];

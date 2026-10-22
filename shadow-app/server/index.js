@@ -96,6 +96,7 @@ import {
   saveInkoopInvoiceLines,
   deleteInkoopInvoiceCopies,
   deleteDuplicateInkoopInvoiceCopies,
+  deleteInkoopVirtualErpLines,
   saveInkoopLeveringBb,
   applyInkoopLeveringBbBridge,
   getInkoopLeveringBbStatus,
@@ -6637,7 +6638,14 @@ async function parseInkoopErpUpload(filePayload) {
   if (payload?.error) {
     throw new Error(payload.error);
   }
-  return Array.isArray(payload?.rows) ? payload.rows : [];
+  // Supplier VIRTST: virtual lines in Connect, no real purchase -- never in.
+  return (Array.isArray(payload?.rows) ? payload.rows : []).filter((row) => !isInkoopVirtualErpRow(row));
+}
+
+const INKOOP_VIRTUAL_SUPPLIERS = new Set(["VIRTST"]);
+
+function isInkoopVirtualErpRow(row) {
+  return INKOOP_VIRTUAL_SUPPLIERS.has(String(row?.suppl || "").trim().toUpperCase());
 }
 
 async function parseInkoopVeilingUpload(filePayload) {
@@ -8959,6 +8967,7 @@ async function startInkoopMatchPipeline() {
   try {
     await resetRunningInkoopMatchDays();
     await cleanDuplicateInkoopInvoiceCopies();
+    await cleanInkoopVirtualErpLines();
     const added = await ensureInkoopMatchDaysForData();
     const stale = await markStaleInkoopMatchDays(await inkoopCurrentFingerprint());
     if (added || stale) console.log(`Inkoop comparison: ${added} new day(s), ${stale} to redo with current master data.`);
@@ -8975,6 +8984,16 @@ async function startInkoopMatchPipeline() {
 
 // " (2)" invoice copies that are only the same invoice again go; the days
 // they were on are compared again.
+async function cleanInkoopVirtualErpLines() {
+  const removed = await deleteInkoopVirtualErpLines([...INKOOP_VIRTUAL_SUPPLIERS]);
+  if (!removed.length) return 0;
+  console.log(`Inkoop: ${removed.length} virtual Connect line(s) (VIRTST) removed.`);
+  inkoopSummaryCache.clear();
+  bumpInkoopMatchVersion();
+  await refreshInkoopDaySummariesForDates(removed.map((row) => row.erp_date));
+  return removed.length;
+}
+
 async function cleanDuplicateInkoopInvoiceCopies() {
   const removed = await deleteDuplicateInkoopInvoiceCopies();
   if (!removed.length) return 0;
