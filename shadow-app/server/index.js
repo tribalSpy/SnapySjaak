@@ -7280,6 +7280,16 @@ function matchInkoopVeilingLines(erpRows, invoices, supplierMap = {}, supplierNa
         erpByBasePav.set(basePav, []);
       }
       erpByBasePav.get(basePav).push(row);
+      // Levering BB's brief number when Connect has another one: the
+      // invoice line can be found under either (the lot is taken once).
+      const extraPav = normalizeInkoopKey(row?.levering_pav);
+      if (isRealInkoopPav(extraPav) && extraPav !== pav) {
+        if (!erpByPav.has(extraPav)) erpByPav.set(extraPav, []);
+        erpByPav.get(extraPav).push(row);
+        const extraBase = inkoopBasePav(extraPav);
+        if (!erpByBasePav.has(extraBase)) erpByBasePav.set(extraBase, []);
+        erpByBasePav.get(extraBase).push(row);
+      }
       continue;
     }
     const supplierCode = resolveErpRowSupplierCode(row, validSupplierCodes);
@@ -7710,8 +7720,8 @@ function matchInkoopVeilingLines(erpRows, invoices, supplierMap = {}, supplierNa
   // claimed it" gaps -- a supplier-code-keyed row (Handel/AI2 lines with no
   // real PAV) that no invoice line ever matched is exactly as real a gap as
   // an unclaimed PAV row, just previously never surfaced at all.
-  const onlyInErp = [...erpByPav.values(), ...erpBySupplierCode.values()]
-    .flat()
+  // (A set: a lot with a Levering BB brief number too is under two PAVs.)
+  const onlyInErp = [...new Set([...erpByPav.values(), ...erpBySupplierCode.values()].flat())]
     .filter((row) => !consumedErpRows.has(row));
 
   // Why a supplier-matched line (Handel / AI2 / Connect without PAV) found
@@ -9038,6 +9048,10 @@ async function startInkoopMatchPipeline() {
     await resetRunningInkoopMatchDays();
     await cleanDuplicateInkoopInvoiceCopies();
     await cleanInkoopVirtualErpLines();
+    // Levering BB already stored: brief numbers filled in / kept next to
+    // Connect's own (only lots that changed are compared again).
+    const leveringChanged = await applyInkoopLeveringBbBridge();
+    if (leveringChanged.length) await refreshInkoopDaySummariesForDates(leveringChanged.map((row) => row.erp_date));
     const added = await ensureInkoopMatchDaysForData();
     const stale = await markStaleInkoopMatchDays(await inkoopCurrentFingerprint());
     if (added || stale) console.log(`Inkoop comparison: ${added} new day(s), ${stale} to redo with current master data.`);

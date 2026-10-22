@@ -383,7 +383,20 @@ export async function applyInkoopLeveringBbBridge() {
      WHERE e.lot = b.lot AND COALESCE(btrim(e.pav), '') = ''
     RETURNING e.lot::text AS lot, to_char(e.erp_date, 'YYYY-MM-DD') AS erp_date
   `);
-  return result.rows;
+  // A lot with another number in Connect's PAV (e.g. "587757" where Levering
+  // BB has "FA8845e"): Connect's stays, Levering BB's is kept next to it
+  // (raw.levering_pav) -- the matcher looks for the invoice line under both.
+  const extra = await pool.query(`
+    UPDATE inkoop_erp_lines e
+       SET raw = e.raw || jsonb_build_object('levering_pav', b.pav, 'levering_order_nr', b.order_nr),
+           updated_at = now()
+      FROM inkoop_levering_bb b
+     WHERE e.lot = b.lot AND COALESCE(btrim(e.pav), '') <> ''
+       AND upper(btrim(e.pav)) <> upper(btrim(b.pav))
+       AND COALESCE(e.raw->>'levering_pav', '') IS DISTINCT FROM b.pav
+    RETURNING e.lot::text AS lot, to_char(e.erp_date, 'YYYY-MM-DD') AS erp_date
+  `);
+  return [...result.rows, ...extra.rows];
 }
 
 export async function saveInkoopLotEpp(rows, sourceFileName = "") {
