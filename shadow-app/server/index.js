@@ -2389,7 +2389,7 @@ const PD_STEP_PLAN_DAY_STEPS = [
   { key: "bq_order", number: 3, label: "Make the BQ order" },
   { key: "bq_purchase", number: 4, label: "Purchase for the BQ order" },
   { key: "bq_divide", number: 5, label: "Divide the BQ order" },
-  { key: "stock_docs", number: 6, label: "Fill in the docs in the phyto inspection menu (stock control)" },
+  { key: "stock_docs", number: 6, label: "Fill in the docs in the phyto inspection menu (stock control + nakeuring)" },
   { key: "stock_finished", number: 7, label: "Confirm stock control is finished" },
   { key: "phyto_from_orders", number: 8, label: "Create the phyto shipments from the orders (order status)" },
   { key: "ecert_send", number: 9, label: "Send to e-Cert and finish them there" },
@@ -11609,10 +11609,18 @@ function buildPdStepPlanDay(state, targetDate) {
   ));
   const marks = stock?.step_plan_marks || {};
   // Step 6 is done by itself once Phyto Inspection has the stock control's
-  // papers (inspection list + locations file) -- its "Complete".
+  // papers (inspection list + locations file) -- its "Complete" -- and every
+  // nakeuring shipment of the day its inspection list (also filled in there).
   const stockRequirements = stock
     ? getUkdocsPrintCollectionRequirements(stock, state.customers, state.print_collections || [])
     : null;
+  const reinspections = (state.print_collections || []).filter((item) => (
+    String(item?.shipment_date || "").slice(0, 10) === targetDate
+    && ukdocsPrintInspectionMode(item) === "reinspection"
+  ));
+  const reinspectionMissing = reinspections
+    .filter((item) => !item?.documents?.inspection_list?.storage_name)
+    .map((item) => `Phyto Inspection still needs: Inspection list for nakeuring ${[item.customer_name, item.city_name].filter(Boolean).join(" - ") || "shipment"}`);
   const steps = [
     {
       key: "stock_setup", number: 1, label: "Stock control PD keuring set up (Voorraad)", page: "pdkeuring", manual: false,
@@ -11622,9 +11630,12 @@ function buildPdStepPlanDay(state, targetDate) {
       const entry = { ...step, page: "", manual: true, done: Boolean(marks[step.key]), mark: marks[step.key] || null, missing: [] };
       if (step.key === "stock_docs") {
         entry.page = "ukdocsinspection";
-        entry.auto_done = Boolean(stockRequirements?.complete);
+        entry.auto_done = Boolean(stockRequirements?.complete) && !reinspectionMissing.length;
         entry.done = entry.done || entry.auto_done;
-        entry.missing = stockRequirements && !stockRequirements.complete ? stockRequirements.missing.map((item) => `Phyto Inspection still needs: ${item}`) : [];
+        entry.missing = [
+          ...(stockRequirements && !stockRequirements.complete ? stockRequirements.missing.map((item) => `Phyto Inspection still needs: ${item} (stock control)`) : []),
+          ...reinspectionMissing,
+        ];
       }
       return entry;
     }),
