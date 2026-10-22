@@ -7559,7 +7559,20 @@ function matchInkoopVeilingLines(erpRows, invoices, supplierMap = {}, supplierNa
         matchedOk.push({ ...entry, matched_as_group: true });
       }
     } else {
-      stillAmbiguous.push(...group.entries);
+      // The same party bought more than once (same brief number, pieces
+      // and price): it doesn't matter which line is which lot -- pair one
+      // with one as far as they go; only the rest stays unmatched (lines
+      // left -> only in invoice, lots left -> only in Connect).
+      const free = group.candidates.filter((candidate) => !consumedErpRows.has(candidate));
+      const pairs = Math.min(free.length, group.entries.length);
+      group.entries.forEach((entry, index) => {
+        if (index < pairs) {
+          consumedErpRows.add(free[index]);
+          matchedOk.push({ ...entry, erp_row: free[index], matched_as_group: true });
+        } else {
+          onlyInInvoice.push(entry);
+        }
+      });
     }
   }
 
@@ -8659,7 +8672,7 @@ const INKOOP_EMPTY_DAY_BUCKET = {
 // compared again once (at start-up), not only days whose data changed.
 // 2026-10-21: grower directory (learned links, Handel evidence), supplier
 // pairs stored on the invoice date.
-const INKOOP_MATCH_RULES_VERSION = "2026-10-22";
+const INKOOP_MATCH_RULES_VERSION = "2026-10-22b";
 
 function inkoopStateFingerprint(state) {
   return crypto.createHash("sha1").update(JSON.stringify([
