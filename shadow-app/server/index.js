@@ -11833,7 +11833,11 @@ function buildPdStepPlan(state, targetDate) {
       markStep("tour_dumps", "Tour data dumps (flowers / acc / plants) and IPAFFS", docs.missing.length === 0 && docsMissingRaw.length === 0),
       { key: "documents", label: "Invoices & export docs", page: "ukdocs", done: docs.missing.length === 0, missing: docs.missing, skippable: docs.skippable, skipped: docs.skipped, warnings: docs.warnings },
       { key: "papers", label: route === "ericdocs" ? "Eric Docs" : "UKdocs CSI", page: route, done: papers.missing.length === 0, missing: papers.missing, skippable: papers.skippable, skipped: papers.skipped, warnings: papers.warnings, status: finalStatus },
-      markStep("ecert_finish", "e-Cert: finish the shipment, ask for the digital signature"),
+      // A nakeuring's e-Cert was finished and signed at the first keuring:
+      // nothing to do here.
+      route === "ericdocs"
+        ? { ...markStep("ecert_finish", "e-Cert: not needed for a nakeuring (signed at the first keuring)", true), manual: false }
+        : markStep("ecert_finish", "e-Cert: finish the shipment, ask for the digital signature"),
     ];
     const currentIndex = steps.findIndex((step) => !step.done);
     return {
