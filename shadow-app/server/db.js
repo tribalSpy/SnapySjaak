@@ -626,6 +626,54 @@ export async function saveInkoopErpLines(rows) {
 // upload (an email whose subject named another invoice). Uploading again
 // files those under their own number; the old copies -- of the invoice
 // numbers or source files of this upload -- go. Returns their dates.
+// Stored " (2)" copies that are only the same invoice again: every line of
+// the copy (brief number, pieces, price, total, product) is already in the
+// invoice without the suffix -- deleted, so the original's lots aren't left
+// to the copy as "only in invoice". A copy with other purchases stays.
+export async function deleteDuplicateInkoopInvoiceCopies() {
+  if (!pool) {
+    return [];
+  }
+  const result = await pool.query(`
+    WITH lines AS (
+      SELECT invoice_number,
+             regexp_replace(invoice_number, '\\s*\\(\\d+\\)$', '') AS base_number,
+             invoice_number ~ ' \\(\\d+\\)$' AS is_copy,
+             upper(btrim(COALESCE(reference_bt, ''))) AS bt, quantity, unit_price, total,
+             upper(btrim(COALESCE(description, ''))) AS descr
+        FROM inkoop_invoice_lines
+    ),
+    copy_groups AS (
+      SELECT invoice_number, base_number, bt, quantity, unit_price, total, descr, count(*) AS n
+        FROM lines WHERE is_copy GROUP BY 1, 2, 3, 4, 5, 6, 7
+    ),
+    original_groups AS (
+      SELECT invoice_number, bt, quantity, unit_price, total, descr, count(*) AS n
+        FROM lines WHERE NOT is_copy GROUP BY 1, 2, 3, 4, 5, 6
+    ),
+    covered AS (
+      SELECT c.invoice_number, bool_and(o.n IS NOT NULL AND o.n >= c.n) AS all_in_original
+        FROM copy_groups c
+        LEFT JOIN original_groups o
+          ON o.invoice_number = c.base_number AND o.bt = c.bt AND o.descr = c.descr
+         AND o.quantity IS NOT DISTINCT FROM c.quantity
+         AND o.unit_price IS NOT DISTINCT FROM c.unit_price
+         AND o.total IS NOT DISTINCT FROM c.total
+       GROUP BY c.invoice_number
+    )
+    DELETE FROM inkoop_invoice_lines l
+     USING covered
+     WHERE l.invoice_number = covered.invoice_number AND covered.all_in_original
+    RETURNING l.invoice_number, to_char(l.invoice_date, 'YYYY-MM-DD') AS invoice_date
+  `);
+  const removed = [...new Set(result.rows.map((row) => row.invoice_number))];
+  if (removed.length) {
+    await pool.query("DELETE FROM inkoop_invoice_headers WHERE invoice_number = ANY($1::text[])", [removed]);
+    await pool.query("DELETE FROM inkoop_invoice_totals WHERE invoice_number = ANY($1::text[])", [removed]);
+  }
+  return result.rows;
+}
+
 export async function deleteInkoopInvoiceCopies({ invoiceNumbers = [], sourceFileNames = [] } = {}) {
   if (!pool) {
     return [];

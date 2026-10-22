@@ -95,6 +95,7 @@ import {
   saveInkoopErpLines,
   saveInkoopInvoiceLines,
   deleteInkoopInvoiceCopies,
+  deleteDuplicateInkoopInvoiceCopies,
   saveInkoopLeveringBb,
   applyInkoopLeveringBbBridge,
   getInkoopLeveringBbStatus,
@@ -8944,6 +8945,7 @@ function inkoopDatesBetween(from, to) {
 async function startInkoopMatchPipeline() {
   try {
     await resetRunningInkoopMatchDays();
+    await cleanDuplicateInkoopInvoiceCopies();
     const added = await ensureInkoopMatchDaysForData();
     const stale = await markStaleInkoopMatchDays(await inkoopCurrentFingerprint());
     if (added || stale) console.log(`Inkoop comparison: ${added} new day(s), ${stale} to redo with current master data.`);
@@ -8956,6 +8958,19 @@ async function startInkoopMatchPipeline() {
     console.error("Starting the Inkoop comparison pipeline failed:", error instanceof Error ? error.message : error);
   }
   kickInkoopMatchWorker();
+}
+
+// " (2)" invoice copies that are only the same invoice again go; the days
+// they were on are compared again.
+async function cleanDuplicateInkoopInvoiceCopies() {
+  const removed = await deleteDuplicateInkoopInvoiceCopies();
+  if (!removed.length) return 0;
+  const numbers = [...new Set(removed.map((row) => row.invoice_number))];
+  console.log(`Inkoop: ${numbers.length} duplicate invoice copy/copies removed (${removed.length} line(s)): ${numbers.slice(0, 20).join(", ")}`);
+  inkoopSummaryCache.clear();
+  bumpInkoopMatchVersion();
+  await refreshInkoopDaySummariesForDates(removed.map((row) => row.invoice_date));
+  return numbers.length;
 }
 
 // Master data written: days compared with the old master data are to do.
@@ -23136,6 +23151,7 @@ async function handleApi(req, res, url) {
         return [];
       });
       await saveInkoopInvoiceLines(flatInvoiceLines);
+      await cleanDuplicateInkoopInvoiceCopies().catch((cleanupError) => console.error("Removing duplicate invoice copies failed:", cleanupError instanceof Error ? cleanupError.message : cleanupError));
       // New Connect lots or invoice lines: an EPP may now find its brief number.
       if (erpRows.length || flatInvoiceLines.length) {
         await applyInkoopEppBridge().catch((bridgeError) => console.error("EPP bridge failed:", bridgeError instanceof Error ? bridgeError.message : bridgeError));
