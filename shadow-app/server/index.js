@@ -10941,9 +10941,15 @@ function summarizeShelfTrainedModel(trained, trolleyCount) {
   if (trained.error) {
     return { error: String(trained.error).slice(0, 500) };
   }
-  const photos = (Array.isArray(trained.photos) ? trained.photos : []).filter((photo) => photo && !photo.error);
+  const allPhotos = Array.isArray(trained.photos) ? trained.photos : [];
+  const photos = allPhotos.filter((photo) => photo && !photo.error);
   if (!photos.length) {
-    return { error: "trained model counted no photos", model_version: trained.model_version || "" };
+    // Why: the first photo's own error (e.g. no module / weights not found).
+    const reason = allPhotos.find((photo) => photo?.error)?.error;
+    return {
+      error: (reason ? `trained model counted no photos: ${reason}` : "trained model counted no photos").slice(0, 500),
+      model_version: trained.model_version || "",
+    };
   }
   const median = (values) => {
     const sorted = [...values].sort((left, right) => left - right);
