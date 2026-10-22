@@ -1267,7 +1267,7 @@ export async function getInkoopPeriodReport({ unit = "month", company = "" } = {
   const result = await pool.query(
     `SELECT to_char(summary_date, '${format}') AS period,
        COUNT(DISTINCT summary_date)::int AS days,
-       ${["purchase_value", "invoice_value", "erp_value", "mismatch_count", "mismatch_value", "gap_count", "gap_value", "embalage_value", "product_count"].map(sum).join(",\n       ")}
+       ${["purchase_value", "invoice_value", "erp_value", "mismatch_count", "mismatch_value", "gap_count", "gap_value", "gap_erp_count", "gap_erp_value", "gap_invoice_count", "gap_invoice_value", "embalage_value", "product_count"].map(sum).join(",\n       ")}
      FROM inkoop_day_summaries
      WHERE company = $1
      GROUP BY 1

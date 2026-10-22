@@ -17529,7 +17529,7 @@ function InkoopPeriodReportTable({ rows }) {
   return (
     <div className="table-wrap">
       <table className="data-table">
-        <thead><tr><th>Period</th><th>Days</th><th>Invoiced</th><th>Connect Data</th><th>Difference</th><th>Mismatches</th><th>Mismatch value</th><th>Gaps</th><th>Gap value</th><th>Emballage</th><th>Products</th></tr></thead>
+        <thead><tr><th>Period</th><th>Days</th><th>Invoiced</th><th>Connect Data</th><th>Difference</th><th>Mismatches</th><th>Mismatch value</th><th title="Connect lots no invoice line took">Only in Connect</th><th>Value</th><th title="Invoice lines no Connect lot took">Only in invoice</th><th>Value</th><th>Emballage</th><th>Products</th></tr></thead>
         <tbody>
           {rows.map((row) => (
             <tr key={row.period}>
@@ -17540,13 +17540,15 @@ function InkoopPeriodReportTable({ rows }) {
               <td>{formatInkoopEuro(row.purchase_value - row.erp_value)}</td>
               <td>{row.mismatch_count}</td>
               <td>{formatInkoopEuro(row.mismatch_value)}</td>
-              <td>{row.gap_count}</td>
-              <td>{formatInkoopEuro(row.gap_value)}</td>
+              <td>{row.gap_erp_count ?? "-"}</td>
+              <td>{row.gap_erp_count === undefined ? "-" : formatInkoopEuro(row.gap_erp_value)}</td>
+              <td>{row.gap_invoice_count ?? "-"}</td>
+              <td>{row.gap_invoice_count === undefined ? "-" : formatInkoopEuro(row.gap_invoice_value)}</td>
               <td>{formatInkoopEuro(row.embalage_value)}</td>
               <td>{row.product_count}</td>
             </tr>
           ))}
-          {!rows.length && <tr><td colSpan="11">No compared days yet.</td></tr>}
+          {!rows.length && <tr><td colSpan="13">No compared days yet.</td></tr>}
         </tbody>
       </table>
     </div>

@@ -8672,6 +8672,7 @@ function inkoopDatesInRange(from, to) {
 const INKOOP_EMPTY_DAY_BUCKET = {
   purchase_value: 0, invoice_value: 0, mismatch_count: 0, mismatch_value: 0,
   gap_count: 0, gap_value: 0, embalage_value: 0, product_count: 0,
+  gap_erp_count: 0, gap_erp_value: 0, gap_invoice_count: 0, gap_invoice_value: 0,
 };
 
 // Which master data a stored day was computed with -- changing supplier
@@ -8680,7 +8681,7 @@ const INKOOP_EMPTY_DAY_BUCKET = {
 // compared again once (at start-up), not only days whose data changed.
 // 2026-10-21: grower directory (learned links, Handel evidence), supplier
 // pairs stored on the invoice date.
-const INKOOP_MATCH_RULES_VERSION = "2026-10-22b";
+const INKOOP_MATCH_RULES_VERSION = "2026-10-22c";
 
 function inkoopStateFingerprint(state) {
   return crypto.createHash("sha1").update(JSON.stringify([
@@ -9895,6 +9896,12 @@ function inkoopEnsureDateBucket(buckets, dateKey) {
       mismatch_value: 0,
       gap_count: 0,
       gap_value: 0,
+      // The gap's two sides apart: a purchase in Connect and on the invoice
+      // that wasn't paired is in both (gap_value counts it twice).
+      gap_erp_count: 0,
+      gap_erp_value: 0,
+      gap_invoice_count: 0,
+      gap_invoice_value: 0,
       embalage_value: 0,
       product_count: 0,
     });
@@ -9961,6 +9968,8 @@ function bucketInkoopResultsByDate(matched, aggregateContext = null) {
     }
     bucket.gap_count += 1;
     bucket.gap_value += value;
+    bucket.gap_erp_count += 1;
+    bucket.gap_erp_value += value;
   }
   for (const row of matched?.only_in_invoice || []) {
     const bucket = inkoopEnsureDateBucket(buckets, inkoopDateKeyFromInvoiceAnchor(row));
@@ -9982,6 +9991,8 @@ function bucketInkoopResultsByDate(matched, aggregateContext = null) {
     }
     bucket.gap_count += 1;
     bucket.gap_value += value;
+    bucket.gap_invoice_count += 1;
+    bucket.gap_invoice_value += value;
   }
   for (const row of matched?.embalage_lines || []) {
     const bucket = inkoopEnsureDateBucket(buckets, inkoopDateKeyFromInvoiceAnchor(row));
