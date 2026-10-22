@@ -11740,7 +11740,14 @@ function buildPdStepPlan(state, targetDate) {
   const dayNext = day.steps[day.current_step];
   const rows = collections.map((collection) => {
     const requirements = getUkdocsPrintCollectionRequirements(collection, state.customers, collections, { requireInspectionListForReinspection: false });
-    const route = ukdocsPrintInspectionMode(collection) === "reinspection" ? "ericdocs" : "ukdocscsi";
+    // Eric Docs only for a nakeuring on its own: with a voorraadkeuring too
+    // (V + N) it goes through UKdocs CSI -- and always where the customer's
+    // settings show it (Eric Docs turned off -> CSI, CSI off -> Eric Docs).
+    const routeCustomer = ukdocsPrintCollectionCustomer(collection, state.customers);
+    const withVoorraadkeuring = /voorraadkeuring/.test(String(collection?.pd_type || "").toLowerCase().replace(/\s+/g, ""));
+    let route = ukdocsPrintInspectionMode(collection) === "reinspection" && !withVoorraadkeuring ? "ericdocs" : "ukdocscsi";
+    if (route === "ericdocs" && routeCustomer?.menu_show_ericdocs === false && routeCustomer?.menu_show_ukdocscsi !== false) route = "ukdocscsi";
+    if (route === "ukdocscsi" && routeCustomer?.menu_show_ukdocscsi === false && routeCustomer?.menu_show_ericdocs !== false) route = "ericdocs";
     const has = (value) => Boolean(String(value || "").trim());
 
     // Every missing item can be skipped on purpose ("continue without ...",
