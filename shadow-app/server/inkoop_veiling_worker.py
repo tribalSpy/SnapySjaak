@@ -2,6 +2,7 @@ import argparse
 import base64
 import csv
 import io
+import collections
 import json
 import re
 import shutil
@@ -1183,32 +1184,69 @@ def _parse_veiling_from(input_path: Path, extract_dir: Path):
     return {"invoices": drop_duplicate_invoices(invoices, skipped), "skipped": skipped, "pdfs": pdfs}
 
 
+def invoice_line_core(line):
+    """What makes an invoice line a purchase: brief number, pieces, price,
+    total, product and grower -- not its date, file or extra XML fields (a
+    resent invoice can differ there)."""
+    def number(value):
+        try:
+            return round(float(value), 4)
+        except (TypeError, ValueError):
+            return None
+    return (
+        str(line.get("reference_bt") or "").strip().upper(),
+        number(line.get("quantity")),
+        number(line.get("unit_price")),
+        number(line.get("total")),
+        str(line.get("description") or "").strip().upper(),
+        str(line.get("supplier_gln") or "").strip(),
+        str(line.get("product_type_code") or "").strip(),
+    )
+
+
 def drop_duplicate_invoices(invoices, skipped):
-    """The same invoice sent twice (e.g. one AI2 Productnota in two emails)
-    gives the same invoice number with the same lines -- read it once; the
-    database refused the double rows ("ON CONFLICT DO UPDATE command cannot
-    affect row a second time"). Two invoices with the same number but
-    different lines are both kept (the second gets " (2)"), never dropped."""
+    """The same invoice sent twice (e.g. one AI2 Productnota in two emails, a
+    resend) gives the same invoice number with the same purchases -- read it
+    once; the database refused the double rows ("ON CONFLICT DO UPDATE
+    command cannot affect row a second time"), and a kept copy made its lines
+    "only in invoice" (the original took the lots). Compared by the lines'
+    core (see invoice_line_core): the same lines, or all of them already in
+    the other copy -> one invoice, the one with the most lines. Two invoices
+    with the same number and really different purchases are both kept (the
+    second gets " (2)"), never dropped."""
     kept = []
-    seen = {}
+    by_number = {}  # number -> [(core lines Counter, index in kept)]
     for invoice in invoices:
         number = invoice.get("invoice_number") or ""
-        fingerprint = json.dumps(invoice.get("lines") or [], sort_keys=True, default=str)
         if not number:
             kept.append(invoice)
             continue
-        if number not in seen:
-            seen[number] = [(fingerprint, invoice.get("file_name", ""))]
+        core = collections.Counter(invoice_line_core(line) for line in invoice.get("lines") or [])
+        known = by_number.setdefault(number, [])
+        duplicate = None
+        for index, (other_core, kept_index) in enumerate(known):
+            if not core - other_core:
+                duplicate = ("skip", kept_index)  # nothing this copy adds
+                break
+            if not other_core - core:
+                duplicate = ("replace", kept_index, index)  # this copy has it all and more
+                break
+        if duplicate and duplicate[0] == "skip":
+            skipped.append({"file_name": invoice.get("file_name", ""), "reason": f"Same invoice {number} as {kept[duplicate[1]].get('file_name', '')} (sent again) -- read once"})
+            continue
+        if duplicate:
+            _, kept_index, known_index = duplicate
+            skipped.append({"file_name": kept[kept_index].get("file_name", ""), "reason": f"Invoice {number} came again with more lines in {invoice.get('file_name', '')} -- that one read"})
+            kept[kept_index] = {**invoice, "invoice_number": kept[kept_index]["invoice_number"]}
+            known[known_index] = (core, kept_index)
+            continue
+        if known:
+            copy = len(known) + 1
+            kept.append({**invoice, "invoice_number": f"{number} ({copy})"})
+            skipped.append({"file_name": invoice.get("file_name", ""), "reason": f"Invoice number {number} appears again with other purchases -- kept as {number} ({copy}), check it"})
+        else:
             kept.append(invoice)
-            continue
-        same = next((file_name for known, file_name in seen[number] if known == fingerprint), None)
-        if same is not None:
-            skipped.append({"file_name": invoice.get("file_name", ""), "reason": f"Same invoice {number} as {same} (sent twice) -- read once"})
-            continue
-        copy = len(seen[number]) + 1
-        seen[number].append((fingerprint, invoice.get("file_name", "")))
-        kept.append({**invoice, "invoice_number": f"{number} ({copy})"})
-        skipped.append({"file_name": invoice.get("file_name", ""), "reason": f"Invoice number {number} appears again with different lines -- kept as {number} ({copy}), check it"})
+        known.append((core, len(kept) - 1))
     return kept
 
 
