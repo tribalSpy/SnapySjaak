@@ -16469,7 +16469,7 @@ function InkoopControlePage({ currentUser }) {
   const [selectedCompany, setSelectedCompany] = useState("");
   const [runDate, setRunDate] = useState(() => localDateIso());
   const [erpFile, setErpFile] = useState(null);
-  const [leveringFile, setLeveringFile] = useState(null);
+  const [leveringFiles, setLeveringFiles] = useState([]);
   const [leveringBusy, setLeveringBusy] = useState(false);
   const [eppFile, setEppFile] = useState(null);
   // One or more .zip files and/or loose .msg files -- split into parts on
@@ -16608,22 +16608,40 @@ function InkoopControlePage({ currentUser }) {
   // "Levering BB": per Connect lot the FloraHolland brief number -- fills
   // the PAV of Connect lots that have none, so they can be matched.
   async function uploadLeveringBb() {
-    if (!leveringFile) {
-      setError("Choose the Levering BB file (.csv).");
+    if (!leveringFiles.length) {
+      setError("Choose the Levering BB file(s) (.csv).");
       return;
     }
     setLeveringBusy(true);
     setError("");
     setMessage("");
+    // One file after another (each is small); a file with nothing in it
+    // (all gekoppeld, or not a Levering BB export) is named, the rest goes on.
+    const total = { lines: 0, bridges: 0, already_linked: 0, cancelled: 0, filled_now: 0, own_pav: 0, not_in_connect: 0 };
+    const skipped = [];
+    let done = 0;
+    let lastBridged = 0;
     try {
-      const payload = await apiJson("/api/inkoop/levering-bb", {
-        method: "POST",
-        body: JSON.stringify({ file: { name: leveringFile.name, content_base64: await fileToBase64(leveringFile) } }),
-      });
-      setMessage(`Levering BB: ${payload.lines} lines -- ${payload.bridges} with a Connect lot (bridge), ${payload.already_linked} already linked in Connect${payload.cancelled ? `, ${payload.cancelled} cancelled` : ""}. `
-        + `Connect lots filled in now: ${payload.filled_now} (in all ${payload.bridged}); ${payload.own_pav} had their own brief number; ${payload.not_in_connect} not in the uploaded Connect data yet (filled in when that is uploaded). The days affected are compared again.`);
-    } catch (uploadError) {
-      setError(uploadError.message);
+      for (const [index, file] of leveringFiles.entries()) {
+        if (leveringFiles.length > 1) setMessage(`Levering BB: file ${index + 1} of ${leveringFiles.length} (${file.name})...`);
+        try {
+          const payload = await apiJson("/api/inkoop/levering-bb", {
+            method: "POST",
+            body: JSON.stringify({ file: { name: file.name, content_base64: await fileToBase64(file) } }),
+          });
+          done += 1;
+          for (const key of Object.keys(total)) total[key] += Number(payload?.[key] || 0);
+          lastBridged = Number(payload?.bridged || lastBridged);
+        } catch (fileError) {
+          skipped.push(`${file.name}: ${fileError.message}`);
+        }
+      }
+      const summary = done
+        ? `Levering BB: ${done} file(s), ${total.lines} lines -- ${total.bridges} with a Connect lot (bridge), ${total.already_linked} already linked in Connect${total.cancelled ? `, ${total.cancelled} cancelled` : ""}. `
+          + `Connect lots filled in now: ${total.filled_now} (in all ${lastBridged}); ${total.own_pav} had their own brief number; ${total.not_in_connect} not in the uploaded Connect data yet (filled in when that is uploaded). The days affected are compared again.`
+        : "Levering BB: nothing read.";
+      setMessage(summary);
+      if (skipped.length) setError(`Skipped ${skipped.length} file(s): ${skipped.join(" | ")}`);
     } finally {
       setLeveringBusy(false);
     }
@@ -17059,11 +17077,11 @@ function InkoopControlePage({ currentUser }) {
         </div>
         <div className="row-actions">
           <label>
-            <span>Levering BB (.csv)</span>
-            <input type="file" accept=".csv,.txt" onChange={(event) => setLeveringFile(event.target.files?.[0] || null)} />
+            <span>Levering BB (.csv) -- one or several files</span>
+            <input type="file" accept=".csv,.txt" multiple onChange={(event) => setLeveringFiles(Array.from(event.target.files || []))} />
           </label>
-          <button type="button" onClick={uploadLeveringBb} disabled={leveringBusy || !leveringFile}>
-            {leveringBusy ? "Uploading..." : "Upload Levering BB"}
+          <button type="button" onClick={uploadLeveringBb} disabled={leveringBusy || !leveringFiles.length}>
+            {leveringBusy ? "Uploading..." : leveringFiles.length > 1 ? `Upload ${leveringFiles.length} Levering BB files` : "Upload Levering BB"}
           </button>
         </div>
         <div className="row-actions">
