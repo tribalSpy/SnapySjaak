@@ -2375,7 +2375,7 @@ const PD_STEP_PLAN_SKIP_CODES = ["city_name", "pd_type", "pd_form", "reference_c
 // PD Step Plan, the whole day in order (numbers as shown in the plan):
 //   1      PD Keuring set up (per shipment; the stock control row too)
 //   2-9    Day steps, once per day, marked on the stock control (Voorraad)
-//          row: phyto inspection docs, Connect tours, the BQ order, stock
+//          row: Connect tours, the BQ order, phyto inspection docs, stock
 //          control finished, phyto shipments, e-Cert
 //   10     Connect number / truck / licence plate (/ pieces) per shipment
 //   11     Tour data dumps (flowers / acc / plants) and IPAFFS per shipment
@@ -2385,11 +2385,11 @@ const PD_STEP_PLAN_SKIP_CODES = ["city_name", "pd_type", "pd_form", "reference_c
 // Steps 2-9, 11 and 14 happen in other programs (Uniware, e-Cert): done is
 // marked by hand here (who / when) -- later an Uniware action can mark them.
 const PD_STEP_PLAN_DAY_STEPS = [
-  { key: "stock_docs", number: 2, label: "Fill in the docs in the phyto inspection menu (stock control)" },
-  { key: "tours_set", number: 3, label: "Tours correct in Connect (508 or 810, per customer)" },
-  { key: "bq_order", number: 4, label: "Make the BQ order" },
-  { key: "bq_purchase", number: 5, label: "Purchase for the BQ order" },
-  { key: "bq_divide", number: 6, label: "Divide the BQ order" },
+  { key: "tours_set", number: 2, label: "Tours correct in Connect (508 or 810, per customer)" },
+  { key: "bq_order", number: 3, label: "Make the BQ order" },
+  { key: "bq_purchase", number: 4, label: "Purchase for the BQ order" },
+  { key: "bq_divide", number: 5, label: "Divide the BQ order" },
+  { key: "stock_docs", number: 6, label: "Fill in the docs in the phyto inspection menu (stock control)" },
   { key: "stock_finished", number: 7, label: "Confirm stock control is finished" },
   { key: "phyto_from_orders", number: 8, label: "Create the phyto shipments from the orders (order status)" },
   { key: "ecert_send", number: 9, label: "Send to e-Cert and finish them there" },
@@ -11601,7 +11601,7 @@ function buildPdStepPlanDay(state, targetDate) {
     && ukdocsPrintInspectionMode(item) === "stock_control"
   ));
   const marks = stock?.step_plan_marks || {};
-  // Step 2 is done by itself once Phyto Inspection has the stock control's
+  // Step 6 is done by itself once Phyto Inspection has the stock control's
   // papers (inspection list + locations file) -- its "Complete".
   const stockRequirements = stock
     ? getUkdocsPrintCollectionRequirements(stock, state.customers, state.print_collections || [])
