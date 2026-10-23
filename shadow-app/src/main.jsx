@@ -17389,23 +17389,40 @@ function InkoopResultTables({ result, windowDays, manualLinkDrafts, setManualLin
           <div className="table-wrap">
             <table className="data-table">
               <thead>
-                <tr><th>Date</th><th>Company</th><th>Invoice</th><th>PAV</th><th>Description</th><th>Connect line</th><th>Field</th><th>Connect value</th><th>FH invoice value</th></tr>
+                <tr><th>Date</th><th>Company</th><th>Invoice</th><th>PAV</th><th>Description</th><th>Connect line</th><th>Field</th><th>Connect value</th><th>FH invoice value</th>
+                  <th title="Invoice minus Connect: red = we pay more than Connect counts on (losing money), green = we pay less">Difference</th></tr>
               </thead>
               <tbody>
                 {result.matched_mismatch.map((row, index) => (
-                  row.diffs.map((diff, diffIndex) => (
-                    <tr key={`${index}-${diffIndex}`}>
-                      {diffIndex === 0 && <td rowSpan={row.diffs.length}>{inkoopShortDate(row.erp_row?.date || row.invoice_date)}</td>}
-                      {diffIndex === 0 && <td rowSpan={row.diffs.length}>{inkoopCompanyLabel(row)}</td>}
-                      {diffIndex === 0 && <td rowSpan={row.diffs.length}><InkoopInvoiceLink invoiceNumber={row.invoice_number} /></td>}
-                      {diffIndex === 0 && <td rowSpan={row.diffs.length}>{row.pav}</td>}
-                      {diffIndex === 0 && <td rowSpan={row.diffs.length}>{row.description}</td>}
-                      {diffIndex === 0 && <td rowSpan={row.diffs.length}>{inkoopErpTranscript(row.erp_row)}</td>}
-                      <td>{inkoopFieldLabel(diff.field)}</td>
-                      <td>{diff.erp}</td>
-                      <td>{diff.invoice}</td>
-                    </tr>
-                  ))
+                  row.diffs.map((diff, diffIndex) => {
+                    // Invoice (what we pay) minus Connect (what we sell on):
+                    // more on the invoice is money lost -- red; less, green.
+                    const difference = Number(diff.invoice) - Number(diff.erp);
+                    const known = Number.isFinite(difference) && Math.abs(difference) >= 0.005;
+                    const color = !known ? undefined : difference > 0 ? "#b91c1c" : "#15803d";
+                    const shown = !known ? "-" : diff.field === "quantity"
+                      ? `${difference > 0 ? "+" : ""}${Math.round(difference * 100) / 100} pcs`
+                      : `${difference > 0 ? "+" : "-"}${formatInkoopEuro(Math.abs(difference))}`;
+                    return (
+                      <tr key={`${index}-${diffIndex}`}>
+                        {diffIndex === 0 && <td rowSpan={row.diffs.length}>{inkoopShortDate(row.erp_row?.date || row.invoice_date)}</td>}
+                        {diffIndex === 0 && <td rowSpan={row.diffs.length}>{inkoopCompanyLabel(row)}</td>}
+                        {diffIndex === 0 && <td rowSpan={row.diffs.length}><InkoopInvoiceLink invoiceNumber={row.invoice_number} /></td>}
+                        {diffIndex === 0 && <td rowSpan={row.diffs.length}>{row.pav}</td>}
+                        {diffIndex === 0 && <td rowSpan={row.diffs.length}>{row.description}</td>}
+                        {diffIndex === 0 && (
+                          <td rowSpan={row.diffs.length}>
+                            {row.erp_row?.description && <div><strong>{String(row.erp_row.description).trim()}</strong></div>}
+                            {inkoopErpTranscript(row.erp_row)}
+                          </td>
+                        )}
+                        <td>{inkoopFieldLabel(diff.field)}</td>
+                        <td>{diff.erp}</td>
+                        <td style={color ? { color, fontWeight: 600 } : undefined}>{diff.invoice}</td>
+                        <td style={color ? { color, fontWeight: 600 } : undefined}>{shown}</td>
+                      </tr>
+                    );
+                  })
                 ))}
               </tbody>
             </table>
