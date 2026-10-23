@@ -382,6 +382,22 @@ DATE_TIME_RE = re.compile(r"\b\d{1,2}[-/.]\d{1,2}[-/.]\d{2,4}\b|\b\d{1,2}:\d{2}(
 
 
 PRG_RE = re.compile(r"Prg\.?\s*(\d{2,4})", re.IGNORECASE)
+# OCR sometimes reads the program number's digits as letters ("Prg. soo"
+# for "Prg. 500"): a 2-4 character word of only look-alikes counts too.
+PRG_LOOKALIKE_RE = re.compile(r"Prg\.?\s*([0-9OoSsIlBDZÛØ]{2,4})(?![\w])", re.IGNORECASE)
+_PRG_DIGITS = str.maketrans({"O": "0", "o": "0", "Û": "0", "Ø": "0", "D": "0", "S": "5", "s": "5", "I": "1", "l": "1", "B": "8", "Z": "2"})
+
+
+def _prg_number(text: str) -> str | None:
+    match = PRG_RE.search(text)
+    if match:
+        return match.group(1)
+    match = PRG_LOOKALIKE_RE.search(text)
+    if match:
+        digits = match.group(1).translate(_PRG_DIGITS)
+        if digits.isdigit():
+            return digits
+    return None
 SCREEN_NUMBER_RE = re.compile(r"^(.*?)\s*\[?(\d{1,4})\]?$")
 
 
@@ -401,9 +417,8 @@ def screen_identity(lines: list[dict], image_height: int, image_width: int = 0) 
         return below[0]["text"] if below else ""
 
     for line in top:
-        match = PRG_RE.search(line["text"])
-        if match:
-            number = match.group(1)
+        number = _prg_number(line["text"])
+        if number:
             return f"prg-{number}", f"Prg. {number} {title_below(line) or ''}".strip()
     # "Prg." with its number read as a separate piece on the same row, or
     # (some screens) no number at all -- then the title names it.
