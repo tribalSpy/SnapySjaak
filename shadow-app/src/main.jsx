@@ -3125,6 +3125,18 @@ function ukdocsPrintCollectionCustomer(collection, customers) {
   return list.find((item) => String(item?.customer_name || "").trim().toLowerCase() === collectionName) || null;
 }
 
+// Eric Docs for a nakeuring on its own; with a voorraadkeuring too (V + N)
+// UKdocs CSI -- and always where the customer's menu settings show it (same
+// rule as the PD Step Plan's route on the server).
+function ukdocsCollectionGoesToEricDocs(collection, customer) {
+  if (ukdocsPrintInspectionMode(collection) !== "reinspection") return false;
+  const withVoorraadkeuring = /voorraadkeuring/.test(String(collection?.pd_type || "").toLowerCase().replace(/\s+/g, ""));
+  let ericDocs = !withVoorraadkeuring;
+  if (ericDocs && customer?.menu_show_ericdocs === false && customer?.menu_show_ukdocscsi !== false) ericDocs = false;
+  if (!ericDocs && customer?.menu_show_ukdocscsi === false && customer?.menu_show_ericdocs !== false) ericDocs = true;
+  return ericDocs;
+}
+
 function ukdocsInspectionDocumentKeys(collection) {
   const inspectionMode = ukdocsPrintInspectionMode(collection);
   if (inspectionMode === "stock_control") {
@@ -6572,10 +6584,16 @@ function UkdocsInspectionPage({ currentUser }) {
                     return false;
                   }
                   return true;
-                }).map((documentDefinition) => {
-                  const document = documentDefinition.key === "phyto"
+                }).map((baseDefinition) => {
+                  // An Eric Docs shipment: before the inspection there is only
+                  // the temporary phyto -- the original comes after, in Eric
+                  // Docs. The same files Eric Docs shows (temp_phyto_files).
+                  const tempInstead = baseDefinition.key === "phyto" && ukdocsCollectionGoesToEricDocs(selectedCollection, selectedCollectionProgress?.customer);
+                  const documentDefinition = tempInstead ? { key: "temp_phyto", label: "Phytosanitaire temp (temporary phyto PDF)", accept: ".pdf" } : baseDefinition;
+                  const document = documentDefinition.key === "phyto" || tempInstead
                     ? null
                     : selectedCollection.documents?.[documentDefinition.key] || null;
+                  const tempFiles = selectedCollection.documents?.temp_phyto_files || [];
                   return (
                     <div key={documentDefinition.key} className="ukdocs-upload-card">
                       <strong>{documentDefinition.label}</strong>
@@ -6589,7 +6607,23 @@ function UkdocsInspectionPage({ currentUser }) {
                         }}
                         disabled={saving}
                       />
-                      {documentDefinition.key === "phyto" ? (
+                      {tempInstead ? (
+                        <>
+                          <small>{tempFiles.length ? `${tempFiles.length} temporary phyto PDF(s) saved -- the original phyto is uploaded in Eric Docs after the inspection.` : "No file saved yet. The original phyto is uploaded in Eric Docs after the inspection."}</small>
+                          {!!tempFiles.length && (
+                            <div className="row-actions spread-actions">
+                              {tempFiles.map((tempFile, index) => (
+                                <span key={`${tempFile.storage_name}-${index}`} className="row-actions spread-actions">
+                                  <a href={`/api/ukdocs-print/collections/${encodeURIComponent(selectedCollection.id)}/documents/temp_phyto/${index}`} target="_blank" rel="noreferrer">
+                                    {tempFile.original_name || `Temporary phyto ${index + 1}`}
+                                  </a>
+                                  <button type="button" onClick={() => deleteCollectionDocument("temp_phyto", index)} disabled={saving}>Delete</button>
+                                </span>
+                              ))}
+                            </div>
+                          )}
+                        </>
+                      ) : documentDefinition.key === "phyto" ? (
                         <>
                           <small>{selectedPhytoFiles.length ? `${selectedPhytoFiles.length} phytosanitary document(s) saved.` : "No file saved yet."}</small>
                           {!!selectedPhytoFiles.length && (
@@ -8458,6 +8492,7 @@ function EricDocsPage({ currentUser }) {
   );
   const selectedCollection = filteredCollections.find((item) => item.id === selectedCollectionId || item.shipment_id === selectedCollectionId) || null;
   const selectedTempPhytoFiles = selectedCollection?.documents?.temp_phyto_files || [];
+  const selectedOriginalPhytoFiles = selectedCollection?.documents?.phyto_files || [];
   const selectedInspectionList = selectedCollection?.documents?.inspection_list || null;
   const selectedCheck = selectedCollection?.eric_docs_check || null;
 
@@ -8518,7 +8553,7 @@ function EricDocsPage({ currentUser }) {
       if (nextCollections) {
         setState((current) => ({ ...current, print_collections: nextCollections || current?.print_collections || [] }));
       }
-      setMessage(kind === "temp_phyto" ? "Temporary phyto PDF added." : "Inspection list saved.");
+      setMessage(kind === "temp_phyto" ? "Temporary phyto PDF added." : kind === "phyto" ? "Original phytosanitary document added -- the papers go once everything is there." : "Inspection list saved.");
     } catch (uploadError) {
       setError(uploadError.message);
     } finally {
@@ -8672,6 +8707,23 @@ function EricDocsPage({ currentUser }) {
                             {file.original_name || `Temporary phyto ${index + 1}`}
                           </a>
                           <button type="button" onClick={() => deleteCollectionDocument("temp_phyto", index)} disabled={saving}>Delete</button>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+                <div className="ukdocs-upload-card">
+                  <strong>Phytosanitaire document (original)</strong>
+                  <input type="file" accept=".pdf,.xlsx,.xls" multiple onChange={(event) => uploadCollectionFile("phyto", event.target.files)} disabled={saving} />
+                  <small>{selectedOriginalPhytoFiles.length ? `${selectedOriginalPhytoFiles.length} original phyto file(s) saved in Zending.` : "Comes after the inspection -- upload it here; the papers email goes once all papers are there."}</small>
+                  {!!selectedOriginalPhytoFiles.length && (
+                    <div className="ukdocs-download-list">
+                      {selectedOriginalPhytoFiles.map((file, index) => (
+                        <div key={`${file.storage_name}-${index}`} className="row-actions spread-actions">
+                          <a href={`/api/ukdocs-print/collections/${encodeURIComponent(selectedCollection.id)}/documents/phyto/${index}`} target="_blank" rel="noreferrer" className="ukdocs-download-link">
+                            {file.original_name || `Phyto ${index + 1}`}
+                          </a>
+                          <button type="button" onClick={() => deleteCollectionDocument("phyto", index)} disabled={saving}>Delete</button>
                         </div>
                       ))}
                     </div>

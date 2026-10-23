@@ -2347,7 +2347,10 @@ function deriveUkdocsPrintCollectionStatus(collection) {
     return "pending";
   }
   if (inspectionMode === "reinspection") {
-    const phytoReady = Array.isArray(collection?.documents?.phyto_files) && collection.documents.phyto_files.length > 0;
+    // Before the inspection there is only the temporary phyto (the original
+    // comes after it, uploaded in Eric Docs): either counts here.
+    const phytoReady = (Array.isArray(collection?.documents?.phyto_files) && collection.documents.phyto_files.length > 0)
+      || (Array.isArray(collection?.documents?.temp_phyto_files) && collection.documents.temp_phyto_files.length > 0);
     const inspectionReady = Boolean(collection?.documents?.inspection_list?.storage_name);
     const extraReady = Boolean(collection?.documents?.export_extra?.storage_name);
     const generatedReady = Array.isArray(collection?.documents?.generated_files) && collection.documents.generated_files.length > 0;
