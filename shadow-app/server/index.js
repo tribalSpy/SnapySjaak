@@ -11892,6 +11892,8 @@ function buildPdStepPlan(state, targetDate) {
     const routeCustomer = ukdocsPrintCollectionCustomer(collection, state.customers);
     const withVoorraadkeuring = /voorraadkeuring/.test(String(collection?.pd_type || "").toLowerCase().replace(/\s+/g, ""));
     let route = ukdocsPrintInspectionMode(collection) === "reinspection" && !withVoorraadkeuring ? "ericdocs" : "ukdocscsi";
+    // PD type "No(No phyto needed)": no PD keuring at all.
+    const noPhytoNeeded = /no\s*phyto/i.test(String(collection?.pd_type || "")) || /^no\b/i.test(String(collection?.pd_type || "").trim());
     if (route === "ericdocs" && routeCustomer?.menu_show_ericdocs === false && routeCustomer?.menu_show_ukdocscsi !== false) route = "ukdocscsi";
     if (route === "ukdocscsi" && routeCustomer?.menu_show_ukdocscsi === false && routeCustomer?.menu_show_ericdocs !== false) route = "ericdocs";
     const has = (value) => Boolean(String(value || "").trim());
@@ -11932,7 +11934,8 @@ function buildPdStepPlan(state, targetDate) {
       ? `Connect numbers: ${connectCount} of ${formCount} (one per PD form ${collection.pd_form}; separate them with a space, comma or /)`
       : "";
     const refs = checkItems([
-      { code: "reference_connect", label: "Connect number", detail: connectDetail || undefined, present: connectCount > 0 && connectCount >= formCount },
+      // No phyto needed ("No(No phyto needed)"): no PD keuring, so no Connect number either.
+      ...(noPhytoNeeded ? [] : [{ code: "reference_connect", label: "Connect number", detail: connectDetail || undefined, present: connectCount > 0 && connectCount >= formCount }]),
       ...(collection.transport_mode === "Airplane" ? [] : [
         { code: "truck_number", label: "Truck number", present: has(collection.truck_number) },
         { code: "trailer_number", label: "Licence plate", present: has(collection.trailer_number) },
@@ -11988,9 +11991,12 @@ function buildPdStepPlan(state, targetDate) {
       { key: "papers", label: route === "ericdocs" ? "Eric Docs" : "UKdocs CSI", page: route, done: papers.missing.length === 0, missing: papers.missing, skippable: papers.skippable, skipped: papers.skipped, warnings: papers.warnings, status: finalStatus },
       // A nakeuring's e-Cert was finished and signed at the first keuring:
       // nothing to do here.
-      route === "ericdocs"
-        ? { ...markStep("ecert_finish", "e-Cert: not needed for a nakeuring (signed at the first keuring)", true), manual: false }
-        : markStep("ecert_finish", "e-Cert: finish the shipment, ask for the digital signature"),
+      // No phyto needed: no e-Cert at all.
+      noPhytoNeeded
+        ? { ...markStep("ecert_finish", "e-Cert: not needed (no phyto needed)", true), manual: false }
+        : route === "ericdocs"
+          ? { ...markStep("ecert_finish", "e-Cert: not needed for a nakeuring (signed at the first keuring)", true), manual: false }
+          : markStep("ecert_finish", "e-Cert: finish the shipment, ask for the digital signature"),
     ];
     const currentIndex = steps.findIndex((step) => !step.done);
     return {
