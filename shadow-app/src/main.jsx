@@ -17361,6 +17361,22 @@ function InkoopRangeSelect({ period, onChange }) {
 }
 
 function InkoopResultTables({ result, windowDays, manualLinkDrafts, setManualLinkDrafts, onLinkSupplier, skippedFiles, manualLinks }) {
+  // "Only in Connect" by betaalwijze: by default only V (via veiling) --
+  // the purchases FloraHolland invoices; direct (D), mix (M) ... on request.
+  const [erpBwFilter, setErpBwFilter] = useState(["V"]);
+  const erpBwOf = (row) => row?.supplier_bw || "?";
+  const erpBwTotals = new Map();
+  for (const row of result?.only_in_erp || []) {
+    const bw = erpBwOf(row);
+    const entry = erpBwTotals.get(bw) || [bw, 0, 0];
+    entry[1] += 1;
+    entry[2] += Number(row?.t_price) || 0;
+    erpBwTotals.set(bw, entry);
+  }
+  const erpBwOptions = [...erpBwTotals.values()].sort((left, right) => right[2] - left[2]);
+  // Without any BW on the rows (no betaalwijze file uploaded): all of them.
+  const erpBwKnown = erpBwOptions.some(([bw]) => bw !== "?");
+  const erpRowsShown = (result?.only_in_erp || []).filter((row) => !erpBwFilter || !erpBwKnown || erpBwFilter.includes(erpBwOf(row)));
   if (!result) {
     return null;
   }
@@ -17508,8 +17524,19 @@ function InkoopResultTables({ result, windowDays, manualLinkDrafts, setManualLin
       )}
 
       {!!result.only_in_erp.length && (
-        <InkoopCollapsibleCard title="Only in Connect" count={inkoopResultCount(result, "only_in_erp")}>
+        <InkoopCollapsibleCard title="Only in Connect" count={erpBwFilter ? `${erpRowsShown.length} of ${inkoopResultCount(result, "only_in_erp")}` : inkoopResultCount(result, "only_in_erp")}>
           <InkoopTruncatedNote result={result} list="only_in_erp" />
+          <div className="row-actions" style={{ marginBottom: 8 }}>
+            <strong>Betaalwijze:</strong>
+            <label className="checkbox-label"><input type="radio" checked={!erpBwFilter} onChange={() => setErpBwFilter(null)} /><span>all</span></label>
+            <label className="checkbox-label"><input type="radio" checked={Boolean(erpBwFilter)} onChange={() => setErpBwFilter(erpBwFilter || ["V"])} /><span>only</span></label>
+            {erpBwFilter && erpBwOptions.map(([bw, count, value]) => (
+              <label key={bw} className="checkbox-label">
+                <input type="checkbox" checked={erpBwFilter.includes(bw)} onChange={() => setErpBwFilter((current) => (current.includes(bw) ? current.filter((item) => item !== bw) : [...current, bw]))} />
+                <span>{bw === "?" ? "no BW" : `${bw}${INKOOP_BW_LABELS[bw] ? ` (${INKOOP_BW_LABELS[bw]})` : ""}`} <small className="muted">{count} · {formatInkoopEuro(value)}</small></span>
+              </label>
+            ))}
+          </div>
           <div className="notice">
             Recorded as a purchase but no invoice line referenced this PAV{windowDays ? ` within the last ${windowDays} days` : ""} -- invoice not received yet, or a data entry mistake. No company can be attributed here -- the Connect export has no such field.
             This list is unfiltered, unlike Calendar/Follow-up: it includes rows those views hide because the grower's day (or day+product) total already reconciles overall.
@@ -17519,7 +17546,7 @@ function InkoopResultTables({ result, windowDays, manualLinkDrafts, setManualLin
             <table className="data-table">
               <thead><tr><th>Date</th><th>PAV</th><th>Lot</th><th>Description</th><th>Pieces</th><th>Price</th><th>Total</th><th>Supplier</th></tr></thead>
               <tbody>
-                {result.only_in_erp.map((row, index) => (
+                {erpRowsShown.map((row, index) => (
                   <tr key={index}><td>{inkoopShortDate(row.date)}</td><td>{row.pav}</td><td>{row.lot}</td><td>{row.description}</td><td>{row.pieces}</td><td>{row.price}</td><td>{row.t_price}</td><td>{row.suppl}{row.supplier_bw ? ` (BW ${row.supplier_bw}${INKOOP_BW_LABELS[row.supplier_bw] ? `: ${INKOOP_BW_LABELS[row.supplier_bw]}` : ""})` : ""}</td></tr>
                 ))}
               </tbody>

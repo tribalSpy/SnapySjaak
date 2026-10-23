@@ -7933,7 +7933,8 @@ function inkoopErpRowIsInternalBunches(row, supplierBwMap) {
   for (const value of [row?.suppl, row?.avc]) {
     const entry = supplierBwMap?.[normalizeInkoopKey(value)];
     if (entry) {
-      return entry.bw === INKOOP_BW_INTERNAL_BUNCHES;
+      // B (bunches) and N (niet berekenen: XPAK, RETOUR ...) never count.
+      return entry.bw === INKOOP_BW_INTERNAL_BUNCHES || entry.bw === "N";
     }
   }
   return false;
@@ -8795,7 +8796,7 @@ const INKOOP_EMPTY_DAY_BUCKET = {
 // compared again once (at start-up), not only days whose data changed.
 // 2026-10-21: grower directory (learned links, Handel evidence), supplier
 // pairs stored on the invoice date.
-const INKOOP_MATCH_RULES_VERSION = "2026-10-23";
+const INKOOP_MATCH_RULES_VERSION = "2026-10-23b";
 
 function inkoopStateFingerprint(state) {
   return crypto.createHash("sha1").update(JSON.stringify([
