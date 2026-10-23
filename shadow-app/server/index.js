@@ -7899,8 +7899,20 @@ function normalizeInkoopCustomerEntryMap(source) {
 // "kwekers/leveranciers met betaalwijze" entries -- keyed by the internal
 // code (Vkn), complementing the stamgegevens maps (keyed by GLN/name/FH
 // number) with each code's BW (betaalwijze) and relation info.
+// FloraHolland's own Connect codes -- its locations, all paid through the
+// auction: via veiling (V) unless the master data gives them a BW.
+const INKOOP_DEFAULT_BW = {
+  WEST: "FloraHolland Westland (Naaldwijk)",
+  VBA: "FloraHolland Aalsmeer",
+  FLORA: "FloraHolland",
+  F2: "FloraHolland Connect (with the grower)",
+};
+
 function normalizeInkoopSupplierBwMap(source) {
   const result = {};
+  for (const [code, name] of Object.entries(INKOOP_DEFAULT_BW)) {
+    result[code] = { name, bw: "V", type: "", rel_nr: "", h_bedr: "", land: "NL", source: "default (FloraHolland)" };
+  }
   if (source && typeof source === "object") {
     for (const [key, info] of Object.entries(source)) {
       const normalizedKey = normalizeInkoopKey(key);
