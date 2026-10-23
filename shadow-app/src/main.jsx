@@ -17597,19 +17597,25 @@ function inkoopPeriodLabel2(period) {
   return period;
 }
 
-function InkoopPeriodReportTable({ rows }) {
+function InkoopPeriodReportTable({ rows, bwFilter = null }) {
+  // Connect value of the chosen betaalwijzen only (e.g. V: via veiling --
+  // what is paid through FloraHolland), or all of it.
+  const connectValue = (row) => (bwFilter
+    ? Object.entries(row.erp_by_bw || {}).filter(([bw]) => bwFilter.includes(bw)).reduce((sum, [, value]) => sum + Number(value || 0), 0)
+    : row.erp_value);
+  const connectLabel = bwFilter ? `Connect Data (BW ${bwFilter.join(" + ") || "-"})` : "Connect Data";
   return (
     <div className="table-wrap">
       <table className="data-table">
-        <thead><tr><th>Period</th><th>Days</th><th>Invoiced</th><th>Connect Data</th><th>Difference</th><th>Mismatches</th><th>Mismatch value</th><th title="Connect lots no invoice line took">Only in Connect</th><th>Value</th><th title="Invoice lines no Connect lot took">Only in invoice</th><th>Value</th><th>Emballage</th><th>Products</th></tr></thead>
+        <thead><tr><th>Period</th><th>Days</th><th>Invoiced</th><th>{connectLabel}</th><th>Difference</th><th>Mismatches</th><th>Mismatch value</th><th title="Connect lots no invoice line took">Only in Connect</th><th>Value</th><th title="Invoice lines no Connect lot took">Only in invoice</th><th>Value</th><th>Emballage</th><th>Products</th></tr></thead>
         <tbody>
           {rows.map((row) => (
             <tr key={row.period}>
               <td>{inkoopPeriodLabel2(row.period)}</td>
               <td>{row.days}</td>
               <td>{formatInkoopEuro(row.purchase_value)}</td>
-              <td>{formatInkoopEuro(row.erp_value)}</td>
-              <td>{formatInkoopEuro(row.purchase_value - row.erp_value)}</td>
+              <td title={Object.entries(row.erp_by_bw || {}).map(([bw, value]) => `BW ${bw}${INKOOP_BW_LABELS[bw] ? ` (${INKOOP_BW_LABELS[bw]})` : ""}: ${formatInkoopEuro(value)}`).join("\n") || "Per BW after the next comparison"}>{formatInkoopEuro(connectValue(row))}</td>
+              <td>{formatInkoopEuro(row.purchase_value - connectValue(row))}</td>
               <td>{row.mismatch_count}</td>
               <td>{formatInkoopEuro(row.mismatch_value)}</td>
               <td>{row.gap_erp_count ?? "-"}</td>
@@ -17641,16 +17647,40 @@ function InkoopPeriodReports({ company }) {
     return () => { cancelled = true; };
   }, [company]);
   const note = data?.pending_days ? <div className="notice info">{data.pending_days} day(s) are still being compared in the background -- they count once they're done.</div> : null;
+  // Which betaalwijzen count on the Connect side: all, or only the chosen
+  // ones (V: via veiling = paid through FloraHolland -- like the invoices).
+  const [bwChoice, setBwChoice] = useState(null);
+  const bwCodes = [...new Set([...(data?.months || []), ...(data?.years || [])].flatMap((row) => Object.keys(row.erp_by_bw || {})))].sort();
+  const toggleBw = (bw) => setBwChoice((current) => {
+    const base = current || [];
+    return base.includes(bw) ? base.filter((item) => item !== bw) : [...base, bw].sort();
+  });
+  const bwPicker = (
+    <div className="row-actions" style={{ marginBottom: 8 }}>
+      <strong>Connect side:</strong>
+      <label className="checkbox-label"><input type="radio" checked={!bwChoice} onChange={() => setBwChoice(null)} /><span>all</span></label>
+      <label className="checkbox-label"><input type="radio" checked={Boolean(bwChoice)} onChange={() => setBwChoice(bwChoice || ["V"])} /><span>only betaalwijze</span></label>
+      {bwChoice && bwCodes.map((bw) => (
+        <label key={bw} className="checkbox-label">
+          <input type="checkbox" checked={bwChoice.includes(bw)} onChange={() => toggleBw(bw)} />
+          <span>{bw}{INKOOP_BW_LABELS[bw] ? ` (${INKOOP_BW_LABELS[bw]})` : bw === "?" ? " (code without BW)" : ""}</span>
+        </label>
+      ))}
+      {bwChoice && !bwCodes.length && <span className="muted">Per BW once the days are compared again.</span>}
+    </div>
+  );
   return (
     <>
       <InkoopCollapsibleCard title="Month report">
         {error && <div className="notice danger">{error}</div>}
         {note}
-        {data ? <InkoopPeriodReportTable rows={data.months || []} /> : <div className="notice">Loading...</div>}
+        {bwPicker}
+        {data ? <InkoopPeriodReportTable rows={data.months || []} bwFilter={bwChoice} /> : <div className="notice">Loading...</div>}
       </InkoopCollapsibleCard>
       <InkoopCollapsibleCard title="Year report">
         {note}
-        {data ? <InkoopPeriodReportTable rows={data.years || []} /> : <div className="notice">Loading...</div>}
+        {bwPicker}
+        {data ? <InkoopPeriodReportTable rows={data.years || []} bwFilter={bwChoice} /> : <div className="notice">Loading...</div>}
       </InkoopCollapsibleCard>
     </>
   );

@@ -8372,6 +8372,9 @@ async function buildInkoopAggregateContext(state, range) {
     supplierNameMap: state.supplier_name_map,
     manualLinks: state.manual_supplier_links,
     supplierFhMap: state.supplier_fh_map,
+    // The betaalwijze (BW) per Connect code: V via veiling (FloraHolland),
+    // A AI2, T LTD direct ... -- the Connect value is kept per BW.
+    supplierBwMap: state.supplier_bw_map,
   };
 }
 
@@ -8763,7 +8766,7 @@ const INKOOP_EMPTY_DAY_BUCKET = {
 // compared again once (at start-up), not only days whose data changed.
 // 2026-10-21: grower directory (learned links, Handel evidence), supplier
 // pairs stored on the invoice date.
-const INKOOP_MATCH_RULES_VERSION = "2026-10-22c";
+const INKOOP_MATCH_RULES_VERSION = "2026-10-23";
 
 function inkoopStateFingerprint(state) {
   return crypto.createHash("sha1").update(JSON.stringify([
@@ -9990,6 +9993,7 @@ function inkoopEnsureDateBucket(buckets, dateKey) {
       gap_invoice_value: 0,
       embalage_value: 0,
       product_count: 0,
+      erp_by_bw: {},
     });
   }
   return buckets.get(dateKey);
@@ -10021,6 +10025,21 @@ function inkoopEnsureDateBucket(buckets, dateKey) {
 // no grower/product-level matching required at all.
 function bucketInkoopResultsByDate(matched, aggregateContext = null) {
   const buckets = new Map();
+  // Connect value per betaalwijze (the BW of the lot's Suppl. / Avc. code,
+  // "?" unknown) -- the report can then compare only what is paid via
+  // FloraHolland (BW V) with the invoices.
+  const bwMap = aggregateContext?.supplierBwMap || {};
+  const bwOf = (row) => {
+    for (const value of [row?.suppl, row?.avc]) {
+      const entry = bwMap[normalizeInkoopKey(value)];
+      if (entry?.bw) return entry.bw;
+    }
+    return "?";
+  };
+  const addErpByBw = (bucket, row, value) => {
+    const bw = bwOf(row);
+    bucket.erp_by_bw[bw] = Math.round(((bucket.erp_by_bw[bw] || 0) + value) * 100) / 100;
+  };
 
   for (const row of matched?.matched_ok || []) {
     const bucket = inkoopEnsureDateBucket(buckets, inkoopDateKeyFromErpAnchor(row));
@@ -10028,6 +10047,7 @@ function bucketInkoopResultsByDate(matched, aggregateContext = null) {
     bucket.purchase_value += inkoopInvoiceLineTotal(row);
     bucket.invoice_value += inkoopInvoiceLineTotal(row);
     bucket.erp_value += inkoopErpRowTotal(row?.erp_row);
+    addErpByBw(bucket, row?.erp_row, inkoopErpRowTotal(row?.erp_row));
     bucket.product_count += 1;
   }
   for (const row of matched?.matched_mismatch || []) {
@@ -10036,6 +10056,7 @@ function bucketInkoopResultsByDate(matched, aggregateContext = null) {
     bucket.purchase_value += inkoopInvoiceLineTotal(row);
     bucket.invoice_value += inkoopInvoiceLineTotal(row);
     bucket.erp_value += inkoopErpRowTotal(row?.erp_row);
+    addErpByBw(bucket, row?.erp_row, inkoopErpRowTotal(row?.erp_row));
     bucket.product_count += 1;
     bucket.mismatch_count += 1;
     bucket.mismatch_value += inkoopMismatchValue(row);
@@ -10046,6 +10067,7 @@ function bucketInkoopResultsByDate(matched, aggregateContext = null) {
     bucket.product_count += 1;
     const value = inkoopErpRowTotal(row);
     bucket.erp_value += value;
+    addErpByBw(bucket, row, value);
     if (aggregateContext) {
       const growerName = inkoopGrowerNameForErpRow(row, aggregateContext.codeToName, aggregateContext.validSupplierCodes);
       if (inkoopGapIsExplainedByAggregate(row, growerName, aggregateContext.aggregateResult)) {

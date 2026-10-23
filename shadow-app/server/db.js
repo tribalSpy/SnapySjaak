@@ -1287,7 +1287,20 @@ export async function getInkoopPeriodReport({ unit = "month", company = "" } = {
      ORDER BY 1 DESC`,
     [company || ""],
   );
-  return result.rows;
+  // The Connect value per betaalwijze (BW), per period.
+  const byBw = await pool.query(
+    `SELECT to_char(s.summary_date, '${format}') AS period, kv.key AS bw, SUM(kv.value::numeric)::float8 AS value
+       FROM inkoop_day_summaries s, jsonb_each_text(COALESCE(s.bucket->'erp_by_bw', '{}'::jsonb)) kv
+      WHERE s.company = $1
+      GROUP BY 1, 2`,
+    [company || ""],
+  );
+  const bwByPeriod = new Map();
+  for (const row of byBw.rows) {
+    if (!bwByPeriod.has(row.period)) bwByPeriod.set(row.period, {});
+    bwByPeriod.get(row.period)[row.bw] = Math.round(row.value * 100) / 100;
+  }
+  return result.rows.map((row) => ({ ...row, erp_by_bw: bwByPeriod.get(row.period) || {} }));
 }
 
 export async function getInkoopDaySummaries({ from, to } = {}) {
