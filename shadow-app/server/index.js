@@ -8236,13 +8236,19 @@ function inkoopBumpAggregate(map, key, pieces, value) {
 // CHR T ALTAJ case: ~17 lots of 25-30 pieces each, re-aggregated by
 // FloraHolland into two differently-sized invoice lines) totals correctly
 // here even when no single ERP row lines up with any single invoice line.
-function computeInkoopGrowerDayTotals(erpRows, invoiceLines, supplierMap, supplierNameMap, manualLinks, supplierFhMap, facturationGroups) {
+function computeInkoopGrowerDayTotals(erpRows, invoiceLines, supplierMap, supplierNameMap, manualLinks, supplierFhMap, facturationGroups, extraCodeNames = null) {
   const validSupplierCodes = new Set(
     [...Object.values(supplierMap || {}), ...Object.values(supplierNameMap || {}), ...Object.values(supplierFhMap || {})]
       .map((entry) => normalizeInkoopKey(entry?.code))
       .filter(Boolean),
   );
   const codeToName = buildInkoopCodeNameMap(supplierMap, supplierNameMap, supplierFhMap, facturationGroups);
+  // Codes linked by hand / learned, without a name in the master data (the
+  // master data's own name wins).
+  for (const [code, name] of extraCodeNames || []) {
+    if (name && !codeToName.has(code)) codeToName.set(code, name);
+    if (name) validSupplierCodes.add(code);
+  }
 
   const erpByGrowerDay = new Map();
   const erpByGrowerDayProduct = new Map();
@@ -23464,6 +23470,118 @@ async function handleApi(req, res, url) {
       .map((row) => ({ ...row.bucket, date: row.date }))
       .sort((left, right) => (left.date < right.date ? 1 : -1));
     sendJson(res, 200, { from, to, days });
+    return;
+  }
+
+  // Per grower (its links and facturation groups) the invoiced and the
+  // Connect total of a period, per day too -- whether the lines match or
+  // not. body ?from&to&company&bw=V,D (the Connect side's betaalwijzen).
+  if (url.pathname === "/api/inkoop/dashboard/grower-totals" && req.method === "GET") {
+    if (!requirePermission(res, requestUser, PERMISSIONS.INKOOP_VIEW)) {
+      return;
+    }
+    let from = inkoopIsoDate(url.searchParams.get("from")) || addDaysToIsoDate(localDateIso(), -29);
+    let to = inkoopIsoDate(url.searchParams.get("to")) || localDateIso();
+    if (from > to) [from, to] = [to, from];
+    // A quarter at most (every line of the period is read).
+    if (addDaysToIsoDate(from, 92) < to) from = addDaysToIsoDate(to, -92);
+    const company = normalizeUkdocsText(url.searchParams.get("company"));
+    const bwFilter = new Set(String(url.searchParams.get("bw") || "").split(",").map((value) => value.trim().toUpperCase()).filter(Boolean));
+    try {
+      const state = await readInkoopState();
+      const [allErpRows, allInvoiceLines, directory] = await Promise.all([
+        getInkoopErpLines({ from, to }),
+        getInkoopInvoiceLines({ from, to }),
+        inkoopGrowerDirectory(state),
+      ]);
+      const bwOf = (row) => (state.supplier_bw_map?.[normalizeInkoopKey(row?.suppl)] || state.supplier_bw_map?.[normalizeInkoopKey(row?.avc)])?.bw || "?";
+      const erpRows = excludeInkoopInternalBunchRows(allErpRows, state.supplier_bw_map, inkoopExcludedErpCodes(state))
+        .filter((row) => String(row?.date || "").slice(0, 10) >= from && String(row?.date || "").slice(0, 10) <= to)
+        .filter((row) => !bwFilter.size || bwFilter.has(bwOf(row)));
+      const invoiceLines = allInvoiceLines
+        .filter((line) => String(line?.invoice_date || "").slice(0, 10) >= from && String(line?.invoice_date || "").slice(0, 10) <= to)
+        .filter((line) => !company || normalizeUkdocsText(line?.company_number) === company);
+      const supplierMap = { ...directory.matcherMaps.gln, ...state.supplier_map };
+      const supplierFhMap = { ...directory.matcherMaps.fh, ...state.supplier_fh_map };
+      // A grower name for every code linked by hand (the link's name) or
+      // learned (the name on its invoice lines) -- not only the master data's.
+      const extraCodeNames = new Map();
+      for (const link of state.manual_supplier_links || []) {
+        const name = normalizeInkoopSupplierName(link.name);
+        for (const code of link.codes || []) if (name && !extraCodeNames.has(normalizeInkoopKey(code))) extraCodeNames.set(normalizeInkoopKey(code), name);
+      }
+      for (const line of invoiceLines) {
+        const name = normalizeInkoopSupplierName(line?.supplier_name);
+        if (!name) continue;
+        const resolved = resolveInkoopSupplierCode(line?.supplier_gln, line?.supplier_fh_number, line?.supplier_name, supplierMap, state.supplier_name_map, state.manual_supplier_links, supplierFhMap);
+        for (const code of resolved.codes || []) if (!extraCodeNames.has(normalizeInkoopKey(code))) extraCodeNames.set(normalizeInkoopKey(code), name);
+      }
+      const totals = computeInkoopGrowerDayTotals(erpRows, invoiceLines, supplierMap, state.supplier_name_map, state.manual_supplier_links, supplierFhMap, state.facturation_groups, extraCodeNames);
+      // A readable name per grower: the facturation group's own, else the
+      // name on most of its invoice lines.
+      const codeToName = buildInkoopCodeNameMap(supplierMap, state.supplier_name_map, supplierFhMap, state.facturation_groups);
+      for (const [code, name] of extraCodeNames) if (!codeToName.has(code)) codeToName.set(code, name);
+      const display = new Map();
+      for (const group of state.facturation_groups || []) display.set(normalizeInkoopSupplierName(group.group_name), group.group_name);
+      const nameVotes = new Map();
+      let invoiceLinked = 0;
+      let invoiceTotal = 0;
+      for (const line of invoiceLines) {
+        if (inkoopInvoiceLineIsNotAPurchase(line)) continue;
+        const value = Number(line?.total) || 0;
+        invoiceTotal += value;
+        const growerName = inkoopGrowerNameForInvoiceLine(line, codeToName, supplierMap, state.supplier_name_map, state.manual_supplier_links, supplierFhMap);
+        if (!growerName) continue;
+        invoiceLinked += value;
+        const votes = nameVotes.get(growerName) || new Map();
+        const shown = normalizeUkdocsText(line?.supplier_name);
+        if (shown) votes.set(shown, (votes.get(shown) || 0) + 1);
+        nameVotes.set(growerName, votes);
+      }
+      const nameOf = (growerName) => display.get(growerName)
+        || [...(nameVotes.get(growerName) || new Map()).entries()].sort((left, right) => right[1] - left[1])[0]?.[0]
+        || growerName;
+      const validSupplierCodes = new Set([...Object.values(supplierMap), ...Object.values(state.supplier_name_map || {}), ...Object.values(supplierFhMap)].map((entry) => normalizeInkoopKey(entry?.code)).filter(Boolean));
+      for (const code of extraCodeNames.keys()) validSupplierCodes.add(code);
+      let connectTotal = 0;
+      let connectLinked = 0;
+      for (const row of erpRows) {
+        const value = parseFloat(row?.t_price) || 0;
+        connectTotal += value;
+        if (codeToName.get(resolveErpRowSupplierCode(row, validSupplierCodes))) connectLinked += value;
+      }
+      const growers = new Map();
+      const add = (map, side) => {
+        for (const [key, entry] of map) {
+          const [growerName, date] = key.split("|");
+          if (!growers.has(growerName)) growers.set(growerName, { key: growerName, grower: nameOf(growerName), invoice_value: 0, invoice_pieces: 0, connect_value: 0, connect_pieces: 0, days: new Map() });
+          const grower = growers.get(growerName);
+          const day = grower.days.get(date) || { date, invoice_value: 0, invoice_pieces: 0, connect_value: 0, connect_pieces: 0 };
+          day[`${side}_value`] += entry.value;
+          day[`${side}_pieces`] += entry.pieces;
+          grower[`${side}_value`] += entry.value;
+          grower[`${side}_pieces`] += entry.pieces;
+          grower.days.set(date, day);
+        }
+      };
+      add(totals.invoiceByGrowerDay, "invoice");
+      add(totals.erpByGrowerDay, "connect");
+      const round = (value) => Math.round(value * 100) / 100;
+      const list = [...growers.values()].map((grower) => ({
+        ...grower,
+        invoice_value: round(grower.invoice_value),
+        connect_value: round(grower.connect_value),
+        difference: round(grower.invoice_value - grower.connect_value),
+        days: [...grower.days.values()].sort((left, right) => (left.date < right.date ? -1 : 1)).map((day) => ({ ...day, invoice_value: round(day.invoice_value), connect_value: round(day.connect_value) })),
+      })).sort((left, right) => Math.abs(right.difference) - Math.abs(left.difference));
+      sendJson(res, 200, {
+        from, to,
+        growers: list,
+        totals: { invoice_total: round(invoiceTotal), invoice_linked: round(invoiceLinked), connect_total: round(connectTotal), connect_linked: round(connectLinked) },
+      });
+    } catch (error) {
+      sendJson(res, 400, { error: error instanceof Error ? error.message : String(error) });
+    }
     return;
   }
 

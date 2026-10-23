@@ -17981,6 +17981,126 @@ function InkoopBarChart({ rows, series, signed = false, onBarClick, height = 220
   );
 }
 
+// Per grower (its links and facturation groups): the invoiced total
+// against the Connect total of the period -- whether the lines match or
+// not -- and per day or week when a grower is opened.
+function InkoopGrowerTotals({ company, from, to, bwChoice }) {
+  const [data, setData] = useState(null);
+  const [error, setError] = useState("");
+  const [search, setSearch] = useState("");
+  const [show, setShow] = useState("difference");
+  const [per, setPer] = useState("week");
+  const [open, setOpen] = useState("");
+  useEffect(() => {
+    if (!from || !to) return undefined;
+    let cancelled = false;
+    setData(null);
+    setError("");
+    const params = new URLSearchParams({ from, to });
+    if (company) params.set("company", company);
+    if (bwChoice?.length) params.set("bw", bwChoice.join(","));
+    apiJson(`/api/inkoop/dashboard/grower-totals?${params.toString()}`)
+      .then((payload) => { if (!cancelled) setData(payload); })
+      .catch((loadError) => { if (!cancelled) setError(loadError.message); });
+    return () => { cancelled = true; };
+  }, [company, from, to, bwChoice ? bwChoice.join(",") : ""]);
+  const pct = (part, whole) => (whole > 0 ? `${((part / whole) * 100).toFixed(1)}%` : "-");
+  const growers = (data?.growers || [])
+    .filter((grower) => !search.trim() || grower.grower.toLowerCase().includes(search.trim().toLowerCase()))
+    .filter((grower) => {
+      if (show === "difference") return Math.abs(grower.difference) >= 1;
+      if (show === "both") return grower.invoice_value && grower.connect_value;
+      if (show === "invoice") return grower.invoice_value && !grower.connect_value;
+      if (show === "connect") return grower.connect_value && !grower.invoice_value;
+      return true;
+    });
+  const periods = (grower) => {
+    if (per === "day") return grower.days.map((day) => ({ ...day, label: day.date }));
+    const weeks = new Map();
+    for (const day of grower.days) {
+      const date = new Date(`${day.date}T00:00:00`);
+      date.setDate(date.getDate() - ((date.getDay() + 6) % 7));
+      const start = inkoopIsoLocal(date);
+      const week = weeks.get(start) || { label: `week of ${start}`, invoice_value: 0, connect_value: 0, invoice_pieces: 0, connect_pieces: 0 };
+      week.invoice_value += day.invoice_value;
+      week.connect_value += day.connect_value;
+      week.invoice_pieces += day.invoice_pieces;
+      week.connect_pieces += day.connect_pieces;
+      weeks.set(start, week);
+    }
+    return [...weeks.entries()].sort((left, right) => (left[0] < right[0] ? -1 : 1)).map(([, week]) => week);
+  };
+  const totals = data?.totals;
+  return (
+    <div className="fin-card" style={{ marginTop: 12 }}>
+      <div className="fin-head" style={{ marginBottom: 6 }}>
+        <div>
+          <h3>Growers: invoice vs Connect totals</h3>
+          <div className="fin-sub">
+            Per grower (its links and facturation groups) -- totals, whether the lines match or not
+            {data && data.from !== from && <> · a quarter at most: {data.from} – {data.to}</>}
+          </div>
+          {totals && (
+            <div className="fin-sub">
+              Invoiced tied to a grower: {formatInkoopEuro(totals.invoice_linked)} of {formatInkoopEuro(totals.invoice_total)} ({pct(totals.invoice_linked, totals.invoice_total)})
+              {" · "}Connect tied to a grower: {formatInkoopEuro(totals.connect_linked)} of {formatInkoopEuro(totals.connect_total)} ({pct(totals.connect_linked, totals.connect_total)})
+            </div>
+          )}
+        </div>
+        <div className="row-actions">
+          <input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Search grower" />
+          <select value={show} onChange={(event) => setShow(event.target.value)}>
+            <option value="difference">with a difference</option>
+            <option value="both">on both sides</option>
+            <option value="invoice">only invoiced</option>
+            <option value="connect">only in Connect</option>
+            <option value="all">all growers</option>
+          </select>
+          <select value={per} onChange={(event) => setPer(event.target.value)}>
+            <option value="week">per week</option>
+            <option value="day">per day</option>
+          </select>
+        </div>
+      </div>
+      {error && <div className="notice danger">{error}</div>}
+      {!data && !error && <div className="fin-sub">Loading...</div>}
+      {data && (
+        <div className="table-wrap">
+          <table className="fin-table">
+            <thead><tr><th>Grower</th><th>Invoiced</th><th>Connect</th><th>Difference</th><th>% vs Connect</th><th>Pieces invoice / Connect</th></tr></thead>
+            <tbody>
+              {growers.slice(0, 250).map((grower) => (
+                <React.Fragment key={grower.key}>
+                  <tr className="fin-click" onClick={() => setOpen((current) => (current === grower.key ? "" : grower.key))}>
+                    <td>{open === grower.key ? "▾" : "▸"} {grower.grower}</td>
+                    <td>{formatInkoopEuro(grower.invoice_value)}</td>
+                    <td>{formatInkoopEuro(grower.connect_value)}</td>
+                    <td><InkoopMoneyDiff value={grower.difference} dark /></td>
+                    <td className={grower.difference > 0 ? "fin-loss" : grower.difference < 0 ? "fin-gain" : ""}>{grower.connect_value > 0 ? inkoopPct((grower.difference / grower.connect_value) * 100) : "-"}</td>
+                    <td>{grower.invoice_pieces} / {grower.connect_pieces}</td>
+                  </tr>
+                  {open === grower.key && periods(grower).map((row) => (
+                    <tr key={`${grower.key}-${row.label}`} style={{ background: "rgba(57, 135, 229, 0.05)" }}>
+                      <td style={{ paddingLeft: 26 }} className="fin-sub">{row.label}</td>
+                      <td>{formatInkoopEuro(row.invoice_value)}</td>
+                      <td>{formatInkoopEuro(row.connect_value)}</td>
+                      <td><InkoopMoneyDiff value={row.invoice_value - row.connect_value} dark /></td>
+                      <td>{row.connect_value > 0 ? inkoopPct(((row.invoice_value - row.connect_value) / row.connect_value) * 100) : "-"}</td>
+                      <td>{row.invoice_pieces} / {row.connect_pieces}</td>
+                    </tr>
+                  ))}
+                </React.Fragment>
+              ))}
+              {!growers.length && <tr><td colSpan="6">No growers for this choice.</td></tr>}
+            </tbody>
+          </table>
+          {growers.length > 250 && <div className="fin-sub">First 250 of {growers.length} -- search to narrow.</div>}
+        </div>
+      )}
+    </div>
+  );
+}
+
 // The dashboard's top: KPI tiles of the chosen period and the history in
 // bars -- every figure opens the growers behind it.
 function InkoopFinanceHero({ company, dayReport, period }) {
@@ -18096,6 +18216,7 @@ function InkoopFinanceHero({ company, dayReport, period }) {
             : <div className="fin-sub">No months compared yet.</div>}
         </div>
       </div>
+      <InkoopGrowerTotals company={company} from={period?.from || from} to={period?.to || to} bwChoice={bwChoice} />
       {popup && <InkoopGrowerPopup {...popup} company={company} onClose={() => setPopup(null)} />}
     </section>
   );
