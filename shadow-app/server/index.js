@@ -23526,12 +23526,23 @@ async function handleApi(req, res, url) {
       const nameVotes = new Map();
       let invoiceLinked = 0;
       let invoiceTotal = 0;
+      // ?grower=<key>&date=<day>: that grower's own lines of that day too --
+      // the invoice lines and the Connect lots behind its day total.
+      const detailGrower = normalizeUkdocsText(url.searchParams.get("grower"));
+      const detailDate = inkoopIsoDate(url.searchParams.get("date"));
+      const detail = detailGrower && detailDate ? { invoice_lines: [], connect_lots: [] } : null;
       for (const line of invoiceLines) {
         if (inkoopInvoiceLineIsNotAPurchase(line)) continue;
         const value = Number(line?.total) || 0;
         invoiceTotal += value;
         const growerName = inkoopGrowerNameForInvoiceLine(line, codeToName, supplierMap, state.supplier_name_map, state.manual_supplier_links, supplierFhMap);
         if (!growerName) continue;
+        if (detail && growerName === detailGrower && String(line?.invoice_date || "").slice(0, 10) === detailDate) {
+          detail.invoice_lines.push({
+            invoice_number: line.invoice_number, reference_bt: line.reference_bt, description: line.description,
+            supplier_name: line.supplier_name, quantity: line.quantity, unit_price: line.unit_price, total: line.total,
+          });
+        }
         invoiceLinked += value;
         const votes = nameVotes.get(growerName) || new Map();
         const shown = normalizeUkdocsText(line?.supplier_name);
@@ -23548,7 +23559,15 @@ async function handleApi(req, res, url) {
       for (const row of erpRows) {
         const value = parseFloat(row?.t_price) || 0;
         connectTotal += value;
-        if (codeToName.get(resolveErpRowSupplierCode(row, validSupplierCodes))) connectLinked += value;
+        const rowGrower = codeToName.get(resolveErpRowSupplierCode(row, validSupplierCodes));
+        if (rowGrower) connectLinked += value;
+        if (detail && rowGrower === detailGrower && String(row?.date || "").slice(0, 10) === detailDate) {
+          detail.connect_lots.push({ lot: row.lot, pav: row.pav, suppl: row.suppl, description: row.description, pieces: row.pieces, price: row.price, t_price: row.t_price });
+        }
+      }
+      if (detail) {
+        sendJson(res, 200, { from, to, grower: detailGrower, date: detailDate, ...detail });
+        return;
       }
       const growers = new Map();
       const add = (map, side) => {

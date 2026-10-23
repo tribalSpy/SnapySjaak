@@ -17989,8 +17989,24 @@ function InkoopGrowerTotals({ company, from, to, bwChoice }) {
   const [error, setError] = useState("");
   const [search, setSearch] = useState("");
   const [show, setShow] = useState("difference");
-  const [per, setPer] = useState("week");
+  // Drill-down: a grower opens its weeks, a week its days, a day its lines.
   const [open, setOpen] = useState("");
+  const [openWeek, setOpenWeek] = useState("");
+  const [openDay, setOpenDay] = useState("");
+  const [dayDetails, setDayDetails] = useState({});
+  function toggleDay(grower, date) {
+    const key = `${grower.key}|${date}`;
+    if (openDay === key) { setOpenDay(""); return; }
+    setOpenDay(key);
+    if (dayDetails[key]) return;
+    // The whole period (the grower's codes are learned from all its lines), the day as the filter.
+    const params = new URLSearchParams({ from, to, grower: grower.key, date });
+    if (company) params.set("company", company);
+    if (bwChoice?.length) params.set("bw", bwChoice.join(","));
+    apiJson(`/api/inkoop/dashboard/grower-totals?${params.toString()}`)
+      .then((payload) => setDayDetails((current) => ({ ...current, [key]: payload })))
+      .catch((loadError) => setDayDetails((current) => ({ ...current, [key]: { error: loadError.message } })));
+  }
   useEffect(() => {
     if (!from || !to) return undefined;
     let cancelled = false;
@@ -18014,22 +18030,67 @@ function InkoopGrowerTotals({ company, from, to, bwChoice }) {
       if (show === "connect") return grower.connect_value && !grower.invoice_value;
       return true;
     });
-  const periods = (grower) => {
-    if (per === "day") return grower.days.map((day) => ({ ...day, label: day.date }));
+  const weeksOf = (grower) => {
     const weeks = new Map();
     for (const day of grower.days) {
       const date = new Date(`${day.date}T00:00:00`);
       date.setDate(date.getDate() - ((date.getDay() + 6) % 7));
       const start = inkoopIsoLocal(date);
-      const week = weeks.get(start) || { label: `week of ${start}`, invoice_value: 0, connect_value: 0, invoice_pieces: 0, connect_pieces: 0 };
+      const week = weeks.get(start) || { start, days: [], invoice_value: 0, connect_value: 0, invoice_pieces: 0, connect_pieces: 0 };
+      week.days.push(day);
       week.invoice_value += day.invoice_value;
       week.connect_value += day.connect_value;
       week.invoice_pieces += day.invoice_pieces;
       week.connect_pieces += day.connect_pieces;
       weeks.set(start, week);
     }
-    return [...weeks.entries()].sort((left, right) => (left[0] < right[0] ? -1 : 1)).map(([, week]) => week);
+    return [...weeks.values()].sort((left, right) => (left.start < right.start ? -1 : 1));
   };
+  const figures = (row) => (
+    <>
+      <td>{formatInkoopEuro(row.invoice_value)}</td>
+      <td>{formatInkoopEuro(row.connect_value)}</td>
+      <td><InkoopMoneyDiff value={row.invoice_value - row.connect_value} dark /></td>
+      <td className={row.invoice_value > row.connect_value ? "fin-loss" : row.invoice_value < row.connect_value ? "fin-gain" : ""}>{row.connect_value > 0 ? inkoopPct(((row.invoice_value - row.connect_value) / row.connect_value) * 100) : "-"}</td>
+      <td>{row.invoice_pieces} / {row.connect_pieces}</td>
+    </>
+  );
+  const dayLines = (detail) => (
+    <tr>
+      <td colSpan="6" style={{ padding: "6px 6px 12px 60px" }}>
+        {!detail && <span className="fin-sub">Loading the lines...</span>}
+        {detail?.error && <span className="fin-loss">{detail.error}</span>}
+        {detail && !detail.error && (
+          <div className="fin-grid" style={{ gridTemplateColumns: "repeat(auto-fit, minmax(320px, 1fr))" }}>
+            <div>
+              <div className="fin-sub" style={{ marginBottom: 4 }}><strong>Invoice lines ({detail.invoice_lines.length})</strong></div>
+              <table className="fin-table">
+                <thead><tr><th>Invoice</th><th>Brief</th><th>Product</th><th>Pieces</th><th>Price</th><th>Total</th></tr></thead>
+                <tbody>
+                  {detail.invoice_lines.map((line, index) => (
+                    <tr key={index}><td><InkoopInvoiceLink invoiceNumber={line.invoice_number} /></td><td>{line.reference_bt || "-"}</td><td>{line.description}</td><td>{line.quantity}</td><td>{line.unit_price}</td><td>{formatInkoopEuro(line.total)}</td></tr>
+                  ))}
+                  {!detail.invoice_lines.length && <tr><td colSpan="6">None.</td></tr>}
+                </tbody>
+              </table>
+            </div>
+            <div>
+              <div className="fin-sub" style={{ marginBottom: 4 }}><strong>Connect lots ({detail.connect_lots.length})</strong></div>
+              <table className="fin-table">
+                <thead><tr><th>Lot</th><th>PAV</th><th>Code</th><th>Product</th><th>Pieces</th><th>Price</th><th>Total</th></tr></thead>
+                <tbody>
+                  {detail.connect_lots.map((lot) => (
+                    <tr key={lot.lot}><td>{lot.lot}</td><td>{String(lot.pav || "").trim() || "-"}</td><td>{String(lot.suppl || "").trim()}</td><td>{lot.description}</td><td>{lot.pieces}</td><td>{lot.price}</td><td>{formatInkoopEuro(lot.t_price)}</td></tr>
+                  ))}
+                  {!detail.connect_lots.length && <tr><td colSpan="7">None.</td></tr>}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        )}
+      </td>
+    </tr>
+  );
   const totals = data?.totals;
   return (
     <div className="fin-card" style={{ marginTop: 12 }}>
@@ -18037,7 +18098,7 @@ function InkoopGrowerTotals({ company, from, to, bwChoice }) {
         <div>
           <h3>Growers: invoice vs Connect totals</h3>
           <div className="fin-sub">
-            Per grower (its links and facturation groups) -- totals, whether the lines match or not
+            Per grower (its links and facturation groups) -- totals, whether the lines match or not · click a grower for its weeks, a week for its days, a day for its lines
             {data && data.from !== from && <> · a quarter at most: {data.from} – {data.to}</>}
           </div>
           {totals && (
@@ -18056,10 +18117,7 @@ function InkoopGrowerTotals({ company, from, to, bwChoice }) {
             <option value="connect">only in Connect</option>
             <option value="all">all growers</option>
           </select>
-          <select value={per} onChange={(event) => setPer(event.target.value)}>
-            <option value="week">per week</option>
-            <option value="day">per day</option>
-          </select>
+
         </div>
       </div>
       {error && <div className="notice danger">{error}</div>}
@@ -18071,24 +18129,33 @@ function InkoopGrowerTotals({ company, from, to, bwChoice }) {
             <tbody>
               {growers.slice(0, 250).map((grower) => (
                 <React.Fragment key={grower.key}>
-                  <tr className="fin-click" onClick={() => setOpen((current) => (current === grower.key ? "" : grower.key))}>
-                    <td>{open === grower.key ? "▾" : "▸"} {grower.grower}</td>
-                    <td>{formatInkoopEuro(grower.invoice_value)}</td>
-                    <td>{formatInkoopEuro(grower.connect_value)}</td>
-                    <td><InkoopMoneyDiff value={grower.difference} dark /></td>
-                    <td className={grower.difference > 0 ? "fin-loss" : grower.difference < 0 ? "fin-gain" : ""}>{grower.connect_value > 0 ? inkoopPct((grower.difference / grower.connect_value) * 100) : "-"}</td>
-                    <td>{grower.invoice_pieces} / {grower.connect_pieces}</td>
+                  <tr className="fin-click" onClick={() => setOpen((current) => (current === grower.key ? "" : grower.key))} title="Click: its weeks">
+                    <td>{open === grower.key ? "▾" : "▸"} <strong>{grower.grower}</strong></td>
+                    {figures(grower)}
                   </tr>
-                  {open === grower.key && periods(grower).map((row) => (
-                    <tr key={`${grower.key}-${row.label}`} style={{ background: "rgba(57, 135, 229, 0.05)" }}>
-                      <td style={{ paddingLeft: 26 }} className="fin-sub">{row.label}</td>
-                      <td>{formatInkoopEuro(row.invoice_value)}</td>
-                      <td>{formatInkoopEuro(row.connect_value)}</td>
-                      <td><InkoopMoneyDiff value={row.invoice_value - row.connect_value} dark /></td>
-                      <td>{row.connect_value > 0 ? inkoopPct(((row.invoice_value - row.connect_value) / row.connect_value) * 100) : "-"}</td>
-                      <td>{row.invoice_pieces} / {row.connect_pieces}</td>
-                    </tr>
-                  ))}
+                  {open === grower.key && weeksOf(grower).map((week) => {
+                    const weekKey = `${grower.key}|${week.start}`;
+                    return (
+                      <React.Fragment key={weekKey}>
+                        <tr className="fin-click" style={{ background: "rgba(57, 135, 229, 0.06)" }} onClick={() => setOpenWeek((current) => (current === weekKey ? "" : weekKey))} title="Click: its days">
+                          <td style={{ paddingLeft: 24 }}>{openWeek === weekKey ? "▾" : "▸"} week of {week.start} <span className="fin-sub">({week.days.length} day{week.days.length === 1 ? "" : "s"})</span></td>
+                          {figures(week)}
+                        </tr>
+                        {openWeek === weekKey && week.days.map((day) => {
+                          const dayKey = `${grower.key}|${day.date}`;
+                          return (
+                            <React.Fragment key={dayKey}>
+                              <tr className="fin-click" style={{ background: "rgba(57, 135, 229, 0.1)" }} onClick={() => toggleDay(grower, day.date)} title="Click: the invoice lines and Connect lots of this day">
+                                <td style={{ paddingLeft: 44 }}>{openDay === dayKey ? "▾" : "▸"} {day.date}</td>
+                                {figures(day)}
+                              </tr>
+                              {openDay === dayKey && dayLines(dayDetails[dayKey])}
+                            </React.Fragment>
+                          );
+                        })}
+                      </React.Fragment>
+                    );
+                  })}
                 </React.Fragment>
               ))}
               {!growers.length && <tr><td colSpan="6">No growers for this choice.</td></tr>}
