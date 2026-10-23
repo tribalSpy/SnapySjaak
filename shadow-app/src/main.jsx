@@ -18393,8 +18393,14 @@ function InkoopLinkGrowersTab() {
                       )}
                     </div>
                     {!!supplier.products?.length && (
-                      <div style={{ fontSize: "0.78rem", color: "#475569", marginTop: 4 }} title="Most bought on its invoices">
-                        {supplier.products.map((product) => `${product.description} (${product.lines})`).join(" · ")}
+                      <div style={{ fontSize: "0.78rem", color: "#475569", marginTop: 4, display: "grid", gap: 2 }} title="Most bought on its invoices -- the latest invoice with it (look that day up in Connect)">
+                        {supplier.products.map((product) => (
+                          <div key={product.description}>
+                            {product.description} <span className="muted">({product.lines})</span>
+                            {product.last_date && <> -- {inkoopShortDate(product.last_date)}</>}
+                            {product.last_invoice && <> · <InkoopInvoiceLink invoiceNumber={product.last_invoice} /></>}
+                          </div>
+                        ))}
                       </div>
                     )}
                     {!supplier.codes.length && !!supplier.suggestions?.length && (

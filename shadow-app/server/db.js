@@ -324,10 +324,13 @@ export async function getInkoopInvoiceSupplierProducts() {
     return [];
   }
   const result = await pool.query(`
-    SELECT gln, fh_number, description, lines
+    SELECT gln, fh_number, description, lines, last_date, last_invoice
       FROM (
         SELECT btrim(COALESCE(l.supplier_gln, '')) AS gln, btrim(COALESCE(l.supplier_fh_number, '')) AS fh_number,
                btrim(l.description) AS description, count(*)::int AS lines,
+               -- The latest invoice with it: look that day up in Connect.
+               to_char(max(l.invoice_date), 'YYYY-MM-DD') AS last_date,
+               (array_agg(l.invoice_number ORDER BY l.invoice_date DESC NULLS LAST))[1] AS last_invoice,
                row_number() OVER (PARTITION BY btrim(COALESCE(l.supplier_gln, '')), btrim(COALESCE(l.supplier_fh_number, '')) ORDER BY count(*) DESC, btrim(l.description)) AS rank
           FROM inkoop_invoice_lines l
          WHERE (btrim(COALESCE(l.supplier_gln, '')) <> '' OR btrim(COALESCE(l.supplier_fh_number, '')) <> '')

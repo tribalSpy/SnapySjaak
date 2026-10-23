@@ -23739,7 +23739,7 @@ async function handleApi(req, res, url) {
     for (const row of await getInkoopInvoiceSupplierProducts().catch(() => [])) {
       const key = `${row.gln}|${row.fh_number}`;
       if (!products.has(key)) products.set(key, []);
-      products.get(key).push({ description: row.description, lines: row.lines });
+      products.get(key).push({ description: row.description, lines: row.lines, last_date: row.last_date, last_invoice: row.last_invoice });
     }
     const suppliers = (view.suppliers || []).map((supplier) => ({ ...supplier, products: products.get(`${supplier.gln || ""}|${supplier.fh_number || ""}`) || [] }));
     sendJson(res, 200, { ...view, suppliers, manual_supplier_links: state.manual_supplier_links || [], facturation_groups: state.facturation_groups || [] });
