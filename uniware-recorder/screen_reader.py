@@ -381,10 +381,11 @@ def strip_chrome(lines: list[dict]) -> list[dict]:
 DATE_TIME_RE = re.compile(r"\b\d{1,2}[-/.]\d{1,2}[-/.]\d{2,4}\b|\b\d{1,2}:\d{2}(:\d{2})?\b|\[\d+\]|\b\d+\.\d+\.\d+\b")
 
 
-PRG_RE = re.compile(r"Prg\.?\s*(\d{2,4})", re.IGNORECASE)
+# "Prg. 510", also as OCR sometimes reads it: "Prg . [510]".
+PRG_RE = re.compile(r"Prg\s*\.?\s*\[?\s*(\d{2,4})", re.IGNORECASE)
 # OCR sometimes reads the program number's digits as letters ("Prg. soo"
 # for "Prg. 500"): a 2-4 character word of only look-alikes counts too.
-PRG_LOOKALIKE_RE = re.compile(r"Prg\.?\s*([0-9OoSsIlBDZÛØ]{2,4})(?![\w])", re.IGNORECASE)
+PRG_LOOKALIKE_RE = re.compile(r"Prg\s*\.?\s*\[?\s*([0-9OoSsIlBDZÛØ]{2,4})(?![\w])", re.IGNORECASE)
 _PRG_DIGITS = str.maketrans({"O": "0", "o": "0", "Û": "0", "Ø": "0", "D": "0", "S": "5", "s": "5", "I": "1", "l": "1", "B": "8", "Z": "2"})
 
 
