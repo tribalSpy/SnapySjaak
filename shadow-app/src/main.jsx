@@ -18303,7 +18303,7 @@ function InkoopLinkGrowersTab() {
     }
   }
   const codeRows = (data?.codes || [])
-    .filter((entry) => !excludedCodes.includes(entry.code))
+    .filter((entry) => !excludedCodes.includes(entry.code) && !(data?.bedrijf_excluded || []).some((item) => item.code === entry.code))
     .filter((entry) => !onlyFreeCodes || !growersByCode.has(entry.code))
     .filter((entry) => matches(`${entry.code} ${entry.name}`, codeSearch))
     .sort((left, right) => (growersByCode.has(left.code) - growersByCode.has(right.code)) || (right.lots || 0) - (left.lots || 0));
@@ -18445,13 +18445,19 @@ function InkoopLinkGrowersTab() {
             <div className="notice" style={{ marginTop: 8 }}>
               <strong>Not a purchase</strong> -- left out of the comparison (internal moves: returns, product changes to a mix / pack code).
               Their Connect lines stay stored; take a code off to count it again.
+              {!!data?.bedrijf_excluded?.length && (
+                <div style={{ marginTop: 4 }} title={data.bedrijf_excluded.map((item) => `${item.code} (${item.bedrijf})`).join(", ")}>
+                  Also left out by themselves: <strong>{data.bedrijf_excluded.length}</strong> code(s) with Bedrijf INKOOP / VDV in the stamgegevens
+                  ({data.bedrijf_excluded.slice(0, 12).map((item) => item.code).join(", ")}{data.bedrijf_excluded.length > 12 ? " ..." : ""}).
+                </div>
+              )}
               <div className="row-actions" style={{ marginTop: 6 }}>
                 {excludedCodes.map((code) => (
                   <span key={code} className="ukdocs-status-badge muted">
                     {code} <button type="button" className="link-button" onClick={() => setExcluded(code, false)} title="Count it again">x</button>
                   </span>
                 ))}
-                {!excludedCodes.length && <span className="muted">none yet</span>}
+                {!excludedCodes.length && <span className="muted">none chosen</span>}
                 <input size={10} value={excludeDraft} onChange={(event) => setExcludeDraft(event.target.value)} placeholder="e.g. RETOUR" />
                 <button type="button" onClick={() => { setExcluded(excludeDraft, true); setExcludeDraft(""); }} disabled={!excludeDraft.trim()}>Leave out</button>
               </div>

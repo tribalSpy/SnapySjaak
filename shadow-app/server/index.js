@@ -6713,6 +6713,7 @@ async function parseInkoopSupplierMaster({ kwekers_file: kwekersFile, leverancie
     by_gln: payload?.by_gln && typeof payload.by_gln === "object" ? payload.by_gln : {},
     by_name: payload?.by_name && typeof payload.by_name === "object" ? payload.by_name : {},
     by_fh: payload?.by_fh && typeof payload.by_fh === "object" ? payload.by_fh : {},
+    bedrijf: payload?.bedrijf && typeof payload.bedrijf === "object" ? payload.bedrijf : {},
   };
 }
 
@@ -7775,7 +7776,7 @@ function matchInkoopVeilingLines(erpRows, invoices, supplierMap = {}, supplierNa
   };
 }
 
-const defaultInkoopState = { imports: [], supplier_map: {}, supplier_name_map: {}, supplier_fh_map: {}, supplier_bw_map: {}, customer_map: {}, manual_supplier_links: [], facturation_groups: [], king_ledger_map: null, king_settings: {}, grower_skip_codes: [], excluded_erp_codes: [] };
+const defaultInkoopState = { imports: [], supplier_map: {}, supplier_name_map: {}, supplier_fh_map: {}, supplier_bw_map: {}, customer_map: {}, manual_supplier_links: [], facturation_groups: [], king_ledger_map: null, king_settings: {}, grower_skip_codes: [], excluded_erp_codes: [], supplier_bedrijf_map: {} };
 
 // Every compare/upload used to be matched in isolation and its full result
 // (every matched/mismatched/unmatched line) pushed onto this list forever --
@@ -7969,7 +7970,25 @@ function normalizeInkoopState(state) {
     // out of every comparison (kept in the database).
     excluded_erp_codes: [...new Set((Array.isArray(state?.excluded_erp_codes) ? state.excluded_erp_codes : [])
       .map((code) => normalizeInkoopKey(code)).filter(Boolean))].sort(),
+    // "Bedrijf" per supplier code from the leveranciers / kwekers
+    // stamgegevens (VEILIN, FAC, INKOOP, VDV, LTD ...).
+    supplier_bedrijf_map: Object.fromEntries(Object.entries(state?.supplier_bedrijf_map && typeof state.supplier_bedrijf_map === "object" ? state.supplier_bedrijf_map : {})
+      .map(([code, bedrijf]) => [normalizeInkoopKey(code), normalizeUkdocsText(bedrijf).toUpperCase()]).filter(([code, bedrijf]) => code && bedrijf)),
   };
+}
+
+// Bedrijf values of internal codes: no purchase (no matching, not in the
+// Connect value). FAC, LTD, LTD2, VEILIN stay.
+const INKOOP_INTERNAL_BEDRIJF = new Set(["INKOOP", "VDV"]);
+
+// Every Connect code left out of the comparison: chosen by hand ("not a
+// purchase") plus the codes whose Bedrijf is INKOOP / VDV.
+function inkoopExcludedErpCodes(state) {
+  const codes = new Set((state?.excluded_erp_codes || []).map((code) => normalizeInkoopKey(code)));
+  for (const [code, bedrijf] of Object.entries(state?.supplier_bedrijf_map || {})) {
+    if (INKOOP_INTERNAL_BEDRIJF.has(bedrijf)) codes.add(code);
+  }
+  return [...codes];
 }
 
 // A single Briefnummer/PAV -- or, for corrections, a re-uploaded day -- can
@@ -8355,7 +8374,7 @@ async function buildInkoopAggregateContext(state, range) {
     getInkoopErpLines(range),
     getInkoopInvoiceLines(range),
   ]);
-  const erpRows = excludeInkoopInternalBunchRows(allErpRows, state.supplier_bw_map, state.excluded_erp_codes);
+  const erpRows = excludeInkoopInternalBunchRows(allErpRows, state.supplier_bw_map, inkoopExcludedErpCodes(state));
   const aggregateResult = computeInkoopAggregateMismatches(
     erpRows, invoiceLines,
     state.supplier_map, state.supplier_name_map, state.manual_supplier_links, state.supplier_fh_map, state.facturation_groups,
@@ -8780,7 +8799,7 @@ function inkoopStateFingerprint(state) {
   return crypto.createHash("sha1").update(JSON.stringify([
     INKOOP_MATCH_RULES_VERSION,
     state.supplier_map, state.supplier_name_map, state.supplier_fh_map, state.supplier_bw_map,
-    state.manual_supplier_links, state.facturation_groups, state.customer_map, state.grower_skip_codes || [], state.excluded_erp_codes || [],
+    state.manual_supplier_links, state.facturation_groups, state.customer_map, state.grower_skip_codes || [], inkoopExcludedErpCodes(state).sort(),
   ])).digest("hex");
 }
 
@@ -9440,7 +9459,7 @@ async function computeInkoopLiveMatchFresh(state, { from, to }) {
     getInkoopInvoiceLines({ from, to }),
     inkoopGrowerDirectory(state),
   ]);
-  const erpRows = excludeInkoopInternalBunchRows(allErpRows, state.supplier_bw_map, state.excluded_erp_codes);
+  const erpRows = excludeInkoopInternalBunchRows(allErpRows, state.supplier_bw_map, inkoopExcludedErpCodes(state));
   const invoices = groupInkoopInvoiceLinesByInvoice(invoiceLines);
   // The stamgegevens (and manual links) always win over a learned link.
   const supplierMap = { ...directory.matcherMaps.gln, ...state.supplier_map };
@@ -23712,6 +23731,7 @@ async function handleApi(req, res, url) {
       state.supplier_map = { ...state.supplier_map, ...parsed.by_gln };
       state.supplier_name_map = { ...state.supplier_name_map, ...parsed.by_name };
       state.supplier_fh_map = { ...state.supplier_fh_map, ...parsed.by_fh };
+      state.supplier_bedrijf_map = { ...(state.supplier_bedrijf_map || {}), ...parsed.bedrijf };
       if (body?.klant_file) {
         const customerEntries = await parseInkoopKlantGegevens(body.klant_file);
         state.customer_map = { ...state.customer_map, ...customerEntries };
@@ -23755,7 +23775,8 @@ async function handleApi(req, res, url) {
       products.get(key).push({ description: row.description, lines: row.lines, last_date: row.last_date, last_invoice: row.last_invoice });
     }
     const suppliers = (view.suppliers || []).map((supplier) => ({ ...supplier, products: products.get(`${supplier.gln || ""}|${supplier.fh_number || ""}`) || [] }));
-    sendJson(res, 200, { ...view, suppliers, manual_supplier_links: state.manual_supplier_links || [], facturation_groups: state.facturation_groups || [], excluded_erp_codes: state.excluded_erp_codes || [] });
+    const bedrijfExcluded = Object.entries(state.supplier_bedrijf_map || {}).filter(([, bedrijf]) => INKOOP_INTERNAL_BEDRIJF.has(bedrijf)).map(([code, bedrijf]) => ({ code, bedrijf }));
+    sendJson(res, 200, { ...view, suppliers, manual_supplier_links: state.manual_supplier_links || [], facturation_groups: state.facturation_groups || [], excluded_erp_codes: state.excluded_erp_codes || [], bedrijf_excluded: bedrijfExcluded });
     return;
   }
 
@@ -23942,7 +23963,7 @@ async function handleApi(req, res, url) {
     const range = inkoopRangeFromRequest(url);
     const state = await readInkoopState();
     // Not the lots of a "not a purchase" code (RETOUR, XPAK ...): no money.
-    const excludedCodes = new Set((state.excluded_erp_codes || []).map((code) => normalizeInkoopKey(code)));
+    const excludedCodes = new Set(inkoopExcludedErpCodes(state));
     const dispatchLots = (await getInkoopDispatchLots(range)).filter((lot) => !excludedCodes.has(normalizeInkoopKey(lot?.suppl)));
     const summary = computeInkoopDestinationsSummary(dispatchLots, state.customer_map);
     sendJson(res, 200, {

@@ -808,6 +808,9 @@ def load_supplier_csv(path: Path, source_label: str):
     by_gln = {}
     by_name = {}
     fh_candidates = {}
+    # "Bedrijf" per code (VEILIN, FAC, INKOOP, VDV, LTD ...): INKOOP / VDV
+    # codes are internal -- no purchase to match, not in the Connect value.
+    bedrijf_by_code = {}
     with open(path, encoding="utf-8-sig", errors="replace", newline="") as handle:
         reader = csv.reader(handle, delimiter=";")
         header = next(reader, [])
@@ -816,8 +819,9 @@ def load_supplier_csv(path: Path, source_label: str):
         naam_idx = idx.get("Naam")
         gln_idx = idx.get("GLN kweke")
         kwekercode_idx = idx.get("Kwekercod")
+        bedrijf_idx = next((i for i, name in enumerate(header) if name.strip().lower() == "bedrijf"), None)
         if code_idx is None or naam_idx is None or gln_idx is None:
-            return by_gln, by_name, fh_candidates
+            return by_gln, by_name, fh_candidates, bedrijf_by_code
         for row in reader:
             if len(row) <= max(code_idx, naam_idx, gln_idx):
                 continue
@@ -825,6 +829,8 @@ def load_supplier_csv(path: Path, source_label: str):
             name = row[naam_idx].strip()
             if not code:
                 continue
+            if bedrijf_idx is not None and len(row) > bedrijf_idx and row[bedrijf_idx].strip():
+                bedrijf_by_code[code.upper()] = row[bedrijf_idx].strip().upper()
             gln = row[gln_idx].strip()
             if gln:
                 by_gln[gln] = {"code": code, "name": name, "source": source_label}
@@ -835,19 +841,21 @@ def load_supplier_csv(path: Path, source_label: str):
                 fh_key = derive_fh_key_from_kwekercode(row[kwekercode_idx].strip())
                 if fh_key:
                     fh_candidates.setdefault(fh_key, []).append({"code": code, "name": name, "source": source_label})
-    return by_gln, by_name, fh_candidates
+    return by_gln, by_name, fh_candidates, bedrijf_by_code
 
 
 def parse_suppliers(kwekers_path: Path, leveranciers_path: Path):
     by_gln = {}
     by_name = {}
     fh_candidates = {}
+    bedrijf = {}
     for path, label in [(kwekers_path, "kwekers"), (leveranciers_path, "leveranciers")]:
         if not path:
             continue
-        gln_entries, name_entries, fh_entries = load_supplier_csv(path, label)
+        gln_entries, name_entries, fh_entries, bedrijf_entries = load_supplier_csv(path, label)
         by_gln.update(gln_entries)
         by_name.update(name_entries)
+        bedrijf.update(bedrijf_entries)
         for fh_key, entries in fh_entries.items():
             fh_candidates.setdefault(fh_key, []).extend(entries)
     by_fh = {
@@ -855,7 +863,7 @@ def parse_suppliers(kwekers_path: Path, leveranciers_path: Path):
         for fh_key, entries in fh_candidates.items()
         if len({entry["code"] for entry in entries}) == 1
     }
-    return {"by_gln": by_gln, "by_name": by_name, "by_fh": by_fh}
+    return {"by_gln": by_gln, "by_name": by_name, "by_fh": by_fh, "bedrijf": bedrijf}
 
 
 def find_header_row_by_column(all_rows, column_name):
