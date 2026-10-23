@@ -15402,9 +15402,14 @@ function inkoopFieldLabel(field) {
   return field;
 }
 
+// "€25 832 183.91": a narrow space between every three digits (no line
+// break inside an amount), the cents after a dot.
 function formatInkoopEuro(value) {
   const number = Number(value);
-  return `€${(Number.isFinite(number) ? number : 0).toFixed(2)}`;
+  const [whole, cents] = (Number.isFinite(number) ? number : 0).toFixed(2).split(".");
+  const sign = whole.startsWith("-") ? "-" : "";
+  const digits = sign ? whole.slice(1) : whole;
+  return `${sign}€${digits.replace(/\B(?=(\d{3})+(?!\d))/g, " ")}.${cents}`;
 }
 
 // "2026-10-01T00:00:00.000Z" / "2026-10-01" -> "01-10-2026"
