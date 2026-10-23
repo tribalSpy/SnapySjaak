@@ -23935,7 +23935,9 @@ async function handleApi(req, res, url) {
     // A week by default, a month at most (was 90 days).
     const range = inkoopRangeFromRequest(url);
     const state = await readInkoopState();
-    const dispatchLots = await getInkoopDispatchLots(range);
+    // Not the lots of a "not a purchase" code (RETOUR, XPAK ...): no money.
+    const excludedCodes = new Set((state.excluded_erp_codes || []).map((code) => normalizeInkoopKey(code)));
+    const dispatchLots = (await getInkoopDispatchLots(range)).filter((lot) => !excludedCodes.has(normalizeInkoopKey(lot?.suppl)));
     const summary = computeInkoopDestinationsSummary(dispatchLots, state.customer_map);
     sendJson(res, 200, {
       ...summary,
