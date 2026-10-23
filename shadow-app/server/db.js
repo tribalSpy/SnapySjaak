@@ -674,43 +674,72 @@ export async function deleteDuplicateInkoopInvoiceCopies() {
   if (!pool) {
     return [];
   }
-  const result = await pool.query(`
+  // A copy is "the same invoice" when every line (brief number, pieces,
+  // price, total) is on the original -- not the description: one copy can
+  // have it and the other not (read from another source).
+  const covered = await pool.query(`
     WITH lines AS (
       SELECT invoice_number,
              regexp_replace(invoice_number, '\\s*\\(\\d+\\)$', '') AS base_number,
              invoice_number ~ ' \\(\\d+\\)$' AS is_copy,
-             upper(btrim(COALESCE(reference_bt, ''))) AS bt, quantity, unit_price, total,
-             upper(btrim(COALESCE(description, ''))) AS descr
+             upper(btrim(COALESCE(reference_bt, ''))) AS bt, quantity, unit_price, total
         FROM inkoop_invoice_lines
     ),
     copy_groups AS (
-      SELECT invoice_number, base_number, bt, quantity, unit_price, total, descr, count(*) AS n
-        FROM lines WHERE is_copy GROUP BY 1, 2, 3, 4, 5, 6, 7
+      SELECT invoice_number, base_number, bt, quantity, unit_price, total, count(*) AS n
+        FROM lines WHERE is_copy GROUP BY 1, 2, 3, 4, 5, 6
     ),
     original_groups AS (
-      SELECT invoice_number, bt, quantity, unit_price, total, descr, count(*) AS n
-        FROM lines WHERE NOT is_copy GROUP BY 1, 2, 3, 4, 5, 6
-    ),
-    covered AS (
-      SELECT c.invoice_number, bool_and(o.n IS NOT NULL AND o.n >= c.n) AS all_in_original
-        FROM copy_groups c
-        LEFT JOIN original_groups o
-          ON o.invoice_number = c.base_number AND o.bt = c.bt AND o.descr = c.descr
-         AND o.quantity IS NOT DISTINCT FROM c.quantity
-         AND o.unit_price IS NOT DISTINCT FROM c.unit_price
-         AND o.total IS NOT DISTINCT FROM c.total
-       GROUP BY c.invoice_number
+      SELECT invoice_number, bt, quantity, unit_price, total, count(*) AS n
+        FROM lines WHERE NOT is_copy GROUP BY 1, 2, 3, 4, 5
     )
-    DELETE FROM inkoop_invoice_lines l
-     USING covered
-     WHERE l.invoice_number = covered.invoice_number AND covered.all_in_original
-    RETURNING l.invoice_number, to_char(l.invoice_date, 'YYYY-MM-DD') AS invoice_date
+    SELECT c.invoice_number, min(c.base_number) AS base_number
+      FROM copy_groups c
+      LEFT JOIN original_groups o
+        ON o.invoice_number = c.base_number AND o.bt = c.bt
+       AND o.quantity IS NOT DISTINCT FROM c.quantity
+       AND o.unit_price IS NOT DISTINCT FROM c.unit_price
+       AND o.total IS NOT DISTINCT FROM c.total
+     GROUP BY c.invoice_number
+    HAVING bool_and(o.n IS NOT NULL AND o.n >= c.n)
   `);
-  const removed = [...new Set(result.rows.map((row) => row.invoice_number))];
-  if (removed.length) {
-    await pool.query("DELETE FROM inkoop_invoice_headers WHERE invoice_number = ANY($1::text[])", [removed]);
-    await pool.query("DELETE FROM inkoop_invoice_totals WHERE invoice_number = ANY($1::text[])", [removed]);
+  const copies = covered.rows.map((row) => row.invoice_number);
+  if (!copies.length) {
+    return [];
   }
+  // What only the copy has (description, grower) goes onto the original's
+  // lines that lack it -- the same line: brief number, pieces, price, total.
+  await pool.query(`
+    UPDATE inkoop_invoice_lines o
+       SET description = CASE WHEN btrim(COALESCE(o.description, '')) = '' THEN c.description ELSE o.description END,
+           supplier_name = CASE WHEN btrim(COALESCE(o.supplier_name, '')) = '' THEN c.supplier_name ELSE o.supplier_name END,
+           supplier_gln = CASE WHEN btrim(COALESCE(o.supplier_gln, '')) = '' THEN c.supplier_gln ELSE o.supplier_gln END,
+           supplier_fh_number = CASE WHEN btrim(COALESCE(o.supplier_fh_number, '')) = '' THEN c.supplier_fh_number ELSE o.supplier_fh_number END,
+           raw = o.raw || jsonb_strip_nulls(jsonb_build_object(
+             'description', CASE WHEN btrim(COALESCE(o.description, '')) = '' THEN c.description END,
+             'supplier_name', CASE WHEN btrim(COALESCE(o.supplier_name, '')) = '' THEN c.supplier_name END)),
+           updated_at = now()
+      FROM (
+        SELECT DISTINCT ON (regexp_replace(invoice_number, '\\s*\\(\\d+\\)$', ''), upper(btrim(COALESCE(reference_bt, ''))), quantity, unit_price, total)
+               regexp_replace(invoice_number, '\\s*\\(\\d+\\)$', '') AS base_number,
+               upper(btrim(COALESCE(reference_bt, ''))) AS bt, quantity, unit_price, total,
+               description, supplier_name, supplier_gln, supplier_fh_number
+          FROM inkoop_invoice_lines
+         WHERE invoice_number = ANY($1::text[])
+         ORDER BY 1, 2, 3, 4, 5, (btrim(COALESCE(description, '')) = '')
+      ) c
+     WHERE o.invoice_number = c.base_number AND upper(btrim(COALESCE(o.reference_bt, ''))) = c.bt
+       AND o.quantity IS NOT DISTINCT FROM c.quantity AND o.unit_price IS NOT DISTINCT FROM c.unit_price AND o.total IS NOT DISTINCT FROM c.total
+       AND (btrim(COALESCE(o.description, '')) = '' OR btrim(COALESCE(o.supplier_name, '')) = ''
+         OR btrim(COALESCE(o.supplier_gln, '')) = '' OR btrim(COALESCE(o.supplier_fh_number, '')) = '')
+  `, [copies]);
+  const result = await pool.query(
+    `DELETE FROM inkoop_invoice_lines WHERE invoice_number = ANY($1::text[])
+     RETURNING invoice_number, to_char(invoice_date, 'YYYY-MM-DD') AS invoice_date`,
+    [copies],
+  );
+  await pool.query("DELETE FROM inkoop_invoice_headers WHERE invoice_number = ANY($1::text[])", [copies]);
+  await pool.query("DELETE FROM inkoop_invoice_totals WHERE invoice_number = ANY($1::text[])", [copies]);
   return result.rows;
 }
 

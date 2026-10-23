@@ -1194,8 +1194,8 @@ def _parse_veiling_from(input_path: Path, extract_dir: Path):
 
 def invoice_line_core(line):
     """What makes an invoice line a purchase: brief number, pieces, price,
-    total, product and grower -- not its date, file or extra XML fields (a
-    resent invoice can differ there)."""
+    total -- not its date, file, description or extra XML fields (a resent
+    invoice, or one read from another source, can differ there)."""
     def number(value):
         try:
             return round(float(value), 4)
@@ -1206,9 +1206,6 @@ def invoice_line_core(line):
         number(line.get("quantity")),
         number(line.get("unit_price")),
         number(line.get("total")),
-        str(line.get("description") or "").strip().upper(),
-        str(line.get("supplier_gln") or "").strip(),
-        str(line.get("product_type_code") or "").strip(),
     )
 
 
@@ -1240,6 +1237,11 @@ def drop_duplicate_invoices(invoices, skipped):
                 duplicate = ("replace", kept_index, index)  # this copy has it all and more
                 break
         if duplicate and duplicate[0] == "skip":
+            # The same purchases: keep the copy with the most descriptions.
+            described = lambda candidate: sum(1 for line in candidate.get("lines") or [] if str(line.get("description") or "").strip())
+            kept_index = duplicate[1]
+            if not other_core - core and described(invoice) > described(kept[kept_index]):
+                kept[kept_index] = {**invoice, "invoice_number": kept[kept_index]["invoice_number"]}
             skipped.append({"file_name": invoice.get("file_name", ""), "reason": f"Same invoice {number} as {kept[duplicate[1]].get('file_name', '')} (sent again) -- read once"})
             continue
         if duplicate:
