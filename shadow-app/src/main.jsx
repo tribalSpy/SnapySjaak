@@ -18210,7 +18210,18 @@ function InkoopLinkGrowersTab() {
   // compare every day again after each one; Save sends them all at once.
   const [pendingLinks, setPendingLinks] = useState({}); // grower key -> { gln, fh_number, name, codes }
   const [pendingGroups, setPendingGroups] = useState({}); // group name (lower) -> { group_name, codes } (codes [] = remove)
-  const pendingCount = Object.keys(pendingLinks).length + Object.keys(pendingGroups).length;
+  // The "not a purchase" Connect codes (RETOUR, XROS, XPAK ...): null = unchanged.
+  const [pendingExcluded, setPendingExcluded] = useState(null);
+  const [excludeDraft, setExcludeDraft] = useState("");
+  const excludedCodes = pendingExcluded || data?.excluded_erp_codes || [];
+  const pendingCount = Object.keys(pendingLinks).length + Object.keys(pendingGroups).length + (pendingExcluded ? 1 : 0);
+  function setExcluded(code, on) {
+    const value = String(code || "").trim().toUpperCase();
+    if (!value) return;
+    const next = on ? [...new Set([...excludedCodes, value])].sort() : excludedCodes.filter((item) => item !== value);
+    setPendingExcluded(next);
+    setMessage(`${value} ${on ? "left out of the comparison (no purchase)" : "counted again"}. Not saved yet -- press Save when done.`);
+  }
   const effectiveGroup = (supplier) => {
     const name = String(groupName(supplier)).toLowerCase();
     if (pendingGroups[name]) return pendingGroups[name].codes.length ? pendingGroups[name] : null;
@@ -18251,10 +18262,11 @@ function InkoopLinkGrowersTab() {
     try {
       const payload = await apiJson("/api/inkoop/growers/links-batch", {
         method: "POST",
-        body: JSON.stringify({ links: Object.values(pendingLinks), groups: Object.values(pendingGroups) }),
+        body: JSON.stringify({ links: Object.values(pendingLinks), groups: Object.values(pendingGroups), ...(pendingExcluded ? { excluded_codes: pendingExcluded } : {}) }),
       });
       setPendingLinks({});
       setPendingGroups({});
+      setPendingExcluded(null);
       setMessage(`Saved: ${payload.links} grower link(s)${payload.groups ? `, ${payload.groups} group(s)` : ""}. Every day is compared again in the background.`);
       await load();
     } catch (saveError) {
@@ -18268,6 +18280,7 @@ function InkoopLinkGrowersTab() {
     if (!window.confirm(`Forget the ${pendingCount} unsaved change(s)?`)) return;
     setPendingLinks({});
     setPendingGroups({});
+    setPendingExcluded(null);
     setMessage("");
   }
 
@@ -18290,6 +18303,7 @@ function InkoopLinkGrowersTab() {
     }
   }
   const codeRows = (data?.codes || [])
+    .filter((entry) => !excludedCodes.includes(entry.code))
     .filter((entry) => !onlyFreeCodes || !growersByCode.has(entry.code))
     .filter((entry) => matches(`${entry.code} ${entry.name}`, codeSearch))
     .sort((left, right) => (growersByCode.has(left.code) - growersByCode.has(right.code)) || (right.lots || 0) - (left.lots || 0));
@@ -18428,6 +18442,20 @@ function InkoopLinkGrowersTab() {
               <h3>Connect codes ({codeRows.length})</h3>
               <input value={codeSearch} onChange={(event) => setCodeSearch(event.target.value)} placeholder="Search code or name" />
             </div>
+            <div className="notice" style={{ marginTop: 8 }}>
+              <strong>Not a purchase</strong> -- left out of the comparison (internal moves: returns, product changes to a mix / pack code).
+              Their Connect lines stay stored; take a code off to count it again.
+              <div className="row-actions" style={{ marginTop: 6 }}>
+                {excludedCodes.map((code) => (
+                  <span key={code} className="ukdocs-status-badge muted">
+                    {code} <button type="button" className="link-button" onClick={() => setExcluded(code, false)} title="Count it again">x</button>
+                  </span>
+                ))}
+                {!excludedCodes.length && <span className="muted">none yet</span>}
+                <input size={10} value={excludeDraft} onChange={(event) => setExcludeDraft(event.target.value)} placeholder="e.g. RETOUR" />
+                <button type="button" onClick={() => { setExcluded(excludeDraft, true); setExcludeDraft(""); }} disabled={!excludeDraft.trim()}>Leave out</button>
+              </div>
+            </div>
             <label className="checkbox-label">
               <input type="checkbox" checked={onlyFreeCodes} onChange={(event) => setOnlyFreeCodes(event.target.checked)} />
               <span>Only codes not linked to a grower</span>
@@ -18448,6 +18476,10 @@ function InkoopLinkGrowersTab() {
                     title="Slide onto a grower, or click to choose"
                   >
                     <strong>{entry.code}</strong> {entry.name && <span className="muted">{entry.name}</span>}
+                    <button type="button" className="link-button" style={{ float: "right" }}
+                      onClick={(event) => { event.stopPropagation(); setExcluded(entry.code, true); }} title="An internal move, never on an invoice: leave its lines out of the comparison">
+                      not a purchase
+                    </button>
                     <div style={{ fontSize: "0.76rem", color: "#6b7280" }}>
                       {entry.lots} lots{entry.lots_without_pav ? ` (${entry.lots_without_pav} without brief number)` : ""}
                       {linkedTo.length ? ` · linked to ${linkedTo.slice(0, 3).join(", ")}${linkedTo.length > 3 ? ` +${linkedTo.length - 3}` : ""}` : " · not linked"}

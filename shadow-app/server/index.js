@@ -7775,7 +7775,7 @@ function matchInkoopVeilingLines(erpRows, invoices, supplierMap = {}, supplierNa
   };
 }
 
-const defaultInkoopState = { imports: [], supplier_map: {}, supplier_name_map: {}, supplier_fh_map: {}, supplier_bw_map: {}, customer_map: {}, manual_supplier_links: [], facturation_groups: [], king_ledger_map: null, king_settings: {}, grower_skip_codes: [] };
+const defaultInkoopState = { imports: [], supplier_map: {}, supplier_name_map: {}, supplier_fh_map: {}, supplier_bw_map: {}, customer_map: {}, manual_supplier_links: [], facturation_groups: [], king_ledger_map: null, king_settings: {}, grower_skip_codes: [], excluded_erp_codes: [] };
 
 // Every compare/upload used to be matched in isolation and its full result
 // (every matched/mismatched/unmatched line) pushed onto this list forever --
@@ -7936,11 +7936,13 @@ function inkoopErpRowIsInternalBunches(row, supplierBwMap) {
   return false;
 }
 
-function excludeInkoopInternalBunchRows(erpRows, supplierBwMap) {
-  if (!supplierBwMap || !Object.keys(supplierBwMap).length) {
+function excludeInkoopInternalBunchRows(erpRows, supplierBwMap, excludedCodes = []) {
+  // Also the lines of a code that is no purchase (Link growers tab).
+  const excluded = new Set((excludedCodes || []).map((code) => normalizeInkoopKey(code)));
+  if ((!supplierBwMap || !Object.keys(supplierBwMap).length) && !excluded.size) {
     return erpRows;
   }
-  return (Array.isArray(erpRows) ? erpRows : []).filter((row) => !inkoopErpRowIsInternalBunches(row, supplierBwMap));
+  return (Array.isArray(erpRows) ? erpRows : []).filter((row) => !excluded.has(normalizeInkoopKey(row?.suppl)) && !inkoopErpRowIsInternalBunches(row, supplierBwMap || {}));
 }
 
 function normalizeInkoopState(state) {
@@ -7961,6 +7963,11 @@ function normalizeInkoopState(state) {
     // KVV PL "klok voor verkoop planten", or WW12): chosen in the Growers
     // tab; the grower is then looked for in the lot's other code positions.
     grower_skip_codes: [...new Set((Array.isArray(state?.grower_skip_codes) ? state.grower_skip_codes : [])
+      .map((code) => normalizeInkoopKey(code)).filter(Boolean))].sort(),
+    // Connect supplier codes that are no purchase (RETOUR, XROS, XPAK, a
+    // mix code: internal moves, product changes) -- their lines are left
+    // out of every comparison (kept in the database).
+    excluded_erp_codes: [...new Set((Array.isArray(state?.excluded_erp_codes) ? state.excluded_erp_codes : [])
       .map((code) => normalizeInkoopKey(code)).filter(Boolean))].sort(),
   };
 }
@@ -8348,7 +8355,7 @@ async function buildInkoopAggregateContext(state, range) {
     getInkoopErpLines(range),
     getInkoopInvoiceLines(range),
   ]);
-  const erpRows = excludeInkoopInternalBunchRows(allErpRows, state.supplier_bw_map);
+  const erpRows = excludeInkoopInternalBunchRows(allErpRows, state.supplier_bw_map, state.excluded_erp_codes);
   const aggregateResult = computeInkoopAggregateMismatches(
     erpRows, invoiceLines,
     state.supplier_map, state.supplier_name_map, state.manual_supplier_links, state.supplier_fh_map, state.facturation_groups,
@@ -8773,7 +8780,7 @@ function inkoopStateFingerprint(state) {
   return crypto.createHash("sha1").update(JSON.stringify([
     INKOOP_MATCH_RULES_VERSION,
     state.supplier_map, state.supplier_name_map, state.supplier_fh_map, state.supplier_bw_map,
-    state.manual_supplier_links, state.facturation_groups, state.customer_map, state.grower_skip_codes || [],
+    state.manual_supplier_links, state.facturation_groups, state.customer_map, state.grower_skip_codes || [], state.excluded_erp_codes || [],
   ])).digest("hex");
 }
 
@@ -9433,7 +9440,7 @@ async function computeInkoopLiveMatchFresh(state, { from, to }) {
     getInkoopInvoiceLines({ from, to }),
     inkoopGrowerDirectory(state),
   ]);
-  const erpRows = excludeInkoopInternalBunchRows(allErpRows, state.supplier_bw_map);
+  const erpRows = excludeInkoopInternalBunchRows(allErpRows, state.supplier_bw_map, state.excluded_erp_codes);
   const invoices = groupInkoopInvoiceLinesByInvoice(invoiceLines);
   // The stamgegevens (and manual links) always win over a learned link.
   const supplierMap = { ...directory.matcherMaps.gln, ...state.supplier_map };
@@ -23742,7 +23749,7 @@ async function handleApi(req, res, url) {
       products.get(key).push({ description: row.description, lines: row.lines, last_date: row.last_date, last_invoice: row.last_invoice });
     }
     const suppliers = (view.suppliers || []).map((supplier) => ({ ...supplier, products: products.get(`${supplier.gln || ""}|${supplier.fh_number || ""}`) || [] }));
-    sendJson(res, 200, { ...view, suppliers, manual_supplier_links: state.manual_supplier_links || [], facturation_groups: state.facturation_groups || [] });
+    sendJson(res, 200, { ...view, suppliers, manual_supplier_links: state.manual_supplier_links || [], facturation_groups: state.facturation_groups || [], excluded_erp_codes: state.excluded_erp_codes || [] });
     return;
   }
 
@@ -23779,8 +23786,14 @@ async function handleApi(req, res, url) {
         : rest;
       groups += 1;
     }
-    if (links || groups) await writeInkoopState(state);
-    sendJson(res, 200, { links, groups, manual_supplier_links: state.manual_supplier_links, facturation_groups: state.facturation_groups });
+    // The whole "not a purchase" list, when sent.
+    let excludedChanged = false;
+    if (Array.isArray(body?.excluded_codes)) {
+      state.excluded_erp_codes = [...new Set(body.excluded_codes.map((code) => normalizeInkoopKey(code)).filter(Boolean))].sort();
+      excludedChanged = true;
+    }
+    if (links || groups || excludedChanged) await writeInkoopState(state);
+    sendJson(res, 200, { links, groups, excluded_erp_codes: state.excluded_erp_codes || [], manual_supplier_links: state.manual_supplier_links, facturation_groups: state.facturation_groups });
     return;
   }
 
