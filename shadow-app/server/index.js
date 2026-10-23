@@ -6837,7 +6837,9 @@ function parseInkoopLeveringBb(base64) {
     counts.lines += 1;
     const info = String(cells[col.info] || "").toUpperCase();
     const prt = cells[col.prt];
-    const brief = info.match(/^([A-Z0-9]{5,7})\/([A-Z])$/);
+    // "FA0DMC/A" -> FA0DMCa; "407971/-" (no letter) -> 407971.
+    const match = info.match(/^([A-Z0-9]{5,7})\/([A-Z-])$/);
+    const brief = match && !/^0+$/.test(match[1]) ? match : null; // "000000/-": none
     if (!/^\d{6,10}$/.test(prt) || !brief) {
       if (/gekoppel/i.test(prt)) counts.linked += 1;
       else if (/afgemeld/i.test(prt)) counts.cancelled += 1;
@@ -6848,7 +6850,7 @@ function parseInkoopLeveringBb(base64) {
     const perItem = Number(String(cells[col.per_item] || "").replace(/[^\d.]/g, "")) || 0;
     rows.push({
       lot: Number(prt),
-      pav: `${brief[1]}${brief[2].toLowerCase()}`,
+      pav: brief[2] === "-" ? brief[1] : `${brief[1]}${brief[2].toLowerCase()}`,
       info,
       order_nr: col.order_nr >= 0 ? cells[col.order_nr] : "",
       vbn: cells[col.vbn],

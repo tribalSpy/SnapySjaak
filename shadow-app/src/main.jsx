@@ -17129,7 +17129,7 @@ function InkoopControlePage({ currentUser }) {
         </div>
         <div className="row-actions">
           <label>
-            <span>Levering BB (.csv) -- one or several files</span>
+            <span>Levering BB or Communications dump (.csv: Info + Prt) -- one or several files</span>
             <input type="file" accept=".csv,.txt" multiple onChange={(event) => setLeveringFiles(Array.from(event.target.files || []))} />
           </label>
           <button type="button" onClick={uploadLeveringBb} disabled={leveringBusy || !leveringFiles.length}>
