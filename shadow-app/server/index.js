@@ -6874,6 +6874,29 @@ function inkoopDescriptionWords(text) {
   return new Set(String(text || "").toUpperCase().split(/[^A-Z]+/).filter((word) => word.length >= 4 && !INKOOP_DESCRIPTION_STOPWORDS.has(word)));
 }
 
+// How many name words an invoice and a Connect description share
+// ("ANTHU BANDEROLA CAVA" / "Anthu Banderola Cava 5+" -> 3, against just
+// "ANTHU" for any other Anthurium).
+function inkoopDescriptionSharedWords(invoiceDescription, connectDescription) {
+  const connectWords = inkoopDescriptionWords(connectDescription);
+  let shared = 0;
+  for (const word of inkoopDescriptionWords(invoiceDescription)) {
+    if (connectWords.has(word)) shared += 1;
+  }
+  return shared;
+}
+
+// Of these lots, the one whose name fits the line clearly best (more
+// shared words than any other), or null.
+function inkoopBestNamedRow(rows, description) {
+  const scored = rows.map((row) => ({ row, score: inkoopDescriptionSharedWords(description, row?.description) }))
+    .filter((item) => item.score > 0)
+    .sort((left, right) => right.score - left.score);
+  if (!scored.length) return null;
+  if (scored.length > 1 && scored[1].score === scored[0].score) return null;
+  return scored[0].row;
+}
+
 function inkoopDescriptionsShareName(invoiceDescription, connectDescription) {
   const connectWords = inkoopDescriptionWords(connectDescription);
   if (!connectWords.size) return false;
@@ -7380,13 +7403,15 @@ function matchInkoopVeilingLines(erpRows, invoices, supplierMap = {}, supplierNa
     // with the same pieces and price, the one with the name; with none
     // exact, the one lot with the name and the same pieces or price.
     const nameMatches = (row) => inkoopDescriptionsShareName(line?.description, row?.description);
+    // The lot whose name fits clearly best -- not just any lot sharing one
+    // word (every Anthurium shares "ANTHU").
     if (picked.ambiguous) {
-      const named = (picked.candidates || []).filter(nameMatches);
-      if (named.length === 1) picked = { row: named[0], ambiguous: false };
+      const named = inkoopBestNamedRow(picked.candidates || [], line?.description);
+      if (named) picked = { row: named, ambiguous: false };
     } else if (!picked.row || (inkoopValuesDiffer(picked.row.pieces, line.quantity) && inkoopValuesDiffer(parseFloat(picked.row.price), line.unit_price) && !nameMatches(picked.row))) {
-      const named = candidates.filter((row) => !consumedErpRows.has(row) && nameMatches(row)
-        && (!inkoopValuesDiffer(row.pieces, line.quantity) || !inkoopValuesDiffer(parseFloat(row.price), line.unit_price)));
-      if (named.length === 1) picked = { row: named[0], ambiguous: false, by_name: true };
+      const named = inkoopBestNamedRow(candidates.filter((row) => !consumedErpRows.has(row)
+        && (!inkoopValuesDiffer(row.pieces, line.quantity) || !inkoopValuesDiffer(parseFloat(row.price), line.unit_price))), line?.description);
+      if (named) picked = { row: named, ambiguous: false, by_name: true };
     }
     // One invoice line booked as several lots, also under the grower's
     // different codes (20 boxes: 10 under MELISS, 10 under -MELUK): free
@@ -7747,11 +7772,16 @@ function matchInkoopVeilingLines(erpRows, invoices, supplierMap = {}, supplierNa
     const date = String(item.invoice_date || "").slice(0, 10);
     const ofSupplier = (Array.isArray(erpRows) ? erpRows : []).filter((row) => codes.has(resolveErpRowSupplierCode(row, validSupplierCodes)));
     const near = ofSupplier.filter((row) => !date || !row?.date || dayDistance(row.date, date) <= INKOOP_DAY_TOLERANCE_DAYS);
-    const similar = near.filter((row) => !inkoopValuesDiffer(row.pieces, item.quantity) || !inkoopValuesDiffer(parseFloat(row.price), item.unit_price));
+    // Best first: the name, then the nearest day.
+    const similar = near.filter((row) => !inkoopValuesDiffer(row.pieces, item.quantity) || !inkoopValuesDiffer(parseFloat(row.price), item.unit_price))
+      .map((row) => ({ row, score: inkoopDescriptionSharedWords(item.description, row?.description), days: dayDistance(row.date, date) }))
+      .sort((left, right) => right.score - left.score || left.days - right.days)
+      .map((entry) => entry.row);
     item.connect_check = {
       supplier_lots: ofSupplier.length,
       near_lots: near.length,
-      candidates: similar.slice(0, 6).map((row) => {
+      similar_lots: similar.length,
+      candidates: similar.slice(0, 8).map((row) => {
         const taker = takenBy.get(row);
         const pav = normalizeInkoopKey(row?.pav);
         return {
@@ -8815,7 +8845,7 @@ const INKOOP_EMPTY_DAY_BUCKET = {
 // compared again once (at start-up), not only days whose data changed.
 // 2026-10-21: grower directory (learned links, Handel evidence), supplier
 // pairs stored on the invoice date.
-const INKOOP_MATCH_RULES_VERSION = "2026-10-23b";
+const INKOOP_MATCH_RULES_VERSION = "2026-10-24";
 
 function inkoopStateFingerprint(state) {
   return crypto.createHash("sha1").update(JSON.stringify([
