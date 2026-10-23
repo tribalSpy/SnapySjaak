@@ -18785,6 +18785,7 @@ function InkoopFollowUpTab({ company }) {
             <div className="inkoop-summary-card"><div className="inkoop-summary-value">{formatInkoopEuro(shownIssues.reduce((sum, issue) => sum + (Number(issue.value) || 0), 0))}</div><div className="inkoop-summary-label">Value at stake</div></div>
             <div className="inkoop-summary-card"><div className="inkoop-summary-value"><InkoopMoneyDiff value={shownIssues.reduce((sum, issue) => sum + (Number(issue.money_diff) || 0), 0)} /></div><div className="inkoop-summary-label">Net (invoice − Connect)</div></div>
           </div>
+          <InkoopTransactionCostSummary issues={shownIssues} />
           <div className="table-wrap">
             <table className="data-table">
               <thead>
@@ -18817,7 +18818,12 @@ function InkoopFollowUpTab({ company }) {
                                     <td>{inkoopShortDate(issue.date)}</td>
                                     <td>{inkoopIssueTypeLabel(issue.issue_type)}</td>
                                     <td><InkoopInvoiceLink invoiceNumber={issue.invoice_number} /></td>
-                                    <td>{issue.description}</td>
+                                    <td>
+                                      {issue.description}
+                                      {issue.transaction_cost && (
+                                        <div><span className="ukdocs-status-badge muted" title={`Connect ${issue.erp_row?.price} + ${issue.transaction_cost.pct}% = ${issue.transaction_cost.connect_price_with_cost}; this line: +${issue.transaction_cost.actual_pct}%`}>transaction cost {issue.transaction_cost.code} +{issue.transaction_cost.pct}%</span></div>
+                                      )}
+                                    </td>
                                     <td>{issue.issue_type === "aggregate_mismatch" ? inkoopAggregateMismatchTranscript(issue.detail) : inkoopErpTranscript(issue.erp_row)}</td>
                                     <td>{formatInkoopEuro(issue.value)}</td>
                                     <td><InkoopMoneyDiff value={issue.money_diff} /></td>
@@ -18895,6 +18901,36 @@ const INKOOP_GROWER_SOURCE_LABELS = {
 // have several codes (Milessa: MELISS and -MELUK). "Count together" makes
 // them a facturation group, so the grower's day total is compared over all
 // its codes. Goal: every invoice grower at least one code.
+// The price mismatches a grower's transaction cost explains (VDEIJK): how
+// many, what they cost and the % the prices really show (invoice against
+// Connect of those lines).
+function InkoopTransactionCostSummary({ issues }) {
+  const byCode = new Map();
+  for (const issue of issues || []) {
+    const cost = issue.transaction_cost;
+    // Only the lines where the price is the whole difference (same pieces).
+    if (!cost || (issue.detail?.diffs || []).some((diff) => diff.field === "quantity")) continue;
+    const entry = byCode.get(cost.code) || { code: cost.code, pct: cost.pct, lines: 0, invoice: 0, connect: 0 };
+    entry.lines += 1;
+    entry.invoice += Number(issue.invoice_value) || 0;
+    entry.connect += Number(issue.connect_value) || 0;
+    byCode.set(cost.code, entry);
+  }
+  if (!byCode.size) return null;
+  return (
+    <div className="notice" style={{ margin: "6px 0" }}>
+      {[...byCode.values()].map((entry) => (
+        <div key={entry.code}>
+          <strong>Transaction cost {entry.code}</strong> (set: +{entry.pct}%): {entry.lines} line(s),{" "}
+          <InkoopMoneyDiff value={Math.round((entry.invoice - entry.connect) * 100) / 100} /> extra --
+          calculated from these lines: <strong>{entry.connect > 0 ? inkoopPct(((entry.invoice - entry.connect) / entry.connect) * 100) : "-"}</strong>.
+          Paired with their lots; still counted as a price difference until {entry.code} fixes it.
+        </div>
+      ))}
+    </div>
+  );
+}
+
 function InkoopLinkGrowersTab() {
   const [data, setData] = useState(null);
   const [error, setError] = useState("");
@@ -18929,7 +18965,20 @@ function InkoopLinkGrowersTab() {
   const [pendingExcluded, setPendingExcluded] = useState(null);
   const [excludeDraft, setExcludeDraft] = useState("");
   const excludedCodes = pendingExcluded || data?.excluded_erp_codes || [];
-  const pendingCount = Object.keys(pendingLinks).length + Object.keys(pendingGroups).length + (pendingExcluded ? 1 : 0);
+  // Transaction cost % a grower adds on its invoice prices (VDEIJK): null = unchanged.
+  const [pendingCosts, setPendingCosts] = useState(null);
+  const [costDraft, setCostDraft] = useState({ code: "", pct: "" });
+  const transactionCosts = pendingCosts || data?.transaction_costs || {};
+  function setCost(code, pct) {
+    const value = String(code || "").trim().toUpperCase();
+    if (!value) return;
+    const next = { ...transactionCosts };
+    if (Number(pct) > 0) next[value] = Number(pct);
+    else delete next[value];
+    setPendingCosts(next);
+    setMessage(`${value}: ${Number(pct) > 0 ? `transaction cost +${Number(pct)}% on the invoice price` : "no transaction cost"}. Not saved yet -- press Save when done.`);
+  }
+  const pendingCount = Object.keys(pendingLinks).length + Object.keys(pendingGroups).length + (pendingExcluded ? 1 : 0) + (pendingCosts ? 1 : 0);
   function setExcluded(code, on) {
     const value = String(code || "").trim().toUpperCase();
     if (!value) return;
@@ -18977,11 +19026,12 @@ function InkoopLinkGrowersTab() {
     try {
       const payload = await apiJson("/api/inkoop/growers/links-batch", {
         method: "POST",
-        body: JSON.stringify({ links: Object.values(pendingLinks), groups: Object.values(pendingGroups), ...(pendingExcluded ? { excluded_codes: pendingExcluded } : {}) }),
+        body: JSON.stringify({ links: Object.values(pendingLinks), groups: Object.values(pendingGroups), ...(pendingExcluded ? { excluded_codes: pendingExcluded } : {}), ...(pendingCosts ? { transaction_costs: pendingCosts } : {}) }),
       });
       setPendingLinks({});
       setPendingGroups({});
       setPendingExcluded(null);
+      setPendingCosts(null);
       setMessage(`Saved: ${payload.links} grower link(s)${payload.groups ? `, ${payload.groups} group(s)` : ""}. Every day is compared again in the background.`);
       await load();
     } catch (saveError) {
@@ -19175,6 +19225,21 @@ function InkoopLinkGrowersTab() {
                 {!excludedCodes.length && <span className="muted">none chosen</span>}
                 <input size={10} value={excludeDraft} onChange={(event) => setExcludeDraft(event.target.value)} placeholder="e.g. RETOUR" />
                 <button type="button" onClick={() => { setExcluded(excludeDraft, true); setExcludeDraft(""); }} disabled={!excludeDraft.trim()}>Leave out</button>
+              </div>
+            </div>
+            <div className="notice" style={{ marginTop: 8 }}>
+              <strong>Transaction cost on the invoice</strong> -- the grower's invoice price is the Connect price plus this %.
+              The line still pairs with its lot and stays a (minor) price mismatch, tagged "transaction cost", until they fix it.
+              <div className="row-actions" style={{ marginTop: 6 }}>
+                {Object.entries(transactionCosts).map(([code, pct]) => (
+                  <span key={code} className="ukdocs-status-badge muted">
+                    {code} +{pct}% <button type="button" className="link-button" onClick={() => setCost(code, 0)} title="No transaction cost">x</button>
+                  </span>
+                ))}
+                {!Object.keys(transactionCosts).length && <span className="muted">none</span>}
+                <input size={8} value={costDraft.code} onChange={(event) => setCostDraft((current) => ({ ...current, code: event.target.value }))} placeholder="e.g. VDEIJK" />
+                <input size={5} type="number" step="0.01" min="0" value={costDraft.pct} onChange={(event) => setCostDraft((current) => ({ ...current, pct: event.target.value }))} placeholder="%" />
+                <button type="button" onClick={() => { setCost(costDraft.code, costDraft.pct); setCostDraft({ code: "", pct: "" }); }} disabled={!costDraft.code.trim() || !(Number(costDraft.pct) > 0)}>Set</button>
               </div>
             </div>
             <label className="checkbox-label">

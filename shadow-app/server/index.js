@@ -7069,10 +7069,11 @@ function resolveInkoopSupplierCode(gln, fhNumber, name, supplierMap, supplierNam
 // apart, so that's surfaced as ambiguous rather than guessed. Shared by
 // both the PAV-keyed (Klok/Connect) and supplier-code-keyed (Handel)
 // candidate pools -- same shape of problem either way.
-function pickInkoopMatchingErpRow(candidates, quantity, unitPrice, consumedErpRows, targetDate, trySplitDelivery) {
+function pickInkoopMatchingErpRow(candidates, quantity, unitPrice, consumedErpRows, targetDate, trySplitDelivery, priceFits) {
   const remaining = (candidates || []).filter((row) => !consumedErpRows.has(row));
+  const samePrice = priceFits || ((row, price) => !inkoopValuesDiffer(parseFloat(row.price), price));
   const exactMatches = remaining.filter((row) => (
-    !inkoopValuesDiffer(row.pieces, quantity) && !inkoopValuesDiffer(parseFloat(row.price), unitPrice)
+    !inkoopValuesDiffer(row.pieces, quantity) && samePrice(row, unitPrice)
   ));
   if (exactMatches.length === 1) {
     return { row: exactMatches[0], ambiguous: false };
@@ -7266,7 +7267,17 @@ function findInkoopPiecesCombination(rows, target) {
   return null;
 }
 
-function matchInkoopVeilingLines(erpRows, invoices, supplierMap = {}, supplierNameMap = {}, manualLinks = [], supplierFhMap = {}) {
+// A grower adding a % transaction cost on its invoice prices (VDEIJK, until
+// they fix it): the lot's Connect price plus that % rounded is the invoice
+// price, so the line still pairs with its lot -- and stays a (minor) price
+// mismatch, tagged with the cost.
+function inkoopPriceWithTransactionCost(connectPrice, pct) {
+  const price = Number(connectPrice);
+  if (!Number.isFinite(price) || !(pct > 0)) return null;
+  return Math.round(price * (1 + pct / 100) * 100) / 100;
+}
+
+function matchInkoopVeilingLines(erpRows, invoices, supplierMap = {}, supplierNameMap = {}, manualLinks = [], supplierFhMap = {}, transactionCosts = {}) {
   // Every code the uploaded master data actually knows about, regardless of
   // which lookup (GLN/name/FH) it happened to be reachable through --
   // needed here since an ERP row's Suppl./Avc./Transp. value has to be
@@ -7277,6 +7288,19 @@ function matchInkoopVeilingLines(erpRows, invoices, supplierMap = {}, supplierNa
       .map((entry) => normalizeInkoopKey(entry?.code))
       .filter(Boolean),
   );
+
+  const transactionCostOf = (row) => {
+    const code = resolveErpRowSupplierCode(row, validSupplierCodes) || normalizeInkoopKey(row?.suppl);
+    const pct = Number(transactionCosts?.[code]);
+    return pct > 0 ? { code, pct } : null;
+  };
+  // Same price -- or the Connect price plus the code's transaction cost.
+  const priceFits = (row, unitPrice) => {
+    if (!inkoopValuesDiffer(parseFloat(row?.price), unitPrice)) return true;
+    const cost = transactionCostOf(row);
+    const withCost = cost ? inkoopPriceWithTransactionCost(parseFloat(row?.price), cost.pct) : null;
+    return withCost !== null && !inkoopValuesDiffer(withCost, unitPrice);
+  };
 
   const erpByPav = new Map();
   const erpByBasePav = new Map();
@@ -7397,7 +7421,7 @@ function matchInkoopVeilingLines(erpRows, invoices, supplierMap = {}, supplierNa
     // actually is, exactly as it already does for several rows under one
     // code.
     const candidates = resolved.codes.flatMap((code) => erpBySupplierCode.get(code) || []);
-    let picked = pickInkoopMatchingErpRow(candidates, line.quantity, line.unit_price, consumedErpRows, normalizeUkdocsText(line?.invoice_date).slice(0, 10));
+    let picked = pickInkoopMatchingErpRow(candidates, line.quantity, line.unit_price, consumedErpRows, normalizeUkdocsText(line?.invoice_date).slice(0, 10), null, priceFits);
     // No brief number to go on: the product name helps ("CHR S AAA
     // AURINKO" on the invoice, "Aurinko" in Connect). Among several lots
     // with the same pieces and price, the one with the name; with none
@@ -7408,9 +7432,9 @@ function matchInkoopVeilingLines(erpRows, invoices, supplierMap = {}, supplierNa
     if (picked.ambiguous) {
       const named = inkoopBestNamedRow(picked.candidates || [], line?.description);
       if (named) picked = { row: named, ambiguous: false };
-    } else if (!picked.row || (inkoopValuesDiffer(picked.row.pieces, line.quantity) && inkoopValuesDiffer(parseFloat(picked.row.price), line.unit_price) && !nameMatches(picked.row))) {
+    } else if (!picked.row || (inkoopValuesDiffer(picked.row.pieces, line.quantity) && !priceFits(picked.row, line.unit_price) && !nameMatches(picked.row))) {
       const named = inkoopBestNamedRow(candidates.filter((row) => !consumedErpRows.has(row)
-        && (!inkoopValuesDiffer(row.pieces, line.quantity) || !inkoopValuesDiffer(parseFloat(row.price), line.unit_price))), line?.description);
+        && (!inkoopValuesDiffer(row.pieces, line.quantity) || priceFits(row, line.unit_price))), line?.description);
       if (named) picked = { row: named, ambiguous: false, by_name: true };
     }
     // One invoice line booked as several lots, also under the grower's
@@ -7420,7 +7444,7 @@ function matchInkoopVeilingLines(erpRows, invoices, supplierMap = {}, supplierNa
       const lineDate = normalizeUkdocsText(line?.invoice_date).slice(0, 10);
       const parts = candidates.filter((row) => !consumedErpRows.has(row)
         && String(row?.date || "").slice(0, 10) === lineDate
-        && !inkoopValuesDiffer(parseFloat(row.price), line.unit_price)
+        && priceFits(row, line.unit_price)
         && Number(row.pieces) > 0 && Number(row.pieces) < Number(line.quantity)).slice(0, 14);
       const combination = findInkoopPiecesCombination(parts, Number(line.quantity));
       if (combination) {
@@ -7452,7 +7476,7 @@ function matchInkoopVeilingLines(erpRows, invoices, supplierMap = {}, supplierNa
     // another product, not this one (it used to be taken -- and called OK).
     const quantityDiffers = picked.row && inkoopValuesDiffer(picked.row.pieces, line.quantity);
     const priceDiffers = picked.row && inkoopValuesDiffer(parseFloat(picked.row.price), line.unit_price);
-    if (!picked.row || (quantityDiffers && priceDiffers && !nameMatches(picked.row))) {
+    if (!picked.row || (quantityDiffers && !priceFits(picked.row, line.unit_price) && !nameMatches(picked.row))) {
       onlyInInvoice.push({ ...context, supplier_code: codesLabel, supplier_match_type: resolved.match_type });
       return;
     }
@@ -7608,6 +7632,7 @@ function matchInkoopVeilingLines(erpRows, invoices, supplierMap = {}, supplierNa
       consumedErpRows,
       normalizeUkdocsText(item?.invoice_date).slice(0, 10),
       () => tryInkoopSplitDeliveryMatch(erpByBasePav.get(inkoopBasePav(referenceBt)), item.quantity, item.unit_price, item.total, consumedErpRows),
+      priceFits,
     );
     if (picked.ambiguous) {
       ambiguousMatches.push({ ...context, pav: referenceBt, candidates: picked.candidates });
@@ -7797,6 +7822,21 @@ function matchInkoopVeilingLines(erpRows, invoices, supplierMap = {}, supplierNa
     };
   }
 
+  for (const item of matchedMismatch) {
+    const priceDiff = (item.diffs || []).find((diff) => diff.field === "unit_price");
+    if (!priceDiff || !item.erp_row) continue;
+    const cost = transactionCostOf(item.erp_row);
+    if (!cost || !priceFits(item.erp_row, item.unit_price)) continue;
+    const connectPrice = parseFloat(item.erp_row.price);
+    item.transaction_cost = {
+      code: cost.code,
+      pct: cost.pct,
+      connect_price_with_cost: inkoopPriceWithTransactionCost(connectPrice, cost.pct),
+      // What this line's prices actually say.
+      actual_pct: connectPrice > 0 ? Math.round(((Number(item.unit_price) / connectPrice) - 1) * 10000) / 100 : null,
+    };
+  }
+
   return {
     matched_ok: matchedOk,
     matched_mismatch: matchedMismatch,
@@ -7809,7 +7849,17 @@ function matchInkoopVeilingLines(erpRows, invoices, supplierMap = {}, supplierNa
   };
 }
 
-const defaultInkoopState = { imports: [], supplier_map: {}, supplier_name_map: {}, supplier_fh_map: {}, supplier_bw_map: {}, customer_map: {}, manual_supplier_links: [], facturation_groups: [], king_ledger_map: null, king_settings: {}, grower_skip_codes: [], excluded_erp_codes: [], supplier_bedrijf_map: {} };
+const defaultInkoopState = { imports: [], supplier_map: {}, supplier_name_map: {}, supplier_fh_map: {}, supplier_bw_map: {}, customer_map: {}, manual_supplier_links: [], facturation_groups: [], king_ledger_map: null, king_settings: {}, grower_skip_codes: [], excluded_erp_codes: [], supplier_bedrijf_map: {}, transaction_costs: null };
+
+// Connect codes whose invoices carry a % transaction cost on the price.
+const INKOOP_DEFAULT_TRANSACTION_COSTS = { VDEIJK: 1 };
+
+function normalizeInkoopTransactionCosts(value) {
+  if (!value || typeof value !== "object") return { ...INKOOP_DEFAULT_TRANSACTION_COSTS };
+  return Object.fromEntries(Object.entries(value)
+    .map(([code, pct]) => [normalizeInkoopKey(code), Math.round(Number(pct) * 1000) / 1000])
+    .filter(([code, pct]) => code && Number.isFinite(pct) && pct > 0 && pct < 20));
+}
 
 // Every compare/upload used to be matched in isolation and its full result
 // (every matched/mismatched/unmatched line) pushed onto this list forever --
@@ -8020,6 +8070,9 @@ function normalizeInkoopState(state) {
     // stamgegevens (VEILIN, FAC, INKOOP, VDV, LTD ...).
     supplier_bedrijf_map: Object.fromEntries(Object.entries(state?.supplier_bedrijf_map && typeof state.supplier_bedrijf_map === "object" ? state.supplier_bedrijf_map : {})
       .map(([code, bedrijf]) => [normalizeInkoopKey(code), normalizeUkdocsText(bedrijf).toUpperCase()]).filter(([code, bedrijf]) => code && bedrijf)),
+    // Connect code -> % transaction cost the grower adds on its invoice
+    // prices (VDEIJK 1%): still paired, shown as a minor price mismatch.
+    transaction_costs: normalizeInkoopTransactionCosts(state?.transaction_costs),
   };
 }
 
@@ -8845,13 +8898,14 @@ const INKOOP_EMPTY_DAY_BUCKET = {
 // compared again once (at start-up), not only days whose data changed.
 // 2026-10-21: grower directory (learned links, Handel evidence), supplier
 // pairs stored on the invoice date.
-const INKOOP_MATCH_RULES_VERSION = "2026-10-24";
+const INKOOP_MATCH_RULES_VERSION = "2026-10-24b";
 
 function inkoopStateFingerprint(state) {
   return crypto.createHash("sha1").update(JSON.stringify([
     INKOOP_MATCH_RULES_VERSION,
     state.supplier_map, state.supplier_name_map, state.supplier_fh_map, state.supplier_bw_map,
     state.manual_supplier_links, state.facturation_groups, state.customer_map, state.grower_skip_codes || [], inkoopExcludedErpCodes(state).sort(),
+    state.transaction_costs || {},
   ])).digest("hex");
 }
 
@@ -8927,6 +8981,7 @@ function buildInkoopMatchRows(result) {
       if (row?.matched_as_correction) notes.push("correction");
       if (row?.confirmed_return) notes.push("confirmed return");
       if (row?.matched_as_split_delivery) notes.push("split delivery");
+      if (row?.transaction_cost) notes.push(`transaction cost ${row.transaction_cost.code} +${row.transaction_cost.pct}%`);
       if (row?.matched_as_group) notes.push("matched as group");
       if (row?.supplier_bw_name) notes.push(`supplier: ${row.supplier_bw_name}`);
       rows.push({
@@ -9517,7 +9572,7 @@ async function computeInkoopLiveMatchFresh(state, { from, to }) {
   const supplierMap = { ...directory.matcherMaps.gln, ...state.supplier_map };
   const supplierFhMap = { ...directory.matcherMaps.fh, ...state.supplier_fh_map };
   inkoopNonGrowerCodes = new Set(directory.skipCodes || []);
-  const result = matchInkoopVeilingLines(erpRows, invoices, supplierMap, state.supplier_name_map, state.manual_supplier_links, supplierFhMap);
+  const result = matchInkoopVeilingLines(erpRows, invoices, supplierMap, state.supplier_name_map, state.manual_supplier_links, supplierFhMap, state.transaction_costs);
   const withReturns = await reclassifyInkoopConfirmedReturns(result, state.customer_map);
   // Tagged in place (fresh rows from this request's own query) so every
   // view showing an only-in-ERP gap can say what kind of party it is --
@@ -23863,6 +23918,7 @@ async function handleApi(req, res, url) {
           id: inkoopIssueId("mismatch", row), issue_type: "mismatch", date: inkoopDateKeyFromErpAnchor(row), description: row.description, value: inkoopMismatchValue(row), invoice_number: row.invoice_number || "", erp_row: row.erp_row || null, detail: row,
           grower: growerOfInvoice(row) || inkoopGrowerNameForErpRow(row.erp_row, codeToName, validSupplierCodes) || normalizeUkdocsText(row.erp_row?.suppl),
           bw: bwOfErp(row.erp_row), invoice_value: invoiceValue, connect_value: connectValue, money_diff: Math.round((invoiceValue - connectValue) * 100) / 100,
+          transaction_cost: row.transaction_cost || null,
         });
       }
       for (const row of result.only_in_erp || []) {
@@ -24017,7 +24073,7 @@ async function handleApi(req, res, url) {
     }
     const suppliers = (view.suppliers || []).map((supplier) => ({ ...supplier, products: products.get(`${supplier.gln || ""}|${supplier.fh_number || ""}`) || [] }));
     const bedrijfExcluded = Object.entries(state.supplier_bedrijf_map || {}).filter(([, bedrijf]) => INKOOP_INTERNAL_BEDRIJF.has(bedrijf)).map(([code, bedrijf]) => ({ code, bedrijf }));
-    sendJson(res, 200, { ...view, suppliers, manual_supplier_links: state.manual_supplier_links || [], facturation_groups: state.facturation_groups || [], excluded_erp_codes: state.excluded_erp_codes || [], bedrijf_excluded: bedrijfExcluded });
+    sendJson(res, 200, { ...view, suppliers, manual_supplier_links: state.manual_supplier_links || [], facturation_groups: state.facturation_groups || [], excluded_erp_codes: state.excluded_erp_codes || [], transaction_costs: state.transaction_costs || {}, bedrijf_excluded: bedrijfExcluded });
     return;
   }
 
@@ -24060,8 +24116,14 @@ async function handleApi(req, res, url) {
       state.excluded_erp_codes = [...new Set(body.excluded_codes.map((code) => normalizeInkoopKey(code)).filter(Boolean))].sort();
       excludedChanged = true;
     }
-    if (links || groups || excludedChanged) await writeInkoopState(state);
-    sendJson(res, 200, { links, groups, excluded_erp_codes: state.excluded_erp_codes || [], manual_supplier_links: state.manual_supplier_links, facturation_groups: state.facturation_groups });
+    // The transaction costs, when sent ({code: pct}; a code left out is removed).
+    let costsChanged = false;
+    if (body?.transaction_costs && typeof body.transaction_costs === "object") {
+      state.transaction_costs = normalizeInkoopTransactionCosts(body.transaction_costs);
+      costsChanged = true;
+    }
+    if (links || groups || excludedChanged || costsChanged) await writeInkoopState(state);
+    sendJson(res, 200, { links, groups, excluded_erp_codes: state.excluded_erp_codes || [], transaction_costs: state.transaction_costs || {}, manual_supplier_links: state.manual_supplier_links, facturation_groups: state.facturation_groups });
     return;
   }
 
