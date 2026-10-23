@@ -23633,8 +23633,22 @@ async function handleApi(req, res, url) {
       // The aggregate covers the day's window (D-1..D+1); only D's own
       // grower-day mismatches are this day's issues.
       const aggregateResult = { ...dayAggregate, mismatches: (dayAggregate?.mismatches || []).filter((mismatch) => mismatch.date === day.date) };
+      // Per line also: the grower (name), the betaalwijze of the Connect
+      // code and the money difference -- invoice (what we pay) minus Connect
+      // (what we count on): more than 0 is money lost.
+      const bwOfErp = (erp) => {
+        const entry = state.supplier_bw_map?.[normalizeInkoopKey(erp?.suppl)] || state.supplier_bw_map?.[normalizeInkoopKey(erp?.avc)];
+        return entry?.bw || "?";
+      };
+      const growerOfInvoice = (row) => inkoopGrowerNameForInvoiceLine(row, codeToName, supplierMap, supplierNameMap, manualLinks, supplierFhMap) || normalizeUkdocsText(row?.supplier_name);
       for (const row of result.matched_mismatch || []) {
-        issues.push({ id: inkoopIssueId("mismatch", row), issue_type: "mismatch", date: inkoopDateKeyFromErpAnchor(row), description: row.description, value: inkoopMismatchValue(row), invoice_number: row.invoice_number || "", erp_row: row.erp_row || null, detail: row });
+        const invoiceValue = inkoopInvoiceLineTotal(row);
+        const connectValue = inkoopErpRowTotal(row.erp_row);
+        issues.push({
+          id: inkoopIssueId("mismatch", row), issue_type: "mismatch", date: inkoopDateKeyFromErpAnchor(row), description: row.description, value: inkoopMismatchValue(row), invoice_number: row.invoice_number || "", erp_row: row.erp_row || null, detail: row,
+          grower: growerOfInvoice(row) || inkoopGrowerNameForErpRow(row.erp_row, codeToName, validSupplierCodes) || normalizeUkdocsText(row.erp_row?.suppl),
+          bw: bwOfErp(row.erp_row), invoice_value: invoiceValue, connect_value: connectValue, money_diff: Math.round((invoiceValue - connectValue) * 100) / 100,
+        });
       }
       for (const row of result.only_in_erp || []) {
         if (inkoopGapIsExplainedByAggregate(row, inkoopGrowerNameForErpRow(row, codeToName, validSupplierCodes), aggregateResult)) {
@@ -23642,14 +23656,22 @@ async function handleApi(req, res, url) {
         }
         // No invoice side exists for a "missing from invoice" gap -- no
         // invoice_number to link a PDF from, same asymmetry as AVC/company.
-        issues.push({ id: inkoopIssueId("gap_erp", row), issue_type: "gap_erp", date: inkoopDateKeyFromErpAnchor(row), description: row.description, value: inkoopErpRowTotal(row), invoice_number: "", erp_row: row, detail: row });
+        issues.push({
+          id: inkoopIssueId("gap_erp", row), issue_type: "gap_erp", date: inkoopDateKeyFromErpAnchor(row), description: row.description, value: inkoopErpRowTotal(row), invoice_number: "", erp_row: row, detail: row,
+          grower: inkoopGrowerNameForErpRow(row, codeToName, validSupplierCodes) || normalizeUkdocsText(row?.suppl),
+          bw: bwOfErp(row), invoice_value: 0, connect_value: inkoopErpRowTotal(row), money_diff: -Math.round(inkoopErpRowTotal(row) * 100) / 100,
+        });
       }
       for (const row of result.only_in_invoice || []) {
         const invoiceGrowerName = inkoopGrowerNameForInvoiceLine(row, codeToName, supplierMap, supplierNameMap, manualLinks, supplierFhMap);
         if (inkoopGapIsExplainedByAggregate(row, invoiceGrowerName, aggregateResult)) {
           continue;
         }
-        issues.push({ id: inkoopIssueId("gap_invoice", row), issue_type: "gap_invoice", date: inkoopDateKeyFromInvoiceAnchor(row), description: row.description, value: inkoopInvoiceLineTotal(row), invoice_number: row.invoice_number || "", erp_row: null, detail: row });
+        issues.push({
+          id: inkoopIssueId("gap_invoice", row), issue_type: "gap_invoice", date: inkoopDateKeyFromInvoiceAnchor(row), description: row.description, value: inkoopInvoiceLineTotal(row), invoice_number: row.invoice_number || "", erp_row: null, detail: row,
+          // An invoice line is FloraHolland: via veiling.
+          grower: invoiceGrowerName || normalizeUkdocsText(row?.supplier_name), bw: "V", invoice_value: inkoopInvoiceLineTotal(row), connect_value: 0, money_diff: Math.round(inkoopInvoiceLineTotal(row) * 100) / 100,
+        });
       }
       for (const mismatch of aggregateResult.mismatches) {
         const pieceDiff = mismatch.invoice_pieces - mismatch.erp_pieces;
@@ -23665,6 +23687,7 @@ async function handleApi(req, res, url) {
           invoice_number: "",
           erp_row: null,
           detail: { ...mismatch, piece_diff: pieceDiff, value_diff: valueDiff },
+          grower: mismatch.grower_name || "", bw: "V", invoice_value: mismatch.invoice_value, connect_value: mismatch.erp_value, money_diff: Math.round(valueDiff * 100) / 100,
         });
       }
       }

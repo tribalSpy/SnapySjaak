@@ -17386,6 +17386,24 @@ function InkoopResultTables({ result, windowDays, manualLinkDrafts, setManualLin
       {!!result.matched_mismatch.length && (
         <InkoopCollapsibleCard title="Mismatches" count={inkoopResultCount(result, "matched_mismatch")}>
           <InkoopTruncatedNote result={result} list="matched_mismatch" />
+          {(() => {
+            // Invoice minus Connect over all mismatches: lost (we pay more) and gained.
+            const rows = result.matched_mismatch || [];
+            const diffOf = (row) => (Number(row.total) || 0) - (Number(row.erp_row?.t_price) || 0);
+            const net = rows.reduce((sum, row) => sum + diffOf(row), 0);
+            const lost = rows.reduce((sum, row) => sum + Math.max(0, diffOf(row)), 0);
+            const gained = rows.reduce((sum, row) => sum + Math.min(0, diffOf(row)), 0);
+            const growers = new Set(rows.map((row) => String(row.supplier_name || row.erp_row?.suppl || "").trim()).filter(Boolean));
+            return (
+              <div className="inkoop-summary-cards" style={{ marginBottom: 10 }}>
+                <div className="inkoop-summary-card"><div className="inkoop-summary-value">{rows.length}</div><div className="inkoop-summary-label">Lines</div></div>
+                <div className="inkoop-summary-card"><div className="inkoop-summary-value">{growers.size}</div><div className="inkoop-summary-label">Growers</div></div>
+                <div className="inkoop-summary-card"><div className="inkoop-summary-value"><InkoopMoneyDiff value={net} /></div><div className="inkoop-summary-label">Net (invoice − Connect)</div></div>
+                <div className="inkoop-summary-card"><div className="inkoop-summary-value"><span className="money-loss">+{formatInkoopEuro(lost)}</span></div><div className="inkoop-summary-label">We pay more</div></div>
+                <div className="inkoop-summary-card"><div className="inkoop-summary-value"><span className="money-gain">−{formatInkoopEuro(Math.abs(gained))}</span></div><div className="inkoop-summary-label">We pay less</div></div>
+              </div>
+            );
+          })()}
           <div className="table-wrap">
             <table className="data-table">
               <thead>
@@ -17730,6 +17748,302 @@ function InkoopPeriodReports({ company }) {
   );
 }
 
+// ---- Money, growers and the betaalwijze filter (Follow-up, Mismatches,
+// Financial Dashboard) -------------------------------------------------------
+
+// Invoice (what we pay) minus Connect (what we count on): above 0 is money
+// lost (red), below 0 money gained (green).
+function InkoopMoneyDiff({ value, dark = false }) {
+  const number = Number(value) || 0;
+  if (Math.abs(number) < 0.005) return <span>{formatInkoopEuro(0)}</span>;
+  const lost = number > 0;
+  return (
+    <span className={dark ? (lost ? "fin-loss" : "fin-gain") : (lost ? "money-loss" : "money-gain")} title={lost ? "We pay more than Connect counts on" : "We pay less than Connect counts on"}>
+      {lost ? "+" : "−"}{formatInkoopEuro(Math.abs(number))}
+    </span>
+  );
+}
+
+const INKOOP_ISSUE_TYPES = [
+  ["mismatch", "Price / pieces"],
+  ["gap_erp", "Only in Connect"],
+  ["gap_invoice", "Only in invoice"],
+  ["aggregate_mismatch", "Day total (overlaps the lines)"],
+];
+
+// Follow-up lines folded per grower: lines, value at stake, the money
+// difference, per type, and % difference from Connect.
+function inkoopGroupIssuesByGrower(issues) {
+  const groups = new Map();
+  for (const issue of issues) {
+    const name = String(issue.grower || "").trim() || "(grower unknown)";
+    if (!groups.has(name)) groups.set(name, { grower: name, issues: [], lines: 0, value: 0, money_diff: 0, invoice_value: 0, connect_value: 0, types: {} });
+    const group = groups.get(name);
+    group.issues.push(issue);
+    group.lines += 1;
+    group.value += Number(issue.value) || 0;
+    group.money_diff += Number(issue.money_diff) || 0;
+    group.invoice_value += Number(issue.invoice_value) || 0;
+    group.connect_value += Number(issue.connect_value) || 0;
+    group.types[issue.issue_type] = (group.types[issue.issue_type] || 0) + 1;
+  }
+  const total = [...groups.values()].reduce((sum, group) => sum + group.value, 0) || 1;
+  return [...groups.values()]
+    .map((group) => ({
+      ...group,
+      share: (group.value / total) * 100,
+      pct_vs_connect: group.connect_value > 0 ? (group.money_diff / group.connect_value) * 100 : null,
+    }))
+    .sort((left, right) => right.value - left.value);
+}
+
+function inkoopPct(value) {
+  if (value === null || value === undefined || !Number.isFinite(value)) return "-";
+  return `${value > 0 ? "+" : ""}${value.toFixed(1)}%`;
+}
+
+// Betaalwijze filter over a list of rows with .bw and a value: "all", or
+// only the ticked ones (V via veiling by default).
+function InkoopBwFilter({ items, value, onChange, valueOf, dark = false }) {
+  const totals = new Map();
+  for (const item of items) {
+    const bw = item.bw || "?";
+    const entry = totals.get(bw) || [bw, 0, 0];
+    entry[1] += 1;
+    entry[2] += Number(valueOf(item)) || 0;
+    totals.set(bw, entry);
+  }
+  const options = [...totals.values()].sort((left, right) => right[2] - left[2]);
+  return (
+    <div className="row-actions" style={{ margin: "6px 0" }}>
+      <strong>Betaalwijze:</strong>
+      <label className="checkbox-label"><input type="radio" checked={!value} onChange={() => onChange(null)} /><span>all</span></label>
+      <label className="checkbox-label"><input type="radio" checked={Boolean(value)} onChange={() => onChange(value || ["V"])} /><span>only</span></label>
+      {value && options.map(([bw, count, total]) => (
+        <label key={bw} className="checkbox-label">
+          <input type="checkbox" checked={value.includes(bw)} onChange={() => onChange(value.includes(bw) ? value.filter((item) => item !== bw) : [...value, bw])} />
+          <span>{bw === "?" ? "no BW" : `${bw}${INKOOP_BW_LABELS[bw] ? ` (${INKOOP_BW_LABELS[bw]})` : ""}`} <small className={dark ? "fin-sub" : "muted"}>{count} · {formatInkoopEuro(total)}</small></span>
+        </label>
+      ))}
+    </div>
+  );
+}
+
+// The growers behind a figure (a month, a day, a type): the Follow-up
+// lines of that period grouped per grower, in a popup.
+function InkoopGrowerPopup({ from, to, types, title, company, onClose }) {
+  const [issues, setIssues] = useState(null);
+  const [error, setError] = useState("");
+  const [bwFilter, setBwFilter] = useState(["V"]);
+  useEffect(() => {
+    let cancelled = false;
+    const params = new URLSearchParams({ from, to });
+    if (company) params.set("company", company);
+    apiJson(`/api/inkoop/issues?${params.toString()}`)
+      .then((payload) => { if (!cancelled) setIssues(payload.issues || []); })
+      .catch((loadError) => { if (!cancelled) setError(loadError.message); });
+    return () => { cancelled = true; };
+  }, [from, to, company]);
+  useEffect(() => {
+    const onKey = (event) => { if (event.key === "Escape") onClose(); };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [onClose]);
+  const ofType = (issues || []).filter((issue) => !types || types.includes(issue.issue_type));
+  const shown = ofType.filter((issue) => !bwFilter || bwFilter.includes(issue.bw || "?"));
+  const groups = inkoopGroupIssuesByGrower(shown);
+  const net = shown.reduce((sum, issue) => sum + (Number(issue.money_diff) || 0), 0);
+  return (
+    <div className="fin-modal-backdrop" onClick={onClose}>
+      <div className="fin-hero fin-modal" onClick={(event) => event.stopPropagation()}>
+        <div className="fin-head">
+          <div>
+            <h2>{title}</h2>
+            <div className="fin-sub">{from === to ? from : `${from} – ${to}`} · {groups.length} grower(s) · {shown.length} line(s) · net <InkoopMoneyDiff value={net} dark /></div>
+          </div>
+          <button type="button" onClick={onClose}>Close</button>
+        </div>
+        {error && <div className="notice danger">{error}</div>}
+        {!issues && !error && <div className="fin-sub">Loading...</div>}
+        {issues && (
+          <>
+            <InkoopBwFilter items={ofType} value={bwFilter} onChange={setBwFilter} valueOf={(issue) => issue.value} dark />
+            <div className="table-wrap">
+              <table className="fin-table">
+                <thead><tr><th>Grower</th><th>Lines</th><th>Invoice</th><th>Connect</th><th>Difference</th><th>% vs Connect</th><th>Share</th></tr></thead>
+                <tbody>
+                  {groups.slice(0, 200).map((group) => (
+                    <tr key={group.grower}>
+                      <td>{group.grower}</td>
+                      <td>{group.lines}</td>
+                      <td>{formatInkoopEuro(group.invoice_value)}</td>
+                      <td>{formatInkoopEuro(group.connect_value)}</td>
+                      <td><InkoopMoneyDiff value={group.money_diff} dark /></td>
+                      <td className={group.pct_vs_connect > 0 ? "fin-loss" : group.pct_vs_connect < 0 ? "fin-gain" : ""}>{inkoopPct(group.pct_vs_connect)}</td>
+                      <td>{group.share.toFixed(1)}%</td>
+                    </tr>
+                  ))}
+                  {!groups.length && <tr><td colSpan="7">Nothing here.</td></tr>}
+                </tbody>
+              </table>
+            </div>
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// Bars over time, two series side by side (Invoiced / Connect) or one
+// signed series around zero (the difference). Hover: the values.
+function InkoopBarChart({ rows, series, signed = false, onBarClick, height = 220 }) {
+  const [hover, setHover] = useState(null);
+  const width = 640;
+  const pad = { top: 10, right: 8, bottom: 26, left: 56 };
+  const innerWidth = width - pad.left - pad.right;
+  const innerHeight = height - pad.top - pad.bottom;
+  const values = rows.flatMap((row) => series.map((item) => Number(item.value(row)) || 0));
+  const max = Math.max(0, ...values);
+  const min = signed ? Math.min(0, ...values) : 0;
+  const span = max - min || 1;
+  const y = (value) => pad.top + ((max - value) / span) * innerHeight;
+  const slot = innerWidth / Math.max(1, rows.length);
+  const gap = 2;
+  const barWidth = Math.max(2, Math.min(28, (slot - 6) / series.length - gap));
+  const ticks = [max, (max + min) / 2, min].filter((value, index, all) => all.indexOf(value) === index);
+  const short = (value) => (Math.abs(value) >= 1e6 ? `${(value / 1e6).toFixed(1)}M` : Math.abs(value) >= 1e3 ? `${Math.round(value / 1e3)}k` : String(Math.round(value)));
+  const labelEvery = Math.ceil(rows.length / 12);
+  return (
+    <div className="fin-chart" style={{ position: "relative" }} onMouseLeave={() => setHover(null)}>
+      <svg viewBox={`0 0 ${width} ${height}`} role="img">
+        {ticks.map((tick) => (
+          <g key={tick}>
+            <line x1={pad.left} x2={width - pad.right} y1={y(tick)} y2={y(tick)} stroke="var(--fin-grid)" strokeWidth="1" />
+            <text className="fin-axis" x={pad.left - 6} y={y(tick) + 3} textAnchor="end">{short(tick)}</text>
+          </g>
+        ))}
+        {rows.map((row, index) => {
+          const x0 = pad.left + index * slot + (slot - (barWidth + gap) * series.length) / 2;
+          return (
+            <g key={row.key} onMouseEnter={() => setHover({ index, x: pad.left + index * slot + slot / 2 })} onClick={() => onBarClick?.(row)} style={{ cursor: onBarClick ? "pointer" : "default" }}>
+              <rect x={pad.left + index * slot} y={pad.top} width={slot} height={innerHeight} fill="transparent" />
+              {series.map((item, seriesIndex) => {
+                const value = Number(item.value(row)) || 0;
+                const top = Math.min(y(value), y(0));
+                const barHeight = Math.max(1, Math.abs(y(value) - y(0)));
+                const color = typeof item.color === "function" ? item.color(value) : item.color;
+                return <rect key={item.name} x={x0 + seriesIndex * (barWidth + gap)} y={top} width={barWidth} height={barHeight} rx="3" fill={color} opacity={hover && hover.index !== index ? 0.55 : 1} />;
+              })}
+              {index % labelEvery === 0 && <text className="fin-axis" x={pad.left + index * slot + slot / 2} y={height - 8} textAnchor="middle">{row.label}</text>}
+            </g>
+          );
+        })}
+        {signed && <line x1={pad.left} x2={width - pad.right} y1={y(0)} y2={y(0)} stroke="var(--fin-text-2)" strokeWidth="1" />}
+      </svg>
+      {hover && rows[hover.index] && (
+        <div className="fin-tooltip" style={{ left: `${(hover.x / width) * 100}%`, top: 4, transform: hover.x > width * 0.7 ? "translateX(-100%)" : "translateX(8px)" }}>
+          <div><strong>{rows[hover.index].label}</strong></div>
+          {series.map((item) => <div key={item.name}>{item.name}: {(item.format || formatInkoopEuro)(Number(item.value(rows[hover.index])) || 0)}</div>)}
+          {onBarClick && <div className="fin-sub">click: growers</div>}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// The dashboard's top: KPI tiles of the chosen period and the history in
+// bars -- every figure opens the growers behind it.
+function InkoopFinanceHero({ company, dayReport, period }) {
+  const [periods, setPeriods] = useState(null);
+  const [bwChoice, setBwChoice] = useState(null);
+  const [popup, setPopup] = useState(null);
+  useEffect(() => {
+    let cancelled = false;
+    const params = new URLSearchParams();
+    if (company) params.set("company", company);
+    apiJson(`/api/inkoop/dashboard/periods?${params}`).then((payload) => { if (!cancelled) setPeriods(payload); }).catch(() => {});
+    return () => { cancelled = true; };
+  }, [company]);
+  const connectOf = (row) => (bwChoice
+    ? Object.entries(row.erp_by_bw || {}).filter(([bw]) => bwChoice.includes(bw)).reduce((sum, [, value]) => sum + Number(value || 0), 0)
+    : Number(row.erp_value) || 0);
+  const sum = (key) => dayReport.reduce((total, day) => total + (Number(day[key]) || 0), 0);
+  const invoiced = sum("purchase_value");
+  const connect = dayReport.reduce((total, day) => total + connectOf(day), 0);
+  const gapInvoice = sum("gap_invoice_value");
+  const matchedShare = invoiced > 0 ? ((invoiced - gapInvoice) / invoiced) * 100 : null;
+  const dates = dayReport.map((day) => day.date).sort();
+  const from = dates[0];
+  const to = dates[dates.length - 1];
+  const open = (title, types, range = { from, to }) => range.from && setPopup({ title, types, ...range });
+  const months = [...(periods?.months || [])].sort((left, right) => (left.period < right.period ? -1 : 1)).slice(-12);
+  const monthRows = months.map((row) => ({ ...row, key: row.period, label: new Date(`${row.period}-01T00:00:00`).toLocaleDateString("nl-NL", { month: "short" }) }));
+  const dayRows = [...dayReport].sort((left, right) => (left.date < right.date ? -1 : 1)).map((day) => ({ ...day, key: day.date, label: day.date.slice(8, 10) }));
+  const monthRange = (row) => {
+    const [year, month] = row.period.split("-").map(Number);
+    const last = new Date(year, month, 0).getDate();
+    return { from: `${row.period}-01`, to: `${row.period}-${String(last).padStart(2, "0")}` };
+  };
+  const bwCodes = [...new Set([...months, ...dayReport].flatMap((row) => Object.keys(row.erp_by_bw || {})))].sort();
+  return (
+    <section className="fin-hero">
+      <div className="fin-head">
+        <div>
+          <h2>Financial overview</h2>
+          <div className="fin-sub">{from ? `${from} – ${to}` : "No days in this period"} · invoice = what we pay, Connect = what we count on · click a figure or a bar for the growers behind it</div>
+        </div>
+        <div className="row-actions">
+          <span className="fin-sub">Connect side:</span>
+          <select value={bwChoice ? bwChoice.join(",") : ""} onChange={(event) => setBwChoice(event.target.value ? event.target.value.split(",") : null)}>
+            <option value="">all betaalwijzen</option>
+            <option value="V">only V (via veiling)</option>
+            {bwCodes.filter((bw) => bw !== "V").map((bw) => <option key={bw} value={`V,${bw}`}>V + {bw}{INKOOP_BW_LABELS[bw] ? ` (${INKOOP_BW_LABELS[bw]})` : ""}</option>)}
+          </select>
+        </div>
+      </div>
+      <div className="fin-tiles">
+        <div className="fin-tile"><div className="fin-tile-label">Invoiced</div><div className="fin-tile-value">{formatInkoopEuro(invoiced)}</div><div className="fin-tile-note">FloraHolland invoices</div></div>
+        <div className="fin-tile"><div className="fin-tile-label">Connect{bwChoice ? ` (BW ${bwChoice.join("+")})` : ""}</div><div className="fin-tile-value">{formatInkoopEuro(connect)}</div><div className="fin-tile-note">recorded purchases</div></div>
+        <div className="fin-tile"><div className="fin-tile-label">Difference</div><div className="fin-tile-value"><InkoopMoneyDiff value={invoiced - connect} dark /></div><div className="fin-tile-note">invoice − Connect</div></div>
+        <div className="fin-tile"><div className="fin-tile-label">Matched</div><div className="fin-tile-value">{matchedShare === null ? "-" : `${matchedShare.toFixed(1)}%`}</div><div className="fin-tile-note">of the invoiced value</div></div>
+        <button type="button" className="fin-tile" onClick={() => open("Price / pieces differences", ["mismatch"])}>
+          <div className="fin-tile-label">Mismatches</div><div className="fin-tile-value">{formatInkoopEuro(sum("mismatch_value"))}</div><div className="fin-tile-note">{sum("mismatch_count")} lines · click: growers</div>
+        </button>
+        <button type="button" className="fin-tile" onClick={() => open("Only in invoice", ["gap_invoice"])}>
+          <div className="fin-tile-label">Only in invoice</div><div className="fin-tile-value">{formatInkoopEuro(gapInvoice)}</div><div className="fin-tile-note">{sum("gap_invoice_count")} lines · click: growers</div>
+        </button>
+        <button type="button" className="fin-tile" onClick={() => open("Only in Connect", ["gap_erp"])}>
+          <div className="fin-tile-label">Only in Connect</div><div className="fin-tile-value">{formatInkoopEuro(sum("gap_erp_value"))}</div><div className="fin-tile-note">{sum("gap_erp_count")} lines · click: growers</div>
+        </button>
+      </div>
+      <div className="fin-grid">
+        <div className="fin-card">
+          <h3>Invoiced vs Connect per month</h3>
+          <div className="fin-legend"><span><i style={{ background: "var(--fin-series-1)" }} />Invoiced</span><span><i style={{ background: "var(--fin-series-2)" }} />Connect{bwChoice ? ` (BW ${bwChoice.join("+")})` : ""}</span></div>
+          {monthRows.length
+            ? <InkoopBarChart rows={monthRows} series={[{ name: "Invoiced", color: "var(--fin-series-1)", value: (row) => row.purchase_value }, { name: "Connect", color: "var(--fin-series-2)", value: connectOf }]} onBarClick={(row) => setPopup({ title: `Growers -- ${row.label} ${row.period.slice(0, 4)}`, types: null, ...monthRange(row) })} />
+            : <div className="fin-sub">No months compared yet.</div>}
+        </div>
+        <div className="fin-card">
+          <h3>Difference per day</h3>
+          <div className="fin-legend"><span><i style={{ background: "var(--fin-critical)" }} />we pay more (loss)</span><span><i style={{ background: "var(--fin-series-1)" }} />we pay less</span></div>
+          {dayRows.length
+            ? <InkoopBarChart rows={dayRows} signed series={[{ name: "Invoice − Connect", color: (value) => (value > 0 ? "var(--fin-critical)" : "var(--fin-series-1)"), value: (row) => (Number(row.purchase_value) || 0) - connectOf(row) }]} onBarClick={(row) => setPopup({ title: `Growers -- ${row.date}`, types: null, from: row.date, to: row.date })} />
+            : <div className="fin-sub">No days in this period.</div>}
+        </div>
+        <div className="fin-card">
+          <h3>Matched share per month</h3>
+          <div className="fin-legend"><span><i style={{ background: "var(--fin-series-1)" }} />% of the invoiced value matched</span></div>
+          {monthRows.length
+            ? <InkoopBarChart rows={monthRows.map((row) => ({ ...row, matched: row.purchase_value > 0 ? ((row.purchase_value - (row.gap_invoice_value || 0)) / row.purchase_value) * 100 : 0 }))} series={[{ name: "Matched", color: "var(--fin-series-1)", value: (row) => row.matched, format: (value) => `${value.toFixed(1)}%` }]} />
+            : <div className="fin-sub">No months compared yet.</div>}
+        </div>
+      </div>
+      {popup && <InkoopGrowerPopup {...popup} company={company} onClose={() => setPopup(null)} />}
+    </section>
+  );
+}
+
 function InkoopDashboardTab({ company }) {
   const [loading, setLoading] = useState(true);
   const [period, setPeriod] = useState({ days: 7 });
@@ -17742,6 +18056,8 @@ function InkoopDashboardTab({ company }) {
   const [embalageSummary, setEmbalageSummary] = useState(null);
   const [todaySummary, setTodaySummary] = useState(null);
   const [error, setError] = useState("");
+  const [fullDayReport, setFullDayReport] = useState([]);
+  const [popup, setPopup] = useState(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -17757,6 +18073,7 @@ function InkoopDashboardTab({ company }) {
         setByCompany(payload.by_company || []);
         setByProductGroup(payload.by_product_group || []);
         setDayReport((payload.day_report || []).slice(0, 14));
+        setFullDayReport(payload.day_report || []);
         setWeekReport((payload.week_report || []).slice(0, 8));
         setEmbalageSummary(payload.embalage_summary || null);
         setTodaySummary(payload.today_summary || null);
@@ -17789,6 +18106,8 @@ function InkoopDashboardTab({ company }) {
         <div className="notice">Loading dashboard...</div>
       ) : (
         <>
+          <InkoopFinanceHero company={company} dayReport={fullDayReport} period={period} />
+          {popup && <InkoopGrowerPopup {...popup} company={company} onClose={() => setPopup(null)} />}
           {todaySummary && (
             <InkoopCollapsibleCard title={<>Today ({todaySummary.date})</>}>
               <div className="notice">
@@ -17829,13 +18148,13 @@ function InkoopDashboardTab({ company }) {
                 <tbody>
                   {dayReport.map((day) => (
                     <tr key={day.date}>
-                      <td>{day.date}</td>
+                      <td className="clickable-cell" onClick={() => setPopup({ title: `Growers -- ${day.date}`, types: null, from: day.date, to: day.date })}>{day.date}</td>
                       <td>{formatInkoopEuro(day.purchase_value)}</td>
                       <td>{formatInkoopEuro(day.erp_value)}</td>
-                      <td>{formatInkoopEuro(day.purchase_value - day.erp_value)}</td>
-                      <td>{day.mismatch_count}</td>
+                      <td><InkoopMoneyDiff value={day.purchase_value - day.erp_value} /></td>
+                      <td className="clickable-cell" onClick={() => setPopup({ title: `Price / pieces differences -- ${day.date}`, types: ["mismatch"], from: day.date, to: day.date })}>{day.mismatch_count}</td>
                       <td>{formatInkoopEuro(day.mismatch_value)}</td>
-                      <td>{day.gap_count}</td>
+                      <td className="clickable-cell" onClick={() => setPopup({ title: `Gaps -- ${day.date}`, types: ["gap_erp", "gap_invoice"], from: day.date, to: day.date })}>{day.gap_count}</td>
                       <td>{formatInkoopEuro(day.gap_value)}</td>
                       <td>{formatInkoopEuro(day.embalage_value)}</td>
                       <td>{day.product_count}</td>
@@ -18068,6 +18387,17 @@ function InkoopFollowUpTab({ company }) {
   const [showResolved, setShowResolved] = useState(false);
   const [drafts, setDrafts] = useState({});
   const [savingId, setSavingId] = useState("");
+  // Per grower first; by default only via veiling (FloraHolland) and every type.
+  const [bwFilter, setBwFilter] = useState(["V"]);
+  // "Day total" is the grower's whole day -- it overlaps that day's lines, so
+  // it is off by default (counted together the value would double).
+  const [typeFilter, setTypeFilter] = useState(["mismatch", "gap_erp", "gap_invoice"]);
+  const [openGrower, setOpenGrower] = useState("");
+  const typedIssues = issues.filter((issue) => typeFilter.includes(issue.issue_type));
+  const shownIssues = typedIssues.filter((issue) => !bwFilter || bwFilter.includes(issue.bw || "?"));
+  const growerGroups = inkoopGroupIssuesByGrower(shownIssues);
+  const typedCounts = {};
+  for (const issue of issues.filter((item) => !bwFilter || bwFilter.includes(item.bw || "?"))) typedCounts[issue.issue_type] = (typedCounts[issue.issue_type] || 0) + 1;
 
   function load() {
     setLoading(true);
@@ -18139,42 +18469,84 @@ function InkoopFollowUpTab({ company }) {
       ) : !issues.length ? (
         <div className="notice">Nothing open{showResolved ? "" : " -- or everything's resolved"}.</div>
       ) : (
-        <div className="table-wrap">
-          <table className="data-table">
-            <thead>
-              <tr><th>Date</th><th>Type</th><th>Invoice</th><th>Description</th><th>Connect line</th><th>Value</th><th>Status</th><th>Assigned to</th><th>Note</th><th></th></tr>
-            </thead>
-            <tbody>
-              {issues.map((issue) => {
-                const draft = getDraft(issue);
-                return (
-                  <tr key={issue.id}>
-                    <td>{inkoopShortDate(issue.date)}</td>
-                    <td>{inkoopIssueTypeLabel(issue.issue_type)}</td>
-                    <td><InkoopInvoiceLink invoiceNumber={issue.invoice_number} /></td>
-                    <td>{issue.description}</td>
-                    <td>{issue.issue_type === "aggregate_mismatch" ? inkoopAggregateMismatchTranscript(issue.detail) : inkoopErpTranscript(issue.erp_row)}</td>
-                    <td>{formatInkoopEuro(issue.value)}</td>
-                    <td>
-                      <select value={draft.status} onChange={(event) => updateDraft(issue, { status: event.target.value })}>
-                        <option value="open">Open</option>
-                        <option value="investigating">Investigating</option>
-                        <option value="resolved">Resolved</option>
-                      </select>
-                    </td>
-                    <td>
-                      <input value={draft.assigned_to} onChange={(event) => updateDraft(issue, { assigned_to: event.target.value })} placeholder="Who's checking" />
-                    </td>
-                    <td>
-                      <input value={draft.note} onChange={(event) => updateDraft(issue, { note: event.target.value })} placeholder="Note" />
-                    </td>
-                    <td><button type="button" onClick={() => saveIssue(issue)} disabled={savingId === issue.id}>{savingId === issue.id ? "Saving..." : "Save"}</button></td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
-        </div>
+        <>
+          <InkoopBwFilter items={typedIssues} value={bwFilter} onChange={setBwFilter} valueOf={(issue) => issue.value} />
+          <div className="row-actions" style={{ margin: "6px 0" }}>
+            <strong>Type:</strong>
+            {INKOOP_ISSUE_TYPES.map(([type, label]) => (
+              <label key={type} className="checkbox-label">
+                <input type="checkbox" checked={typeFilter.includes(type)} onChange={() => setTypeFilter((current) => (current.includes(type) ? current.filter((item) => item !== type) : [...current, type]))} />
+                <span>{label} <small className="muted">{typedCounts[type] || 0}</small></span>
+              </label>
+            ))}
+          </div>
+          <div className="inkoop-summary-cards">
+            <div className="inkoop-summary-card"><div className="inkoop-summary-value">{growerGroups.length}</div><div className="inkoop-summary-label">Growers</div></div>
+            <div className="inkoop-summary-card"><div className="inkoop-summary-value">{shownIssues.length}</div><div className="inkoop-summary-label">Lines</div></div>
+            <div className="inkoop-summary-card"><div className="inkoop-summary-value">{formatInkoopEuro(shownIssues.reduce((sum, issue) => sum + (Number(issue.value) || 0), 0))}</div><div className="inkoop-summary-label">Value at stake</div></div>
+            <div className="inkoop-summary-card"><div className="inkoop-summary-value"><InkoopMoneyDiff value={shownIssues.reduce((sum, issue) => sum + (Number(issue.money_diff) || 0), 0)} /></div><div className="inkoop-summary-label">Net (invoice − Connect)</div></div>
+          </div>
+          <div className="table-wrap">
+            <table className="data-table">
+              <thead>
+                <tr><th>Grower</th><th>Lines</th>{INKOOP_ISSUE_TYPES.map(([type, label]) => <th key={type}>{label}</th>)}<th>Value at stake</th><th>Difference</th><th>% vs Connect</th><th>Share</th></tr>
+              </thead>
+              <tbody>
+                {growerGroups.map((group) => (
+                  <React.Fragment key={group.grower}>
+                    <tr className="clickable-row" style={{ cursor: "pointer" }} onClick={() => setOpenGrower((current) => (current === group.grower ? "" : group.grower))}>
+                      <td><strong>{openGrower === group.grower ? "▾" : "▸"} {group.grower}</strong></td>
+                      <td>{group.lines}</td>
+                      {INKOOP_ISSUE_TYPES.map(([type]) => <td key={type}>{group.types[type] || ""}</td>)}
+                      <td>{formatInkoopEuro(group.value)}</td>
+                      <td><InkoopMoneyDiff value={group.money_diff} /></td>
+                      <td className={group.pct_vs_connect > 0 ? "money-loss" : group.pct_vs_connect < 0 ? "money-gain" : ""}>{inkoopPct(group.pct_vs_connect)}</td>
+                      <td>{group.share.toFixed(1)}%</td>
+                    </tr>
+                    {openGrower === group.grower && (
+                      <tr>
+                        <td colSpan={INKOOP_ISSUE_TYPES.length + 6} style={{ background: "#f8fafc" }}>
+                          <table className="data-table">
+                            <thead>
+                              <tr><th>Date</th><th>Type</th><th>Invoice</th><th>Description</th><th>Connect line</th><th>Value</th><th>Difference</th><th>Status</th><th>Assigned to</th><th>Note</th><th></th></tr>
+                            </thead>
+                            <tbody>
+                              {group.issues.map((issue) => {
+                                const draft = getDraft(issue);
+                                return (
+                                  <tr key={issue.id}>
+                                    <td>{inkoopShortDate(issue.date)}</td>
+                                    <td>{inkoopIssueTypeLabel(issue.issue_type)}</td>
+                                    <td><InkoopInvoiceLink invoiceNumber={issue.invoice_number} /></td>
+                                    <td>{issue.description}</td>
+                                    <td>{issue.issue_type === "aggregate_mismatch" ? inkoopAggregateMismatchTranscript(issue.detail) : inkoopErpTranscript(issue.erp_row)}</td>
+                                    <td>{formatInkoopEuro(issue.value)}</td>
+                                    <td><InkoopMoneyDiff value={issue.money_diff} /></td>
+                                    <td>
+                                      <select value={draft.status} onChange={(event) => updateDraft(issue, { status: event.target.value })}>
+                                        <option value="open">Open</option>
+                                        <option value="investigating">Investigating</option>
+                                        <option value="resolved">Resolved</option>
+                                      </select>
+                                    </td>
+                                    <td><input value={draft.assigned_to} onChange={(event) => updateDraft(issue, { assigned_to: event.target.value })} placeholder="Who's checking" /></td>
+                                    <td><input value={draft.note} onChange={(event) => updateDraft(issue, { note: event.target.value })} placeholder="Note" /></td>
+                                    <td><button type="button" onClick={() => saveIssue(issue)} disabled={savingId === issue.id}>{savingId === issue.id ? "Saving..." : "Save"}</button></td>
+                                  </tr>
+                                );
+                              })}
+                            </tbody>
+                          </table>
+                        </td>
+                      </tr>
+                    )}
+                  </React.Fragment>
+                ))}
+                {!growerGroups.length && <tr><td colSpan={INKOOP_ISSUE_TYPES.length + 6}>Nothing for this filter.</td></tr>}
+              </tbody>
+            </table>
+          </div>
+        </>
       )}
     </div>
   );
