@@ -18206,29 +18206,56 @@ function InkoopLinkGrowersTab() {
     return link?.codes || [];
   };
 
-  async function saveCodes(supplier, codes, note) {
+  // Changes are collected here first -- linking many growers doesn't
+  // compare every day again after each one; Save sends them all at once.
+  const [pendingLinks, setPendingLinks] = useState({}); // grower key -> { gln, fh_number, name, codes }
+  const [pendingGroups, setPendingGroups] = useState({}); // group name (lower) -> { group_name, codes } (codes [] = remove)
+  const pendingCount = Object.keys(pendingLinks).length + Object.keys(pendingGroups).length;
+  const effectiveGroup = (supplier) => {
+    const name = String(groupName(supplier)).toLowerCase();
+    if (pendingGroups[name]) return pendingGroups[name].codes.length ? pendingGroups[name] : null;
+    return groupOf(supplier);
+  };
+
+  function setCodes(supplier, codes, note) {
+    setPendingLinks((current) => ({ ...current, [keyOf(supplier)]: { gln: supplier.gln, fh_number: supplier.fh_number, name: supplier.name, codes } }));
+    // Counted together already: the group follows the codes.
+    const group = effectiveGroup(supplier);
+    if (group) {
+      const name = String(groupName(supplier)).toLowerCase();
+      setPendingGroups((current) => ({ ...current, [name]: { group_name: group.group_name, codes: codes.length > 1 ? codes : [] } }));
+    }
+    setMessage(`${note} Not saved yet -- press Save when done.`);
+    setSelectedCode("");
+  }
+
+  function addCode(supplier, code) {
+    const value = String(code || "").trim().toUpperCase();
+    if (!value || supplier.codes.includes(value)) return;
+    setCodes(supplier, [...supplier.codes, value], `${value} linked to ${groupName(supplier)}.`);
+  }
+
+  function removeCode(supplier, code) {
+    setCodes(supplier, supplier.codes.filter((item) => item !== code), `${code} taken off ${groupName(supplier)}.`);
+  }
+
+  function setCountTogether(supplier, on) {
+    const name = String(groupName(supplier)).toLowerCase();
+    setPendingGroups((current) => ({ ...current, [name]: { group_name: groupOf(supplier)?.group_name || groupName(supplier), codes: on ? supplier.codes : [] } }));
+    setMessage(`${groupName(supplier)}: ${on ? `${supplier.codes.join(" + ")} counted together` : "codes counted apart"}. Not saved yet -- press Save when done.`);
+  }
+
+  async function saveAll() {
     setBusy(true);
     setError("");
     try {
-      if (codes.length) {
-        await apiJson("/api/inkoop/suppliers/manual", {
-          method: "POST",
-          body: JSON.stringify({ gln: supplier.gln, fh_number: supplier.fh_number, name: supplier.name, code: codes.join(", ") }),
-        });
-      } else {
-        await apiJson("/api/inkoop/suppliers/manual", { method: "DELETE", body: JSON.stringify({ gln: supplier.gln, fh_number: supplier.fh_number }) });
-      }
-      // Counted together already: the group follows the codes.
-      const group = groupOf(supplier);
-      if (group) {
-        if (codes.length > 1) {
-          await apiJson("/api/inkoop/facturation-groups", { method: "POST", body: JSON.stringify({ group_name: group.group_name, codes }) });
-        } else {
-          await apiJson("/api/inkoop/facturation-groups", { method: "DELETE", body: JSON.stringify({ group_name: group.group_name }) });
-        }
-      }
-      setMessage(`${note} Every day is compared again in the background.`);
-      setSelectedCode("");
+      const payload = await apiJson("/api/inkoop/growers/links-batch", {
+        method: "POST",
+        body: JSON.stringify({ links: Object.values(pendingLinks), groups: Object.values(pendingGroups) }),
+      });
+      setPendingLinks({});
+      setPendingGroups({});
+      setMessage(`Saved: ${payload.links} grower link(s)${payload.groups ? `, ${payload.groups} group(s)` : ""}. Every day is compared again in the background.`);
       await load();
     } catch (saveError) {
       setError(saveError.message);
@@ -18237,41 +18264,21 @@ function InkoopLinkGrowersTab() {
     }
   }
 
-  function addCode(supplier, code) {
-    const value = String(code || "").trim().toUpperCase();
-    if (!value || supplier.codes.includes(value)) return;
-    saveCodes(supplier, [...supplier.codes, value], `${value} linked to ${groupName(supplier)}.`);
-  }
-
-  function removeCode(supplier, code) {
-    if (!window.confirm(`Take ${code} off ${groupName(supplier)}?`)) return;
-    saveCodes(supplier, supplier.codes.filter((item) => item !== code), `${code} taken off ${groupName(supplier)}.`);
-  }
-
-  async function setCountTogether(supplier, on) {
-    setBusy(true);
-    setError("");
-    try {
-      if (on) {
-        await apiJson("/api/inkoop/facturation-groups", { method: "POST", body: JSON.stringify({ group_name: groupName(supplier), codes: supplier.codes }) });
-        setMessage(`${supplier.codes.join(" + ")} are counted together as ${groupName(supplier)}.`);
-      } else {
-        await apiJson("/api/inkoop/facturation-groups", { method: "DELETE", body: JSON.stringify({ group_name: groupOf(supplier)?.group_name || groupName(supplier) }) });
-        setMessage(`${groupName(supplier)}: codes counted apart again.`);
-      }
-      await load();
-    } catch (groupError) {
-      setError(groupError.message);
-    } finally {
-      setBusy(false);
-    }
+  function discardAll() {
+    if (!window.confirm(`Forget the ${pendingCount} unsaved change(s)?`)) return;
+    setPendingLinks({});
+    setPendingGroups({});
+    setMessage("");
   }
 
   const matches = (text, query) => !query.trim() || String(text || "").toLowerCase().includes(query.trim().toLowerCase());
-  const suppliers = data?.suppliers || [];
+  const suppliers = (data?.suppliers || []).map((supplier) => {
+    const pending = pendingLinks[keyOf(supplier)];
+    return pending ? { ...supplier, codes: pending.codes, unsaved: true } : supplier;
+  });
   const linkedCount = suppliers.filter((supplier) => supplier.codes.length).length;
   const growerRows = suppliers
-    .filter((supplier) => !onlyOpen || !supplier.codes.length)
+    .filter((supplier) => !onlyOpen || !supplier.codes.length || supplier.unsaved)
     .filter((supplier) => matches(`${supplier.name} ${supplier.gln} ${supplier.fh_number} ${supplier.codes.join(" ")}`, growerSearch))
     .sort((left, right) => (Boolean(left.codes.length) - Boolean(right.codes.length)) || (right.total || 0) - (left.total || 0));
   // Per Connect code: the invoice growers it is linked to.
@@ -18299,8 +18306,18 @@ function InkoopLinkGrowersTab() {
         <div className="muted">
           Slide a Connect code (right) onto an invoice grower (left) to link it -- or click the code, then <strong>+ add</strong> on the grower.
           A grower can have several codes (e.g. Milessa: MELISS and -MELUK, when one purchase is booked under both); tick
-          <strong> count together</strong> to compare the grower's day total over all its codes. Every change compares all days again in the background.
+          <strong> count together</strong> to compare the grower's day total over all its codes. Link as many as you like, then <strong>Save</strong>:
+          all days are compared again once, in the background.
         </div>
+        {pendingCount > 0 && (
+          <div className="notice info row-actions spread-actions" style={{ marginTop: 8 }}>
+            <span><strong>{pendingCount} unsaved change(s)</strong> -- nothing is compared until you save.</span>
+            <span className="row-actions">
+              <button type="button" className="primary" onClick={saveAll} disabled={busy}>{busy ? "Saving..." : `Save ${pendingCount} change(s)`}</button>
+              <button type="button" onClick={discardAll} disabled={busy}>Discard</button>
+            </span>
+          </div>
+        )}
         {error && <div className="notice danger">{error}</div>}
         {message && <div className="notice">{message}</div>}
         {data && (
@@ -18335,7 +18352,7 @@ function InkoopLinkGrowersTab() {
               {growerRows.slice(0, 300).map((supplier) => {
                 const key = keyOf(supplier);
                 const manual = manualCodes(supplier);
-                const group = groupOf(supplier);
+                const group = effectiveGroup(supplier);
                 return (
                   <div
                     key={key}
@@ -18344,12 +18361,13 @@ function InkoopLinkGrowersTab() {
                     onDrop={(event) => { event.preventDefault(); setDropKey(""); addCode(supplier, event.dataTransfer.getData("text/plain")); }}
                     style={{
                       border: `2px ${dropKey === key ? "solid #2563eb" : "dashed #e2e8f0"}`, borderRadius: 8, padding: "8px 10px",
-                      background: dropKey === key ? "#eff6ff" : supplier.codes.length ? "#ffffff" : "#fff7ed",
+                      background: dropKey === key ? "#eff6ff" : supplier.unsaved ? "#fefce8" : supplier.codes.length ? "#ffffff" : "#fff7ed",
                     }}
                   >
                     <div className="row-actions spread-actions">
                       <div>
                         <strong>{supplier.name || "-"}</strong>{" "}
+                        {supplier.unsaved && <span className="ukdocs-status-badge info">unsaved</span>}{" "}
                         <small className="muted">
                           {[supplier.gln && `GLN ${supplier.gln}`, supplier.fh_number && `FH ${supplier.fh_number}`].filter(Boolean).join(" · ")}
                           {" · "}{supplier.lines} lines · {formatInkoopEuro(supplier.total)} · {supplier.invoice_types.join(", ")}

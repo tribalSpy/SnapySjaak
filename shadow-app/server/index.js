@@ -23737,6 +23737,44 @@ async function handleApi(req, res, url) {
     return;
   }
 
+  // Link growers tab: several links and facturation groups saved at once --
+  // body { links: [{ gln, fh_number, name, codes }], groups: [{ group_name,
+  // codes }] } (no codes: the link / group goes). One save, so every day is
+  // compared again only once.
+  if (url.pathname === "/api/inkoop/growers/links-batch" && req.method === "POST") {
+    if (!requirePermission(res, requestUser, PERMISSIONS.INKOOP_VIEW)) {
+      return;
+    }
+    const body = await readRequestJson(req);
+    const state = await readInkoopState();
+    let links = 0;
+    let groups = 0;
+    for (const item of Array.isArray(body?.links) ? body.links : []) {
+      const gln = normalizeUkdocsText(item?.gln);
+      const fhNumber = normalizeUkdocsText(item?.fh_number);
+      if (!gln && !fhNumber) continue;
+      const rest = state.manual_supplier_links.filter((link) => (!gln || link.gln !== gln) && (!fhNumber || link.fh_number !== fhNumber));
+      const codes = normalizeInkoopManualSupplierLinkCodes({ codes: item?.codes });
+      state.manual_supplier_links = codes.length
+        ? [normalizeInkoopManualSupplierLink({ gln, fh_number: fhNumber, name: item?.name, codes, added_by: requestUser.username }), ...rest]
+        : rest;
+      links += 1;
+    }
+    for (const item of Array.isArray(body?.groups) ? body.groups : []) {
+      const groupName = normalizeUkdocsText(item?.group_name);
+      if (!groupName) continue;
+      const rest = state.facturation_groups.filter((group) => group.group_name.toLowerCase() !== groupName.toLowerCase());
+      const codes = normalizeInkoopFacturationGroupCodes({ codes: item?.codes });
+      state.facturation_groups = codes.length
+        ? [normalizeInkoopFacturationGroup({ group_name: groupName, codes, added_by: requestUser.username }), ...rest]
+        : rest;
+      groups += 1;
+    }
+    if (links || groups) await writeInkoopState(state);
+    sendJson(res, 200, { links, groups, manual_supplier_links: state.manual_supplier_links, facturation_groups: state.facturation_groups });
+    return;
+  }
+
   // A manual link taken away again: body { gln, fh_number } -- the grower is
   // then linked by what the data teaches (or not at all).
   if (url.pathname === "/api/inkoop/suppliers/manual" && req.method === "DELETE") {
