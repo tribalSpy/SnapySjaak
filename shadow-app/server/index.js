@@ -61,6 +61,7 @@ import {
   saveInkoopInvoiceHeaders,
   getInkoopInvoiceHeaders,
   getInkoopDaySummaries,
+  getInkoopConnectCodeValues,
   saveInkoopDaySummaries,
   getInkoopInvoiceLinesByInvoiceNumbers,
   getKingExports,
@@ -23431,6 +23432,41 @@ async function handleApi(req, res, url) {
       getInkoopMatchStatus(),
     ]);
     sendJson(res, 200, { months, years, pending_days: (status.counts?.pending || 0) + (status.counts?.running || 0) });
+    return;
+  }
+
+  // The stored day figures of any period (a quarter, a year): what the
+  // dashboard's overview, day and week report are built from -- nothing is
+  // compared again, so a long period loads at once.
+  if (url.pathname === "/api/inkoop/dashboard/days" && req.method === "GET") {
+    if (!requirePermission(res, requestUser, PERMISSIONS.INKOOP_VIEW)) {
+      return;
+    }
+    let from = inkoopIsoDate(url.searchParams.get("from")) || addDaysToIsoDate(localDateIso(), -29);
+    let to = inkoopIsoDate(url.searchParams.get("to")) || localDateIso();
+    if (from > to) [from, to] = [to, from];
+    if (addDaysToIsoDate(from, 400) < to) from = addDaysToIsoDate(to, -400);
+    const company = normalizeUkdocsText(url.searchParams.get("company"));
+    const rows = await getInkoopDaySummaries({ from, to });
+    const days = rows.filter((row) => row.company === company)
+      .map((row) => ({ ...row.bucket, date: row.date }))
+      .sort((left, right) => (left.date < right.date ? 1 : -1));
+    sendJson(res, 200, { from, to, days });
+    return;
+  }
+
+  // Connect supplier codes without a betaalwijze (BW) in the master data --
+  // the "?" in the reports -- with lots, value and last date.
+  if (url.pathname === "/api/inkoop/codes-without-bw" && req.method === "GET") {
+    if (!requirePermission(res, requestUser, PERMISSIONS.INKOOP_VIEW)) {
+      return;
+    }
+    const state = await readInkoopState();
+    const excluded = new Set(inkoopExcludedErpCodes(state));
+    const codes = (await getInkoopConnectCodeValues())
+      .filter((row) => !state.supplier_bw_map?.[normalizeInkoopKey(row.code)] && !excluded.has(normalizeInkoopKey(row.code)))
+      .sort((left, right) => right.value - left.value);
+    sendJson(res, 200, { codes });
     return;
   }
 

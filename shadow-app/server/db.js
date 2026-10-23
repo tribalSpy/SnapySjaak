@@ -269,6 +269,24 @@ export async function getInkoopGrowerPavPairs() {
 // Connect's own codes: how often each appears as supplier and as route
 // (Transp), with lots without a brief number (those need a GLN / FH link
 // to be matched to a Handel / AI2 / Connect invoice line).
+// Per Connect supplier code: lots, value and last date -- for the list of
+// codes without a betaalwijze (BW).
+export async function getInkoopConnectCodeValues() {
+  if (!pool) {
+    return [];
+  }
+  const result = await pool.query(`
+    SELECT upper(btrim(suppl)) AS code, count(*)::int AS lots,
+           round(sum(COALESCE(t_price, 0))::numeric, 2)::float8 AS value,
+           to_char(max(erp_date), 'YYYY-MM-DD') AS last_date,
+           max(description) AS example_description
+      FROM inkoop_erp_lines
+     WHERE btrim(COALESCE(suppl, '')) <> ''
+     GROUP BY 1
+  `);
+  return result.rows;
+}
+
 export async function getInkoopConnectCodeStats() {
   if (!pool) {
     return { suppliers: [], routes: [] };

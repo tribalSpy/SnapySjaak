@@ -17717,6 +17717,11 @@ function InkoopPeriodReports({ company }) {
   // Which betaalwijzen count on the Connect side: all, or only the chosen
   // ones (V: via veiling = paid through FloraHolland -- like the invoices).
   const [bwChoice, setBwChoice] = useState(null);
+  const [codesWithoutBw, setCodesWithoutBw] = useState(null);
+  function loadCodesWithoutBw() {
+    if (codesWithoutBw) { setCodesWithoutBw(null); return; }
+    apiJson("/api/inkoop/codes-without-bw").then((payload) => setCodesWithoutBw(payload.codes || [])).catch(() => setCodesWithoutBw([]));
+  }
   const bwCodes = [...new Set([...(data?.months || []), ...(data?.years || [])].flatMap((row) => Object.keys(row.erp_by_bw || {})))].sort();
   const toggleBw = (bw) => setBwChoice((current) => {
     const base = current || [];
@@ -17730,10 +17735,27 @@ function InkoopPeriodReports({ company }) {
       {bwChoice && bwCodes.map((bw) => (
         <label key={bw} className="checkbox-label">
           <input type="checkbox" checked={bwChoice.includes(bw)} onChange={() => toggleBw(bw)} />
-          <span>{bw}{INKOOP_BW_LABELS[bw] ? ` (${INKOOP_BW_LABELS[bw]})` : bw === "?" ? " (code without BW)" : ""}</span>
+          <span>{bw === "?" ? "? (code without BW)" : `${bw}${INKOOP_BW_LABELS[bw] ? ` (${INKOOP_BW_LABELS[bw]})` : ""}`}</span>
         </label>
       ))}
       {bwChoice && !bwCodes.length && <span className="muted">Per BW once the days are compared again.</span>}
+      <button type="button" className="link-button" onClick={loadCodesWithoutBw}>{codesWithoutBw ? "Hide codes without a BW" : "Which codes have no BW?"}</button>
+    </div>
+  );
+  const codesWithoutBwTable = codesWithoutBw && (
+    <div style={{ marginBottom: 10 }}>
+      <div className="notice">Connect supplier codes without a betaalwijze (BW) in the leveranciers / kwekers met betaalwijze -- the "?" above. Give them a BW in Uniware and upload that file again, or mark them "not a purchase" in Link growers.</div>
+      <div className="table-wrap">
+        <table className="data-table">
+          <thead><tr><th>Code</th><th>Lots</th><th>Value</th><th>Last date</th><th>Example</th></tr></thead>
+          <tbody>
+            {codesWithoutBw.slice(0, 300).map((row) => (
+              <tr key={row.code}><td><strong>{row.code}</strong></td><td>{row.lots}</td><td>{formatInkoopEuro(row.value)}</td><td>{inkoopShortDate(row.last_date)}</td><td>{row.example_description}</td></tr>
+            ))}
+            {!codesWithoutBw.length && <tr><td colSpan="5">Every Connect code has a BW.</td></tr>}
+          </tbody>
+        </table>
+      </div>
     </div>
   );
   return (
@@ -17742,11 +17764,13 @@ function InkoopPeriodReports({ company }) {
         {error && <div className="notice danger">{error}</div>}
         {note}
         {bwPicker}
+        {codesWithoutBwTable}
         {data ? <InkoopPeriodReportTable rows={data.months || []} bwFilter={bwChoice} /> : <div className="notice">Loading...</div>}
       </InkoopCollapsibleCard>
       <InkoopCollapsibleCard title="Year report">
         {note}
         {bwPicker}
+        {codesWithoutBwTable}
         {data ? <InkoopPeriodReportTable rows={data.years || []} bwFilter={bwChoice} /> : <div className="notice">Loading...</div>}
       </InkoopCollapsibleCard>
     </>
@@ -17864,7 +17888,8 @@ function InkoopGrowerPopup({ from, to, types, title, company, onClose }) {
         <div className="fin-head">
           <div>
             <h2>{title}</h2>
-            <div className="fin-sub">{from === to ? from : `${from} – ${to}`} · {groups.length} grower(s) · {shown.length} line(s) · net <InkoopMoneyDiff value={net} dark /></div>
+            <div className="fin-sub">{from === to ? from : `${from} – ${to}`} · {groups.length} grower(s) · {shown.length} line(s) · net <InkoopMoneyDiff value={net} dark />
+              {(new Date(`${to}T00:00:00`) - new Date(`${from}T00:00:00`)) / 86400000 > 30 && <> · the growers of the last 31 days of the period</>}</div>
           </div>
           <button type="button" onClick={onClose}>Close</button>
         </div>
@@ -18049,9 +18074,76 @@ function InkoopFinanceHero({ company, dayReport, period }) {
   );
 }
 
+// The dashboard's period: a from / to calendar, with quick choices.
+function inkoopIsoLocal(date) {
+  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
+}
+
+function inkoopPresetPeriod(preset) {
+  const today = new Date();
+  const year = today.getFullYear();
+  const month = today.getMonth();
+  const quarterStart = Math.floor(month / 3) * 3;
+  const end = (date) => inkoopIsoLocal(date > today ? today : date);
+  switch (preset) {
+    case "last_month": return { from: inkoopIsoLocal(new Date(year, month - 1, 1)), to: inkoopIsoLocal(new Date(year, month, 0)) };
+    case "this_quarter": return { from: inkoopIsoLocal(new Date(year, quarterStart, 1)), to: end(new Date(year, quarterStart + 3, 0)) };
+    case "last_quarter": return { from: inkoopIsoLocal(new Date(year, quarterStart - 3, 1)), to: inkoopIsoLocal(new Date(year, quarterStart, 0)) };
+    case "this_year": return { from: `${year}-01-01`, to: inkoopIsoLocal(today) };
+    case "last_year": return { from: `${year - 1}-01-01`, to: `${year - 1}-12-31` };
+    default: return { from: inkoopIsoLocal(new Date(year, month, 1)), to: inkoopIsoLocal(today) };
+  }
+}
+
+const INKOOP_DASHBOARD_PRESETS = [
+  ["this_month", "This month"],
+  ["last_month", "Last month"],
+  ["this_quarter", "This quarter"],
+  ["last_quarter", "Last quarter"],
+  ["this_year", "This year"],
+  ["last_year", "Last year"],
+];
+
+function InkoopDashboardPeriod({ period, onChange }) {
+  const preset = INKOOP_DASHBOARD_PRESETS.find(([key]) => {
+    const range = inkoopPresetPeriod(key);
+    return range.from === period.from && range.to === period.to;
+  })?.[0] || "custom";
+  const setDates = (from, to) => { if (from && to) onChange(from <= to ? { from, to } : { from: to, to: from }); };
+  return (
+    <div className="row-actions" style={{ alignItems: "flex-end" }}>
+      <label>
+        <span>Period</span>
+        <select value={preset} onChange={(event) => { if (event.target.value !== "custom") onChange(inkoopPresetPeriod(event.target.value)); }}>
+          {INKOOP_DASHBOARD_PRESETS.map(([key, label]) => <option key={key} value={key}>{label}</option>)}
+          <option value="custom">Own dates</option>
+        </select>
+      </label>
+      <label><span>From</span><input type="date" value={period.from} onChange={(event) => setDates(event.target.value, period.to)} /></label>
+      <label><span>To</span><input type="date" value={period.to} onChange={(event) => setDates(period.from, event.target.value)} /></label>
+    </div>
+  );
+}
+
+// Day figures folded into weeks (Monday first) -- the week report.
+function inkoopWeeksFromDays(days) {
+  const weeks = new Map();
+  const keys = ["purchase_value", "invoice_value", "erp_value", "mismatch_count", "mismatch_value", "gap_count", "gap_value", "embalage_value", "product_count"];
+  for (const day of days) {
+    const date = new Date(`${day.date}T00:00:00`);
+    date.setDate(date.getDate() - ((date.getDay() + 6) % 7));
+    const weekStart = inkoopIsoLocal(date);
+    if (!weeks.has(weekStart)) weeks.set(weekStart, Object.fromEntries([["week_start", weekStart], ...keys.map((key) => [key, 0])]));
+    const week = weeks.get(weekStart);
+    for (const key of keys) week[key] += Number(day[key]) || 0;
+  }
+  return [...weeks.values()].sort((left, right) => (left.week_start < right.week_start ? 1 : -1));
+}
+
 function InkoopDashboardTab({ company }) {
   const [loading, setLoading] = useState(true);
-  const [period, setPeriod] = useState({ days: 7 });
+  const [period, setPeriod] = useState(() => inkoopPresetPeriod("this_month"));
+  const [periodDays, setPeriodDays] = useState([]);
   const [byGrower, setByGrower] = useState([]);
   const [byAvc, setByAvc] = useState([]);
   const [byCompany, setByCompany] = useState([]);
@@ -18064,11 +18156,29 @@ function InkoopDashboardTab({ company }) {
   const [fullDayReport, setFullDayReport] = useState([]);
   const [popup, setPopup] = useState(null);
 
+  // The stored day figures of the whole period (overview, day and week
+  // report); the rankings by grower / AVC / ... below take its last 31 days.
+  useEffect(() => {
+    let cancelled = false;
+    const params = new URLSearchParams({ from: period.from, to: period.to });
+    if (company) params.set("company", company);
+    apiJson(`/api/inkoop/dashboard/days?${params.toString()}`)
+      .then((payload) => { if (!cancelled) setPeriodDays(payload.days || []); })
+      .catch((loadError) => { if (!cancelled) setError(loadError.message); });
+    return () => { cancelled = true; };
+  }, [period, company]);
+  const rankingFrom = (() => {
+    const to = new Date(`${period.to}T00:00:00`);
+    to.setDate(to.getDate() - 30);
+    const earliest = inkoopIsoLocal(to);
+    return earliest > period.from ? earliest : period.from;
+  })();
+
   useEffect(() => {
     let cancelled = false;
     setLoading(true);
     setError("");
-    const params = new URLSearchParams(inkoopPeriodParams(period));
+    const params = new URLSearchParams({ from: rankingFrom, to: period.to });
     if (company) params.set("company", company);
     apiJson(`/api/inkoop/dashboard/summary?${params.toString()}`)
       .then((payload) => {
@@ -18100,9 +18210,7 @@ function InkoopDashboardTab({ company }) {
         <div className="notice">
           How much money is at risk from mismatches and unresolved gaps, and how much is actually being spent -- ranked by grower, AVC, buying company, and product group (Bloemen/Planten/Accessoires).
         </div>
-        <div className="form-grid">
-          <InkoopRangeSelect period={period} onChange={setPeriod} />
-        </div>
+        <InkoopDashboardPeriod period={period} onChange={setPeriod} />
       </InkoopCollapsibleCard>
 
       {error && <div className="notice danger">{error}</div>}
@@ -18111,38 +18219,8 @@ function InkoopDashboardTab({ company }) {
         <div className="notice">Loading dashboard...</div>
       ) : (
         <>
-          <InkoopFinanceHero company={company} dayReport={fullDayReport} period={period} />
+          <InkoopFinanceHero company={company} dayReport={periodDays} period={period} />
           {popup && <InkoopGrowerPopup {...popup} company={company} onClose={() => setPopup(null)} />}
-          {todaySummary && (
-            <InkoopCollapsibleCard title={<>Today ({todaySummary.date})</>}>
-              <div className="notice">
-                Whole-day totals -- no grower/product matching involved, just "did the money invoiced add up to what the Connect recorded" for the day as a whole. A facturation umbrella (one invoice identity billing many Connect-side locations, e.g. Zentoo) can still show a gap at the grower level even when these two totals line up.
-              </div>
-              <div className="inkoop-summary-cards">
-                <div className="inkoop-summary-card">
-                  <div className="inkoop-summary-value">{formatInkoopEuro(todaySummary.purchase_value)}</div>
-                  <div className="inkoop-summary-label">Invoiced (FH invoice total)</div>
-                </div>
-                <div className="inkoop-summary-card">
-                  <div className="inkoop-summary-value">{formatInkoopEuro(todaySummary.erp_value)}</div>
-                  <div className="inkoop-summary-label">Connect Data</div>
-                </div>
-                <div className="inkoop-summary-card">
-                  <div className="inkoop-summary-value">{formatInkoopEuro(todaySummary.purchase_value - todaySummary.erp_value)}</div>
-                  <div className="inkoop-summary-label">Difference</div>
-                </div>
-                <div className="inkoop-summary-card">
-                  <div className="inkoop-summary-value">{formatInkoopEuro(todaySummary.gap_value)}</div>
-                  <div className="inkoop-summary-label">Missing-match value</div>
-                </div>
-                <div className="inkoop-summary-card">
-                  <div className="inkoop-summary-value">{todaySummary.product_count}</div>
-                  <div className="inkoop-summary-label">Products</div>
-                </div>
-              </div>
-            </InkoopCollapsibleCard>
-          )}
-
           <InkoopCollapsibleCard title="Day report">
             <div className="notice">
               "Invoiced" vs "Connect Data" are plain day-wide totals, matched by date only -- not by grower or product. Use this first to see whether the day balanced financially at all before drilling into Compare &amp; Reconcile or Follow-up for the specific lines.
@@ -18151,7 +18229,7 @@ function InkoopDashboardTab({ company }) {
               <table className="data-table">
                 <thead><tr><th>Date</th><th>Invoiced</th><th>Connect Data</th><th>Difference</th><th>Mismatches</th><th>Mismatch value</th><th>Gaps</th><th>Gap value</th><th>Emballage</th><th>Products</th></tr></thead>
                 <tbody>
-                  {dayReport.map((day) => (
+                  {periodDays.map((day) => (
                     <tr key={day.date}>
                       <td className="clickable-cell" onClick={() => setPopup({ title: `Growers -- ${day.date}`, types: null, from: day.date, to: day.date })}>{day.date}</td>
                       <td>{formatInkoopEuro(day.purchase_value)}</td>
@@ -18165,7 +18243,7 @@ function InkoopDashboardTab({ company }) {
                       <td>{day.product_count}</td>
                     </tr>
                   ))}
-                  {!dayReport.length && <tr><td colSpan="10">No data in this window.</td></tr>}
+                  {!periodDays.length && <tr><td colSpan="10">No data in this period.</td></tr>}
                 </tbody>
               </table>
             </div>
@@ -18176,12 +18254,12 @@ function InkoopDashboardTab({ company }) {
               <table className="data-table">
                 <thead><tr><th>Week of</th><th>Invoiced</th><th>Connect Data</th><th>Difference</th><th>Mismatches</th><th>Mismatch value</th><th>Gaps</th><th>Gap value</th><th>Emballage</th><th>Products</th></tr></thead>
                 <tbody>
-                  {weekReport.map((week) => (
+                  {inkoopWeeksFromDays(periodDays).map((week) => (
                     <tr key={week.week_start}>
                       <td>{week.week_start}</td>
                       <td>{formatInkoopEuro(week.purchase_value)}</td>
                       <td>{formatInkoopEuro(week.erp_value)}</td>
-                      <td>{formatInkoopEuro(week.purchase_value - week.erp_value)}</td>
+                      <td><InkoopMoneyDiff value={week.purchase_value - week.erp_value} /></td>
                       <td>{week.mismatch_count}</td>
                       <td>{formatInkoopEuro(week.mismatch_value)}</td>
                       <td>{week.gap_count}</td>
@@ -18190,7 +18268,7 @@ function InkoopDashboardTab({ company }) {
                       <td>{week.product_count}</td>
                     </tr>
                   ))}
-                  {!weekReport.length && <tr><td colSpan="10">No data in this window.</td></tr>}
+                  {!periodDays.length && <tr><td colSpan="10">No data in this period.</td></tr>}
                 </tbody>
               </table>
             </div>
@@ -18198,6 +18276,7 @@ function InkoopDashboardTab({ company }) {
 
           <InkoopPeriodReports company={company} />
 
+          {rankingFrom > period.from && <div className="notice">By grower / AVC / company / product group and emballage: the last 31 days of the period ({rankingFrom} – {period.to}).</div>}
           <InkoopCollapsibleCard title="By grower" defaultOpen={false}>
             {inkoopRenderBarList(byGrower)}
           </InkoopCollapsibleCard>
