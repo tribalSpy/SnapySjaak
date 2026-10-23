@@ -317,6 +317,30 @@ export async function getInkoopHandelCodeEvidence() {
 
 // Every supplier on the purchase invoices (not FD / HV): GLN + FH number as
 // they come together on a line, with what was bought from them.
+// Per invoice grower (GLN / FH number) its most bought products on the
+// invoices: description and how many lines -- the five most frequent.
+export async function getInkoopInvoiceSupplierProducts() {
+  if (!pool) {
+    return [];
+  }
+  const result = await pool.query(`
+    SELECT gln, fh_number, description, lines
+      FROM (
+        SELECT btrim(COALESCE(l.supplier_gln, '')) AS gln, btrim(COALESCE(l.supplier_fh_number, '')) AS fh_number,
+               btrim(l.description) AS description, count(*)::int AS lines,
+               row_number() OVER (PARTITION BY btrim(COALESCE(l.supplier_gln, '')), btrim(COALESCE(l.supplier_fh_number, '')) ORDER BY count(*) DESC, btrim(l.description)) AS rank
+          FROM inkoop_invoice_lines l
+         WHERE (btrim(COALESCE(l.supplier_gln, '')) <> '' OR btrim(COALESCE(l.supplier_fh_number, '')) <> '')
+           AND btrim(COALESCE(l.description, '')) <> ''
+           AND l.quantity IS NOT NULL
+           AND ${INKOOP_LINE_KIND_SQL} = 'product'
+         GROUP BY 1, 2, 3
+      ) ranked
+     WHERE rank <= 5
+  `);
+  return result.rows;
+}
+
 export async function getInkoopInvoiceSuppliers() {
   if (!pool) {
     return [];

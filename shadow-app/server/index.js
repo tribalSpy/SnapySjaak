@@ -109,6 +109,7 @@ import {
   getInkoopGrowerPavPairs,
   getInkoopConnectCodeStats,
   getInkoopInvoiceSuppliers,
+  getInkoopInvoiceSupplierProducts,
   getInkoopHandelCodeEvidence,
   saveInkoopIssueStatus,
   upsertLlmAgentHeartbeat,
@@ -23731,9 +23732,17 @@ async function handleApi(req, res, url) {
     const state = await readInkoopState();
     const directory = await inkoopGrowerDirectory(state);
     const { matcherMaps, skipCodes, ...view } = directory;
-    // For the Link growers tab: which codes were linked by hand, and the
-    // facturation groups (codes counted together).
-    sendJson(res, 200, { ...view, manual_supplier_links: state.manual_supplier_links || [], facturation_groups: state.facturation_groups || [] });
+    // For the Link growers tab: each grower's most bought products (to see
+    // who it is), which codes were linked by hand, and the facturation
+    // groups (codes counted together).
+    const products = new Map();
+    for (const row of await getInkoopInvoiceSupplierProducts().catch(() => [])) {
+      const key = `${row.gln}|${row.fh_number}`;
+      if (!products.has(key)) products.set(key, []);
+      products.get(key).push({ description: row.description, lines: row.lines });
+    }
+    const suppliers = (view.suppliers || []).map((supplier) => ({ ...supplier, products: products.get(`${supplier.gln || ""}|${supplier.fh_number || ""}`) || [] }));
+    sendJson(res, 200, { ...view, suppliers, manual_supplier_links: state.manual_supplier_links || [], facturation_groups: state.facturation_groups || [] });
     return;
   }
 

@@ -18392,6 +18392,11 @@ function InkoopLinkGrowersTab() {
                         </label>
                       )}
                     </div>
+                    {!!supplier.products?.length && (
+                      <div style={{ fontSize: "0.78rem", color: "#475569", marginTop: 4 }} title="Most bought on its invoices">
+                        {supplier.products.map((product) => `${product.description} (${product.lines})`).join(" · ")}
+                      </div>
+                    )}
                     {!supplier.codes.length && !!supplier.suggestions?.length && (
                       <div className="row-actions" style={{ marginTop: 6 }}>
                         <small className="muted">Suggested:</small>
