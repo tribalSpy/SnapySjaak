@@ -2347,3 +2347,4 @@ button.fin-tile:hover { border-color: var(--fin-series-1); box-shadow: 0 0 14px 
 /* Popup with the growers behind a figure */
 .fin-modal-backdrop { position: fixed; inset: 0; background: rgba(5, 10, 20, 0.55); z-index: 50; display: flex; align-items: flex-start; justify-content: center; padding: 40px 16px; overflow-y: auto; }
 .fin-modal { width: min(1100px, 100%); }
+.fin-hero .checkbox-label, .fin-hero .checkbox-label span { color: var(--fin-text); opacity: 1; }

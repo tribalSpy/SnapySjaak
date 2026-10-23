@@ -18008,7 +18008,24 @@ function InkoopFinanceHero({ company, dayReport, period }) {
   const open = (title, types, range = { from, to }) => range.from && setPopup({ title, types, ...range });
   const months = [...(periods?.months || [])].sort((left, right) => (left.period < right.period ? -1 : 1)).slice(-12);
   const monthRows = months.map((row) => ({ ...row, key: row.period, label: new Date(`${row.period}-01T00:00:00`).toLocaleDateString("nl-NL", { month: "short" }) }));
-  const dayRows = [...dayReport].sort((left, right) => (left.date < right.date ? -1 : 1)).map((day) => ({ ...day, key: day.date, label: day.date.slice(8, 10) }));
+  // The days folded into weeks (Monday first): invoiced and the chosen
+  // Connect side per week -- one day alone says little (lots cross days).
+  const weekRows = (() => {
+    const weeks = new Map();
+    for (const day of dayReport) {
+      const date = new Date(`${day.date}T00:00:00`);
+      date.setDate(date.getDate() - ((date.getDay() + 6) % 7));
+      const start = inkoopIsoLocal(date);
+      const week = weeks.get(start) || { key: start, from: start, to: day.date, purchase_value: 0, connect: 0 };
+      week.purchase_value += Number(day.purchase_value) || 0;
+      week.connect += connectOf(day);
+      if (day.date > week.to) week.to = day.date;
+      if (day.date < week.from) week.from = day.date;
+      weeks.set(start, week);
+    }
+    return [...weeks.values()].sort((left, right) => (left.key < right.key ? -1 : 1))
+      .map((week) => ({ ...week, label: `${week.key.slice(8, 10)}-${week.key.slice(5, 7)}` }));
+  })();
   const monthRange = (row) => {
     const [year, month] = row.period.split("-").map(Number);
     const last = new Date(year, month, 0).getDate();
@@ -18024,11 +18041,21 @@ function InkoopFinanceHero({ company, dayReport, period }) {
         </div>
         <div className="row-actions">
           <span className="fin-sub">Connect side:</span>
-          <select value={bwChoice ? bwChoice.join(",") : ""} onChange={(event) => setBwChoice(event.target.value ? event.target.value.split(",") : null)}>
-            <option value="">all betaalwijzen</option>
-            <option value="V">only V (via veiling)</option>
-            {bwCodes.filter((bw) => bw !== "V").map((bw) => <option key={bw} value={`V,${bw}`}>V + {bw}{INKOOP_BW_LABELS[bw] ? ` (${INKOOP_BW_LABELS[bw]})` : ""}</option>)}
-          </select>
+          <label className="checkbox-label"><input type="checkbox" checked={!bwChoice} onChange={(event) => setBwChoice(event.target.checked ? null : ["V"])} /><span>all</span></label>
+          {bwCodes.map((bw) => (
+            <label key={bw} className="checkbox-label" title={bw === "?" ? "Connect codes without a BW" : INKOOP_BW_LABELS[bw] || ""}>
+              <input
+                type="checkbox"
+                checked={!bwChoice || bwChoice.includes(bw)}
+                onChange={() => {
+                  const current = bwChoice || bwCodes;
+                  const next = current.includes(bw) ? current.filter((item) => item !== bw) : [...current, bw];
+                  setBwChoice(next.length === bwCodes.length ? null : next);
+                }}
+              />
+              <span>{bw === "?" ? "? (no BW)" : `${bw}${INKOOP_BW_LABELS[bw] ? ` ${INKOOP_BW_LABELS[bw]}` : ""}`}</span>
+            </label>
+          ))}
         </div>
       </div>
       <div className="fin-tiles">
@@ -18055,10 +18082,10 @@ function InkoopFinanceHero({ company, dayReport, period }) {
             : <div className="fin-sub">No months compared yet.</div>}
         </div>
         <div className="fin-card">
-          <h3>Difference per day</h3>
-          <div className="fin-legend"><span><i style={{ background: "var(--fin-critical)" }} />we pay more (loss)</span><span><i style={{ background: "var(--fin-series-1)" }} />we pay less</span></div>
-          {dayRows.length
-            ? <InkoopBarChart rows={dayRows} signed series={[{ name: "Invoice − Connect", color: (value) => (value > 0 ? "var(--fin-critical)" : "var(--fin-series-1)"), value: (row) => (Number(row.purchase_value) || 0) - connectOf(row) }]} onBarClick={(row) => setPopup({ title: `Growers -- ${row.date}`, types: null, from: row.date, to: row.date })} />
+          <h3>Difference per week</h3>
+          <div className="fin-legend"><span><i style={{ background: "var(--fin-critical)" }} />we pay more (loss)</span><span><i style={{ background: "var(--fin-series-1)" }} />we pay less</span><span className="fin-sub">week of (Monday)</span></div>
+          {weekRows.length
+            ? <InkoopBarChart rows={weekRows} signed series={[{ name: "Invoice − Connect", color: (value) => (value > 0 ? "var(--fin-critical)" : "var(--fin-series-1)"), value: (row) => row.purchase_value - row.connect }]} onBarClick={(row) => setPopup({ title: `Growers -- week of ${row.key}`, types: null, from: row.from, to: row.to })} />
             : <div className="fin-sub">No days in this period.</div>}
         </div>
         <div className="fin-card">
