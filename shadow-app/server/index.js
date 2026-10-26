@@ -104,6 +104,7 @@ import {
   saveInkoopLotEpp,
   applyInkoopEppBridge,
   applyInkoopOrderBridge,
+  inkoopLotUploadCheck,
   applyInkoopRefBridge,
   applyInkoopLotInfo,
   getInkoopLotGlnPairs,
@@ -23383,9 +23384,13 @@ async function handleApi(req, res, url) {
     const withInfo = await applyInkoopLotInfo();
     const filled = [...fromEpp, ...fromOrder, ...fromRefs, ...withInfo];
     inkoopGrowerDirectoryCache = null;
-    if (filled.length) {
+    // The days of every uploaded lot are compared again (not only those whose
+    // data changed): what the night action brings can pair lines either way.
+    const check = await inkoopLotUploadCheck(rows.map((row) => row.lot)).catch(() => null);
+    const days = [...new Set([...filled.map((row) => row.erp_date), ...(check?.dates || [])])];
+    if (days.length) {
       bumpInkoopMatchVersion();
-      await refreshInkoopDaySummariesForDates(filled.map((row) => row.erp_date))
+      await refreshInkoopDaySummariesForDates(days)
         .catch((queueError) => console.error("Queueing the Inkoop comparison failed:", queueError instanceof Error ? queueError.message : queueError));
       kickInkoopMatchWorker();
     }
@@ -23395,6 +23400,10 @@ async function handleApi(req, res, url) {
       from_epp: fromEpp.length, from_order: fromOrder.length, from_refs: fromRefs.length,
       with_order_number: rows.filter((row) => row.order_number).length,
       with_gln: rows.filter((row) => row.gln).length,
+      lots_updated: withInfo.length,
+      days_compared_again: days.sort(),
+      order_on_invoice: check?.order_on_invoice ?? null,
+      invoices_without_on: check?.invoices_without_on ?? null,
     });
     return;
   }

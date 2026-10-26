@@ -538,6 +538,39 @@ export async function applyInkoopOrderBridge() {
   return result.rows;
 }
 
+// After an EPP list upload: the Connect days of these lots, and how many of
+// their order numbers are on an invoice line at all (its XML's ON, stored
+// since 21-10 -- invoices uploaded before have none until uploaded again).
+export async function inkoopLotUploadCheck(lots) {
+  if (!pool || !Array.isArray(lots) || !lots.length) {
+    return { dates: [], with_order: 0, order_on_invoice: 0, invoices_without_on: 0 };
+  }
+  const result = await pool.query(`
+    WITH uploaded AS (
+      SELECT b.lot, b.order_number, e.erp_date
+        FROM inkoop_lot_epp b
+        LEFT JOIN inkoop_erp_lines e ON e.lot = b.lot
+       WHERE b.lot = ANY($1::bigint[])
+    )
+    SELECT
+      (SELECT coalesce(array_agg(DISTINCT to_char(erp_date, 'YYYY-MM-DD')), '{}') FROM uploaded WHERE erp_date IS NOT NULL) AS dates,
+      (SELECT count(*) FROM uploaded WHERE btrim(COALESCE(order_number, '')) <> '')::int AS with_order,
+      (SELECT count(*) FROM uploaded u
+        WHERE btrim(COALESCE(u.order_number, '')) <> ''
+          AND EXISTS (SELECT 1 FROM inkoop_invoice_lines i
+                       WHERE btrim(COALESCE(i.raw->>'order_number', '')) <> ''
+                         AND left(u.order_number, length(i.raw->>'order_number')) = i.raw->>'order_number'
+                         AND length(u.order_number) - length(i.raw->>'order_number') BETWEEN 0 AND 3
+                         AND i.invoice_date BETWEEN u.erp_date - 4 AND u.erp_date + 4))::int AS order_on_invoice,
+      (SELECT count(DISTINCT i.invoice_number) FROM inkoop_invoice_lines i
+        WHERE i.invoice_type IN ('connect', 'klok', 'klokfactuur', 'connectfactuur')
+          AND i.invoice_date BETWEEN (SELECT min(erp_date) FROM uploaded) - 1 AND (SELECT max(erp_date) FROM uploaded) + 1
+          AND btrim(COALESCE(i.raw->>'order_number', '')) = ''
+          AND NOT EXISTS (SELECT 1 FROM inkoop_invoice_lines o WHERE o.invoice_number = i.invoice_number AND btrim(COALESCE(o.raw->>'order_number', '')) <> ''))::int AS invoices_without_on
+  `, [lots.map((lot) => Number(lot)).filter(Number.isFinite)]);
+  return result.rows[0];
+}
+
 // Connect lots without a PAV with a popup number (13 digits) that is a
 // reference of exactly one invoice line with a brief number (VN, AAG, SS or
 // ADJ in its XML, 4 days either side): that brief number.
