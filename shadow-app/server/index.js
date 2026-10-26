@@ -6946,6 +6946,12 @@ function parseInkoopLotInfo(info) {
   if (!orderNumber) {
     orderNumber = compact.find((line) => /^\d{15,24}$/.test(line)) || "";
   }
+  // A Floriday purchase: no "Klant code" line, but the order number on a
+  // line of its own ("11088009") -- the invoice line's ON (8 digits).
+  if (!orderNumber) {
+    const floriday = [...new Set(compact.filter((line) => /^\d{8}$/.test(line)))];
+    if (floriday.length === 1) orderNumber = floriday[0];
+  }
   const gln = compact.find((line) => /^87\d{11}$/.test(line) && line !== orderNumber && !INKOOP_AUCTION_GLNS.has(line)) || "";
   // Every 13-digit number (a clock lot's transaction numbers) -- not the
   // GLNs: one may be an invoice line's VN / AAG / SS / ADJ reference.
