@@ -3703,7 +3703,9 @@ function UkdocsPage({ currentUser, onNavigate }) {
         resetDrafts();
       }
       if (!options.silent) {
-        setMessage(`Loaded ${payload.imported_count || 0} available sendings for ${payload.date}.`);
+        setMessage(payload.sheet_off
+          ? `Showing the zendingen of ${payload.date} that are in the app (the PD keuringen spreadsheet is turned off).`
+          : `Loaded ${payload.imported_count || 0} available sendings for ${payload.date}.`);
       }
     } catch (loadError) {
       setError(loadError.message);
@@ -5954,7 +5956,9 @@ function UkdocsPrintPage({ currentUser }) {
       });
       setState((current) => ({ ...current, print_collections: payload.print_collections || current?.print_collections || [] }));
       setMessage(
-        updatingLoadedDay
+        payload.sheet_off
+          ? "The PD keuringen spreadsheet is turned off (Settings > UKdocs Print) -- nothing loaded from it."
+          : updatingLoadedDay
           ? `Updated ${payload.updated_count || 0} zendingen for ${payload.date}. Existing saved files, notes, and links stayed connected, and duplicate zendingen were merged.`
           : `Started ${payload.imported_count || 0} zendingen from ${payload.sheet_name || "spreadsheet"} for ${payload.date}.`,
       );
@@ -20328,6 +20332,14 @@ function SettingsPage({ currentUser }) {
               <div className="settings-subsection-card">
                 <div className="section-header"><h3>Spreadsheet source</h3></div>
                 <div className="form-grid">
+                  <label className="checkbox-label" style={{ gridColumn: "1 / -1" }}>
+                    <input
+                      type="checkbox"
+                      checked={form.ukdocs_print_sheet_active === true}
+                      onChange={(event) => setForm({ ...form, ukdocs_print_sheet_active: event.target.checked })}
+                    />
+                    <span>Spreadsheet active -- off: the app doesn't read or write the PD keuringen spreadsheet at all (no sync, no write-back)</span>
+                  </label>
                   <label>
                     <span>UKdocs Print spreadsheet ID</span>
                     <input

@@ -697,6 +697,9 @@ const defaultFustSettings = {
   hal_locations_source: "netlify",
   hal_locations_netlify_url: "https://halindeling.netlify.app",
   ukdocs_print_spreadsheet_id: "",
+  // The PD keuringen spreadsheet is no longer used: off, the app never
+  // reads or writes it (no sync, no write-back, no day loading from it).
+  ukdocs_print_sheet_active: false,
   ukdocs_print_sheet_name: "PD keuringen",
   cmr_default_template_name: "",
   cmr_manage_usernames: [],
@@ -1682,6 +1685,7 @@ function normalizeFustSettings(settings) {
     hal_locations_source: settings?.hal_locations_source === "sheet" ? "sheet" : "netlify",
     hal_locations_netlify_url: String(settings?.hal_locations_netlify_url || defaultFustSettings.hal_locations_netlify_url).trim().replace(/\/+$/, "") || defaultFustSettings.hal_locations_netlify_url,
     ukdocs_print_spreadsheet_id: String(settings?.ukdocs_print_spreadsheet_id || "").trim(),
+    ukdocs_print_sheet_active: settings?.ukdocs_print_sheet_active === true,
     ukdocs_print_sheet_name: String(settings?.ukdocs_print_sheet_name || defaultFustSettings.ukdocs_print_sheet_name).trim() || defaultFustSettings.ukdocs_print_sheet_name,
     cmr_default_template_name: String(settings?.cmr_default_template_name || "").trim(),
     cmr_manage_usernames: normalizeCmrManageUsernames(settings?.cmr_manage_usernames),
@@ -2818,7 +2822,13 @@ function ukdocsViewerSettingsSummary(settings) {
   return {
     gmail_connected_email: String(settings?.gmail_connected_email || "").trim(),
     ukdocs_print_spreadsheet_id: String(settings?.ukdocs_print_spreadsheet_id || "").trim(),
+    ukdocs_print_sheet_active: settings?.ukdocs_print_sheet_active === true,
   };
+}
+
+// Is the PD keuringen spreadsheet in use (Settings > UKdocs Print)?
+function ukdocsPrintSheetActive(settings) {
+  return settings?.ukdocs_print_sheet_active === true && Boolean(String(settings?.ukdocs_print_spreadsheet_id || "").trim());
 }
 
 async function readUkdocsState() {
@@ -5921,6 +5931,9 @@ function buildPdKeuringSheetRowValues(collection, columnIndices) {
 // app-original rows (no sheet row yet) or rows already confirmed 1:1 by a
 // previous write/reconcile pass (pd_sheet_sync.row_number set) are written.
 async function syncPdKeuringCollectionToSheet(settings, collection) {
+  if (!ukdocsPrintSheetActive(settings)) {
+    return null;
+  }
   const spreadsheetId = String(settings.ukdocs_print_spreadsheet_id || "").trim();
   const sheetName = String(settings.ukdocs_print_sheet_name || defaultFustSettings.ukdocs_print_sheet_name).trim();
   if (!spreadsheetId || !sheetName) {
@@ -16636,6 +16649,9 @@ async function syncUkdocsPrintCollectionsFromSheet(settings, date, options = {})
 // tied to pd_reference (which models per-city lookup entries) -- this is
 // deliberately just plain option lists, matching what the sheet actually is.
 async function syncPdKeuringDropdownOptionsFromSheet(settings) {
+  if (!ukdocsPrintSheetActive(settings)) {
+    throw new Error("The PD keuringen spreadsheet is turned off (Settings > UKdocs Print)");
+  }
   const spreadsheetId = String(settings.ukdocs_print_spreadsheet_id || "").trim();
   if (!spreadsheetId) {
     throw new Error("Set a UKdocs Print spreadsheet ID in Settings first");
@@ -16676,6 +16692,9 @@ async function syncPdKeuringDropdownOptionsFromSheet(settings) {
 }
 
 async function backfillPdKeuringHistoryFromSheet(settings, sheetNames = ["PD planning"]) {
+  if (!ukdocsPrintSheetActive(settings)) {
+    throw new Error("The PD keuringen spreadsheet is turned off (Settings > UKdocs Print)");
+  }
   const spreadsheetId = String(settings.ukdocs_print_spreadsheet_id || "").trim();
   if (!spreadsheetId) {
     throw new Error("Set a UKdocs Print spreadsheet ID in Settings first");
@@ -16770,6 +16789,9 @@ const PD_KEURING_RECONCILE_FIELDS = [
 // the collection for a human to resolve by editing either side normally.
 async function runPdKeuringSheetReconcile() {
   const settings = await readFustSettings();
+  if (!ukdocsPrintSheetActive(settings)) {
+    return { ok: true, skipped: true, reason: "PD keuringen spreadsheet turned off in Settings" };
+  }
   const spreadsheetId = String(settings.ukdocs_print_spreadsheet_id || "").trim();
   const sheetName = String(settings.ukdocs_print_sheet_name || defaultFustSettings.ukdocs_print_sheet_name).trim();
   if (!spreadsheetId || !sheetName) {
@@ -22314,6 +22336,12 @@ async function handleApi(req, res, url) {
     }
     const body = await readRequestJson(req);
     const settings = await readFustSettings();
+    // Spreadsheet off: the day shows the zendingen already in the app.
+    if (!ukdocsPrintSheetActive(settings)) {
+      const state = await readUkdocsState();
+      sendJson(res, 200, { ok: true, sheet_off: true, date: body?.date || localDateIso(), imported_count: 0, updated_count: 0, print_collections: state.print_collections || [] });
+      return;
+    }
     try {
       const payload = await syncUkdocsPrintCollectionsFromSheet(settings, body?.date || localDateIso(), {
         reference_connect_only: body?.reference_connect_only === true,
