@@ -495,6 +495,16 @@ def read_screen_value(label: str, lines: list[str]) -> str | None:
     return digits if digits.isdigit() else None
 
 
+def read_aanvoerder(lines: list[str]) -> str | None:
+    """The bottom bar's "Aanv.: x94478" -> "x94478" (the grower's
+    Kwekercod; a letter and digits, look-alike letters read as digits)."""
+    found = re.search(r"Aanv\.?\s*[:;]?\s*([A-Za-z])\s?([0-9OoSsIlBDZ]{3,6})\b", "\n".join(lines))
+    if not found:
+        return None
+    digits = found.group(2).translate(_DIGIT_LOOKALIKES)
+    return f"{found.group(1).lower()}{digits}" if digits.isdigit() else None
+
+
 def normalize_foreach(settings: dict) -> dict:
     try:
         count = max(1, min(50, int(float(settings.get("count") or 1))))
@@ -1576,6 +1586,7 @@ class ActionRun:
         value_label = str(loop.get("collect_value") or "").strip()
         # The value (e.g. EPP) belongs to the cursor row only: key -> values read.
         row_values: dict[str, list[str]] = {}
+        row_aanv: dict[str, list[str]] = {}  # the bottom bar's "Aanv.: x94478" per cursor row
         keys_by_position: dict[int, str] = {}  # screen row -> key, from the previous look
         popup_keys = str(loop.get("row_popup_keys") or "").strip()
         close_keys = str(loop.get("row_close_keys") or "").strip() or "Esc"
@@ -1709,6 +1720,9 @@ class ActionRun:
                     value = read_screen_value(value_label, [line.get("text", "") for line in layout])
                     if cursor_key and value:
                         row_values.setdefault(cursor_key, []).append(value)
+                    aanv = read_aanvoerder([line.get("text", "") for line in layout])
+                    if cursor_key and aanv:
+                        row_aanv.setdefault(cursor_key, []).append(aanv)
                 keys_by_position.clear()
                 for entry in rows_now:
                     key = row_key(entry["text"]) if not entry["highlighted"] else None
@@ -1778,9 +1792,13 @@ class ActionRun:
                     # A second look at the value, a moment later (the bottom
                     # bar's EPP comes a little after the cursor): that strip
                     # of the screen only.
-                    late = self._read_bottom_value(list_back or self._screenshot(hwnd), value_label)
+                    bottom = self._read_bottom_lines(list_back or self._screenshot(hwnd))
+                    late = read_screen_value(value_label, bottom)
                     if late:
                         row_values.setdefault(cursor_key, []).extend([late, late])  # counts more: read later
+                    late_aanv = read_aanvoerder(bottom)
+                    if late_aanv:
+                        row_aanv.setdefault(cursor_key, []).extend([late_aanv, late_aanv])
                 if cursor_key:
                     cursor_keys_done.add(cursor_key)
                 for part in list_loop_keys(next_key):
@@ -1874,6 +1892,14 @@ class ActionRun:
             # the one well-read key it is nearly the same as.
             good_keys = [order for order, seen in sightings.items() if seen["count"] >= 2]
             values_by_key: dict[str, str] = {}
+            aanv_by_key: dict[str, str] = {}
+            for cursor_key, values in row_aanv.items():
+                key = cursor_key if cursor_key in good_keys else None
+                if key is None:
+                    close = [order for order in good_keys if difflib.SequenceMatcher(None, cursor_key, order).ratio() >= 0.85]
+                    key = close[0] if len(close) == 1 else None
+                if key:
+                    aanv_by_key[key] = max(set(values), key=values.count)
             for cursor_key, values in row_values.items():
                 key = cursor_key if cursor_key in good_keys else None
                 if key is None:
@@ -1890,6 +1916,7 @@ class ActionRun:
                 if value_label:
                     # Not every lot has one (e.g. no EPP): left empty.
                     item["value"] = values_by_key.get(order, "")
+                    item["aanv"] = aanv_by_key.get(order, "")
                     if not item["value"]:
                         item["note"] = f"no {value_label}"
                 if popup_keys:
@@ -1951,17 +1978,21 @@ class ActionRun:
             self.say(f"{label}: {key}: no popup seen after {popup_keys}")
         return back
 
-    def _read_bottom_value(self, image, value_label: str) -> str | None:
-        """The value after its label (e.g. "EPP: [...]") in the bottom bar --
-        the lowest fifth of the screenshot only."""
+    def _read_bottom_lines(self, image) -> list[str]:
+        """The bottom bar's text (EPP: [...], Aanv.: ...) -- the lowest fifth
+        of the screenshot only."""
         if image is None:
-            return None
+            return []
         crop = image.crop((0, int(image.height * 0.8), image.width, image.height))
         try:
             lines = screen_reader.read_screen(crop)
         except Exception:  # noqa: BLE001 -- a second look only
-            return None
-        return read_screen_value(value_label, [line.get("text", "") for line in lines])
+            return []
+        return [line.get("text", "") for line in lines]
+
+    def _read_bottom_value(self, image, value_label: str) -> str | None:
+        """The value after its label (e.g. "EPP: [...]") in the bottom bar."""
+        return read_screen_value(value_label, self._read_bottom_lines(image))
 
     def _read_popup_text(self, image, box) -> list[str]:
         """The lines inside a popup's frame: that part of the screenshot
@@ -1978,16 +2009,18 @@ class ActionRun:
         ("lot;epp;info"), in the action's dump folder (else outputs/) -- the
         file for SnappySjaak's EPP list upload. The same columns are added to
         the run's dump file (Ctrl+P), matched by lot."""
-        rows = [item for item in collected.get("items", []) if item.get("value") or item.get("info")]
+        rows = [item for item in collected.get("items", []) if item.get("value") or item.get("info") or item.get("aanv")]
         if not rows:
             self.say(f"{label}: no {value_label} / popup read on any row -- no CSV written.")
             return
         with_info = any(item.get("info") for item in rows)
+        with_aanv = any(item.get("aanv") for item in rows)
         target_dir = self._export_dir()
         target = target_dir / f"{day_list_slug(collected['name'])}_{self.run_date():%Y%m%d}.csv"
-        header = f"lot;{value_label.lower()}" + (";info" if with_info else "")
+        header = f"lot;{value_label.lower()}" + (";aanv" if with_aanv else "") + (";info" if with_info else "")
         lines = [header] + [
-            f"{item['key']};{item.get('value', '')}" + (f";{str(item.get('info', '')).replace(';', ',')}" if with_info else "")
+            f"{item['key']};{item.get('value', '')}" + (f";{item.get('aanv', '')}" if with_aanv else "")
+            + (f";{str(item.get('info', '')).replace(';', ',')}" if with_info else "")
             for item in rows
         ]
         target.write_text("\r\n".join(lines) + "\r\n", encoding="utf-8", newline="")

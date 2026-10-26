@@ -6949,7 +6949,9 @@ function parseInkoopEppList(base64) {
       // Clock lots have a 9-digit EPP, others 13 -- or none at all.
       const epp = /^\d{6,16}$/.test(value("epp")) ? value("epp") : "";
       const info = header.includes("info") ? value("info") : "";
-      rows.push({ lot: Number(lot), epp, info, ...parseInkoopLotInfo(info) });
+      // The bottom bar's "Aanv.: x94478": the grower's Kwekercod.
+      const aanv = /^[a-z]?\d{3,6}$/i.test(value("aanv")) ? value("aanv").toLowerCase() : "";
+      rows.push({ lot: Number(lot), epp, info, ...parseInkoopLotInfo(info), aanv });
       continue;
     }
     const cells = line.split(/[;,\t ]+/).map((cell) => cell.trim().replace(/^"|"$/g, ""));
@@ -7266,6 +7268,11 @@ function findInkoopPiecesCombination(rows, target) {
   }
   return null;
 }
+
+// Connect codes that are no grower but a general booking: FloraHolland
+// Connect (F2), its locations, X99 -- a lot under one of them can be any
+// grower's purchase.
+const INKOOP_POOL_CODES = new Set(["F2", "X99", "WEST", "VBA", "FLORA"]);
 
 // A grower adding a % transaction cost on its invoice prices (VDEIJK, until
 // they fix it): the lot's Connect price plus that % rounded is the invoice
@@ -7773,6 +7780,50 @@ function matchInkoopVeilingLines(erpRows, invoices, supplierMap = {}, supplierNa
     secondChance(onlyInInvoice);
     secondChance(supplierNotLinked);
   }
+
+  // Last: a line without a brief number (Handel / AI2 / Connect direct) that
+  // still found nothing, and a free lot of the same day with exactly its
+  // pieces and price booked under a general code (F2, X99, a FloraHolland
+  // location -- not the grower), or whose Aanv. (the night action's bottom
+  // bar: the grower's Kwekercod) is the line's grower. Also a lot with a
+  // brief number: a Handel line has none to find it by. Only one lot may fit.
+  const aanvCodeOf = (row) => {
+    const fh = normalizeInkoopFhKey(row?.uniware_aanv);
+    return fh ? normalizeInkoopKey(supplierFhMap?.[fh]?.code) : "";
+  };
+  const samedayPool = (unmatched) => {
+    const rest = [];
+    for (const item of unmatched) {
+      const date = normalizeUkdocsText(item?.invoice_date).slice(0, 10);
+      if (!date || isRealInkoopPav(normalizeInkoopKey(item?.reference_bt))) {
+        rest.push(item);
+        continue;
+      }
+      const codes = new Set(String(item?.supplier_code || "").split(/[/+]/).map((code) => normalizeInkoopKey(code)).filter(Boolean));
+      const fits = (Array.isArray(erpRows) ? erpRows : []).filter((row) => !consumedErpRows.has(row)
+        && String(row?.date || "").slice(0, 10) === date
+        && !inkoopValuesDiffer(row.pieces, item.quantity) && priceFits(row, item.unit_price));
+      const byAanv = fits.filter((row) => codes.has(aanvCodeOf(row)));
+      const pooled = fits.filter((row) => INKOOP_POOL_CODES.has(resolveErpRowSupplierCode(row, validSupplierCodes)));
+      const row = byAanv.length === 1 ? byAanv[0] : (!byAanv.length && pooled.length === 1 ? pooled[0] : null);
+      if (!row) {
+        rest.push(item);
+        continue;
+      }
+      consumedErpRows.add(row);
+      const via = byAanv.length ? `Aanv. ${row.uniware_aanv} (night action)` : `same day, pieces and price (${resolveErpRowSupplierCode(row, validSupplierCodes)} lot)`;
+      const pair = { ...item, supplier_code: item.supplier_code || aanvCodeOf(row) || resolveErpRowSupplierCode(row, validSupplierCodes), supplier_match_type: via, erp_row: row };
+      if (inkoopValuesDiffer(parseFloat(row.price), item.unit_price)) {
+        matchedMismatch.push({ ...pair, diffs: [{ field: "unit_price", erp: parseFloat(row.price), invoice: item.unit_price }, { field: "total", erp: parseFloat(row.t_price), invoice: item.total }] });
+      } else {
+        matchedOk.push(pair);
+      }
+    }
+    unmatched.length = 0;
+    unmatched.push(...rest);
+  };
+  samedayPool(onlyInInvoice);
+  samedayPool(supplierNotLinked);
 
   // Unconsumed rows from both pools are genuine "recorded but nothing
   // claimed it" gaps -- a supplier-code-keyed row (Handel/AI2 lines with no
@@ -8912,7 +8963,7 @@ const INKOOP_EMPTY_DAY_BUCKET = {
 // compared again once (at start-up), not only days whose data changed.
 // 2026-10-21: grower directory (learned links, Handel evidence), supplier
 // pairs stored on the invoice date.
-const INKOOP_MATCH_RULES_VERSION = "2026-10-24b";
+const INKOOP_MATCH_RULES_VERSION = "2026-10-26";
 
 function inkoopStateFingerprint(state) {
   return crypto.createHash("sha1").update(JSON.stringify([

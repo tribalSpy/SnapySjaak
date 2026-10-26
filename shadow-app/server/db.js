@@ -448,20 +448,21 @@ export async function saveInkoopLotEpp(rows, sourceFileName = "") {
   if (!pool || !Array.isArray(rows) || !rows.length) {
     return 0;
   }
-  const valid = dedupeByKeyKeepingLast(rows.filter((row) => row?.lot && (row?.epp || row?.info)), (row) => String(row.lot));
+  const valid = dedupeByKeyKeepingLast(rows.filter((row) => row?.lot && (row?.epp || row?.info || row?.aanv)), (row) => String(row.lot));
   for (const chunk of chunkArray(valid, INKOOP_UPSERT_CHUNK_SIZE)) {
     const values = [];
     const placeholders = chunk.map((row) => {
       const base = values.length;
-      values.push(row.lot, row.epp || null, sourceFileName, row.info || null, row.order_number || null, row.gln || null, Array.isArray(row.refs) && row.refs.length ? row.refs : null);
-      return `($${base + 1}, $${base + 2}, $${base + 3}, $${base + 4}, $${base + 5}, $${base + 6}, $${base + 7}::text[])`;
+      values.push(row.lot, row.epp || null, sourceFileName, row.info || null, row.order_number || null, row.gln || null, Array.isArray(row.refs) && row.refs.length ? row.refs : null, row.aanv || null);
+      return `($${base + 1}, $${base + 2}, $${base + 3}, $${base + 4}, $${base + 5}, $${base + 6}, $${base + 7}::text[], $${base + 8})`;
     });
     await pool.query(
-      `INSERT INTO inkoop_lot_epp (lot, epp, source_file_name, info, order_number, gln, refs) VALUES ${placeholders.join(", ")}
+      `INSERT INTO inkoop_lot_epp (lot, epp, source_file_name, info, order_number, gln, refs, aanv) VALUES ${placeholders.join(", ")}
        ON CONFLICT (lot) DO UPDATE SET
          epp = COALESCE(EXCLUDED.epp, inkoop_lot_epp.epp), source_file_name = EXCLUDED.source_file_name,
          info = COALESCE(EXCLUDED.info, inkoop_lot_epp.info), order_number = COALESCE(EXCLUDED.order_number, inkoop_lot_epp.order_number),
-         gln = COALESCE(EXCLUDED.gln, inkoop_lot_epp.gln), refs = COALESCE(EXCLUDED.refs, inkoop_lot_epp.refs), imported_at = now()`,
+         gln = COALESCE(EXCLUDED.gln, inkoop_lot_epp.gln), refs = COALESCE(EXCLUDED.refs, inkoop_lot_epp.refs),
+         aanv = COALESCE(EXCLUDED.aanv, inkoop_lot_epp.aanv), imported_at = now()`,
       values,
     );
   }
@@ -478,13 +479,14 @@ export async function applyInkoopLotInfo() {
   }
   const result = await pool.query(`
     UPDATE inkoop_erp_lines e
-       SET raw = e.raw || jsonb_strip_nulls(jsonb_build_object('uniware_order', b.order_number, 'uniware_gln', b.gln, 'uniware_epp', b.epp)),
+       SET raw = e.raw || jsonb_strip_nulls(jsonb_build_object('uniware_order', b.order_number, 'uniware_gln', b.gln, 'uniware_epp', b.epp, 'uniware_aanv', b.aanv)),
            updated_at = now()
       FROM inkoop_lot_epp b
-     WHERE e.lot = b.lot AND (b.order_number IS NOT NULL OR b.gln IS NOT NULL OR b.epp IS NOT NULL)
+     WHERE e.lot = b.lot AND (b.order_number IS NOT NULL OR b.gln IS NOT NULL OR b.epp IS NOT NULL OR b.aanv IS NOT NULL)
        AND (COALESCE(e.raw->>'uniware_order', '') IS DISTINCT FROM COALESCE(b.order_number, '')
          OR COALESCE(e.raw->>'uniware_gln', '') IS DISTINCT FROM COALESCE(b.gln, '')
-         OR COALESCE(e.raw->>'uniware_epp', '') IS DISTINCT FROM COALESCE(b.epp, ''))
+         OR COALESCE(e.raw->>'uniware_epp', '') IS DISTINCT FROM COALESCE(b.epp, '')
+         OR COALESCE(e.raw->>'uniware_aanv', '') IS DISTINCT FROM COALESCE(b.aanv, ''))
     RETURNING e.lot::text AS lot, to_char(e.erp_date, 'YYYY-MM-DD') AS erp_date
   `);
   return result.rows;
@@ -3395,6 +3397,8 @@ const databaseMigrations = [
   // Every 13-digit number in the popup (a clock lot's transaction numbers):
   // one that is an invoice line's reference (VN, AAG, SS, ADJ) links them.
   `ALTER TABLE IF EXISTS inkoop_lot_epp ADD COLUMN IF NOT EXISTS refs text[]`,
+  // The bottom bar's "Aanv.: x94478" (the grower's Kwekercod).
+  `ALTER TABLE IF EXISTS inkoop_lot_epp ADD COLUMN IF NOT EXISTS aanv text`,
   // "Levering BB" (a Connect Screen export of deliveries): per Connect lot
   // ("Prt") the FloraHolland brief number ("Info", F9NKFJ/F -> F9NKFJf) and
   // order number. A bridge for Connect lots that have no PAV of their own.
