@@ -495,6 +495,22 @@ def read_screen_value(label: str, lines: list[str]) -> str | None:
     return digits if digits.isdigit() else None
 
 
+def list_row_product(row: str) -> tuple[str, str]:
+    """A list row's VBN code and Omschrijving: "1702 EUC SEASONAL MIX PER
+    BU... 70 cm 200 gra ..." -> ("1702", "EUC SEASONAL MIX PER BU") -- the
+    words up to the length ("70 cm") or the first number."""
+    words = str(row or "").split()
+    if not words or not words[0].isdigit():
+        return "", ""
+    name = []
+    for word in words[1:]:
+        if re.match(r"^\d", word) and name:
+            break
+        name.append(word)
+    text = re.sub(r"\.{2,}$|…$", "", " ".join(name)).strip()
+    return words[0], text
+
+
 def read_aanvoerder(lines: list[str]) -> str | None:
     """The bottom bar's "Aanv.: x94478" -> "x94478" (the grower's
     Kwekercod; a letter and digits, look-alike letters read as digits)."""
@@ -2009,7 +2025,9 @@ class ActionRun:
         ("lot;epp;info"), in the action's dump folder (else outputs/) -- the
         file for SnappySjaak's EPP list upload. The same columns are added to
         the run's dump file (Ctrl+P), matched by lot."""
-        rows = [item for item in collected.get("items", []) if item.get("value") or item.get("info") or item.get("aanv")]
+        for item in collected.get("items", []):
+            item["vbn"], item["omschrijving"] = list_row_product(item.get("row", ""))
+        rows = [item for item in collected.get("items", []) if item.get("value") or item.get("info") or item.get("aanv") or item.get("omschrijving")]
         if not rows:
             self.say(f"{label}: no {value_label} / popup read on any row -- no CSV written.")
             return
@@ -2017,9 +2035,10 @@ class ActionRun:
         with_aanv = any(item.get("aanv") for item in rows)
         target_dir = self._export_dir()
         target = target_dir / f"{day_list_slug(collected['name'])}_{self.run_date():%Y%m%d}.csv"
-        header = f"lot;{value_label.lower()}" + (";aanv" if with_aanv else "") + (";info" if with_info else "")
+        header = f"lot;{value_label.lower()};vbn;omschrijving" + (";aanv" if with_aanv else "") + (";info" if with_info else "")
         lines = [header] + [
-            f"{item['key']};{item.get('value', '')}" + (f";{item.get('aanv', '')}" if with_aanv else "")
+            f"{item['key']};{item.get('value', '')};{item.get('vbn', '')};{item.get('omschrijving', '').replace(';', ',')}"
+            + (f";{item.get('aanv', '')}" if with_aanv else "")
             + (f";{str(item.get('info', '')).replace(';', ',')}" if with_info else "")
             for item in rows
         ]

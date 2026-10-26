@@ -15492,6 +15492,10 @@ function inkoopErpTranscript(erpRow) {
     erpRow.t_price !== undefined ? `= ${formatInkoopEuro(erpRow.t_price)}` : "",
     erpRow.fust ? `Fust ${String(erpRow.fust).trim()}` : "",
     erpRow.avc ? `Avc ${String(erpRow.avc).trim()}` : "",
+    // Extra names, next to Connect's own: Uniware (night action) and Levering BB.
+    erpRow.uniware_description ? `Uniware: ${erpRow.uniware_vbn ? `${erpRow.uniware_vbn} ` : ""}${erpRow.uniware_description}` : "",
+    erpRow.levering_description && erpRow.levering_description !== erpRow.uniware_description ? `Levering BB: ${erpRow.levering_vbn ? `${erpRow.levering_vbn} ` : ""}${erpRow.levering_description}` : "",
+    erpRow.uniware_aanv ? `Aanv. ${erpRow.uniware_aanv}` : "",
   ].filter(Boolean);
   return parts.join(" · ");
 }

@@ -6886,10 +6886,29 @@ function inkoopDescriptionSharedWords(invoiceDescription, connectDescription) {
   return shared;
 }
 
+// All a Connect lot is called: Connect's own short name ("Seasonal
+// Starline") plus Uniware's (night action: "EUC SEASONAL MIX PER BU...")
+// and Levering BB's -- closer to the invoice's VBN names.
+function inkoopLotNameText(row) {
+  return [row?.description, row?.uniware_description, row?.levering_description].filter(Boolean).join(" ");
+}
+
+// The lot's VBN product codes (night action, Levering BB).
+function inkoopLotVbnCodes(row) {
+  return new Set([row?.uniware_vbn, row?.levering_vbn].map((code) => String(code || "").replace(/^0+/, "").trim()).filter(Boolean));
+}
+
+// How well a lot's name fits an invoice line: shared name words, and the
+// same VBN product code counts as three.
+function inkoopLotNameScore(line, row) {
+  const vbn = String(line?.vbn_code || "").replace(/^0+/, "").trim();
+  return inkoopDescriptionSharedWords(line?.description, inkoopLotNameText(row)) + (vbn && inkoopLotVbnCodes(row).has(vbn) ? 3 : 0);
+}
+
 // Of these lots, the one whose name fits the line clearly best (more
 // shared words than any other), or null.
-function inkoopBestNamedRow(rows, description) {
-  const scored = rows.map((row) => ({ row, score: inkoopDescriptionSharedWords(description, row?.description) }))
+function inkoopBestNamedRow(rows, line) {
+  const scored = rows.map((row) => ({ row, score: inkoopLotNameScore(line, row) }))
     .filter((item) => item.score > 0)
     .sort((left, right) => right.score - left.score);
   if (!scored.length) return null;
@@ -6951,7 +6970,10 @@ function parseInkoopEppList(base64) {
       const info = header.includes("info") ? value("info") : "";
       // The bottom bar's "Aanv.: x94478": the grower's Kwekercod.
       const aanv = /^[a-z]?\d{3,6}$/i.test(value("aanv")) ? value("aanv").toLowerCase() : "";
-      rows.push({ lot: Number(lot), epp, info, ...parseInkoopLotInfo(info), aanv });
+      // The list row's VBN code and Omschrijving ("EUC SEASONAL MIX PER BU").
+      const vbn = /^\d{1,7}$/.test(value("vbn")) ? value("vbn") : "";
+      const description = value("omschrijving").slice(0, 120);
+      rows.push({ lot: Number(lot), epp, info, ...parseInkoopLotInfo(info), aanv, vbn, description });
       continue;
     }
     const cells = line.split(/[;,\t ]+/).map((cell) => cell.trim().replace(/^"|"$/g, ""));
@@ -7433,15 +7455,15 @@ function matchInkoopVeilingLines(erpRows, invoices, supplierMap = {}, supplierNa
     // AURINKO" on the invoice, "Aurinko" in Connect). Among several lots
     // with the same pieces and price, the one with the name; with none
     // exact, the one lot with the name and the same pieces or price.
-    const nameMatches = (row) => inkoopDescriptionsShareName(line?.description, row?.description);
+    const nameMatches = (row) => inkoopLotNameScore(line, row) > 0;
     // The lot whose name fits clearly best -- not just any lot sharing one
     // word (every Anthurium shares "ANTHU").
     if (picked.ambiguous) {
-      const named = inkoopBestNamedRow(picked.candidates || [], line?.description);
+      const named = inkoopBestNamedRow(picked.candidates || [], line);
       if (named) picked = { row: named, ambiguous: false };
     } else if (!picked.row || (inkoopValuesDiffer(picked.row.pieces, line.quantity) && !priceFits(picked.row, line.unit_price) && !nameMatches(picked.row))) {
       const named = inkoopBestNamedRow(candidates.filter((row) => !consumedErpRows.has(row)
-        && (!inkoopValuesDiffer(row.pieces, line.quantity) || priceFits(row, line.unit_price))), line?.description);
+        && (!inkoopValuesDiffer(row.pieces, line.quantity) || priceFits(row, line.unit_price))), line);
       if (named) picked = { row: named, ambiguous: false, by_name: true };
     }
     // One invoice line booked as several lots, also under the grower's
@@ -7805,7 +7827,9 @@ function matchInkoopVeilingLines(erpRows, invoices, supplierMap = {}, supplierNa
         && !inkoopValuesDiffer(row.pieces, item.quantity) && priceFits(row, item.unit_price));
       const byAanv = fits.filter((row) => codes.has(aanvCodeOf(row)));
       const pooled = fits.filter((row) => INKOOP_POOL_CODES.has(resolveErpRowSupplierCode(row, validSupplierCodes)));
-      const row = byAanv.length === 1 ? byAanv[0] : (!byAanv.length && pooled.length === 1 ? pooled[0] : null);
+      const row = byAanv.length === 1 ? byAanv[0]
+        : byAanv.length > 1 ? inkoopBestNamedRow(byAanv, item)
+          : pooled.length === 1 ? pooled[0] : inkoopBestNamedRow(pooled, item);
       if (!row) {
         rest.push(item);
         continue;
@@ -7850,7 +7874,7 @@ function matchInkoopVeilingLines(erpRows, invoices, supplierMap = {}, supplierNa
     const near = ofSupplier.filter((row) => !date || !row?.date || dayDistance(row.date, date) <= INKOOP_DAY_TOLERANCE_DAYS);
     // Best first: the name, then the nearest day.
     const similar = near.filter((row) => !inkoopValuesDiffer(row.pieces, item.quantity) || !inkoopValuesDiffer(parseFloat(row.price), item.unit_price))
-      .map((row) => ({ row, score: inkoopDescriptionSharedWords(item.description, row?.description), days: dayDistance(row.date, date) }))
+      .map((row) => ({ row, score: inkoopLotNameScore(item, row), days: dayDistance(row.date, date) }))
       .sort((left, right) => right.score - left.score || left.days - right.days)
       .map((entry) => entry.row);
     item.connect_check = {
@@ -8225,6 +8249,9 @@ function flattenInkoopInvoiceLines(invoices, sourceFileName, fallbackDate) {
         // InvoiceeParty) -- company_name_override covers that case.
         company_name: normalizeUkdocsText(line?.company_name) || normalizeUkdocsText(invoice?.company_name_override),
         product_type_code: normalizeUkdocsText(line?.product_type_code),
+        // The VBN product code (e.g. 492 "DI ST GEM") -- the same code the
+        // Connect lot has in Uniware / Levering BB.
+        vbn_code: normalizeUkdocsText(line?.vbn_code),
         // King export fields (see king.js buildKingJournalPost) -- kept in
         // the raw jsonb, not separate columns.
         line_id: normalizeUkdocsText(line?.line_id),
@@ -8963,7 +8990,7 @@ const INKOOP_EMPTY_DAY_BUCKET = {
 // compared again once (at start-up), not only days whose data changed.
 // 2026-10-21: grower directory (learned links, Handel evidence), supplier
 // pairs stored on the invoice date.
-const INKOOP_MATCH_RULES_VERSION = "2026-10-26";
+const INKOOP_MATCH_RULES_VERSION = "2026-10-26b";
 
 function inkoopStateFingerprint(state) {
   return crypto.createHash("sha1").update(JSON.stringify([
