@@ -7849,7 +7849,7 @@ function matchInkoopVeilingLines(erpRows, invoices, supplierMap = {}, supplierNa
   };
 }
 
-const defaultInkoopState = { imports: [], supplier_map: {}, supplier_name_map: {}, supplier_fh_map: {}, supplier_bw_map: {}, customer_map: {}, manual_supplier_links: [], facturation_groups: [], king_ledger_map: null, king_settings: {}, grower_skip_codes: [], excluded_erp_codes: [], supplier_bedrijf_map: {}, transaction_costs: null };
+const defaultInkoopState = { imports: [], supplier_map: {}, supplier_name_map: {}, supplier_fh_map: {}, supplier_bw_map: {}, customer_map: {}, manual_supplier_links: [], facturation_groups: [], king_ledger_map: null, king_settings: {}, grower_skip_codes: [], excluded_erp_codes: [], supplier_bedrijf_map: {}, transaction_costs: null, manual_bw_map: {} };
 
 // Connect codes whose invoices carry a % transaction cost on the price.
 const INKOOP_DEFAULT_TRANSACTION_COSTS = { VDEIJK: 1 };
@@ -7988,7 +7988,16 @@ const INKOOP_DEFAULT_BW = {
   F2: "FloraHolland Connect (with the grower)",
 };
 
-function normalizeInkoopSupplierBwMap(source) {
+// A BW given by hand in Inkoop controle (code -> BW): wins over the master
+// data, also after the leveranciers file is uploaded again.
+function normalizeInkoopManualBwMap(value) {
+  if (!value || typeof value !== "object") return {};
+  return Object.fromEntries(Object.entries(value)
+    .map(([code, bw]) => [normalizeInkoopKey(code), normalizeUkdocsText(bw).toUpperCase()])
+    .filter(([code, bw]) => code && /^[A-Z]$/.test(bw)));
+}
+
+function normalizeInkoopSupplierBwMap(source, manual = {}) {
   const result = {};
   for (const [code, name] of Object.entries(INKOOP_DEFAULT_BW)) {
     result[code] = { name, bw: "V", type: "", rel_nr: "", h_bedr: "", land: "NL", source: "default (FloraHolland)" };
@@ -7996,7 +8005,8 @@ function normalizeInkoopSupplierBwMap(source) {
   if (source && typeof source === "object") {
     for (const [key, info] of Object.entries(source)) {
       const normalizedKey = normalizeInkoopKey(key);
-      if (!normalizedKey) {
+      // A hand-given BW taken off again: the code has no BW of its own.
+      if (!normalizedKey || normalizeUkdocsText(info?.source) === "by hand") {
         continue;
       }
       result[normalizedKey] = {
@@ -8009,6 +8019,9 @@ function normalizeInkoopSupplierBwMap(source) {
         source: normalizeUkdocsText(info?.source),
       };
     }
+  }
+  for (const [code, bw] of Object.entries(manual || {})) {
+    result[code] = { ...(result[code] || { name: "", type: "", rel_nr: "", h_bedr: "", land: "" }), bw, source: "by hand" };
   }
   return result;
 }
@@ -8049,7 +8062,8 @@ function normalizeInkoopState(state) {
     supplier_name_map: normalizeInkoopSupplierEntryMap(state?.supplier_name_map),
     customer_map: normalizeInkoopCustomerEntryMap(state?.customer_map),
     supplier_fh_map: normalizeInkoopSupplierEntryMap(state?.supplier_fh_map),
-    supplier_bw_map: normalizeInkoopSupplierBwMap(state?.supplier_bw_map),
+    supplier_bw_map: normalizeInkoopSupplierBwMap(state?.supplier_bw_map, normalizeInkoopManualBwMap(state?.manual_bw_map)),
+    manual_bw_map: normalizeInkoopManualBwMap(state?.manual_bw_map),
     manual_supplier_links: (Array.isArray(state?.manual_supplier_links) ? state.manual_supplier_links : []).map(normalizeInkoopManualSupplierLink),
     facturation_groups: (Array.isArray(state?.facturation_groups) ? state.facturation_groups : []).map(normalizeInkoopFacturationGroup),
     // King ERP export (king.js): the "kingkoppel" ledger table (seeded from
@@ -23697,10 +23711,36 @@ async function handleApi(req, res, url) {
     }
     const state = await readInkoopState();
     const excluded = new Set(inkoopExcludedErpCodes(state));
-    const codes = (await getInkoopConnectCodeValues())
+    const allCodes = await getInkoopConnectCodeValues();
+    const codes = allCodes
       .filter((row) => !state.supplier_bw_map?.[normalizeInkoopKey(row.code)] && !excluded.has(normalizeInkoopKey(row.code)))
       .sort((left, right) => right.value - left.value);
-    sendJson(res, 200, { codes });
+    // The BWs given by hand, with what the master data says (if anything).
+    const byCode = new Map(allCodes.map((row) => [normalizeInkoopKey(row.code), row]));
+    const manual = Object.entries(state.manual_bw_map || {}).map(([code, bw]) => ({ code, bw, ...(byCode.get(code) ? { lots: byCode.get(code).lots, value: byCode.get(code).value } : {}) }));
+    sendJson(res, 200, { codes, manual });
+    return;
+  }
+
+  // A BW by hand for a Connect code ({code, bw}; bw "" takes it off).
+  if (url.pathname === "/api/inkoop/codes-bw" && req.method === "POST") {
+    if (!requirePermission(res, requestUser, PERMISSIONS.INKOOP_VIEW)) {
+      return;
+    }
+    const body = await readRequestJson(req);
+    const code = normalizeInkoopKey(body?.code);
+    const bw = normalizeUkdocsText(body?.bw).toUpperCase();
+    if (!code || (bw && !/^[A-Z]$/.test(bw))) {
+      sendJson(res, 400, { error: "A Connect code and a one-letter BW are needed" });
+      return;
+    }
+    const state = await readInkoopState();
+    const manual = { ...(state.manual_bw_map || {}) };
+    if (bw) manual[code] = bw;
+    else delete manual[code];
+    state.manual_bw_map = manual;
+    await writeInkoopState(state);
+    sendJson(res, 200, { ok: true, manual_bw_map: manual });
     return;
   }
 

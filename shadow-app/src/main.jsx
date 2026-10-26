@@ -17718,10 +17718,35 @@ function InkoopPeriodReports({ company }) {
   // ones (V: via veiling = paid through FloraHolland -- like the invoices).
   const [bwChoice, setBwChoice] = useState(null);
   const [codesWithoutBw, setCodesWithoutBw] = useState(null);
+  const [manualBw, setManualBw] = useState([]);
+  const [bwDrafts, setBwDrafts] = useState({});
+  const [bwMessage, setBwMessage] = useState("");
+  function fetchCodesWithoutBw() {
+    return apiJson("/api/inkoop/codes-without-bw")
+      .then((payload) => { setCodesWithoutBw(payload.codes || []); setManualBw(payload.manual || []); })
+      .catch(() => setCodesWithoutBw([]));
+  }
   function loadCodesWithoutBw() {
     if (codesWithoutBw) { setCodesWithoutBw(null); return; }
-    apiJson("/api/inkoop/codes-without-bw").then((payload) => setCodesWithoutBw(payload.codes || [])).catch(() => setCodesWithoutBw([]));
+    fetchCodesWithoutBw();
   }
+  // A BW by hand for a code ("" takes it off); every day is compared again.
+  async function saveManualBw(code, bw) {
+    try {
+      await apiJson("/api/inkoop/codes-bw", { method: "POST", body: JSON.stringify({ code, bw }) });
+      setBwMessage(`${code}: ${bw ? `BW ${bw} (by hand)` : "BW by hand taken off"}. The days are compared again in the background.`);
+      setBwDrafts((current) => { const next = { ...current }; delete next[code]; return next; });
+      await fetchCodesWithoutBw();
+    } catch (saveError) {
+      setBwMessage(saveError.message);
+    }
+  }
+  const bwOptions = (
+    <>
+      <option value="">BW...</option>
+      {["V", ...Object.keys(INKOOP_BW_LABELS).filter((bw) => bw !== "V")].map((bw) => <option key={bw} value={bw}>{bw}{INKOOP_BW_LABELS[bw] ? ` -- ${INKOOP_BW_LABELS[bw]}` : ""}</option>)}
+    </>
+  );
   const bwCodes = [...new Set([...(data?.months || []), ...(data?.years || [])].flatMap((row) => Object.keys(row.erp_by_bw || {})))].sort();
   const toggleBw = (bw) => setBwChoice((current) => {
     const base = current || [];
@@ -17744,17 +17769,36 @@ function InkoopPeriodReports({ company }) {
   );
   const codesWithoutBwTable = codesWithoutBw && (
     <div style={{ marginBottom: 10 }}>
-      <div className="notice">Connect supplier codes without a betaalwijze (BW) in the leveranciers / kwekers met betaalwijze -- the "?" above. Give them a BW in Uniware and upload that file again, or mark them "not a purchase" in Link growers.</div>
+      <div className="notice">Connect supplier codes without a betaalwijze (BW) in the leveranciers / kwekers met betaalwijze -- the "?" above. Give them a BW here by hand, or in Uniware and upload that file again, or mark them "not a purchase" in Link growers.</div>
+      {bwMessage && <div className="notice info">{bwMessage}</div>}
       <div className="table-wrap">
         <table className="data-table">
-          <thead><tr><th>Code</th><th>Lots</th><th>Value</th><th>Last date</th><th>Example</th></tr></thead>
+          <thead><tr><th>Code</th><th>Lots</th><th>Value</th><th>Last date</th><th>Example</th><th>BW by hand</th></tr></thead>
           <tbody>
             {codesWithoutBw.slice(0, 300).map((row) => (
-              <tr key={row.code}><td><strong>{row.code}</strong></td><td>{row.lots}</td><td>{formatInkoopEuro(row.value)}</td><td>{inkoopShortDate(row.last_date)}</td><td>{row.example_description}</td></tr>
+              <tr key={row.code}>
+                <td><strong>{row.code}</strong></td><td>{row.lots}</td><td>{formatInkoopEuro(row.value)}</td><td>{inkoopShortDate(row.last_date)}</td><td>{row.example_description}</td>
+                <td>
+                  <select value={bwDrafts[row.code] || ""} onChange={(event) => setBwDrafts((current) => ({ ...current, [row.code]: event.target.value }))}>{bwOptions}</select>{" "}
+                  <button type="button" disabled={!bwDrafts[row.code]} onClick={() => saveManualBw(row.code, bwDrafts[row.code])}>Save</button>
+                </td>
+              </tr>
             ))}
-            {!codesWithoutBw.length && <tr><td colSpan="5">Every Connect code has a BW.</td></tr>}
+            {!codesWithoutBw.length && <tr><td colSpan="6">Every Connect code has a BW.</td></tr>}
           </tbody>
         </table>
+      </div>
+      <div className="row-actions" style={{ marginTop: 8 }}>
+        <strong>BW given by hand</strong> <span className="muted">(wins over the leveranciers file):</span>
+        {manualBw.map((item) => (
+          <span key={item.code} className="ukdocs-status-badge muted">
+            {item.code} = {item.bw} <button type="button" className="link-button" onClick={() => saveManualBw(item.code, "")} title="Take the BW by hand off">x</button>
+          </span>
+        ))}
+        {!manualBw.length && <span className="muted">none</span>}
+        <input size={9} value={bwDrafts.__code || ""} onChange={(event) => setBwDrafts((current) => ({ ...current, __code: event.target.value.toUpperCase() }))} placeholder="Any code" />
+        <select value={bwDrafts.__bw || ""} onChange={(event) => setBwDrafts((current) => ({ ...current, __bw: event.target.value }))}>{bwOptions}</select>
+        <button type="button" disabled={!String(bwDrafts.__code || "").trim() || !bwDrafts.__bw} onClick={() => saveManualBw(String(bwDrafts.__code).trim(), bwDrafts.__bw).then(() => setBwDrafts((current) => ({ ...current, __code: "", __bw: "" })))}>Set BW</button>
       </div>
     </div>
   );
@@ -18269,10 +18313,10 @@ function InkoopFinanceHero({ company, dayReport, period }) {
             : <div className="fin-sub">No months compared yet.</div>}
         </div>
         <div className="fin-card">
-          <h3>Difference per week</h3>
-          <div className="fin-legend"><span><i style={{ background: "var(--fin-critical)" }} />we pay more (loss)</span><span><i style={{ background: "var(--fin-series-1)" }} />we pay less</span><span className="fin-sub">week of (Monday)</span></div>
+          <h3>Invoiced vs Connect per week</h3>
+          <div className="fin-legend"><span><i style={{ background: "var(--fin-series-1)" }} />Invoiced</span><span><i style={{ background: "var(--fin-series-2)" }} />Connect{bwChoice ? ` (BW ${bwChoice.join("+")})` : ""}</span><span className="fin-sub">week of (Monday)</span></div>
           {weekRows.length
-            ? <InkoopBarChart rows={weekRows} signed series={[{ name: "Invoice − Connect", color: (value) => (value > 0 ? "var(--fin-critical)" : "var(--fin-series-1)"), value: (row) => row.purchase_value - row.connect }]} onBarClick={(row) => setPopup({ title: `Growers -- week of ${row.key}`, types: null, from: row.from, to: row.to })} />
+            ? <InkoopBarChart rows={weekRows} series={[{ name: "Invoiced", color: "var(--fin-series-1)", value: (row) => row.purchase_value }, { name: "Connect", color: "var(--fin-series-2)", value: (row) => row.connect }]} onBarClick={(row) => setPopup({ title: `Growers -- week of ${row.key}`, types: null, from: row.from, to: row.to })} />
             : <div className="fin-sub">No days in this period.</div>}
         </div>
         <div className="fin-card">
