@@ -16724,7 +16724,7 @@ function InkoopControlePage({ currentUser }) {
         + `Connect lots that got the invoice's brief number now: ${payload.filled_now} (${payload.from_epp} by EPP, ${payload.from_order} by order number, ${payload.from_refs} by popup reference). `
         + `Order numbers also pair Connect lines without a brief number, and the GLNs go to the Growers tab. The rest is tried again with every new upload.`
         + (payload.order_on_invoice !== null && payload.order_on_invoice !== undefined ? ` Of the ${payload.with_order_number} order numbers, ${payload.order_on_invoice} are on an invoice line.` : "")
-        + (payload.invoices_without_on ? ` ${payload.invoices_without_on} Klok/Connect invoice(s) of these days have no order numbers stored (uploaded before 21-10) -- upload those invoice zips again.` : "")
+        + (payload.invoices_without_on ? ` ${payload.invoices_without_on} Klok/Connect invoice(s) of these days have no order numbers stored -- upload those invoice zips again (needed once for every invoice uploaded before 26-10).` : "")
         + (payload.days_compared_again?.length ? ` Compared again: ${payload.days_compared_again.length} day(s) (${payload.days_compared_again[0]}${payload.days_compared_again.length > 1 ? ` – ${payload.days_compared_again[payload.days_compared_again.length - 1]}` : ""}), in the background.` : ""));
     } catch (uploadError) {
       setError(uploadError.message);

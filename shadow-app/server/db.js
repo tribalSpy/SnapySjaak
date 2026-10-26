@@ -540,7 +540,7 @@ export async function applyInkoopOrderBridge() {
 
 // After an EPP list upload: the Connect days of these lots, and how many of
 // their order numbers are on an invoice line at all (its XML's ON, stored
-// since 21-10 -- invoices uploaded before have none until uploaded again).
+// since 26-10 -- invoices uploaded before have none until uploaded again).
 export async function inkoopLotUploadCheck(lots) {
   if (!pool || !Array.isArray(lots) || !lots.length) {
     return { dates: [], with_order: 0, order_on_invoice: 0, invoices_without_on: 0 };

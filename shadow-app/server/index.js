@@ -8259,6 +8259,16 @@ function flattenInkoopInvoiceLines(invoices, sourceFileName, fallbackDate) {
         // The VBN product code (e.g. 492 "DI ST GEM") -- the same code the
         // Connect lot has in Uniware / Levering BB.
         vbn_code: normalizeUkdocsText(line?.vbn_code),
+        // The line's references from the XML (they were read but never
+        // stored): the order number (ON -- pairs the Connect lot via the night
+        // action), the brief base (ACE) and VN / AAG / SS / ADJ (a clock lot's
+        // popup numbers).
+        order_number: normalizeUkdocsText(line?.order_number),
+        brief_base: normalizeUkdocsText(line?.brief_base),
+        your_reference: normalizeUkdocsText(line?.your_reference),
+        delivery_reference: normalizeUkdocsText(line?.delivery_reference),
+        ref_ss: normalizeUkdocsText(line?.ref_ss),
+        ref_adj: normalizeUkdocsText(line?.ref_adj),
         // King export fields (see king.js buildKingJournalPost) -- kept in
         // the raw jsonb, not separate columns.
         line_id: normalizeUkdocsText(line?.line_id),
@@ -8333,6 +8343,8 @@ function groupInkoopInvoiceLinesByInvoice(flatLines) {
       // Connect lot of the same order number (night action) when there is
       // no brief number.
       order_number: line?.order_number || "",
+      // The VBN product code: the same code as the Connect lot's (Uniware / Levering BB).
+      vbn_code: line?.vbn_code || "",
     });
   }
   return [...byInvoice.values()];
