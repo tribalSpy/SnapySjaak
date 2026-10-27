@@ -10995,11 +10995,13 @@ function UserRow({ user, currentUser, onSave, onDelete }) {
   const [password, setPassword] = useState("");
   const [role, setRole] = useState(user.role);
   const [permissions, setPermissions] = useState(normalizePermissions(user.role, user.permissions));
+  const [fustHidden, setFustHidden] = useState(user.fust_hidden_tabs || []);
 
   useEffect(() => {
     setRole(user.role);
     setPermissions(normalizePermissions(user.role, user.permissions));
-  }, [user.permissions, user.role]);
+    setFustHidden(user.fust_hidden_tabs || []);
+  }, [user.permissions, user.role, user.fust_hidden_tabs]);
 
   return (
     <article className="user-row">
@@ -11023,10 +11025,13 @@ function UserRow({ user, currentUser, onSave, onDelete }) {
             <option value="admin">Admin</option>
           </select>
         </label>
-        <button onClick={() => onSave({ role, permissions })}>Save access</button>
+        <button onClick={() => onSave({ role, permissions, fust_hidden_tabs: fustHidden })}>Save access</button>
       </div>
 
       <PermissionChecklist title="Allowed menus" permissions={permissions} onChange={setPermissions} />
+      {(role === "admin" || permissions.includes(PERMISSIONS.FUST_VIEW)) && (
+        <FustTabChecklist permissions={role === "admin" ? ALL_PERMISSIONS : permissions} hidden={fustHidden} onChange={setFustHidden} />
+      )}
 
       <form
         className="password-form"
@@ -11071,6 +11076,47 @@ function PermissionChecklist({ title, permissions, onChange }) {
             }}
           />
           <span>{permission}</span>
+        </label>
+      ))}
+    </fieldset>
+  );
+}
+
+// The Fust menus a set of permissions allows (before the per-user hidden ones).
+function fustTabsAllowedBy(permissions) {
+  const has = (permission) => permissions.includes(permission);
+  return [
+    has(PERMISSIONS.FUST_IN) ? "in" : null,
+    has(PERMISSIONS.FUST_IN) ? "fust-list" : null,
+    has(PERMISSIONS.FUST_OUT) ? "out" : null,
+    has(PERMISSIONS.FUST_OVERVIEW) ? "overview" : null,
+    has(PERMISSIONS.FUST_OVERVIEW) ? "overview-connect" : null,
+    has(PERMISSIONS.FUST_OVERVIEW) ? "last-actions" : null,
+    has(PERMISSIONS.FUST_OVERVIEW) ? "planning" : null,
+    has(PERMISSIONS.FUST_OVERVIEW) ? "control" : null,
+    has(PERMISSIONS.FUST_OVERVIEW) ? "analyse" : null,
+    has(PERMISSIONS.FUST_OVERVIEW) ? "share" : null,
+    has(PERMISSIONS.FUST_MANAGE) ? "manage" : null,
+    has(PERMISSIONS.FUST_MANAGE) ? "import" : null,
+    has(PERMISSIONS.FUST_MANAGE) ? "contacts" : null,
+  ].filter(Boolean);
+}
+
+// Users screen: which of the Fust menus this user sees (ticked = visible).
+function FustTabChecklist({ permissions, hidden, onChange }) {
+  const tabs = fustTabsAllowedBy(permissions);
+  if (!tabs.length) return null;
+  return (
+    <fieldset className="permission-grid">
+      <legend>Fust menus (ticked = visible)</legend>
+      {tabs.map((tab) => (
+        <label key={tab} className="permission-option">
+          <input
+            type="checkbox"
+            checked={!hidden.includes(tab)}
+            onChange={(event) => onChange(event.target.checked ? hidden.filter((item) => item !== tab) : [...hidden, tab])}
+          />
+          <span>{fustTileLabel(tab)}</span>
         </label>
       ))}
     </fieldset>
@@ -11148,21 +11194,11 @@ function buildFustExporterBlock(exporter) {
 
 function FustPage({ currentUser, menuVersion }) {
   const canManageFust = hasPermission(currentUser, PERMISSIONS.FUST_MANAGE);
-  const visibleTabs = [
-    hasPermission(currentUser, PERMISSIONS.FUST_IN) ? "in" : null,
-    hasPermission(currentUser, PERMISSIONS.FUST_IN) ? "fust-list" : null,
-    hasPermission(currentUser, PERMISSIONS.FUST_OUT) ? "out" : null,
-    hasPermission(currentUser, PERMISSIONS.FUST_OVERVIEW) ? "overview" : null,
-    hasPermission(currentUser, PERMISSIONS.FUST_OVERVIEW) ? "overview-connect" : null,
-    hasPermission(currentUser, PERMISSIONS.FUST_OVERVIEW) ? "last-actions" : null,
-    hasPermission(currentUser, PERMISSIONS.FUST_OVERVIEW) ? "planning" : null,
-    hasPermission(currentUser, PERMISSIONS.FUST_OVERVIEW) ? "control" : null,
-    hasPermission(currentUser, PERMISSIONS.FUST_OVERVIEW) ? "analyse" : null,
-    hasPermission(currentUser, PERMISSIONS.FUST_OVERVIEW) ? "share" : null,
-    canManageFust ? "manage" : null,
-    canManageFust ? "import" : null,
-    canManageFust ? "contacts" : null,
-  ].filter(Boolean);
+  // What the Fust permissions allow, minus the menus hidden for this user
+  // (Users screen).
+  const hiddenFustTabs = currentUser?.fust_hidden_tabs || [];
+  const visibleTabs = fustTabsAllowedBy(normalizePermissions(currentUser?.role, currentUser?.permissions))
+    .filter((tab) => !hiddenFustTabs.includes(tab));
   const [activeTab, setActiveTab] = useState("");
   const { loading: metaLoading, data: metaData, error: metaError } = useFustMeta(Boolean(currentUser));
   const { loading: actionsLoading, data: actionsData, error: actionsError, refresh } = useFustActions(Boolean(currentUser));

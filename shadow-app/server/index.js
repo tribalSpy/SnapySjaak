@@ -1462,12 +1462,21 @@ function normalizePermissions(role, permissions) {
   return normalized.length ? normalized : [...defaults];
 }
 
+// The Fust page's menus (tiles). Per user, the ones hidden from them --
+// on top of what their Fust permissions allow (empty: all of those).
+const FUST_TAB_KEYS = ["in", "fust-list", "out", "overview", "overview-connect", "last-actions", "planning", "control", "analyse", "share", "manage", "import", "contacts"];
+
+function normalizeFustHiddenTabs(value) {
+  return [...new Set((Array.isArray(value) ? value : []).map((tab) => String(tab || "").trim()).filter((tab) => FUST_TAB_KEYS.includes(tab)))];
+}
+
 function sanitizeStoredUser(user) {
   const role = user?.role === "admin" ? "admin" : "viewer";
   return {
     ...user,
     role,
     permissions: normalizePermissions(role, user?.permissions),
+    fust_hidden_tabs: normalizeFustHiddenTabs(user?.fust_hidden_tabs),
   };
 }
 
@@ -6304,6 +6313,7 @@ function publicUser(user) {
     username: normalizedUser.username,
     role: normalizedUser.role,
     permissions: normalizedUser.permissions,
+    fust_hidden_tabs: normalizedUser.fust_hidden_tabs,
     created_at: normalizedUser.created_at,
   };
 }
@@ -25345,6 +25355,7 @@ async function handleApi(req, res, url) {
         username,
         role,
         permissions,
+        fust_hidden_tabs: normalizeFustHiddenTabs(body.fust_hidden_tabs),
         password_hash: hashPassword(password),
         created_at: new Date().toISOString(),
       };
@@ -25373,6 +25384,9 @@ async function handleApi(req, res, url) {
         users[userIndex].role,
         Array.isArray(body.permissions) ? body.permissions : users[userIndex].permissions,
       );
+      if (Array.isArray(body.fust_hidden_tabs)) {
+        users[userIndex].fust_hidden_tabs = normalizeFustHiddenTabs(body.fust_hidden_tabs);
+      }
       if (typeof body.password === "string" && body.password) {
         if (body.password.length < 6) {
           sendJson(res, 400, { error: "Password must be at least 6 characters" });
