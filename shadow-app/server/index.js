@@ -3,7 +3,7 @@ import http from "node:http";
 import os from "node:os";
 import path from "node:path";
 import crypto from "node:crypto";
-import { spawn, execSync } from "node:child_process";
+import { spawn, execSync, fork } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import zlib from "node:zlib";
 import readline from "node:readline";
@@ -9549,8 +9549,52 @@ async function inkoopWaitForQuietServer() {
   }
 }
 
+// The comparison runs in a process of its own (startInkoopMatchChild): the
+// operating system shares the CPU, with the app first -- a heavy day never
+// freezes the pages. This process only tells it there is work.
+const INKOOP_MATCH_CHILD = process.env.INKOOP_MATCH_CHILD === "1";
+let inkoopMatchChild = null;
+
+function startInkoopMatchChild() {
+  if (INKOOP_MATCH_CHILD || inkoopMatchChild || !isDatabaseEnabled() || process.env.INKOOP_MATCH_IN_PROCESS === "1") return;
+  try {
+    const child = fork(fileURLToPath(import.meta.url), [], {
+      env: { ...process.env, INKOOP_MATCH_CHILD: "1" },
+      execArgv: ["--max-old-space-size=768"],
+      stdio: "inherit",
+    });
+    inkoopMatchChild = child;
+    try {
+      os.setPriority(child.pid, 15); // lower than the app: pages go first
+    } catch {
+      // Not allowed here: the pauses between days still apply.
+    }
+    child.on("exit", (code, signal) => {
+      inkoopMatchChild = null;
+      console.error(`Inkoop comparison process stopped (${signal || code}) -- started again in 30 s; until then the app compares.`);
+      setTimeout(() => {
+        startInkoopMatchChild();
+        kickInkoopMatchWorker();
+      }, 30000);
+    });
+    child.on("error", (error) => console.error("Inkoop comparison process:", error instanceof Error ? error.message : error));
+    console.log(`Inkoop comparison runs in its own process (pid ${child.pid}).`);
+  } catch (error) {
+    inkoopMatchChild = null;
+    console.error("Starting the Inkoop comparison process failed -- the app compares itself:", error instanceof Error ? error.message : error);
+  }
+}
+
 function kickInkoopMatchWorker() {
   if (!isDatabaseEnabled()) return;
+  if (!INKOOP_MATCH_CHILD && inkoopMatchChild?.connected) {
+    try {
+      inkoopMatchChild.send("kick");
+      return;
+    } catch {
+      // Gone: compare here (it is started again by its exit handler).
+    }
+  }
   if (inkoopMatchWorker) {
     inkoopMatchWorkerAgain = true;
     return;
@@ -9580,7 +9624,9 @@ function kickInkoopMatchWorker() {
           // the next, so every other page gets its turn in between (with
           // 0.15 s a year of days to redo made the rest time out).
           const took = Date.now() - started;
-          await new Promise((resolve) => setTimeout(resolve, Math.max(500, Math.min(10000, took))));
+          // In its own process a short pause is enough (the system gives
+          // the app priority); in the app itself, as long as the day took.
+          await new Promise((resolve) => setTimeout(resolve, INKOOP_MATCH_CHILD ? 100 : Math.max(500, Math.min(10000, took))));
         }
       } while (inkoopMatchWorkerAgain);
     } catch (error) {
@@ -26231,7 +26277,26 @@ function retryDatabaseUntilReady() {
   }, 30 * 1000);
 }
 
+// The comparison process: the database, then compare days whenever told
+// (and every 30 s) -- no web server, no other background jobs.
+async function runInkoopMatchChild() {
+  if (!isDatabaseEnabled()) return;
+  while (!(await connectDatabaseAtStart())) {
+    await new Promise((resolve) => setTimeout(resolve, 15000));
+  }
+  process.on("message", (message) => {
+    if (message === "kick") kickInkoopMatchWorker();
+  });
+  process.on("disconnect", () => process.exit(0)); // the app stopped
+  kickInkoopMatchWorker();
+  setInterval(kickInkoopMatchWorker, 30000);
+}
+
 async function startServer() {
+  if (INKOOP_MATCH_CHILD) {
+    await runInkoopMatchChild();
+    return;
+  }
   let databaseStarted = false;
   if (isDatabaseEnabled()) {
     databaseStarted = await connectDatabaseAtStart();
@@ -26477,6 +26542,7 @@ async function startServer() {
     // Big-table indexes after the port is open (see ensureBackgroundIndexes).
     // (Database not there yet: retryDatabaseUntilReady does this later.)
     if (isDatabaseEnabled() && databaseStarted) {
+      startInkoopMatchChild();
       ensureBackgroundIndexes()
         .then((built) => { if (built.length) console.log(`Built database index(es): ${built.join(", ")}`); })
         .catch((error) => console.error("Building background database indexes failed:", error instanceof Error ? error.message : error));
