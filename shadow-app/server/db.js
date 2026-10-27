@@ -522,8 +522,12 @@ export async function applyInkoopOrderBridge() {
         JOIN inkoop_lot_epp b ON b.lot = e.lot AND btrim(COALESCE(b.order_number, '')) <> ''
         JOIN inkoop_invoice_lines i
           ON btrim(COALESCE(i.raw->>'order_number', '')) <> ''
-         AND left(b.order_number, length(i.raw->>'order_number')) = i.raw->>'order_number'
-         AND length(b.order_number) - length(i.raw->>'order_number') BETWEEN 0 AND 3
+         AND ((left(b.order_number, length(i.raw->>'order_number')) = i.raw->>'order_number'
+               AND length(b.order_number) - length(i.raw->>'order_number') BETWEEN 0 AND 3)
+           -- the 20-digit clock / Connect number: the same first 17 digits
+           -- (the last 3 differ per lot)
+           OR (length(b.order_number) >= 17 AND length(i.raw->>'order_number') >= 17
+               AND left(b.order_number, 17) = left(i.raw->>'order_number', 17)))
          AND btrim(COALESCE(i.reference_bt, '')) <> ''
          AND i.invoice_date BETWEEN e.erp_date - 4 AND e.erp_date + 4
        WHERE COALESCE(btrim(e.pav), '') = '' OR e.pav ~ '^0+[A-Za-z]?$'
@@ -559,8 +563,10 @@ export async function inkoopLotUploadCheck(lots) {
         WHERE btrim(COALESCE(u.order_number, '')) <> ''
           AND EXISTS (SELECT 1 FROM inkoop_invoice_lines i
                        WHERE btrim(COALESCE(i.raw->>'order_number', '')) <> ''
-                         AND left(u.order_number, length(i.raw->>'order_number')) = i.raw->>'order_number'
-                         AND length(u.order_number) - length(i.raw->>'order_number') BETWEEN 0 AND 3
+                         AND ((left(u.order_number, length(i.raw->>'order_number')) = i.raw->>'order_number'
+                               AND length(u.order_number) - length(i.raw->>'order_number') BETWEEN 0 AND 3)
+                           OR (length(u.order_number) >= 17 AND length(i.raw->>'order_number') >= 17
+                               AND left(u.order_number, 17) = left(i.raw->>'order_number', 17)))
                          AND i.invoice_date BETWEEN u.erp_date - 4 AND u.erp_date + 4))::int AS order_on_invoice,
       (SELECT count(DISTINCT i.invoice_number) FROM inkoop_invoice_lines i
         WHERE i.invoice_type IN ('connect', 'klok', 'klokfactuur', 'connectfactuur')

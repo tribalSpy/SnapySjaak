@@ -7316,6 +7316,25 @@ function findInkoopPiecesCombination(rows, target) {
 // grower's purchase.
 const INKOOP_POOL_CODES = new Set(["F2", "X99", "WEST", "VBA", "FLORA"]);
 
+// A clock / Connect order number's own part: the first 17 digits of the
+// 20-digit number -- the last 3 differ per lot (invoice XML
+// "09999287041565500001", the Connect lot's popup "09999287041565500018",
+// the invoice PDF just "09999287041565500"). Shorter ones (Floriday
+// "11088009") stay as they are.
+function inkoopOrderKey(value) {
+  const digits = normalizeUkdocsText(value).replace(/\s+/g, "");
+  return digits.length >= 18 ? digits.slice(0, 17) : digits;
+}
+
+// Is a Connect lot's order number (night action) the invoice line's?
+function inkoopOrderNumbersMatch(lotOrder, invoiceOrder) {
+  const lot = normalizeUkdocsText(lotOrder).replace(/\s+/g, "");
+  const invoice = normalizeUkdocsText(invoiceOrder).replace(/\s+/g, "");
+  if (lot.length < 6 || invoice.length < 6) return false;
+  if (lot.startsWith(invoice) && lot.length - invoice.length <= 3) return true;
+  return lot.length >= 17 && invoice.length >= 17 && inkoopOrderKey(lot) === inkoopOrderKey(invoice);
+}
+
 // A grower adding a % transaction cost on its invoice prices (VDEIJK, until
 // they fix it): the lot's Connect price plus that % rounded is the invoice
 // price, so the line still pairs with its lot -- and stays a (minor) price
@@ -7443,7 +7462,15 @@ function matchInkoopVeilingLines(erpRows, invoices, supplierMap = {}, supplierNa
     // an exact pair, before anything by supplier.
     const orderNumber = normalizeUkdocsText(line?.order_number);
     if (orderNumber) {
-      const byOrder = (erpByOrderPrefix.get(orderNumber) || []).filter((row) => !consumedErpRows.has(row));
+      // Its first 17 digits too: the invoice's 20-digit ON ends in other
+      // digits than the lot's.
+      let byOrder = [...new Set([...(erpByOrderPrefix.get(orderNumber) || []), ...(erpByOrderPrefix.get(inkoopOrderKey(orderNumber)) || [])])]
+        .filter((row) => !consumedErpRows.has(row));
+      // One order split over several lots: the one with the line's pieces and price.
+      if (byOrder.length > 1) {
+        const exact = byOrder.filter((row) => !inkoopValuesDiffer(row.pieces, line.quantity) && priceFits(row, line.unit_price));
+        if (exact.length === 1) byOrder = exact;
+      }
       if (byOrder.length === 1) {
         const row = byOrder[0];
         consumedErpRows.add(row);
@@ -7791,10 +7818,12 @@ function matchInkoopVeilingLines(erpRows, invoices, supplierMap = {}, supplierNa
       let found = [];
       let via = "";
       if (order.length >= 6) {
-        found = free.filter((row) => {
-          const rowOrder = normalizeUkdocsText(row?.uniware_order);
-          return rowOrder.startsWith(order) && rowOrder.length - order.length <= 3;
-        });
+        found = free.filter((row) => inkoopOrderNumbersMatch(row?.uniware_order, order));
+        // One order split over several lots: the one with the line's pieces and price.
+        if (found.length > 1) {
+          const exact = found.filter((row) => !inkoopValuesDiffer(row.pieces, item.quantity) && priceFits(row, item.unit_price));
+          if (exact.length === 1) found = exact;
+        }
         via = "order number (night action)";
       }
       if (found.length !== 1 && /^\d{6}$/.test(brief)) {
@@ -9022,7 +9051,7 @@ const INKOOP_EMPTY_DAY_BUCKET = {
 // compared again once (at start-up), not only days whose data changed.
 // 2026-10-21: grower directory (learned links, Handel evidence), supplier
 // pairs stored on the invoice date.
-const INKOOP_MATCH_RULES_VERSION = "2026-10-26b";
+const INKOOP_MATCH_RULES_VERSION = "2026-10-27";
 
 function inkoopStateFingerprint(state) {
   return crypto.createHash("sha1").update(JSON.stringify([
