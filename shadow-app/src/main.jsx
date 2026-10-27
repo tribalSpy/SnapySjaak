@@ -17789,10 +17789,12 @@ function InkoopPeriodReports({ company }) {
           <tbody>
             {codesWithoutBw.slice(0, 300).map((row) => (
               <tr key={row.code}>
-                <td><strong>{row.code}</strong></td><td>{row.lots}</td><td>{formatInkoopEuro(row.value)}</td><td>{inkoopShortDate(row.last_date)}</td><td>{row.example_description}</td>
+                <td><strong>{row.code || "(no supplier code)"}</strong>{row.in_master && <div className="muted" style={{ fontSize: "0.85em" }}>in the leveranciers file, BW empty</div>}</td><td>{row.lots}</td><td>{formatInkoopEuro(row.value)}</td><td>{inkoopShortDate(row.last_date)}</td><td>{row.example_description}</td>
                 <td>
+                  {row.code ? (<>
                   <select value={bwDrafts[row.code] || ""} onChange={(event) => setBwDrafts((current) => ({ ...current, [row.code]: event.target.value }))}>{bwOptions}</select>{" "}
                   <button type="button" disabled={!bwDrafts[row.code]} onClick={() => saveManualBw(row.code, bwDrafts[row.code])}>Save</button>
+                  </>) : <span className="muted">Connect lots without a Suppl. code</span>}
                 </td>
               </tr>
             ))}

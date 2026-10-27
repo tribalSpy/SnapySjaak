@@ -23875,13 +23875,32 @@ async function handleApi(req, res, url) {
     }
     const state = await readInkoopState();
     const excluded = new Set(inkoopExcludedErpCodes(state));
-    const allCodes = await getInkoopConnectCodeValues();
+    // Per code (Suppl. + Avc. pair from the database), summed per Suppl.
+    const pairs = await getInkoopConnectCodeValues();
+    const byCode = new Map();
+    for (const row of pairs) {
+      const code = normalizeInkoopKey(row.code);
+      const entry = byCode.get(code) || { code, lots: 0, value: 0, last_date: "", example_description: "", unknown_lots: 0, unknown_value: 0 };
+      entry.lots += row.lots;
+      entry.value += row.value;
+      if (row.last_date > entry.last_date) entry.last_date = row.last_date;
+      entry.example_description = entry.example_description || row.example_description;
+      // The comparison's own rule: the Suppl. code's BW, else the Avc.'s,
+      // else "?" -- also a code in the leveranciers file with an empty BW.
+      const bw = state.supplier_bw_map?.[code]?.bw || state.supplier_bw_map?.[normalizeInkoopKey(row.avc)]?.bw;
+      if (!bw) {
+        entry.unknown_lots += row.lots;
+        entry.unknown_value += row.value;
+      }
+      byCode.set(code, entry);
+    }
+    const allCodes = [...byCode.values()];
     const codes = allCodes
-      .filter((row) => !state.supplier_bw_map?.[normalizeInkoopKey(row.code)] && !excluded.has(normalizeInkoopKey(row.code)))
+      .filter((row) => row.unknown_lots > 0 && !excluded.has(row.code))
+      .map((row) => ({ ...row, lots: row.unknown_lots, value: Math.round(row.unknown_value * 100) / 100, in_master: Boolean(state.supplier_bw_map?.[row.code]) }))
       .sort((left, right) => right.value - left.value);
     // The BWs given by hand, with what the master data says (if anything).
-    const byCode = new Map(allCodes.map((row) => [normalizeInkoopKey(row.code), row]));
-    const manual = Object.entries(state.manual_bw_map || {}).map(([code, bw]) => ({ code, bw, ...(byCode.get(code) ? { lots: byCode.get(code).lots, value: byCode.get(code).value } : {}) }));
+    const manual = Object.entries(state.manual_bw_map || {}).map(([code, bw]) => ({ code, bw, ...(byCode.get(code) ? { lots: byCode.get(code).lots, value: Math.round(byCode.get(code).value * 100) / 100 } : {}) }));
     sendJson(res, 200, { codes, manual });
     return;
   }

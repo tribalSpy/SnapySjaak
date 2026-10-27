@@ -276,13 +276,12 @@ export async function getInkoopConnectCodeValues() {
     return [];
   }
   const result = await pool.query(`
-    SELECT upper(btrim(suppl)) AS code, count(*)::int AS lots,
+    SELECT upper(btrim(COALESCE(suppl, ''))) AS code, upper(btrim(COALESCE(avc, ''))) AS avc, count(*)::int AS lots,
            round(sum(COALESCE(t_price, 0))::numeric, 2)::float8 AS value,
            to_char(max(erp_date), 'YYYY-MM-DD') AS last_date,
            max(description) AS example_description
       FROM inkoop_erp_lines
-     WHERE btrim(COALESCE(suppl, '')) <> ''
-     GROUP BY 1
+     GROUP BY 1, 2
   `);
   return result.rows;
 }
