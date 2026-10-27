@@ -863,6 +863,19 @@ function clearSessionCookie(res) {
   res.setHeader("set-cookie", `${sessionCookieName}=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0`);
 }
 
+async function readRequestText(req, maxBytes = 1024 * 1024) {
+  const chunks = [];
+  let totalBytes = 0;
+  for await (const chunk of req) {
+    chunks.push(chunk);
+    totalBytes += chunk.length;
+    if (totalBytes > maxBytes) {
+      throw new Error("Request body is too large");
+    }
+  }
+  return Buffer.concat(chunks).toString("utf8");
+}
+
 async function readRequestJson(req, maxBytes = 1024 * 1024) {
   const chunks = [];
   let totalBytes = 0;
@@ -25569,6 +25582,74 @@ async function handleApi(req, res, url) {
     const files = [];
     for (const name of names) files.push(await describe(path.join(cacheDir, name)));
     sendJson(res, 200, { cache_dir: cacheDir, env_cache_dir: process.env.SNAPPYSJAAK_CACHE_DIR || "", unreadable_now: [...unreadableJsonFiles.entries()].map(([file, reason]) => ({ file: path.basename(file), reason })), files });
+    return;
+  }
+
+  // Admin page: the state files with a download link each, and a form to
+  // put one back (for a disk restore).
+  if (url.pathname === "/api/admin/state-restore" && req.method === "GET") {
+    if (requestUser.role !== "admin") {
+      sendForbidden(res);
+      return;
+    }
+    res.writeHead(200, { "content-type": "text/html; charset=utf-8" });
+    res.end(`<!doctype html><html><head><meta charset="utf-8"><title>State files</title>
+<style>body{font-family:system-ui,sans-serif;margin:24px;max-width:900px}td,th{padding:4px 10px;text-align:left;border-bottom:1px solid #ddd}.bad{color:#b00}</style></head><body>
+<h2>State files</h2><p>Download = the file as it is now. Put back = replace it with a file you choose (the current one is kept as a copy).</p>
+<table id="t"><tr><th>File</th><th>Size</th><th>Saved</th><th>Zendingen</th><th></th></tr></table>
+<h3>Put a file back</h3><p><select id="n"></select> <input type="file" id="f" accept=".json"> <button id="b">Put back</button></p><p id="m"></p>
+<script>
+fetch("/api/admin/state-files").then(r=>r.json()).then(d=>{
+  const t=document.getElementById("t"),n=document.getElementById("n");
+  for(const f of d.files||[]){ if(!/\.json$/.test(f.file)) continue;
+    const tr=document.createElement("tr");
+    tr.innerHTML="<td>"+f.file+"</td><td>"+(f.size_bytes||0).toLocaleString()+"</td><td>"+(f.saved_at||"")+"</td><td>"+(f.zendingen??"")+"</td><td><a href='/api/admin/state-file?name="+encodeURIComponent(f.file)+"'>Download</a></td>";
+    t.appendChild(tr); const o=document.createElement("option"); o.textContent=f.file; n.appendChild(o);}
+});
+document.getElementById("b").onclick=async()=>{const file=document.getElementById("f").files[0],name=document.getElementById("n").value,m=document.getElementById("m");
+  if(!file){m.textContent="Choose a file first.";return;}
+  if(!confirm("Replace "+name+" with "+file.name+"?"))return;
+  const r=await fetch("/api/admin/state-file?name="+encodeURIComponent(name),{method:"POST",body:await file.text()});
+  const j=await r.json(); m.textContent=r.ok?("Put back: "+j.file+" ("+j.size_bytes.toLocaleString()+" bytes)"):("Error: "+j.error); m.className=r.ok?"":"bad";};
+</script></body></html>`);
+    return;
+  }
+
+  // Admin: download one state file as it is now (e.g. before a disk
+  // restore), or put one back (it must be valid JSON; the current one is
+  // kept as .before-upload-<time>).
+  if (url.pathname === "/api/admin/state-file" && (req.method === "GET" || req.method === "POST")) {
+    if (requestUser.role !== "admin") {
+      sendForbidden(res);
+      return;
+    }
+    const name = String(url.searchParams.get("name") || "");
+    if (!/^[a-z0-9_-]+\.json$/i.test(name)) {
+      sendJson(res, 400, { error: "name=<file>.json (as listed in /api/admin/state-files)" });
+      return;
+    }
+    const filePath = path.join(cacheDir, name);
+    if (req.method === "GET") {
+      if (!existsSync(filePath)) {
+        sendJson(res, 404, { error: `${name} not found` });
+        return;
+      }
+      res.writeHead(200, { "content-type": "application/json", "content-disposition": `attachment; filename="${name}"` });
+      res.end(await fs.readFile(filePath));
+      return;
+    }
+    const text = await readRequestText(req, 200 * 1024 * 1024);
+    let parsed;
+    try {
+      parsed = JSON.parse(text);
+    } catch (error) {
+      sendJson(res, 400, { error: `Not valid JSON: ${error instanceof Error ? error.message : error}` });
+      return;
+    }
+    if (existsSync(filePath)) await fs.copyFile(filePath, `${filePath}.before-upload-${Date.now()}`);
+    unreadableJsonFiles.delete(filePath);
+    await writeJsonFile(filePath, parsed);
+    sendJson(res, 200, { ok: true, file: name, size_bytes: Buffer.byteLength(text) });
     return;
   }
 
