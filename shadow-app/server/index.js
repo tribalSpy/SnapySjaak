@@ -8049,6 +8049,16 @@ function matchInkoopVeilingLines(erpRows, invoices, supplierMap = {}, supplierNa
   // location -- not the grower), or whose Aanv. (the night action's bottom
   // bar: the grower's Kwekercod) is the line's grower. Also a lot with a
   // brief number: a Handel line has none to find it by. Only one lot may fit.
+  // The lots by their pieces: the last steps only look at lots with exactly
+  // the line's pieces (not every lot for every line -- that made a day take
+  // 20+ seconds).
+  const erpRowsByPieces = new Map();
+  for (const row of Array.isArray(erpRows) ? erpRows : []) {
+    const key = String(Number(row?.pieces));
+    if (!erpRowsByPieces.has(key)) erpRowsByPieces.set(key, []);
+    erpRowsByPieces.get(key).push(row);
+  }
+  const lotsWithPieces = (quantity) => erpRowsByPieces.get(String(Number(quantity))) || [];
   const aanvCodeOf = (row) => {
     const fh = normalizeInkoopFhKey(row?.uniware_aanv);
     return fh ? normalizeInkoopKey(supplierFhMap?.[fh]?.code) : "";
@@ -8072,9 +8082,9 @@ function matchInkoopVeilingLines(erpRows, invoices, supplierMap = {}, supplierNa
       }
       const sameGoods = (row) => !consumedErpRows.has(row) && !inkoopValuesDiffer(row.pieces, item.quantity) && priceFits(row, item.unit_price);
       const daysApartOf = (row) => Math.abs((Date.parse(String(row?.date || "").slice(0, 10)) - Date.parse(date)) / 86400000);
-      const byAanv = (Array.isArray(erpRows) ? erpRows : []).filter((row) => row?.uniware_aanv && sameGoods(row) && daysApartOf(row) <= 2 && codes.has(aanvCodeOf(row)))
+      const byAanv = lotsWithPieces(item.quantity).filter((row) => row?.uniware_aanv && sameGoods(row) && daysApartOf(row) <= 2 && codes.has(aanvCodeOf(row)))
         .sort((left, right) => daysApartOf(left) - daysApartOf(right));
-      const pooled = withBrief ? [] : (Array.isArray(erpRows) ? erpRows : []).filter((row) => sameGoods(row)
+      const pooled = withBrief ? [] : lotsWithPieces(item.quantity).filter((row) => sameGoods(row)
         && String(row?.date || "").slice(0, 10) === date
         && INKOOP_POOL_CODES.has(resolveErpRowSupplierCode(row, validSupplierCodes)));
       // Several by Aanv.: the best name, else the nearest day if only one is.
@@ -8119,7 +8129,7 @@ function matchInkoopVeilingLines(erpRows, invoices, supplierMap = {}, supplierNa
       for (const code of resolved.codes || []) codes.add(normalizeInkoopKey(code));
       const brief = inkoopBasePav(normalizeInkoopKey(item?.reference_bt));
       const daysApartOf = (row) => Math.abs((Date.parse(String(row?.date || "").slice(0, 10)) - Date.parse(date)) / 86400000);
-      const scored = (Array.isArray(erpRows) ? erpRows : [])
+      const scored = lotsWithPieces(item.quantity)
         .filter((row) => !consumedErpRows.has(row) && daysApartOf(row) <= 2
           && !inkoopValuesDiffer(row.pieces, item.quantity) && priceFits(row, item.unit_price))
         .map((row) => {
@@ -8176,11 +8186,18 @@ function matchInkoopVeilingLines(erpRows, invoices, supplierMap = {}, supplierNa
     if (item?.erp_row) takenBy.set(item.erp_row, item);
   }
   const dayDistance = (left, right) => Math.abs((Date.parse(String(left || "").slice(0, 10)) - Date.parse(String(right || "").slice(0, 10))) / 86400000);
+  // The lots by their grower code, worked out once (not per line).
+  const erpRowsByCode = new Map();
+  for (const row of Array.isArray(erpRows) ? erpRows : []) {
+    const code = resolveErpRowSupplierCode(row, validSupplierCodes);
+    if (!erpRowsByCode.has(code)) erpRowsByCode.set(code, []);
+    erpRowsByCode.get(code).push(row);
+  }
   for (const item of onlyInInvoice) {
     if (!item?.supplier_code) continue;
     const codes = new Set(String(item.supplier_code).split("/").map((code) => normalizeInkoopKey(code)).filter(Boolean));
     const date = String(item.invoice_date || "").slice(0, 10);
-    const ofSupplier = (Array.isArray(erpRows) ? erpRows : []).filter((row) => codes.has(resolveErpRowSupplierCode(row, validSupplierCodes)));
+    const ofSupplier = [...codes].flatMap((code) => erpRowsByCode.get(code) || []);
     const near = ofSupplier.filter((row) => !date || !row?.date || dayDistance(row.date, date) <= INKOOP_DAY_TOLERANCE_DAYS);
     // Best first: the name, then the nearest day.
     const similar = near.filter((row) => !inkoopValuesDiffer(row.pieces, item.quantity) || !inkoopValuesDiffer(parseFloat(row.price), item.unit_price))
