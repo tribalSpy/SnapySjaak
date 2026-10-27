@@ -730,6 +730,44 @@ export async function getStateFileSnapshot(id) {
   return result.rows[0] || null;
 }
 
+export async function saveInkoopAfgemeldMessages(rows, sourceFileName = "") {
+  if (!pool || !Array.isArray(rows) || !rows.length) return 0;
+  const valid = dedupeByKeyKeepingLast(rows.filter((row) => row?.trnum), (row) => String(row.trnum));
+  for (const chunk of chunkArray(valid, INKOOP_UPSERT_CHUNK_SIZE)) {
+    const values = [];
+    const placeholders = chunk.map((row) => {
+      const base = values.length;
+      values.push(String(row.trnum), row.date || null, row.order_number || null, row.brief || null, row.epp || null, row.aanv || null,
+        row.vbn || null, row.description || null, numberOrNull(row.boxes), numberOrNull(row.per_box), numberOrNull(row.price), row.info || null, sourceFileName);
+      return `(${Array.from({ length: 13 }, (_, index) => `$${base + index + 1}`).join(", ")})`;
+    });
+    await pool.query(
+      `INSERT INTO inkoop_afgemeld_messages (trnum, msg_date, order_number, brief, epp, aanv, vbn, description, boxes, per_box, price, info, source_file_name)
+       VALUES ${placeholders.join(", ")}
+       ON CONFLICT (trnum) DO UPDATE SET
+         msg_date = COALESCE(EXCLUDED.msg_date, inkoop_afgemeld_messages.msg_date), order_number = COALESCE(EXCLUDED.order_number, inkoop_afgemeld_messages.order_number),
+         brief = COALESCE(EXCLUDED.brief, inkoop_afgemeld_messages.brief), epp = COALESCE(EXCLUDED.epp, inkoop_afgemeld_messages.epp),
+         aanv = COALESCE(EXCLUDED.aanv, inkoop_afgemeld_messages.aanv), vbn = COALESCE(EXCLUDED.vbn, inkoop_afgemeld_messages.vbn),
+         description = COALESCE(EXCLUDED.description, inkoop_afgemeld_messages.description), boxes = COALESCE(EXCLUDED.boxes, inkoop_afgemeld_messages.boxes),
+         per_box = COALESCE(EXCLUDED.per_box, inkoop_afgemeld_messages.per_box), price = COALESCE(EXCLUDED.price, inkoop_afgemeld_messages.price),
+         info = COALESCE(EXCLUDED.info, inkoop_afgemeld_messages.info), source_file_name = EXCLUDED.source_file_name, imported_at = now()`,
+      values,
+    );
+  }
+  return valid.length;
+}
+
+export async function getInkoopAfgemeldMessages({ from, to } = {}) {
+  if (!pool || !from || !to) return [];
+  const result = await pool.query(
+    `SELECT trnum, to_char(msg_date, 'YYYY-MM-DD') AS date, order_number, brief, epp, aanv, vbn, description,
+            boxes::float8 AS boxes, per_box::float8 AS per_box, price::float8 AS price
+       FROM inkoop_afgemeld_messages WHERE msg_date >= $1::date AND msg_date <= $2::date`,
+    [from, to],
+  );
+  return result.rows;
+}
+
 // The first and last Connect date of these lots.
 export async function getInkoopErpDatesForLots(lots) {
   if (!pool || !Array.isArray(lots) || !lots.length) {
@@ -3558,6 +3596,29 @@ const databaseMigrations = [
   // Every 13-digit number in the popup (a clock lot's transaction numbers):
   // one that is an invoice line's reference (VN, AAG, SS, ADJ) links them.
   `ALTER TABLE IF EXISTS inkoop_lot_epp ADD COLUMN IF NOT EXISTS refs text[]`,
+  // Night action rows "Afgemeld" (no Connect lot: the message came after the
+  // lot was entered by hand, or the lot was split): per TrNum the order
+  // number, Aanv., product, boxes x per box and price -- the link between an
+  // invoice line and a lot entered by hand.
+  `
+    CREATE TABLE IF NOT EXISTS inkoop_afgemeld_messages (
+      trnum text PRIMARY KEY,
+      msg_date date,
+      order_number text,
+      brief text,
+      epp text,
+      aanv text,
+      vbn text,
+      description text,
+      boxes numeric,
+      per_box numeric,
+      price numeric,
+      info text,
+      source_file_name text,
+      imported_at timestamptz NOT NULL DEFAULT now()
+    )
+  `,
+  `CREATE INDEX IF NOT EXISTS inkoop_afgemeld_messages_date_idx ON inkoop_afgemeld_messages (msg_date)`,
   // The bottom bar's "Aanv.: x94478" (the grower's Kwekercod).
   `ALTER TABLE IF EXISTS inkoop_lot_epp ADD COLUMN IF NOT EXISTS aanv text`,
   // The list row's VBN code and Omschrijving (Uniware's product name).

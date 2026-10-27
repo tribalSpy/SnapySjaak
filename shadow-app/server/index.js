@@ -106,6 +106,8 @@ import {
   applyInkoopEppBridge,
   applyInkoopOrderBridge,
   getLatestStateFileSha,
+  saveInkoopAfgemeldMessages,
+  getInkoopAfgemeldMessages,
   getInkoopUnmatchedInvoiceTotals,
   listInkoopInvoiceNumbers,
   saveStateFileSnapshot,
@@ -7167,12 +7169,29 @@ function parseInkoopEppList(base64) {
   const header = (lines[0] || "").toLowerCase().split(/[;\t]/).map((cell) => cell.trim());
   const hasHeader = header.includes("lot");
   const rows = [];
+  const afgemeld = [];
+  rows.afgemeld = afgemeld;
   for (const line of hasHeader ? lines.slice(1) : lines) {
     if (hasHeader) {
       const cells = line.split(/[;\t]/).map((cell) => cell.trim().replace(/^"|"$/g, ""));
       const value = (name) => cells[header.indexOf(name)] || "";
       const lot = value("lot");
-      if (!/^\d{6,10}$/.test(lot)) continue;
+      if (!/^\d{6,10}$/.test(lot)) {
+        // An "Afgemeld" row: no lot, its TrNum (see inkoop_afgemeld_messages).
+        const trnum = value("trnum");
+        if (/^\d{3,10}$/.test(trnum)) {
+          const info = header.includes("info") ? value("info") : "";
+          afgemeld.push({
+            trnum, date: /^\d{4}-\d{2}-\d{2}$/.test(value("datum")) ? value("datum") : "",
+            epp: /^\d{6,16}$/.test(value("epp")) ? value("epp") : "", info, ...parseInkoopLotInfo(info),
+            brief: value("brief").replace(/\/-?$/, "").replace("/", "").toUpperCase(),
+            aanv: /^[a-z]?\d{3,6}$/i.test(value("aanv")) ? value("aanv").toLowerCase() : "",
+            vbn: /^\d{1,7}$/.test(value("vbn")) ? value("vbn") : "", description: value("omschrijving").slice(0, 120),
+            boxes: Number(value("aantal")) || null, per_box: Number(value("per_fust")) || null, price: Number(value("prijs")) || null,
+          });
+        }
+        continue;
+      }
       // Clock lots have a 9-digit EPP, others 13 -- or none at all.
       const epp = /^\d{6,16}$/.test(value("epp")) ? value("epp") : "";
       const info = header.includes("info") ? value("info") : "";
@@ -7533,7 +7552,7 @@ function inkoopPriceWithTransactionCost(connectPrice, pct) {
   return Math.round(price * (1 + pct / 100) * 100) / 100;
 }
 
-function matchInkoopVeilingLines(erpRows, invoices, supplierMap = {}, supplierNameMap = {}, manualLinks = [], supplierFhMap = {}, transactionCosts = {}) {
+function matchInkoopVeilingLines(erpRows, invoices, supplierMap = {}, supplierNameMap = {}, manualLinks = [], supplierFhMap = {}, transactionCosts = {}, afgemeldMessages = []) {
   // Every code the uploaded master data actually knows about, regardless of
   // which lookup (GLN/name/FH) it happened to be reachable through --
   // needed here since an ERP row's Suppl./Avc./Transp. value has to be
@@ -8169,6 +8188,78 @@ function matchInkoopVeilingLines(erpRows, invoices, supplierMap = {}, supplierNa
   };
   combinedEvidence(onlyInInvoice);
   combinedEvidence(supplierNotLinked);
+
+  // An "Afgemeld" message (night action: no lot -- the lot was entered by
+  // hand before the message came) with the line's order number or brief
+  // number: its grower (Aanv.), product and boxes find that hand-entered lot.
+  // Not when another lot carries the message's order / brief number: then
+  // the lot was split and the new lots (which keep them) are the purchase.
+  const viaAfgemeld = (unmatched) => {
+    if (!afgemeldMessages.length) return;
+    const rest = [];
+    const allRows = Array.isArray(erpRows) ? erpRows : [];
+    for (const item of unmatched) {
+      const brief = normalizeInkoopKey(item?.reference_bt);
+      const messages = afgemeldMessages.filter((message) => (item?.order_number && message.order_number && inkoopOrderNumbersMatch(message.order_number, item.order_number))
+        || (isRealInkoopPav(brief) && message.brief && (normalizeInkoopKey(message.brief) === brief || normalizeInkoopKey(message.brief) === inkoopBasePav(brief))));
+      const message = messages.length === 1 ? messages[0] : null;
+      const splitInto = message && allRows.some((row) => (message.order_number && row?.uniware_order && inkoopOrderNumbersMatch(row.uniware_order, message.order_number))
+        || (message.brief && [row?.pav, row?.levering_pav].some((pav) => normalizeInkoopKey(pav) === normalizeInkoopKey(message.brief) || inkoopBasePav(normalizeInkoopKey(pav)) === normalizeInkoopKey(message.brief))));
+      if (!message) {
+        rest.push(item);
+        continue;
+      }
+      if (splitInto) {
+        // Split: the invoice always has the original line (30 x 80); the
+        // new lots keep its order / brief number -- together they are it.
+        const carries = (row) => (message.order_number && row?.uniware_order && inkoopOrderNumbersMatch(row.uniware_order, message.order_number))
+          || (message.brief && [row?.pav, row?.levering_pav].some((pav) => normalizeInkoopKey(pav) === normalizeInkoopKey(message.brief) || inkoopBasePav(normalizeInkoopKey(pav)) === normalizeInkoopKey(message.brief)));
+        const parts = allRows.filter((row) => !consumedErpRows.has(row) && carries(row) && priceFits(row, item.unit_price) && Number(row.pieces) > 0).slice(0, 14);
+        const combination = parts.length === 1 && !inkoopValuesDiffer(parts[0].pieces, item.quantity) ? parts : findInkoopPiecesCombination(parts, Number(item.quantity));
+        if (!combination?.length) {
+          rest.push(item);
+          continue;
+        }
+        for (const row of combination) consumedErpRows.add(row);
+        const sorted = [...combination].sort((left, right) => Number(left.lot) - Number(right.lot));
+        matchedOk.push({
+          ...item,
+          supplier_code: item.supplier_code || resolveErpRowSupplierCode(sorted[0], validSupplierCodes),
+          supplier_match_type: `Afgemeld message TrNum ${message.trnum}: split into ${sorted.length} lot(s)`,
+          erp_row: { ...sorted[0], lot: sorted.map((row) => row.lot).join("+"), pieces: item.quantity, t_price: sorted.reduce((sum, row) => sum + (parseFloat(row.t_price) || 0), 0) },
+          matched_as_split_delivery: true,
+          split_lots: sorted.map((row) => row.lot),
+          afgemeld_trnum: message.trnum,
+        });
+        continue;
+      }
+      const date = message.date || normalizeUkdocsText(item?.invoice_date).slice(0, 10);
+      const codes = new Set(String(item?.supplier_code || "").split(/[/+]/).map((code) => normalizeInkoopKey(code)).filter(Boolean));
+      const aanvCode = normalizeInkoopKey(supplierFhMap?.[normalizeInkoopFhKey(message.aanv)]?.code);
+      if (aanvCode) codes.add(aanvCode);
+      const lineWithMessage = { ...item, vbn_code: item?.vbn_code || message.vbn, description: `${item?.description || ""} ${message.description || ""}` };
+      const daysApart = (row) => Math.abs((Date.parse(String(row?.date || "").slice(0, 10)) - Date.parse(date)) / 86400000);
+      const fits = lotsWithPieces(item.quantity).filter((row) => !consumedErpRows.has(row) && !isRealInkoopPav(normalizeInkoopKey(row?.pav))
+        && daysApart(row) <= 2 && priceFits(row, item.unit_price)
+        && ([row?.suppl, row?.avc, row?.transp].some((code) => codes.has(normalizeInkoopKey(code))) || inkoopLotNameScore(lineWithMessage, row) > 0));
+      const row = fits.length === 1 ? fits[0] : inkoopBestNamedRow(fits, lineWithMessage);
+      if (!row) {
+        rest.push(item);
+        continue;
+      }
+      consumedErpRows.add(row);
+      const pair = { ...item, supplier_code: item.supplier_code || aanvCode || resolveErpRowSupplierCode(row, validSupplierCodes), supplier_match_type: `Afgemeld message TrNum ${message.trnum} (night action)`, erp_row: row, afgemeld_trnum: message.trnum };
+      if (inkoopValuesDiffer(parseFloat(row.price), item.unit_price)) {
+        matchedMismatch.push({ ...pair, diffs: [{ field: "unit_price", erp: parseFloat(row.price), invoice: item.unit_price }, { field: "total", erp: parseFloat(row.t_price), invoice: item.total }] });
+      } else {
+        matchedOk.push(pair);
+      }
+    }
+    unmatched.length = 0;
+    unmatched.push(...rest);
+  };
+  viaAfgemeld(onlyInInvoice);
+  viaAfgemeld(supplierNotLinked);
 
   // Unconsumed rows from both pools are genuine "recorded but nothing
   // claimed it" gaps -- a supplier-code-keyed row (Handel/AI2 lines with no
@@ -9363,7 +9454,7 @@ const INKOOP_EMPTY_DAY_BUCKET = {
 // compared again once (at start-up), not only days whose data changed.
 // 2026-10-21: grower directory (learned links, Handel evidence), supplier
 // pairs stored on the invoice date.
-const INKOOP_MATCH_RULES_VERSION = "2026-10-27f";
+const INKOOP_MATCH_RULES_VERSION = "2026-10-28";
 
 function inkoopStateFingerprint(state) {
   return crypto.createHash("sha1").update(JSON.stringify([
@@ -10093,10 +10184,11 @@ async function inkoopGrowerDirectory(state) {
 }
 
 async function computeInkoopLiveMatchFresh(state, { from, to }) {
-  const [allErpRows, invoiceLines, directory] = await Promise.all([
+  const [allErpRows, invoiceLines, directory, afgemeldMessages] = await Promise.all([
     getInkoopErpLines({ from, to }),
     getInkoopInvoiceLines({ from, to }),
     inkoopGrowerDirectory(state),
+    getInkoopAfgemeldMessages({ from, to }).catch(() => []),
   ]);
   const erpRows = excludeInkoopInternalBunchRows(allErpRows, state.supplier_bw_map, inkoopExcludedErpCodes(state));
   const invoices = groupInkoopInvoiceLinesByInvoice(invoiceLines);
@@ -10104,7 +10196,7 @@ async function computeInkoopLiveMatchFresh(state, { from, to }) {
   const supplierMap = { ...directory.matcherMaps.gln, ...state.supplier_map };
   const supplierFhMap = { ...directory.matcherMaps.fh, ...state.supplier_fh_map };
   inkoopNonGrowerCodes = new Set(directory.skipCodes || []);
-  const result = matchInkoopVeilingLines(erpRows, invoices, supplierMap, state.supplier_name_map, state.manual_supplier_links, supplierFhMap, state.transaction_costs);
+  const result = matchInkoopVeilingLines(erpRows, invoices, supplierMap, state.supplier_name_map, state.manual_supplier_links, supplierFhMap, state.transaction_costs, afgemeldMessages);
   const withReturns = await reclassifyInkoopConfirmedReturns(result, state.customer_map);
   // Tagged in place (fresh rows from this request's own query) so every
   // view showing an only-in-ERP gap can say what kind of party it is --
@@ -23844,6 +23936,18 @@ async function handleApi(req, res, url) {
       }
     }
     const rows = parseInkoopEppList(listBase64);
+    const afgemeldRows = rows.afgemeld || [];
+    const savedAfgemeld = await saveInkoopAfgemeldMessages(afgemeldRows, String(body?.file?.name || ""));
+    if (!rows.length && savedAfgemeld) {
+      const afgemeldDays = [...new Set(afgemeldRows.map((row) => row.date).filter(Boolean))];
+      if (afgemeldDays.length) {
+        bumpInkoopMatchVersion();
+        await refreshInkoopDaySummariesForDates(afgemeldDays).catch(() => {});
+        kickInkoopMatchWorker();
+      }
+      sendJson(res, 200, { ok: true, lines: 0, saved: 0, afgemeld: savedAfgemeld, filled_now: 0, from_epp: 0, from_order: 0, from_refs: 0, with_order_number: 0, with_gln: 0 });
+      return;
+    }
     if (!rows.length) {
       sendJson(res, 400, { error: "No lines with a Connect lot and an EPP number (e.g. 44759254;9100185445726) found." });
       return;
@@ -23858,7 +23962,7 @@ async function handleApi(req, res, url) {
     // The days of every uploaded lot are compared again (not only those whose
     // data changed): what the night action brings can pair lines either way.
     const check = await inkoopLotUploadCheck(rows.map((row) => row.lot)).catch(() => null);
-    const days = [...new Set([...filled.map((row) => row.erp_date), ...(check?.dates || [])])];
+    const days = [...new Set([...filled.map((row) => row.erp_date), ...(check?.dates || []), ...afgemeldRows.map((row) => row.date).filter(Boolean)])];
     if (days.length) {
       bumpInkoopMatchVersion();
       await refreshInkoopDaySummariesForDates(days)
@@ -23872,6 +23976,7 @@ async function handleApi(req, res, url) {
       with_order_number: rows.filter((row) => row.order_number).length,
       with_gln: rows.filter((row) => row.gln).length,
       lots_updated: withInfo.length,
+      afgemeld: savedAfgemeld,
       days_compared_again: days.sort(),
       order_on_invoice: check?.order_on_invoice ?? null,
       invoices_without_on: check?.invoices_without_on ?? null,
