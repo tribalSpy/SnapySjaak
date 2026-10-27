@@ -19752,6 +19752,10 @@ function InkoopGrowersTab() {
 function InkoopConnectCheck({ check, code, quantity, price }) {
   if (!check) return null;
   const style = { display: "block", fontSize: "0.78rem", color: "#6b7280", marginTop: 2 };
+  const afgemeld = check.afgemeld
+    ? <small style={{ ...style, color: "#b45309" }}>Afgemeld TrNum {check.afgemeld.trnum}{check.afgemeld.boxes ? ` (${check.afgemeld.boxes} x ${check.afgemeld.per_box} @ ${check.afgemeld.price})` : ""}{check.afgemeld.brief ? `, brief ${check.afgemeld.brief}` : ""} -- no free Connect lot for it: not entered by hand?</small>
+    : null;
+  if (afgemeld) return <>{afgemeld}<InkoopConnectCheck check={{ ...check, afgemeld: null }} code={code} quantity={quantity} price={price} /></>;
   if (!check.supplier_lots) {
     return <small style={{ ...style, color: "#b45309" }}>No Connect lots of {code} around this date -- is the Connect export of this day uploaded, or is it booked under another code?</small>;
   }

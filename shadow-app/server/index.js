@@ -8317,10 +8317,27 @@ function matchInkoopVeilingLines(erpRows, invoices, supplierMap = {}, supplierNa
       } else if (free.length <= 14) {
         lots = findInkoopPiecesCombination(free, wanted);
       }
+      // More on the invoice than in Connect: the lines that together are
+      // all the lots (66 + 16 = 82 boxes = 25 + 25 + 25 + 7) -- the line
+      // left over (4 x 160, no lot entered for it) is the real gap. Only
+      // one such set of lines, else it isn't clear which line is missing.
+      if (!lots?.length && pool.lines.length > 1 && pool.lines.length <= 14 && total(free) < wanted) {
+        const target = total(free);
+        const subsets = [];
+        for (let mask = 1; mask < (1 << pool.lines.length) - 1 && subsets.length < 2; mask += 1) {
+          const chosen = pool.lines.filter((_, index) => mask & (1 << index));
+          if (!inkoopValuesDiffer(chosen.reduce((sum, line) => sum + Number(line.quantity), 0), target)) subsets.push(chosen);
+        }
+        if (subsets.length === 1) {
+          pool.lines = subsets[0];
+          lots = free;
+        }
+      }
+      const wantedNow = pool.lines.reduce((sum, line) => sum + Number(line.quantity), 0);
       // Not the same pieces, but close (a box more or less, within 5%): the
       // pool is still these lines and lots -- the difference shows as a
       // mismatch on its last line instead of 8 lines and 18 lots apart.
-      const short = !lots?.length && pool.lines.length > 1 && free.length > 1 && Math.abs(total(free) - wanted) <= wanted * 0.05;
+      const short = !lots?.length && pool.lines.length > 1 && free.length > 1 && Math.abs(total(free) - wantedNow) <= wantedNow * 0.05;
       if (short) lots = free;
       if (!lots?.length || (pool.lines.length === 1 && lots.length === 1)) continue;
       for (const row of lots) consumedErpRows.add(row);
@@ -8328,15 +8345,15 @@ function matchInkoopVeilingLines(erpRows, invoices, supplierMap = {}, supplierNa
       const lotLabel = lots.map((row) => row.lot).join("+");
       let left = Math.round(value * 100) / 100;
       pool.lines.forEach((line, index) => {
-        const share = index === pool.lines.length - 1 ? left : Math.round((value * Number(line.quantity) / wanted) * 100) / 100;
+        const share = index === pool.lines.length - 1 ? left : Math.round((value * Number(line.quantity) / wantedNow) * 100) / 100;
         left = Math.round((left - share) * 100) / 100;
         const last = index === pool.lines.length - 1;
         const lotPieces = total(lots);
         const pair = {
           ...line,
           supplier_code: line.supplier_code || resolveErpRowSupplierCode(lots[0], validSupplierCodes),
-          supplier_match_type: `product pool: ${pool.lines.length} invoice line(s) = ${lots.length} lot(s) (same grower, product, price, day; ${short ? `invoice ${wanted} / Connect ${lotPieces}` : wanted} pieces)`,
-          erp_row: { ...lots[0], lot: lotLabel, pieces: last && short ? Number(line.quantity) + lotPieces - wanted : line.quantity, t_price: share },
+          supplier_match_type: `product pool: ${pool.lines.length} invoice line(s) = ${lots.length} lot(s) (same grower, product, price, day; ${short ? `invoice ${wantedNow} / Connect ${lotPieces}` : wantedNow} pieces)`,
+          erp_row: { ...lots[0], lot: lotLabel, pieces: last && short ? Number(line.quantity) + lotPieces - wantedNow : line.quantity, t_price: share },
           matched_as_group: true,
           split_lots: lots.map((row) => row.lot),
         };
@@ -8389,7 +8406,13 @@ function matchInkoopVeilingLines(erpRows, invoices, supplierMap = {}, supplierNa
       .map((row) => ({ row, score: inkoopLotNameScore(item, row), days: dayDistance(row.date, date) }))
       .sort((left, right) => right.score - left.score || left.days - right.days)
       .map((entry) => entry.row);
+    // The line's order number names an Afgemeld row of the night action:
+    // what was announced (boxes x per box) -- no lot for it means it was
+    // not entered by hand (yet).
+    const named = inkoopOrderTrnum(item.order_number);
+    const message = named ? afgemeldMessages.find((entry) => String(Number(entry.trnum)) === named) : null;
     item.connect_check = {
+      afgemeld: message ? { trnum: named, boxes: message.boxes, per_box: message.per_box, price: message.price, brief: message.brief || "" } : null,
       supplier_lots: ofSupplier.length,
       near_lots: near.length,
       similar_lots: similar.length,
