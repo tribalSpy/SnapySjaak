@@ -9400,6 +9400,21 @@ let inkoopMatchWorkerCurrent = "";
 // The background comparison: claim the next pending day, compare, store --
 // until nothing is pending. A short pause between days keeps the app
 // responsive while a long backlog (first run, master data change) is done.
+// Pages being used right now: requests running, and when the last ended.
+let serverUserRequestsActive = 0;
+let serverLastUserRequestAt = 0;
+
+// The comparison of a day holds the whole server (one thread): it starts
+// only when no page request is running and the last ended 2 s ago -- other
+// work goes first. At most 20 s of waiting per day, so a page that keeps
+// asking (an open Calendar) can't stop it altogether.
+async function inkoopWaitForQuietServer() {
+  const waitUntil = Date.now() + 20000;
+  while (Date.now() < waitUntil && (serverUserRequestsActive > 0 || Date.now() - serverLastUserRequestAt < 2000)) {
+    await new Promise((resolve) => setTimeout(resolve, 250));
+  }
+}
+
 function kickInkoopMatchWorker() {
   if (!isDatabaseEnabled()) return;
   if (inkoopMatchWorker) {
@@ -9411,6 +9426,7 @@ function kickInkoopMatchWorker() {
       do {
         inkoopMatchWorkerAgain = false;
         for (;;) {
+          await inkoopWaitForQuietServer();
           const job = await claimNextInkoopMatchDay();
           if (!job) break;
           inkoopMatchWorkerCurrent = job.date;
@@ -9430,7 +9446,7 @@ function kickInkoopMatchWorker() {
           // the next, so every other page gets its turn in between (with
           // 0.15 s a year of days to redo made the rest time out).
           const took = Date.now() - started;
-          await new Promise((resolve) => setTimeout(resolve, Math.max(1500, Math.min(15000, took * 1.5))));
+          await new Promise((resolve) => setTimeout(resolve, Math.max(500, Math.min(10000, took))));
         }
       } while (inkoopMatchWorkerAgain);
     } catch (error) {
@@ -25799,6 +25815,20 @@ async function serveWarehouseStatic(req, res, url) {
 
 const server = http.createServer((req, res) => {
   const url = new URL(req.url || "/", `http://${req.headers.host || "127.0.0.1"}`);
+  // Someone using the app (not a poller / device): the background Inkoop
+  // comparison waits for it (see inkoopWaitForQuietServer).
+  if (!req.headers["x-shadow-agent-key"] && !url.pathname.startsWith("/warehouse/ingest")) {
+    serverUserRequestsActive += 1;
+    let done = false;
+    const finish = () => {
+      if (done) return;
+      done = true;
+      serverUserRequestsActive = Math.max(0, serverUserRequestsActive - 1);
+      serverLastUserRequestAt = Date.now();
+    };
+    res.on("finish", finish);
+    res.on("close", finish);
+  }
   if (url.pathname.startsWith("/api/") || url.pathname.startsWith("/warehouse/ingest") || url.pathname.startsWith("/warehouse/api/")) {
     handleApi(req, res, url).catch((error) => {
       sendJson(res, 500, { error: error instanceof Error ? error.message : String(error) });
