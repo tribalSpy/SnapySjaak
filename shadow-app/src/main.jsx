@@ -18230,6 +18230,20 @@ function InkoopFinanceHero({ company, dayReport, period }) {
   const [periods, setPeriods] = useState(null);
   const [bwChoice, setBwChoice] = useState(null);
   const [popup, setPopup] = useState(null);
+  // Matched share: a clicked month shows its days (null = the year).
+  const [matchMonth, setMatchMonth] = useState(null);
+  const [matchDays, setMatchDays] = useState(null);
+  function openMatchMonth(row) {
+    const range = monthRange(row);
+    setMatchMonth({ ...row, ...range });
+    setMatchDays(null);
+    const params = new URLSearchParams(range);
+    if (company) params.set("company", company);
+    apiJson(`/api/inkoop/dashboard/days?${params.toString()}`)
+      .then((payload) => setMatchDays(payload.days || []))
+      .catch(() => setMatchDays([]));
+  }
+  const matchedPct = (row) => (row.purchase_value > 0 ? ((row.purchase_value - (row.gap_invoice_value || 0)) / row.purchase_value) * 100 : 0);
   useEffect(() => {
     let cancelled = false;
     const params = new URLSearchParams();
@@ -18332,10 +18346,18 @@ function InkoopFinanceHero({ company, dayReport, period }) {
             : <div className="fin-sub">No days in this period.</div>}
         </div>
         <div className="fin-card">
-          <h3>Matched share per month</h3>
-          <div className="fin-legend"><span><i style={{ background: "var(--fin-series-1)" }} />% of the invoiced value matched</span></div>
-          {monthRows.length
-            ? <InkoopBarChart rows={monthRows.map((row) => ({ ...row, matched: row.purchase_value > 0 ? ((row.purchase_value - (row.gap_invoice_value || 0)) / row.purchase_value) * 100 : 0 }))} series={[{ name: "Matched", color: "var(--fin-series-1)", value: (row) => row.matched, format: (value) => `${value.toFixed(1)}%` }]} />
+          <div className="row-actions spread-actions">
+            <h3>{matchMonth ? `Matched share per day -- ${new Date(`${matchMonth.period}-01T00:00:00`).toLocaleDateString("nl-NL", { month: "long", year: "numeric" })}` : "Matched share per month"}</h3>
+            {matchMonth && <button type="button" className="link-button" onClick={() => { setMatchMonth(null); setMatchDays(null); }}>← Back to the year</button>}
+          </div>
+          <div className="fin-legend"><span><i style={{ background: "var(--fin-series-1)" }} />% of the invoiced value matched</span>{!matchMonth && <span className="fin-sub">click a month for its days</span>}</div>
+          {matchMonth ? (
+            !matchDays ? <div className="fin-sub">Loading the days...</div>
+              : matchDays.some((day) => Number(day.purchase_value) > 0)
+                ? <InkoopBarChart rows={matchDays.filter((day) => Number(day.purchase_value) > 0).sort((left, right) => (left.date < right.date ? -1 : 1)).map((day) => ({ ...day, key: day.date, label: day.date.slice(8, 10), matched: matchedPct(day) }))} series={[{ name: "Matched", color: "var(--fin-series-1)", value: (row) => row.matched, format: (value) => `${value.toFixed(1)}%` }]} onBarClick={(row) => setPopup({ title: `Growers -- ${row.date}`, types: null, from: row.date, to: row.date })} />
+                : <div className="fin-sub">No invoiced days in this month.</div>
+          ) : monthRows.length
+            ? <InkoopBarChart rows={monthRows.map((row) => ({ ...row, matched: matchedPct(row) }))} series={[{ name: "Matched", color: "var(--fin-series-1)", value: (row) => row.matched, format: (value) => `${value.toFixed(1)}%` }]} onBarClick={openMatchMonth} />
             : <div className="fin-sub">No months compared yet.</div>}
         </div>
       </div>
