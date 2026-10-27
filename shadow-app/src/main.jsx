@@ -18628,6 +18628,37 @@ function InkoopCalendarTab({ company, manualLinkDrafts, setManualLinkDrafts, onL
   const [dayResult, setDayResult] = useState(null);
   const [dayLoading, setDayLoading] = useState(false);
   const [pendingDays, setPendingDays] = useState(0);
+  // Which betaalwijzen' "only in Connect" lots count as a gap: by default
+  // via veiling (V) and codes without a BW -- D (direct) / F (FOB) lots never
+  // get a FloraHolland invoice. Remembered in this browser.
+  const [calendarBw, setCalendarBw] = useState(() => {
+    try {
+      const saved = JSON.parse(window.localStorage.getItem("inkoop-calendar-bw") || "null");
+      return Array.isArray(saved) ? saved : ["V", "?"];
+    } catch {
+      return ["V", "?"];
+    }
+  });
+  function toggleCalendarBw(bw) {
+    setCalendarBw((current) => {
+      const next = current.includes(bw) ? current.filter((item) => item !== bw) : [...current, bw];
+      try { window.localStorage.setItem("inkoop-calendar-bw", JSON.stringify(next)); } catch { /* per-browser only */ }
+      return next;
+    });
+  }
+  const calendarBwCodes = [...new Set(["V", "?", ...days.flatMap((day) => Object.keys(day.gap_erp_by_bw || {}))])].sort();
+  const daysOlderThanBw = days.filter((day) => day.gap_erp_count > 0 && !day.gap_erp_by_bw).length;
+  // The day with the "only in Connect" lots of the other BWs left out.
+  const shownDay = (day) => {
+    let count = 0;
+    let value = 0;
+    for (const [bw, part] of Object.entries(day.gap_erp_by_bw || {})) {
+      if (calendarBw.includes(bw)) continue;
+      count += Number(part?.count) || 0;
+      value += Number(part?.value) || 0;
+    }
+    return { ...day, gap_count: Math.max(0, (day.gap_count || 0) - count), gap_value: Math.max(0, Math.round(((day.gap_value || 0) - value) * 100) / 100) };
+  };
 
   useEffect(() => {
     let cancelled = false;
@@ -18703,6 +18734,16 @@ function InkoopCalendarTab({ company, manualLinkDrafts, setManualLinkDrafts, onL
           <button type="button" onClick={() => shiftMonth(1)}>Next &gt;</button>
         </div>
         {!!pendingDays && <div className="notice">Calculating {pendingDays} day(s) in the background -- they fill in by themselves. Once calculated, this month opens instantly.</div>}
+        <div className="row-actions" style={{ margin: "6px 0" }}>
+          <strong>"Only in Connect" gaps of BW:</strong>
+          {calendarBwCodes.map((bw) => (
+            <label key={bw} className="checkbox-label" title={bw === "?" ? "Connect codes without a BW" : INKOOP_BW_LABELS[bw] || ""}>
+              <input type="checkbox" checked={calendarBw.includes(bw)} onChange={() => toggleCalendarBw(bw)} />
+              <span>{bw === "?" ? "? (no BW)" : `${bw}${INKOOP_BW_LABELS[bw] ? ` (${INKOOP_BW_LABELS[bw]})` : ""}`}</span>
+            </label>
+          ))}
+          {!!daysOlderThanBw && <span className="muted">{daysOlderThanBw} day(s) still have figures without BW -- they follow the filter once compared again.</span>}
+        </div>
         {error && <div className="notice danger">{error}</div>}
         {loading ? (
           <div className="notice">Loading calendar...</div>
@@ -18713,7 +18754,7 @@ function InkoopCalendarTab({ company, manualLinkDrafts, setManualLinkDrafts, onL
             </div>
             <div className="inkoop-calendar-grid">
               {leadingBlanks.map((_, index) => <div key={`blank-${index}`} className="inkoop-calendar-cell blank" />)}
-              {days.map((day) => (
+              {days.map(shownDay).map((day) => (
                 <button
                   type="button"
                   key={day.date}

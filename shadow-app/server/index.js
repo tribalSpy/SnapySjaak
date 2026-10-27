@@ -9053,7 +9053,7 @@ const INKOOP_EMPTY_DAY_BUCKET = {
 // compared again once (at start-up), not only days whose data changed.
 // 2026-10-21: grower directory (learned links, Handel evidence), supplier
 // pairs stored on the invoice date.
-const INKOOP_MATCH_RULES_VERSION = "2026-10-27b";
+const INKOOP_MATCH_RULES_VERSION = "2026-10-27c";
 
 function inkoopStateFingerprint(state) {
   return crypto.createHash("sha1").update(JSON.stringify([
@@ -10283,6 +10283,9 @@ function inkoopEnsureDateBucket(buckets, dateKey) {
       embalage_value: 0,
       product_count: 0,
       erp_by_bw: {},
+      // The "only in Connect" gap per betaalwijze ({V: {count, value}}):
+      // the calendar can leave out D / F lots no FloraHolland invoice has.
+      gap_erp_by_bw: {},
     });
   }
   return buckets.get(dateKey);
@@ -10367,6 +10370,10 @@ function bucketInkoopResultsByDate(matched, aggregateContext = null) {
     bucket.gap_value += value;
     bucket.gap_erp_count += 1;
     bucket.gap_erp_value += value;
+    if (!bucket.gap_erp_by_bw) bucket.gap_erp_by_bw = {};
+    const gapBw = bucket.gap_erp_by_bw[bwOf(row)] || (bucket.gap_erp_by_bw[bwOf(row)] = { count: 0, value: 0 });
+    gapBw.count += 1;
+    gapBw.value = Math.round((gapBw.value + value) * 100) / 100;
   }
   for (const row of matched?.only_in_invoice || []) {
     const bucket = inkoopEnsureDateBucket(buckets, inkoopDateKeyFromInvoiceAnchor(row));
