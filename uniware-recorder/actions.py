@@ -379,11 +379,19 @@ def list_row_lot_or_afgemeld(text: str) -> str | None:
 
 def list_row_amounts(text: str) -> tuple[str, str, str]:
     """Aantal x per box and the price of a list row: "... 132 x140 0.620
-    855 ..." -> ("132", "140", "0.620")."""
-    found = re.search(r"(?<![\d.])(\d{1,4})\s*x\s*(\d{1,5})\s+(\d{1,4}[.,]\d{2,3})(?!\d)", str(text or ""))
+    855 ..." -> ("132", "140", "0.620"). OCR reads it as "132 *140 o. 620"
+    too: x as * (or lost when the price follows), 0 as o, digits as letters
+    ("o. sao" -> 0.580)."""
+    text = str(text or "")
+    found = re.search(r"(?<![\w.\-])(\d{1,4})\s*[xX×*]?\s*(\d{1,5})\s+([0-9oOÛ]{1,2})\s*[.,]\s*([0-9A-Za-zÛ]{2,3})(?!\w)", text)
+    if found:
+        price = f"{found.group(3).translate(_DIGIT_LOOKALIKES)}.{found.group(4).translate(_DIGIT_LOOKALIKES)}"
+        return found.group(1), found.group(2), price if re.fullmatch(r"\d+\.\d+", price) else ""
+    # The price not readable: Aantal x per box alone, the x then required.
+    found = re.search(r"(?<![\w.\-])(\d{1,4})\s*[xX×*]\s*(\d{1,5})(?!\d)", text)
     if not found:
         return "", "", ""
-    return found.group(1), found.group(2), found.group(3).replace(",", ".")
+    return found.group(1), found.group(2), ""
 
 
 def list_row_brief(text: str) -> str | None:
@@ -1952,7 +1960,22 @@ class ActionRun:
                 if key:
                     # The value read most often for that row (it is read on every look).
                     values_by_key[key] = max(set(values), key=values.count)
+            # An Afgemeld TrNum read cut short ("T286645" next to "T2866457",
+            # same brief) is that row: its popup and values go to the full key.
+            for short_key in [key for key in good_keys if key.startswith("T")]:
+                longer = [key for key in good_keys if key != short_key and key.startswith(short_key)
+                          and sightings[key].get("brief", "") == sightings[short_key].get("brief", "")]
+                if len(longer) != 1:
+                    continue
+                full_key = longer[0]
+                for store in (row_popups, values_by_key, aanv_by_key):
+                    if short_key in store and not store.get(full_key):
+                        store[full_key] = store[short_key]
+                sightings[short_key]["count"] = 0
+                self.say(f"{label}: {short_key} is {full_key} read cut short -- merged")
             for order, seen in sightings.items():
+                if seen["count"] == 0:
+                    continue
                 if seen["count"] < 2:
                     self.say(f"{label}: {order} read only once ('{seen['row'][:50]}') -- not collected, check by hand")
                     continue
