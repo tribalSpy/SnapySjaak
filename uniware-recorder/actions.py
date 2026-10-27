@@ -1266,6 +1266,8 @@ class ActionRun:
         # end (Uniware's own folder dump, "dump.filipe....csv").
         self.pending_dump_merge = None
         self.collected_csv_paths: set[str] = set()
+        # The night CSV, rebuilt from Uniware's dump once that is there.
+        self.collected_csv_target: Path | None = None
         self.captures: list[dict] = []
         self.started = datetime.datetime.now()
 
@@ -2117,23 +2119,98 @@ class ActionRun:
         target = target_dir / f"{day_list_slug(collected['name'])}_{self.run_date():%Y%m%d}.csv"
         # An "Afgemeld" row has no lot: its TrNum instead (lot left empty),
         # with the day, Aantal x per box, price and brief number of the row.
-        header = f"lot;trnum;datum;{value_label.lower()};vbn;omschrijving;aantal;per_fust;prijs;brief" + (";aanv" if with_aanv else "") + (";info" if with_info else "")
-        run_day = f"{self.run_date():%Y-%m-%d}"
-        lines = [header] + [
-            (f"{'' if str(item['key']).startswith('T') else item['key']};{str(item['key'])[1:] if str(item['key']).startswith('T') else ''};{run_day};"
-             f"{item.get('value', '')};{item.get('vbn', '')};{item.get('omschrijving', '').replace(';', ',')};"
-             f"{item.get('aantal', '')};{item.get('per_fust', '')};{item.get('prijs', '')};{item.get('brief', '') or ''}")
-            + (f";{item.get('aanv', '')}" if with_aanv else "")
-            + (f";{str(item.get('info', '')).replace(';', ',')}" if with_info else "")
+        lines = self._collected_csv_lines([
+            {**item,
+             "lot": "" if str(item["key"]).startswith("T") else item["key"],
+             "trnum": str(item["key"])[1:] if str(item["key"]).startswith("T") else ""}
             for item in rows
-        ]
+        ], value_label, with_aanv, with_info)
         target.write_text("\r\n".join(lines) + "\r\n", encoding="utf-8", newline="")
         self.exported_files.append(str(target))
         self.collected_csv_paths.add(str(target))
+        self.collected_csv_target = target
         self.say(f"{label}: {len(rows)} row(s) -> {target}")
         if not self._merge_into_dump(rows, value_label, with_info, label):
             # Uniware's folder dump comes at the end of the run: then.
             self.pending_dump_merge = (rows, value_label, with_info, label)
+
+    def _collected_csv_lines(self, items: list[dict], value_label: str, with_aanv: bool, with_info: bool, with_ordernr: bool = False) -> list[str]:
+        """The night CSV's lines. An "Afgemeld" row has no lot: its TrNum
+        instead (lot left empty), with the day, Aantal x per box, price and
+        brief number of the row."""
+        header = (f"lot;trnum;datum;{value_label.lower()};vbn;omschrijving;aantal;per_fust;prijs;brief"
+                  + (";aanv" if with_aanv else "") + (";info" if with_info else "") + (";ordernr" if with_ordernr else ""))
+        run_day = f"{self.run_date():%Y-%m-%d}"
+        clean = lambda value: str(value or "").replace(";", ",")
+        return [header] + [
+            (f"{item.get('lot', '')};{item.get('trnum', '')};{run_day};"
+             f"{clean(item.get('value'))};{clean(item.get('vbn'))};{clean(item.get('omschrijving'))};"
+             f"{clean(item.get('aantal'))};{clean(item.get('per_fust'))};{clean(item.get('prijs'))};{clean(item.get('brief'))}")
+            + (f";{clean(item.get('aanv'))}" if with_aanv else "")
+            + (f";{clean(item.get('info'))}" if with_info else "")
+            + (f";{clean(item.get('ordernr'))}" if with_ordernr else "")
+            for item in items
+        ]
+
+    def _rebuild_collected_from_dump(self, table: list[list[str]], header_index: int, rows: list[dict], value_label: str, label: str):
+        """The night CSV again, now from Uniware's own dump: every row of the
+        list -- lots and "Afgemeld" rows (by their TrNum) -- with the dump's
+        exact VBN, name, Aantal x per box, price, brief and TrNum. Only what
+        the dump hasn't got (EPP, Aanv., popup) comes from reading the
+        screen: by lot, an Afgemeld row by the TrNum its popup's order number
+        names (the screen's own TrNum reading can be another row's)."""
+        target = self.collected_csv_target
+        if not target:
+            return
+        names = [cell.strip().lower() for cell in table[header_index]]
+        column = {name: (names.index(name) if name in names else None)
+                  for name in ("vbn", "omschrijving", "aant", "prs", "info", "prt", "trnum", "ordernr")}
+        if column["prt"] is None or column["trnum"] is None or column["aant"] is None:
+            self.say(f"{label}: the dump has no Prt / TrNum / Aant column -- the night CSV stays as read from the screen.")
+            return
+        by_lot = {str(item["key"]): item for item in rows if not str(item["key"]).startswith("T")}
+        by_trnum: dict[str, dict] = {}
+        for item in rows:
+            if str(item["key"]).startswith("T"):
+                trnum = popup_trnum(str(item.get("info", "")).split(" | ")) or str(item["key"])[1:]
+                if trnum not in by_trnum or (item.get("info") and not by_trnum[trnum].get("info")):
+                    by_trnum[trnum] = item
+        out, done, used = [], set(), set()
+        for cells in table[header_index + 1:]:
+            get = lambda name: cells[column[name]].strip() if column[name] is not None and column[name] < len(cells) else ""
+            prt, trnum = get("prt"), get("trnum")
+            if re.fullmatch(r"\d{6,10}", prt):
+                lot, trnum, item = prt, "", by_lot.get(prt)
+            elif prt.lower().startswith("afgemeld") and trnum.isdigit() and int(trnum) > 0:
+                lot, trnum = "", str(int(trnum))
+                item = by_trnum.get(trnum)
+            else:
+                continue  # page header, separator, or Afgemeld without TrNum
+            signature = tuple(cell.strip() for cell in cells)
+            if signature in done:
+                continue  # the same row printed twice
+            done.add(signature)
+            if item:
+                used.add(id(item))
+            item = item or {}
+            per_box = cells[column["aant"] + 1].strip() if column["aant"] + 1 < len(cells) else ""
+            out.append({
+                "lot": lot, "trnum": trnum, "value": item.get("value", ""), "vbn": get("vbn"),
+                "omschrijving": get("omschrijving"), "aantal": get("aant").rstrip("xX ").strip(),
+                "per_fust": per_box, "prijs": get("prs"), "brief": get("info"),
+                "aanv": item.get("aanv", ""), "info": item.get("info", ""), "ordernr": get("ordernr"),
+            })
+        if not out:
+            self.say(f"{label}: no rows in the dump -- the night CSV stays as read from the screen.")
+            return
+        lines = self._collected_csv_lines(out, value_label, True, True, with_ordernr=True)
+        target.write_text("\r\n".join(lines) + "\r\n", encoding="utf-8", newline="")
+        afgemeld = sum(1 for row in out if row["trnum"])
+        in_dump = {row["lot"] or f"T{row['trnum']}" for row in out}
+        unlinked = [str(item["key"]) for item in rows if id(item) not in used and str(item["key"]) not in in_dump]
+        self.say(f"{label}: night CSV rebuilt from the dump: {len(out)} row(s) ({afgemeld} Afgemeld), "
+                 f"{sum(1 for row in out if row['info'])} with popup -> {target.name}"
+                 + (f"; read on screen but not in the dump: {', '.join(unlinked[:15])}" if unlinked else ""))
 
     def _merge_into_dump(self, rows: list[dict], value_label: str, with_info: bool, label: str) -> bool:
         """Add the collected columns to this run's dump -- the Excel file from
@@ -2186,7 +2263,11 @@ class ActionRun:
                 return
             by_lot = {str(item["key"]): item for item in rows}
             prt = next(index for index, cell in enumerate(table[header_index]) if cell.strip().lower() == "prt")
-            table[header_index] = table[header_index] + [value_label] + (["Popup"] if with_info else [])
+            try:
+                self._rebuild_collected_from_dump(table, header_index, rows, value_label, label)
+            except Exception as error:  # noqa: BLE001 -- the screen's CSV is there anyway
+                self.say(f"{label}: could not rebuild the night CSV from the dump: {error}")
+            table[header_index] =table[header_index] + [value_label] + (["Popup"] if with_info else [])
             filled = 0
             # The dump has every row: the lots the loop didn't read.
             dump_lots = [cells[prt].strip() for cells in table[header_index + 1:] if prt < len(cells) and re.fullmatch(r"\d{6,10}", cells[prt].strip())]
