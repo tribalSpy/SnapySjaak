@@ -1402,17 +1402,60 @@ function guessMimeType(filePath) {
   return map[extension] || "application/octet-stream";
 }
 
+// Files that exist but could not be read (damaged, or the read failed --
+// e.g. memory short): nothing may be written over them, or the "empty"
+// fallback would replace the real data (zendingen lost).
+const unreadableJsonFiles = new Map();
+
 async function readJsonFile(filePath, fallback) {
+  let text;
   try {
-    return JSON.parse(await fs.readFile(filePath, "utf8"));
-  } catch {
+    text = await fs.readFile(filePath, "utf8");
+  } catch (error) {
+    if (error?.code === "ENOENT") return fallback;
+    unreadableJsonFiles.set(filePath, error instanceof Error ? error.message : String(error));
+    console.error(`Could not read ${filePath} -- it is protected against overwriting:`, error instanceof Error ? error.message : error);
+    return fallback;
+  }
+  try {
+    const parsed = JSON.parse(text);
+    unreadableJsonFiles.delete(filePath);
+    return parsed;
+  } catch (error) {
+    // Damaged (e.g. a save cut off by a restart): the last good version
+    // (.prev, see writeJsonFile) if there is one -- else protected.
+    try {
+      const previous = JSON.parse(await fs.readFile(`${filePath}.prev`, "utf8"));
+      console.error(`${filePath} is damaged (${error instanceof Error ? error.message : error}) -- using its previous version.`);
+      await fs.copyFile(filePath, `${filePath}.damaged-${Date.now()}`).catch(() => {});
+      unreadableJsonFiles.delete(filePath);
+      return previous;
+    } catch {
+      // No usable previous version either.
+    }
+    unreadableJsonFiles.set(filePath, error instanceof Error ? error.message : String(error));
+    console.error(`Could not read ${filePath} -- it is protected against overwriting:`, error instanceof Error ? error.message : error);
     return fallback;
   }
 }
 
 async function writeJsonFile(filePath, payload) {
+  if (unreadableJsonFiles.has(filePath) && existsSync(filePath)) {
+    // Retry the read once: if it works now, the save can go ahead.
+    try {
+      JSON.parse(await fs.readFile(filePath, "utf8"));
+      unreadableJsonFiles.delete(filePath);
+    } catch {
+      throw new Error(`Not saved: ${path.basename(filePath)} could not be read (${unreadableJsonFiles.get(filePath)}), and saving now would replace it -- nothing was changed. Try again in a minute.`);
+    }
+  }
   await fs.mkdir(path.dirname(filePath), { recursive: true });
-  await fs.writeFile(filePath, JSON.stringify(payload, null, 2), "utf8");
+  // Written to a new file first and then put in place in one step (a restart
+  // halfway can't leave a cut-off file), the old one kept as .prev.
+  const temporary = `${filePath}.tmp-${process.pid}-${Date.now()}`;
+  await fs.writeFile(temporary, JSON.stringify(payload, null, 2), "utf8");
+  if (existsSync(filePath)) await fs.copyFile(filePath, `${filePath}.prev`).catch(() => {});
+  await fs.rename(temporary, filePath);
 }
 
 async function readWarehouseDashboardExcludedReferences() {
