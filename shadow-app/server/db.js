@@ -424,7 +424,7 @@ export async function applyInkoopLeveringBbBridge() {
            raw = e.raw || jsonb_build_object('pav_from', 'levering bb', 'levering_order_nr', b.order_nr),
            updated_at = now()
       FROM inkoop_levering_bb b
-     WHERE e.lot = b.lot AND COALESCE(btrim(e.pav), '') = ''
+     WHERE e.lot = b.lot AND (COALESCE(btrim(e.pav), '') = '' OR btrim(e.pav) ~ '^0+[A-Za-z]?$')
     RETURNING e.lot::text AS lot, to_char(e.erp_date, 'YYYY-MM-DD') AS erp_date
   `);
   // A lot with another number in Connect's PAV (e.g. "587757" where Levering
@@ -435,7 +435,7 @@ export async function applyInkoopLeveringBbBridge() {
        SET raw = e.raw || jsonb_build_object('levering_pav', b.pav, 'levering_order_nr', b.order_nr),
            updated_at = now()
       FROM inkoop_levering_bb b
-     WHERE e.lot = b.lot AND COALESCE(btrim(e.pav), '') <> ''
+     WHERE e.lot = b.lot AND COALESCE(btrim(e.pav), '') <> '' AND btrim(e.pav) !~ '^0+[A-Za-z]?$'
        AND upper(btrim(e.pav)) <> upper(btrim(b.pav))
        AND COALESCE(e.raw->>'levering_pav', '') IS DISTINCT FROM b.pav
     RETURNING e.lot::text AS lot, to_char(e.erp_date, 'YYYY-MM-DD') AS erp_date
@@ -666,6 +666,19 @@ export async function applyInkoopEppBridge() {
 
 // For the upload message: of these lots, how many Connect already has with
 // its own PAV, with the bridge's PAV, and not at all (not uploaded yet).
+// The first and last Connect date of these lots.
+export async function getInkoopErpDatesForLots(lots) {
+  if (!pool || !Array.isArray(lots) || !lots.length) {
+    return { from: "", to: "" };
+  }
+  const result = await pool.query(
+    `SELECT to_char(min(erp_date), 'YYYY-MM-DD') AS from, to_char(max(erp_date), 'YYYY-MM-DD') AS to
+       FROM inkoop_erp_lines WHERE lot = ANY($1::bigint[])`,
+    [lots.map((lot) => Number(lot)).filter(Number.isFinite)],
+  );
+  return { from: result.rows[0]?.from || "", to: result.rows[0]?.to || "" };
+}
+
 export async function getInkoopLeveringBbStatus(lots) {
   if (!pool || !Array.isArray(lots) || !lots.length) {
     return { own_pav: 0, bridged: 0, not_in_connect: 0 };

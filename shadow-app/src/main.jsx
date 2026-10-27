@@ -16718,7 +16718,7 @@ function InkoopControlePage({ currentUser }) {
     setMessage("");
     // One file after another (each is small); a file with nothing in it
     // (all gekoppeld, or not a Levering BB export) is named, the rest goes on.
-    const total = { lines: 0, bridges: 0, already_linked: 0, cancelled: 0, filled_now: 0, own_pav: 0, not_in_connect: 0 };
+    const total = { lines: 0, bridges: 0, already_linked: 0, linked_found: 0, linked_with_brief: 0, cancelled: 0, filled_now: 0, own_pav: 0, not_in_connect: 0 };
     const skipped = [];
     let done = 0;
     let lastBridged = 0;
@@ -16738,7 +16738,7 @@ function InkoopControlePage({ currentUser }) {
         }
       }
       const summary = done
-        ? `Levering BB: ${done} file(s), ${total.lines} lines -- ${total.bridges} with a Connect lot (bridge), ${total.already_linked} already linked in Connect${total.cancelled ? `, ${total.cancelled} cancelled` : ""}. `
+        ? `Levering BB: ${done} file(s), ${total.lines} lines -- ${total.bridges} with a Connect lot (bridge), ${total.already_linked} "gekoppeld" (no lot number: for ${total.linked_found} of the ${total.linked_with_brief} with a brief number the Connect lot was found by pieces, price and name)${total.cancelled ? `, ${total.cancelled} cancelled` : ""}. `
           + `Connect lots filled in now: ${total.filled_now} (in all ${lastBridged}); ${total.own_pav} had their own brief number; ${total.not_in_connect} not in the uploaded Connect data yet (filled in when that is uploaded). The days affected are compared again.`
         : "Levering BB: nothing read.";
       setMessage(summary);

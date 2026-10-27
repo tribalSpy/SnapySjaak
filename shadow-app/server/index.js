@@ -101,6 +101,7 @@ import {
   saveInkoopLeveringBb,
   applyInkoopLeveringBbBridge,
   getInkoopLeveringBbStatus,
+  getInkoopErpDatesForLots,
   saveInkoopLotEpp,
   applyInkoopEppBridge,
   applyInkoopOrderBridge,
@@ -6838,6 +6839,7 @@ const INKOOP_MATCH_TOLERANCE = 0.01;
 function parseInkoopLeveringBb(base64) {
   const text = Buffer.from(String(base64 || ""), "base64").toString("latin1");
   const rows = [];
+  const linkedRows = [];
   const counts = { lines: 0, linked: 0, cancelled: 0, other: 0 };
   // The columns by their header (the export comes with and without quotes,
   // and with one size column more or less): Aant (items "1 x", then per
@@ -6865,14 +6867,29 @@ function parseInkoopLeveringBb(base64) {
     // "FA0DMC/A" -> FA0DMCa; "407971/-" (no letter) -> 407971.
     const match = info.match(/^([A-Z0-9]{5,7})\/([A-Z-])$/);
     const brief = match && !/^0+$/.test(match[1]) ? match : null; // "000000/-": none
+    const items = Number(String(cells[col.items] || "").replace(/[^\d.]/g, "")) || 0;
+    const perItem = Number(String(cells[col.per_item] || "").replace(/[^\d.]/g, "")) || 0;
     if (!/^\d{6,10}$/.test(prt) || !brief) {
-      if (/gekoppel/i.test(prt)) counts.linked += 1;
-      else if (/afgemeld/i.test(prt)) counts.cancelled += 1;
+      if (/gekoppel/i.test(prt)) {
+        counts.linked += 1;
+        // No lot number, but the brief number, product, pieces and price:
+        // the Connect lot is looked for (see bridgeInkoopLeveringLinkedRows).
+        if (brief) {
+          linkedRows.push({
+            pav: brief[2] === "-" ? brief[1] : `${brief[1]}${brief[2].toLowerCase()}`,
+            info,
+            order_nr: col.order_nr >= 0 ? cells[col.order_nr] : "",
+            vbn: cells[col.vbn],
+            description: cells[col.description],
+            quantity: items && perItem ? items * perItem : null,
+            price: Number(String(cells[col.price] || "").replace(",", ".")) || null,
+            fust: cells[col.fust],
+          });
+        }
+      } else if (/afgemeld/i.test(prt)) counts.cancelled += 1;
       else counts.other += 1;
       continue;
     }
-    const items = Number(String(cells[col.items] || "").replace(/[^\d.]/g, "")) || 0;
-    const perItem = Number(String(cells[col.per_item] || "").replace(/[^\d.]/g, "")) || 0;
     rows.push({
       lot: Number(prt),
       pav: brief[2] === "-" ? brief[1] : `${brief[1]}${brief[2].toLowerCase()}`,
@@ -6885,7 +6902,33 @@ function parseInkoopLeveringBb(base64) {
       fust: cells[col.fust],
     });
   }
-  return { rows, counts };
+  return { rows, counts, linkedRows };
+}
+
+// Levering BB rows "gekoppeld" (no lot number in Prt) still carry the brief
+// number: each goes to the one Connect lot without a brief number of the
+// file's days (the dates of its rows that do have a lot, a day either side)
+// with exactly its pieces and price and its name or VBN code -- only when
+// exactly one lot fits and no other row of the file wants that lot.
+async function bridgeInkoopLeveringLinkedRows(linkedRows, lotRows) {
+  if (!linkedRows.length || !lotRows.length) return [];
+  const dates = await getInkoopErpDatesForLots(lotRows.map((row) => row.lot));
+  if (!dates.from) return [];
+  const free = (await getInkoopErpLines({ from: addDaysToIsoDate(dates.from, -1), to: addDaysToIsoDate(dates.to, 1) }))
+    .filter((row) => !isRealInkoopPav(normalizeInkoopKey(row?.pav)) && !isRealInkoopPav(normalizeInkoopKey(row?.levering_pav)));
+  const wanted = new Map();
+  const pick = new Map();
+  for (const linked of linkedRows) {
+    const vbn = String(linked.vbn || "").replace(/^0+/, "");
+    const fits = free.filter((row) => !inkoopValuesDiffer(row.pieces, linked.quantity)
+      && Math.abs((parseFloat(row.price) || 0) - (Number(linked.price) || 0)) <= 0.005
+      && (inkoopDescriptionSharedWords(linked.description, inkoopLotNameText(row)) > 0 || (vbn && inkoopLotVbnCodes(row).has(vbn))));
+    if (fits.length !== 1) continue;
+    const lot = String(fits[0].lot);
+    wanted.set(lot, (wanted.get(lot) || 0) + 1);
+    pick.set(lot, { ...linked, lot: fits[0].lot });
+  }
+  return [...pick.entries()].filter(([lot]) => wanted.get(lot) === 1).map(([, row]) => row);
 }
 
 // Do an invoice description and a Connect description name the same
@@ -7402,7 +7445,9 @@ function matchInkoopVeilingLines(erpRows, invoices, supplierMap = {}, supplierNa
     }
   }
   for (const row of Array.isArray(erpRows) ? erpRows : []) {
-    const pav = normalizeInkoopKey(row?.pav);
+    // "000000" in Connect, Levering BB's brief number next to it: that one.
+    const ownPav = normalizeInkoopKey(row?.pav);
+    const pav = isRealInkoopPav(ownPav) ? ownPav : normalizeInkoopKey(row?.levering_pav);
     if (isRealInkoopPav(pav)) {
       if (!erpByPav.has(pav)) {
         erpByPav.set(pav, []);
@@ -9133,7 +9178,7 @@ const INKOOP_EMPTY_DAY_BUCKET = {
 // compared again once (at start-up), not only days whose data changed.
 // 2026-10-21: grower directory (learned links, Handel evidence), supplier
 // pairs stored on the invoice date.
-const INKOOP_MATCH_RULES_VERSION = "2026-10-27d";
+const INKOOP_MATCH_RULES_VERSION = "2026-10-27e";
 
 function inkoopStateFingerprint(state) {
   return crypto.createHash("sha1").update(JSON.stringify([
@@ -23598,18 +23643,24 @@ async function handleApi(req, res, url) {
       sendJson(res, 400, { error: "Choose the Levering BB file (.csv)." });
       return;
     }
-    const { rows, counts } = parseInkoopLeveringBb(body.file.content_base64);
+    const { rows, counts, linkedRows } = parseInkoopLeveringBb(body.file.content_base64);
     if (!counts.lines) {
       sendJson(res, 400, { error: "No delivery lines found -- is this the Levering BB Screen export (VBN; Omschrijving; ...; Info; OrderNr; M; Prt; V)?" });
       return;
     }
-    if (!rows.length) {
+    if (!rows.length && !linkedRows.length) {
       sendJson(res, 400, {
         error: `All ${counts.lines} delivery lines have no lot in Prt (${counts.linked} "gekoppeld"${counts.cancelled ? `, ${counts.cancelled} Afgemeld` : ""}) -- nothing to add from this file. Export the day before it is gekoppeld (Prt still shows the lot number).`,
       });
       return;
     }
     const saved = await saveInkoopLeveringBb(rows, String(body.file.name || ""));
+    // "Gekoppeld" rows: their Connect lot found by pieces, price and name.
+    const linkedBridges = await bridgeInkoopLeveringLinkedRows(linkedRows, rows).catch((bridgeError) => {
+      console.error("Levering BB gekoppeld rows failed:", bridgeError instanceof Error ? bridgeError.message : bridgeError);
+      return [];
+    });
+    if (linkedBridges.length) await saveInkoopLeveringBb(linkedBridges, `${String(body.file.name || "")} (gekoppeld)`);
     const filled = await applyInkoopLeveringBbBridge();
     const status = await getInkoopLeveringBbStatus(rows.map((row) => row.lot));
     if (filled.length) {
@@ -23618,7 +23669,7 @@ async function handleApi(req, res, url) {
         .catch((queueError) => console.error("Queueing the Inkoop comparison failed:", queueError instanceof Error ? queueError.message : queueError));
       kickInkoopMatchWorker();
     }
-    sendJson(res, 200, { ok: true, lines: counts.lines, bridges: saved, already_linked: counts.linked, cancelled: counts.cancelled, other: counts.other, filled_now: filled.length, ...status });
+    sendJson(res, 200, { ok: true, lines: counts.lines, bridges: saved, already_linked: counts.linked, linked_found: linkedBridges.length, linked_with_brief: linkedRows.length, cancelled: counts.cancelled, other: counts.other, filled_now: filled.length, ...status });
     return;
   }
 
