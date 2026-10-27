@@ -568,8 +568,17 @@ export async function inkoopLotUploadCheck(lots) {
                            OR (length(u.order_number) >= 17 AND length(i.raw->>'order_number') >= 17
                                AND left(u.order_number, 17) = left(i.raw->>'order_number', 17)))
                          AND i.invoice_date BETWEEN u.erp_date - 4 AND u.erp_date + 4))::int AS order_on_invoice,
+      -- Connect lines of these days with a brief number, and how many of them
+      -- have their order number stored (Klok invoices never carry one).
+      (SELECT count(*) FROM inkoop_invoice_lines i
+        WHERE i.invoice_type = 'connect' AND btrim(COALESCE(i.reference_bt, '')) <> ''
+          AND i.invoice_date BETWEEN (SELECT min(erp_date) FROM uploaded) - 1 AND (SELECT max(erp_date) FROM uploaded) + 1)::int AS connect_lines,
+      (SELECT count(*) FROM inkoop_invoice_lines i
+        WHERE i.invoice_type = 'connect' AND btrim(COALESCE(i.reference_bt, '')) <> ''
+          AND btrim(COALESCE(i.raw->>'order_number', '')) <> ''
+          AND i.invoice_date BETWEEN (SELECT min(erp_date) FROM uploaded) - 1 AND (SELECT max(erp_date) FROM uploaded) + 1)::int AS connect_lines_with_on,
       (SELECT count(DISTINCT i.invoice_number) FROM inkoop_invoice_lines i
-        WHERE i.invoice_type IN ('connect', 'klok', 'klokfactuur', 'connectfactuur')
+        WHERE i.invoice_type = 'connect'
           AND i.invoice_date BETWEEN (SELECT min(erp_date) FROM uploaded) - 1 AND (SELECT max(erp_date) FROM uploaded) + 1
           AND btrim(COALESCE(i.raw->>'order_number', '')) = ''
           AND NOT EXISTS (SELECT 1 FROM inkoop_invoice_lines o WHERE o.invoice_number = i.invoice_number AND btrim(COALESCE(o.raw->>'order_number', '')) <> ''))::int AS invoices_without_on

@@ -23473,6 +23473,8 @@ async function handleApi(req, res, url) {
       days_compared_again: days.sort(),
       order_on_invoice: check?.order_on_invoice ?? null,
       invoices_without_on: check?.invoices_without_on ?? null,
+      connect_lines: check?.connect_lines ?? null,
+      connect_lines_with_on: check?.connect_lines_with_on ?? null,
     });
     return;
   }
