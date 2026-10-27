@@ -377,6 +377,18 @@ def list_row_lot_or_afgemeld(text: str) -> str | None:
     return f"T{digits}" if digits.isdigit() else None
 
 
+def popup_trnum(lines: list[str]) -> str | None:
+    """The TrNum in an Afgemeld row's popup: its Floriday order number has
+    "99288" at positions 4-8 and the 7-digit TrNum right after
+    ("18699288285736500066" -> "2857365")."""
+    for line in lines or []:
+        text = str(line).replace(" ", "").translate(str.maketrans("ûÛOoIlSs", "00001155"))
+        found = re.search(r"(?<!\d)\d{3}99288(\d{7})\d{5}(?!\d)", text)
+        if found:
+            return found.group(1)
+    return None
+
+
 def list_row_amounts(text: str) -> tuple[str, str, str]:
     """Aantal x per box and the price of a list row: "... 132 x140 0.620
     855 ..." -> ("132", "140", "0.620"). OCR reads it as "132 *140 o. 620"
@@ -1660,9 +1672,17 @@ class ActionRun:
                         sample = screen_row["text"][:90]
                         unread_rows[sample] = unread_rows.get(sample, 0) + 1
                     continue
-                seen = sightings.setdefault(order, {"count": 0, "row": screen_row["text"][:80], "type": "", "brief": ""})
+                seen = sightings.setdefault(order, {"count": 0, "row": screen_row["text"][:80], "type": "", "brief": "", "briefs": {}})
                 seen["count"] += 1
-                seen["brief"] = seen["brief"] or list_row_brief(screen_row["text"]) or ""
+                # The brief (and row text) read most often: a misread
+                # cursor row's key can be another row's -- its brief is
+                # then outvoted by that row's own readings.
+                brief = list_row_brief(screen_row["text"]) or ""
+                if brief:
+                    votes = seen["briefs"].setdefault(brief, [0, screen_row["text"][:80]])
+                    votes[0] += 1
+                    best = max(seen["briefs"].items(), key=lambda pair: pair[1][0])
+                    seen["brief"], seen["row"] = best[0], best[1][1]
                 if screen_row["highlighted"] and not seen["type"]:
                     seen["type"] = found(match_words, joined) or found(keep_words, joined) or ""
         list_data = load_day_list(use_list) if use_list else None
@@ -2040,6 +2060,14 @@ class ActionRun:
             back = self._screenshot(hwnd)
             if not popup_box(image, back):
                 break  # the list is back
+        # An Afgemeld row's popup names its own TrNum in the Floriday order
+        # number ("18699288285736500066" -> 2857365): the teal cursor row's
+        # TrNum is misread more often (5 as 9), so the popup goes to the
+        # TrNum it names -- not to another row's.
+        named = popup_trnum(lines) if str(key).startswith("T") else None
+        if named and f"T{named}" != key:
+            self.say(f"{label}: {key} read on the cursor row, its popup is T{named} (order number) -- kept there")
+            key = f"T{named}"
         row_popups[key] = lines
         if not lines:
             self.say(f"{label}: {key}: no popup seen after {popup_keys}")
