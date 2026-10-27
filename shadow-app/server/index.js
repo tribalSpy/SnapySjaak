@@ -9425,7 +9425,12 @@ function kickInkoopMatchWorker() {
             await failInkoopMatchDay(job.date, job.generation, error instanceof Error ? error.message : String(error)).catch(() => {});
           }
           inkoopMatchWorkerCurrent = "";
-          await new Promise((resolve) => setTimeout(resolve, 150));
+          // A day's comparison holds the whole server (one thread) while it
+          // runs: a pause of at least 1.5 s and 1.5x the day's time before
+          // the next, so every other page gets its turn in between (with
+          // 0.15 s a year of days to redo made the rest time out).
+          const took = Date.now() - started;
+          await new Promise((resolve) => setTimeout(resolve, Math.max(1500, Math.min(15000, took * 1.5))));
         }
       } while (inkoopMatchWorkerAgain);
     } catch (error) {
