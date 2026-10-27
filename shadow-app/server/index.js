@@ -7776,9 +7776,11 @@ function matchInkoopVeilingLines(erpRows, invoices, supplierMap = {}, supplierNa
       for (const candidate of group.candidates) {
         consumedErpRows.add(candidate);
       }
-      for (const entry of group.entries) {
-        matchedOk.push({ ...entry, matched_as_group: true });
-      }
+      // One lot per line (all the same pieces and price): the Connect value
+      // counts too (without a lot it was in no total).
+      group.entries.forEach((entry, index) => {
+        matchedOk.push({ ...entry, erp_row: group.candidates[index], matched_as_group: true });
+      });
     } else {
       // The same party bought more than once (same brief number, pieces
       // and price): it doesn't matter which line is which lot -- pair one
@@ -9051,7 +9053,7 @@ const INKOOP_EMPTY_DAY_BUCKET = {
 // compared again once (at start-up), not only days whose data changed.
 // 2026-10-21: grower directory (learned links, Handel evidence), supplier
 // pairs stored on the invoice date.
-const INKOOP_MATCH_RULES_VERSION = "2026-10-27";
+const INKOOP_MATCH_RULES_VERSION = "2026-10-27b";
 
 function inkoopStateFingerprint(state) {
   return crypto.createHash("sha1").update(JSON.stringify([
@@ -10384,6 +10386,22 @@ function bucketInkoopResultsByDate(matched, aggregateContext = null) {
         continue;
       }
     }
+    bucket.gap_count += 1;
+    bucket.gap_value += value;
+    bucket.gap_invoice_count += 1;
+    bucket.gap_invoice_value += value;
+  }
+  // Invoice lines whose grower isn't linked to a Connect code, and lines
+  // with several equally fitting lots: paid, but not matched -- they count
+  // as invoiced and as not matched (left out, the matched share came out
+  // too high).
+  for (const row of [...(matched?.supplier_not_linked || []), ...(matched?.ambiguous_matches || [])]) {
+    if (row?.matched_as_group) continue;
+    const bucket = inkoopEnsureDateBucket(buckets, inkoopDateKeyFromInvoiceAnchor(row));
+    if (!bucket) continue;
+    const value = inkoopInvoiceLineTotal(row);
+    bucket.purchase_value += value;
+    bucket.invoice_value += value;
     bucket.gap_count += 1;
     bucket.gap_value += value;
     bucket.gap_invoice_count += 1;
