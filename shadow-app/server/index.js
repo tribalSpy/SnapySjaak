@@ -105,6 +105,11 @@ import {
   saveInkoopLotEpp,
   applyInkoopEppBridge,
   applyInkoopOrderBridge,
+  getLatestStateFileSha,
+  saveStateFileSnapshot,
+  pruneStateFileHistory,
+  listStateFileHistory,
+  getStateFileSnapshot,
   inkoopLotUploadCheck,
   applyInkoopRefBridge,
   applyInkoopLotInfo,
@@ -1415,6 +1420,30 @@ function guessMimeType(filePath) {
   return map[extension] || "application/octet-stream";
 }
 
+// The important state files: guarded against a save that suddenly drops
+// most of their records, and copied to the database every hour.
+const PROTECTED_STATE_FILES = ["ukdocs-state.json", "fust-actions.json", "inkoop-state.json", "dag-foutjes.json", "bunches-state.json", "shadow-users.json", "clock-records.json", "expedition-stickers.json", "fust-settings.json", "warehouse-dashboard-settings.json"];
+
+// How many records a state file holds: the zendingen + customers of the
+// UKdocs state; otherwise every top-level list's length and map's size.
+function countStateRecords(fileName, payload) {
+  if (Array.isArray(payload)) return payload.length;
+  if (!payload || typeof payload !== "object") return 0;
+  if (fileName === "ukdocs-state.json") {
+    return (Array.isArray(payload.print_collections) ? payload.print_collections.length : 0) + (Array.isArray(payload.customers) ? payload.customers.length : 0);
+  }
+  let count = 0;
+  for (const value of Object.values(payload)) {
+    if (Array.isArray(value)) count += value.length;
+    else if (value && typeof value === "object") count += Object.keys(value).length;
+  }
+  return count;
+}
+const stateRecordCounts = new Map();
+// The files where a big drop can never be a normal save (the others, like
+// bunches-state.json rewritten every night, only get the hourly copies).
+const SHRINK_GUARDED_STATE_FILES = ["ukdocs-state.json", "fust-actions.json", "shadow-users.json", "inkoop-state.json", "clock-records.json"];
+
 // Files that exist but could not be read (damaged, or the read failed --
 // e.g. memory short): nothing may be written over them, or the "empty"
 // fallback would replace the real data (zendingen lost).
@@ -1433,6 +1462,7 @@ async function readJsonFile(filePath, fallback) {
   try {
     const parsed = JSON.parse(text);
     unreadableJsonFiles.delete(filePath);
+    if (PROTECTED_STATE_FILES.includes(path.basename(filePath))) stateRecordCounts.set(filePath, countStateRecords(path.basename(filePath), parsed));
     return parsed;
   } catch (error) {
     // Damaged (e.g. a save cut off by a restart): the last good version
@@ -1452,7 +1482,27 @@ async function readJsonFile(filePath, fallback) {
   }
 }
 
-async function writeJsonFile(filePath, payload) {
+async function writeJsonFile(filePath, payload, { allowShrink = false } = {}) {
+  // An important file suddenly losing most of its records (e.g. every
+  // zending -- 27-10-2026) is a fault, never a normal save: refused, the
+  // attempted content kept aside as .refused-<time>.
+  const fileName = path.basename(filePath);
+  if (SHRINK_GUARDED_STATE_FILES.includes(fileName) && !allowShrink && existsSync(filePath)) {
+    if (!stateRecordCounts.has(filePath)) {
+      try {
+        stateRecordCounts.set(filePath, countStateRecords(fileName, JSON.parse(await fs.readFile(filePath, "utf8"))));
+      } catch {
+        // Unreadable: the check below (unreadableJsonFiles) protects it.
+      }
+    }
+    const before = stateRecordCounts.get(filePath) || 0;
+    const after = countStateRecords(fileName, payload);
+    if (before >= 10 && after < before * 0.5) {
+      await fs.writeFile(`${filePath}.refused-${Date.now()}`, JSON.stringify(payload), "utf8").catch(() => {});
+      console.error(`REFUSED saving ${fileName}: it would go from ${before} to ${after} records.`);
+      throw new Error(`Not saved: ${fileName} would go from ${before} to ${after} records -- that looks like a fault, so nothing was changed.`);
+    }
+  }
   if (unreadableJsonFiles.has(filePath) && existsSync(filePath)) {
     // Retry the read once: if it works now, the save can go ahead.
     try {
@@ -1469,6 +1519,33 @@ async function writeJsonFile(filePath, payload) {
   await fs.writeFile(temporary, JSON.stringify(payload, null, 2), "utf8");
   if (existsSync(filePath)) await fs.copyFile(filePath, `${filePath}.prev`).catch(() => {});
   await fs.rename(temporary, filePath);
+  if (PROTECTED_STATE_FILES.includes(fileName)) stateRecordCounts.set(filePath, countStateRecords(fileName, payload));
+}
+
+// Every hour: a compressed copy of each important state file that changed
+// since its last copy, into the database (state_file_history), then the
+// old copies thinned out (48 h all, then one a day for 60 days).
+async function snapshotStateFilesToDatabase() {
+  if (!isDatabaseEnabled()) return { ok: false, skipped: true, reason: "no database" };
+  let saved = 0;
+  for (const fileName of PROTECTED_STATE_FILES) {
+    const filePath = path.join(cacheDir, fileName);
+    if (!existsSync(filePath) || unreadableJsonFiles.has(filePath)) continue;
+    const buffer = await fs.readFile(filePath);
+    let records = null;
+    try {
+      records = countStateRecords(fileName, JSON.parse(buffer.toString("utf8")));
+    } catch {
+      continue; // not a whole file right now: next hour
+    }
+    const sha256 = crypto.createHash("sha256").update(buffer).digest("hex");
+    if (sha256 === await getLatestStateFileSha(fileName)) continue;
+    const gzipped = await new Promise((resolve, reject) => zlib.gzip(buffer, (error, result) => (error ? reject(error) : resolve(result))));
+    await saveStateFileSnapshot({ fileName, sizeBytes: buffer.length, sha256, records, gzipped });
+    saved += 1;
+  }
+  const pruned = await pruneStateFileHistory();
+  return { ok: true, saved, pruned };
 }
 
 async function readWarehouseDashboardExcludedReferences() {
@@ -25597,6 +25674,8 @@ async function handleApi(req, res, url) {
 <style>body{font-family:system-ui,sans-serif;margin:24px;max-width:900px}td,th{padding:4px 10px;text-align:left;border-bottom:1px solid #ddd}.bad{color:#b00}</style></head><body>
 <h2>State files</h2><p>Download = the file as it is now. Put back = replace it with a file you choose (the current one is kept as a copy).</p>
 <table id="t"><tr><th>File</th><th>Size</th><th>Saved</th><th>Zendingen</th><th></th></tr></table>
+<h3>History in the database (hourly copies)</h3><p>Every hour each important file that changed is copied to the database: the last 48 hours all, then one a day for 60 days. Restore = put that copy back (the current file is kept as a copy).</p>
+<table id="h"><tr><th>File</th><th>Copied (UTC)</th><th>Size</th><th>Records</th><th></th></tr></table>
 <h3>Put a file back</h3><p><select id="n"></select> <input type="file" id="f" accept=".json"> <button id="b">Put back</button></p><p id="m"></p>
 <script>
 fetch("/api/admin/state-files").then(r=>r.json()).then(d=>{
@@ -25606,12 +25685,61 @@ fetch("/api/admin/state-files").then(r=>r.json()).then(d=>{
     tr.innerHTML="<td>"+f.file+"</td><td>"+(f.size_bytes||0).toLocaleString()+"</td><td>"+(f.saved_at||"")+"</td><td>"+(f.zendingen??"")+"</td><td><a href='/api/admin/state-file?name="+encodeURIComponent(f.file)+"'>Download</a></td>";
     t.appendChild(tr); const o=document.createElement("option"); o.textContent=f.file; n.appendChild(o);}
 });
+fetch("/api/admin/state-history").then(r=>r.json()).then(d=>{
+  const h=document.getElementById("h");
+  for(const s of d.snapshots||[]){const tr=document.createElement("tr");
+    tr.innerHTML="<td>"+s.file_name+"</td><td>"+s.taken_at+"</td><td>"+Number(s.size_bytes).toLocaleString()+"</td><td>"+(s.records??"")+"</td><td><a href='/api/admin/state-history/"+s.id+"'>Download</a> <button data-id='"+s.id+"' data-name='"+s.file_name+"' data-at='"+s.taken_at+"'>Restore</button></td>";
+    h.appendChild(tr);}
+  h.onclick=async(e)=>{const b=e.target.closest("button");if(!b)return;
+    if(!confirm("Put back "+b.dataset.name+" as it was at "+b.dataset.at+"? The current file is kept as a copy."))return;
+    const r=await fetch("/api/admin/state-history/"+b.dataset.id+"/restore",{method:"POST"});const j=await r.json();
+    alert(r.ok?("Restored "+j.file+" from "+j.taken_at):("Error: "+j.error));};
+});
 document.getElementById("b").onclick=async()=>{const file=document.getElementById("f").files[0],name=document.getElementById("n").value,m=document.getElementById("m");
   if(!file){m.textContent="Choose a file first.";return;}
   if(!confirm("Replace "+name+" with "+file.name+"?"))return;
   const r=await fetch("/api/admin/state-file?name="+encodeURIComponent(name),{method:"POST",body:await file.text()});
   const j=await r.json(); m.textContent=r.ok?("Put back: "+j.file+" ("+j.size_bytes.toLocaleString()+" bytes)"):("Error: "+j.error); m.className=r.ok?"":"bad";};
 </script></body></html>`);
+    return;
+  }
+
+  // Admin: the database copies of the state files -- list, download one, or
+  // restore one (the current file kept as .before-restore-<time>).
+  if (url.pathname === "/api/admin/state-history" && req.method === "GET") {
+    if (requestUser.role !== "admin") {
+      sendForbidden(res);
+      return;
+    }
+    sendJson(res, 200, { snapshots: await listStateFileHistory(String(url.searchParams.get("name") || "")) });
+    return;
+  }
+  if (url.pathname.startsWith("/api/admin/state-history/") && (req.method === "GET" || req.method === "POST")) {
+    if (requestUser.role !== "admin") {
+      sendForbidden(res);
+      return;
+    }
+    const [, , , , id, action] = url.pathname.split("/");
+    const snapshot = /^\d+$/.test(id || "") ? await getStateFileSnapshot(id) : null;
+    if (!snapshot) {
+      sendJson(res, 404, { error: "Copy not found" });
+      return;
+    }
+    const buffer = zlib.gunzipSync(snapshot.data);
+    if (req.method === "GET") {
+      res.writeHead(200, { "content-type": "application/json", "content-disposition": `attachment; filename="${snapshot.file_name.replace(".json", "")}-${new Date(snapshot.taken_at).toISOString().replace(/[:.]/g, "-")}.json"` });
+      res.end(buffer);
+      return;
+    }
+    if (action !== "restore") {
+      sendJson(res, 400, { error: "POST .../<id>/restore" });
+      return;
+    }
+    const filePath = path.join(cacheDir, snapshot.file_name);
+    if (existsSync(filePath)) await fs.copyFile(filePath, `${filePath}.before-restore-${Date.now()}`);
+    unreadableJsonFiles.delete(filePath);
+    await writeJsonFile(filePath, JSON.parse(buffer.toString("utf8")), { allowShrink: true });
+    sendJson(res, 200, { ok: true, file: snapshot.file_name, taken_at: snapshot.taken_at });
     return;
   }
 
@@ -25648,7 +25776,7 @@ document.getElementById("b").onclick=async()=>{const file=document.getElementByI
     }
     if (existsSync(filePath)) await fs.copyFile(filePath, `${filePath}.before-upload-${Date.now()}`);
     unreadableJsonFiles.delete(filePath);
-    await writeJsonFile(filePath, parsed);
+    await writeJsonFile(filePath, parsed, { allowShrink: true });
     sendJson(res, 200, { ok: true, file: name, size_bytes: Buffer.byteLength(text) });
     return;
   }
@@ -26128,6 +26256,12 @@ async function startServer() {
       console.log(`Online job "${jobName}" completed:`, quiet);
     }
   }
+
+  // The important state files to the database: soon after start, then hourly.
+  setTimeout(() => runIfOnline("State file history", snapshotStateFilesToDatabase).catch(() => {}), 2 * 60 * 1000);
+  setInterval(() => {
+    runIfOnline("State file history", snapshotStateFilesToDatabase).catch(() => {});
+  }, 60 * 60 * 1000);
 
   runIfOnline("dag-foutjes sheet sync", syncPendingDagFoutjesDaysToSheet).catch(() => {});
   setInterval(() => {

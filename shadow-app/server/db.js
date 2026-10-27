@@ -669,6 +669,55 @@ export async function applyInkoopEppBridge() {
 
 // For the upload message: of these lots, how many Connect already has with
 // its own PAV, with the bridge's PAV, and not at all (not uploaded yet).
+// ---- State file history (see state_file_history) ---------------------------
+export async function getLatestStateFileSha(fileName) {
+  if (!pool) return "";
+  const result = await pool.query("SELECT sha256 FROM state_file_history WHERE file_name = $1 ORDER BY taken_at DESC LIMIT 1", [fileName]);
+  return result.rows[0]?.sha256 || "";
+}
+
+export async function saveStateFileSnapshot({ fileName, sizeBytes, sha256, records, gzipped }) {
+  if (!pool) return null;
+  const result = await pool.query(
+    "INSERT INTO state_file_history (file_name, size_bytes, sha256, records, data) VALUES ($1, $2, $3, $4, $5) RETURNING id",
+    [fileName, sizeBytes, sha256, Number.isFinite(records) ? records : null, gzipped],
+  );
+  return result.rows[0]?.id || null;
+}
+
+// All copies of the last 48 hours; older ones one per file per day (the
+// day's last), for 60 days.
+export async function pruneStateFileHistory() {
+  if (!pool) return 0;
+  const result = await pool.query(`
+    DELETE FROM state_file_history h
+     WHERE h.taken_at < now() - interval '60 days'
+        OR (h.taken_at < now() - interval '48 hours'
+            AND EXISTS (SELECT 1 FROM state_file_history n
+                         WHERE n.file_name = h.file_name
+                           AND date_trunc('day', n.taken_at) = date_trunc('day', h.taken_at)
+                           AND n.taken_at > h.taken_at))
+  `);
+  return result.rowCount || 0;
+}
+
+export async function listStateFileHistory(fileName = "") {
+  if (!pool) return [];
+  const result = await pool.query(
+    `SELECT id::text, file_name, taken_at, size_bytes::float8 AS size_bytes, records
+       FROM state_file_history ${fileName ? "WHERE file_name = $1" : ""}
+      ORDER BY file_name, taken_at DESC LIMIT 2000`,
+    fileName ? [fileName] : [],
+  );
+  return result.rows;
+}
+
+export async function getStateFileSnapshot(id) {
+  if (!pool) return null;
+  const result = await pool.query("SELECT id::text, file_name, taken_at, data FROM state_file_history WHERE id = $1", [id]);
+  return result.rows[0] || null;
+}
+
 // The first and last Connect date of these lots.
 export async function getInkoopErpDatesForLots(lots) {
   if (!pool || !Array.isArray(lots) || !lots.length) {
@@ -3703,6 +3752,23 @@ const databaseMigrations = [
   // that keeps an invoice from being booked twice. Deliberately NOT cleared
   // by "Start fresh" (clearInkoopUploads): re-uploading an invoice later
   // must still know it already went to King.
+  // Hourly compressed copies of the important state files (ukdocs-state.json
+  // with every zending, fust-actions.json, ...): restorable from the app,
+  // and safe in the database (its own backups) even if the disk is lost.
+  `
+    CREATE TABLE IF NOT EXISTS state_file_history (
+      id bigserial PRIMARY KEY,
+      file_name text NOT NULL,
+      taken_at timestamptz NOT NULL DEFAULT now(),
+      size_bytes bigint NOT NULL,
+      sha256 text NOT NULL,
+      records integer,
+      data bytea NOT NULL
+    )
+  `,
+  `
+    CREATE INDEX IF NOT EXISTS state_file_history_file_idx ON state_file_history (file_name, taken_at DESC)
+  `,
   `
     CREATE TABLE IF NOT EXISTS king_exports (
       invoice_number text PRIMARY KEY,
