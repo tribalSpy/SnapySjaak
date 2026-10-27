@@ -24196,12 +24196,17 @@ async function handleApi(req, res, url) {
       for (const [code, name] of extraCodeNames) if (!growerOfCode.has(code)) growerOfCode.set(code, name);
       const nonGrowerCodes = new Set(directory.skipCodes || []);
       const erpRowsByGrower = erpRows.map((row) => {
-        // Only a lot none of whose codes (Suppl. / Avc. / Transp.) is a grower's.
-        const positions = [row?.suppl, row?.avc, row?.transp].map((value) => normalizeInkoopKey(value)).filter(Boolean);
-        if (positions.some((code) => !INKOOP_POOL_CODES.has(code) && !nonGrowerCodes.has(code) && growerOfCode.has(code))) return row;
+        // The brief number on an invoice line: that line's grower, whatever
+        // code the lot is booked under (a trader's / FloraHolland's).
         const byPav = growerCodeByPav.get(normalizeInkoopKey(row?.pav)) || growerCodeByPav.get(normalizeInkoopKey(row?.levering_pav));
-        const code = byPav || normalizeInkoopKey(supplierFhMap?.[normalizeInkoopFhKey(row?.uniware_aanv)]?.code);
-        return code ? { ...row, suppl: code, avc: code, transp: "", booked_under: `${normalizeInkoopKey(row.suppl)} (via ${byPav ? "brief number" : "Aanv."})` } : row;
+        const positions = [row?.suppl, row?.avc, row?.transp].map((value) => normalizeInkoopKey(value)).filter(Boolean);
+        if (byPav) {
+          return positions.includes(byPav) ? row : { ...row, suppl: byPav, avc: byPav, transp: "", booked_under: `${normalizeInkoopKey(row.suppl)} (via brief number)` };
+        }
+        // Otherwise only a lot none of whose codes is a grower's: by its Aanv.
+        if (positions.some((code) => !INKOOP_POOL_CODES.has(code) && !nonGrowerCodes.has(code) && growerOfCode.has(code))) return row;
+        const code = normalizeInkoopKey(supplierFhMap?.[normalizeInkoopFhKey(row?.uniware_aanv)]?.code);
+        return code ? { ...row, suppl: code, avc: code, transp: "", booked_under: `${normalizeInkoopKey(row.suppl)} (via Aanv.)` } : row;
       });
       const totals = computeInkoopGrowerDayTotals(erpRowsByGrower, invoiceLines, supplierMap, state.supplier_name_map, state.manual_supplier_links, supplierFhMap, state.facturation_groups, extraCodeNames);
       // A readable name per grower: the facturation group's own, else the
