@@ -22,6 +22,9 @@ function createPool() {
     ssl: sslEnabled ? { rejectUnauthorized: false } : false,
     // Detect dropped connections sooner instead of finding out on the next query.
     keepAlive: true,
+    // Idle connections stay a minute (default 10 s): with a query every few
+    // seconds the pool kept closing and reopening them.
+    idleTimeoutMillis: 60000,
   });
   // A connection the database drops (Postgres restarting / recovering,
   // network blip) emits an 'error' event; with no listener, Node treats it
