@@ -25529,6 +25529,49 @@ async function handleApi(req, res, url) {
     return;
   }
 
+  // Admin check of the state files: the folder, each file's size, last
+  // save, whether it reads, and the zendingen in the UKdocs one (and in its
+  // previous version / damaged copies).
+  if (url.pathname === "/api/admin/state-files" && req.method === "GET") {
+    if (requestUser.role !== "admin") {
+      sendForbidden(res);
+      return;
+    }
+    const describe = async (filePath) => {
+      try {
+        const info = await fs.stat(filePath);
+        const entry = { file: path.basename(filePath), size_bytes: info.size, saved_at: info.mtime.toISOString() };
+        try {
+          const parsed = JSON.parse(await fs.readFile(filePath, "utf8"));
+          entry.readable = true;
+          if (Array.isArray(parsed?.print_collections)) {
+            entry.zendingen = parsed.print_collections.length;
+            const dates = parsed.print_collections.map((item) => String(item?.shipment_date || "").slice(0, 10)).filter(Boolean).sort();
+            entry.zendingen_dates = dates.length ? `${dates[0]} .. ${dates[dates.length - 1]}` : "";
+            entry.customers = Array.isArray(parsed?.customers) ? parsed.customers.length : undefined;
+          }
+        } catch (error) {
+          entry.readable = false;
+          entry.read_error = error instanceof Error ? error.message.slice(0, 200) : String(error);
+        }
+        return entry;
+      } catch {
+        return { file: path.basename(filePath), missing: true };
+      }
+    };
+    let names = [];
+    try {
+      names = (await fs.readdir(cacheDir)).filter((name) => /\.json(\.prev|\.damaged-\d+)?$/.test(name)).sort();
+    } catch (error) {
+      sendJson(res, 200, { cache_dir: cacheDir, error: error instanceof Error ? error.message : String(error) });
+      return;
+    }
+    const files = [];
+    for (const name of names) files.push(await describe(path.join(cacheDir, name)));
+    sendJson(res, 200, { cache_dir: cacheDir, env_cache_dir: process.env.SNAPPYSJAAK_CACHE_DIR || "", unreadable_now: [...unreadableJsonFiles.entries()].map(([file, reason]) => ({ file: path.basename(file), reason })), files });
+    return;
+  }
+
   if (url.pathname === "/api/users") {
     if (requestUser.role !== "admin") {
       sendForbidden(res);
