@@ -7534,6 +7534,14 @@ function inkoopOrderKey(value) {
 }
 
 // Is a Connect lot's order number (night action) the invoice line's?
+// The TrNum in a Floriday order number: "xxx99288" + the 7-digit TrNum
+// ("18699288285777100" -> "2857771") -- an invoice line names the night
+// action's "Afgemeld" row itself, also when its popup wasn't read.
+function inkoopOrderTrnum(order) {
+  const found = normalizeUkdocsText(order).replace(/\s+/g, "").match(/^\d{3}99288(\d{7})/);
+  return found && Number(found[1]) > 0 ? String(Number(found[1])) : "";
+}
+
 function inkoopOrderNumbersMatch(lotOrder, invoiceOrder) {
   const lot = normalizeUkdocsText(lotOrder).replace(/\s+/g, "");
   const invoice = normalizeUkdocsText(invoiceOrder).replace(/\s+/g, "");
@@ -8200,10 +8208,15 @@ function matchInkoopVeilingLines(erpRows, invoices, supplierMap = {}, supplierNa
     const allRows = Array.isArray(erpRows) ? erpRows : [];
     for (const item of unmatched) {
       const brief = normalizeInkoopKey(item?.reference_bt);
-      const messages = afgemeldMessages.filter((message) => (item?.order_number && message.order_number && inkoopOrderNumbersMatch(message.order_number, item.order_number))
+      const lineTrnum = inkoopOrderTrnum(item?.order_number);
+      const found = afgemeldMessages.filter((message) => (lineTrnum && String(Number(message.trnum)) === lineTrnum)
+        || (item?.order_number && message.order_number && inkoopOrderNumbersMatch(message.order_number, item.order_number))
         || (isRealInkoopPav(brief) && message.brief && (normalizeInkoopKey(message.brief) === brief || normalizeInkoopKey(message.brief) === inkoopBasePav(brief))));
+      // One TrNum can be several rows of the same message (a split shown twice).
+      const messages = [...new Map(found.map((message) => [String(Number(message.trnum)), message])).values()];
       const message = messages.length === 1 ? messages[0] : null;
-      const splitInto = message && allRows.some((row) => (message.order_number && row?.uniware_order && inkoopOrderNumbersMatch(row.uniware_order, message.order_number))
+      const rowNamesMessage = (row) => row?.uniware_order && inkoopOrderTrnum(row.uniware_order) === String(Number(message.trnum));
+      const splitInto = message && allRows.some((row) => rowNamesMessage(row) || (message.order_number && row?.uniware_order && inkoopOrderNumbersMatch(row.uniware_order, message.order_number))
         || (message.brief && [row?.pav, row?.levering_pav].some((pav) => normalizeInkoopKey(pav) === normalizeInkoopKey(message.brief) || inkoopBasePav(normalizeInkoopKey(pav)) === normalizeInkoopKey(message.brief))));
       if (!message) {
         rest.push(item);
@@ -8212,7 +8225,7 @@ function matchInkoopVeilingLines(erpRows, invoices, supplierMap = {}, supplierNa
       if (splitInto) {
         // Split: the invoice always has the original line (30 x 80); the
         // new lots keep its order / brief number -- together they are it.
-        const carries = (row) => (message.order_number && row?.uniware_order && inkoopOrderNumbersMatch(row.uniware_order, message.order_number))
+        const carries = (row) => rowNamesMessage(row) || (message.order_number && row?.uniware_order && inkoopOrderNumbersMatch(row.uniware_order, message.order_number))
           || (message.brief && [row?.pav, row?.levering_pav].some((pav) => normalizeInkoopKey(pav) === normalizeInkoopKey(message.brief) || inkoopBasePav(normalizeInkoopKey(pav)) === normalizeInkoopKey(message.brief)));
         const parts = allRows.filter((row) => !consumedErpRows.has(row) && carries(row) && priceFits(row, item.unit_price) && Number(row.pieces) > 0).slice(0, 14);
         const combination = parts.length === 1 && !inkoopValuesDiffer(parts[0].pieces, item.quantity) ? parts : findInkoopPiecesCombination(parts, Number(item.quantity));
