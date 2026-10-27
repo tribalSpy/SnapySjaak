@@ -408,6 +408,9 @@ def parse_invoice_xml(xml_bytes):
         lines.append({
             "description": description,
             "quantity": quantity,
+            # Aantal (boxes) and Stuks (per box): 33 x 80 = 2640.
+            "packages": parse_number(find_child_text(item, "PackageUnitQuantity")),
+            "per_package": parse_number(find_child_text(item, "ProductUnitQuantity")),
             "unit_price": unit_price,
             "total": total,
             "reference_bt": reference_bt,

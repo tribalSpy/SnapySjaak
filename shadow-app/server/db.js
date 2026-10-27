@@ -1300,7 +1300,7 @@ export async function getInkoopErpLines({ from, to } = {}) {
   }
   const result = await pool.query(
     `
-      SELECT ${ERP_LINE_RAW_SQL} - ARRAY['cont','cr','deb_no','inv_no','ite_date','ite_no','ite_t','items','keur','po_no','verd','fust']::text[] AS raw
+      SELECT ${ERP_LINE_RAW_SQL} - ARRAY['cr','deb_no','inv_no','ite_date','ite_no','ite_t','keur','po_no','verd','fust']::text[] AS raw
       FROM inkoop_erp_lines
       WHERE erp_date IS NULL OR (erp_date >= $1 AND erp_date <= $2)
       ORDER BY lot
@@ -1517,6 +1517,27 @@ export async function getInkoopPeriodReport({ unit = "month", company = "" } = {
     bwByPeriod.get(row.period)[row.bw] = Math.round(row.value * 100) / 100;
   }
   return result.rows.map((row) => ({ ...row, erp_by_bw: bwByPeriod.get(row.period) || {} }));
+}
+
+// The invoiced value that found no Connect lot -- every such line (only in
+// invoice, grower not linked, several equally fitting lots), per day /
+// month / year from the stored match lines. Unlike gap_invoice_value, lines
+// whose grower's day total happens to balance are counted too: this is what
+// "matched %" means.
+export async function getInkoopUnmatchedInvoiceTotals({ unit = "day", company = "", from = "", to = "" } = {}) {
+  if (!pool) return new Map();
+  const format = unit === "year" ? "YYYY" : unit === "month" ? "YYYY-MM" : "YYYY-MM-DD";
+  const params = [];
+  const where = ["list IN ('only_in_invoice', 'supplier_not_linked', 'ambiguous_matches')"];
+  if (company) { params.push(company); where.push(`company_number = $${params.length}`); }
+  if (from) { params.push(from); where.push(`match_date >= $${params.length}::date`); }
+  if (to) { params.push(to); where.push(`match_date <= $${params.length}::date`); }
+  const result = await pool.query(
+    `SELECT to_char(match_date, '${format}') AS period, COALESCE(SUM(invoice_total), 0)::float8 AS value, COUNT(*)::int AS lines
+       FROM inkoop_match_rows WHERE ${where.join(" AND ")} GROUP BY 1`,
+    params,
+  );
+  return new Map(result.rows.map((row) => [row.period, { value: Math.round(row.value * 100) / 100, lines: row.lines }]));
 }
 
 export async function getInkoopDaySummaries({ from, to } = {}) {

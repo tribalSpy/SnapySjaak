@@ -15520,6 +15520,18 @@ function InkoopInvoiceLink({ invoiceNumber }) {
 // A compact, readable transcript of the matched ERP line -- so someone
 // checking a mismatch/follow-up item can see the full original record, not
 // just whichever field(s) differed.
+// Pieces with the boxes behind them: "33 × 80 = 2640" (Aantal × Stuks),
+// just the total when the boxes aren't known or don't add up.
+function inkoopPiecesText(total, boxes, perBox) {
+  const pieces = Number(total);
+  const count = Number(boxes);
+  const each = Number(perBox);
+  if (count > 0 && each > 0 && Number.isFinite(pieces) && Math.abs(count * each - pieces) < 0.01) {
+    return `${count} × ${each} = ${pieces}`;
+  }
+  return total ?? "";
+}
+
 function inkoopErpTranscript(erpRow) {
   if (!erpRow) {
     return "-";
@@ -15528,7 +15540,7 @@ function inkoopErpTranscript(erpRow) {
     inkoopShortDate(erpRow.date),
     String(erpRow.suppl || erpRow.transp || "").trim(),
     erpRow.lot ? `Lot ${erpRow.lot}` : "",
-    (erpRow.pieces !== undefined && erpRow.pieces !== null) ? `${erpRow.pieces} pcs @ ${formatInkoopEuro(erpRow.price)}` : "",
+    (erpRow.pieces !== undefined && erpRow.pieces !== null) ? `${inkoopPiecesText(erpRow.pieces, erpRow.items, erpRow.cont)} pcs @ ${formatInkoopEuro(erpRow.price)}` : "",
     erpRow.t_price !== undefined ? `= ${formatInkoopEuro(erpRow.t_price)}` : "",
     erpRow.fust ? `Fust ${String(erpRow.fust).trim()}` : "",
     erpRow.avc ? `Avc ${String(erpRow.avc).trim()}` : "",
@@ -17326,7 +17338,7 @@ function InkoopMatchedTable({ rows }) {
                 <td>{row.pav || row.supplier_code || "-"}</td>
                 <td>{row.supplier_name || "-"}</td>
                 <td>{row.description}</td>
-                <td>{row.quantity}</td>
+                <td>{inkoopPiecesText(row.quantity, row.packages, row.per_package)}</td>
                 <td>{row.unit_price}</td>
                 <td>{row.total}</td>
                 <td>{row.erp_row ? inkoopErpTranscript(row.erp_row) : "-"}</td>
@@ -17519,7 +17531,7 @@ function InkoopResultTables({ result, windowDays, manualLinkDrafts, setManualLin
                     <td>{row.supplier_fh_number}</td>
                     <td>{row.supplier_name}</td>
                     <td>{row.description}</td>
-                    <td>{row.quantity}</td>
+                    <td>{inkoopPiecesText(row.quantity, row.packages, row.per_package)}</td>
                     <td>{row.unit_price}</td>
                     <td>
                       <input
@@ -17553,7 +17565,7 @@ function InkoopResultTables({ result, windowDays, manualLinkDrafts, setManualLin
                     <td>{inkoopCompanyLabel(row)}</td>
                     <td><InkoopInvoiceLink invoiceNumber={row.invoice_number} /></td>
                     <td>{row.supplier_code}{row.supplier_match_type === "name" ? " (name match)" : ""}</td>
-                    <td>{row.quantity}</td>
+                    <td>{inkoopPiecesText(row.quantity, row.packages, row.per_package)}</td>
                     <td>{row.unit_price}</td>
                     <td>{row.candidates.map((c) => `${c.lot} (${String(c.description || "").trim()})`).join(", ")}</td>
                   </tr>
@@ -17589,7 +17601,7 @@ function InkoopResultTables({ result, windowDays, manualLinkDrafts, setManualLin
                         {row.description}
                         <InkoopConnectCheck check={row.connect_check} code={row.supplier_code} quantity={row.quantity} price={row.unit_price} />
                       </td>
-                      <td>{row.quantity}</td>
+                      <td>{inkoopPiecesText(row.quantity, row.packages, row.per_package)}</td>
                       <td>{row.unit_price}</td>
                       <td>{row.total}</td>
                       <td>
@@ -17635,7 +17647,7 @@ function InkoopResultTables({ result, windowDays, manualLinkDrafts, setManualLin
               <thead><tr><th>Date</th><th>PAV</th><th>Lot</th><th>Description</th><th>Pieces</th><th>Price</th><th>Total</th><th>Supplier</th></tr></thead>
               <tbody>
                 {erpRowsShown.map((row, index) => (
-                  <tr key={index}><td>{inkoopShortDate(row.date)}</td><td>{row.pav}</td><td>{row.lot}</td><td>{row.description}</td><td>{row.pieces}</td><td>{row.price}</td><td>{row.t_price}</td><td>{row.suppl}{row.supplier_bw ? ` (BW ${row.supplier_bw}${INKOOP_BW_LABELS[row.supplier_bw] ? `: ${INKOOP_BW_LABELS[row.supplier_bw]}` : ""})` : ""}</td></tr>
+                  <tr key={index}><td>{inkoopShortDate(row.date)}</td><td>{row.pav}</td><td>{row.lot}</td><td>{row.description}</td><td>{inkoopPiecesText(row.pieces, row.items, row.cont)}</td><td>{row.price}</td><td>{row.t_price}</td><td>{row.suppl}{row.supplier_bw ? ` (BW ${row.supplier_bw}${INKOOP_BW_LABELS[row.supplier_bw] ? `: ${INKOOP_BW_LABELS[row.supplier_bw]}` : ""})` : ""}</td></tr>
                 ))}
               </tbody>
             </table>
@@ -18162,7 +18174,7 @@ function InkoopGrowerTotals({ company, from, to, bwChoice }) {
                 <thead><tr><th>Invoice</th><th>Brief</th><th>Product</th><th>Pieces</th><th>Price</th><th>Total</th></tr></thead>
                 <tbody>
                   {detail.invoice_lines.map((line, index) => (
-                    <tr key={index}><td><InkoopInvoiceLink invoiceNumber={line.invoice_number} /></td><td>{line.reference_bt || "-"}</td><td>{line.description}</td><td>{line.quantity}</td><td>{line.unit_price}</td><td>{formatInkoopEuro(line.total)}</td></tr>
+                    <tr key={index}><td><InkoopInvoiceLink invoiceNumber={line.invoice_number} /></td><td>{line.reference_bt || "-"}</td><td>{line.description}</td><td>{inkoopPiecesText(line.quantity, line.packages, line.per_package)}</td><td>{line.unit_price}</td><td>{formatInkoopEuro(line.total)}</td></tr>
                   ))}
                   {!detail.invoice_lines.length && <tr><td colSpan="6">None.</td></tr>}
                 </tbody>
@@ -18174,7 +18186,7 @@ function InkoopGrowerTotals({ company, from, to, bwChoice }) {
                 <thead><tr><th>Lot</th><th>PAV</th><th>Code</th><th>Product</th><th>Pieces</th><th>Price</th><th>Total</th></tr></thead>
                 <tbody>
                   {detail.connect_lots.map((lot) => (
-                    <tr key={lot.lot}><td>{lot.lot}</td><td>{String(lot.pav || "").trim() || "-"}</td><td>{String(lot.suppl || "").trim()}</td><td>{lot.description}</td><td>{lot.pieces}</td><td>{lot.price}</td><td>{formatInkoopEuro(lot.t_price)}</td></tr>
+                    <tr key={lot.lot}><td>{lot.lot}</td><td>{String(lot.pav || "").trim() || "-"}</td><td>{String(lot.suppl || "").trim()}</td><td>{lot.description}</td><td>{inkoopPiecesText(lot.pieces, lot.items, lot.cont)}</td><td>{lot.price}</td><td>{formatInkoopEuro(lot.t_price)}</td></tr>
                   ))}
                   {!detail.connect_lots.length && <tr><td colSpan="7">None.</td></tr>}
                 </tbody>
@@ -18281,7 +18293,11 @@ function InkoopFinanceHero({ company, dayReport, period }) {
       .then((payload) => setMatchDays(payload.days || []))
       .catch(() => setMatchDays([]));
   }
-  const matchedPct = (row) => (row.purchase_value > 0 ? ((row.purchase_value - (row.gap_invoice_value || 0)) / row.purchase_value) * 100 : 0);
+  // Matched = the invoiced value that found its Connect lot: every line
+  // without one counts (unmatched_invoice_value), also when the grower's day
+  // total happens to balance.
+  const unmatchedOf = (row) => Number(row.unmatched_invoice_value ?? row.gap_invoice_value) || 0;
+  const matchedPct = (row) => (row.purchase_value > 0 ? Math.max(0, ((row.purchase_value - unmatchedOf(row)) / row.purchase_value) * 100) : 0);
   useEffect(() => {
     let cancelled = false;
     const params = new URLSearchParams();
@@ -18296,7 +18312,8 @@ function InkoopFinanceHero({ company, dayReport, period }) {
   const invoiced = sum("purchase_value");
   const connect = dayReport.reduce((total, day) => total + connectOf(day), 0);
   const gapInvoice = sum("gap_invoice_value");
-  const matchedShare = invoiced > 0 ? ((invoiced - gapInvoice) / invoiced) * 100 : null;
+  const unmatchedInvoice = dayReport.reduce((total, day) => total + (Number(day.unmatched_invoice_value ?? day.gap_invoice_value) || 0), 0);
+  const matchedShare = invoiced > 0 ? Math.max(0, ((invoiced - unmatchedInvoice) / invoiced) * 100) : null;
   const dates = dayReport.map((day) => day.date).sort();
   const from = dates[0];
   const to = dates[dates.length - 1];

@@ -106,6 +106,7 @@ import {
   applyInkoopEppBridge,
   applyInkoopOrderBridge,
   getLatestStateFileSha,
+  getInkoopUnmatchedInvoiceTotals,
   listInkoopInvoiceNumbers,
   saveStateFileSnapshot,
   pruneStateFileHistory,
@@ -8579,6 +8580,9 @@ function flattenInkoopInvoiceLines(invoices, sourceFileName, fallbackDate) {
         // The VBN product code (e.g. 492 "DI ST GEM") -- the same code the
         // Connect lot has in Uniware / Levering BB.
         vbn_code: normalizeUkdocsText(line?.vbn_code),
+        // Aantal (boxes) x Stuks (per box) -- quantity is their product.
+        packages: line?.packages ?? null,
+        per_package: line?.per_package ?? null,
         // The line's references from the XML (they were read but never
         // stored): the order number (ON -- pairs the Connect lot via the night
         // action), the brief base (ACE) and VN / AAG / SS / ADJ (a clock lot's
@@ -8665,6 +8669,8 @@ function groupInkoopInvoiceLinesByInvoice(flatLines) {
       order_number: line?.order_number || "",
       // The VBN product code: the same code as the Connect lot's (Uniware / Levering BB).
       vbn_code: line?.vbn_code || "",
+      packages: line?.packages ?? null,
+      per_package: line?.per_package ?? null,
     });
   }
   return [...byInvoice.values()];
@@ -8905,12 +8911,40 @@ function inkoopGapIsExplainedByAggregate(row, growerName, aggregateResult) {
 // rows, so they all agree with each other, the same way
 // bucketInkoopResultsByDate is already the shared source for the
 // gap/mismatch counts themselves.
+// Connect lots for the grower comparisons: a lot whose brief number (its
+// own or Levering BB's) is on an invoice line counts for that line's grower,
+// whatever code it is booked under (a trader's, FloraHolland's WEST / VBA);
+// a lot with no grower code at all goes by its Aanv. (night action).
+function inkoopErpRowsForInvoiceGrowers(erpRows, invoiceLines, { supplierMap, supplierNameMap, manualLinks, supplierFhMap, growerOfCode, nonGrowerCodes }) {
+  const growerCodeByPav = new Map();
+  for (const line of invoiceLines || []) {
+    const pav = normalizeInkoopKey(line?.reference_bt);
+    if (!isRealInkoopPav(pav) || growerCodeByPav.has(pav)) continue;
+    const resolved = resolveInkoopSupplierCode(line?.supplier_gln, line?.supplier_fh_number, line?.supplier_name, supplierMap, supplierNameMap, manualLinks, supplierFhMap);
+    if (resolved.codes?.length) growerCodeByPav.set(pav, normalizeInkoopKey(resolved.codes[0]));
+  }
+  return (erpRows || []).map((row) => {
+    const byPav = growerCodeByPav.get(normalizeInkoopKey(row?.pav)) || growerCodeByPav.get(normalizeInkoopKey(row?.levering_pav));
+    const positions = [row?.suppl, row?.avc, row?.transp].map((value) => normalizeInkoopKey(value)).filter(Boolean);
+    if (byPav) {
+      return positions.includes(byPav) ? row : { ...row, suppl: byPav, avc: byPav, transp: "", booked_under: `${normalizeInkoopKey(row.suppl)} (via brief number)` };
+    }
+    if (positions.some((code) => !INKOOP_POOL_CODES.has(code) && !nonGrowerCodes.has(code) && growerOfCode.has(code))) return row;
+    const code = normalizeInkoopKey(supplierFhMap?.[normalizeInkoopFhKey(row?.uniware_aanv)]?.code);
+    return code ? { ...row, suppl: code, avc: code, transp: "", booked_under: `${normalizeInkoopKey(row.suppl)} (via Aanv.)` } : row;
+  });
+}
+
 async function buildInkoopAggregateContext(state, range) {
   const [allErpRows, invoiceLines] = await Promise.all([
     getInkoopErpLines(range),
     getInkoopInvoiceLines(range),
   ]);
-  const erpRows = excludeInkoopInternalBunchRows(allErpRows, state.supplier_bw_map, inkoopExcludedErpCodes(state));
+  const erpRows = inkoopErpRowsForInvoiceGrowers(excludeInkoopInternalBunchRows(allErpRows, state.supplier_bw_map, inkoopExcludedErpCodes(state)), invoiceLines, {
+    supplierMap: state.supplier_map, supplierNameMap: state.supplier_name_map, manualLinks: state.manual_supplier_links, supplierFhMap: state.supplier_fh_map,
+    growerOfCode: buildInkoopCodeNameMap(state.supplier_map, state.supplier_name_map, state.supplier_fh_map, state.facturation_groups),
+    nonGrowerCodes: inkoopNonGrowerCodes,
+  });
   const aggregateResult = computeInkoopAggregateMismatches(
     erpRows, invoiceLines,
     state.supplier_map, state.supplier_name_map, state.manual_supplier_links, state.supplier_fh_map, state.facturation_groups,
@@ -9329,7 +9363,7 @@ const INKOOP_EMPTY_DAY_BUCKET = {
 // compared again once (at start-up), not only days whose data changed.
 // 2026-10-21: grower directory (learned links, Handel evidence), supplier
 // pairs stored on the invoice date.
-const INKOOP_MATCH_RULES_VERSION = "2026-10-27e";
+const INKOOP_MATCH_RULES_VERSION = "2026-10-27f";
 
 function inkoopStateFingerprint(state) {
   return crypto.createHash("sha1").update(JSON.stringify([
@@ -24109,12 +24143,15 @@ async function handleApi(req, res, url) {
       return;
     }
     const company = normalizeUkdocsText(url.searchParams.get("company"));
-    const [months, years, status] = await Promise.all([
+    const [months, years, status, unmatchedMonths, unmatchedYears] = await Promise.all([
       getInkoopPeriodReport({ unit: "month", company }),
       getInkoopPeriodReport({ unit: "year", company }),
       getInkoopMatchStatus(),
+      getInkoopUnmatchedInvoiceTotals({ unit: "month", company }),
+      getInkoopUnmatchedInvoiceTotals({ unit: "year", company }),
     ]);
-    sendJson(res, 200, { months, years, pending_days: (status.counts?.pending || 0) + (status.counts?.running || 0) });
+    const withUnmatched = (rows, unmatched) => rows.map((row) => ({ ...row, unmatched_invoice_value: unmatched.get(row.period)?.value || 0, unmatched_invoice_lines: unmatched.get(row.period)?.lines || 0 }));
+    sendJson(res, 200, { months: withUnmatched(months, unmatchedMonths), years: withUnmatched(years, unmatchedYears), pending_days: (status.counts?.pending || 0) + (status.counts?.running || 0) });
     return;
   }
 
@@ -24130,9 +24167,12 @@ async function handleApi(req, res, url) {
     if (from > to) [from, to] = [to, from];
     if (addDaysToIsoDate(from, 400) < to) from = addDaysToIsoDate(to, -400);
     const company = normalizeUkdocsText(url.searchParams.get("company"));
-    const rows = await getInkoopDaySummaries({ from, to });
+    const [rows, unmatched] = await Promise.all([
+      getInkoopDaySummaries({ from, to }),
+      getInkoopUnmatchedInvoiceTotals({ unit: "day", company, from, to }),
+    ]);
     const days = rows.filter((row) => row.company === company)
-      .map((row) => ({ ...row.bucket, date: row.date }))
+      .map((row) => ({ ...row.bucket, date: row.date, unmatched_invoice_value: unmatched.get(row.date)?.value || 0, unmatched_invoice_lines: unmatched.get(row.date)?.lines || 0 }))
       .sort((left, right) => (left.date < right.date ? 1 : -1));
     sendJson(res, 200, { from, to, days });
     return;
@@ -24181,32 +24221,11 @@ async function handleApi(req, res, url) {
         const resolved = resolveInkoopSupplierCode(line?.supplier_gln, line?.supplier_fh_number, line?.supplier_name, supplierMap, state.supplier_name_map, state.manual_supplier_links, supplierFhMap);
         for (const code of resolved.codes || []) if (!extraCodeNames.has(normalizeInkoopKey(code))) extraCodeNames.set(normalizeInkoopKey(code), name);
       }
-      // A lot under a general code (WEST, VBA, FLORA, F2, X99 -- FloraHolland,
-      // not the grower) goes to the grower of the invoice line with its brief
-      // number (Connect's or Levering BB's), else to the one its Aanv. (night
-      // action: the grower's Kwekercod) points to.
-      const growerCodeByPav = new Map();
-      for (const line of invoiceLines) {
-        const pav = normalizeInkoopKey(line?.reference_bt);
-        if (!isRealInkoopPav(pav) || growerCodeByPav.has(pav)) continue;
-        const resolved = resolveInkoopSupplierCode(line?.supplier_gln, line?.supplier_fh_number, line?.supplier_name, supplierMap, state.supplier_name_map, state.manual_supplier_links, supplierFhMap);
-        if (resolved.codes?.length) growerCodeByPav.set(pav, normalizeInkoopKey(resolved.codes[0]));
-      }
       const growerOfCode = buildInkoopCodeNameMap(supplierMap, state.supplier_name_map, supplierFhMap, state.facturation_groups);
       for (const [code, name] of extraCodeNames) if (!growerOfCode.has(code)) growerOfCode.set(code, name);
-      const nonGrowerCodes = new Set(directory.skipCodes || []);
-      const erpRowsByGrower = erpRows.map((row) => {
-        // The brief number on an invoice line: that line's grower, whatever
-        // code the lot is booked under (a trader's / FloraHolland's).
-        const byPav = growerCodeByPav.get(normalizeInkoopKey(row?.pav)) || growerCodeByPav.get(normalizeInkoopKey(row?.levering_pav));
-        const positions = [row?.suppl, row?.avc, row?.transp].map((value) => normalizeInkoopKey(value)).filter(Boolean);
-        if (byPav) {
-          return positions.includes(byPav) ? row : { ...row, suppl: byPav, avc: byPav, transp: "", booked_under: `${normalizeInkoopKey(row.suppl)} (via brief number)` };
-        }
-        // Otherwise only a lot none of whose codes is a grower's: by its Aanv.
-        if (positions.some((code) => !INKOOP_POOL_CODES.has(code) && !nonGrowerCodes.has(code) && growerOfCode.has(code))) return row;
-        const code = normalizeInkoopKey(supplierFhMap?.[normalizeInkoopFhKey(row?.uniware_aanv)]?.code);
-        return code ? { ...row, suppl: code, avc: code, transp: "", booked_under: `${normalizeInkoopKey(row.suppl)} (via Aanv.)` } : row;
+      const erpRowsByGrower = inkoopErpRowsForInvoiceGrowers(erpRows, invoiceLines, {
+        supplierMap, supplierNameMap: state.supplier_name_map, manualLinks: state.manual_supplier_links, supplierFhMap,
+        growerOfCode, nonGrowerCodes: new Set(directory.skipCodes || []),
       });
       const totals = computeInkoopGrowerDayTotals(erpRowsByGrower, invoiceLines, supplierMap, state.supplier_name_map, state.manual_supplier_links, supplierFhMap, state.facturation_groups, extraCodeNames);
       // A readable name per grower: the facturation group's own, else the
@@ -24232,7 +24251,7 @@ async function handleApi(req, res, url) {
         if (detail && growerName === detailGrower && String(line?.invoice_date || "").slice(0, 10) === detailDate) {
           detail.invoice_lines.push({
             invoice_number: line.invoice_number, reference_bt: line.reference_bt, description: line.description,
-            supplier_name: line.supplier_name, quantity: line.quantity, unit_price: line.unit_price, total: line.total,
+            supplier_name: line.supplier_name, quantity: line.quantity, packages: line.packages, per_package: line.per_package, unit_price: line.unit_price, total: line.total,
           });
         }
         invoiceLinked += value;
@@ -24254,7 +24273,7 @@ async function handleApi(req, res, url) {
         const rowGrower = codeToName.get(resolveErpRowSupplierCode(row, validSupplierCodes));
         if (rowGrower) connectLinked += value;
         if (detail && rowGrower === detailGrower && String(row?.date || "").slice(0, 10) === detailDate) {
-          detail.connect_lots.push({ lot: row.lot, pav: row.pav, suppl: row.booked_under || row.suppl, description: row.description, pieces: row.pieces, price: row.price, t_price: row.t_price });
+          detail.connect_lots.push({ lot: row.lot, pav: row.pav, suppl: row.booked_under || row.suppl, description: row.description, pieces: row.pieces, items: row.items, cont: row.cont, price: row.price, t_price: row.t_price });
         }
       }
       if (detail) {
