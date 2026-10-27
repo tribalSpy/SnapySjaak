@@ -23814,7 +23814,29 @@ async function handleApi(req, res, url) {
         const resolved = resolveInkoopSupplierCode(line?.supplier_gln, line?.supplier_fh_number, line?.supplier_name, supplierMap, state.supplier_name_map, state.manual_supplier_links, supplierFhMap);
         for (const code of resolved.codes || []) if (!extraCodeNames.has(normalizeInkoopKey(code))) extraCodeNames.set(normalizeInkoopKey(code), name);
       }
-      const totals = computeInkoopGrowerDayTotals(erpRows, invoiceLines, supplierMap, state.supplier_name_map, state.manual_supplier_links, supplierFhMap, state.facturation_groups, extraCodeNames);
+      // A lot under a general code (WEST, VBA, FLORA, F2, X99 -- FloraHolland,
+      // not the grower) goes to the grower of the invoice line with its brief
+      // number (Connect's or Levering BB's), else to the one its Aanv. (night
+      // action: the grower's Kwekercod) points to.
+      const growerCodeByPav = new Map();
+      for (const line of invoiceLines) {
+        const pav = normalizeInkoopKey(line?.reference_bt);
+        if (!isRealInkoopPav(pav) || growerCodeByPav.has(pav)) continue;
+        const resolved = resolveInkoopSupplierCode(line?.supplier_gln, line?.supplier_fh_number, line?.supplier_name, supplierMap, state.supplier_name_map, state.manual_supplier_links, supplierFhMap);
+        if (resolved.codes?.length) growerCodeByPav.set(pav, normalizeInkoopKey(resolved.codes[0]));
+      }
+      const growerOfCode = buildInkoopCodeNameMap(supplierMap, state.supplier_name_map, supplierFhMap, state.facturation_groups);
+      for (const [code, name] of extraCodeNames) if (!growerOfCode.has(code)) growerOfCode.set(code, name);
+      const nonGrowerCodes = new Set(directory.skipCodes || []);
+      const erpRowsByGrower = erpRows.map((row) => {
+        // Only a lot none of whose codes (Suppl. / Avc. / Transp.) is a grower's.
+        const positions = [row?.suppl, row?.avc, row?.transp].map((value) => normalizeInkoopKey(value)).filter(Boolean);
+        if (positions.some((code) => !INKOOP_POOL_CODES.has(code) && !nonGrowerCodes.has(code) && growerOfCode.has(code))) return row;
+        const byPav = growerCodeByPav.get(normalizeInkoopKey(row?.pav)) || growerCodeByPav.get(normalizeInkoopKey(row?.levering_pav));
+        const code = byPav || normalizeInkoopKey(supplierFhMap?.[normalizeInkoopFhKey(row?.uniware_aanv)]?.code);
+        return code ? { ...row, suppl: code, avc: code, transp: "", booked_under: `${normalizeInkoopKey(row.suppl)} (via ${byPav ? "brief number" : "Aanv."})` } : row;
+      });
+      const totals = computeInkoopGrowerDayTotals(erpRowsByGrower, invoiceLines, supplierMap, state.supplier_name_map, state.manual_supplier_links, supplierFhMap, state.facturation_groups, extraCodeNames);
       // A readable name per grower: the facturation group's own, else the
       // name on most of its invoice lines.
       const codeToName = buildInkoopCodeNameMap(supplierMap, state.supplier_name_map, supplierFhMap, state.facturation_groups);
@@ -23854,13 +23876,13 @@ async function handleApi(req, res, url) {
       for (const code of extraCodeNames.keys()) validSupplierCodes.add(code);
       let connectTotal = 0;
       let connectLinked = 0;
-      for (const row of erpRows) {
+      for (const row of erpRowsByGrower) {
         const value = parseFloat(row?.t_price) || 0;
         connectTotal += value;
         const rowGrower = codeToName.get(resolveErpRowSupplierCode(row, validSupplierCodes));
         if (rowGrower) connectLinked += value;
         if (detail && rowGrower === detailGrower && String(row?.date || "").slice(0, 10) === detailDate) {
-          detail.connect_lots.push({ lot: row.lot, pav: row.pav, suppl: row.suppl, description: row.description, pieces: row.pieces, price: row.price, t_price: row.t_price });
+          detail.connect_lots.push({ lot: row.lot, pav: row.pav, suppl: row.booked_under || row.suppl, description: row.description, pieces: row.pieces, price: row.price, t_price: row.t_price });
         }
       }
       if (detail) {
