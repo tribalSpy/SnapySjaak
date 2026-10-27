@@ -7878,18 +7878,30 @@ function matchInkoopVeilingLines(erpRows, invoices, supplierMap = {}, supplierNa
     const rest = [];
     for (const item of unmatched) {
       const date = normalizeUkdocsText(item?.invoice_date).slice(0, 10);
-      if (!date || isRealInkoopPav(normalizeInkoopKey(item?.reference_bt))) {
+      if (!date) {
         rest.push(item);
         continue;
       }
+      // A line with a brief number that wasn't found (the lot has another
+      // or none): only by its Aanv., with the grower from the line's GLN /
+      // FH number -- clock lots are often invoiced a day or two later.
+      const withBrief = isRealInkoopPav(normalizeInkoopKey(item?.reference_bt));
       const codes = new Set(String(item?.supplier_code || "").split(/[/+]/).map((code) => normalizeInkoopKey(code)).filter(Boolean));
-      const fits = (Array.isArray(erpRows) ? erpRows : []).filter((row) => !consumedErpRows.has(row)
+      if (!codes.size || withBrief) {
+        const resolved = resolveInkoopSupplierCode(item?.supplier_gln, item?.supplier_fh_number, item?.supplier_name, supplierMap, supplierNameMap, manualLinks, supplierFhMap);
+        for (const code of resolved.codes || []) codes.add(normalizeInkoopKey(code));
+      }
+      const sameGoods = (row) => !consumedErpRows.has(row) && !inkoopValuesDiffer(row.pieces, item.quantity) && priceFits(row, item.unit_price);
+      const daysApartOf = (row) => Math.abs((Date.parse(String(row?.date || "").slice(0, 10)) - Date.parse(date)) / 86400000);
+      const byAanv = (Array.isArray(erpRows) ? erpRows : []).filter((row) => row?.uniware_aanv && sameGoods(row) && daysApartOf(row) <= 2 && codes.has(aanvCodeOf(row)))
+        .sort((left, right) => daysApartOf(left) - daysApartOf(right));
+      const pooled = withBrief ? [] : (Array.isArray(erpRows) ? erpRows : []).filter((row) => sameGoods(row)
         && String(row?.date || "").slice(0, 10) === date
-        && !inkoopValuesDiffer(row.pieces, item.quantity) && priceFits(row, item.unit_price));
-      const byAanv = fits.filter((row) => codes.has(aanvCodeOf(row)));
-      const pooled = fits.filter((row) => INKOOP_POOL_CODES.has(resolveErpRowSupplierCode(row, validSupplierCodes)));
+        && INKOOP_POOL_CODES.has(resolveErpRowSupplierCode(row, validSupplierCodes)));
+      // Several by Aanv.: the best name, else the nearest day if only one is.
+      const nearestAanv = byAanv.filter((row) => daysApartOf(row) === daysApartOf(byAanv[0] || {}));
       const row = byAanv.length === 1 ? byAanv[0]
-        : byAanv.length > 1 ? inkoopBestNamedRow(byAanv, item)
+        : byAanv.length > 1 ? (inkoopBestNamedRow(byAanv, item) || (nearestAanv.length === 1 ? nearestAanv[0] : null))
           : pooled.length === 1 ? pooled[0] : inkoopBestNamedRow(pooled, item);
       if (!row) {
         rest.push(item);
@@ -7909,6 +7921,64 @@ function matchInkoopVeilingLines(erpRows, invoices, supplierMap = {}, supplierNa
   };
   samedayPool(onlyInInvoice);
   samedayPool(supplierNotLinked);
+
+  // Last of all: every kind of evidence together. A line every single test
+  // missed, against the free lots with its pieces and price (2 days either
+  // side): grower by code (3) or Aanv. (3), the same VBN code (3), each
+  // shared name word (1), the brief number without its letter (2), the same
+  // day (1). Only a lot scoring 3+ and clearly above every other is taken.
+  const combinedEvidence = (unmatched) => {
+    const rest = [];
+    for (const item of unmatched) {
+      const date = normalizeUkdocsText(item?.invoice_date).slice(0, 10);
+      if (!date || !(Number(item?.quantity) > 0)) {
+        rest.push(item);
+        continue;
+      }
+      const codes = new Set(String(item?.supplier_code || "").split(/[/+]/).map((code) => normalizeInkoopKey(code)).filter(Boolean));
+      const resolved = resolveInkoopSupplierCode(item?.supplier_gln, item?.supplier_fh_number, item?.supplier_name, supplierMap, supplierNameMap, manualLinks, supplierFhMap);
+      for (const code of resolved.codes || []) codes.add(normalizeInkoopKey(code));
+      const brief = inkoopBasePav(normalizeInkoopKey(item?.reference_bt));
+      const daysApartOf = (row) => Math.abs((Date.parse(String(row?.date || "").slice(0, 10)) - Date.parse(date)) / 86400000);
+      const scored = (Array.isArray(erpRows) ? erpRows : [])
+        .filter((row) => !consumedErpRows.has(row) && daysApartOf(row) <= 2
+          && !inkoopValuesDiffer(row.pieces, item.quantity) && priceFits(row, item.unit_price))
+        .map((row) => {
+          const reasons = [];
+          let score = 0;
+          const rowCodes = [row?.suppl, row?.avc, row?.transp].map((value) => normalizeInkoopKey(value)).filter(Boolean);
+          if (rowCodes.some((code) => codes.has(code))) { score += 3; reasons.push("grower code"); }
+          else if (codes.has(aanvCodeOf(row))) { score += 3; reasons.push(`Aanv. ${row.uniware_aanv}`); }
+          const vbn = String(item?.vbn_code || "").replace(/^0+/, "");
+          if (vbn && inkoopLotVbnCodes(row).has(vbn)) { score += 3; reasons.push("VBN"); }
+          const words = inkoopDescriptionSharedWords(item?.description, inkoopLotNameText(row));
+          if (words) { score += words; reasons.push(`${words} name word(s)`); }
+          const rowBrief = inkoopBasePav(normalizeInkoopKey(row?.pav));
+          const extraBrief = inkoopBasePav(normalizeInkoopKey(row?.levering_pav));
+          if (isRealInkoopPav(brief) && (rowBrief === brief || extraBrief === brief)) { score += 2; reasons.push("brief number base"); }
+          if (daysApartOf(row) === 0) { score += 1; reasons.push("same day"); }
+          return { row, score, reasons };
+        })
+        .sort((left, right) => right.score - left.score);
+      const best = scored[0];
+      if (!best || best.score < 3 || (scored[1] && scored[1].score >= best.score)) {
+        rest.push(item);
+        continue;
+      }
+      const row = best.row;
+      consumedErpRows.add(row);
+      const pair = { ...item, supplier_code: item.supplier_code || resolveErpRowSupplierCode(row, validSupplierCodes), supplier_match_type: `combined: ${best.reasons.join(" + ")}`, erp_row: row };
+      if (inkoopValuesDiffer(parseFloat(row.price), item.unit_price)) {
+        matchedMismatch.push({ ...pair, diffs: [{ field: "unit_price", erp: parseFloat(row.price), invoice: item.unit_price }, { field: "total", erp: parseFloat(row.t_price), invoice: item.total }] });
+      } else {
+        matchedOk.push(pair);
+      }
+    }
+    unmatched.length = 0;
+    unmatched.push(...rest);
+  };
+  combinedEvidence(onlyInInvoice);
+  combinedEvidence(supplierNotLinked);
 
   // Unconsumed rows from both pools are genuine "recorded but nothing
   // claimed it" gaps -- a supplier-code-keyed row (Handel/AI2 lines with no
@@ -9063,7 +9133,7 @@ const INKOOP_EMPTY_DAY_BUCKET = {
 // compared again once (at start-up), not only days whose data changed.
 // 2026-10-21: grower directory (learned links, Handel evidence), supplier
 // pairs stored on the invoice date.
-const INKOOP_MATCH_RULES_VERSION = "2026-10-27c";
+const INKOOP_MATCH_RULES_VERSION = "2026-10-27d";
 
 function inkoopStateFingerprint(state) {
   return crypto.createHash("sha1").update(JSON.stringify([
