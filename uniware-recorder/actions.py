@@ -361,6 +361,29 @@ def list_row_lot(text: str) -> str | None:
     return glued.group(0) if glued else None
 
 
+def list_row_lot_or_afgemeld(text: str) -> str | None:
+    """The Connect lot of a list row, or for an "Afgemeld" row (no lot in
+    Prt: the message came after the lot was entered by hand, or the lot was
+    split) "T" + its TrNum ("397222/- Afgemeld J 2857770" -> "T2857770")."""
+    lot = list_row_lot(text)
+    if lot:
+        return lot
+    found = re.search(r"fgemeld\s+(?:[A-Za-z]\s+)?([0-9OoSsIlBDZ]{4,9})(?![0-9])", str(text or ""))
+    if not found:
+        return None
+    digits = found.group(1).translate(_DIGIT_LOOKALIKES)
+    return f"T{digits}" if digits.isdigit() else None
+
+
+def list_row_amounts(text: str) -> tuple[str, str, str]:
+    """Aantal x per box and the price of a list row: "... 132 x140 0.620
+    855 ..." -> ("132", "140", "0.620")."""
+    found = re.search(r"(?<![\d.])(\d{1,4})\s*x\s*(\d{1,5})\s+(\d{1,4}[.,]\d{2,3})(?!\d)", str(text or ""))
+    if not found:
+        return "", "", ""
+    return found.group(1), found.group(2), found.group(3).replace(",", ".")
+
+
 def list_row_brief(text: str) -> str | None:
     """The brief number in a list row's Info column ("... 5 FA3CWD/A 44858309
     J 10", "X01907/a", "407971/-") -- a row without one (Info empty, or not
@@ -1598,7 +1621,10 @@ class ActionRun:
         # (OCR misreads digits on the teal cursor: 4841449 -> "4 41449"); a
         # number counts once it was read the same way twice.
         sightings: dict[str, dict] = {}
-        row_key = list_row_lot if loop.get("collect_key") == "lot" else list_row_order
+        # Lots -- and "Afgemeld" rows by their TrNum ("T2857770"): a message
+        # whose lot was entered by hand before it came still links the
+        # invoice line (order number, Aanv.) to that lot.
+        row_key = list_row_lot_or_afgemeld if loop.get("collect_key") == "lot" else list_row_order
         value_label = str(loop.get("collect_value") or "").strip()
         # The value (e.g. EPP) belongs to the cursor row only: key -> values read.
         row_values: dict[str, list[str]] = {}
@@ -2027,6 +2053,7 @@ class ActionRun:
         the run's dump file (Ctrl+P), matched by lot."""
         for item in collected.get("items", []):
             item["vbn"], item["omschrijving"] = list_row_product(item.get("row", ""))
+            item["aantal"], item["per_fust"], item["prijs"] = list_row_amounts(item.get("row", ""))
         rows = [item for item in collected.get("items", []) if item.get("value") or item.get("info") or item.get("aanv") or item.get("omschrijving")]
         if not rows:
             self.say(f"{label}: no {value_label} / popup read on any row -- no CSV written.")
@@ -2035,9 +2062,14 @@ class ActionRun:
         with_aanv = any(item.get("aanv") for item in rows)
         target_dir = self._export_dir()
         target = target_dir / f"{day_list_slug(collected['name'])}_{self.run_date():%Y%m%d}.csv"
-        header = f"lot;{value_label.lower()};vbn;omschrijving" + (";aanv" if with_aanv else "") + (";info" if with_info else "")
+        # An "Afgemeld" row has no lot: its TrNum instead (lot left empty),
+        # with the day, Aantal x per box, price and brief number of the row.
+        header = f"lot;trnum;datum;{value_label.lower()};vbn;omschrijving;aantal;per_fust;prijs;brief" + (";aanv" if with_aanv else "") + (";info" if with_info else "")
+        run_day = f"{self.run_date():%Y-%m-%d}"
         lines = [header] + [
-            f"{item['key']};{item.get('value', '')};{item.get('vbn', '')};{item.get('omschrijving', '').replace(';', ',')}"
+            (f"{'' if str(item['key']).startswith('T') else item['key']};{str(item['key'])[1:] if str(item['key']).startswith('T') else ''};{run_day};"
+             f"{item.get('value', '')};{item.get('vbn', '')};{item.get('omschrijving', '').replace(';', ',')};"
+             f"{item.get('aantal', '')};{item.get('per_fust', '')};{item.get('prijs', '')};{item.get('brief', '') or ''}")
             + (f";{item.get('aanv', '')}" if with_aanv else "")
             + (f";{str(item.get('info', '')).replace(';', ',')}" if with_info else "")
             for item in rows
