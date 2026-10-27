@@ -368,7 +368,9 @@ def list_row_lot_or_afgemeld(text: str) -> str | None:
     lot = list_row_lot(text)
     if lot:
         return lot
-    found = re.search(r"fgemeld\s+(?:[A-Za-z]\s+)?([0-9OoSsIlBDZ]{4,9})(?![0-9])", str(text or ""))
+    # OCR reads it in many ways: "Afgemeld J 2857770", "Afgemeld ] 2857770",
+    # "AfgemeldJ2857770", "Afgemela | 2857770" -- the first number after it.
+    found = re.search(r"[FfTt]geme\S*?[^0-9]{0,6}?([0-9OoSsIlBDZ]{5,9})(?![0-9])", str(text or ""))
     if not found:
         return None
     digits = found.group(1).translate(_DIGIT_LOOKALIKES)
