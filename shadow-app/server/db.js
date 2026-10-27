@@ -669,6 +669,18 @@ export async function applyInkoopEppBridge() {
 
 // For the upload message: of these lots, how many Connect already has with
 // its own PAV, with the bridge's PAV, and not at all (not uploaded yet).
+// Every uploaded invoice: number, type, first date and line count.
+export async function listInkoopInvoiceNumbers() {
+  if (!pool) return [];
+  const result = await pool.query(`
+    SELECT invoice_number, min(invoice_type) AS invoice_type, to_char(min(invoice_date), 'YYYY-MM-DD') AS invoice_date, count(*)::int AS lines
+      FROM inkoop_invoice_lines
+     GROUP BY invoice_number
+     ORDER BY 3 DESC NULLS LAST, 1
+  `);
+  return result.rows;
+}
+
 // ---- State file history (see state_file_history) ---------------------------
 export async function getLatestStateFileSha(fileName) {
   if (!pool) return "";

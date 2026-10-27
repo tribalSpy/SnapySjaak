@@ -106,6 +106,7 @@ import {
   applyInkoopEppBridge,
   applyInkoopOrderBridge,
   getLatestStateFileSha,
+  listInkoopInvoiceNumbers,
   saveStateFileSnapshot,
   pruneStateFileHistory,
   listStateFileHistory,
@@ -23824,6 +23825,34 @@ async function handleApi(req, res, url) {
       kickInkoopMatchWorker();
     }
     sendJson(res, 200, { ok: true, lines: counts.lines, bridges: saved, already_linked: counts.linked, linked_found: linkedBridges.length, linked_with_brief: linkedRows.length, cancelled: counts.cancelled, other: counts.other, filled_now: filled.length, ...status });
+    return;
+  }
+
+  const escapeHtml = (value) => String(value ?? "").replace(/[&<>"']/g, (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[char]);
+  // The uploaded invoices whose PDF is not on the disk (e.g. after a disk
+  // restore): upload their zip again. ?format=html for a readable page.
+  if (url.pathname === "/api/inkoop/missing-pdfs" && req.method === "GET") {
+    if (!requirePermission(res, requestUser, PERMISSIONS.INKOOP_VIEW)) {
+      return;
+    }
+    const invoices = await listInkoopInvoiceNumbers();
+    const missing = invoices.filter((invoice) => {
+      const number = String(invoice.invoice_number || "");
+      return !existsSync(inkoopInvoicePdfPath(number)) && !existsSync(inkoopInvoicePdfPath(number.replace(/\s*\(\d+\)\s*$/, "")));
+    });
+    if (url.searchParams.get("format") === "html") {
+      const byDate = new Map();
+      for (const invoice of missing) {
+        const date = invoice.invoice_date || "no date";
+        if (!byDate.has(date)) byDate.set(date, []);
+        byDate.get(date).push(invoice);
+      }
+      const rows = [...byDate.entries()].map(([date, list]) => `<tr><td>${date}</td><td>${list.length}</td><td>${list.map((invoice) => escapeHtml(`${invoice.invoice_number} (${invoice.invoice_type})`)).join(", ")}</td></tr>`).join("");
+      res.writeHead(200, { "content-type": "text/html; charset=utf-8" });
+      res.end(`<!doctype html><html><head><meta charset="utf-8"><title>Missing invoice PDFs</title><style>body{font-family:system-ui,sans-serif;margin:24px}td,th{padding:4px 10px;text-align:left;border-bottom:1px solid #ddd;vertical-align:top}</style></head><body><h2>Invoices without their PDF: ${missing.length} of ${invoices.length}</h2><p>Upload the veiling zip(s) of these dates again -- the lines stay as they are, the PDFs come back.</p><table><tr><th>Invoice date</th><th>Invoices</th><th>Which</th></tr>${rows}</table></body></html>`);
+      return;
+    }
+    sendJson(res, 200, { total: invoices.length, missing: missing.length, invoices: missing });
     return;
   }
 
