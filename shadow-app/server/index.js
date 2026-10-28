@@ -25049,6 +25049,15 @@ async function handleApi(req, res, url) {
         return entry?.bw || "?";
       };
       const growerOfInvoice = (row) => inkoopGrowerNameForInvoiceLine(row, codeToName, supplierMap, supplierNameMap, manualLinks, supplierFhMap) || normalizeUkdocsText(row?.supplier_name);
+      // An invoice line's betaalwijze: its grower's Connect code's (a D / F
+      // grower is left out with D / F unticked, its invoice side too); else
+      // A for an AI2 nota, V for FloraHolland's.
+      const bwOfInvoice = (row) => {
+        const resolved = resolveInkoopSupplierCode(row?.supplier_gln, row?.supplier_fh_number, row?.supplier_name, supplierMap, supplierNameMap, manualLinks, supplierFhMap);
+        const bw = (resolved.codes || []).map((code) => state.supplier_bw_map?.[normalizeInkoopKey(code)]?.bw).find(Boolean);
+        return bw || (/^ai2/i.test(String(row?.invoice_type || row?.invoice_number || "")) ? "A" : "V");
+      };
+      const bwOfGrower = new Map();
       for (const row of result.matched_mismatch || []) {
         const invoiceValue = inkoopInvoiceLineTotal(row);
         const connectValue = inkoopErpRowTotal(row.erp_row);
@@ -25079,8 +25088,15 @@ async function handleApi(req, res, url) {
         issues.push({
           id: inkoopIssueId("gap_invoice", row), issue_type: "gap_invoice", date: inkoopDateKeyFromInvoiceAnchor(row), description: row.description, value: inkoopInvoiceLineTotal(row), invoice_number: row.invoice_number || "", erp_row: null, detail: row,
           // An invoice line is FloraHolland: via veiling.
-          grower: invoiceGrowerName || normalizeUkdocsText(row?.supplier_name), bw: "V", invoice_value: inkoopInvoiceLineTotal(row), connect_value: 0, money_diff: Math.round(inkoopInvoiceLineTotal(row) * 100) / 100,
+          grower: invoiceGrowerName || normalizeUkdocsText(row?.supplier_name), bw: bwOfInvoice(row), invoice_value: inkoopInvoiceLineTotal(row), connect_value: 0, money_diff: Math.round(inkoopInvoiceLineTotal(row) * 100) / 100,
         });
+      }
+      // A grower-day total: the betaalwijze of that grower's lines.
+      for (const key of ["matched_ok", "matched_mismatch", "only_in_invoice"]) {
+        for (const row of result[key] || []) {
+          const name = growerOfInvoice(row);
+          if (name && !bwOfGrower.has(name)) bwOfGrower.set(name, bwOfInvoice(row));
+        }
       }
       for (const mismatch of aggregateResult.mismatches) {
         const pieceDiff = mismatch.invoice_pieces - mismatch.erp_pieces;
@@ -25096,7 +25112,7 @@ async function handleApi(req, res, url) {
           invoice_number: "",
           erp_row: null,
           detail: { ...mismatch, piece_diff: pieceDiff, value_diff: valueDiff },
-          grower: mismatch.grower_name || "", bw: "V", invoice_value: mismatch.invoice_value, connect_value: mismatch.erp_value, money_diff: Math.round(valueDiff * 100) / 100,
+          grower: mismatch.grower_name || "", bw: bwOfGrower.get(mismatch.grower_name) || "V", invoice_value: mismatch.invoice_value, connect_value: mismatch.erp_value, money_diff: Math.round(valueDiff * 100) / 100,
         });
       }
       }
