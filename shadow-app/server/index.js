@@ -7384,8 +7384,11 @@ function pickInkoopMatchingErpRow(candidates, quantity, unitPrice, consumedErpRo
 // multi-day export, notably every AI2-sourced row) means exactly the same
 // thing and needs the same treatment, or it silently pools under a
 // meaningless shared key that no real invoice line will ever reference.
+// "000000" with a letter -- or signs ("000000!", Starline's 32 x 80 on
+// 16-10; 'a 000000";  "' of DGC) -- is no brief number either.
 function isRealInkoopPav(normalizedPav) {
-  return Boolean(normalizedPav) && !/^0+[A-Z]?$/.test(normalizedPav);
+  const core = String(normalizedPav || "").replace(/[^0-9A-Z]/gi, "");
+  return Boolean(core) && !/^0+[A-Z]?$/i.test(core);
 }
 
 // FloraHolland Briefnummers always end in one letter (e.g. "F9B5DWA"). When
@@ -9694,7 +9697,7 @@ const INKOOP_EMPTY_DAY_BUCKET = {
 // compared again once (at start-up), not only days whose data changed.
 // 2026-10-21: grower directory (learned links, Handel evidence), supplier
 // pairs stored on the invoice date.
-const INKOOP_MATCH_RULES_VERSION = "2026-10-28e";
+const INKOOP_MATCH_RULES_VERSION = "2026-10-28f";
 
 function inkoopStateFingerprint(state) {
   return crypto.createHash("sha1").update(JSON.stringify([
