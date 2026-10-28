@@ -16892,7 +16892,7 @@ function InkoopControlePage({ currentUser }) {
       setLastSkippedFiles(payload.import?.skipped_files || []);
       setMessage(
         `Imported ${erpRows} Connect rows and ${invoiceLines} invoice lines${parts.length > 1 ? ` (${messages.length} emails in ${parts.length} parts)` : ""}`
-        + `${payload.dispatch_lot_count ? ` (${payload.dispatch_lot_count} of them with dispatch destinations, see the Destinations tab)` : ""}. `
+        + `${payload.dispatch_lot_count ? ` (${payload.dispatch_lot_count} of them with dispatch destinations, see the Corrections tab)` : ""}. `
         + `The comparison of the days this touched runs in the background${payload.result_date ? ` -- ${fustOverviewDate(payload.result_date)} first, its result appears below by itself` : ""}.`,
       );
       loadCompanies().catch(() => {});
@@ -17014,7 +17014,7 @@ function InkoopControlePage({ currentUser }) {
         <button type="button" className={activeTab === "calendar" ? "active" : ""} onClick={() => setActiveTab("calendar")}>Calendar</button>
         <button type="button" className={activeTab === "dashboard" ? "active" : ""} onClick={() => setActiveTab("dashboard")}>Financial Dashboard</button>
         <button type="button" className={activeTab === "followup" ? "active" : ""} onClick={() => setActiveTab("followup")}>Follow-up</button>
-        <button type="button" className={activeTab === "destinations" ? "active" : ""} onClick={() => setActiveTab("destinations")}>Destinations</button>
+        <button type="button" className={activeTab === "destinations" ? "active" : ""} onClick={() => setActiveTab("destinations")}>Corrections</button>
         <button type="button" className={activeTab === "search" ? "active" : ""} onClick={() => setActiveTab("search")}>Search</button>
         <button type="button" className={activeTab === "data" ? "active" : ""} onClick={() => setActiveTab("data")}>Data</button>
         <button type="button" className={activeTab === "king" ? "active" : ""} onClick={() => setActiveTab("king")}>Import naar King</button>
@@ -17071,7 +17071,7 @@ function InkoopControlePage({ currentUser }) {
         <div className="notice">
           Upload each file once here -- it's remembered from then on. Re-upload any of them any time it's refreshed; entries merge in, nothing is removed.
           {" "}{supplierCount} suppliers linked by GLN, {supplierFhCount} more by grower number (Kwekercod), {supplierNameCount} more only by name (from "kwekers stamgegevens"/"leveranciers stamgegevens").
-          {" "}{customerCount} customers loaded from "klant gegevens" (used to resolve dispatch destinations on the Destinations tab).
+          {" "}{customerCount} customers loaded from "klant gegevens" (used to resolve dispatch destinations on the Corrections tab).
           {" "}{supplierBwCount} codes with a betaalwijze (BW) from "kwekers/leveranciers met betaalwijze" -- complements the stamgegevens above; BW=B (bunches, internal) Connect rows are never matched.
         </div>
         <div className="form-grid">
@@ -17178,7 +17178,7 @@ function InkoopControlePage({ currentUser }) {
         <div className="notice">
           No live mailbox yet -- for now, save the day's veiling emails (Klokfactuur, Connect factuur, Factuur handel aankopen, AI2 Dagnota) as .msg files -- both the XML and PDF version of each -- zip them all together, and upload that zip with the Connect "Screen" export (.xlsx or .csv) for the same period. The PDF companions are what let you open the original invoice from a mismatch later.
           Every line's real date is read straight from the invoice, so the date below is only used as a fallback and for the import history log.
-          If the Connect export includes "Dispatched to" rows, they're read from this same file too -- see the Destinations tab.
+          If the Connect export includes "Dispatched to" rows, they're read from this same file too -- see the Corrections tab.
         </div>
         <div className="form-grid">
           <label>
@@ -18985,8 +18985,28 @@ function InkoopCalendarTab({ company, manualLinkDrafts, setManualLinkDrafts, onL
   );
 }
 
+// The day a Follow-up line belongs to: its invoice date (a Connect lot
+// without an invoice line: the lot's date).
+function inkoopIssueInvoiceDay(issue) {
+  return String(issue?.detail?.invoice_date || issue?.detail?.erp_row?.date || issue?.date || "").slice(0, 10);
+}
+
 function InkoopFollowUpTab({ company }) {
-  const [period, setPeriod] = useState({ days: 7 });
+  // A month in a calendar by invoice date; a clicked day narrows the list.
+  const [month, setMonth] = useState(() => todayIso().slice(0, 7));
+  const [selectedDay, setSelectedDay] = useState("");
+  const monthEnd = (() => {
+    const [year, monthNumber] = month.split("-").map(Number);
+    const last = `${month}-${String(new Date(year, monthNumber, 0).getDate()).padStart(2, "0")}`;
+    return last < todayIso() ? last : todayIso();
+  })();
+  const period = { from: `${month}-01`, to: monthEnd < `${month}-01` ? `${month}-01` : monthEnd };
+  const shiftMonth = (delta) => {
+    const [year, monthNumber] = month.split("-").map(Number);
+    const next = new Date(year, monthNumber - 1 + delta, 1);
+    setMonth(`${next.getFullYear()}-${String(next.getMonth() + 1).padStart(2, "0")}`);
+    setSelectedDay("");
+  };
   const [issues, setIssues] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
@@ -19000,7 +19020,18 @@ function InkoopFollowUpTab({ company }) {
   const [typeFilter, setTypeFilter] = useState(["mismatch", "gap_erp", "gap_invoice"]);
   const [openGrower, setOpenGrower] = useState("");
   const typedIssues = issues.filter((issue) => typeFilter.includes(issue.issue_type));
-  const shownIssues = typedIssues.filter((issue) => !bwFilter || bwFilter.includes(issue.bw || "?"));
+  const filteredIssues = typedIssues.filter((issue) => !bwFilter || bwFilter.includes(issue.bw || "?"));
+  const shownIssues = selectedDay ? filteredIssues.filter((issue) => inkoopIssueInvoiceDay(issue) === selectedDay) : filteredIssues;
+  // Per invoice day: the open lines and their value (type and BW filters on).
+  const issuesByDay = new Map();
+  for (const issue of filteredIssues) {
+    const day = inkoopIssueInvoiceDay(issue);
+    const entry = issuesByDay.get(day) || { lines: 0, value: 0, net: 0 };
+    entry.lines += 1;
+    entry.value += Number(issue.value) || 0;
+    entry.net += Number(issue.money_diff) || 0;
+    issuesByDay.set(day, entry);
+  }
   const growerGroups = inkoopGroupIssuesByGrower(shownIssues);
   const typedCounts = {};
   for (const issue of issues.filter((item) => !bwFilter || bwFilter.includes(item.bw || "?"))) typedCounts[issue.issue_type] = (typedCounts[issue.issue_type] || 0) + 1;
@@ -19021,7 +19052,7 @@ function InkoopFollowUpTab({ company }) {
   useEffect(() => {
     load().catch(() => {});
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [company, showResolved, period]);
+  }, [company, showResolved, month]);
 
   function getDraft(issue) {
     return drafts[issue.id] || { status: issue.status, assigned_to: issue.assigned_to, note: issue.note };
@@ -19063,11 +19094,46 @@ function InkoopFollowUpTab({ company }) {
         Genuine financial discrepancies worth physically checking -- mismatches, and purchases/invoice lines with no counterpart yet. Mark progress here so nothing gets checked twice or forgotten.
       </div>
       <div className="row-actions spread-actions">
-        <InkoopRangeSelect period={period} onChange={setPeriod} />
+        <button type="button" onClick={() => shiftMonth(-1)}>&lt; Previous</button>
+        <strong>{month}{selectedDay ? ` -- ${fustOverviewDate(selectedDay)}` : ""}</strong>
+        <button type="button" onClick={() => shiftMonth(1)} disabled={month >= todayIso().slice(0, 7)}>Next &gt;</button>
         <label className="inline-checkbox">
           <input type="checkbox" checked={showResolved} onChange={(event) => setShowResolved(event.target.checked)} />
           <span>Show resolved</span>
         </label>
+      </div>
+      <div className="notice">By <strong>invoice date</strong> (a Connect lot without an invoice line: its own date). Click a day for its lines, again for the whole month.</div>
+      <div className="inkoop-calendar-grid inkoop-calendar-weekdays">
+        {["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"].map((label) => <div key={label} className="inkoop-calendar-weekday">{label}</div>)}
+      </div>
+      <div className="inkoop-calendar-grid">
+        {(() => {
+          const [year, monthNumber] = month.split("-").map(Number);
+          const blanks = (new Date(year, monthNumber - 1, 1).getDay() + 6) % 7;
+          const count = new Date(year, monthNumber, 0).getDate();
+          return [
+            ...Array.from({ length: blanks }, (_, index) => <div key={`blank-${index}`} className="inkoop-calendar-cell blank" />),
+            ...Array.from({ length: count }, (_, index) => {
+              const date = `${month}-${String(index + 1).padStart(2, "0")}`;
+              const entry = issuesByDay.get(date);
+              const status = date > todayIso() ? "quiet" : entry ? "danger" : loading ? "quiet" : "full";
+              return (
+                <button type="button" key={date} className={`inkoop-calendar-cell ${status}${selectedDay === date ? " selected" : ""}`} onClick={() => setSelectedDay((current) => (current === date ? "" : date))} disabled={date > todayIso()}>
+                  <div className="inkoop-calendar-date">{index + 1}</div>
+                  <div className="inkoop-calendar-summary">
+                    {entry ? (
+                      <>
+                        <span>{entry.lines} open</span>
+                        <span>{formatInkoopEuro(entry.value)} at stake</span>
+                        <span>net {formatInkoopEuro(entry.net)}</span>
+                      </>
+                    ) : date <= todayIso() && !loading ? <span>nothing open</span> : null}
+                  </div>
+                </button>
+              );
+            }),
+          ];
+        })()}
       </div>
       {error && <div className="notice danger">{error}</div>}
       {loading ? (
@@ -20002,6 +20068,52 @@ function InkoopDestinationsTab() {
       )}
       {error && <div className="notice danger">{error}</div>}
 
+      <div style={loadingCorrections && corrections ? { opacity: 0.35, pointerEvents: "none" } : undefined}>
+      <InkoopCollapsibleCard title={corrections ? `Corrections check -- ${fustOverviewDate(corrections.from)} - ${fustOverviewDate(corrections.to)}` : "Corrections check"} count={correctionRows.length}>
+        <div className="notice">
+          A correction credits the whole invoiced lot and invoices the right amount again. What counts is whether what we <strong>pay</strong> is explained by what we <strong>received</strong> (the Connect lot): paying exactly for what came in (invoiced 200, credited 200, again 100, received 100) or less (invoiced 170, credited 50, again 40, received 170: 10 credited) is OK -- credited pieces don't have to go back to a retour customer; if they did, it says "credited and returned". Only <strong>paying for more than was received</strong> needs a look.
+        </div>
+        <div className="table-wrap">
+          <table className="data-table">
+            <thead>
+              <tr><th>Date</th><th>Invoice</th><th>PAV</th><th>Description</th><th>Invoiced</th><th>Credited</th><th>Invoiced again</th><th>Received (Connect)</th><th>Credited pieces</th><th>At retour</th><th>Net value</th><th>Status</th><th>Destination(s)</th></tr>
+            </thead>
+            <tbody>
+              {!corrections && <tr><td colSpan={13}>Loading corrections...</td></tr>}
+              {correctionRows.map((item, index) => (
+                <tr key={`${item.invoice_number}-${item.pav}-${index}`}>
+                  <td>{inkoopShortDate(item.invoice_date)}</td>
+                  <td><InkoopInvoiceLink invoiceNumber={item.invoice_number} /></td>
+                  <td>{item.pav}</td>
+                  <td>{item.description}</td>
+                  <td>{item.original || "-"}</td>
+                  <td>{item.credited ? `-${item.credited}` : "-"}</td>
+                  <td>{item.reissued || "-"}</td>
+                  <td>{item.received || "-"}</td>
+                  <td><strong>{item.over_invoiced ? `+${item.over_invoiced} paid too much` : item.returned || 0}</strong></td>
+                  <td>{item.retour_pieces || 0}</td>
+                  <td>{formatInkoopEuro(item.total)}</td>
+                  <td><InkoopRetourStatusBadge status={item.status} /></td>
+                  <td>
+                    {item.lots.flatMap((lot) => lot.destinations).length
+                      ? item.lots.flatMap((lot) => lot.destinations).map((dest, destIndex) => (
+                        <div key={`${dest.code}-${destIndex}`}>
+                          {dest.pieces} &rarr; {dest.code}{dest.name ? ` (${dest.name}${dest.land ? `, ${dest.land}` : ""})` : ""}{dest.is_retour ? " [retour 119]" : ""}{!dest.is_retour && dest.bw ? ` [intern: ${INKOOP_BW_LABELS[dest.bw] || `BW ${dest.bw}`}]` : ""}
+                        </div>
+                      ))
+                      : "-"}
+                  </td>
+                </tr>
+              ))}
+              {corrections && !correctionRows.length && (
+                <tr><td colSpan={13}>No corrections in this period.</td></tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+      </InkoopCollapsibleCard>
+      </div>
+
       {!summary && loadingSummary && <div className="notice">Loading destinations...</div>}
       {summary && (
         <div style={loadingSummary ? { opacity: 0.35, pointerEvents: "none" } : undefined}>
@@ -20052,51 +20164,6 @@ function InkoopDestinationsTab() {
         </div>
       )}
 
-      <div style={loadingCorrections && corrections ? { opacity: 0.35, pointerEvents: "none" } : undefined}>
-      <InkoopCollapsibleCard title={corrections ? `Corrections check -- ${fustOverviewDate(corrections.from)} - ${fustOverviewDate(corrections.to)}` : "Corrections check"} count={correctionRows.length}>
-        <div className="notice">
-          A correction credits the whole invoiced lot and invoices the right amount again. What counts is whether what we <strong>pay</strong> is explained by what we <strong>received</strong> (the Connect lot): paying exactly for what came in (invoiced 200, credited 200, again 100, received 100) or less (invoiced 170, credited 50, again 40, received 170: 10 credited) is OK -- credited pieces don't have to go back to a retour customer; if they did, it says "credited and returned". Only <strong>paying for more than was received</strong> needs a look.
-        </div>
-        <div className="table-wrap">
-          <table className="data-table">
-            <thead>
-              <tr><th>Date</th><th>Invoice</th><th>PAV</th><th>Description</th><th>Invoiced</th><th>Credited</th><th>Invoiced again</th><th>Received (Connect)</th><th>Credited pieces</th><th>At retour</th><th>Net value</th><th>Status</th><th>Destination(s)</th></tr>
-            </thead>
-            <tbody>
-              {!corrections && <tr><td colSpan={13}>Loading corrections...</td></tr>}
-              {correctionRows.map((item, index) => (
-                <tr key={`${item.invoice_number}-${item.pav}-${index}`}>
-                  <td>{inkoopShortDate(item.invoice_date)}</td>
-                  <td><InkoopInvoiceLink invoiceNumber={item.invoice_number} /></td>
-                  <td>{item.pav}</td>
-                  <td>{item.description}</td>
-                  <td>{item.original || "-"}</td>
-                  <td>{item.credited ? `-${item.credited}` : "-"}</td>
-                  <td>{item.reissued || "-"}</td>
-                  <td>{item.received || "-"}</td>
-                  <td><strong>{item.over_invoiced ? `+${item.over_invoiced} paid too much` : item.returned || 0}</strong></td>
-                  <td>{item.retour_pieces || 0}</td>
-                  <td>{formatInkoopEuro(item.total)}</td>
-                  <td><InkoopRetourStatusBadge status={item.status} /></td>
-                  <td>
-                    {item.lots.flatMap((lot) => lot.destinations).length
-                      ? item.lots.flatMap((lot) => lot.destinations).map((dest, destIndex) => (
-                        <div key={`${dest.code}-${destIndex}`}>
-                          {dest.pieces} &rarr; {dest.code}{dest.name ? ` (${dest.name}${dest.land ? `, ${dest.land}` : ""})` : ""}{dest.is_retour ? " [retour 119]" : ""}{!dest.is_retour && dest.bw ? ` [intern: ${INKOOP_BW_LABELS[dest.bw] || `BW ${dest.bw}`}]` : ""}
-                        </div>
-                      ))
-                      : "-"}
-                  </td>
-                </tr>
-              ))}
-              {corrections && !correctionRows.length && (
-                <tr><td colSpan={13}>No corrections in this period.</td></tr>
-              )}
-            </tbody>
-          </table>
-        </div>
-      </InkoopCollapsibleCard>
-      </div>
     </>
   );
 }
