@@ -17102,6 +17102,13 @@ function nextIsoDate(date) {
   return current.toISOString().slice(0, 10);
 }
 
+// Midnight of a day in the Netherlands, in seconds since 1970.
+function amsterdamMidnightEpochSeconds(isoDate) {
+  const utcMidnight = Date.parse(`${isoDate}T00:00:00Z`);
+  const amsterdamHour = Number(new Intl.DateTimeFormat("en-GB", { timeZone: "Europe/Amsterdam", hour: "2-digit", hourCycle: "h23" }).format(new Date(utcMidnight)));
+  return Math.floor((utcMidnight - amsterdamHour * 3600000) / 1000);
+}
+
 function buildUkdocsGmailSyncQuery(baseQuery, date) {
   const trimmedQuery = String(baseQuery || "").trim() || "has:attachment";
   const startDate = formatGmailQueryDate(date);
@@ -17109,7 +17116,10 @@ function buildUkdocsGmailSyncQuery(baseQuery, date) {
   if (!startDate || !nextDate) {
     return trimmedQuery;
   }
-  return `${trimmedQuery} after:${startDate} before:${nextDate}`.trim();
+  // Exact times, the Dutch day: a plain after:2026/10/22 is a day in
+  // Pacific time for Gmail, so an email before ~09:00 here counted for the
+  // day before and a sync of its own day never saw it.
+  return `${trimmedQuery} after:${amsterdamMidnightEpochSeconds(String(date).slice(0, 10))} before:${amsterdamMidnightEpochSeconds(nextIsoDate(date))}`.trim();
 }
 
 async function syncUkdocsPrintFromGmail(settings, requestUser, query, date) {
