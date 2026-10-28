@@ -9157,7 +9157,26 @@ function inkoopGapIsExplainedByAggregate(row, growerName, aggregateResult) {
 // own or Levering BB's) is on an invoice line counts for that line's grower,
 // whatever code it is booked under (a trader's, FloraHolland's WEST / VBA);
 // a lot with no grower code at all goes by its Aanv. (night action).
-function inkoopErpRowsForInvoiceGrowers(erpRows, invoiceLines, { supplierMap, supplierNameMap, manualLinks, supplierFhMap, growerOfCode, nonGrowerCodes }) {
+// The day's matches: per Connect lot, the grower codes of the invoice line
+// it was matched to (a pool's / split's every lot).
+function inkoopMatchedLotCodes(match, { supplierMap, supplierNameMap, manualLinks, supplierFhMap }) {
+  const byLot = new Map();
+  for (const row of [...(match?.matched_ok || []), ...(match?.matched_mismatch || [])]) {
+    if (!row?.erp_row) continue;
+    const resolved = resolveInkoopSupplierCode(row?.supplier_gln, row?.supplier_fh_number, row?.supplier_name, supplierMap, supplierNameMap, manualLinks, supplierFhMap);
+    const codes = [...new Set([...(resolved.codes || []), ...String(row.supplier_code || "").split(/[/+]/)].map((code) => normalizeInkoopKey(code)).filter(Boolean))];
+    if (!codes.length) continue;
+    const lots = Array.isArray(row.split_lots) && row.split_lots.length ? row.split_lots : String(row.erp_row.lot || "").split("+");
+    for (const lot of lots) if (String(lot).trim() && !byLot.has(String(lot).trim())) byLot.set(String(lot).trim(), codes);
+  }
+  return byLot;
+}
+
+// matchedLotCodes (inkoopMatchedLotCodes): a lot matched to an invoice line
+// counts for that line's grower first -- matched means paid for that
+// grower, also when Connect books it under another code (a Handel line has
+// no brief number to go by).
+function inkoopErpRowsForInvoiceGrowers(erpRows, invoiceLines, { supplierMap, supplierNameMap, manualLinks, supplierFhMap, growerOfCode, nonGrowerCodes, matchedLotCodes = null }) {
   const growerCodeByPav = new Map();
   for (const line of invoiceLines || []) {
     const pav = normalizeInkoopKey(line?.reference_bt);
@@ -9168,6 +9187,11 @@ function inkoopErpRowsForInvoiceGrowers(erpRows, invoiceLines, { supplierMap, su
   return (erpRows || []).map((row) => {
     const byPav = growerCodeByPav.get(normalizeInkoopKey(row?.pav)) || growerCodeByPav.get(normalizeInkoopKey(row?.levering_pav));
     const positions = [row?.suppl, row?.avc, row?.transp].map((value) => normalizeInkoopKey(value)).filter(Boolean);
+    const matchedCodes = matchedLotCodes?.get(String(row?.lot ?? "").trim());
+    if (matchedCodes?.length) {
+      return matchedCodes.some((code) => positions.includes(code)) ? row
+        : { ...row, suppl: matchedCodes[0], avc: matchedCodes[0], transp: "", booked_under: `${normalizeInkoopKey(row.suppl)} (matched to its invoice line)` };
+    }
     if (byPav) {
       return positions.includes(byPav) ? row : { ...row, suppl: byPav, avc: byPav, transp: "", booked_under: `${normalizeInkoopKey(row.suppl)} (via brief number)` };
     }
@@ -9177,15 +9201,19 @@ function inkoopErpRowsForInvoiceGrowers(erpRows, invoiceLines, { supplierMap, su
   });
 }
 
-async function buildInkoopAggregateContext(state, range) {
+// match (optional): the range's line matching -- its matched lots count for
+// their invoice line's grower (inkoopMatchedLotCodes).
+async function buildInkoopAggregateContext(state, range, match = null) {
   const [allErpRows, invoiceLines] = await Promise.all([
     getInkoopErpLines(range),
     getInkoopInvoiceLines(range),
   ]);
+  const maps = { supplierMap: state.supplier_map, supplierNameMap: state.supplier_name_map, manualLinks: state.manual_supplier_links, supplierFhMap: state.supplier_fh_map };
   const erpRows = inkoopErpRowsForInvoiceGrowers(excludeInkoopInternalBunchRows(allErpRows, state.supplier_bw_map, inkoopExcludedErpCodes(state)), invoiceLines, {
-    supplierMap: state.supplier_map, supplierNameMap: state.supplier_name_map, manualLinks: state.manual_supplier_links, supplierFhMap: state.supplier_fh_map,
+    ...maps,
     growerOfCode: buildInkoopCodeNameMap(state.supplier_map, state.supplier_name_map, state.supplier_fh_map, state.facturation_groups),
     nonGrowerCodes: inkoopNonGrowerCodes,
+    matchedLotCodes: match ? inkoopMatchedLotCodes(match, maps) : null,
   });
   const aggregateResult = computeInkoopAggregateMismatches(
     erpRows, invoiceLines,
@@ -9491,8 +9519,8 @@ async function computeInkoopLiveMatch(state, range) {
   return inkoopCachedCompute("match", range, () => computeInkoopLiveMatchFresh(state, range));
 }
 
-function buildInkoopAggregateContextCached(state, range) {
-  return inkoopCachedCompute("aggregate", range, () => buildInkoopAggregateContext(state, range));
+function buildInkoopAggregateContextCached(state, range, match = null) {
+  return inkoopCachedCompute("aggregate", range, () => buildInkoopAggregateContext(state, range, match));
 }
 
 // --- Matching per day -------------------------------------------------------
@@ -9544,14 +9572,14 @@ async function computeInkoopDayFresh(state, date, { cache = true } = {}) {
     // computation at a time together with the pages.
     const run = inkoopMatchLock.then(async () => {
       const match = await computeInkoopLiveMatchFresh(state, window);
-      const aggregateContext = await buildInkoopAggregateContext(state, window);
+      const aggregateContext = await buildInkoopAggregateContext(state, window, match);
       return { date, result: inkoopResultOnDay(match, date), aggregateContext };
     });
     inkoopMatchLock = run.catch(() => {});
     return run;
   }
   const match = await computeInkoopLiveMatch(state, window);
-  const aggregateContext = await buildInkoopAggregateContextCached(state, window);
+  const aggregateContext = await buildInkoopAggregateContextCached(state, window, match);
   return { date, result: inkoopResultOnDay(match, date), aggregateContext };
 }
 
@@ -9605,7 +9633,7 @@ const INKOOP_EMPTY_DAY_BUCKET = {
 // compared again once (at start-up), not only days whose data changed.
 // 2026-10-21: grower directory (learned links, Handel evidence), supplier
 // pairs stored on the invoice date.
-const INKOOP_MATCH_RULES_VERSION = "2026-10-28b";
+const INKOOP_MATCH_RULES_VERSION = "2026-10-28c";
 
 function inkoopStateFingerprint(state) {
   return crypto.createHash("sha1").update(JSON.stringify([
