@@ -8145,6 +8145,25 @@ function matchInkoopVeilingLines(erpRows, invoices, supplierMap = {}, supplierNa
         : byAanv.length > 1 ? (inkoopBestNamedRow(byAanv, item) || (nearestAanv.length === 1 ? nearestAanv[0] : null))
           : pooled.length === 1 ? pooled[0] : inkoopBestNamedRow(pooled, item);
       if (!row) {
+        // One line, several lots of its Aanv. the same day that add up to
+        // its pieces (16-10 IFT DI ST GEM 4800 = "Mix IFT" 4000 + 800, F2).
+        const parts = withBrief ? [] : (Array.isArray(erpRows) ? erpRows : []).filter((lot) => lot?.uniware_aanv && !consumedErpRows.has(lot)
+          && String(lot?.date || "").slice(0, 10) === date && priceFits(lot, item.unit_price) && codes.has(aanvCodeOf(lot))
+          && Number(lot.pieces) > 0 && Number(lot.pieces) < Number(item.quantity)).slice(0, 14);
+        const combination = parts.length > 1 ? findInkoopPiecesCombination(parts, Number(item.quantity)) : null;
+        if (combination) {
+          for (const lot of combination) consumedErpRows.add(lot);
+          const sorted = [...combination].sort((left, right) => Number(left.lot) - Number(right.lot));
+          matchedOk.push({
+            ...item,
+            supplier_code: item.supplier_code || aanvCodeOf(sorted[0]),
+            supplier_match_type: `Aanv. ${sorted[0].uniware_aanv} (night action): ${sorted.length} lots the same day`,
+            erp_row: { ...sorted[0], lot: sorted.map((lot) => lot.lot).join("+"), pieces: item.quantity, t_price: sorted.reduce((sum, lot) => sum + (parseFloat(lot.t_price) || 0), 0) },
+            matched_as_split_delivery: true,
+            split_lots: sorted.map((lot) => lot.lot),
+          });
+          continue;
+        }
         rest.push(item);
         continue;
       }
@@ -9675,7 +9694,7 @@ const INKOOP_EMPTY_DAY_BUCKET = {
 // compared again once (at start-up), not only days whose data changed.
 // 2026-10-21: grower directory (learned links, Handel evidence), supplier
 // pairs stored on the invoice date.
-const INKOOP_MATCH_RULES_VERSION = "2026-10-28d";
+const INKOOP_MATCH_RULES_VERSION = "2026-10-28e";
 
 function inkoopStateFingerprint(state) {
   return crypto.createHash("sha1").update(JSON.stringify([
