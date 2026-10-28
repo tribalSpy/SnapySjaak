@@ -7943,7 +7943,12 @@ function matchInkoopVeilingLines(erpRows, invoices, supplierMap = {}, supplierNa
     });
   }
 
-  for (const item of preparedPavLines) {
+  // Lines with a lot of exactly their pieces and price under their brief
+  // number go first: two lines of one brief number (84 + 6) and one lot of 6
+  // -- the 6 is that lot's line, the 84 the one without (FA5T20a 19-10).
+  const hasExactPavLot = (item) => (erpByPav.get(item.pav) || []).some((row) => !inkoopValuesDiffer(row.pieces, item.quantity) && priceFits(row, item.unit_price));
+  const pavLinesInOrder = [...preparedPavLines.filter(hasExactPavLot), ...preparedPavLines.filter((item) => !hasExactPavLot(item))];
+  for (const item of pavLinesInOrder) {
     const referenceBt = item.pav;
     const context = item;
     // A single Briefnummer can cover more than one purchase (a cart sold
@@ -9730,7 +9735,7 @@ const INKOOP_EMPTY_DAY_BUCKET = {
 // compared again once (at start-up), not only days whose data changed.
 // 2026-10-21: grower directory (learned links, Handel evidence), supplier
 // pairs stored on the invoice date.
-const INKOOP_MATCH_RULES_VERSION = "2026-10-28g";
+const INKOOP_MATCH_RULES_VERSION = "2026-10-28h";
 
 function inkoopStateFingerprint(state) {
   return crypto.createHash("sha1").update(JSON.stringify([
