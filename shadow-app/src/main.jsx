@@ -17441,7 +17441,7 @@ function InkoopRangeSelect({ period, onChange }) {
 function InkoopResultTables({ result, windowDays, manualLinkDrafts, setManualLinkDrafts, onLinkSupplier, skippedFiles, manualLinks }) {
   // "Only in Connect" by betaalwijze: by default only V (via veiling) --
   // the purchases FloraHolland invoices; direct (D), mix (M) ... on request.
-  const [erpBwFilter, setErpBwFilter] = useState(["V"]);
+  const [erpBwFilter, setErpBwFilter] = useState(INKOOP_INVOICED_BW);
   const erpBwOf = (row) => row?.supplier_bw || "?";
   const erpBwTotals = new Map();
   for (const row of result?.only_in_erp || []) {
@@ -17642,7 +17642,7 @@ function InkoopResultTables({ result, windowDays, manualLinkDrafts, setManualLin
           <div className="row-actions" style={{ marginBottom: 8 }}>
             <strong>Betaalwijze:</strong>
             <label className="checkbox-label"><input type="radio" checked={!erpBwFilter} onChange={() => setErpBwFilter(null)} /><span>all</span></label>
-            <label className="checkbox-label"><input type="radio" checked={Boolean(erpBwFilter)} onChange={() => setErpBwFilter(erpBwFilter || ["V"])} /><span>only</span></label>
+            <label className="checkbox-label"><input type="radio" checked={Boolean(erpBwFilter)} onChange={() => setErpBwFilter(erpBwFilter || INKOOP_INVOICED_BW)} /><span>only</span></label>
             {erpBwFilter && erpBwOptions.map(([bw, count, value]) => (
               <label key={bw} className="checkbox-label">
                 <input type="checkbox" checked={erpBwFilter.includes(bw)} onChange={() => setErpBwFilter((current) => (current.includes(bw) ? current.filter((item) => item !== bw) : [...current, bw]))} />
@@ -17829,7 +17829,7 @@ function InkoopPeriodReports({ company }) {
     <div className="row-actions" style={{ marginBottom: 8 }}>
       <strong>Connect side:</strong>
       <label className="checkbox-label"><input type="radio" checked={!bwChoice} onChange={() => setBwChoice(null)} /><span>all</span></label>
-      <label className="checkbox-label"><input type="radio" checked={Boolean(bwChoice)} onChange={() => setBwChoice(bwChoice || ["V"])} /><span>only betaalwijze</span></label>
+      <label className="checkbox-label"><input type="radio" checked={Boolean(bwChoice)} onChange={() => setBwChoice(bwChoice || INKOOP_INVOICED_BW)} /><span>only betaalwijze</span></label>
       {bwChoice && bwCodes.map((bw) => (
         <label key={bw} className="checkbox-label">
           <input type="checkbox" checked={bwChoice.includes(bw)} onChange={() => toggleBw(bw)} />
@@ -17966,7 +17966,7 @@ function InkoopBwFilter({ items, value, onChange, valueOf, dark = false }) {
     <div className="row-actions" style={{ margin: "6px 0" }}>
       <strong>Betaalwijze:</strong>
       <label className="checkbox-label"><input type="radio" checked={!value} onChange={() => onChange(null)} /><span>all</span></label>
-      <label className="checkbox-label"><input type="radio" checked={Boolean(value)} onChange={() => onChange(value || ["V"])} /><span>only</span></label>
+      <label className="checkbox-label"><input type="radio" checked={Boolean(value)} onChange={() => onChange(value || INKOOP_INVOICED_BW)} /><span>only</span></label>
       {value && options.map(([bw, count, total]) => (
         <label key={bw} className="checkbox-label">
           <input type="checkbox" checked={value.includes(bw)} onChange={() => onChange(value.includes(bw) ? value.filter((item) => item !== bw) : [...value, bw])} />
@@ -18060,7 +18060,7 @@ function InkoopGrowerLines({ from, to, company, grower, side }) {
 function InkoopGrowerPopup({ from, to, types, title, company, onClose }) {
   const [issues, setIssues] = useState(null);
   const [error, setError] = useState("");
-  const [bwFilter, setBwFilter] = useState(["V"]);
+  const [bwFilter, setBwFilter] = useState(INKOOP_INVOICED_BW);
   // Clicked: a grower's invoice lines, Connect lots, or both.
   const [opened, setOpened] = useState(null);
   const toggleOpened = (grower, side) => setOpened((current) => (current?.grower === grower && current.side === side ? null : { grower, side }));
@@ -18456,7 +18456,7 @@ function InkoopFinanceHero({ company, dayReport, period }) {
         </div>
         <div className="row-actions">
           <span className="fin-sub">Connect side:</span>
-          <label className="checkbox-label"><input type="checkbox" checked={!bwChoice} onChange={(event) => setBwChoice(event.target.checked ? null : ["V"])} /><span>all</span></label>
+          <label className="checkbox-label"><input type="checkbox" checked={!bwChoice} onChange={(event) => setBwChoice(event.target.checked ? null : INKOOP_INVOICED_BW)} /><span>all</span></label>
           {bwCodes.map((bw) => (
             <label key={bw} className="checkbox-label" title={bw === "?" ? "Connect codes without a BW" : INKOOP_BW_LABELS[bw] || ""}>
               <input
@@ -18785,14 +18785,14 @@ function InkoopCalendarTab({ company, manualLinkDrafts, setManualLinkDrafts, onL
   const [dayLoading, setDayLoading] = useState(false);
   const [pendingDays, setPendingDays] = useState(0);
   // Which betaalwijzen' "only in Connect" lots count as a gap: by default
-  // via veiling (V) and codes without a BW -- D (direct) / F (FOB) lots never
-  // get a FloraHolland invoice. Remembered in this browser.
+  // via veiling (V), AI2 (A) and codes without a BW -- D (direct) / F (FOB)
+  // lots never get an invoice. Remembered in this browser.
   const [calendarBw, setCalendarBw] = useState(() => {
     try {
       const saved = JSON.parse(window.localStorage.getItem("inkoop-calendar-bw") || "null");
-      return Array.isArray(saved) ? saved : ["V", "?"];
+      return Array.isArray(saved) ? saved : ["V", "A", "?"];
     } catch {
-      return ["V", "?"];
+      return ["V", "A", "?"];
     }
   });
   function toggleCalendarBw(bw) {
@@ -18973,7 +18973,7 @@ function InkoopFollowUpTab({ company }) {
   const [drafts, setDrafts] = useState({});
   const [savingId, setSavingId] = useState("");
   // Per grower first; by default only via veiling (FloraHolland) and every type.
-  const [bwFilter, setBwFilter] = useState(["V"]);
+  const [bwFilter, setBwFilter] = useState(INKOOP_INVOICED_BW);
   // "Day total" is the grower's whole day -- it overlaps that day's lines, so
   // it is off by default (counted together the value would double).
   const [typeFilter, setTypeFilter] = useState(["mismatch", "gap_erp", "gap_invoice"]);
@@ -19144,6 +19144,11 @@ function InkoopFollowUpTab({ company }) {
 }
 
 // "BW" (betaalwijze) from the kwekers/leveranciers/klant exports.
+// The betaalwijzen that get an invoice: V via veiling (FloraHolland's) and A
+// (the AI2 nota) -- the Connect side's default, or AI2 growers (Dutch Green
+// Centre) show their invoices against no Connect value.
+const INKOOP_INVOICED_BW = ["V", "A"];
+
 const INKOOP_BW_LABELS = {
   A: "AI2",
   B: "bunches",
