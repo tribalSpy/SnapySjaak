@@ -15532,6 +15532,18 @@ function inkoopPiecesText(total, boxes, perBox) {
   return total ?? "";
 }
 
+// Boxes x pieces per box ("7 × 100") for its own column before the
+// quantity: the invoice line's Aantal x Stuks, else -- an invoice uploaded
+// before those were kept -- its matched Connect lot's Items x Cont. when
+// that lot has the same pieces. Empty when not known.
+function inkoopBoxesText(total, boxes, perBox, erpRow = null) {
+  const pieces = Number(total);
+  const fits = (count, each) => Number(count) > 0 && Number(each) > 0 && Number.isFinite(pieces) && Math.abs(Number(count) * Number(each) - pieces) < 0.01;
+  if (fits(boxes, perBox)) return `${Number(boxes)} × ${Number(perBox)}`;
+  if (erpRow && fits(erpRow.items, erpRow.cont)) return `${Number(erpRow.items)} × ${Number(erpRow.cont)}`;
+  return "";
+}
+
 function inkoopErpTranscript(erpRow) {
   if (!erpRow) {
     return "-";
@@ -17328,7 +17340,7 @@ function InkoopMatchedTable({ rows }) {
       <div className="table-wrap">
         <table className="data-table">
           <thead>
-            <tr><th>Date</th><th>Company</th><th>Invoice</th><th>PAV / supplier</th><th>Grower</th><th>Description</th><th>Qty</th><th>Price</th><th>Total</th><th>Matched Connect line</th><th>Matched by</th></tr>
+            <tr><th>Date</th><th>Company</th><th>Invoice</th><th>PAV / supplier</th><th>Grower</th><th>Description</th><th>Boxes</th><th>Qty</th><th>Price</th><th>Total</th><th>Matched Connect line</th><th>Matched by</th></tr>
           </thead>
           <tbody>
             {filtered.slice(0, limit).map((row, index) => (
@@ -17339,7 +17351,7 @@ function InkoopMatchedTable({ rows }) {
                 <td>{row.pav || row.supplier_code || "-"}</td>
                 <td>{row.supplier_name || "-"}</td>
                 <td>{row.description}</td>
-                <td>{inkoopPiecesText(row.quantity, row.packages, row.per_package)}</td>
+                <td>{inkoopBoxesText(row.quantity, row.packages, row.per_package, row.erp_row)}</td><td>{row.quantity}</td>
                 <td>{row.unit_price}</td>
                 <td>{row.total}</td>
                 <td>{row.erp_row ? inkoopErpTranscript(row.erp_row) : "-"}</td>
@@ -17522,7 +17534,7 @@ function InkoopResultTables({ result, windowDays, manualLinkDrafts, setManualLin
           </div>
           <div className="table-wrap">
             <table className="data-table">
-              <thead><tr><th>Date</th><th>Company</th><th>Invoice</th><th>FH number</th><th>Grower</th><th>Description</th><th>Quantity</th><th>Unit price</th><th>Your code</th><th></th></tr></thead>
+              <thead><tr><th>Date</th><th>Company</th><th>Invoice</th><th>FH number</th><th>Grower</th><th>Description</th><th>Boxes</th><th>Quantity</th><th>Unit price</th><th>Your code</th><th></th></tr></thead>
               <tbody>
                 {result.supplier_not_linked.map((row, index) => (
                   <tr key={index}>
@@ -17532,7 +17544,7 @@ function InkoopResultTables({ result, windowDays, manualLinkDrafts, setManualLin
                     <td>{row.supplier_fh_number}</td>
                     <td>{row.supplier_name}</td>
                     <td>{row.description}</td>
-                    <td>{inkoopPiecesText(row.quantity, row.packages, row.per_package)}</td>
+                    <td>{inkoopBoxesText(row.quantity, row.packages, row.per_package, row.erp_row)}</td><td>{row.quantity}</td>
                     <td>{row.unit_price}</td>
                     <td>
                       <input
@@ -17558,7 +17570,7 @@ function InkoopResultTables({ result, windowDays, manualLinkDrafts, setManualLin
           </div>
           <div className="table-wrap">
             <table className="data-table">
-              <thead><tr><th>Date</th><th>Company</th><th>Invoice</th><th>Supplier</th><th>Quantity</th><th>Unit price</th><th>Candidate lots (Connect)</th></tr></thead>
+              <thead><tr><th>Date</th><th>Company</th><th>Invoice</th><th>Supplier</th><th>Boxes</th><th>Quantity</th><th>Unit price</th><th>Candidate lots (Connect)</th></tr></thead>
               <tbody>
                 {result.ambiguous_matches.map((row, index) => (
                   <tr key={index}>
@@ -17566,7 +17578,7 @@ function InkoopResultTables({ result, windowDays, manualLinkDrafts, setManualLin
                     <td>{inkoopCompanyLabel(row)}</td>
                     <td><InkoopInvoiceLink invoiceNumber={row.invoice_number} /></td>
                     <td>{row.supplier_code}{row.supplier_match_type === "name" ? " (name match)" : ""}</td>
-                    <td>{inkoopPiecesText(row.quantity, row.packages, row.per_package)}</td>
+                    <td>{inkoopBoxesText(row.quantity, row.packages, row.per_package, row.erp_row)}</td><td>{row.quantity}</td>
                     <td>{row.unit_price}</td>
                     <td>{row.candidates.map((c) => `${c.lot} (${String(c.description || "").trim()})`).join(", ")}</td>
                   </tr>
@@ -17587,7 +17599,7 @@ function InkoopResultTables({ result, windowDays, manualLinkDrafts, setManualLin
           </div>
           <div className="table-wrap">
             <table className="data-table">
-              <thead><tr><th>Date</th><th>Company</th><th>Invoice</th><th>PAV / supplier</th><th>Description</th><th>Quantity</th><th>Unit price</th><th>Total</th><th>Your code</th><th></th></tr></thead>
+              <thead><tr><th>Date</th><th>Company</th><th>Invoice</th><th>PAV / supplier</th><th>Description</th><th>Boxes</th><th>Quantity</th><th>Unit price</th><th>Total</th><th>Your code</th><th></th></tr></thead>
               <tbody>
                 {result.only_in_invoice.map((row, index) => {
                   const canLink = (row.invoice_type === "handel" || row.invoice_type === "ai2" || row.invoice_type === "connect") && (row.supplier_gln || row.supplier_fh_number);
@@ -17602,7 +17614,7 @@ function InkoopResultTables({ result, windowDays, manualLinkDrafts, setManualLin
                         {row.description}
                         <InkoopConnectCheck check={row.connect_check} code={row.supplier_code} quantity={row.quantity} price={row.unit_price} />
                       </td>
-                      <td>{inkoopPiecesText(row.quantity, row.packages, row.per_package)}</td>
+                      <td>{inkoopBoxesText(row.quantity, row.packages, row.per_package, row.erp_row)}</td><td>{row.quantity}</td>
                       <td>{row.unit_price}</td>
                       <td>{row.total}</td>
                       <td>
@@ -17645,10 +17657,10 @@ function InkoopResultTables({ result, windowDays, manualLinkDrafts, setManualLin
           </div>
           <div className="table-wrap">
             <table className="data-table">
-              <thead><tr><th>Date</th><th>PAV</th><th>Lot</th><th>Description</th><th>Pieces</th><th>Price</th><th>Total</th><th>Supplier</th></tr></thead>
+              <thead><tr><th>Date</th><th>PAV</th><th>Lot</th><th>Description</th><th>Boxes</th><th>Pieces</th><th>Price</th><th>Total</th><th>Supplier</th></tr></thead>
               <tbody>
                 {erpRowsShown.map((row, index) => (
-                  <tr key={index}><td>{inkoopShortDate(row.date)}</td><td>{row.pav}</td><td>{row.lot}</td><td>{row.description}</td><td>{inkoopPiecesText(row.pieces, row.items, row.cont)}</td><td>{row.price}</td><td>{row.t_price}</td><td>{row.suppl}{row.supplier_bw ? ` (BW ${row.supplier_bw}${INKOOP_BW_LABELS[row.supplier_bw] ? `: ${INKOOP_BW_LABELS[row.supplier_bw]}` : ""})` : ""}</td></tr>
+                  <tr key={index}><td>{inkoopShortDate(row.date)}</td><td>{row.pav}</td><td>{row.lot}</td><td>{row.description}</td><td>{inkoopBoxesText(row.pieces, row.items, row.cont)}</td><td>{row.pieces}</td><td>{row.price}</td><td>{row.t_price}</td><td>{row.suppl}{row.supplier_bw ? ` (BW ${row.supplier_bw}${INKOOP_BW_LABELS[row.supplier_bw] ? `: ${INKOOP_BW_LABELS[row.supplier_bw]}` : ""})` : ""}</td></tr>
                 ))}
               </tbody>
             </table>
@@ -18172,10 +18184,10 @@ function InkoopGrowerTotals({ company, from, to, bwChoice }) {
             <div>
               <div className="fin-sub" style={{ marginBottom: 4 }}><strong>Invoice lines ({detail.invoice_lines.length})</strong></div>
               <table className="fin-table">
-                <thead><tr><th>Invoice</th><th>Brief</th><th>Product</th><th>Pieces</th><th>Price</th><th>Total</th></tr></thead>
+                <thead><tr><th>Invoice</th><th>Brief</th><th>Product</th><th>Boxes</th><th>Pieces</th><th>Price</th><th>Total</th></tr></thead>
                 <tbody>
                   {detail.invoice_lines.map((line, index) => (
-                    <tr key={index}><td><InkoopInvoiceLink invoiceNumber={line.invoice_number} /></td><td>{line.reference_bt || "-"}</td><td>{line.description}</td><td>{inkoopPiecesText(line.quantity, line.packages, line.per_package)}</td><td>{line.unit_price}</td><td>{formatInkoopEuro(line.total)}</td></tr>
+                    <tr key={index}><td><InkoopInvoiceLink invoiceNumber={line.invoice_number} /></td><td>{line.reference_bt || "-"}</td><td>{line.description}</td><td>{inkoopBoxesText(line.quantity, line.packages, line.per_package)}</td><td>{line.quantity}</td><td>{line.unit_price}</td><td>{formatInkoopEuro(line.total)}</td></tr>
                   ))}
                   {!detail.invoice_lines.length && <tr><td colSpan="6">None.</td></tr>}
                 </tbody>
@@ -18184,10 +18196,10 @@ function InkoopGrowerTotals({ company, from, to, bwChoice }) {
             <div>
               <div className="fin-sub" style={{ marginBottom: 4 }}><strong>Connect lots ({detail.connect_lots.length})</strong></div>
               <table className="fin-table">
-                <thead><tr><th>Lot</th><th>PAV</th><th>Code</th><th>Product</th><th>Pieces</th><th>Price</th><th>Total</th></tr></thead>
+                <thead><tr><th>Lot</th><th>PAV</th><th>Code</th><th>Product</th><th>Boxes</th><th>Pieces</th><th>Price</th><th>Total</th></tr></thead>
                 <tbody>
                   {detail.connect_lots.map((lot) => (
-                    <tr key={lot.lot}><td>{lot.lot}</td><td>{String(lot.pav || "").trim() || "-"}</td><td>{String(lot.suppl || "").trim()}</td><td>{lot.description}</td><td>{inkoopPiecesText(lot.pieces, lot.items, lot.cont)}</td><td>{lot.price}</td><td>{formatInkoopEuro(lot.t_price)}</td></tr>
+                    <tr key={lot.lot}><td>{lot.lot}</td><td>{String(lot.pav || "").trim() || "-"}</td><td>{String(lot.suppl || "").trim()}</td><td>{lot.description}</td><td>{inkoopBoxesText(lot.pieces, lot.items, lot.cont)}</td><td>{lot.pieces}</td><td>{lot.price}</td><td>{formatInkoopEuro(lot.t_price)}</td></tr>
                   ))}
                   {!detail.connect_lots.length && <tr><td colSpan="7">None.</td></tr>}
                 </tbody>
@@ -18817,11 +18829,20 @@ function InkoopCalendarTab({ company, manualLinkDrafts, setManualLinkDrafts, onL
                 >
                   <div className="inkoop-calendar-date">{Number(day.date.slice(8, 10))}</div>
                   <div className="inkoop-calendar-summary">
-                    {day.mismatch_count > 0 && <span>{day.mismatch_count} mismatch</span>}
-                    {day.gap_count > 0 && <span>{day.gap_count} gap</span>}
-                    {(day.mismatch_value + day.gap_value) > 0
-                      ? <span>{formatInkoopEuro(day.mismatch_value + day.gap_value)} at risk</span>
-                      : day.invoice_value > 0 && <span>{formatInkoopEuro(day.invoice_value)}</span>}
+                    {/* The mistakes' amount and how much of the invoiced
+                        value found its Connect lot (as the Financial
+                        Dashboard's matched %). */}
+                    {day.mismatch_value > 0 && <span>{formatInkoopEuro(day.mismatch_value)} mistakes</span>}
+                    {day.purchase_value > 0 && (() => {
+                      const unmatchedValue = Number(day.unmatched_invoice_value ?? day.gap_invoice_value) || 0;
+                      const matched = Math.max(0, Math.min(100, ((day.purchase_value - unmatchedValue) / day.purchase_value) * 100));
+                      return (
+                        <>
+                          <span>{matched.toFixed(1)}% matched</span>
+                          <span>{(100 - matched).toFixed(1)}% unmatched</span>
+                        </>
+                      );
+                    })()}
                   </div>
                 </button>
               ))}

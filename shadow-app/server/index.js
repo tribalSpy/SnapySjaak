@@ -24717,13 +24717,18 @@ async function handleApi(req, res, url) {
         // listed in pending_days and the page asks again shortly); a day
         // without a comparison row has no data at all.
         const fingerprint = await inkoopCurrentFingerprint();
-        const [stored, matchDays] = await Promise.all([
+        const [stored, matchDays, unmatched] = await Promise.all([
           getInkoopDaySummaries({ from: monthStart, to: lastDay }),
           getInkoopMatchDays({ from: monthStart, to: lastDay, withData: false }),
+          // Every invoice line without its Connect lot -- what "matched %"
+          // means (as on the Financial Dashboard).
+          getInkoopUnmatchedInvoiceTotals({ unit: "day", company, from: monthStart, to: lastDay }).catch(() => new Map()),
         ]);
         const summarized = new Set(stored.filter((row) => row.company === "").map((row) => row.date));
         for (const row of stored) {
-          if (row.company === company) buckets.set(row.date, { ...row.bucket, date: row.date });
+          if (row.company === company) {
+            buckets.set(row.date, { ...row.bucket, date: row.date, unmatched_invoice_value: unmatched.get(row.date)?.value || 0, unmatched_invoice_lines: unmatched.get(row.date)?.lines || 0 });
+          }
         }
         const missingSummary = [];
         for (const day of matchDays) {
