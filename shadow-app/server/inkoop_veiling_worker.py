@@ -34,7 +34,8 @@ def cell_value(value):
     return value
 
 
-ERP_DASH_DATE_RE = re.compile(r"^(\d{2})-(\d{2})-(\d{2})$")
+# "20-10-26", and "20-10-2026" / "20/10/2026" / "20.10.2026" (newer exports).
+ERP_DASH_DATE_RE = re.compile(r"^(\d{1,2})[-/.](\d{1,2})[-/.](\d{4}|\d{2})$")
 
 
 # The "Date"/"ITE.date" columns arrive as either a real datetime (the xlsx
@@ -48,7 +49,7 @@ def normalize_erp_date(value):
     match = ERP_DASH_DATE_RE.match(text)
     if match:
         day, month, year = match.groups()
-        return f"20{year}-{month}-{day}"
+        return f"{year if len(year) == 4 else '20' + year}-{int(month):02d}-{int(day):02d}"
     return text
 
 
