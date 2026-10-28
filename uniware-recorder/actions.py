@@ -379,11 +379,11 @@ def list_row_lot_or_afgemeld(text: str) -> str | None:
 
 def popup_trnum(lines: list[str]) -> str | None:
     """The TrNum in an Afgemeld row's popup: its Floriday order number has
-    "99288" at positions 4-8 and the 7-digit TrNum right after
+    "99288" (or 99289) at positions 4-8 and the 7-digit TrNum right after
     ("18699288285736500066" -> "2857365")."""
     for line in lines or []:
         text = str(line).replace(" ", "").translate(str.maketrans("ûÛOoIlSs", "00001155"))
-        found = re.search(r"(?<!\d)\d{3}99288(\d{7})\d{5}(?!\d)", text)
+        found = re.search(r"(?<!\d)\d{3}9928\d(\d{7})\d{5}(?!\d)", text)
         if found:
             return found.group(1)
     return None

@@ -7144,7 +7144,9 @@ function parseInkoopLotInfo(info) {
   let orderNumber = "";
   const customerCode = lines.findIndex((line) => /klant\s*code/i.test(line));
   if (customerCode >= 0) {
-    const next = compact.slice(customerCode + 1).find((line) => /^[A-Z]{0,3}\d{6,24}$/i.test(line));
+    // Not the GLN (87 + 11 digits) -- a split lot's popup has that right
+    // after "Klant code" and no order number (ALTAJ 16-10, 8713783478363).
+    const next = compact.slice(customerCode + 1).find((line) => /^[A-Z]{0,3}\d{6,24}$/i.test(line) && !/^87\d{11}$/.test(line));
     if (next) orderNumber = next;
   }
   if (!orderNumber) {
@@ -7200,7 +7202,10 @@ function parseInkoopEppList(base64) {
       // The list row's VBN code and Omschrijving ("EUC SEASONAL MIX PER BU").
       const vbn = /^\d{1,7}$/.test(value("vbn")) ? value("vbn") : "";
       const description = value("omschrijving").slice(0, 120);
-      rows.push({ lot: Number(lot), epp, info, ...parseInkoopLotInfo(info), aanv, vbn, description });
+      // The row's TrNum: a split lot carries its order's (the invoice line's
+      // ON names it), also when its popup has no order number.
+      const trnum = /^\d{3,10}$/.test(value("trnum")) ? String(Number(value("trnum"))) : "";
+      rows.push({ lot: Number(lot), epp, info, ...parseInkoopLotInfo(info), aanv, vbn, description, trnum });
       continue;
     }
     const cells = line.split(/[;,\t ]+/).map((cell) => cell.trim().replace(/^"|"$/g, ""));
@@ -7537,11 +7542,11 @@ function inkoopOrderKey(value) {
 }
 
 // Is a Connect lot's order number (night action) the invoice line's?
-// The TrNum in a Floriday order number: "xxx99288" + the 7-digit TrNum
+// The TrNum in a Floriday order number: "xxx9928x" (99288, 99289) + the 7-digit TrNum
 // ("18699288285777100" -> "2857771") -- an invoice line names the night
 // action's "Afgemeld" row itself, also when its popup wasn't read.
 function inkoopOrderTrnum(order) {
-  const found = normalizeUkdocsText(order).replace(/\s+/g, "").match(/^\d{3}99288(\d{7})/);
+  const found = normalizeUkdocsText(order).replace(/\s+/g, "").match(/^\d{3}9928\d(\d{7})/);
   return found && Number(found[1]) > 0 ? String(Number(found[1])) : "";
 }
 
@@ -8051,7 +8056,7 @@ function matchInkoopVeilingLines(erpRows, invoices, supplierMap = {}, supplierNa
   // order number (+ up to 3 digits: the 20-digit code is the ON plus 3) or
   // an EPP that ends in the line's brief number (without its letter).
   const freeErpRows = (Array.isArray(erpRows) ? erpRows : []).filter((row) => !consumedErpRows.has(row));
-  if (freeErpRows.some((row) => row?.uniware_order || row?.uniware_epp)) {
+  if (freeErpRows.some((row) => row?.uniware_order || row?.uniware_epp || row?.uniware_trnum)) {
     const daysApart = (left, right) => Math.abs((Date.parse(String(left || "").slice(0, 10)) - Date.parse(String(right || "").slice(0, 10))) / 86400000);
     const secondChance = (unmatched) => {
     const stillOnlyInInvoice = [];
@@ -8071,6 +8076,34 @@ function matchInkoopVeilingLines(erpRows, invoices, supplierMap = {}, supplierNa
           if (exact.length === 1) found = exact;
         }
         via = "order number (night action)";
+      }
+      // The TrNum in the order number (xxx9928x + 7 digits) on the lots of
+      // the night action: an order split over lots in Connect (ALTAJ 16-10:
+      // 40 x 75 = 27 + 13 boxes, TrNum 2058931) -- the one lot, the one
+      // with the line's pieces, or the lots that add up to them.
+      const trnum = inkoopOrderTrnum(order);
+      if (found.length !== 1 && trnum) {
+        const byTrnum = free.filter((row) => String(row?.uniware_trnum || "") === trnum && priceFits(row, item.unit_price));
+        const exact = byTrnum.filter((row) => !inkoopValuesDiffer(row.pieces, item.quantity));
+        const combination = byTrnum.length > 1 && !exact.length ? findInkoopPiecesCombination(byTrnum, Number(item.quantity)) : null;
+        if (combination) {
+          for (const row of combination) consumedErpRows.add(row);
+          const sorted = [...combination].sort((left, right) => Number(left.lot) - Number(right.lot));
+          matchedOk.push({
+            ...item,
+            supplier_code: item.supplier_code || resolveErpRowSupplierCode(sorted[0], validSupplierCodes),
+            supplier_match_type: `TrNum ${trnum} (night action): ${sorted.length} lots`,
+            erp_row: { ...sorted[0], lot: sorted.map((row) => row.lot).join("+"), pieces: item.quantity, t_price: sorted.reduce((sum, row) => sum + (parseFloat(row.t_price) || 0), 0) },
+            matched_as_split_delivery: true,
+            split_lots: sorted.map((row) => row.lot),
+          });
+          continue;
+        }
+        const picked = byTrnum.length === 1 ? byTrnum : exact.length === 1 ? exact : [];
+        if (picked.length === 1) {
+          found = picked;
+          via = `TrNum ${trnum} (night action)`;
+        }
       }
       if (found.length !== 1 && /^\d{6}$/.test(brief)) {
         found = free.filter((row) => String(row?.uniware_epp || "").trim().endsWith(brief));
@@ -9697,7 +9730,7 @@ const INKOOP_EMPTY_DAY_BUCKET = {
 // compared again once (at start-up), not only days whose data changed.
 // 2026-10-21: grower directory (learned links, Handel evidence), supplier
 // pairs stored on the invoice date.
-const INKOOP_MATCH_RULES_VERSION = "2026-10-28f";
+const INKOOP_MATCH_RULES_VERSION = "2026-10-28g";
 
 function inkoopStateFingerprint(state) {
   return crypto.createHash("sha1").update(JSON.stringify([

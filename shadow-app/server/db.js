@@ -462,22 +462,22 @@ export async function saveInkoopLotEpp(rows, sourceFileName = "") {
   if (!pool || !Array.isArray(rows) || !rows.length) {
     return 0;
   }
-  const valid = dedupeByKeyKeepingLast(rows.filter((row) => row?.lot && (row?.epp || row?.info || row?.aanv || row?.description)), (row) => String(row.lot));
+  const valid = dedupeByKeyKeepingLast(rows.filter((row) => row?.lot && (row?.epp || row?.info || row?.aanv || row?.description || row?.trnum)), (row) => String(row.lot));
   for (const chunk of chunkArray(valid, INKOOP_UPSERT_CHUNK_SIZE)) {
     const values = [];
     const placeholders = chunk.map((row) => {
       const base = values.length;
-      values.push(row.lot, row.epp || null, sourceFileName, row.info || null, row.order_number || null, row.gln || null, Array.isArray(row.refs) && row.refs.length ? row.refs : null, row.aanv || null, row.vbn || null, row.description || null);
-      return `($${base + 1}, $${base + 2}, $${base + 3}, $${base + 4}, $${base + 5}, $${base + 6}, $${base + 7}::text[], $${base + 8}, $${base + 9}, $${base + 10})`;
+      values.push(row.lot, row.epp || null, sourceFileName, row.info || null, row.order_number || null, row.gln || null, Array.isArray(row.refs) && row.refs.length ? row.refs : null, row.aanv || null, row.vbn || null, row.description || null, row.trnum || null);
+      return `($${base + 1}, $${base + 2}, $${base + 3}, $${base + 4}, $${base + 5}, $${base + 6}, $${base + 7}::text[], $${base + 8}, $${base + 9}, $${base + 10}, $${base + 11})`;
     });
     await pool.query(
-      `INSERT INTO inkoop_lot_epp (lot, epp, source_file_name, info, order_number, gln, refs, aanv, vbn, description) VALUES ${placeholders.join(", ")}
+      `INSERT INTO inkoop_lot_epp (lot, epp, source_file_name, info, order_number, gln, refs, aanv, vbn, description, trnum) VALUES ${placeholders.join(", ")}
        ON CONFLICT (lot) DO UPDATE SET
          epp = COALESCE(EXCLUDED.epp, inkoop_lot_epp.epp), source_file_name = EXCLUDED.source_file_name,
-         info = COALESCE(EXCLUDED.info, inkoop_lot_epp.info), order_number = COALESCE(EXCLUDED.order_number, inkoop_lot_epp.order_number),
+         info = COALESCE(EXCLUDED.info, inkoop_lot_epp.info), order_number = CASE WHEN EXCLUDED.info IS NOT NULL THEN EXCLUDED.order_number ELSE inkoop_lot_epp.order_number END,
          gln = COALESCE(EXCLUDED.gln, inkoop_lot_epp.gln), refs = COALESCE(EXCLUDED.refs, inkoop_lot_epp.refs),
          aanv = COALESCE(EXCLUDED.aanv, inkoop_lot_epp.aanv), vbn = COALESCE(EXCLUDED.vbn, inkoop_lot_epp.vbn),
-         description = COALESCE(EXCLUDED.description, inkoop_lot_epp.description), imported_at = now()`,
+         description = COALESCE(EXCLUDED.description, inkoop_lot_epp.description), trnum = COALESCE(EXCLUDED.trnum, inkoop_lot_epp.trnum), imported_at = now()`,
       values,
     );
   }
@@ -494,12 +494,13 @@ export async function applyInkoopLotInfo() {
   }
   const result = await pool.query(`
     UPDATE inkoop_erp_lines e
-       SET raw = e.raw || jsonb_strip_nulls(jsonb_build_object('uniware_order', b.order_number, 'uniware_gln', b.gln, 'uniware_epp', b.epp, 'uniware_aanv', b.aanv,
-                                                               'uniware_vbn', b.vbn, 'uniware_description', b.description)),
+       SET raw = (e.raw - 'uniware_order') || jsonb_strip_nulls(jsonb_build_object('uniware_order', b.order_number, 'uniware_gln', b.gln, 'uniware_epp', b.epp, 'uniware_aanv', b.aanv,
+                                                               'uniware_vbn', b.vbn, 'uniware_description', b.description, 'uniware_trnum', b.trnum)),
            updated_at = now()
       FROM inkoop_lot_epp b
-     WHERE e.lot = b.lot AND (b.order_number IS NOT NULL OR b.gln IS NOT NULL OR b.epp IS NOT NULL OR b.aanv IS NOT NULL OR b.description IS NOT NULL)
+     WHERE e.lot = b.lot AND (b.order_number IS NOT NULL OR b.gln IS NOT NULL OR b.epp IS NOT NULL OR b.aanv IS NOT NULL OR b.description IS NOT NULL OR b.trnum IS NOT NULL)
        AND (COALESCE(e.raw->>'uniware_order', '') IS DISTINCT FROM COALESCE(b.order_number, '')
+         OR COALESCE(e.raw->>'uniware_trnum', '') IS DISTINCT FROM COALESCE(b.trnum, '')
          OR COALESCE(e.raw->>'uniware_gln', '') IS DISTINCT FROM COALESCE(b.gln, '')
          OR COALESCE(e.raw->>'uniware_epp', '') IS DISTINCT FROM COALESCE(b.epp, '')
          OR COALESCE(e.raw->>'uniware_aanv', '') IS DISTINCT FROM COALESCE(b.aanv, '')
@@ -3624,6 +3625,7 @@ const databaseMigrations = [
   // The list row's VBN code and Omschrijving (Uniware's product name).
   `ALTER TABLE IF EXISTS inkoop_lot_epp ADD COLUMN IF NOT EXISTS vbn text`,
   `ALTER TABLE IF EXISTS inkoop_lot_epp ADD COLUMN IF NOT EXISTS description text`,
+  `ALTER TABLE IF EXISTS inkoop_lot_epp ADD COLUMN IF NOT EXISTS trnum text`,
   // "Levering BB" (a Connect Screen export of deliveries): per Connect lot
   // ("Prt") the FloraHolland brief number ("Info", F9NKFJ/F -> F9NKFJf) and
   // order number. A bridge for Connect lots that have no PAV of their own.
