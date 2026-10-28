@@ -10315,20 +10315,35 @@ async function inkoopGrowerDirectory(state) {
   return directory;
 }
 
-async function computeInkoopLiveMatchFresh(state, { from, to }) {
+// Everything matchInkoopVeilingLines gets for a range -- also what the
+// Settings "Test info" download carries, so a day can be replayed exactly.
+async function gatherInkoopMatchInputs(state, { from, to }) {
   const [allErpRows, invoiceLines, directory, afgemeldMessages] = await Promise.all([
     getInkoopErpLines({ from, to }),
     getInkoopInvoiceLines({ from, to }),
     inkoopGrowerDirectory(state),
     getInkoopAfgemeldMessages({ from, to }).catch(() => []),
   ]);
-  const erpRows = excludeInkoopInternalBunchRows(allErpRows, state.supplier_bw_map, inkoopExcludedErpCodes(state));
-  const invoices = groupInkoopInvoiceLinesByInvoice(invoiceLines);
-  // The stamgegevens (and manual links) always win over a learned link.
-  const supplierMap = { ...directory.matcherMaps.gln, ...state.supplier_map };
-  const supplierFhMap = { ...directory.matcherMaps.fh, ...state.supplier_fh_map };
-  inkoopNonGrowerCodes = new Set(directory.skipCodes || []);
-  const result = matchInkoopVeilingLines(erpRows, invoices, supplierMap, state.supplier_name_map, state.manual_supplier_links, supplierFhMap, state.transaction_costs, afgemeldMessages);
+  return {
+    allErpRows,
+    erpRows: excludeInkoopInternalBunchRows(allErpRows, state.supplier_bw_map, inkoopExcludedErpCodes(state)),
+    invoices: groupInkoopInvoiceLinesByInvoice(invoiceLines),
+    // The stamgegevens (and manual links) always win over a learned link.
+    supplierMap: { ...directory.matcherMaps.gln, ...state.supplier_map },
+    supplierNameMap: state.supplier_name_map,
+    manualLinks: state.manual_supplier_links,
+    supplierFhMap: { ...directory.matcherMaps.fh, ...state.supplier_fh_map },
+    transactionCosts: state.transaction_costs,
+    afgemeldMessages,
+    skipCodes: directory.skipCodes || [],
+  };
+}
+
+async function computeInkoopLiveMatchFresh(state, { from, to }) {
+  const inputs = await gatherInkoopMatchInputs(state, { from, to });
+  const { allErpRows, erpRows } = inputs;
+  inkoopNonGrowerCodes = new Set(inputs.skipCodes);
+  const result = matchInkoopVeilingLines(erpRows, inputs.invoices, inputs.supplierMap, inputs.supplierNameMap, inputs.manualLinks, inputs.supplierFhMap, inputs.transactionCosts, inputs.afgemeldMessages);
   const withReturns = await reclassifyInkoopConfirmedReturns(result, state.customer_map);
   // Tagged in place (fresh rows from this request's own query) so every
   // view showing an only-in-ERP gap can say what kind of party it is --
@@ -25966,6 +25981,56 @@ async function handleApi(req, res, url) {
       const body = await readRequestJson(req, 25 * 1024 * 1024);
       const payload = await applyFustImportRows(body?.file || {}, requestUser, body?.selected_import_keys || []);
       sendJson(res, 200, payload);
+    } catch (error) {
+      sendJson(res, 400, { error: error instanceof Error ? error.message : String(error) });
+    }
+    return;
+  }
+
+  // Settings > Test info: one day's comparison as a zip -- the exact inputs
+  // of matchInkoopVeilingLines (its 9-day window), the result for the day,
+  // the stored day summary -- to replay and check it outside the app.
+  if (url.pathname === "/api/admin/test-info" && req.method === "GET") {
+    if (requestUser.role !== "admin") {
+      sendForbidden(res);
+      return;
+    }
+    try {
+      const date = inkoopIsoDate(url.searchParams.get("date"));
+      if (!date) throw new Error("Pick a date.");
+      const state = await readInkoopState();
+      const window = inkoopDayWindow(date);
+      const inputs = await gatherInkoopMatchInputs(state, window);
+      inkoopNonGrowerCodes = new Set(inputs.skipCodes);
+      const result = matchInkoopVeilingLines(inputs.erpRows, inputs.invoices, inputs.supplierMap, inputs.supplierNameMap, inputs.manualLinks, inputs.supplierFhMap, inputs.transactionCosts, inputs.afgemeldMessages);
+      const summaries = await getInkoopDaySummaries({ from: date, to: date }).catch((error) => ({ error: String(error?.message || error) }));
+      const { default: JSZip } = await import("jszip");
+      const zip = new JSZip();
+      const json = (value) => JSON.stringify(value, null, 1);
+      zip.file("meta.json", json({
+        date, window, app_version: appVersion, rules_version: INKOOP_MATCH_RULES_VERSION, made_at: new Date().toISOString(),
+        counts: { erp_rows: inputs.erpRows.length, erp_rows_before_exclude: inputs.allErpRows.length, invoices: inputs.invoices.length, afgemeld_messages: inputs.afgemeldMessages.length },
+        replay: "matchInkoopVeilingLines(erp_rows, invoices, supplier_map, supplier_name_map, manual_links, supplier_fh_map, transaction_costs, afgemeld_messages) with inkoopNonGrowerCodes = skip_codes",
+      }));
+      zip.file("inputs/erp_rows.json", json(inputs.erpRows));
+      zip.file("inputs/invoices.json", json(inputs.invoices));
+      zip.file("inputs/supplier_map.json", json(inputs.supplierMap));
+      zip.file("inputs/supplier_name_map.json", json(inputs.supplierNameMap || {}));
+      zip.file("inputs/manual_links.json", json(inputs.manualLinks || []));
+      zip.file("inputs/supplier_fh_map.json", json(inputs.supplierFhMap));
+      zip.file("inputs/transaction_costs.json", json(inputs.transactionCosts || {}));
+      zip.file("inputs/afgemeld_messages.json", json(inputs.afgemeldMessages));
+      zip.file("inputs/skip_codes.json", json(inputs.skipCodes));
+      zip.file("result_window.json", json(result));
+      zip.file("result_day.json", json(inkoopResultOnDay(result, date)));
+      zip.file("stored_day_summary.json", json(summaries));
+      const buffer = await zip.generateAsync({ type: "nodebuffer", compression: "DEFLATE", compressionOptions: { level: 6 } });
+      res.writeHead(200, {
+        "content-type": "application/zip",
+        "content-disposition": `attachment; filename="test-info-${date}.zip"`,
+        "cache-control": "private, no-store",
+      });
+      res.end(buffer);
     } catch (error) {
       sendJson(res, 400, { error: error instanceof Error ? error.message : String(error) });
     }

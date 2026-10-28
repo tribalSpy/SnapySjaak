@@ -19974,7 +19974,40 @@ function SettingsPage({ currentUser }) {
     { id: "settings-ukdocs", label: "UKdocs Print" },
     { id: "settings-cmr", label: "CMR / Drive" },
     { id: "settings-mail", label: "Mail" },
+    { id: "settings-test-info", label: "Test info" },
   ];
+  // Test info: one day's Inkoop comparison (its inputs and result) as a zip.
+  const [testInfoDate, setTestInfoDate] = useState(() => {
+    const day = new Date(Date.now() - 86400000);
+    return `${day.getFullYear()}-${String(day.getMonth() + 1).padStart(2, "0")}-${String(day.getDate()).padStart(2, "0")}`;
+  });
+  const [testInfoBusy, setTestInfoBusy] = useState(false);
+  const [testInfoMessage, setTestInfoMessage] = useState("");
+
+  async function downloadTestInfo() {
+    setTestInfoBusy(true);
+    setTestInfoMessage("");
+    try {
+      const response = await fetch(`/api/admin/test-info?date=${encodeURIComponent(testInfoDate)}`, { credentials: "same-origin" });
+      if (!response.ok) {
+        const payload = await response.json().catch(() => ({}));
+        throw new Error(payload.error || `Download failed (${response.status}).`);
+      }
+      const blob = await response.blob();
+      const link = document.createElement("a");
+      link.href = URL.createObjectURL(blob);
+      link.download = `test-info-${testInfoDate}.zip`;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      setTimeout(() => URL.revokeObjectURL(link.href), 5000);
+      setTestInfoMessage(`test-info-${testInfoDate}.zip downloaded (${Math.round(blob.size / 1024)} KB).`);
+    } catch (downloadError) {
+      setTestInfoMessage(downloadError instanceof Error ? downloadError.message : String(downloadError));
+    } finally {
+      setTestInfoBusy(false);
+    }
+  }
   const { loading: metaLoading, data: metaData, error: metaError } = useFustMeta(Boolean(currentUser));
   const [backups, setBackups] = useState([]);
   const [backupBusy, setBackupBusy] = useState(false);
@@ -20368,6 +20401,15 @@ function SettingsPage({ currentUser }) {
           ))}
         </div>
         <div className="form-grid">
+          <div id="settings-test-info" className="wide data-table-card">
+            <div className="section-header"><h2>Test info</h2></div>
+            <p className="sidebar-note">One day of the Inkoop comparison as a zip: the invoices, Connect lots, Afgemeld messages and grower links it uses (the day and 4 days either side), and its result. For checking a day outside the app -- put the zip in the project folder for support.</p>
+            <div className="row-actions">
+              <label><span>Day</span><input type="date" value={testInfoDate} onChange={(event) => setTestInfoDate(event.target.value)} /></label>
+              <button type="button" className="primary" onClick={downloadTestInfo} disabled={testInfoBusy || !testInfoDate}>{testInfoBusy ? "Collecting..." : "Test info"}</button>
+            </div>
+            {testInfoMessage && <p className="sidebar-note">{testInfoMessage}</p>}
+          </div>
           <div id="settings-sheets" className="wide data-table-card">
             <div className="section-header"><h2>Sheet settings</h2></div>
             <p className="sidebar-note">Main spreadsheet, clock tabs, hal locations, and shared spreadsheet IDs.</p>
