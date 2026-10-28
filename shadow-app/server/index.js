@@ -8139,6 +8139,135 @@ function matchInkoopVeilingLines(erpRows, invoices, supplierMap = {}, supplierNa
   samedayPool(onlyInInvoice);
   samedayPool(supplierNotLinked);
 
+  // One product of one grower the same day, at one price and box size,
+  // split differently on both sides: Floriday split the party into 25 /
+  // 107 / 23 / 108 / 1 / 122 / 10 / 55 boxes (the invoice lines), the lots
+  // were entered by hand as 25 x 140 each (Connect, no brief number). No
+  // line is one lot, but the pieces of all the lines and all the lots are
+  // the same: matched as one pool, each line with its share of the lots'
+  // value (so the Connect total stays exact).
+  // exactSameDay: only a pool whose own day's lots are exactly its lines
+  // -- run before the one-to-one steps that allow a day's difference (a
+  // 16 x 160 line took the day before's 16 x 160 lot, and both days' pools
+  // broke); the full pool runs last.
+  const productPool = (unmatched, { exactSameDay = false } = {}) => {
+    const pools = new Map();
+    for (const item of unmatched) {
+      const resolved = resolveInkoopSupplierCode(item?.supplier_gln, item?.supplier_fh_number, item?.supplier_name, supplierMap, supplierNameMap, manualLinks, supplierFhMap);
+      const codes = [...new Set([...resolved.codes, ...String(item?.supplier_code || "").split(/[/+]/)].map((code) => normalizeInkoopKey(code)).filter(Boolean))].sort();
+      const quantity = Number(item?.quantity);
+      if (!codes.length || !(quantity > 0) || !(Number(item?.unit_price) > 0)) continue;
+      const product = normalizeInkoopKey(item?.vbn_code) || normalizeInkoopKey(item?.description);
+      const key = [codes.join("/"), normalizeUkdocsText(item?.invoice_date).slice(0, 10), Number(item.unit_price).toFixed(3), Number(item?.per_package) || "", product].join("|");
+      if (!pools.has(key)) pools.set(key, { codes: new Set(codes), lines: [] });
+      pools.get(key).lines.push(item);
+    }
+    const taken = new Set();
+    for (const pool of pools.values()) {
+      const sample = pool.lines[0];
+      const day = normalizeUkdocsText(sample?.invoice_date).slice(0, 10);
+      const perBox = Number(sample?.per_package) || 0;
+      const wanted = pool.lines.reduce((sum, line) => sum + Number(line.quantity), 0);
+      const daysOff = (row) => Math.abs((Date.parse(String(row?.date || "").slice(0, 10)) - Date.parse(day)) / 86400000);
+      const fitting = (Array.isArray(erpRows) ? erpRows : []).filter((row) => !consumedErpRows.has(row)
+        && [row?.suppl, row?.avc, row?.transp, resolveErpRowSupplierCode(row, validSupplierCodes)].some((code) => pool.codes.has(normalizeInkoopKey(code)))
+        && daysOff(row) <= 1
+        && priceFits(row, sample.unit_price) && Number(row.pieces) > 0
+        && (!perBox || !(Number(row?.cont) > 0) || Number(row.cont) === perBox)
+        && inkoopLotNameScore(sample, row) > 0)
+        .sort((left, right) => Number(left.lot) - Number(right.lot));
+      const total = (rows) => rows.reduce((sum, row) => sum + Number(row.pieces), 0);
+      const sameDay = fitting.filter((row) => daysOff(row) === 0);
+      // Why a pool didn't match, shown on its lines (connect_check).
+      const poolCheck = { lines: pool.lines.length, invoice_pieces: wanted, per_box: perBox || null,
+        lots: sameDay.slice(0, 20).map((row) => `${row.lot} ${row.items || "?"}x${row.cont || "?"}`), connect_pieces: total(sameDay),
+        other_day_lots: fitting.length - sameDay.length };
+      if (!exactSameDay) for (const line of pool.lines) line.pool_check = poolCheck;
+      // The lines and lots that add up, from these free lots -- or null.
+      const choose = (free, allowShort) => {
+        if (!free.length) return null;
+        if (!inkoopValuesDiffer(total(free), wanted)) return { lines: pool.lines, lots: free, short: false };
+        if (new Set(free.map((row) => Number(row.pieces))).size === 1 && wanted % Number(free[0].pieces) === 0 && wanted / Number(free[0].pieces) <= free.length) {
+          // All lots the same size: any of them are as good -- as many as the lines need.
+          return { lines: pool.lines, lots: free.slice(0, wanted / Number(free[0].pieces)), short: false };
+        }
+        const combination = free.length <= 14 ? findInkoopPiecesCombination(free, wanted) : null;
+        if (combination?.length) return { lines: pool.lines, lots: combination, short: false };
+        // More on the invoice than in Connect: the lines that together are
+        // all the lots (66 + 16 = 82 boxes = 25 + 25 + 25 + 7) -- the line
+        // left over (4 x 160, no lot entered for it) is the real gap. Only
+        // one such set of lines, else it isn't clear which line is missing.
+        if (pool.lines.length > 1 && pool.lines.length <= 14 && total(free) < wanted) {
+          const target = total(free);
+          const subsets = [];
+          for (let mask = 1; mask < (1 << pool.lines.length) - 1 && subsets.length < 2; mask += 1) {
+            const chosen = pool.lines.filter((_, index) => mask & (1 << index));
+            if (!inkoopValuesDiffer(chosen.reduce((sum, line) => sum + Number(line.quantity), 0), target)) subsets.push(chosen);
+          }
+          if (subsets.length === 1) return { lines: subsets[0], lots: free, short: false };
+        }
+        // Not the same pieces, but close (a box more or less, within 5%):
+        // the pool is still these lines and lots -- the difference shows as
+        // a mismatch on its last line instead of 8 lines and 18 lots apart.
+        if (allowShort && pool.lines.length > 1 && free.length > 1 && Math.abs(total(free) - wanted) <= wanted * 0.05) {
+          return { lines: pool.lines, lots: free, short: true };
+        }
+        return null;
+      };
+      // The lots of the line's own day first; a day either side only when
+      // those don't add up (else the next day's lots of the same product
+      // spoil a pool that was exact).
+      // Early (exact) pool: not when every line has its own lot of the
+      // same day with the same pieces -- the one-to-one steps pair those
+      // line by line, which says more than a pool.
+      const eachOwnLot = () => {
+        const used = new Set();
+        return pool.lines.every((line) => {
+          const own = sameDay.find((row) => !used.has(row) && !inkoopValuesDiffer(row.pieces, line.quantity));
+          if (own) used.add(own);
+          return Boolean(own);
+        });
+      };
+      const chosen = exactSameDay
+        ? (sameDay.length && !inkoopValuesDiffer(total(sameDay), wanted) && !(pool.lines.length === 1 && sameDay.length === 1) && !eachOwnLot() ? { lines: pool.lines, lots: sameDay, short: false } : null)
+        : choose(sameDay, true) || (fitting.length > sameDay.length ? choose(fitting, false) : null);
+      if (!chosen) continue;
+      pool.lines = chosen.lines;
+      const lots = chosen.lots;
+      const short = chosen.short;
+      const wantedNow = pool.lines.reduce((sum, line) => sum + Number(line.quantity), 0);
+      if (!lots?.length || (pool.lines.length === 1 && lots.length === 1)) continue;
+      for (const row of lots) consumedErpRows.add(row);
+      const value = lots.reduce((sum, row) => sum + (parseFloat(row.t_price) || 0), 0);
+      const lotLabel = lots.map((row) => row.lot).join("+");
+      let left = Math.round(value * 100) / 100;
+      pool.lines.forEach((line, index) => {
+        const share = index === pool.lines.length - 1 ? left : Math.round((value * Number(line.quantity) / wantedNow) * 100) / 100;
+        left = Math.round((left - share) * 100) / 100;
+        const last = index === pool.lines.length - 1;
+        const lotPieces = total(lots);
+        const pair = {
+          ...line,
+          supplier_code: line.supplier_code || resolveErpRowSupplierCode(lots[0], validSupplierCodes),
+          supplier_match_type: `product pool: ${pool.lines.length} invoice line(s) = ${lots.length} lot(s) (same grower, product, price, day; ${short ? `invoice ${wantedNow} / Connect ${lotPieces}` : wantedNow} pieces)`,
+          erp_row: { ...lots[0], lot: lotLabel, pieces: last && short ? Number(line.quantity) + lotPieces - wantedNow : line.quantity, t_price: share },
+          matched_as_group: true,
+          split_lots: lots.map((row) => row.lot),
+        };
+        if (last && short) {
+          matchedMismatch.push({ ...pair, diffs: [{ field: "quantity", erp: pair.erp_row.pieces, invoice: Number(line.quantity) }, { field: "total", erp: share, invoice: Number(line.total) }] });
+        } else {
+          matchedOk.push(pair);
+        }
+        taken.add(line);
+      });
+    }
+    const rest = unmatched.filter((item) => !taken.has(item));
+    unmatched.length = 0;
+    unmatched.push(...rest);
+  };
+  productPool(onlyInInvoice, { exactSameDay: true });
+
   // Last of all: every kind of evidence together. A line every single test
   // missed, against the free lots with its pieces and price (2 days either
   // side): grower by code (3) or Aanv. (3), the same VBN code (3), each
@@ -8274,116 +8403,6 @@ function matchInkoopVeilingLines(erpRows, invoices, supplierMap = {}, supplierNa
   viaAfgemeld(onlyInInvoice);
   viaAfgemeld(supplierNotLinked);
 
-  // One product of one grower the same day, at one price and box size,
-  // split differently on both sides: Floriday split the party into 25 /
-  // 107 / 23 / 108 / 1 / 122 / 10 / 55 boxes (the invoice lines), the lots
-  // were entered by hand as 25 x 140 each (Connect, no brief number). No
-  // line is one lot, but the pieces of all the lines and all the lots are
-  // the same: matched as one pool, each line with its share of the lots'
-  // value (so the Connect total stays exact).
-  const productPool = (unmatched) => {
-    const pools = new Map();
-    for (const item of unmatched) {
-      const resolved = resolveInkoopSupplierCode(item?.supplier_gln, item?.supplier_fh_number, item?.supplier_name, supplierMap, supplierNameMap, manualLinks, supplierFhMap);
-      const codes = [...new Set([...resolved.codes, ...String(item?.supplier_code || "").split(/[/+]/)].map((code) => normalizeInkoopKey(code)).filter(Boolean))].sort();
-      const quantity = Number(item?.quantity);
-      if (!codes.length || !(quantity > 0) || !(Number(item?.unit_price) > 0)) continue;
-      const product = normalizeInkoopKey(item?.vbn_code) || normalizeInkoopKey(item?.description);
-      const key = [codes.join("/"), normalizeUkdocsText(item?.invoice_date).slice(0, 10), Number(item.unit_price).toFixed(3), Number(item?.per_package) || "", product].join("|");
-      if (!pools.has(key)) pools.set(key, { codes: new Set(codes), lines: [] });
-      pools.get(key).lines.push(item);
-    }
-    const taken = new Set();
-    for (const pool of pools.values()) {
-      const sample = pool.lines[0];
-      const day = normalizeUkdocsText(sample?.invoice_date).slice(0, 10);
-      const perBox = Number(sample?.per_package) || 0;
-      const wanted = pool.lines.reduce((sum, line) => sum + Number(line.quantity), 0);
-      const daysOff = (row) => Math.abs((Date.parse(String(row?.date || "").slice(0, 10)) - Date.parse(day)) / 86400000);
-      const fitting = (Array.isArray(erpRows) ? erpRows : []).filter((row) => !consumedErpRows.has(row)
-        && [row?.suppl, row?.avc, row?.transp, resolveErpRowSupplierCode(row, validSupplierCodes)].some((code) => pool.codes.has(normalizeInkoopKey(code)))
-        && daysOff(row) <= 1
-        && priceFits(row, sample.unit_price) && Number(row.pieces) > 0
-        && (!perBox || !(Number(row?.cont) > 0) || Number(row.cont) === perBox)
-        && inkoopLotNameScore(sample, row) > 0)
-        .sort((left, right) => Number(left.lot) - Number(right.lot));
-      const total = (rows) => rows.reduce((sum, row) => sum + Number(row.pieces), 0);
-      const sameDay = fitting.filter((row) => daysOff(row) === 0);
-      // Why a pool didn't match, shown on its lines (connect_check).
-      const poolCheck = { lines: pool.lines.length, invoice_pieces: wanted, per_box: perBox || null,
-        lots: sameDay.slice(0, 20).map((row) => `${row.lot} ${row.items || "?"}x${row.cont || "?"}`), connect_pieces: total(sameDay),
-        other_day_lots: fitting.length - sameDay.length };
-      for (const line of pool.lines) line.pool_check = poolCheck;
-      // The lines and lots that add up, from these free lots -- or null.
-      const choose = (free, allowShort) => {
-        if (!free.length) return null;
-        if (!inkoopValuesDiffer(total(free), wanted)) return { lines: pool.lines, lots: free, short: false };
-        if (new Set(free.map((row) => Number(row.pieces))).size === 1 && wanted % Number(free[0].pieces) === 0 && wanted / Number(free[0].pieces) <= free.length) {
-          // All lots the same size: any of them are as good -- as many as the lines need.
-          return { lines: pool.lines, lots: free.slice(0, wanted / Number(free[0].pieces)), short: false };
-        }
-        const combination = free.length <= 14 ? findInkoopPiecesCombination(free, wanted) : null;
-        if (combination?.length) return { lines: pool.lines, lots: combination, short: false };
-        // More on the invoice than in Connect: the lines that together are
-        // all the lots (66 + 16 = 82 boxes = 25 + 25 + 25 + 7) -- the line
-        // left over (4 x 160, no lot entered for it) is the real gap. Only
-        // one such set of lines, else it isn't clear which line is missing.
-        if (pool.lines.length > 1 && pool.lines.length <= 14 && total(free) < wanted) {
-          const target = total(free);
-          const subsets = [];
-          for (let mask = 1; mask < (1 << pool.lines.length) - 1 && subsets.length < 2; mask += 1) {
-            const chosen = pool.lines.filter((_, index) => mask & (1 << index));
-            if (!inkoopValuesDiffer(chosen.reduce((sum, line) => sum + Number(line.quantity), 0), target)) subsets.push(chosen);
-          }
-          if (subsets.length === 1) return { lines: subsets[0], lots: free, short: false };
-        }
-        // Not the same pieces, but close (a box more or less, within 5%):
-        // the pool is still these lines and lots -- the difference shows as
-        // a mismatch on its last line instead of 8 lines and 18 lots apart.
-        if (allowShort && pool.lines.length > 1 && free.length > 1 && Math.abs(total(free) - wanted) <= wanted * 0.05) {
-          return { lines: pool.lines, lots: free, short: true };
-        }
-        return null;
-      };
-      // The lots of the line's own day first; a day either side only when
-      // those don't add up (else the next day's lots of the same product
-      // spoil a pool that was exact).
-      const chosen = choose(sameDay, true) || (fitting.length > sameDay.length ? choose(fitting, false) : null);
-      if (!chosen) continue;
-      pool.lines = chosen.lines;
-      const lots = chosen.lots;
-      const short = chosen.short;
-      const wantedNow = pool.lines.reduce((sum, line) => sum + Number(line.quantity), 0);
-      if (!lots?.length || (pool.lines.length === 1 && lots.length === 1)) continue;
-      for (const row of lots) consumedErpRows.add(row);
-      const value = lots.reduce((sum, row) => sum + (parseFloat(row.t_price) || 0), 0);
-      const lotLabel = lots.map((row) => row.lot).join("+");
-      let left = Math.round(value * 100) / 100;
-      pool.lines.forEach((line, index) => {
-        const share = index === pool.lines.length - 1 ? left : Math.round((value * Number(line.quantity) / wantedNow) * 100) / 100;
-        left = Math.round((left - share) * 100) / 100;
-        const last = index === pool.lines.length - 1;
-        const lotPieces = total(lots);
-        const pair = {
-          ...line,
-          supplier_code: line.supplier_code || resolveErpRowSupplierCode(lots[0], validSupplierCodes),
-          supplier_match_type: `product pool: ${pool.lines.length} invoice line(s) = ${lots.length} lot(s) (same grower, product, price, day; ${short ? `invoice ${wantedNow} / Connect ${lotPieces}` : wantedNow} pieces)`,
-          erp_row: { ...lots[0], lot: lotLabel, pieces: last && short ? Number(line.quantity) + lotPieces - wantedNow : line.quantity, t_price: share },
-          matched_as_group: true,
-          split_lots: lots.map((row) => row.lot),
-        };
-        if (last && short) {
-          matchedMismatch.push({ ...pair, diffs: [{ field: "quantity", erp: pair.erp_row.pieces, invoice: Number(line.quantity) }, { field: "total", erp: share, invoice: Number(line.total) }] });
-        } else {
-          matchedOk.push(pair);
-        }
-        taken.add(line);
-      });
-    }
-    const rest = unmatched.filter((item) => !taken.has(item));
-    unmatched.length = 0;
-    unmatched.push(...rest);
-  };
   productPool(onlyInInvoice);
 
   // Unconsumed rows from both pools are genuine "recorded but nothing
