@@ -24335,6 +24335,9 @@ async function handleApi(req, res, url) {
       const erpRows = hasErpFile ? await parseInkoopErpUpload(body?.erp_file) : [];
       const veiling = hasVeilingZip ? await parseInkoopVeilingUpload(body?.veiling_zip) : { invoices: [], skipped: [], pdfs: {} };
       const flatInvoiceLines = flattenInkoopInvoiceLines(veiling.invoices, body?.veiling_zip?.name, runDate);
+      // The PDFs first: they need nothing else, and a later step failing
+      // must not leave the invoice link "not found" while its lines are in.
+      await saveInkoopInvoicePdfs(veiling.pdfs);
 
       // Accumulate into the permanent ledger first, then re-match against
       // everything accumulated so far (not just this upload's pair) -- this
@@ -24386,7 +24389,6 @@ async function handleApi(req, res, url) {
       bumpInkoopMatchVersion();
       await saveInkoopInvoiceHeaders(buildInkoopInvoiceHeaders(veiling.invoices, body?.veiling_zip?.name));
       inkoopSummaryCache.clear(); // the Overview dates invoices by these headers
-      await saveInkoopInvoicePdfs(veiling.pdfs);
       // Everything saved: the days this upload touched (plus the match
       // tolerance either side) are compared again in the background --
       // nothing is compared while the upload waits.
