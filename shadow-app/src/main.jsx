@@ -18868,7 +18868,21 @@ function InkoopCalendarTab({ company, manualLinkDrafts, setManualLinkDrafts, onL
   // "quiet" (a real day with nothing recorded) must stay visually distinct
   // from the leading padding cells (which have no day number at all) -- a
   // quiet day still needs to show its date, just with no color/summary.
+  // How much of the day's invoiced value found its Connect lot (null: no
+  // invoiced value).
+  function dayMatchedPct(day) {
+    if (!(day.purchase_value > 0)) return null;
+    const unmatchedValue = Number(day.unmatched_invoice_value ?? day.gap_invoice_value) || 0;
+    return Math.max(0, Math.min(100, ((day.purchase_value - unmatchedValue) / day.purchase_value) * 100));
+  }
+
+  // All matched green, nothing matched dark red, nothing in it blue; in
+  // between by mistakes / gaps as before.
   function dayStatus(day) {
+    const matched = dayMatchedPct(day);
+    if (matched === null && !(day.mismatch_value > 0)) return "empty";
+    if (matched !== null && matched >= 99.95) return "full";
+    if (matched !== null && matched < 0.05) return "none";
     if (day.mismatch_count > 0) return "danger";
     if (day.gap_count > 0) return "warning";
     if (day.product_count > 0 || day.invoice_value > 0 || day.embalage_value > 0) return "ok";
@@ -18924,8 +18938,7 @@ function InkoopCalendarTab({ company, manualLinkDrafts, setManualLinkDrafts, onL
                         Dashboard's matched %). */}
                     {day.mismatch_value > 0 && <span>{formatInkoopEuro(day.mismatch_value)} mistakes</span>}
                     {day.purchase_value > 0 && (() => {
-                      const unmatchedValue = Number(day.unmatched_invoice_value ?? day.gap_invoice_value) || 0;
-                      const matched = Math.max(0, Math.min(100, ((day.purchase_value - unmatchedValue) / day.purchase_value) * 100));
+                      const matched = dayMatchedPct(day);
                       return (
                         <>
                           <span>{matched.toFixed(1)}% matched</span>

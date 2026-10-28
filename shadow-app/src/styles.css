@@ -2215,6 +2215,22 @@ pre {
   border-color: #eeb6b6;
 }
 
+.inkoop-calendar-cell.full {
+  background: #c9ebd5;
+  border-color: #6cbf8a;
+}
+
+.inkoop-calendar-cell.none {
+  background: #9f1f1f;
+  border-color: #7a1414;
+  color: #ffffff;
+}
+
+.inkoop-calendar-cell.empty {
+  background: #e6f0fb;
+  border-color: #b5cfee;
+}
+
 .inkoop-calendar-cell.selected {
   outline: 2px solid #1f7a5a;
   outline-offset: -2px;
@@ -2229,6 +2245,10 @@ pre {
   flex-direction: column;
   font-size: 0.75em;
   color: #4a5561;
+}
+
+.inkoop-calendar-cell.none .inkoop-calendar-summary {
+  color: #ffe3e3;
 }
 
 /* PD Step Plan: fields a shipment still needs, glowing until filled in. */
