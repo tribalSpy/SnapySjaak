@@ -109,6 +109,7 @@ import {
   saveInkoopAfgemeldMessages,
   getInkoopAfgemeldMessages,
   getInkoopUnmatchedInvoiceTotals,
+  getInkoopInvoiceTotalsByCode,
   listInkoopInvoiceNumbers,
   saveStateFileSnapshot,
   pruneStateFileHistory,
@@ -24923,17 +24924,36 @@ async function handleApi(req, res, url) {
         // listed in pending_days and the page asks again shortly); a day
         // without a comparison row has no data at all.
         const fingerprint = await inkoopCurrentFingerprint();
-        const [stored, matchDays, unmatched] = await Promise.all([
+        const [stored, matchDays, unmatched, byCode] = await Promise.all([
           getInkoopDaySummaries({ from: monthStart, to: lastDay }),
           getInkoopMatchDays({ from: monthStart, to: lastDay, withData: false }),
           // Every invoice line without its Connect lot -- what "matched %"
           // means (as on the Financial Dashboard).
           getInkoopUnmatchedInvoiceTotals({ unit: "day", company, from: monthStart, to: lastDay }).catch(() => new Map()),
+          getInkoopInvoiceTotalsByCode({ company, from: monthStart, to: lastDay }).catch(() => []),
         ]);
+        // Per day and betaalwijze (of the line's grower code; else A for an
+        // AI2 nota, V for FloraHolland's): invoiced and unmatched value --
+        // the calendar's matched % for the ticked betaalwijzen.
+        const bwOfInvoiceCode = (code, type) => {
+          const bw = String(code || "").split(/[\s/+]+/).map((part) => state.supplier_bw_map?.[normalizeInkoopKey(part)]?.bw).find(Boolean);
+          return bw || (/^ai2/i.test(String(type || "")) ? "A" : "V");
+        };
+        const byBw = new Map();
+        for (const row of byCode) {
+          const bw = bwOfInvoiceCode(row.supplier_code, row.invoice_type);
+          const day = byBw.get(row.date) || { invoice: {}, unmatched: {} };
+          day.invoice[bw] = Math.round(((day.invoice[bw] || 0) + (Number(row.value) || 0)) * 100) / 100;
+          day.unmatched[bw] = Math.round(((day.unmatched[bw] || 0) + (Number(row.unmatched) || 0)) * 100) / 100;
+          byBw.set(row.date, day);
+        }
         const summarized = new Set(stored.filter((row) => row.company === "").map((row) => row.date));
         for (const row of stored) {
           if (row.company === company) {
-            buckets.set(row.date, { ...row.bucket, date: row.date, unmatched_invoice_value: unmatched.get(row.date)?.value || 0, unmatched_invoice_lines: unmatched.get(row.date)?.lines || 0 });
+            buckets.set(row.date, {
+              ...row.bucket, date: row.date, unmatched_invoice_value: unmatched.get(row.date)?.value || 0, unmatched_invoice_lines: unmatched.get(row.date)?.lines || 0,
+              invoice_by_bw: byBw.get(row.date)?.invoice || null, unmatched_by_bw: byBw.get(row.date)?.unmatched || null,
+            });
           }
         }
         const missingSummary = [];

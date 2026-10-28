@@ -18802,7 +18802,7 @@ function InkoopCalendarTab({ company, manualLinkDrafts, setManualLinkDrafts, onL
       return next;
     });
   }
-  const calendarBwCodes = [...new Set(["V", "?", ...days.flatMap((day) => Object.keys(day.gap_erp_by_bw || {}))])].sort();
+  const calendarBwCodes = [...new Set(["V", "?", ...days.flatMap((day) => [...Object.keys(day.gap_erp_by_bw || {}), ...Object.keys(day.invoice_by_bw || {})])])].sort();
   const daysOlderThanBw = days.filter((day) => day.gap_erp_count > 0 && !day.gap_erp_by_bw).length;
   // The day with the "only in Connect" lots of the other BWs left out.
   const shownDay = (day) => {
@@ -18813,7 +18813,15 @@ function InkoopCalendarTab({ company, manualLinkDrafts, setManualLinkDrafts, onL
       count += Number(part?.count) || 0;
       value += Number(part?.value) || 0;
     }
-    return { ...day, gap_count: Math.max(0, (day.gap_count || 0) - count), gap_value: Math.max(0, Math.round(((day.gap_value || 0) - value) * 100) / 100) };
+    // The matched %: the invoiced and unmatched value of the ticked
+    // betaalwijzen only (the growers' BW; AI2 notas A).
+    const byBw = day.invoice_by_bw
+      ? {
+        purchase_value: Object.entries(day.invoice_by_bw).filter(([bw]) => calendarBw.includes(bw)).reduce((sum, [, part]) => sum + (Number(part) || 0), 0),
+        unmatched_invoice_value: Object.entries(day.unmatched_by_bw || {}).filter(([bw]) => calendarBw.includes(bw)).reduce((sum, [, part]) => sum + (Number(part) || 0), 0),
+      }
+      : {};
+    return { ...day, ...byBw, gap_count: Math.max(0, (day.gap_count || 0) - count), gap_value: Math.max(0, Math.round(((day.gap_value || 0) - value) * 100) / 100) };
   };
 
   useEffect(() => {
@@ -18905,7 +18913,7 @@ function InkoopCalendarTab({ company, manualLinkDrafts, setManualLinkDrafts, onL
         </div>
         {!!pendingDays && <div className="notice">Calculating {pendingDays} day(s) in the background -- they fill in by themselves. Once calculated, this month opens instantly.</div>}
         <div className="row-actions" style={{ margin: "6px 0" }}>
-          <strong>"Only in Connect" gaps of BW:</strong>
+          <strong>Betaalwijze (matched % and "only in Connect" gaps):</strong>
           {calendarBwCodes.map((bw) => (
             <label key={bw} className="checkbox-label" title={bw === "?" ? "Connect codes without a BW" : INKOOP_BW_LABELS[bw] || ""}>
               <input type="checkbox" checked={calendarBw.includes(bw)} onChange={() => toggleCalendarBw(bw)} />

@@ -1579,6 +1579,25 @@ export async function getInkoopUnmatchedInvoiceTotals({ unit = "day", company = 
   return new Map(result.rows.map((row) => [row.period, { value: Math.round(row.value * 100) / 100, lines: row.lines }]));
 }
 
+// Per day, grower code and invoice type: the invoiced value, and the part
+// of it without its Connect lot -- the calendar's matched % per betaalwijze.
+export async function getInkoopInvoiceTotalsByCode({ company = "", from = "", to = "" } = {}) {
+  if (!pool) return [];
+  const params = [];
+  const where = ["list IN ('matched_ok', 'matched_mismatch', 'only_in_invoice', 'supplier_not_linked', 'ambiguous_matches')"];
+  if (company) { params.push(company); where.push(`company_number = $${params.length}`); }
+  if (from) { params.push(from); where.push(`match_date >= $${params.length}::date`); }
+  if (to) { params.push(to); where.push(`match_date <= $${params.length}::date`); }
+  const result = await pool.query(
+    `SELECT to_char(match_date, 'YYYY-MM-DD') AS date, supplier_code, invoice_type,
+            COALESCE(SUM(invoice_total), 0)::float8 AS value,
+            COALESCE(SUM(invoice_total) FILTER (WHERE list IN ('only_in_invoice', 'supplier_not_linked', 'ambiguous_matches')), 0)::float8 AS unmatched
+       FROM inkoop_match_rows WHERE ${where.join(" AND ")} GROUP BY 1, 2, 3`,
+    params,
+  );
+  return result.rows;
+}
+
 export async function getInkoopDaySummaries({ from, to } = {}) {
   if (!pool || !from || !to) {
     return [];
