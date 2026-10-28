@@ -8299,49 +8299,61 @@ function matchInkoopVeilingLines(erpRows, invoices, supplierMap = {}, supplierNa
       const day = normalizeUkdocsText(sample?.invoice_date).slice(0, 10);
       const perBox = Number(sample?.per_package) || 0;
       const wanted = pool.lines.reduce((sum, line) => sum + Number(line.quantity), 0);
-      const free = (Array.isArray(erpRows) ? erpRows : []).filter((row) => !consumedErpRows.has(row)
+      const daysOff = (row) => Math.abs((Date.parse(String(row?.date || "").slice(0, 10)) - Date.parse(day)) / 86400000);
+      const fitting = (Array.isArray(erpRows) ? erpRows : []).filter((row) => !consumedErpRows.has(row)
         && [row?.suppl, row?.avc, row?.transp, resolveErpRowSupplierCode(row, validSupplierCodes)].some((code) => pool.codes.has(normalizeInkoopKey(code)))
-        && Math.abs((Date.parse(String(row?.date || "").slice(0, 10)) - Date.parse(day)) / 86400000) <= 1
+        && daysOff(row) <= 1
         && priceFits(row, sample.unit_price) && Number(row.pieces) > 0
         && (!perBox || !(Number(row?.cont) > 0) || Number(row.cont) === perBox)
         && inkoopLotNameScore(sample, row) > 0)
         .sort((left, right) => Number(left.lot) - Number(right.lot));
       const total = (rows) => rows.reduce((sum, row) => sum + Number(row.pieces), 0);
+      const sameDay = fitting.filter((row) => daysOff(row) === 0);
       // Why a pool didn't match, shown on its lines (connect_check).
-      const poolCheck = { lines: pool.lines.length, invoice_pieces: wanted, per_box: perBox || null, lots: free.slice(0, 20).map((row) => `${row.lot} ${row.items || "?"}x${row.cont || "?"}`), connect_pieces: total(free) };
+      const poolCheck = { lines: pool.lines.length, invoice_pieces: wanted, per_box: perBox || null,
+        lots: sameDay.slice(0, 20).map((row) => `${row.lot} ${row.items || "?"}x${row.cont || "?"}`), connect_pieces: total(sameDay),
+        other_day_lots: fitting.length - sameDay.length };
       for (const line of pool.lines) line.pool_check = poolCheck;
-      if (!free.length) continue;
-      let lots = null;
-      if (!inkoopValuesDiffer(total(free), wanted)) {
-        lots = free;
-      } else if (new Set(free.map((row) => Number(row.pieces))).size === 1 && wanted % Number(free[0].pieces) === 0 && wanted / Number(free[0].pieces) <= free.length) {
-        // All lots the same size: any of them are as good -- as many as the lines need.
-        lots = free.slice(0, wanted / Number(free[0].pieces));
-      } else if (free.length <= 14) {
-        lots = findInkoopPiecesCombination(free, wanted);
-      }
-      // More on the invoice than in Connect: the lines that together are
-      // all the lots (66 + 16 = 82 boxes = 25 + 25 + 25 + 7) -- the line
-      // left over (4 x 160, no lot entered for it) is the real gap. Only
-      // one such set of lines, else it isn't clear which line is missing.
-      if (!lots?.length && pool.lines.length > 1 && pool.lines.length <= 14 && total(free) < wanted) {
-        const target = total(free);
-        const subsets = [];
-        for (let mask = 1; mask < (1 << pool.lines.length) - 1 && subsets.length < 2; mask += 1) {
-          const chosen = pool.lines.filter((_, index) => mask & (1 << index));
-          if (!inkoopValuesDiffer(chosen.reduce((sum, line) => sum + Number(line.quantity), 0), target)) subsets.push(chosen);
+      // The lines and lots that add up, from these free lots -- or null.
+      const choose = (free, allowShort) => {
+        if (!free.length) return null;
+        if (!inkoopValuesDiffer(total(free), wanted)) return { lines: pool.lines, lots: free, short: false };
+        if (new Set(free.map((row) => Number(row.pieces))).size === 1 && wanted % Number(free[0].pieces) === 0 && wanted / Number(free[0].pieces) <= free.length) {
+          // All lots the same size: any of them are as good -- as many as the lines need.
+          return { lines: pool.lines, lots: free.slice(0, wanted / Number(free[0].pieces)), short: false };
         }
-        if (subsets.length === 1) {
-          pool.lines = subsets[0];
-          lots = free;
+        const combination = free.length <= 14 ? findInkoopPiecesCombination(free, wanted) : null;
+        if (combination?.length) return { lines: pool.lines, lots: combination, short: false };
+        // More on the invoice than in Connect: the lines that together are
+        // all the lots (66 + 16 = 82 boxes = 25 + 25 + 25 + 7) -- the line
+        // left over (4 x 160, no lot entered for it) is the real gap. Only
+        // one such set of lines, else it isn't clear which line is missing.
+        if (pool.lines.length > 1 && pool.lines.length <= 14 && total(free) < wanted) {
+          const target = total(free);
+          const subsets = [];
+          for (let mask = 1; mask < (1 << pool.lines.length) - 1 && subsets.length < 2; mask += 1) {
+            const chosen = pool.lines.filter((_, index) => mask & (1 << index));
+            if (!inkoopValuesDiffer(chosen.reduce((sum, line) => sum + Number(line.quantity), 0), target)) subsets.push(chosen);
+          }
+          if (subsets.length === 1) return { lines: subsets[0], lots: free, short: false };
         }
-      }
+        // Not the same pieces, but close (a box more or less, within 5%):
+        // the pool is still these lines and lots -- the difference shows as
+        // a mismatch on its last line instead of 8 lines and 18 lots apart.
+        if (allowShort && pool.lines.length > 1 && free.length > 1 && Math.abs(total(free) - wanted) <= wanted * 0.05) {
+          return { lines: pool.lines, lots: free, short: true };
+        }
+        return null;
+      };
+      // The lots of the line's own day first; a day either side only when
+      // those don't add up (else the next day's lots of the same product
+      // spoil a pool that was exact).
+      const chosen = choose(sameDay, true) || (fitting.length > sameDay.length ? choose(fitting, false) : null);
+      if (!chosen) continue;
+      pool.lines = chosen.lines;
+      const lots = chosen.lots;
+      const short = chosen.short;
       const wantedNow = pool.lines.reduce((sum, line) => sum + Number(line.quantity), 0);
-      // Not the same pieces, but close (a box more or less, within 5%): the
-      // pool is still these lines and lots -- the difference shows as a
-      // mismatch on its last line instead of 8 lines and 18 lots apart.
-      const short = !lots?.length && pool.lines.length > 1 && free.length > 1 && Math.abs(total(free) - wantedNow) <= wantedNow * 0.05;
-      if (short) lots = free;
       if (!lots?.length || (pool.lines.length === 1 && lots.length === 1)) continue;
       for (const row of lots) consumedErpRows.add(row);
       const value = lots.reduce((sum, row) => sum + (parseFloat(row.t_price) || 0), 0);
