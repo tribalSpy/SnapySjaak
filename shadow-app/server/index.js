@@ -8489,6 +8489,54 @@ function matchInkoopVeilingLines(erpRows, invoices, supplierMap = {}, supplierNa
 
   productPool(onlyInInvoice);
 
+  // Last: import boxes resold per N ("x5 SL Sweet Revival Diya", 1 x 22 @
+  // 0.95): the lot is the invoice line in another unit -- pieces x N, price
+  // / N, the same total (R GR REVIVAL SWEET 110 @ 0.19 = 20.90). Booked a
+  // few days after the invoice (unpacked and repacked), under a code of the
+  // line's grower (Akina's farms: DIYAE, AYANAE ...), with its name.
+  const RESALE_GENERIC_WORDS = new Set(["ROSA", "ROSE", "ROZEN", "FUST", "SPRAY", "BLOEM", "PLUS", "LARGE", "EXTRA"]);
+  const resaleLots = [...new Set([...erpByPav.values(), ...erpBySupplierCode.values()].flat())]
+    .filter((row) => !consumedErpRows.has(row) && /^x\s?\d{1,2}\s/i.test(normalizeUkdocsText(row?.description)));
+  if (resaleLots.length) {
+    const resaleFactor = (row) => Number(normalizeUkdocsText(row.description).match(/^x\s?(\d{1,2})/i)[1]);
+    const compactName = (text) => String(text || "").toUpperCase().replace(/[^A-Z]/g, "");
+    const daysFrom = (from, to) => (Date.parse(String(to || "").slice(0, 10)) - Date.parse(String(from || "").slice(0, 10))) / 86400000;
+    const resale = (unmatched) => {
+      const rest = [];
+      for (const item of [...unmatched].sort((left, right) => String(left.invoice_date || "").localeCompare(String(right.invoice_date || "")))) {
+        const codes = new Set(String(item?.supplier_code || "").split(/[/+]/).map((code) => normalizeInkoopKey(code)).filter(Boolean));
+        for (const code of resolveInkoopSupplierCode(item?.supplier_gln, item?.supplier_fh_number, item?.supplier_name, supplierMap, supplierNameMap, manualLinks, supplierFhMap).codes || []) codes.add(normalizeInkoopKey(code));
+        const words = String(item?.description || "").toUpperCase().split(/[^A-Z]+/).filter((word) => word.length >= 4 && !RESALE_GENERIC_WORDS.has(word));
+        const scored = words.length && codes.size ? resaleLots.filter((row) => {
+          if (consumedErpRows.has(row) || !codes.has(resolveErpRowSupplierCode(row, validSupplierCodes))) return false;
+          const days = daysFrom(item.invoice_date, row.date);
+          return days >= -1 && days <= 4
+            && !inkoopValuesDiffer(Number(row.pieces) * resaleFactor(row), item.quantity)
+            && Math.abs((parseFloat(row.t_price) || 0) - (Number(item.total) || 0)) <= 0.011;
+        }).map((row) => {
+          const name = compactName(normalizeUkdocsText(row.description).replace(/^x\s?\d{1,2}/i, ""));
+          return { row, hits: words.filter((word) => name.includes(word)).length, days: Math.abs(daysFrom(item.invoice_date, row.date)) };
+        }).filter((entry) => entry.hits > 0).sort((left, right) => right.hits - left.hits || left.days - right.days) : [];
+        if (!scored.length) {
+          rest.push(item);
+          continue;
+        }
+        const row = scored[0].row;
+        consumedErpRows.add(row);
+        matchedOk.push({
+          ...item,
+          supplier_code: resolveErpRowSupplierCode(row, validSupplierCodes),
+          supplier_match_type: `resold per ${resaleFactor(row)}: ${row.pieces} x ${parseFloat(row.price)} = ${item.quantity} x ${item.unit_price} (same total, name)`,
+          erp_row: row,
+        });
+      }
+      unmatched.length = 0;
+      unmatched.push(...rest);
+    };
+    resale(onlyInInvoice);
+    resale(supplierNotLinked);
+  }
+
   // Unconsumed rows from both pools are genuine "recorded but nothing
   // claimed it" gaps -- a supplier-code-keyed row (Handel/AI2 lines with no
   // real PAV) that no invoice line ever matched is exactly as real a gap as
@@ -9735,7 +9783,7 @@ const INKOOP_EMPTY_DAY_BUCKET = {
 // compared again once (at start-up), not only days whose data changed.
 // 2026-10-21: grower directory (learned links, Handel evidence), supplier
 // pairs stored on the invoice date.
-const INKOOP_MATCH_RULES_VERSION = "2026-10-28h";
+const INKOOP_MATCH_RULES_VERSION = "2026-10-28i";
 
 function inkoopStateFingerprint(state) {
   return crypto.createHash("sha1").update(JSON.stringify([
