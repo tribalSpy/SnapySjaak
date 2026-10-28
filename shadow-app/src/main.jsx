@@ -19008,6 +19008,209 @@ function inkoopIssueInvoiceDay(issue) {
   return String(issue?.detail?.invoice_date || issue?.detail?.erp_row?.date || issue?.date || "").slice(0, 10);
 }
 
+// A detective line / lot (server: inkoopDetectiveLine / inkoopDetectiveLot).
+function inkoopDetectiveLineText(line) {
+  if (!line) return "?";
+  return `${inkoopShortDate(line.date)} · ${line.brief || "-"} · ${line.description} · ${line.boxes && line.per_box ? `${line.boxes} × ${line.per_box} = ` : ""}${line.quantity} pcs @ ${formatInkoopEuro(line.price)} = ${formatInkoopEuro(line.total)}`;
+}
+
+function inkoopDetectiveLotText(lot) {
+  if (!lot) return "?";
+  return `${inkoopShortDate(lot.date)} · ${lot.code} · Lot ${lot.lot} · ${lot.description}${lot.uniware ? ` (${lot.uniware})` : ""} · ${lot.boxes && lot.per_box ? `${lot.boxes} × ${lot.per_box} = ` : ""}${lot.pieces} pcs @ ${formatInkoopEuro(lot.price)} = ${formatInkoopEuro(lot.total)}`;
+}
+
+// Link invoice line(s) and lot(s) by hand -- the comparison uses it first.
+async function inkoopSaveManualPair({ lineIds, lots, dates, note, source }) {
+  return apiJson("/api/inkoop/manual-pairs", {
+    method: "POST",
+    body: JSON.stringify({ invoice_line_ids: lineIds, lots, dates, note, source }),
+  });
+}
+
+function InkoopDetectiveSuggestionRow({ item, lineById, lotByNumber, accepted, onAccept, reason }) {
+  return (
+    <tr>
+      <td>{item.line_ids.map((id) => <div key={id}>{inkoopDetectiveLineText(lineById.get(id))}</div>)}</td>
+      <td>{item.lots.map((lot) => <div key={lot}>{inkoopDetectiveLotText(lotByNumber.get(lot))}</div>)}</td>
+      <td>{reason || item.kind}{item.confidence ? <div className="muted">{item.confidence}</div> : null}</td>
+      <td>{item.invoice_pieces} / {item.connect_pieces}</td>
+      <td><InkoopMoneyDiff value={item.difference} /></td>
+      <td>{accepted ? <span className="ukdocs-status-badge">linked</span> : <button type="button" onClick={onAccept}>Accept</button>}</td>
+    </tr>
+  );
+}
+
+// Detective: what of the leftovers fits together (rules, the differences
+// worked out by the server), and per grower the AI's view (LLM poller);
+// Accept links them by hand.
+function InkoopDetectiveCard({ from, to, company, onLinked }) {
+  const [data, setData] = useState(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState("");
+  const [accepted, setAccepted] = useState(() => new Set());
+  const [asks, setAsks] = useState({});
+  const timers = useRef({});
+  useEffect(() => () => Object.values(timers.current).forEach((timer) => window.clearTimeout(timer)), []);
+  useEffect(() => { setData(null); setAsks({}); }, [from, to, company]);
+
+  function search() {
+    setLoading(true);
+    setError("");
+    const params = new URLSearchParams({ from, to });
+    if (company) params.set("company", company);
+    apiJson(`/api/inkoop/detective?${params.toString()}`)
+      .then((payload) => setData(payload))
+      .catch((loadError) => setError(loadError.message))
+      .finally(() => setLoading(false));
+  }
+
+  async function accept(key, item, lines, lots, note) {
+    setError("");
+    try {
+      const lineById = new Map(lines.map((line) => [line.id, line]));
+      const lotByNumber = new Map(lots.map((lot) => [lot.lot, lot]));
+      const dates = [...item.line_ids.map((id) => lineById.get(id)?.date), ...item.lots.map((lot) => lotByNumber.get(lot)?.date)].filter(Boolean);
+      await inkoopSaveManualPair({ lineIds: item.line_ids, lots: item.lots, dates, note, source: note.startsWith("AI") ? "ai" : "detective" });
+      setAccepted((current) => new Set([...current, key]));
+      onLinked?.();
+    } catch (saveError) {
+      setError(saveError.message);
+    }
+  }
+
+  function poll(grower, jobId, startedAt) {
+    apiJson(`/api/inkoop/detective/ask/${encodeURIComponent(jobId)}`)
+      .then((payload) => {
+        if (payload.status === "done" || payload.status === "failed") {
+          setAsks((current) => ({ ...current, [grower]: { ...payload, job_id: jobId } }));
+          return;
+        }
+        setAsks((current) => ({ ...current, [grower]: { status: payload.status, job_id: jobId, waited: Math.round((Date.now() - startedAt) / 1000) } }));
+        timers.current[grower] = window.setTimeout(() => poll(grower, jobId, startedAt), 5000);
+      })
+      .catch((pollError) => setAsks((current) => ({ ...current, [grower]: { status: "failed", error: pollError.message } })));
+  }
+
+  async function ask(grower) {
+    setAsks((current) => ({ ...current, [grower]: { status: "sending" } }));
+    try {
+      const payload = await apiJson("/api/inkoop/detective/ask", { method: "POST", body: JSON.stringify({ from, to, company, grower }) });
+      poll(grower, payload.job_id, Date.now());
+    } catch (askError) {
+      setAsks((current) => ({ ...current, [grower]: { status: "failed", error: askError.message } }));
+    }
+  }
+
+  return (
+    <InkoopCollapsibleCard title={`Detective -- leftovers ${from === to ? fustOverviewDate(from) : `${fustOverviewDate(from)} - ${fustOverviewDate(to)}`}`} count={data ? data.growers.reduce((sum, group) => sum + group.suggestions.length, 0) : undefined} defaultOpen={false}>
+      <div className="notice">
+        Open invoice lines and free Connect lots of one grower that fit together: <strong>the same pieces at another price</strong> (a price typed wrong: Limoncello 480 @ 0.58 + 320 @ 0.53 = lot 800 @ 0.53, €24 too much) or <strong>the same total in other pieces</strong> (resold per 5 / 10), within 4 days, with the name. The differences are worked out here.
+        <strong> Accept</strong> links them by hand -- the comparison then counts them as matched and the difference as a mistake. <strong>Ask the AI</strong> sends a grower's leftovers to the LLM poller for a summary of what happened and the pairs it would make; nothing is linked without Accept.
+      </div>
+      <div className="row-actions">
+        <button type="button" className="primary" onClick={search} disabled={loading}>{loading ? "Searching..." : data ? "Search again" : "Search leftovers"}</button>
+      </div>
+      {error && <div className="notice danger">{error}</div>}
+      {data && !data.growers.length && <div className="notice">No open invoice lines in this period.</div>}
+      {data && data.growers.map((group) => {
+        const lineById = new Map(group.lines.map((line) => [line.id, line]));
+        const lotByNumber = new Map(group.lots.map((lot) => [lot.lot, lot]));
+        const askState = asks[group.grower];
+        const aiLines = askState?.lines ? new Map(askState.lines.map((line) => [line.id, line])) : lineById;
+        const aiLots = askState?.lots ? new Map(askState.lots.map((lot) => [lot.lot, lot])) : lotByNumber;
+        return (
+          <div key={group.grower} className="data-table-card" style={{ marginTop: 8 }}>
+            <div className="row-actions spread-actions">
+              <strong>{group.grower}</strong>
+              <span className="muted">{group.lines.length} open line(s) {formatInkoopEuro(group.lines.reduce((sum, line) => sum + line.total, 0))} · {group.lots.length} free lot(s) {formatInkoopEuro(group.lots.reduce((sum, lot) => sum + lot.total, 0))} · {group.suggestions.length} suggestion(s)</span>
+              <button type="button" onClick={() => ask(group.grower)} disabled={askState && !["done", "failed"].includes(askState.status)}>
+                {askState && !["done", "failed"].includes(askState.status) ? `AI working${askState.waited ? ` (${askState.waited}s)` : ""}...` : askState?.status === "done" ? "Ask the AI again" : "Ask the AI"}
+              </button>
+            </div>
+            {!!group.suggestions.length && (
+              <div className="table-wrap">
+                <table className="data-table">
+                  <thead><tr><th>Invoice line(s)</th><th>Connect lot(s)</th><th>Why</th><th>Pieces inv. / Connect</th><th>Difference</th><th></th></tr></thead>
+                  <tbody>
+                    {group.suggestions.map((item) => {
+                      const key = `${item.line_ids.join(",")}|${item.lots.join(",")}`;
+                      return <InkoopDetectiveSuggestionRow key={key} item={item} lineById={lineById} lotByNumber={lotByNumber} accepted={accepted.has(key)} onAccept={() => accept(key, item, group.lines, group.lots, `detective: ${item.kind}`)} />;
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            )}
+            {askState?.status === "failed" && <div className="notice danger">AI: {askState.error || "failed"}</div>}
+            {askState?.status === "done" && (
+              <>
+                <div className="notice info"><strong>AI summary:</strong> {askState.summary || "(no summary)"}{askState.unexplained ? <div style={{ marginTop: 4 }}><strong>Still open:</strong> {askState.unexplained}</div> : null}</div>
+                {!!askState.pairs?.length && (
+                  <div className="table-wrap">
+                    <table className="data-table">
+                      <thead><tr><th>Invoice line(s)</th><th>Connect lot(s)</th><th>AI's reason</th><th>Pieces inv. / Connect</th><th>Difference (checked)</th><th></th></tr></thead>
+                      <tbody>
+                        {askState.pairs.map((item) => {
+                          const key = `${item.line_ids.join(",")}|${item.lots.join(",")}`;
+                          return <InkoopDetectiveSuggestionRow key={key} item={item} lineById={aiLines} lotByNumber={aiLots} reason={item.reason} accepted={accepted.has(key)} onAccept={() => accept(key, item, askState.lines || group.lines, askState.lots || group.lots, `AI: ${item.reason}`.slice(0, 280))} />;
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+                {!!askState.rejected?.length && <div className="muted">{askState.rejected.length} AI pair(s) left out: unknown or doubled lines / lots.</div>}
+              </>
+            )}
+          </div>
+        );
+      })}
+    </InkoopCollapsibleCard>
+  );
+}
+
+// The links made by hand (also those that match, so they're not in the
+// Follow-up list) of the shown period, to check or take off again.
+function InkoopManualPairsCard({ from, to, refreshKey, onChanged }) {
+  const [pairs, setPairs] = useState(null);
+  const [error, setError] = useState("");
+  useEffect(() => {
+    apiJson("/api/inkoop/manual-pairs").then((payload) => setPairs(payload.pairs || [])).catch((loadError) => setError(loadError.message));
+  }, [refreshKey]);
+  const shown = (pairs || []).filter((pair) => !pair.dates?.length || pair.dates.some((date) => date >= from && date <= to));
+  async function unlink(pairId) {
+    try {
+      await apiJson(`/api/inkoop/manual-pairs/${encodeURIComponent(pairId)}`, { method: "DELETE" });
+      setPairs((current) => (current || []).filter((pair) => pair.id !== pairId));
+      onChanged?.();
+    } catch (unlinkError) {
+      setError(unlinkError.message);
+    }
+  }
+  return (
+    <InkoopCollapsibleCard title="Linked by hand" count={shown.length} defaultOpen={false}>
+      {error && <div className="notice danger">{error}</div>}
+      <div className="notice">Compared again in the background after a change -- the day updates by itself.</div>
+      <div className="table-wrap">
+        <table className="data-table">
+          <thead><tr><th>Days</th><th>Invoice line(s)</th><th>Lot(s)</th><th>Note</th><th>By</th><th></th></tr></thead>
+          <tbody>
+            {shown.map((pair) => (
+              <tr key={pair.id}>
+                <td>{(pair.dates || []).map(inkoopShortDate).join(", ")}</td>
+                <td>{pair.invoice_line_ids.join(", ")}</td>
+                <td>{pair.lots.join(", ")}</td>
+                <td>{pair.note}</td>
+                <td>{pair.by}{pair.at ? <div className="muted">{String(pair.at).slice(0, 16).replace("T", " ")}</div> : null}</td>
+                <td><button type="button" onClick={() => unlink(pair.id)}>Unlink</button></td>
+              </tr>
+            ))}
+            {!shown.length && <tr><td colSpan={6}>None in this period.</td></tr>}
+          </tbody>
+        </table>
+      </div>
+    </InkoopCollapsibleCard>
+  );
+}
+
 function InkoopFollowUpTab({ company }) {
   // A month in a calendar by invoice date; a clicked day narrows the list.
   const [month, setMonth] = useState(() => todayIso().slice(0, 7));
@@ -19036,6 +19239,41 @@ function InkoopFollowUpTab({ company }) {
   // it is off by default (counted together the value would double).
   const [typeFilter, setTypeFilter] = useState(["mismatch", "gap_erp", "gap_invoice"]);
   const [openGrower, setOpenGrower] = useState("");
+  // Ticked to link by hand: invoice lines (by line id) and lots (by lot).
+  const [picked, setPicked] = useState({});
+  const [pairNote, setPairNote] = useState("");
+  const [pairsKey, setPairsKey] = useState(0);
+  const pickKey = (issue) => (issue.issue_type === "gap_erp" ? (issue.erp_row?.lot ? `lot:${issue.erp_row.lot}` : "") : (issue.issue_type === "gap_invoice" || issue.issue_type === "mismatch") && issue.detail?.id ? `line:${issue.detail.id}` : "");
+  const pickedList = Object.values(picked);
+  const pickedLines = pickedList.filter((issue) => issue.issue_type !== "gap_erp");
+  const pickedLots = pickedList.filter((issue) => issue.issue_type === "gap_erp");
+  async function linkPicked() {
+    setError("");
+    try {
+      await inkoopSaveManualPair({
+        lineIds: pickedLines.map((issue) => issue.detail.id),
+        lots: pickedLots.map((issue) => String(issue.erp_row.lot)),
+        dates: [...pickedLines.map((issue) => issue.detail?.invoice_date || issue.date), ...pickedLots.map((issue) => issue.erp_row?.date || issue.date)].filter(Boolean),
+        note: pairNote,
+        source: "hand",
+      });
+      setPicked({});
+      setPairNote("");
+      setPairsKey((value) => value + 1);
+      await load();
+    } catch (linkError) {
+      setError(linkError.message);
+    }
+  }
+  async function unlinkPair(pairId) {
+    setError("");
+    try {
+      await apiJson(`/api/inkoop/manual-pairs/${encodeURIComponent(pairId)}`, { method: "DELETE" });
+      await load();
+    } catch (unlinkError) {
+      setError(unlinkError.message);
+    }
+  }
   const typedIssues = issues.filter((issue) => typeFilter.includes(issue.issue_type));
   const filteredIssues = typedIssues.filter((issue) => !bwFilter || bwFilter.includes(issue.bw || "?"));
   const shownIssues = selectedDay ? filteredIssues.filter((issue) => inkoopIssueInvoiceDay(issue) === selectedDay) : filteredIssues;
@@ -19175,6 +19413,25 @@ function InkoopFollowUpTab({ company }) {
             <div className="inkoop-summary-card"><div className="inkoop-summary-value">{formatInkoopEuro(shownIssues.reduce((sum, issue) => sum + (Number(issue.value) || 0), 0))}</div><div className="inkoop-summary-label">Value at stake</div></div>
             <div className="inkoop-summary-card"><div className="inkoop-summary-value"><InkoopMoneyDiff value={shownIssues.reduce((sum, issue) => sum + (Number(issue.money_diff) || 0), 0)} /></div><div className="inkoop-summary-label">Net (invoice − Connect)</div></div>
           </div>
+          <InkoopDetectiveCard from={selectedDay || period.from} to={selectedDay || period.to} company={company} onLinked={() => { setPairsKey((value) => value + 1); load().catch(() => {}); }} />
+          <InkoopManualPairsCard from={selectedDay || period.from} to={selectedDay || period.to} refreshKey={pairsKey} onChanged={() => load().catch(() => {})} />
+          {!!pickedList.length && (() => {
+            const invoicePieces = pickedLines.reduce((sum, issue) => sum + (Number(issue.detail?.quantity) || 0), 0);
+            const invoiceValue = pickedLines.reduce((sum, issue) => sum + (Number(issue.detail?.total) || 0), 0);
+            const connectPieces = pickedLots.reduce((sum, issue) => sum + (Number(issue.erp_row?.pieces) || 0), 0);
+            const connectValue = pickedLots.reduce((sum, issue) => sum + (parseFloat(issue.erp_row?.t_price) || 0), 0);
+            return (
+              <div className="notice info" style={{ position: "sticky", top: 0, zIndex: 2 }}>
+                <strong>Link by hand:</strong> {pickedLines.length} invoice line(s) {invoicePieces} pcs {formatInkoopEuro(invoiceValue)} · {pickedLots.length} Connect lot(s) {connectPieces} pcs {formatInkoopEuro(connectValue)} · difference <InkoopMoneyDiff value={Math.round((invoiceValue - connectValue) * 100) / 100} />
+                <div className="row-actions" style={{ marginTop: 6 }}>
+                  <input value={pairNote} onChange={(event) => setPairNote(event.target.value)} placeholder="Note (why they belong together)" size={40} />
+                  <button type="button" className="primary" onClick={linkPicked} disabled={!pickedLines.length || !pickedLots.length}>Link</button>
+                  <button type="button" onClick={() => setPicked({})}>Clear</button>
+                  {(!pickedLines.length || !pickedLots.length) && <span className="muted">Tick at least one invoice line and one Connect lot.</span>}
+                </div>
+              </div>
+            );
+          })()}
           <InkoopTransactionCostSummary issues={shownIssues} />
           <div className="table-wrap">
             <table className="data-table">
@@ -19198,13 +19455,26 @@ function InkoopFollowUpTab({ company }) {
                         <td colSpan={INKOOP_ISSUE_TYPES.length + 6} style={{ background: "#f8fafc" }}>
                           <table className="data-table">
                             <thead>
-                              <tr><th>Date</th><th>Type</th><th>Invoice</th><th>Description</th><th>Connect line</th><th>Value</th><th>Difference</th><th>Status</th><th>Assigned to</th><th>Note</th><th></th></tr>
+                              <tr><th title="Tick lines and lots to link them by hand">Link</th><th>Date</th><th>Type</th><th>Invoice</th><th>Description</th><th>Connect line</th><th>Value</th><th>Difference</th><th>Status</th><th>Assigned to</th><th>Note</th><th></th></tr>
                             </thead>
                             <tbody>
                               {group.issues.map((issue) => {
                                 const draft = getDraft(issue);
                                 return (
                                   <tr key={issue.id}>
+                                    <td>
+                                      {issue.detail?.manual_pair_id ? (
+                                        <button type="button" className="link-button" onClick={() => unlinkPair(issue.detail.manual_pair_id)} title={issue.detail.supplier_match_type || "Linked by hand"}>Unlink</button>
+                                      ) : pickKey(issue) ? (
+                                        <input type="checkbox" checked={Boolean(picked[pickKey(issue)])} onChange={() => setPicked((current) => {
+                                          const key = pickKey(issue);
+                                          const next = { ...current };
+                                          if (next[key]) delete next[key];
+                                          else next[key] = issue;
+                                          return next;
+                                        })} />
+                                      ) : null}
+                                    </td>
                                     <td>{inkoopShortDate(issue.date)}</td>
                                     <td>{inkoopIssueTypeLabel(issue.issue_type)}</td>
                                     <td><InkoopInvoiceLink invoiceNumber={issue.invoice_number} /></td>

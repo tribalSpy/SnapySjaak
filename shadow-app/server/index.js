@@ -28,6 +28,7 @@ import {
   exportDatabaseSnapshot,
   importDatabaseSnapshot,
   createLlmJob,
+  getLlmJobById,
   dbQuery,
   deleteUkdocsCsiParsedDocumentFromDatabase,
   getUkdocsCsiParsedDocumentFromDatabase,
@@ -7569,7 +7570,7 @@ function inkoopPriceWithTransactionCost(connectPrice, pct) {
   return Math.round(price * (1 + pct / 100) * 100) / 100;
 }
 
-function matchInkoopVeilingLines(erpRows, invoices, supplierMap = {}, supplierNameMap = {}, manualLinks = [], supplierFhMap = {}, transactionCosts = {}, afgemeldMessages = []) {
+function matchInkoopVeilingLines(erpRows, invoices, supplierMap = {}, supplierNameMap = {}, manualLinks = [], supplierFhMap = {}, transactionCosts = {}, afgemeldMessages = [], manualPairs = []) {
   // Every code the uploaded master data actually knows about, regardless of
   // which lookup (GLN/name/FH) it happened to be reachable through --
   // needed here since an ERP row's Suppl./Avc./Transp. value has to be
@@ -7823,8 +7824,65 @@ function matchInkoopVeilingLines(erpRows, invoices, supplierMap = {}, supplierNa
     matchedOk.push({ ...context, supplier_code: matchedCode, supplier_match_type: resolved.match_type, erp_row: picked.row });
   }
 
+  // Linked by hand (Follow-up): these invoice lines with these lots, before
+  // every rule. The lots' value is shared over the lines by pieces (by
+  // value when the pieces differ); what differs stays a mistake (Limoncello
+  // 480 @ 0.58 + 320 @ 0.53 = lot 800 @ 0.53: matched, 24.00 too much).
+  const manualLineIds = new Set();
+  if (Array.isArray(manualPairs) && manualPairs.length) {
+    const lineById = new Map();
+    for (const invoice of Array.isArray(invoices) ? invoices : []) {
+      for (const line of Array.isArray(invoice?.lines) ? invoice.lines : []) if (line?.id) lineById.set(String(line.id), { invoice, line });
+    }
+    const lotByNumber = new Map();
+    for (const row of Array.isArray(erpRows) ? erpRows : []) if (row?.lot !== undefined && row?.lot !== null) lotByNumber.set(String(row.lot).trim(), row);
+    const round2 = (value) => Math.round(value * 100) / 100;
+    for (const pair of manualPairs) {
+      const lines = (pair?.invoice_line_ids || []).map((id) => lineById.get(String(id)));
+      const lots = (pair?.lots || []).map((lot) => lotByNumber.get(String(lot).trim()));
+      if (!lines.length || !lots.length || lines.some((item) => !item) || lots.some((row) => !row)
+        || lines.some((item) => manualLineIds.has(item.line.id)) || lots.some((row) => consumedErpRows.has(row))) continue;
+      for (const row of lots) consumedErpRows.add(row);
+      for (const item of lines) manualLineIds.add(item.line.id);
+      const lotPieces = lots.reduce((sum, row) => sum + (Number(row.pieces) || 0), 0);
+      const lotValue = round2(lots.reduce((sum, row) => sum + (parseFloat(row.t_price) || 0), 0));
+      const linePieces = lines.reduce((sum, item) => sum + (Number(item.line.quantity) || 0), 0);
+      const lineValue = lines.reduce((sum, item) => sum + (Number(item.line.total) || 0), 0);
+      const byPieces = Math.abs(lotPieces - linePieces) < 0.01 || !(lineValue > 0);
+      let leftValue = lotValue;
+      let leftPieces = lotPieces;
+      const single = lines.length === 1 && lots.length === 1;
+      lines.forEach(({ invoice, line }, index) => {
+        const last = index === lines.length - 1;
+        const weight = byPieces ? (Number(line.quantity) || 0) / (linePieces || 1) : (Number(line.total) || 0) / lineValue;
+        const share = last ? leftValue : round2(lotValue * weight);
+        const pieces = last ? leftPieces : (byPieces ? Number(line.quantity) : Math.round(lotPieces * weight));
+        leftValue = round2(leftValue - share);
+        leftPieces -= pieces;
+        const erpRow = single ? lots[0] : { ...lots[0], lot: lots.map((row) => row.lot).join("+"), pieces, t_price: share, price: pieces > 0 ? Math.round((share / pieces) * 1000) / 1000 : lots[0].price };
+        const matched = {
+          invoice_number: invoice?.invoice_number || "", invoice_type: invoice?.type || "", ...line,
+          supplier_code: line.supplier_code || resolveErpRowSupplierCode(lots[0], validSupplierCodes),
+          supplier_match_type: `linked by hand${pair.by ? ` (${pair.by})` : ""}${pair.note ? `: ${pair.note}` : ""}`,
+          erp_row: erpRow,
+          manual_pair_id: pair.id,
+          ...(single ? {} : { matched_as_group: true, split_lots: lots.map((row) => row.lot) }),
+        };
+        const diffs = [];
+        if (inkoopValuesDiffer(pieces, line.quantity)) diffs.push({ field: "quantity", erp: pieces, invoice: line.quantity });
+        if (Math.abs(share - (Number(line.total) || 0)) > 0.011) {
+          diffs.push({ field: "unit_price", erp: parseFloat(erpRow.price), invoice: line.unit_price });
+          diffs.push({ field: "total", erp: share, invoice: line.total });
+        }
+        if (diffs.length) matchedMismatch.push({ ...matched, diffs });
+        else matchedOk.push(matched);
+      });
+    }
+  }
+
   for (const invoice of Array.isArray(invoices) ? invoices : []) {
     for (const line of Array.isArray(invoice?.lines) ? invoice.lines : []) {
+      if (manualLineIds.has(line?.id)) continue;
       const context = { invoice_number: invoice?.invoice_number || "", invoice_type: invoice?.type || "", ...line };
       const feeBucket = isEmbalageLine(line) ? embalageLines : feeLines;
 
@@ -8627,7 +8685,7 @@ function matchInkoopVeilingLines(erpRows, invoices, supplierMap = {}, supplierNa
   };
 }
 
-const defaultInkoopState = { imports: [], supplier_map: {}, supplier_name_map: {}, supplier_fh_map: {}, supplier_bw_map: {}, customer_map: {}, manual_supplier_links: [], facturation_groups: [], king_ledger_map: null, king_settings: {}, grower_skip_codes: [], excluded_erp_codes: [], supplier_bedrijf_map: {}, transaction_costs: null, manual_bw_map: {} };
+const defaultInkoopState = { imports: [], supplier_map: {}, supplier_name_map: {}, supplier_fh_map: {}, supplier_bw_map: {}, customer_map: {}, manual_supplier_links: [], facturation_groups: [], king_ledger_map: null, king_settings: {}, grower_skip_codes: [], excluded_erp_codes: [], supplier_bedrijf_map: {}, transaction_costs: null, manual_bw_map: {}, manual_line_pairs: [] };
 
 // Connect codes whose invoices carry a % transaction cost on the price.
 const INKOOP_DEFAULT_TRANSACTION_COSTS = { VDEIJK: 1 };
@@ -8865,7 +8923,22 @@ function normalizeInkoopState(state) {
     // Connect code -> % transaction cost the grower adds on its invoice
     // prices (VDEIJK 1%): still paired, shown as a minor price mismatch.
     transaction_costs: normalizeInkoopTransactionCosts(state?.transaction_costs),
+    // Invoice line(s) <-> Connect lot(s) linked by hand (Follow-up).
+    manual_line_pairs: normalizeInkoopManualLinePairs(state?.manual_line_pairs),
   };
+}
+
+function normalizeInkoopManualLinePairs(list) {
+  return (Array.isArray(list) ? list : []).map((pair) => ({
+    id: normalizeUkdocsText(pair?.id),
+    invoice_line_ids: [...new Set((Array.isArray(pair?.invoice_line_ids) ? pair.invoice_line_ids : []).map((id) => normalizeUkdocsText(id)).filter(Boolean))],
+    lots: [...new Set((Array.isArray(pair?.lots) ? pair.lots : []).map((lot) => normalizeUkdocsText(lot)).filter(Boolean))],
+    dates: [...new Set((Array.isArray(pair?.dates) ? pair.dates : []).map((date) => inkoopIsoDate(date)).filter(Boolean))],
+    note: normalizeUkdocsText(pair?.note).slice(0, 300),
+    by: normalizeUkdocsText(pair?.by),
+    at: normalizeUkdocsText(pair?.at),
+    source: normalizeUkdocsText(pair?.source),
+  })).filter((pair) => pair.id && pair.invoice_line_ids.length && pair.lots.length);
 }
 
 // Bedrijf values of internal codes: no purchase (no matching, not in the
@@ -9741,6 +9814,225 @@ function inkoopIsoDate(value) {
 
 // ?from=&to= or ?days=N (ending today / ?to=), a week by default, a month at
 // most.
+// ---- Detective: the leftovers that may belong together.
+const INKOOP_DETECTIVE_GENERIC_WORDS = new Set(["ROSA", "ROSE", "ROZEN", "FUST", "SPRAY", "BLOEM", "PLUS", "LARGE", "EXTRA", "MIXED", "BUNDLE"]);
+
+function inkoopDetectiveWords(text) {
+  return String(text || "").toUpperCase().split(/[^A-Z]+/).filter((word) => word.length >= 4 && !INKOOP_DETECTIVE_GENERIC_WORDS.has(word));
+}
+
+function inkoopDetectiveLine(row, date) {
+  return {
+    id: normalizeUkdocsText(row?.id), invoice_number: normalizeUkdocsText(row?.invoice_number), date: String(row?.invoice_date || date || "").slice(0, 10),
+    brief: normalizeUkdocsText(row?.reference_bt), description: normalizeUkdocsText(row?.description), quantity: Number(row?.quantity) || 0,
+    boxes: Number(row?.packages) || null, per_box: Number(row?.per_package) || null, price: Number(row?.unit_price) || 0, total: Math.round((Number(row?.total) || 0) * 100) / 100,
+    order_number: normalizeUkdocsText(row?.order_number), supplier_name: normalizeUkdocsText(row?.supplier_name),
+  };
+}
+
+function inkoopDetectiveLot(row) {
+  return {
+    lot: normalizeUkdocsText(row?.lot), date: String(row?.date || "").slice(0, 10), pav: normalizeUkdocsText(row?.pav), code: normalizeUkdocsText(row?.suppl),
+    description: normalizeUkdocsText(row?.description), uniware: normalizeUkdocsText(row?.uniware_description), boxes: Number(row?.items) || null, per_box: Number(row?.cont) || null,
+    pieces: Number(row?.pieces) || 0, price: parseFloat(row?.price) || 0, total: Math.round((parseFloat(row?.t_price) || 0) * 100) / 100,
+  };
+}
+
+// A group of lines and lots: the difference (invoice - Connect) and why it
+// fits -- the same pieces at another price, or the same total in other
+// pieces, with the name words and days.
+function inkoopDetectiveCheck(lines, lots) {
+  const round2 = (value) => Math.round(value * 100) / 100;
+  const linePieces = lines.reduce((sum, line) => sum + line.quantity, 0);
+  const lotPieces = lots.reduce((sum, lot) => sum + lot.pieces, 0);
+  const lineValue = round2(lines.reduce((sum, line) => sum + line.total, 0));
+  const lotValue = round2(lots.reduce((sum, lot) => sum + lot.total, 0));
+  const lotNames = lots.map((lot) => `${lot.description} ${lot.uniware}`.toUpperCase().replace(/[^A-Z]/g, "")).join("|");
+  const named = lines.filter((line) => inkoopDetectiveWords(line.description).some((word) => lotNames.includes(word))).length;
+  const lineWords = [...new Set(lines.flatMap((line) => inkoopDetectiveWords(line.description)))];
+  const namedLots = lots.filter((lot) => lineWords.some((word) => `${lot.description} ${lot.uniware}`.toUpperCase().replace(/[^A-Z]/g, "").includes(word))).length;
+  // Every name word found counts: PASTELA ROSE is "Pastela Rose" before "Pastela Pink".
+  const nameWords = lines.reduce((sum, line) => sum + inkoopDetectiveWords(line.description).filter((word) => lotNames.includes(word)).length, 0);
+  const dates = [...lines.map((line) => line.date), ...lots.map((lot) => lot.date)].filter(Boolean).map((date) => Date.parse(date));
+  const spanDays = dates.length ? Math.round((Math.max(...dates) - Math.min(...dates)) / 86400000) : 0;
+  return {
+    same_pieces: Math.abs(linePieces - lotPieces) < 0.5, same_total: Math.abs(lineValue - lotValue) <= 0.02,
+    invoice_pieces: linePieces, connect_pieces: lotPieces, invoice_value: lineValue, connect_value: lotValue,
+    difference: round2(lineValue - lotValue), named_lines: named, named_lots: namedLots, name_words: nameWords, span_days: spanDays,
+  };
+}
+
+async function inkoopDetectiveSearch(state, range, company, onlyGrower) {
+  const days = await computeInkoopDays(state, range.from, range.to);
+  const wanted = normalizeUkdocsText(onlyGrower).toLowerCase();
+  const growers = new Map();
+  const seenLines = new Set();
+  const seenLots = new Set();
+  const groupOf = (name) => {
+    const key = normalizeUkdocsText(name) || "(no grower)";
+    if (!growers.has(key)) growers.set(key, { grower: key, lines: [], lots: [] });
+    return growers.get(key);
+  };
+  for (const day of days) {
+    if (!day?.result) continue;
+    const result = filterInkoopResultsByCompany(day.result, company);
+    const { codeToName, validSupplierCodes, supplierMap, supplierNameMap, manualLinks, supplierFhMap } = day.aggregateContext;
+    for (const key of ["only_in_invoice", "supplier_not_linked", "ambiguous_matches"]) {
+      for (const row of result[key] || []) {
+        if (!row?.id || seenLines.has(row.id) || inkoopInvoiceLineIsNotAPurchase(row)) continue;
+        seenLines.add(row.id);
+        groupOf(inkoopGrowerNameForInvoiceLine(row, codeToName, supplierMap, supplierNameMap, manualLinks, supplierFhMap) || row.supplier_name).lines.push(inkoopDetectiveLine(row, day.date));
+      }
+    }
+    for (const row of result.only_in_erp || []) {
+      const lot = String(row?.lot ?? "").trim();
+      if (!lot || seenLots.has(lot)) continue;
+      seenLots.add(lot);
+      groupOf(inkoopGrowerNameForErpRow(row, codeToName, validSupplierCodes)).lots.push(inkoopDetectiveLot(row));
+    }
+  }
+  const orphanLots = growers.get("(no grower)")?.lots || [];
+  const list = [];
+  for (const group of growers.values()) {
+    if (wanted && group.grower.toLowerCase() !== wanted) continue;
+    if (!group.lines.length) continue;
+    // Its own lots, and the lots of no grower (F2, X99 ...) that share a name word.
+    const words = new Set(group.lines.flatMap((line) => inkoopDetectiveWords(line.description)));
+    const orphans = orphanLots.filter((lot) => [...words].some((word) => `${lot.description} ${lot.uniware}`.toUpperCase().replace(/[^A-Z]/g, "").includes(word)));
+    const lines = [...group.lines].sort((left, right) => right.total - left.total).slice(0, 300);
+    const lots = [...group.lots, ...orphans].sort((left, right) => right.total - left.total).slice(0, 300);
+    list.push({ grower: group.grower, lines, lots, suggestions: inkoopDetectiveSuggestions(lines, lots) });
+  }
+  list.sort((left, right) => right.lines.reduce((sum, line) => sum + line.total, 0) - left.lines.reduce((sum, line) => sum + line.total, 0));
+  return { growers: list };
+}
+
+// Every group of 1-3 lines and 1-3 lots within 4 days that fits by pieces
+// or by total and shares a name (same pieces + same day without a name:
+// only with the same total); best first, no line or lot twice.
+function inkoopDetectiveSuggestions(lines, lots) {
+  // Every single one; pairs of the biggest 120, threes of the biggest 30
+  // (items come biggest first) -- a grower with 300 open lines stays fast.
+  const SUBSET_LIMITS = [Infinity, 120, 30];
+  const subsets = (items, max) => {
+    const out = [];
+    const walk = (start, chosen) => {
+      if (chosen.length) out.push([...chosen]);
+      if (chosen.length === max) return;
+      const limit = Math.min(items.length, SUBSET_LIMITS[chosen.length] ?? 0);
+      for (let index = start; index < limit; index += 1) {
+        chosen.push(items[index]);
+        walk(index + 1, chosen);
+        chosen.pop();
+      }
+    };
+    walk(0, []);
+    return out;
+  };
+  const lineSets = subsets(lines, 3);
+  const byPieces = new Map();
+  const byTotal = new Map();
+  for (const set of lineSets) {
+    const pieces = String(Math.round(set.reduce((sum, line) => sum + line.quantity, 0)));
+    const total = String(Math.round(set.reduce((sum, line) => sum + line.total, 0) * 100));
+    if (!byPieces.has(pieces)) byPieces.set(pieces, []);
+    byPieces.get(pieces).push(set);
+    if (!byTotal.has(total)) byTotal.set(total, []);
+    byTotal.get(total).push(set);
+  }
+  const candidates = [];
+  const seen = new Set();
+  for (const lotSet of subsets(lots, 3)) {
+    const pieces = String(Math.round(lotSet.reduce((sum, lot) => sum + lot.pieces, 0)));
+    const cents = Math.round(lotSet.reduce((sum, lot) => sum + lot.total, 0) * 100);
+    const lineGroups = [...(byPieces.get(pieces) || []), ...[cents - 1, cents, cents + 1].flatMap((value) => byTotal.get(String(value)) || [])];
+    for (const lineSet of lineGroups) {
+      const key = `${lineSet.map((line) => line.id).sort().join(",")}|${lotSet.map((lot) => lot.lot).sort().join(",")}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      const check = inkoopDetectiveCheck(lineSet, lotSet);
+      if (check.span_days > 4) continue;
+      const allNamed = check.named_lines === lineSet.length && check.named_lots === lotSet.length;
+      if (!allNamed && !(check.same_total && check.same_pieces && check.span_days <= 1)) continue;
+      // A one-to-one pair at the same price and pieces the rules already
+      // look at: only worth showing when the name fits.
+      const score = (allNamed ? 4 : 0) + Math.min(3, check.name_words / lineSet.length - 1) + (check.same_total ? 3 : 0) + (check.same_pieces ? 2 : 0) + (check.span_days === 0 ? 1 : 0)
+        - (lineSet.length + lotSet.length - 2) - Math.min(3, Math.abs(check.difference) / Math.max(1, check.invoice_value) * 10);
+      candidates.push({ line_ids: lineSet.map((line) => line.id), lots: lotSet.map((lot) => lot.lot), kind: check.same_pieces && check.same_total ? "same pieces and total" : check.same_pieces ? "same pieces, other price" : "same total, other pieces", score: Math.round(score * 10) / 10, ...check });
+    }
+  }
+  candidates.sort((left, right) => right.score - left.score || Math.abs(left.difference) - Math.abs(right.difference));
+  const usedLines = new Set();
+  const usedLots = new Set();
+  const chosen = [];
+  for (const candidate of candidates) {
+    if (candidate.line_ids.some((id) => usedLines.has(id)) || candidate.lots.some((lot) => usedLots.has(lot))) continue;
+    candidate.line_ids.forEach((id) => usedLines.add(id));
+    candidate.lots.forEach((lot) => usedLots.add(lot));
+    chosen.push(candidate);
+    if (chosen.length >= 60) break;
+  }
+  return chosen;
+}
+
+function inkoopDetectivePrompt(group) {
+  const line = (item) => `${item.id} | ${item.date} | ${item.brief || "-"} | ${item.description} | ${item.boxes && item.per_box ? `${item.boxes} x ${item.per_box} = ` : ""}${item.quantity} pcs @ ${item.price} = ${item.total}${item.order_number ? ` | ON ${item.order_number}` : ""}`;
+  const lot = (item) => `${item.lot} | ${item.date} | ${item.pav || "-"} | ${item.code} | ${item.description}${item.uniware ? ` (Uniware: ${item.uniware})` : ""} | ${item.boxes && item.per_box ? `${item.boxes} x ${item.per_box} = ` : ""}${item.pieces} pcs @ ${item.price} = ${item.total}`;
+  const suggestion = (item, index) => `S${index + 1}: lines ${item.line_ids.join(", ")} <-> lots ${item.lots.join(", ")} | ${item.kind} | invoice ${item.invoice_pieces} pcs ${item.invoice_value} / Connect ${item.connect_pieces} pcs ${item.connect_value} | difference ${item.difference}`;
+  return [
+    {
+      role: "system",
+      content: "You check a flower wholesaler's purchases: FloraHolland invoice lines against the Connect (stock) lots of the same grower. Every listed line and lot is still unpaired. Find what probably belongs together and why: a price typed wrong, a brief number typed wrong, one purchase split differently over lines and lots, resold per 5/10 (a lot 'x5 ...' is the invoice line with pieces / 5 and price x 5, the same total), booked a day or two later, or booked under another name. Only pair what you can explain. Never invent ids. Answer in JSON only: {\"summary\": \"3-6 sentences in English: what happened with this grower's leftovers\", \"pairs\": [{\"line_ids\": [\"...\"], \"lots\": [\"...\"], \"reason\": \"one sentence\", \"confidence\": \"high|medium|low\"}], \"unexplained\": \"what stays open and what to check\"}",
+    },
+    {
+      role: "user",
+      content: [
+        `Grower: ${group.grower}`,
+        "",
+        "Open invoice lines (id | date | brief | product | pieces @ price = total):",
+        ...group.lines.slice(0, 150).map(line),
+        "",
+        "Free Connect lots (lot | date | brief | code | product | pieces @ price = total):",
+        ...group.lots.slice(0, 150).map(lot),
+        "",
+        "Groups the rules found (pieces or total fit, names checked, differences worked out):",
+        ...(group.suggestions.length ? group.suggestions.map(suggestion) : ["(none)"]),
+      ].join("\n"),
+    },
+  ];
+}
+
+// The model's answer, checked: only lines and lots it was given, each once;
+// the difference worked out here.
+function inkoopDetectiveAnswer(job) {
+  const content = job?.result_json?.ollama_response?.message?.content || job?.result_json?.ollama_response?.message?.thinking || "";
+  const parsed = extractJsonObjectFromText(content) || {};
+  const given = job?.payload_json?.detective || {};
+  const lineById = new Map((given.lines || []).map((line) => [String(line.id), line]));
+  const lotByNumber = new Map((given.lots || []).map((lot) => [String(lot.lot), lot]));
+  const usedLines = new Set();
+  const usedLots = new Set();
+  const pairs = [];
+  const rejected = [];
+  for (const pair of Array.isArray(parsed.pairs) ? parsed.pairs : []) {
+    const lineIds = [...new Set((Array.isArray(pair?.line_ids) ? pair.line_ids : []).map(String))];
+    const lots = [...new Set((Array.isArray(pair?.lots) ? pair.lots : []).map(String))];
+    const known = lineIds.length && lots.length && lineIds.every((id) => lineById.has(id)) && lots.every((lot) => lotByNumber.has(lot));
+    if (!known || lineIds.some((id) => usedLines.has(id)) || lots.some((lot) => usedLots.has(lot))) {
+      rejected.push({ ...pair, why: known ? "a line or lot twice" : "unknown line or lot" });
+      continue;
+    }
+    lineIds.forEach((id) => usedLines.add(id));
+    lots.forEach((lot) => usedLots.add(lot));
+    pairs.push({ line_ids: lineIds, lots, reason: normalizeUkdocsText(pair?.reason), confidence: normalizeUkdocsText(pair?.confidence), ...inkoopDetectiveCheck(lineIds.map((id) => lineById.get(id)), lots.map((lot) => lotByNumber.get(lot))) });
+  }
+  return {
+    grower: given.grower || "", from: given.from || "", to: given.to || "",
+    summary: normalizeUkdocsText(parsed.summary), unexplained: normalizeUkdocsText(parsed.unexplained),
+    pairs, rejected, lines: given.lines || [], lots: given.lots || [],
+  };
+}
+
 function inkoopRangeFromRequest(url, defaultDays = INKOOP_RANGE_DEFAULT_DAYS) {
   let to = inkoopIsoDate(url.searchParams.get("to")) || localDateIso();
   let from = inkoopIsoDate(url.searchParams.get("from"));
@@ -10534,6 +10826,7 @@ async function gatherInkoopMatchInputs(state, { from, to }) {
     transactionCosts: state.transaction_costs,
     afgemeldMessages,
     skipCodes: directory.skipCodes || [],
+    manualPairs: state.manual_line_pairs || [],
   };
 }
 
@@ -10541,7 +10834,7 @@ async function computeInkoopLiveMatchFresh(state, { from, to }) {
   const inputs = await gatherInkoopMatchInputs(state, { from, to });
   const { allErpRows, erpRows } = inputs;
   inkoopNonGrowerCodes = new Set(inputs.skipCodes);
-  const result = matchInkoopVeilingLines(erpRows, inputs.invoices, inputs.supplierMap, inputs.supplierNameMap, inputs.manualLinks, inputs.supplierFhMap, inputs.transactionCosts, inputs.afgemeldMessages);
+  const result = matchInkoopVeilingLines(erpRows, inputs.invoices, inputs.supplierMap, inputs.supplierNameMap, inputs.manualLinks, inputs.supplierFhMap, inputs.transactionCosts, inputs.afgemeldMessages, inputs.manualPairs);
   const withReturns = await reclassifyInkoopConfirmedReturns(result, state.customer_map);
   // Tagged in place (fresh rows from this request's own query) so every
   // view showing an only-in-ERP gap can say what kind of party it is --
@@ -25119,6 +25412,127 @@ async function handleApi(req, res, url) {
     return;
   }
 
+  // Invoice line(s) <-> Connect lot(s) linked by hand. POST {invoice_line_ids,
+  // lots, dates, note} adds one (replacing a link with any of the same lines
+  // or lots); DELETE /:id takes it off. The days involved are compared again.
+  if (url.pathname === "/api/inkoop/manual-pairs" && req.method === "GET") {
+    if (!requirePermission(res, requestUser, PERMISSIONS.INKOOP_VIEW)) {
+      return;
+    }
+    const state = await readInkoopState();
+    sendJson(res, 200, { pairs: state.manual_line_pairs || [] });
+    return;
+  }
+  if (url.pathname === "/api/inkoop/manual-pairs" && req.method === "POST") {
+    if (!requirePermission(res, requestUser, PERMISSIONS.INKOOP_VIEW)) {
+      return;
+    }
+    try {
+      const body = await readRequestJson(req);
+      const [pair] = normalizeInkoopManualLinePairs([{
+        ...body, id: crypto.randomUUID(), by: requestUser.username, at: new Date().toISOString(),
+      }]);
+      if (!pair) throw new Error("Choose at least one invoice line and one Connect lot");
+      const state = await readInkoopState();
+      const lineIds = new Set(pair.invoice_line_ids);
+      const lots = new Set(pair.lots);
+      const replaced = (state.manual_line_pairs || []).filter((other) => other.invoice_line_ids.some((id) => lineIds.has(id)) || other.lots.some((lot) => lots.has(lot)));
+      state.manual_line_pairs = [...(state.manual_line_pairs || []).filter((other) => !replaced.includes(other)), pair];
+      await writeInkoopState(state);
+      await refreshInkoopDaySummariesForDates([...pair.dates, ...replaced.flatMap((other) => other.dates)]);
+      sendJson(res, 200, { pair, replaced: replaced.length });
+    } catch (error) {
+      sendJson(res, 400, { error: error instanceof Error ? error.message : String(error) });
+    }
+    return;
+  }
+  if (url.pathname.startsWith("/api/inkoop/manual-pairs/") && req.method === "DELETE") {
+    if (!requirePermission(res, requestUser, PERMISSIONS.INKOOP_VIEW)) {
+      return;
+    }
+    const pairId = decodeURIComponent(url.pathname.slice("/api/inkoop/manual-pairs/".length));
+    const state = await readInkoopState();
+    const removed = (state.manual_line_pairs || []).find((pair) => pair.id === pairId);
+    if (!removed) {
+      sendJson(res, 404, { error: "Link not found" });
+      return;
+    }
+    state.manual_line_pairs = state.manual_line_pairs.filter((pair) => pair.id !== pairId);
+    await writeInkoopState(state);
+    await refreshInkoopDaySummariesForDates(removed.dates);
+    sendJson(res, 200, { ok: true });
+    return;
+  }
+
+  // Detective: the leftovers of a period (stored comparisons) -- per grower
+  // the groups of open invoice lines and free lots that fit together by
+  // pieces (another price) or by total (another unit), with the exact
+  // difference. ?from&to&company[&grower]
+  if (url.pathname === "/api/inkoop/detective" && req.method === "GET") {
+    if (!requirePermission(res, requestUser, PERMISSIONS.INKOOP_VIEW)) {
+      return;
+    }
+    try {
+      const state = await readInkoopState();
+      const range = inkoopRangeFromRequest(url);
+      const found = await inkoopDetectiveSearch(state, range, url.searchParams.get("company"), url.searchParams.get("grower"));
+      sendJson(res, 200, { from: range.from, to: range.to, ...found });
+    } catch (error) {
+      sendJson(res, 400, { error: error instanceof Error ? error.message : String(error) });
+    }
+    return;
+  }
+
+  // The same leftovers of one grower to the LLM poller (ollama_chat): it
+  // explains what probably happened and names the groups it would pair;
+  // GET /:id gives the answer, every pair checked and its difference worked
+  // out here (nothing is matched without Accept).
+  if (url.pathname === "/api/inkoop/detective/ask" && req.method === "POST") {
+    if (!requirePermission(res, requestUser, PERMISSIONS.INKOOP_VIEW)) {
+      return;
+    }
+    try {
+      const body = await readRequestJson(req);
+      const state = await readInkoopState();
+      const range = { from: inkoopIsoDate(body?.from), to: inkoopIsoDate(body?.to) || inkoopIsoDate(body?.from) };
+      if (!range.from || !normalizeUkdocsText(body?.grower)) throw new Error("from and grower are required");
+      const found = await inkoopDetectiveSearch(state, range, body?.company, body?.grower);
+      const group = found.growers[0];
+      if (!group || (!group.lines.length && !group.lots.length)) throw new Error("Nothing open for this grower in this period");
+      const job = await createLlmJob({
+        job_type: "ollama_chat",
+        document_kind: "inkoop_detective",
+        collection_id: group.grower,
+        created_by: requestUser.username,
+        priority: 20,
+        max_attempts: 2,
+        payload_json: {
+          messages: inkoopDetectivePrompt(group),
+          format: "json",
+          think: false,
+          options: { temperature: 0.1, num_ctx: 16384 },
+          detective: { grower: group.grower, from: range.from, to: range.to, lines: group.lines.slice(0, 150), lots: group.lots.slice(0, 150) },
+        },
+      });
+      sendJson(res, 200, { job_id: job.id, lines: group.lines.length, lots: group.lots.length });
+    } catch (error) {
+      sendJson(res, 400, { error: error instanceof Error ? error.message : String(error) });
+    }
+    return;
+  }
+  if (url.pathname.startsWith("/api/inkoop/detective/ask/") && req.method === "GET") {
+    if (!requirePermission(res, requestUser, PERMISSIONS.INKOOP_VIEW)) {
+      return;
+    }
+    const job = await getLlmJobById(decodeURIComponent(url.pathname.slice("/api/inkoop/detective/ask/".length)));
+    if (!job || job.document_kind !== "inkoop_detective") {
+      sendJson(res, 404, { error: "Not found" });
+      return;
+    }
+    sendJson(res, 200, { status: job.status, error: job.error_text || "", ...(job.status === "done" ? inkoopDetectiveAnswer(job) : {}) });
+    return;
+  }
+
   if (url.pathname === "/api/inkoop/issues" && req.method === "GET") {
     if (!requirePermission(res, requestUser, PERMISSIONS.INKOOP_VIEW)) {
       return;
@@ -26339,7 +26753,7 @@ async function handleApi(req, res, url) {
       const window = inkoopDayWindow(date);
       const inputs = await gatherInkoopMatchInputs(state, window);
       inkoopNonGrowerCodes = new Set(inputs.skipCodes);
-      const result = matchInkoopVeilingLines(inputs.erpRows, inputs.invoices, inputs.supplierMap, inputs.supplierNameMap, inputs.manualLinks, inputs.supplierFhMap, inputs.transactionCosts, inputs.afgemeldMessages);
+      const result = matchInkoopVeilingLines(inputs.erpRows, inputs.invoices, inputs.supplierMap, inputs.supplierNameMap, inputs.manualLinks, inputs.supplierFhMap, inputs.transactionCosts, inputs.afgemeldMessages, inputs.manualPairs);
       const summaries = await getInkoopDaySummaries({ from: date, to: date }).catch((error) => ({ error: String(error?.message || error) }));
       const { default: JSZip } = await import("jszip");
       const zip = new JSZip();
@@ -26347,7 +26761,7 @@ async function handleApi(req, res, url) {
       zip.file("meta.json", json({
         date, window, app_version: appVersion, rules_version: INKOOP_MATCH_RULES_VERSION, made_at: new Date().toISOString(),
         counts: { erp_rows: inputs.erpRows.length, erp_rows_before_exclude: inputs.allErpRows.length, invoices: inputs.invoices.length, afgemeld_messages: inputs.afgemeldMessages.length },
-        replay: "matchInkoopVeilingLines(erp_rows, invoices, supplier_map, supplier_name_map, manual_links, supplier_fh_map, transaction_costs, afgemeld_messages) with inkoopNonGrowerCodes = skip_codes",
+        replay: "matchInkoopVeilingLines(erp_rows, invoices, supplier_map, supplier_name_map, manual_links, supplier_fh_map, transaction_costs, afgemeld_messages, manual_pairs) with inkoopNonGrowerCodes = skip_codes",
       }));
       zip.file("inputs/erp_rows.json", json(inputs.erpRows));
       zip.file("inputs/invoices.json", json(inputs.invoices));
@@ -26357,6 +26771,7 @@ async function handleApi(req, res, url) {
       zip.file("inputs/supplier_fh_map.json", json(inputs.supplierFhMap));
       zip.file("inputs/transaction_costs.json", json(inputs.transactionCosts || {}));
       zip.file("inputs/afgemeld_messages.json", json(inputs.afgemeldMessages));
+      zip.file("inputs/manual_pairs.json", json(inputs.manualPairs || []));
       zip.file("inputs/skip_codes.json", json(inputs.skipCodes));
       zip.file("result_window.json", json(result));
       zip.file("result_day.json", json(inkoopResultOnDay(result, date)));

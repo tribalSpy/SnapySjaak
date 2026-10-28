@@ -3308,6 +3308,14 @@ export async function compactFinishedLlmJobs(olderThanHours = 6) {
   return result.rowCount || 0;
 }
 
+export async function getLlmJobById(jobId) {
+  if (!pool || !String(jobId || "").trim()) {
+    return null;
+  }
+  const result = await pool.query("SELECT * FROM llm_jobs WHERE id = $1", [String(jobId).trim()]);
+  return result.rows?.[0] ? mapLlmJobRow(result.rows[0]) : null;
+}
+
 export async function getActiveLlmJobsByType(jobType) {
   if (!pool) {
     return [];
