@@ -1,0 +1,345 @@
+{
+  "name": "SET 515/516 FROM COLLECT",
+  "slug": "set-515-516-from-collect",
+  "description": "collect acesoires info",
+  "created": "2026-10-19T10:56:11",
+  "start_screen": "prg-000",
+  "steps": [
+    {
+      "key": "Enter",
+      "menu": [
+        "Expeditie",
+        "Uitgaande goederen"
+      ],
+      "to": "prg-421",
+      "to_title": "Prg. 421 Uitgaande goederen",
+      "capture": false,
+      "capture_pages": false,
+      "recorded_wait": 0.7,
+      "to_menu": true,
+      "max_wait": 30,
+      "wait_text": ""
+    },
+    {
+      "key": "Enter",
+      "menu": [
+        "Expeditie",
+        "Uitgaande goederen",
+        "Transport afspraken"
+      ],
+      "to": "prg-423",
+      "to_title": "Prg. 423 Transport afspraken",
+      "capture": false,
+      "capture_pages": false,
+      "recorded_wait": 1.0,
+      "to_menu": false,
+      "max_wait": 30,
+      "wait_text": ""
+    },
+    {
+      "key": "Enter",
+      "to": "prg-423",
+      "to_title": "Prg. 423 Transport afspraken",
+      "capture": false,
+      "capture_pages": false,
+      "recorded_wait": 4.4,
+      "to_menu": false,
+      "max_wait": 30,
+      "wait_text": ""
+    },
+    {
+      "text": "516",
+      "recorded_text": "515",
+      "to": "prg-423",
+      "to_title": "Prg. 423 Transport afspraken",
+      "capture": false,
+      "capture_pages": false,
+      "recorded_wait": 1.4,
+      "to_menu": false,
+      "max_wait": 30,
+      "wait_text": ""
+    },
+    {
+      "key": "Enter",
+      "to": "prg-423",
+      "to_title": "Prg. 423 Transport afspraken",
+      "capture": false,
+      "capture_pages": false,
+      "recorded_wait": 1.1,
+      "to_menu": false,
+      "max_wait": 30,
+      "wait_text": ""
+    },
+    {
+      "key": "Enter",
+      "to": "prg-423",
+      "to_title": "Prg. 423 Transport afspraken",
+      "capture": false,
+      "capture_pages": false,
+      "recorded_wait": 0.5,
+      "to_menu": false,
+      "max_wait": 30,
+      "wait_text": ""
+    },
+    {
+      "key": "Enter",
+      "to": "prg-423",
+      "to_title": "Prg. 423 Transport afspraken",
+      "capture": false,
+      "capture_pages": false,
+      "recorded_wait": 0.4,
+      "to_menu": false,
+      "max_wait": 30,
+      "wait_text": ""
+    },
+    {
+      "key": "Enter",
+      "to": "prg-423",
+      "to_title": "Prg. 423 Transport afspraken",
+      "capture": false,
+      "capture_pages": false,
+      "recorded_wait": 0.4,
+      "to_menu": false,
+      "max_wait": 30,
+      "wait_text": ""
+    },
+    {
+      "key": "Enter",
+      "to": "prg-423",
+      "to_title": "Prg. 423 Transport afspraken",
+      "capture": false,
+      "capture_pages": false,
+      "recorded_wait": 0.5,
+      "to_menu": false,
+      "max_wait": 30,
+      "wait_text": ""
+    },
+    {
+      "key": "Enter",
+      "to": "prg-423",
+      "to_title": "Prg. 423 Transport afspraken",
+      "capture": false,
+      "capture_pages": false,
+      "recorded_wait": 0.8,
+      "to_menu": false,
+      "max_wait": 30,
+      "wait_text": ""
+    },
+    {
+      "text": "508",
+      "recorded_text": "508",
+      "to": "prg-423",
+      "to_title": "Prg. 423 Transport afspraken",
+      "capture": false,
+      "capture_pages": false,
+      "recorded_wait": 1.3,
+      "to_menu": false,
+      "max_wait": 30,
+      "wait_text": ""
+    },
+    {
+      "key": "Enter",
+      "to": "prg-423",
+      "to_title": "Prg. 423 Transport afspraken",
+      "capture": false,
+      "capture_pages": false,
+      "recorded_wait": 1.8,
+      "to_menu": false,
+      "max_wait": 30,
+      "wait_text": ""
+    },
+    {
+      "key": "F11",
+      "to": "prg-423",
+      "to_title": "Prg. 423 Transport afspraken",
+      "capture": false,
+      "capture_pages": false,
+      "recorded_wait": 0.4,
+      "to_menu": false,
+      "max_wait": 30,
+      "wait_text": ""
+    },
+    {
+      "key": "F11",
+      "to": "prg-423",
+      "to_title": "Prg. 423 Transport afspraken",
+      "capture": false,
+      "capture_pages": false,
+      "recorded_wait": 0.5,
+      "to_menu": false,
+      "max_wait": 30,
+      "wait_text": ""
+    },
+    {
+      "key": "F11",
+      "to": "prg-423",
+      "to_title": "Prg. 423 Transport afspraken (In te delen",
+      "capture": false,
+      "capture_pages": false,
+      "recorded_wait": 6.3,
+      "to_menu": false,
+      "max_wait": 30,
+      "wait_text": ""
+    },
+    {
+      "loop": {
+        "match": [],
+        "keep": [],
+        "match_key": "Enter",
+        "next_key": "Down",
+        "max_rows": 500,
+        "dry_run": false,
+        "row_stays": false,
+        "only_rows_with": "",
+        "collect_into": "",
+        "use_list": "accessoires vandaag",
+        "use_label": "516"
+      },
+      "to": "",
+      "to_title": "list loop",
+      "capture": false,
+      "capture_pages": false,
+      "wait_text": "",
+      "max_wait": 30
+    },
+    {
+      "key": "F12",
+      "to": "prg-423",
+      "to_title": "Prg. 423 Transport afspraken",
+      "capture": false,
+      "capture_pages": false,
+      "recorded_wait": 0.7,
+      "to_menu": false,
+      "max_wait": 30,
+      "wait_text": ""
+    },
+    {
+      "key": "F12",
+      "to": "prg-423",
+      "to_title": "Prg. 423 Transport afspraken",
+      "capture": false,
+      "capture_pages": false,
+      "recorded_wait": 0.5,
+      "to_menu": false,
+      "max_wait": 30,
+      "wait_text": ""
+    },
+    {
+      "key": "F12",
+      "to": "prg-421",
+      "to_title": "Prg. 421 Uitgaande goederen",
+      "capture": false,
+      "capture_pages": false,
+      "recorded_wait": 0.8,
+      "to_menu": true,
+      "max_wait": 30,
+      "wait_text": ""
+    },
+    {
+      "key": "F12",
+      "menu": [
+        "Expeditie",
+        "Uitgaande goederen",
+        "Transport afspraken"
+      ],
+      "to": "prg-420",
+      "to_title": "Prg. 420 Expeditie",
+      "capture": false,
+      "capture_pages": false,
+      "recorded_wait": 0.4,
+      "to_menu": true,
+      "max_wait": 30,
+      "wait_text": ""
+    },
+    {
+      "key": "F12",
+      "menu": [
+        "Expeditie",
+        "Uitgaande goederen"
+      ],
+      "to": "prg-000",
+      "to_title": "Prg. 000 Hoofdmenu",
+      "capture": false,
+      "capture_pages": false,
+      "recorded_wait": 1.6,
+      "to_menu": true,
+      "max_wait": 30,
+      "wait_text": ""
+    },
+    {
+      "key": "Up",
+      "to": "prg-000",
+      "to_title": "Prg. 000 Hoofdmenu",
+      "capture": false,
+      "capture_pages": false,
+      "recorded_wait": 0.2,
+      "to_menu": true,
+      "max_wait": 30,
+      "wait_text": ""
+    },
+    {
+      "key": "Up",
+      "to": "prg-000",
+      "to_title": "Prg. 000 Hoofdmenu",
+      "capture": false,
+      "capture_pages": false,
+      "recorded_wait": 0.2,
+      "to_menu": true,
+      "max_wait": 30,
+      "wait_text": ""
+    },
+    {
+      "key": "Up",
+      "to": "prg-000",
+      "to_title": "Prg. 000 Hoofdmenu",
+      "capture": false,
+      "capture_pages": false,
+      "recorded_wait": 0.2,
+      "to_menu": true,
+      "max_wait": 30,
+      "wait_text": ""
+    },
+    {
+      "key": "Up",
+      "to": "prg-000",
+      "to_title": "Prg. 000 Hoofdmenu",
+      "capture": false,
+      "capture_pages": false,
+      "recorded_wait": 0.2,
+      "to_menu": true,
+      "max_wait": 30,
+      "wait_text": ""
+    },
+    {
+      "key": "Up",
+      "to": "prg-000",
+      "to_title": "Prg. 000 Hoofdmenu",
+      "capture": false,
+      "capture_pages": false,
+      "recorded_wait": 0.3,
+      "to_menu": true,
+      "max_wait": 30,
+      "wait_text": ""
+    },
+    {
+      "key": "Up",
+      "to": "prg-000",
+      "to_title": "Prg. 000 Hoofdmenu",
+      "capture": false,
+      "capture_pages": false,
+      "recorded_wait": 5.2,
+      "to_menu": true,
+      "max_wait": 30,
+      "wait_text": ""
+    }
+  ],
+  "start_title": "Prg. 000 Hoofdmenu",
+  "export_dir": "",
+  "export_name": "",
+  "uniware_dump_dir": "",
+  "uniware_dump_pattern": "dump.*.csv",
+  "uniware_dump_wait": 180,
+  "back_key": "Esc",
+  "close_dump_window": true,
+  "copied_from": "Colect acc info"
+}

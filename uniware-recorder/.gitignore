@@ -2,7 +2,7 @@ data/
 .venv/
 __pycache__/
 config.json
-actions/
+actions/*.bak
 outputs/
 daylists/
 plans.json

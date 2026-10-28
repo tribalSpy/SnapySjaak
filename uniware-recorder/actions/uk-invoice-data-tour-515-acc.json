@@ -1,0 +1,194 @@
+{
+  "name": "uk invoice data tour 515 acc",
+  "slug": "uk-invoice-data-tour-515-acc",
+  "description": "gets data from connect of tour 515 acc",
+  "created": "2026-10-15T14:01:01",
+  "start_screen": "prg-hoofdmenu",
+  "steps": [
+    {
+      "key": "Right",
+      "menu": [
+        "Expeditie",
+        "Inklaring bedrijf"
+      ],
+      "to": "scr-861",
+      "to_title": "çustomsclearance company [861]",
+      "capture": false,
+      "capture_pages": false,
+      "recorded_wait": 8.2,
+      "to_menu": false,
+      "max_wait": 32,
+      "wait_text": ""
+    },
+    {
+      "key": "F6",
+      "to": "scr-861",
+      "to_title": "çustomsclearance company [861]",
+      "capture": false,
+      "capture_pages": false,
+      "recorded_wait": 1.0,
+      "to_menu": false,
+      "max_wait": 30,
+      "wait_text": ""
+    },
+    {
+      "key": "Down",
+      "to": "scr-861",
+      "to_title": "çustomsclearance company [861]",
+      "capture": false,
+      "capture_pages": false,
+      "recorded_wait": 0.7,
+      "to_menu": false,
+      "max_wait": 30,
+      "wait_text": ""
+    },
+    {
+      "key": "Down",
+      "to": "scr-861",
+      "to_title": "çustomsclearance company [861]",
+      "capture": false,
+      "capture_pages": false,
+      "recorded_wait": 0.7,
+      "to_menu": false,
+      "max_wait": 30,
+      "wait_text": ""
+    },
+    {
+      "key": "Down",
+      "to": "scr-861",
+      "to_title": "çustomsclearance company [861]",
+      "capture": false,
+      "capture_pages": false,
+      "recorded_wait": 1.1,
+      "to_menu": false,
+      "max_wait": 30,
+      "wait_text": ""
+    },
+    {
+      "key": "F1",
+      "to": "scr-861",
+      "to_title": "çustomsclearance company [861]",
+      "capture": false,
+      "capture_pages": false,
+      "recorded_wait": 2.1,
+      "to_menu": false,
+      "max_wait": 30,
+      "wait_text": ""
+    },
+    {
+      "key": "Enter",
+      "pick": "515",
+      "pick_row": "11 OAZ ICD01 4840254 15-10-2026 oxzrsa B PS 27 kg 4082",
+      "to": "scr-861",
+      "to_title": "çustomsclearance company [861]",
+      "capture": false,
+      "capture_pages": false,
+      "recorded_wait": 1.0,
+      "to_menu": false,
+      "max_wait": 30,
+      "wait_text": ""
+    },
+    {
+      "key": "Enter",
+      "to": "scr-861",
+      "to_title": "çustomsclearance company [861]",
+      "capture": false,
+      "capture_pages": false,
+      "recorded_wait": 0.9,
+      "to_menu": false,
+      "max_wait": 30,
+      "wait_text": ""
+    },
+    {
+      "key": "Enter",
+      "to": "scr-861",
+      "to_title": "çustomsclearance company [861]",
+      "capture": false,
+      "capture_pages": false,
+      "recorded_wait": 5.2,
+      "to_menu": false,
+      "max_wait": 30,
+      "wait_text": ""
+    },
+    {
+      "key": "Ctrl+A",
+      "to": "scr-861",
+      "to_title": "çustomsclearance company [861]",
+      "capture": false,
+      "capture_pages": false,
+      "recorded_wait": 1.4,
+      "to_menu": false,
+      "max_wait": 30,
+      "wait_text": ""
+    },
+    {
+      "key": "Shift+F5",
+      "to": "scr-861",
+      "to_title": "çustomsclearance company [861]",
+      "capture": false,
+      "capture_pages": false,
+      "recorded_wait": 1.8,
+      "to_menu": false,
+      "max_wait": 60,
+      "wait_text": ""
+    },
+    {
+      "key": "Left",
+      "to": "scr-861",
+      "to_title": "çustomsclearance company [861]",
+      "capture": false,
+      "capture_pages": false,
+      "recorded_wait": 3.0,
+      "to_menu": false,
+      "max_wait": 30,
+      "wait_text": ""
+    },
+    {
+      "key": "Enter",
+      "to": "scr-861",
+      "to_title": "çustomsclearance company [861]",
+      "capture": false,
+      "capture_pages": false,
+      "recorded_wait": 8.3,
+      "to_menu": false,
+      "max_wait": 60,
+      "wait_text": "",
+      "read_column": "invoiceRes",
+      "read_field": "invoiceres"
+    },
+    {
+      "key": "Enter",
+      "to": "scr-851",
+      "to_title": "Customsclearance lines [851]",
+      "capture": false,
+      "capture_pages": false,
+      "recorded_wait": 6.7,
+      "to_menu": false,
+      "max_wait": 30,
+      "wait_text": ""
+    },
+    {
+      "key": "Ctrl+P",
+      "to": "scr-851",
+      "to_title": "Customsclearance lines [851]",
+      "capture": false,
+      "capture_pages": false,
+      "recorded_wait": 9.3,
+      "to_menu": false,
+      "max_wait": 37,
+      "wait_text": "",
+      "opens_window": {
+        "title": "table_export_data_1792065721_743.xlsx  -  Beveiligde weergave - Excel",
+        "exe": "EXCEL.EXE"
+      }
+    }
+  ],
+  "start_title": "Prg. -- Hoofdmenu",
+  "export_dir": "C:\\Users\\vdvfi\\OneDrive - Sjaak van der Vijver B.V\\Bestanden van Richard van der Sande - UK docs new\\1Pd Keuring\\DAta Dump Test",
+  "export_name": "data_tour-515_{invoiceres}",
+  "uniware_dump_dir": "",
+  "uniware_dump_pattern": "dump.*.csv",
+  "uniware_dump_wait": 180,
+  "back_key": "F12",
+  "close_dump_window": true
+}

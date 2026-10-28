@@ -1,0 +1,216 @@
+{
+  "name": "uk invoice data tour 508",
+  "slug": "uk-invoice-data-tour-508",
+  "description": "gets data from connect of tour 508",
+  "created": "2026-10-15T12:38:24",
+  "start_screen": "prg-hoofdmenu",
+  "steps": [
+    {
+      "key": "Right",
+      "to": "scr-86",
+      "to_title": "ustomsclearance cornpany [86]",
+      "capture": false,
+      "capture_pages": false,
+      "recorded_wait": 7.4,
+      "to_menu": false,
+      "max_wait": 30,
+      "wait_text": "",
+      "menu": [
+        "Expeditie",
+        "Inklaring bedrijf"
+      ]
+    },
+    {
+      "key": "F6",
+      "to": "scr-86",
+      "to_title": "ustomsclearance cornpany [86]",
+      "capture": false,
+      "capture_pages": false,
+      "recorded_wait": 0.9,
+      "to_menu": false,
+      "max_wait": 30,
+      "wait_text": ""
+    },
+    {
+      "key": "Down",
+      "to": "scr-86",
+      "to_title": "ustomsclearance cornpany [86]",
+      "capture": false,
+      "capture_pages": false,
+      "recorded_wait": 0.3,
+      "to_menu": false,
+      "max_wait": 30,
+      "wait_text": ""
+    },
+    {
+      "key": "Down",
+      "to": "scr-86",
+      "to_title": "ustomsclearance cornpany [86]",
+      "capture": false,
+      "capture_pages": false,
+      "recorded_wait": 0.3,
+      "to_menu": false,
+      "max_wait": 30,
+      "wait_text": ""
+    },
+    {
+      "key": "Down",
+      "to": "scr-86",
+      "to_title": "ustomsclearance cornpany [86]",
+      "capture": false,
+      "capture_pages": false,
+      "recorded_wait": 0.7,
+      "to_menu": false,
+      "max_wait": 30,
+      "wait_text": ""
+    },
+    {
+      "key": "F1",
+      "to": "scr-86",
+      "to_title": "ustomsclearance cornpany [86]",
+      "capture": false,
+      "capture_pages": false,
+      "recorded_wait": 0.6,
+      "to_menu": false,
+      "max_wait": 30,
+      "wait_text": ""
+    },
+    {
+      "key": "Enter",
+      "pick": "508",
+      "pick_row": "11 OAZ lcÛ01 4840254 15-10-2026 OAZIS2 B PS 26 kg 476a",
+      "to": "scr-86",
+      "to_title": "ustomsclearance cornpany [86]",
+      "capture": false,
+      "capture_pages": false,
+      "recorded_wait": 1.7,
+      "to_menu": false,
+      "max_wait": 30,
+      "wait_text": ""
+    },
+    {
+      "key": "Enter",
+      "to": "scr-86",
+      "to_title": "ustomsclearance cornpany [86]",
+      "capture": false,
+      "capture_pages": false,
+      "recorded_wait": 0.6,
+      "to_menu": false,
+      "max_wait": 30,
+      "wait_text": ""
+    },
+    {
+      "key": "Enter",
+      "to": "scr-86",
+      "to_title": "ustomsclearance cornpany [86]",
+      "capture": false,
+      "capture_pages": false,
+      "recorded_wait": 2.4,
+      "to_menu": false,
+      "max_wait": 30,
+      "wait_text": ""
+    },
+    {
+      "key": "Ctrl+A",
+      "to": "scr-86",
+      "to_title": "ustomsclearance cornpany [86]",
+      "capture": false,
+      "capture_pages": false,
+      "recorded_wait": 1.2,
+      "to_menu": false,
+      "max_wait": 30,
+      "wait_text": ""
+    },
+    {
+      "key": "Shift+F5",
+      "to": "scr-86",
+      "to_title": "ustomsclearance cornpany [86]",
+      "capture": false,
+      "capture_pages": false,
+      "recorded_wait": 2.2,
+      "to_menu": false,
+      "max_wait": 60,
+      "wait_text": ""
+    },
+    {
+      "key": "Left",
+      "to": "scr-86",
+      "to_title": "ustomsclearance cornpany [86]",
+      "capture": false,
+      "capture_pages": false,
+      "recorded_wait": 1.6,
+      "to_menu": false,
+      "max_wait": 30,
+      "wait_text": ""
+    },
+    {
+      "key": "Enter",
+      "to": "scr-86",
+      "to_title": "ustomsclearance cornpany [86]",
+      "capture": false,
+      "capture_pages": false,
+      "recorded_wait": 11.9,
+      "to_menu": false,
+      "max_wait": 47,
+      "wait_text": ""
+    },
+    {
+      "key": "Enter",
+      "to": "scr-86",
+      "to_title": "ustomsclearance cornpany [86]",
+      "capture": false,
+      "capture_pages": false,
+      "recorded_wait": 6.4,
+      "to_menu": false,
+      "max_wait": 60,
+      "wait_text": "",
+      "read_column": "invoiceRes",
+      "read_field": "invoiceres"
+    },
+    {
+      "key": "Enter",
+      "to": "scr-85",
+      "to_title": "Customsclearance lines [85]",
+      "capture": false,
+      "capture_pages": false,
+      "recorded_wait": 2.0,
+      "to_menu": false,
+      "max_wait": 30,
+      "wait_text": ""
+    },
+    {
+      "key": "Shift+F11",
+      "to": "scr-85",
+      "to_title": "Customsclearance lines [85]",
+      "capture": false,
+      "capture_pages": false,
+      "recorded_wait": 3.5,
+      "to_menu": false,
+      "max_wait": 30,
+      "wait_text": ""
+    },
+    {
+      "key": "Ctrl+P",
+      "to": "scr-85",
+      "to_title": "Customsclearance lines [85]",
+      "capture": false,
+      "capture_pages": false,
+      "recorded_wait": 11.8,
+      "to_menu": false,
+      "max_wait": 47,
+      "wait_text": "",
+      "opens_window": {
+        "title": "table_export_data_1792060773_743.xlsx  -  Beveiligde weergave - Excel",
+        "exe": "EXCEL.EXE"
+      }
+    }
+  ],
+  "start_title": "Prg. -- Hoofdmenu",
+  "export_dir": "C:\\Users\\vdvfi\\OneDrive - Sjaak van der Vijver B.V\\Bestanden van Richard van der Sande - UK docs new\\1Pd Keuring\\DAta Dump Test",
+  "export_name": "data_tour-508_{invoiceres}",
+  "uniware_dump_dir": "",
+  "uniware_dump_pattern": "dump.*.csv",
+  "uniware_dump_wait": 180,
+  "back_key": "F12",
+  "close_dump_window": true
+}

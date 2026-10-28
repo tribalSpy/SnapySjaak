@@ -23,6 +23,29 @@ same screen reading.
    recognition package needs Python 3.9 - 3.12.
 2. Double-click **install.bat**.
 
+## Another PC (e.g. the backup PC)
+
+So the actions run there while you keep working on your own PC:
+
+1. Install Git for Windows (git-scm.com) and Python 3.12 there.
+2. Copy **get_recorder.bat** and **start_recorder.bat** into an empty folder
+   of their own (e.g. `C:\UniwareRecorder`) and double-click
+   get_recorder.bat: it fetches only this recorder from git (sign in to
+   GitHub once) and installs it.
+3. Start it with **start_recorder.bat** -- it fetches the newest code and
+   actions first.
+
+The actions (`actions/*.json`) are in git: record or edit them on your own
+PC, commit and push, and the other PC has them on its next start. Its plans
+(`plans.json`), outputs and logs stay on that PC. Edit actions on one PC
+only -- an action changed on the other PC stops its update ("pull" fails)
+until that change is undone (`git checkout -- .` in its uniware-recorder
+folder).
+
+Uniware must be open and signed in on that PC, and its screen unlocked: a
+locked screen or a minimised / closed Remote Desktop window stops the keys
+and the screen reading.
+
 ## Record
 
 1. Double-click **run_recorder.bat** (a window with the instructions opens).

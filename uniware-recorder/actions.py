@@ -934,6 +934,17 @@ def process_command_line(pid: int) -> str:
 DUMP_SEARCH_DEPTH = 4
 
 
+def this_pcs_folder(folder: str) -> str:
+    """A folder recorded on another PC (C:/Users/<them>/OneDrive - ...):
+    the same folder under this PC's user when it isn't there as written."""
+    text = (folder or "").strip()
+    match = re.match(r"^[A-Za-z]:[\\/]Users[\\/][^\\/]+[\\/](.+)$", text)
+    if not text or Path(text).is_dir() or not match:
+        return text
+    here = Path.home() / match.group(1)
+    return str(here) if here.is_dir() else text
+
+
 def _search_dirs(extra: list[str]) -> list[Path]:
     home = Path.home()
     dirs = [Path(path) for path in extra if path]
@@ -1251,7 +1262,10 @@ class ActionRun:
     changing -- up to the step's max wait -- and stops on anything else."""
 
     def __init__(self, action: dict, values: dict, title_part: str = DEFAULT_WINDOW_TITLE):
-        self.action = action
+        self.action = dict(action)
+        for key in ("uniware_dump_dir", "export_dir"):
+            if self.action.get(key):
+                self.action[key] = this_pcs_folder(self.action[key])
         self.values = {key: str(value) for key, value in (values or {}).items()}
         self.title_part = title_part
         self.log: list[str] = []

@@ -1,0 +1,258 @@
+{
+  "name": "Communicatie nacht one time open with shif 11",
+  "slug": "communicatie-nacht-one-time-open-with-shif-11",
+  "description": "get epp and order number from comunications screen",
+  "created": "2026-10-21T12:27:29",
+  "start_screen": "prg-000",
+  "steps": [
+    {
+      "key": "Right",
+      "menu": [
+        "Communicatie",
+        "Klok transacties"
+      ],
+      "to": "prg-510",
+      "to_title": "Prg. 510 Florinet",
+      "capture": false,
+      "capture_pages": false,
+      "recorded_wait": 1.6,
+      "to_menu": false,
+      "max_wait": 30,
+      "wait_text": ""
+    },
+    {
+      "text": "{date}",
+      "recorded_text": "141026",
+      "to": "prg-510",
+      "to_title": "Prg. 510 Florinet",
+      "capture": false,
+      "capture_pages": false,
+      "recorded_wait": 2.0,
+      "to_menu": false,
+      "max_wait": 30,
+      "wait_text": ""
+    },
+    {
+      "key": "Enter",
+      "to": "prg-510",
+      "to_title": "Prg. 510 Florinet",
+      "capture": false,
+      "capture_pages": false,
+      "recorded_wait": 1.3,
+      "to_menu": false,
+      "max_wait": 30,
+      "wait_text": ""
+    },
+    {
+      "key": "Enter",
+      "to": "prg-510",
+      "to_title": "Prg. 510 Florinet",
+      "capture": false,
+      "capture_pages": false,
+      "recorded_wait": 0.5,
+      "to_menu": false,
+      "max_wait": 30,
+      "wait_text": ""
+    },
+    {
+      "key": "Enter",
+      "to": "prg-510",
+      "to_title": "Prg. 510 Florinet",
+      "capture": false,
+      "capture_pages": false,
+      "recorded_wait": 0.5,
+      "to_menu": false,
+      "max_wait": 30,
+      "wait_text": ""
+    },
+    {
+      "key": "Enter",
+      "to": "prg-510",
+      "to_title": "Prg. 510 Niet verwerkte",
+      "capture": false,
+      "capture_pages": false,
+      "recorded_wait": 2.1,
+      "to_menu": false,
+      "max_wait": 30,
+      "wait_text": ""
+    },
+    {
+      "key": "Shift+F11",
+      "to": "prg-510",
+      "to_title": "Prg. 510 Niet gecheckte",
+      "capture": false,
+      "capture_pages": false,
+      "recorded_wait": 0.5,
+      "to_menu": false,
+      "max_wait": 30,
+      "wait_text": ""
+    },
+    {
+      "key": "Home",
+      "to": "prg-510",
+      "to_title": "Prg. 510 Alles",
+      "capture": false,
+      "capture_pages": false,
+      "recorded_wait": 3.1,
+      "to_menu": false,
+      "max_wait": 30,
+      "wait_text": ""
+    },
+    {
+      "key": "Ctrl+P",
+      "to": "prg-510",
+      "to_title": "Prg. 510 Alles",
+      "capture": false,
+      "capture_pages": false,
+      "recorded_wait": 2.2,
+      "to_menu": false,
+      "max_wait": 30,
+      "wait_text": ""
+    },
+    {
+      "key": "F1",
+      "to": "prg-510",
+      "to_title": "Prg. 510 Alles",
+      "capture": false,
+      "capture_pages": false,
+      "recorded_wait": 1.0,
+      "to_menu": false,
+      "max_wait": 30,
+      "wait_text": ""
+    },
+    {
+      "key": "Enter",
+      "to": "prg-510",
+      "to_title": "Prg. 510 Alles",
+      "capture": false,
+      "capture_pages": false,
+      "recorded_wait": 1.1,
+      "to_menu": false,
+      "max_wait": 45,
+      "wait_text": "",
+      "pick": "OneDrive CSV"
+    },
+    {
+      "key": "Enter",
+      "to": "prg-510",
+      "to_title": "Prg. 510 Alles",
+      "capture": false,
+      "capture_pages": false,
+      "recorded_wait": 7.7,
+      "to_menu": false,
+      "max_wait": 30,
+      "wait_text": ""
+    },
+    {
+      "loop": {
+        "match": [],
+        "keep": [],
+        "match_key": "Delete",
+        "next_key": "Down",
+        "max_rows": 2000,
+        "dry_run": false,
+        "row_stays": false,
+        "only_rows_with": "",
+        "collect_into": "Communicatie nacht",
+        "collect_key": "lot",
+        "collect_value": "EPP",
+        "row_popup_keys": "?",
+        "row_close_keys": "F12",
+        "use_list": "",
+        "use_label": ""
+      },
+      "to": "",
+      "to_title": "list loop",
+      "capture": false,
+      "capture_pages": false,
+      "wait_text": "",
+      "max_wait": 30
+    },
+    {
+      "key": "F12",
+      "to": "prg-510",
+      "to_title": "Prg. 510 Alles",
+      "capture": false,
+      "capture_pages": false,
+      "recorded_wait": 0.5,
+      "to_menu": false,
+      "max_wait": 30,
+      "wait_text": ""
+    },
+    {
+      "key": "F12",
+      "to": "prg-510",
+      "to_title": "Prg. 510 Alles",
+      "capture": false,
+      "capture_pages": false,
+      "recorded_wait": 0.4,
+      "to_menu": false,
+      "max_wait": 30,
+      "wait_text": ""
+    },
+    {
+      "key": "F12",
+      "to": "prg-500",
+      "to_title": "Prg. 500 Communicatie",
+      "capture": false,
+      "capture_pages": false,
+      "recorded_wait": 0.5,
+      "to_menu": true,
+      "max_wait": 30,
+      "wait_text": ""
+    },
+    {
+      "key": "F12",
+      "menu": [
+        "Communicatie",
+        "Klok transacties"
+      ],
+      "to": "prg-000",
+      "to_title": "Prg. 000 Hoofdmenu",
+      "capture": false,
+      "capture_pages": false,
+      "recorded_wait": 0.6,
+      "to_menu": true,
+      "max_wait": 30,
+      "wait_text": ""
+    },
+    {
+      "key": "F12",
+      "menu": [
+        "Communicatie"
+      ],
+      "to": "prg-000",
+      "to_title": "Prg. 000 Hoofdmenu",
+      "capture": false,
+      "capture_pages": false,
+      "recorded_wait": 0.6,
+      "to_menu": true,
+      "max_wait": 30,
+      "wait_text": ""
+    },
+    {
+      "key": "F12",
+      "menu": [
+        "Communicatie"
+      ],
+      "to": "prg-000",
+      "to_title": "Prg. 000 Hoofdmenu",
+      "capture": false,
+      "capture_pages": false,
+      "recorded_wait": 3.2,
+      "to_menu": true,
+      "max_wait": 30,
+      "wait_text": ""
+    }
+  ],
+  "start_title": "Prg. 000 Hoofdmenu",
+  "export_dir": "C:\\Users\\vdvfi\\OneDrive - Sjaak van der Vijver B.V\\Bestanden van Richard van der Sande - UK docs new\\1Pd Keuring\\DAta Dump Test",
+  "export_name": "communicatie_{date}",
+  "uniware_dump_dir": "C:\\Users\\vdvfi\\OneDrive - Sjaak van der Vijver B.V\\Bestanden van Richard van der Sande - ExcelDump",
+  "uniware_dump_pattern": "dump.filipe*.csv",
+  "uniware_dump_wait": 180,
+  "back_key": "Esc",
+  "close_dump_window": true,
+  "join_dumps": false,
+  "copied_from": "Communicatie nacht"
+}
