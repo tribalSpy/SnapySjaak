@@ -95,6 +95,16 @@ def parse_erp(input_path: Path):
             return {"rows": [], "error": "This looks like the Communications dump (a Prt column, no PAV) -- upload it under 'EPP list' instead: it only adds EPP / order number / GLN to the Connect lots, matched by Prt."}
         return {"rows": [], "error": "Could not find a header row containing PAV in this file"}
 
+    # Saved through Excel: a code with a minus in front ("-MELUK") became a
+    # formula and is "#NAAM?" now -- the lot would belong to no grower.
+    excel_errors = [
+        clean_text(row[0]) if row else ""
+        for row in data_rows
+        if any(clean_text(value).upper() in ("#NAAM?", "#NAME?", "#WAARDE!", "#VALUE!", "#REF!", "#VERW!") for value in row)
+    ]
+    if excel_errors:
+        return {"rows": [], "error": f"{len(excel_errors)} row(s) of this file have Excel errors (#NAAM?) instead of a code -- it was opened and saved in Excel, which turns codes like -MELUK into a formula. Upload the export straight from Connect (the .csv, not opened in Excel)."}
+
     rows = []
     for row in data_rows:
         if not any(clean_text(value) for value in row):
