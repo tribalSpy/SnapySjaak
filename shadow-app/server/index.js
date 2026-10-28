@@ -24822,6 +24822,77 @@ async function handleApi(req, res, url) {
   // either side) worth someone physically going to check. Supplier-not-
   // linked and ambiguous matches keep their own inline-resolve UI on the
   // Compare tab instead -- nothing to "investigate" there beyond that.
+  // Growers popup drill-down: every invoice line and Connect lot of one
+  // grower in a range (matched or not), named the way the popup groups
+  // them -- what's behind its Invoice and Connect values.
+  if (url.pathname === "/api/inkoop/grower-lines" && req.method === "GET") {
+    if (!requirePermission(res, requestUser, PERMISSIONS.INKOOP_VIEW)) {
+      return;
+    }
+    try {
+      const state = await readInkoopState();
+      const range = inkoopRangeFromRequest(url);
+      const company = url.searchParams.get("company");
+      const wanted = normalizeUkdocsText(url.searchParams.get("grower")).toLowerCase();
+      if (!wanted) throw new Error("grower is required");
+      const dayBundles = await computeInkoopDays(state, range.from, range.to);
+      const invoiceLines = [];
+      const connectLots = [];
+      const lotOut = (row, status, matchedTo, date) => ({
+        date: date || String(row?.date || "").slice(0, 10), lot: row?.lot, pav: normalizeUkdocsText(row?.pav), suppl: normalizeUkdocsText(row?.suppl),
+        description: normalizeUkdocsText(row?.description), items: row?.items ?? null, cont: row?.cont ?? null,
+        pieces: row?.pieces, price: row?.price, t_price: row?.t_price, status, matched_to: matchedTo || "",
+      });
+      for (const day of dayBundles) {
+        const result = filterInkoopResultsByCompany(day.result, company);
+        const { codeToName, validSupplierCodes, supplierMap, supplierNameMap, manualLinks, supplierFhMap } = day.aggregateContext;
+        const growerOfInvoice = (row) => (inkoopGrowerNameForInvoiceLine(row, codeToName, supplierMap, supplierNameMap, manualLinks, supplierFhMap) || normalizeUkdocsText(row?.supplier_name)).toLowerCase();
+        const growerOfLot = (row) => (inkoopGrowerNameForErpRow(row, codeToName, validSupplierCodes) || normalizeUkdocsText(row?.suppl)).toLowerCase();
+        const lineOut = (row, status) => ({
+          date: inkoopDateKeyFromInvoiceAnchor(row) || day.date, invoice_number: row.invoice_number || "", reference_bt: row.reference_bt || "",
+          description: row.description || "", packages: row.packages ?? null, per_package: row.per_package ?? null,
+          quantity: row.quantity, unit_price: row.unit_price, total: row.total, status,
+          lot: row.erp_row?.lot ? String(row.erp_row.lot) : "", lot_items: row.erp_row?.items ?? null, lot_cont: row.erp_row?.cont ?? null,
+          lot_pieces: row.erp_row?.pieces ?? null, lot_price: row.erp_row?.price ?? null, lot_total: row.erp_row?.t_price ?? null,
+          match_type: row.supplier_match_type || (row.erp_row ? "brief number" : ""), diffs: row.diffs || null,
+        });
+        for (const [key, status] of [["matched_ok", "matched"], ["matched_mismatch", "mismatch"], ["only_in_invoice", "only in invoice"], ["supplier_not_linked", "grower not linked"], ["ambiguous_matches", "several lots fit"]]) {
+          for (const row of result[key] || []) {
+            const invoiceSide = growerOfInvoice(row) === wanted;
+            if (invoiceSide) invoiceLines.push(lineOut(row, status));
+            // The lot behind a match counts for its own grower (it can be
+            // booked under another one than the invoice line's).
+            if (row.erp_row && (key === "matched_ok" || key === "matched_mismatch") && growerOfLot(row.erp_row) === wanted) {
+              connectLots.push(lotOut(row.erp_row, status, `${row.invoice_number || ""} ${row.reference_bt || ""}`.trim(), String(row.erp_row?.date || "").slice(0, 10)));
+            }
+          }
+        }
+        for (const row of result.only_in_erp || []) {
+          if (growerOfLot(row) === wanted) connectLots.push(lotOut(row, "only in Connect", "", ""));
+        }
+      }
+      // A pool's lots come as one combined row per invoice line, each with
+      // its share: added up to one row (all its pieces and value).
+      const byLot = new Map();
+      for (const row of connectLots) {
+        const key = `${row.lot}|${row.status}`;
+        const seen = byLot.get(key);
+        if (!seen) {
+          byLot.set(key, { ...row });
+          continue;
+        }
+        seen.pieces = (Number(seen.pieces) || 0) + (Number(row.pieces) || 0);
+        seen.t_price = Math.round(((parseFloat(seen.t_price) || 0) + (parseFloat(row.t_price) || 0)) * 100) / 100;
+        seen.matched_to = [...new Set(`${seen.matched_to}, ${row.matched_to}`.split(", ").filter(Boolean))].join(", ");
+      }
+      const lots = [...byLot.values()];
+      sendJson(res, 200, { grower: wanted, from: range.from, to: range.to, invoice_lines: invoiceLines, connect_lots: lots });
+    } catch (error) {
+      sendJson(res, 400, { error: error instanceof Error ? error.message : String(error) });
+    }
+    return;
+  }
+
   if (url.pathname === "/api/inkoop/issues" && req.method === "GET") {
     if (!requirePermission(res, requestUser, PERMISSIONS.INKOOP_VIEW)) {
       return;

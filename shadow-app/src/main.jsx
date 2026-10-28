@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useRef, useState } from "react";
+import React, { Fragment, useEffect, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import JSZip from "jszip";
 import "./styles.css";
@@ -17979,10 +17979,91 @@ function InkoopBwFilter({ items, value, onChange, valueOf, dark = false }) {
 
 // The growers behind a figure (a month, a day, a type): the Follow-up
 // lines of that period grouped per grower, in a popup.
+// A grower's lines behind the Growers popup's values: its invoice lines
+// and / or its Connect lots in the range, matched or not.
+function InkoopGrowerLines({ from, to, company, grower, side }) {
+  const [data, setData] = useState(null);
+  const [error, setError] = useState("");
+  useEffect(() => {
+    let cancelled = false;
+    setData(null);
+    setError("");
+    const params = new URLSearchParams({ from, to, grower });
+    if (company) params.set("company", company);
+    apiJson(`/api/inkoop/grower-lines?${params.toString()}`)
+      .then((payload) => { if (!cancelled) setData(payload); })
+      .catch((loadError) => { if (!cancelled) setError(loadError.message); });
+    return () => { cancelled = true; };
+  }, [from, to, company, grower]);
+  if (error) return <div className="notice danger">{error}</div>;
+  if (!data) return <div className="fin-sub">Loading lines...</div>;
+  const statusClass = (status) => (status === "matched" ? "" : status === "mismatch" ? "fin-loss" : "fin-loss");
+  const sum = (rows, field) => rows.reduce((total, row) => total + (parseFloat(row[field]) || 0), 0);
+  return (
+    <div style={{ display: "grid", gap: 10 }}>
+      {side !== "connect" && (
+        <div className="table-wrap">
+          <div className="fin-sub">Invoice lines ({data.invoice_lines.length}) · {formatInkoopEuro(sum(data.invoice_lines, "total"))}</div>
+          <table className="fin-table">
+            <thead><tr><th>Date</th><th>Invoice</th><th>Brief</th><th>Product</th><th>Boxes</th><th>Quantity</th><th>Price</th><th>Total</th><th>Status</th><th>Connect lot</th><th>Connect total</th></tr></thead>
+            <tbody>
+              {data.invoice_lines.map((line, index) => (
+                <tr key={`${line.invoice_number}-${line.reference_bt}-${index}`}>
+                  <td>{inkoopShortDate(line.date)}</td>
+                  <td><InkoopInvoiceLink invoiceNumber={line.invoice_number} /></td>
+                  <td>{line.reference_bt || "-"}</td>
+                  <td>{line.description}</td>
+                  <td>{inkoopBoxesText(line.quantity, line.packages, line.per_package, line.lot ? { items: line.lot_items, cont: line.lot_cont } : null)}</td>
+                  <td>{line.quantity}</td>
+                  <td>{line.unit_price}</td>
+                  <td>{formatInkoopEuro(line.total)}</td>
+                  <td className={statusClass(line.status)} title={line.match_type || ""}>{line.status}{line.diffs?.length ? ` (${line.diffs.map((diff) => diff.field).join(", ")})` : ""}</td>
+                  <td>{line.lot ? String(line.lot).split("+").length > 3 ? `${String(line.lot).split("+").length} lots (pool)` : line.lot : "-"}</td>
+                  <td>{line.lot_total !== null && line.lot_total !== undefined ? formatInkoopEuro(line.lot_total) : "-"}</td>
+                </tr>
+              ))}
+              {!data.invoice_lines.length && <tr><td colSpan="11">No invoice lines.</td></tr>}
+            </tbody>
+          </table>
+        </div>
+      )}
+      {side !== "invoice" && (
+        <div className="table-wrap">
+          <div className="fin-sub">Connect lots ({data.connect_lots.length}) · {formatInkoopEuro(sum(data.connect_lots, "t_price"))}</div>
+          <table className="fin-table">
+            <thead><tr><th>Date</th><th>Lot</th><th>PAV</th><th>Code</th><th>Product</th><th>Boxes</th><th>Pieces</th><th>Price</th><th>Total</th><th>Status</th><th>Invoice line</th></tr></thead>
+            <tbody>
+              {data.connect_lots.map((lot, index) => (
+                <tr key={`${lot.lot}-${index}`}>
+                  <td>{inkoopShortDate(lot.date)}</td>
+                  <td>{String(lot.lot).split("+").length > 3 ? `${String(lot.lot).split("+").length} lots (pool)` : lot.lot}</td>
+                  <td>{lot.pav || "-"}</td>
+                  <td>{lot.suppl}</td>
+                  <td>{lot.description}</td>
+                  <td>{inkoopBoxesText(lot.pieces, lot.items, lot.cont)}</td>
+                  <td>{lot.pieces}</td>
+                  <td>{lot.price}</td>
+                  <td>{formatInkoopEuro(lot.t_price)}</td>
+                  <td className={statusClass(lot.status)}>{lot.status}</td>
+                  <td>{lot.matched_to || "-"}</td>
+                </tr>
+              ))}
+              {!data.connect_lots.length && <tr><td colSpan="11">No Connect lots.</td></tr>}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function InkoopGrowerPopup({ from, to, types, title, company, onClose }) {
   const [issues, setIssues] = useState(null);
   const [error, setError] = useState("");
   const [bwFilter, setBwFilter] = useState(["V"]);
+  // Clicked: a grower's invoice lines, Connect lots, or both.
+  const [opened, setOpened] = useState(null);
+  const toggleOpened = (grower, side) => setOpened((current) => (current?.grower === grower && current.side === side ? null : { grower, side }));
   useEffect(() => {
     let cancelled = false;
     const params = new URLSearchParams({ from, to });
@@ -18022,15 +18103,24 @@ function InkoopGrowerPopup({ from, to, types, title, company, onClose }) {
                 <thead><tr><th>Grower</th><th>Lines</th><th>Invoice</th><th>Connect</th><th>Difference</th><th>% vs Connect</th><th>Share</th></tr></thead>
                 <tbody>
                   {groups.slice(0, 200).map((group) => (
-                    <tr key={group.grower}>
-                      <td>{group.grower}</td>
-                      <td>{group.lines}</td>
-                      <td>{formatInkoopEuro(group.invoice_value)}</td>
-                      <td>{formatInkoopEuro(group.connect_value)}</td>
-                      <td><InkoopMoneyDiff value={group.money_diff} dark /></td>
-                      <td className={group.pct_vs_connect > 0 ? "fin-loss" : group.pct_vs_connect < 0 ? "fin-gain" : ""}>{inkoopPct(group.pct_vs_connect)}</td>
-                      <td>{group.share.toFixed(1)}%</td>
-                    </tr>
+                    <Fragment key={group.grower}>
+                      <tr>
+                        <td className="clickable-cell" title="Click: the grower's invoice lines and Connect lots" onClick={() => toggleOpened(group.grower, "both")}>{group.grower}</td>
+                        <td>{group.lines}</td>
+                        <td className="clickable-cell" title="Click: the invoice lines" onClick={() => toggleOpened(group.grower, "invoice")}>{formatInkoopEuro(group.invoice_value)}</td>
+                        <td className="clickable-cell" title="Click: the Connect lots" onClick={() => toggleOpened(group.grower, "connect")}>{formatInkoopEuro(group.connect_value)}</td>
+                        <td><InkoopMoneyDiff value={group.money_diff} dark /></td>
+                        <td className={group.pct_vs_connect > 0 ? "fin-loss" : group.pct_vs_connect < 0 ? "fin-gain" : ""}>{inkoopPct(group.pct_vs_connect)}</td>
+                        <td>{group.share.toFixed(1)}%</td>
+                      </tr>
+                      {opened?.grower === group.grower && (
+                        <tr>
+                          <td colSpan="7">
+                            <InkoopGrowerLines from={from} to={to} company={company} grower={group.grower} side={opened.side} />
+                          </td>
+                        </tr>
+                      )}
+                    </Fragment>
                   ))}
                   {!groups.length && <tr><td colSpan="7">Nothing here.</td></tr>}
                 </tbody>
