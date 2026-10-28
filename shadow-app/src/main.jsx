@@ -19756,6 +19756,19 @@ function InkoopConnectCheck({ check, code, quantity, price }) {
     ? <small style={{ ...style, color: "#b45309" }}>Afgemeld TrNum {check.afgemeld.trnum}{check.afgemeld.boxes ? ` (${check.afgemeld.boxes} x ${check.afgemeld.per_box} @ ${check.afgemeld.price})` : ""}{check.afgemeld.brief ? `, brief ${check.afgemeld.brief}` : ""} -- no free Connect lot for it: not entered by hand?</small>
     : null;
   if (afgemeld) return <>{afgemeld}<InkoopConnectCheck check={{ ...check, afgemeld: null }} code={code} quantity={quantity} price={price} /></>;
+  // The product pool (same grower, product, price, box size, day): its
+  // lines and the free Connect lots that fit -- why they didn't add up.
+  if (check.pool) {
+    const pool = check.pool;
+    return (
+      <>
+        <small style={style}>
+          Pool: {pool.lines} invoice line(s) of this product{pool.per_box ? ` x ${pool.per_box}` : ""} @ {price} = {pool.invoice_pieces} pcs; free Connect lots with the name, price{pool.per_box ? ", box size" : ""} (±1 day): {pool.lots.length ? `${pool.lots.join(", ")} = ${pool.connect_pieces} pcs` : "none"}
+        </small>
+        <InkoopConnectCheck check={{ ...check, pool: null }} code={code} quantity={quantity} price={price} />
+      </>
+    );
+  }
   if (!check.supplier_lots) {
     return <small style={{ ...style, color: "#b45309" }}>No Connect lots of {code} around this date -- is the Connect export of this day uploaded, or is it booked under another code?</small>;
   }

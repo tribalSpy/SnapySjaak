@@ -8301,13 +8301,16 @@ function matchInkoopVeilingLines(erpRows, invoices, supplierMap = {}, supplierNa
       const wanted = pool.lines.reduce((sum, line) => sum + Number(line.quantity), 0);
       const free = (Array.isArray(erpRows) ? erpRows : []).filter((row) => !consumedErpRows.has(row)
         && [row?.suppl, row?.avc, row?.transp, resolveErpRowSupplierCode(row, validSupplierCodes)].some((code) => pool.codes.has(normalizeInkoopKey(code)))
-        && String(row?.date || "").slice(0, 10) === day
+        && Math.abs((Date.parse(String(row?.date || "").slice(0, 10)) - Date.parse(day)) / 86400000) <= 1
         && priceFits(row, sample.unit_price) && Number(row.pieces) > 0
         && (!perBox || !(Number(row?.cont) > 0) || Number(row.cont) === perBox)
         && inkoopLotNameScore(sample, row) > 0)
         .sort((left, right) => Number(left.lot) - Number(right.lot));
-      if (!free.length) continue;
       const total = (rows) => rows.reduce((sum, row) => sum + Number(row.pieces), 0);
+      // Why a pool didn't match, shown on its lines (connect_check).
+      const poolCheck = { lines: pool.lines.length, invoice_pieces: wanted, per_box: perBox || null, lots: free.slice(0, 20).map((row) => `${row.lot} ${row.items || "?"}x${row.cont || "?"}`), connect_pieces: total(free) };
+      for (const line of pool.lines) line.pool_check = poolCheck;
+      if (!free.length) continue;
       let lots = null;
       if (!inkoopValuesDiffer(total(free), wanted)) {
         lots = free;
@@ -8413,6 +8416,7 @@ function matchInkoopVeilingLines(erpRows, invoices, supplierMap = {}, supplierNa
     const message = named ? afgemeldMessages.find((entry) => String(Number(entry.trnum)) === named) : null;
     item.connect_check = {
       afgemeld: message ? { trnum: named, boxes: message.boxes, per_box: message.per_box, price: message.price, brief: message.brief || "" } : null,
+      pool: item.pool_check || null,
       supplier_lots: ofSupplier.length,
       near_lots: near.length,
       similar_lots: similar.length,
