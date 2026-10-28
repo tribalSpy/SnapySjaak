@@ -7674,6 +7674,22 @@ function matchInkoopVeilingLines(erpRows, invoices, supplierMap = {}, supplierNa
   // below) -- both are resolved to an internal code by grower identity
   // (GLN/FH number/name) and matched by quantity+price, since neither has
   // anything more specific than that to go on.
+  // Invoice lines without a brief number, by invoice date (see
+  // lotNamedBySameDayLine).
+  const noBriefLinesByDate = new Map();
+  for (const invoice of Array.isArray(invoices) ? invoices : []) {
+    for (const invoiceLine of Array.isArray(invoice?.lines) ? invoice.lines : []) {
+      if (normalizeUkdocsText(invoiceLine?.reference_bt) || !(Number(invoiceLine?.quantity) > 0)) continue;
+      const date = normalizeUkdocsText(invoiceLine?.invoice_date).slice(0, 10);
+      if (!noBriefLinesByDate.has(date)) noBriefLinesByDate.set(date, []);
+      noBriefLinesByDate.get(date).push(invoiceLine);
+    }
+  }
+  const lotNamedBySameDayLine = (row, exceptLine) => (noBriefLinesByDate.get(String(row?.date || "").slice(0, 10)) || []).some((other) => (
+    other !== exceptLine
+    && !inkoopValuesDiffer(row.pieces, other.quantity) && priceFits(row, other.unit_price) && inkoopLotNameScore(other, row) > 0
+    && resolveInkoopSupplierCode(other?.supplier_gln, other?.supplier_fh_number, other?.supplier_name, supplierMap, supplierNameMap, manualLinks, supplierFhMap).codes.includes(resolveErpRowSupplierCode(row, validSupplierCodes))
+  ));
   function matchInkoopLineBySupplierCode(context, line) {
     // The night action's order number (Connect line's ON + up to 3 digits):
     // an exact pair, before anything by supplier.
@@ -7715,6 +7731,14 @@ function matchInkoopVeilingLines(erpRows, invoices, supplierMap = {}, supplierNa
     // code.
     const candidates = resolved.codes.flatMap((code) => erpBySupplierCode.get(code) || []);
     let picked = pickInkoopMatchingErpRow(candidates, line.quantity, line.unit_price, consumedErpRows, normalizeUkdocsText(line?.invoice_date).slice(0, 10), null, priceFits);
+    // A lot of another day that a line of the lot's own day fits exactly --
+    // pieces, price and name -- is that line's, not this one's (12-10 PHAL
+    // GEM took 16-10's "Calat Crocata" lot, 6 x 5.84, and the 16-10 CALAT
+    // CROCATA line was left without it).
+    if (picked.row && String(picked.row?.date || "").slice(0, 10) !== normalizeUkdocsText(line?.invoice_date).slice(0, 10)
+      && !(inkoopLotNameScore(line, picked.row) > 0) && lotNamedBySameDayLine(picked.row, line)) {
+      picked = { row: null, ambiguous: false };
+    }
     // No brief number to go on: the product name helps ("CHR S AAA
     // AURINKO" on the invoice, "Aurinko" in Connect). Among several lots
     // with the same pieces and price, the one with the name; with none
@@ -9633,7 +9657,7 @@ const INKOOP_EMPTY_DAY_BUCKET = {
 // compared again once (at start-up), not only days whose data changed.
 // 2026-10-21: grower directory (learned links, Handel evidence), supplier
 // pairs stored on the invoice date.
-const INKOOP_MATCH_RULES_VERSION = "2026-10-28c";
+const INKOOP_MATCH_RULES_VERSION = "2026-10-28d";
 
 function inkoopStateFingerprint(state) {
   return crypto.createHash("sha1").update(JSON.stringify([
