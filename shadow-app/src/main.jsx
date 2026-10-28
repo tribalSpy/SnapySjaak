@@ -15544,6 +15544,23 @@ function inkoopBoxesText(total, boxes, perBox, erpRow = null) {
   return "";
 }
 
+// An invoice line the way a Connect lot is shown: "15-10 · FA4KNCK ·
+// 4 × 80 = 320 pcs @ €0.53 · = €169.60 · ON 18699288286645600004".
+function inkoopInvoiceTranscript(line) {
+  if (!line || line.quantity === undefined || line.quantity === null) {
+    return "";
+  }
+  const boxes = inkoopBoxesText(line.quantity, line.packages, line.per_package);
+  return [
+    line.invoice_date ? inkoopShortDate(line.invoice_date) : "",
+    String(line.reference_bt || line.pav || "").trim(),
+    `${boxes ? `${boxes} = ` : ""}${line.quantity} pcs @ ${formatInkoopEuro(line.unit_price)}`,
+    line.total !== undefined && line.total !== null ? `= ${formatInkoopEuro(line.total)}` : "",
+    line.order_number ? `ON ${line.order_number}` : "",
+    line.supplier_name ? String(line.supplier_name).trim() : "",
+  ].filter(Boolean).join(" · ");
+}
+
 function inkoopErpTranscript(erpRow) {
   if (!erpRow) {
     return "-";
@@ -19192,7 +19209,10 @@ function InkoopFollowUpTab({ company }) {
                                     <td>{inkoopIssueTypeLabel(issue.issue_type)}</td>
                                     <td><InkoopInvoiceLink invoiceNumber={issue.invoice_number} /></td>
                                     <td>
-                                      {issue.description}
+                                      <strong>{issue.description}</strong>
+                                      {(issue.issue_type === "gap_invoice" || issue.issue_type === "mismatch") && inkoopInvoiceTranscript(issue.detail) && (
+                                        <div className="muted" style={{ fontSize: "0.85em" }}>{inkoopInvoiceTranscript(issue.detail)}</div>
+                                      )}
                                       {issue.transaction_cost && (
                                         <div><span className="ukdocs-status-badge muted" title={`Connect ${issue.erp_row?.price} + ${issue.transaction_cost.pct}% = ${issue.transaction_cost.connect_price_with_cost}; this line: +${issue.transaction_cost.actual_pct}%`}>transaction cost {issue.transaction_cost.code} +{issue.transaction_cost.pct}%</span></div>
                                       )}
