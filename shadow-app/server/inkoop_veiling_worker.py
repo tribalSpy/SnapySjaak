@@ -1138,6 +1138,11 @@ def _parse_veiling_from(input_path: Path, extract_dir: Path):
             # correction email can name another invoice in its subject, and
             # then got filed under that number ("1057 (2)").
             invoice_number = extract_invoice_number(header.get("billing_id") or "") or extract_invoice_number(subject)
+            # The same email can carry the invoice PDF next to its XML --
+            # kept too, or the invoice link stays "not found".
+            pdf_bytes = find_pdf_bytes(msg)
+            if pdf_bytes and invoice_number:
+                pdfs.setdefault(invoice_number, base64.b64encode(pdf_bytes).decode("ascii"))
             invoices.append({
                 "file_name": msg_path.name,
                 "type": kind,
