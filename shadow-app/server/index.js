@@ -9196,6 +9196,24 @@ function inkoopMatchedLotCodes(match, { supplierMap, supplierNameMap, manualLink
   return byLot;
 }
 
+// Every lot matched in the stored day results of a period (and the match
+// tolerance either side: a line can take a lot of another day) -> the codes
+// of its invoice line. Read a week at a time.
+async function inkoopStoredMatchedLotCodes(from, to, company, maps) {
+  const byLot = new Map();
+  const last = addDaysToIsoDate(to, INKOOP_DAY_TOLERANCE_DAYS);
+  for (let start = addDaysToIsoDate(from, -INKOOP_DAY_TOLERANCE_DAYS); start <= last; start = addDaysToIsoDate(start, 7)) {
+    const end = addDaysToIsoDate(start, 6) < last ? addDaysToIsoDate(start, 6) : last;
+    for (const day of await getInkoopMatchDays({ from: start, to: end })) {
+      if (!day?.result) continue;
+      for (const [lot, codes] of inkoopMatchedLotCodes(filterInkoopResultsByCompany(day.result, company), maps)) {
+        if (!byLot.has(lot)) byLot.set(lot, codes);
+      }
+    }
+  }
+  return byLot;
+}
+
 // matchedLotCodes (inkoopMatchedLotCodes): a lot matched to an invoice line
 // counts for that line's grower first -- matched means paid for that
 // grower, also when Connect books it under another code (a Handel line has
@@ -24525,14 +24543,23 @@ async function handleApi(req, res, url) {
         inkoopGrowerDirectory(state),
       ]);
       const bwOf = (row) => (state.supplier_bw_map?.[normalizeInkoopKey(row?.suppl)] || state.supplier_bw_map?.[normalizeInkoopKey(row?.avc)])?.bw || "?";
+      const supplierMap = { ...directory.matcherMaps.gln, ...state.supplier_map };
+      const supplierFhMap = { ...directory.matcherMaps.fh, ...state.supplier_fh_map };
+      // A lot matched to an invoice line counts for that line's grower, also
+      // outside the chosen betaalwijzen (an AI2 grower's BW A lots under
+      // "only V"): matched is paid -- only what really has no lot differs.
+      const matchedLotCodes = await inkoopStoredMatchedLotCodes(from, to, company, {
+        supplierMap, supplierNameMap: state.supplier_name_map, manualLinks: state.manual_supplier_links, supplierFhMap,
+      }).catch((matchError) => {
+        console.error("Matched lots for the grower totals failed:", matchError instanceof Error ? matchError.message : matchError);
+        return new Map();
+      });
       const erpRows = excludeInkoopInternalBunchRows(allErpRows, state.supplier_bw_map, inkoopExcludedErpCodes(state))
         .filter((row) => String(row?.date || "").slice(0, 10) >= from && String(row?.date || "").slice(0, 10) <= to)
-        .filter((row) => !bwFilter.size || bwFilter.has(bwOf(row)));
+        .filter((row) => !bwFilter.size || bwFilter.has(bwOf(row)) || matchedLotCodes.has(String(row?.lot ?? "").trim()));
       const invoiceLines = allInvoiceLines
         .filter((line) => String(line?.invoice_date || "").slice(0, 10) >= from && String(line?.invoice_date || "").slice(0, 10) <= to)
         .filter((line) => !company || normalizeUkdocsText(line?.company_number) === company);
-      const supplierMap = { ...directory.matcherMaps.gln, ...state.supplier_map };
-      const supplierFhMap = { ...directory.matcherMaps.fh, ...state.supplier_fh_map };
       // A grower name for every code linked by hand (the link's name) or
       // learned (the name on its invoice lines) -- not only the master data's.
       const extraCodeNames = new Map();
@@ -24550,7 +24577,7 @@ async function handleApi(req, res, url) {
       for (const [code, name] of extraCodeNames) if (!growerOfCode.has(code)) growerOfCode.set(code, name);
       const erpRowsByGrower = inkoopErpRowsForInvoiceGrowers(erpRows, invoiceLines, {
         supplierMap, supplierNameMap: state.supplier_name_map, manualLinks: state.manual_supplier_links, supplierFhMap,
-        growerOfCode, nonGrowerCodes: new Set(directory.skipCodes || []),
+        growerOfCode, nonGrowerCodes: new Set(directory.skipCodes || []), matchedLotCodes,
       });
       const totals = computeInkoopGrowerDayTotals(erpRowsByGrower, invoiceLines, supplierMap, state.supplier_name_map, state.manual_supplier_links, supplierFhMap, state.facturation_groups, extraCodeNames);
       // A readable name per grower: the facturation group's own, else the
