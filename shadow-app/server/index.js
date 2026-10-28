@@ -17120,8 +17120,15 @@ async function syncUkdocsPrintFromGmail(settings, requestUser, query, date) {
   const state = await readUkdocsState();
   const syncDate = String(date || localDateIso()).slice(0, 10);
   const syncQuery = buildUkdocsGmailSyncQuery(query, syncDate);
-  const listPayload = await gmailApiJson(accessToken, `messages?q=${encodeURIComponent(syncQuery)}&maxResults=25`);
-  const messages = Array.isArray(listPayload.messages) ? listPayload.messages : [];
+  // Every email of the day (up to 150): one page of 25 left a busy day's
+  // others -- an exit confirmation among them -- never read.
+  const messages = [];
+  let pageToken = "";
+  do {
+    const listPayload = await gmailApiJson(accessToken, `messages?q=${encodeURIComponent(syncQuery)}&maxResults=50${pageToken ? `&pageToken=${encodeURIComponent(pageToken)}` : ""}`);
+    if (Array.isArray(listPayload.messages)) messages.push(...listPayload.messages);
+    pageToken = listPayload.nextPageToken || "";
+  } while (pageToken && messages.length < 150);
   const dayCollections = state.print_collections.filter((item) => {
     if (String(item.shipment_date || "").slice(0, 10) !== syncDate) {
       return false;
