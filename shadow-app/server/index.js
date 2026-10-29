@@ -9362,6 +9362,21 @@ function computeInkoopAggregateMismatches(erpRows, invoiceLines, supplierMap, su
       [...totals.erpByGrowerDayProduct.keys(), ...totals.invoiceByGrowerDayProduct.keys()]
         .filter((productKey) => productKey.startsWith(prefix)),
     );
+    // A product named otherwise on each side ("aaapurpetta" on the invoice,
+    // "purpetta" in Connect): one side only, the other side only, the same
+    // pieces and value -- the same product, reconciled.
+    const hadProducts = productKeys.size > 0;
+    const connectOnly = [...productKeys].filter((productKey) => totals.erpByGrowerDayProduct.has(productKey) && !totals.invoiceByGrowerDayProduct.has(productKey));
+    for (const productKey of [...productKeys]) {
+      if (totals.erpByGrowerDayProduct.has(productKey) || !totals.invoiceByGrowerDayProduct.has(productKey)) continue;
+      const index = connectOnly.findIndex((erpKey) => inkoopAggregateReconciles(totals.erpByGrowerDayProduct.get(erpKey), totals.invoiceByGrowerDayProduct.get(productKey)));
+      if (index === -1) continue;
+      const [erpKey] = connectOnly.splice(index, 1);
+      for (const key of [productKey, erpKey]) {
+        reconciledProducts.add(key);
+        productKeys.delete(key);
+      }
+    }
     for (const productKey of productKeys) {
       const erpProductEntry = totals.erpByGrowerDayProduct.get(productKey);
       const invoiceProductEntry = totals.invoiceByGrowerDayProduct.get(productKey);
@@ -9379,7 +9394,7 @@ function computeInkoopAggregateMismatches(erpRows, invoiceLines, supplierMap, su
         invoice_value: invoiceProductEntry?.value || 0,
       });
     }
-    if (!productKeys.size) {
+    if (!hadProducts) {
       // No product-level breakdown available on either side to drill into
       // -- report the grower/day mismatch itself rather than silently
       // dropping it.
