@@ -19665,13 +19665,18 @@ function InkoopFollowUpTab({ company, matchRound = 0 }) {
   const pickedList = Object.values(picked);
   const pickedLines = pickedList.filter((issue) => issue.issue_type !== "gap_erp");
   const pickedLots = pickedList.filter((issue) => issue.issue_type === "gap_erp");
+  // A ticked mismatch line brings its own lot(s) along (FA5N2DA: its lot of
+  // 4125 + the ticked free lot of 2375 = its 6500 pieces).
+  const ownLots = pickedLines.filter((issue) => issue.issue_type === "mismatch" && issue.erp_row?.lot)
+    .map((issue) => ({ lots: String(issue.erp_row.lot).split("+").filter(Boolean), pieces: Number(issue.erp_row.pieces) || 0, value: parseFloat(issue.erp_row.t_price) || 0, date: issue.erp_row.date }));
+  const linkLots = [...new Set([...ownLots.flatMap((own) => own.lots), ...pickedLots.map((issue) => String(issue.erp_row.lot))])];
   async function linkPicked() {
     setError("");
     try {
       await inkoopSaveManualPair({
         lineIds: pickedLines.map((issue) => issue.detail.id),
-        lots: pickedLots.map((issue) => String(issue.erp_row.lot)),
-        dates: [...pickedLines.map((issue) => issue.detail?.invoice_date || issue.date), ...pickedLots.map((issue) => issue.erp_row?.date || issue.date)].filter(Boolean),
+        lots: linkLots,
+        dates: [...pickedLines.map((issue) => issue.detail?.invoice_date || issue.date), ...pickedLots.map((issue) => issue.erp_row?.date || issue.date), ...ownLots.map((own) => own.date)].filter(Boolean),
         note: pairNote,
         source: "hand",
       });
@@ -19888,16 +19893,16 @@ function InkoopFollowUpTab({ company, matchRound = 0 }) {
           {!!pickedList.length && (() => {
             const invoicePieces = pickedLines.reduce((sum, issue) => sum + (Number(issue.detail?.quantity) || 0), 0);
             const invoiceValue = pickedLines.reduce((sum, issue) => sum + (Number(issue.detail?.total) || 0), 0);
-            const connectPieces = pickedLots.reduce((sum, issue) => sum + (Number(issue.erp_row?.pieces) || 0), 0);
-            const connectValue = pickedLots.reduce((sum, issue) => sum + (parseFloat(issue.erp_row?.t_price) || 0), 0);
+            const connectPieces = pickedLots.reduce((sum, issue) => sum + (Number(issue.erp_row?.pieces) || 0), 0) + ownLots.reduce((sum, own) => sum + own.pieces, 0);
+            const connectValue = pickedLots.reduce((sum, issue) => sum + (parseFloat(issue.erp_row?.t_price) || 0), 0) + ownLots.reduce((sum, own) => sum + own.value, 0);
             return (
               <div className="notice info" style={{ position: "sticky", top: 0, zIndex: 2 }}>
-                <strong>Link by hand:</strong> {pickedLines.length} invoice line(s) {invoicePieces} pcs {formatInkoopEuro(invoiceValue)} · {pickedLots.length} Connect lot(s) {connectPieces} pcs {formatInkoopEuro(connectValue)} · difference <InkoopMoneyDiff value={Math.round((invoiceValue - connectValue) * 100) / 100} />
+                <strong>Link by hand:</strong> {pickedLines.length} invoice line(s) {invoicePieces} pcs {formatInkoopEuro(invoiceValue)} · {linkLots.length} Connect lot(s){ownLots.length ? " (the mismatch line's own included)" : ""} {connectPieces} pcs {formatInkoopEuro(connectValue)} · difference <InkoopMoneyDiff value={Math.round((invoiceValue - connectValue) * 100) / 100} />
                 <div className="row-actions" style={{ marginTop: 6 }}>
                   <input value={pairNote} onChange={(event) => setPairNote(event.target.value)} placeholder="Note (why they belong together)" size={40} />
-                  <button type="button" className="primary" onClick={linkPicked} disabled={!pickedLines.length || !pickedLots.length}>Link</button>
+                  <button type="button" className="primary" onClick={linkPicked} disabled={!pickedLines.length || !linkLots.length}>Link</button>
                   <button type="button" onClick={() => setPicked({})}>Clear</button>
-                  {(!pickedLines.length || !pickedLots.length) && <span className="muted">Tick at least one invoice line and one Connect lot.</span>}
+                  {(!pickedLines.length || !linkLots.length) && <span className="muted">Tick at least one invoice line and one Connect lot.</span>}
                 </div>
               </div>
             );

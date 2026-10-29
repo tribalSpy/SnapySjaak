@@ -25850,6 +25850,16 @@ async function handleApi(req, res, url) {
       // The open lines per grower, day and product (as the day totals key
       // them): a "Grower total off" row they add up to only repeats them.
       const openByProduct = new Map();
+      // A grower-day with a line matched short in pieces (FA5N2DA 6500 pcs
+      // to one lot of 4125): its other lots stay visible even when the day's
+      // product total balances -- the missing 2375 can be one of them, to
+      // link by hand.
+      const shortPiecesDays = new Set();
+      for (const row of result.matched_mismatch || []) {
+        if (!(row.diffs || []).some((diff) => diff.field === "quantity")) continue;
+        shortPiecesDays.add(inkoopAggregateKey(inkoopGrowerNameForInvoiceLine(row, codeToName, supplierMap, supplierNameMap, manualLinks, supplierFhMap), String(row?.invoice_date || "").slice(0, 10)));
+        if (row.erp_row) shortPiecesDays.add(inkoopAggregateKey(inkoopGrowerNameForErpRow(row.erp_row, codeToName, validSupplierCodes), String(row.erp_row?.date || "").slice(0, 10)));
+      }
       const addOpen = (grower, date, description, field, value) => {
         const key = inkoopAggregateKey(grower, String(date || "").slice(0, 10), normalizeInkoopProductName(description));
         const entry = openByProduct.get(key) || { erp: 0, invoice: 0 };
@@ -25857,7 +25867,8 @@ async function handleApi(req, res, url) {
         openByProduct.set(key, entry);
       };
       for (const row of result.only_in_erp || []) {
-        if (inkoopGapIsExplainedByAggregate(row, inkoopGrowerNameForErpRow(row, codeToName, validSupplierCodes), aggregateResult)) {
+        if (inkoopGapIsExplainedByAggregate(row, inkoopGrowerNameForErpRow(row, codeToName, validSupplierCodes), aggregateResult)
+          && !shortPiecesDays.has(inkoopAggregateKey(inkoopGrowerNameForErpRow(row, codeToName, validSupplierCodes), String(row?.date || "").slice(0, 10)))) {
           continue;
         }
         addOpen(inkoopGrowerNameForErpRow(row, codeToName, validSupplierCodes), row?.date, row?.description, "erp", inkoopErpRowTotal(row));
@@ -25871,7 +25882,8 @@ async function handleApi(req, res, url) {
       }
       for (const row of result.only_in_invoice || []) {
         const invoiceGrowerName = inkoopGrowerNameForInvoiceLine(row, codeToName, supplierMap, supplierNameMap, manualLinks, supplierFhMap);
-        if (inkoopGapIsExplainedByAggregate(row, invoiceGrowerName, aggregateResult)) {
+        if (inkoopGapIsExplainedByAggregate(row, invoiceGrowerName, aggregateResult)
+          && !shortPiecesDays.has(inkoopAggregateKey(invoiceGrowerName, String(row?.invoice_date || "").slice(0, 10)))) {
           continue;
         }
         addOpen(invoiceGrowerName, row?.invoice_date, row?.description, "invoice", inkoopInvoiceLineTotal(row));
