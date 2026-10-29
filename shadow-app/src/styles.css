@@ -2498,3 +2498,802 @@ button.fin-tile:hover { border-color: var(--fin-series-1); box-shadow: 0 0 14px 
   padding: 4px 6px 8px 56px !important;
   background: #fbfcfd;
 }
+
+/* ---------- Inkoop Controle: one light look, taken from the Fust pages ----------
+   Tokens (the Fust white cards, #d6dde5 borders, green accent); the invoice
+   side blue, the Connect side orange; the Financial Dashboard turned light. */
+:root {
+  --ik-surface: #ffffff;
+  --ik-surface-2: #f5f8fb;
+  --ik-border: #d6dde5;
+  --ik-text: #17202a;
+  --ik-text-2: #4a5561;
+  --ik-muted: #6b7785;
+  --ik-accent: #1f7a5a;
+  --ik-invoice: #2a78d6;
+  --ik-connect: #d4552a;
+  --ik-good: #15803d;
+  --ik-bad: #b91c1c;
+  --ik-warn: #a16207;
+  --ik-track: #e3e8ee;
+  /* The dashboard chart / tooltip outside its card. */
+  --fin-surface: #ffffff;
+  --fin-surface-2: #f5f8fb;
+  --fin-border: #d6dde5;
+  --fin-grid: #e3e8ee;
+  --fin-text: #17202a;
+  --fin-text-2: #4a5561;
+  --fin-muted: #6b7785;
+  --fin-series-1: #2a78d6;
+  --fin-series-2: #d4552a;
+  --fin-good: #15803d;
+  --fin-critical: #b91c1c;
+}
+
+.inkoop-page .fin-hero {
+  --fin-surface: #ffffff;
+  --fin-surface-2: #f5f8fb;
+  --fin-border: #d6dde5;
+  --fin-grid: #e3e8ee;
+  --fin-text: #17202a;
+  --fin-text-2: #4a5561;
+  --fin-muted: #6b7785;
+  --fin-series-1: #2a78d6;
+  --fin-series-2: #d4552a;
+  --fin-good: #15803d;
+  --fin-critical: #b91c1c;
+  color-scheme: light;
+  background: #ffffff;
+  border-radius: 8px;
+  box-shadow: none;
+}
+
+.inkoop-page .fin-tile { background: var(--fin-surface-2); }
+.inkoop-page button.fin-tile:hover { border-color: var(--ik-accent); box-shadow: none; }
+.fin-tooltip { background: #ffffff; color: var(--ik-text); border-color: var(--ik-border); box-shadow: 0 6px 18px rgba(23, 32, 42, 0.15); }
+.inkoop-page .fin-table tr.fin-click:hover td { background: #eef5f1; }
+.inkoop-page .fin-modal-backdrop { background: rgba(23, 32, 42, 0.35); }
+
+/* Frozen headers: every Inkoop table scrolls inside its box, its header stays.
+   (A table with a filter row under its header keeps its own rules.) */
+.inkoop-page .table-wrap {
+  max-height: 72vh;
+  overflow: auto;
+}
+
+.inkoop-page .table-wrap .table-wrap {
+  max-height: 55vh;
+}
+
+.inkoop-page .table-wrap > table:not(:has(> thead > tr + tr)) > thead th {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  background: var(--ik-surface-2);
+  box-shadow: inset 0 -1px 0 var(--ik-border);
+}
+
+/* The menu (Fust tiles) and its live figures. */
+.ik-menu .ik-tile {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-height: 120px;
+}
+
+.ik-menu .ik-tile small {
+  font-weight: 400;
+}
+
+.ik-menu .ik-tile.classic {
+  min-height: 80px;
+  background: var(--ik-surface-2);
+}
+
+.ik-tile-figure {
+  margin-top: auto;
+  font-weight: 600;
+}
+
+.ik-subhead {
+  margin: 4px 0 -6px;
+  color: var(--ik-text-2);
+  font-size: 0.95rem;
+}
+
+/* The filter bar: sticky, one band of chips. */
+.ik-filterbar {
+  position: sticky;
+  top: 0;
+  z-index: 6;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 18px;
+  align-items: center;
+  padding: 8px 12px;
+  background: var(--ik-surface);
+  border: 1px solid var(--ik-border);
+  border-radius: 8px;
+  box-shadow: 0 2px 6px rgba(23, 32, 42, 0.06);
+}
+
+.ik-filter-group {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  align-items: center;
+}
+
+.ik-filter-label {
+  font-size: 0.78rem;
+  font-weight: 700;
+  color: var(--ik-text-2);
+  margin: 0 2px 0 4px;
+}
+
+.ik-filterbar input,
+.ik-filterbar select {
+  padding: 4px 6px;
+  font-size: 0.85rem;
+}
+
+.ik-chip {
+  padding: 3px 9px;
+  font-size: 0.8rem;
+  border-radius: 999px;
+  border: 1px solid var(--ik-border);
+  background: var(--ik-surface);
+  color: var(--ik-text);
+  line-height: 1.4;
+}
+
+.ik-chip:hover {
+  border-color: var(--ik-accent);
+}
+
+.ik-chip.on {
+  background: #e7f3ee;
+  border-color: var(--ik-accent);
+  color: var(--ik-accent);
+  font-weight: 600;
+}
+
+.ik-dot {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  margin-right: 5px;
+  vertical-align: middle;
+}
+
+/* Cards and the money trace table. */
+.ik-card {
+  padding: 12px 14px;
+}
+
+.ik-card-head {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.ik-crumbs {
+  font-size: 1rem;
+}
+
+.ik-table th,
+.ik-table td {
+  padding: 5px 8px;
+  font-size: 0.84rem;
+  white-space: nowrap;
+}
+
+.ik-table td:not(:first-child),
+.ik-table th:not(:first-child) {
+  text-align: right;
+}
+
+.ik-pairs td,
+.ik-pairs th {
+  text-align: left !important;
+  white-space: normal;
+  vertical-align: top;
+}
+
+.ik-sortable {
+  cursor: pointer;
+  user-select: none;
+}
+
+.ik-table tr.clickable-row:hover td {
+  background: #eef5f1;
+}
+
+.ik-colpick {
+  position: relative;
+}
+
+.ik-colpick-menu {
+  position: absolute;
+  right: 0;
+  top: 110%;
+  z-index: 8;
+  display: grid;
+  gap: 2px;
+  padding: 8px 10px;
+  background: var(--ik-surface);
+  border: 1px solid var(--ik-border);
+  border-radius: 8px;
+  box-shadow: 0 8px 20px rgba(23, 32, 42, 0.12);
+  white-space: nowrap;
+}
+
+/* Pairs: invoice side blue, Connect side orange. */
+.ik-inv,
+.ik-inv-head {
+  box-shadow: inset 3px 0 0 var(--ik-invoice);
+}
+
+.ik-con,
+.ik-con-head {
+  box-shadow: inset 3px 0 0 var(--ik-connect);
+}
+
+.ik-status-icon {
+  text-align: center !important;
+  font-weight: 700;
+}
+
+.ik-status-not_matched .ik-status-icon,
+.ik-status-connect_only .ik-status-icon {
+  color: var(--ik-bad);
+}
+
+.ik-status-mismatch .ik-status-icon {
+  color: var(--ik-warn);
+}
+
+.ik-status-matched .ik-status-icon {
+  color: var(--ik-good);
+}
+
+/* Graphics: ring, bar, split bar, legend. */
+.ik-ring {
+  position: relative;
+  flex: 0 0 auto;
+}
+
+.ik-ring svg {
+  display: block;
+}
+
+.ik-ring-track {
+  stroke: var(--ik-track);
+}
+
+.ik-ring-value {
+  stroke: var(--ik-accent);
+}
+
+.ik-ring.good .ik-ring-value {
+  stroke: var(--ik-good);
+}
+
+.ik-ring.bad .ik-ring-value {
+  stroke: var(--ik-bad);
+}
+
+.ik-ring-label {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  line-height: 1.1;
+  text-align: center;
+}
+
+.ik-ring-label strong {
+  font-size: 0.95rem;
+}
+
+.ik-ring-label small {
+  font-size: 0.62rem;
+  color: var(--ik-muted);
+}
+
+.ik-bar {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 110px;
+  justify-content: flex-end;
+}
+
+.ik-bar-track {
+  width: 60px;
+  height: 6px;
+  border-radius: 4px;
+  background: var(--ik-track);
+  overflow: hidden;
+}
+
+.ik-bar-fill {
+  display: block;
+  height: 100%;
+  border-radius: 4px;
+  background: var(--ik-accent);
+}
+
+.ik-bar-fill.good {
+  background: var(--ik-good);
+}
+
+.ik-bar-fill.bad {
+  background: var(--ik-bad);
+}
+
+.ik-bar-text {
+  font-variant-numeric: tabular-nums;
+  min-width: 46px;
+  text-align: right;
+}
+
+.ik-split {
+  display: inline-flex;
+  gap: 2px;
+  width: 140px;
+  height: 8px;
+  vertical-align: middle;
+}
+
+.ik-split-part {
+  display: block;
+  height: 100%;
+  border-radius: 3px;
+  min-width: 3px;
+}
+
+.ik-legend {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  font-size: 0.78rem;
+  color: var(--ik-text-2);
+}
+
+.ik-legend i {
+  display: inline-block;
+  width: 10px;
+  height: 10px;
+  border-radius: 2px;
+  margin-right: 4px;
+  vertical-align: -1px;
+}
+
+/* KPI strip. */
+.ik-kpis {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  margin-bottom: 6px;
+}
+
+.ik-kpi {
+  display: flex;
+  flex-direction: column;
+  min-width: 118px;
+  padding: 6px 10px;
+  border: 1px solid var(--ik-border);
+  border-radius: 8px;
+  background: var(--ik-surface-2);
+}
+
+.ik-kpi strong {
+  font-size: 1.05rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.ik-kpi small,
+.ik-kpi-label {
+  font-size: 0.72rem;
+  color: var(--ik-text-2);
+}
+
+.ik-kpi.bad strong {
+  color: var(--ik-bad);
+}
+
+.ik-kpi.warn strong {
+  color: var(--ik-warn);
+}
+
+.ik-top {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 12px;
+  align-items: start;
+}
+
+/* Mini calendar: small squares by matched %, numbers in the tooltip. */
+.ik-cal {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+
+.ik-cal-title {
+  font-size: 0.78rem;
+  font-weight: 700;
+  margin-bottom: 3px;
+}
+
+.ik-cal-grid {
+  display: grid;
+  grid-template-columns: repeat(7, 22px);
+  gap: 2px;
+}
+
+.ik-cal-head {
+  font-size: 0.62rem;
+  color: var(--ik-muted);
+  text-align: center;
+}
+
+.ik-cal-day {
+  width: 22px;
+  height: 20px;
+  padding: 0;
+  font-size: 0.62rem;
+  border: 0;
+  border-radius: 3px;
+  background: #eef1f4;
+  color: var(--ik-text);
+  cursor: pointer;
+  display: inline-block;
+}
+
+.ik-cal-day.empty { background: #e6f0fb; }
+.ik-cal-day.l0 { background: #9f1f1f; color: #ffffff; }
+.ik-cal-day.l1 { background: #f2b8b5; }
+.ik-cal-day.l2 { background: #f6dfa4; }
+.ik-cal-day.l3 { background: #a8dcbc; }
+.ik-cal-day.l4 { background: #2f8f57; color: #ffffff; }
+.ik-cal-day.out { opacity: 0.3; cursor: default; }
+.ik-cal-day.picked { outline: 2px solid var(--ik-text); outline-offset: 0; }
+
+.ik-cal-key {
+  flex-basis: 100%;
+  display: flex;
+  gap: 4px;
+  align-items: center;
+  font-size: 0.7rem;
+}
+
+.ik-cal-key .ik-cal-day {
+  width: 12px;
+  height: 10px;
+  cursor: default;
+}
+
+/* Track & Trace: rail left, a grower's two sides right. */
+.ik-tt {
+  display: grid;
+  grid-template-columns: 300px minmax(0, 1fr);
+  gap: 12px;
+  align-items: start;
+}
+
+.ik-tt-rail {
+  display: grid;
+  gap: 12px;
+  position: sticky;
+  top: 64px;
+}
+
+.ik-growers input {
+  width: 100%;
+  margin-bottom: 6px;
+}
+
+.ik-grower-list {
+  max-height: 55vh;
+  overflow: auto;
+  display: grid;
+  gap: 2px;
+}
+
+.ik-grower {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 0 6px;
+  padding: 5px 7px;
+  text-align: left;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background: transparent;
+  font-size: 0.82rem;
+}
+
+.ik-grower .ik-bar {
+  grid-column: 1 / -1;
+  justify-content: flex-start;
+}
+
+.ik-grower:hover {
+  border-color: var(--ik-border);
+}
+
+.ik-grower.on {
+  border-color: var(--ik-accent);
+  background: #e7f3ee;
+}
+
+.ik-grower-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 600;
+}
+
+.ik-tt-main {
+  display: grid;
+  gap: 12px;
+  min-width: 0;
+}
+
+.ik-tt-head {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 14px;
+  align-items: center;
+}
+
+.ik-tt-title h3 {
+  margin: 0;
+}
+
+.ik-tt-title {
+  display: grid;
+  gap: 4px;
+}
+
+.ik-tt-nums {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 16px;
+  margin-left: auto;
+}
+
+.ik-split-view {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 12px;
+  align-items: start;
+}
+
+.ik-side {
+  max-height: 70vh;
+  overflow: auto;
+  padding-top: 0;
+}
+
+.ik-side.inv {
+  border-top: 3px solid var(--ik-invoice);
+}
+
+.ik-side.con {
+  border-top: 3px solid var(--ik-connect);
+}
+
+.ik-side-head {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  padding: 8px 0;
+  background: var(--ik-surface);
+  border-bottom: 1px solid var(--ik-border);
+  margin-bottom: 4px;
+}
+
+.ik-side-head select {
+  margin-left: auto;
+  width: auto;
+  padding: 2px 4px;
+  font-size: 0.8rem;
+}
+
+.ik-item {
+  display: grid;
+  grid-template-columns: 24px minmax(0, 1fr);
+  align-items: start;
+  border-bottom: 1px solid #edf1f5;
+}
+
+.ik-item.picked {
+  background: #fff7e0;
+}
+
+.ik-item.handled {
+  opacity: 0.7;
+}
+
+.ik-item-tick {
+  padding-top: 7px;
+  text-align: center;
+}
+
+.ik-item-body {
+  display: grid;
+  gap: 1px;
+  padding: 5px 4px;
+  text-align: left;
+  border: 0;
+  background: transparent;
+  font: inherit;
+  color: inherit;
+  cursor: pointer;
+}
+
+.ik-item-body:hover {
+  background: #f5f8fb;
+}
+
+.ik-item-top {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  gap: 8px;
+  font-size: 0.85rem;
+}
+
+.ik-item-top strong {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ik-item-money {
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.ik-item-sub {
+  font-size: 0.76rem;
+}
+
+.ik-con-text {
+  color: #9a3a16;
+}
+
+.ik-inv-text {
+  color: #1d5aa6;
+}
+
+.ik-linkbar {
+  position: sticky;
+  top: 56px;
+  z-index: 5;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 14px;
+  align-items: center;
+  padding: 8px 12px;
+  border: 1px solid var(--ik-accent);
+  border-radius: 8px;
+  background: #f1f8f4;
+}
+
+.ik-drawer {
+  position: fixed;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 40;
+  width: min(420px, 100%);
+  display: grid;
+  align-content: start;
+  gap: 10px;
+  padding: 16px;
+  overflow: auto;
+  background: var(--ik-surface);
+  border-left: 1px solid var(--ik-border);
+  box-shadow: -8px 0 24px rgba(23, 32, 42, 0.15);
+}
+
+.ik-drawer label {
+  display: grid;
+  gap: 3px;
+}
+
+.ik-drawer-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+/* Search: invoices and Connect side by side when there is room. */
+.ik-search-split {
+  display: grid;
+  gap: 12px;
+}
+
+@media (min-width: 1400px) {
+  .ik-search-split {
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+    align-items: start;
+  }
+}
+
+@media (max-width: 1100px) {
+  .ik-tt,
+  .ik-top,
+  .ik-split-view {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .ik-tt-rail {
+    position: static;
+  }
+}
+
+.ik-tile-ring {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.ik-ring-label strong {
+  white-space: nowrap;
+}
+
+.ik-ring[style*="width: 64px"] .ik-ring-label strong,
+.ik-ring[style*="width: 68px"] .ik-ring-label strong {
+  font-size: 0.82rem;
+}
+
+/* One line per side in the pairs; the bar inputs at their own width; the
+   page never wider than the screen. */
+.ik-oneline {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 2px 8px;
+  align-items: baseline;
+}
+
+.ik-pairs td {
+  padding-top: 4px;
+  padding-bottom: 4px;
+}
+
+.ik-pairs td:nth-child(2) {
+  white-space: nowrap;
+}
+
+.ik-filterbar input,
+.ik-filterbar select {
+  width: auto;
+  min-width: 0;
+}
+
+.ik-filterbar label,
+.ik-filterbar .ik-filter-group > * {
+  flex: 0 0 auto;
+}
+
+.inkoop-page {
+  min-width: 0;
+  max-width: 100%;
+}
+
+.inkoop-page > * {
+  min-width: 0;
+}

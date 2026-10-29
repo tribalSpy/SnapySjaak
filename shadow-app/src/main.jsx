@@ -15984,11 +15984,12 @@ function InkoopSearchPanel({ kind, company, request, onFindOther, otherTitle }) 
 function InkoopSearchTab({ company }) {
   const [invoiceRequest, setInvoiceRequest] = useState(null);
   const [erpRequest, setErpRequest] = useState(null);
+  // Side by side on a wide screen: invoices left, Connect right.
   return (
-    <>
+    <div className="ik-search-split">
       <InkoopSearchPanel kind="invoices" company={company} request={invoiceRequest} otherTitle="Connect" onFindOther={(request) => setErpRequest({ ...request, at: Date.now() })} />
       <InkoopSearchPanel kind="erp" company={company} request={erpRequest} otherTitle="invoices" onFindOther={(request) => setInvoiceRequest({ ...request, at: Date.now() })} />
-    </>
+    </div>
   );
 }
 
@@ -16647,10 +16648,864 @@ function InkoopKingTab() {
   );
 }
 
+// ---------- Inkoop workspaces: Fust-style menu, Dashboard (money trace),
+// Track & Trace. Built next to the old tabs (they stay under Setup ›
+// Classic views); they read the stored match lines (/api/inkoop/overview-
+// table, /overview-lines) and link through the existing endpoints. ----------
+
+// How the money was bought (server: inkoopOverviewFlow), in a fixed order
+// and colour (checked for colour-blind separation and contrast); "No
+// invoice": a lot only in Connect.
+const INKOOP_FLOWS = ["Klok", "Connect", "Handel", "AI2", "Other", "No invoice"];
+const INKOOP_FLOW_COLORS = {
+  Klok: "#2a78d6",
+  Connect: "#14a38b",
+  Handel: "#8a4fd6",
+  AI2: "#b07800",
+  Other: "#c2417a",
+  "No invoice": "#e0601c",
+};
+const INKOOP_BAR_BW = ["V", "A", "D", "F", "T", "M", "?"];
+
+function inkoopMonthStart(iso) {
+  return `${String(iso).slice(0, 7)}-01`;
+}
+
+function inkoopDaysBetween(from, to) {
+  return Math.round((new Date(`${to}T00:00:00`) - new Date(`${from}T00:00:00`)) / 86400000);
+}
+
+// A grower name as a key: lower case, letters and digits only (the invoice's
+// "The Green Corner Aalsmeer" = the overview's "thegreencorneraalsmeer").
+function inkoopGrowerKey(name) {
+  return String(name || "").toLowerCase().replace(/\(verkoop\)/g, "").replace(/[^a-z0-9]/g, "");
+}
+
+function inkoopSameGrower(left, right) {
+  const a = inkoopGrowerKey(left);
+  const b = inkoopGrowerKey(right);
+  return Boolean(a && b) && (a === b || a.startsWith(b) || b.startsWith(a));
+}
+
+function inkoopDownloadCsv(fileName, rows) {
+  const text = rows.map((row) => row.map((cell) => {
+    const value = cell === null || cell === undefined ? "" : String(cell);
+    return /[;"\n]/.test(value) ? `"${value.replace(/"/g, '""')}"` : value;
+  }).join(";")).join("\n");
+  const url = URL.createObjectURL(new Blob([`﻿${text}`], { type: "text/csv;charset=utf-8" }));
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = fileName;
+  link.click();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
+// Matched % as a ring, the number in the middle (with ✓ / ✗ -- never colour
+// alone).
+function IkRing({ pct, size = 76, label = "matched" }) {
+  const radius = (size - 10) / 2;
+  const circumference = 2 * Math.PI * radius;
+  const value = pct === null || pct === undefined || !Number.isFinite(pct) ? null : Math.max(0, Math.min(100, pct));
+  const tone = value === null ? "" : value >= 99.95 ? "good" : value < 50 ? "bad" : "mid";
+  return (
+    <div className={`ik-ring ${tone}`} style={{ width: size, height: size }} title={value === null ? "No figures" : `${value.toFixed(1)}% ${label}`}>
+      <svg viewBox={`0 0 ${size} ${size}`} width={size} height={size} aria-hidden="true">
+        <circle cx={size / 2} cy={size / 2} r={radius} fill="none" className="ik-ring-track" strokeWidth="7" />
+        {value !== null && value > 0 && (
+          <circle cx={size / 2} cy={size / 2} r={radius} fill="none" className="ik-ring-value" strokeWidth="7" strokeLinecap="round"
+            strokeDasharray={`${(value / 100) * circumference} ${circumference}`} transform={`rotate(-90 ${size / 2} ${size / 2})`} />
+        )}
+      </svg>
+      <div className="ik-ring-label">
+        <strong>{value === null ? "–" : `${value >= 99.95 ? "✓ " : value < 0.05 ? "✗ " : ""}${value >= 10 || value === 0 ? Math.round(value) : value.toFixed(1)}%`}</strong>
+        <small>{label}</small>
+      </div>
+    </div>
+  );
+}
+
+// A % as a thin bar with the number next to it.
+function IkBar({ pct, title = "" }) {
+  if (pct === null || pct === undefined || !Number.isFinite(pct)) return <span className="muted">–</span>;
+  const value = Math.max(0, Math.min(100, pct));
+  const tone = value >= 99.95 ? "good" : value < 50 ? "bad" : "mid";
+  return (
+    <span className="ik-bar" title={title || `${value.toFixed(1)}% matched`}>
+      <span className="ik-bar-track"><span className={`ik-bar-fill ${tone}`} style={{ width: `${value}%` }} /></span>
+      <span className="ik-bar-text">{value >= 99.95 ? "✓ " : value < 0.05 ? "✗ " : ""}{value.toFixed(1)}%</span>
+    </span>
+  );
+}
+
+// Parts of a whole side by side (the flows of a grower), with a 2px gap.
+function IkSplitBar({ parts }) {
+  const shown = parts.filter((part) => part.value > 0);
+  const total = shown.reduce((sum, part) => sum + part.value, 0);
+  if (!total) return null;
+  return (
+    <span className="ik-split" title={shown.map((part) => `${part.label}: ${formatInkoopEuro(part.value)}`).join("\n")}>
+      {shown.map((part) => <span key={part.label} className="ik-split-part" style={{ width: `${(part.value / total) * 100}%`, background: part.color }} />)}
+    </span>
+  );
+}
+
+function IkFlowLegend({ flows }) {
+  return (
+    <span className="ik-legend">
+      {flows.map((flow) => <span key={flow}><i style={{ background: INKOOP_FLOW_COLORS[flow] }} />{flow}</span>)}
+    </span>
+  );
+}
+
+// Each flow's part of a set of overview rows: the invoiced value, or the
+// Connect value for a lot without an invoice.
+function inkoopFlowParts(rows) {
+  const byFlow = new Map();
+  for (const row of rows) {
+    const flow = row.flow || "Other";
+    const value = row.status === "connect_only" ? Number(row.erp_value) || 0 : row.status === "packaging" ? 0 : Number(row.invoice_value) || 0;
+    byFlow.set(flow, (byFlow.get(flow) || 0) + value);
+  }
+  return INKOOP_FLOWS.filter((flow) => byFlow.get(flow) > 0).map((flow) => ({ label: flow, value: byFlow.get(flow), color: INKOOP_FLOW_COLORS[flow] }));
+}
+
+// The stored overview rows of a period (one request; every workspace part
+// filters them).
+function useInkoopOverviewRows(from, to, company) {
+  const [state, setState] = useState({ rows: null, error: "" });
+  const [round, setRound] = useState(0);
+  useEffect(() => {
+    if (!from || !to || from > to) {
+      setState({ rows: [], error: "" });
+      return undefined;
+    }
+    let cancelled = false;
+    setState((current) => ({ rows: current.rows, error: "" }));
+    const params = new URLSearchParams({ from, to });
+    if (company) params.set("company", company);
+    apiJson(`/api/inkoop/overview-table?${params.toString()}`)
+      .then((payload) => { if (!cancelled) setState({ rows: payload.rows || [], error: "" }); })
+      .catch((loadError) => { if (!cancelled) setState({ rows: [], error: loadError.message }); });
+    return () => { cancelled = true; };
+  }, [from, to, company, round]);
+  return { ...state, reload: () => setRound((value) => value + 1) };
+}
+
+// The bar's filters on overview rows: betaalwijze, flow, grower and the
+// day(s) picked in the mini calendar.
+function inkoopBarRows(rows, bar, { useDay = true, useGrower = true } = {}) {
+  return (rows || []).filter((row) => (
+    (!bar.bw?.length || bar.bw.includes(row.bw || "?"))
+    && (!bar.flows?.length || bar.flows.includes(row.flow || "Other"))
+    && (!useGrower || !bar.grower || inkoopSameGrower(row.grower, bar.grower))
+    && (!useDay || !bar.day || (row.date >= bar.day.from && row.date <= bar.day.to))
+  ));
+}
+
+// One filter bar for the workspaces: period, company, betaalwijze, flow and
+// grower.
+function IkFilterBar({ bar, setBar, companies, company, setCompany, growers = [] }) {
+  const today = localDateIso();
+  const setPeriod = (from, to) => setBar((current) => ({ ...current, from, to, day: null }));
+  const presets = [
+    ["This week", () => { const date = new Date(`${today}T00:00:00`); const back = (date.getDay() + 6) % 7; setPeriod(addDaysToIso(today, -back), today); }],
+    ["This month", () => setPeriod(inkoopMonthStart(today), today)],
+    ["Last month", () => { const start = inkoopMonthStart(addDaysToIso(inkoopMonthStart(today), -1)); setPeriod(start, addDaysToIso(inkoopMonthStart(today), -1)); }],
+    ["3 months", () => setPeriod(inkoopMonthStart(addDaysToIso(inkoopMonthStart(addDaysToIso(inkoopMonthStart(today), -1)), -32)), today)],
+  ];
+  const toggle = (key, value) => setBar((current) => {
+    const list = current[key] || [];
+    const next = list.includes(value) ? list.filter((item) => item !== value) : [...list, value];
+    if (key === "bw") { try { window.localStorage.setItem("inkoop-bar-bw", JSON.stringify(next)); } catch { /* per-browser only */ } }
+    return { ...current, [key]: next };
+  });
+  const tooLong = inkoopDaysBetween(bar.from, bar.to) > 92;
+  return (
+    <div className="ik-filterbar">
+      <div className="ik-filter-group">
+        {presets.map(([label, run]) => <button key={label} type="button" className="ik-chip" onClick={run}>{label}</button>)}
+        <input type="date" value={bar.from} max={bar.to} onChange={(event) => event.target.value && setPeriod(event.target.value, bar.to)} />
+        <span className="muted">–</span>
+        <input type="date" value={bar.to} min={bar.from} onChange={(event) => event.target.value && setPeriod(bar.from, event.target.value)} />
+        {tooLong && <span className="money-loss" title="At most 3 months at once">max. 3 months</span>}
+      </div>
+      <div className="ik-filter-group">
+        <select value={company} onChange={(event) => setCompany(event.target.value)} title="Company (a Connect lot has no company: with one chosen, the invoice side only)">
+          <option value="">All companies</option>
+          {companies.map((entry) => <option key={entry.company_number} value={entry.company_number}>{entry.company_number}{entry.company_name ? ` - ${entry.company_name}` : ""}</option>)}
+        </select>
+        <span className="ik-filter-label">BW</span>
+        {INKOOP_BAR_BW.map((bw) => (
+          <button key={bw} type="button" className={`ik-chip${bar.bw.includes(bw) ? " on" : ""}`} title={bw === "?" ? "Connect codes without a BW" : INKOOP_BW_LABELS[bw] || bw} onClick={() => toggle("bw", bw)}>{bw}</button>
+        ))}
+      </div>
+      <div className="ik-filter-group">
+        <span className="ik-filter-label">Flow</span>
+        <button type="button" className={`ik-chip${!bar.flows.length ? " on" : ""}`} onClick={() => setBar((current) => ({ ...current, flows: [] }))}>All</button>
+        {INKOOP_FLOWS.map((flow) => (
+          <button key={flow} type="button" className={`ik-chip${bar.flows.includes(flow) ? " on" : ""}`} onClick={() => toggle("flows", flow)}>
+            <i className="ik-dot" style={{ background: INKOOP_FLOW_COLORS[flow] }} />{flow}
+          </button>
+        ))}
+      </div>
+      <div className="ik-filter-group">
+        <input list="ik-grower-list" value={bar.grower} placeholder="Grower / supplier…" onChange={(event) => setBar((current) => ({ ...current, grower: event.target.value }))} style={{ minWidth: 220 }} />
+        <datalist id="ik-grower-list">{growers.map((name) => <option key={name} value={name} />)}</datalist>
+        {bar.grower && <button type="button" className="ik-chip on" onClick={() => setBar((current) => ({ ...current, grower: "" }))}>{bar.grower} ✕</button>}
+        {bar.day && <button type="button" className="ik-chip on" title="Picked in the calendar" onClick={() => setBar((current) => ({ ...current, day: null }))}>{bar.day.from === bar.day.to ? fustOverviewDate(bar.day.from) : `${fustOverviewDate(bar.day.from)} – ${fustOverviewDate(bar.day.to)}`} ✕</button>}
+      </div>
+    </div>
+  );
+}
+
+// The period's numbers in one line: ring + invoiced, matched, not matched,
+// only in Connect, Connect total, difference, figures that differ.
+function IkKpiStrip({ rows }) {
+  const sum = inkoopOverviewSum(rows);
+  const tile = (label, value, sub = "", tone = "") => (
+    <div className={`ik-kpi ${tone}`}><span className="ik-kpi-label">{label}</span><strong>{value}</strong>{sub && <small>{sub}</small>}</div>
+  );
+  return (
+    <div className="ik-kpis">
+      <IkRing pct={sum.matched_pct} />
+      {tile("Invoiced", formatInkoopEuro(sum.invoice_value), `${sum.invoice_lines} lines`)}
+      {tile("✓ Matched", formatInkoopEuro(sum.matched_value), `${sum.matched_lines} lines`)}
+      {tile("✗ Invoice not matched", formatInkoopEuro(sum.not_matched_value), `${sum.not_matched_lines} lines`, sum.not_matched_value ? "bad" : "")}
+      {tile("✗ Only in Connect", formatInkoopEuro(sum.connect_only_value), `${sum.connect_only_lines} lots`, sum.connect_only_value ? "bad" : "")}
+      {tile("Connect total", formatInkoopEuro(sum.connect_value))}
+      {tile("Difference", formatInkoopEuro(sum.difference), "invoice − Connect", Math.abs(sum.difference) >= 0.01 ? "warn" : "")}
+      {tile("⚠ Figures differ", String(sum.mismatch_lines), "matched lines")}
+    </div>
+  );
+}
+
+// Small heat-map months: a square per day coloured by matched %, the
+// numbers in the tooltip. Click: that day; shift-click: up to that day;
+// click it again: the whole period.
+function IkMiniCalendar({ rows, from, to, day, onDay }) {
+  const byDate = new Map();
+  for (const row of rows || []) byDate.set(row.date, [...(byDate.get(row.date) || []), row]);
+  const months = [];
+  for (let month = inkoopMonthStart(from); month <= to && months.length < 4; month = inkoopMonthStart(addDaysToIso(month, 32))) months.push(month);
+  const pick = (date, event) => {
+    if (day && day.from === date && day.to === date) return onDay(null);
+    if (event.shiftKey && day) return onDay(date < day.from ? { from: date, to: day.to } : { from: day.from, to: date });
+    return onDay({ from: date, to: date });
+  };
+  return (
+    <div className="ik-cal">
+      {months.map((month) => {
+        const [year, monthNumber] = month.split("-").map(Number);
+        const blanks = (new Date(year, monthNumber - 1, 1).getDay() + 6) % 7;
+        const count = new Date(year, monthNumber, 0).getDate();
+        return (
+          <div key={month} className="ik-cal-month">
+            <div className="ik-cal-title">{new Date(year, monthNumber - 1, 1).toLocaleDateString("en-GB", { month: "short", year: "numeric" })}</div>
+            <div className="ik-cal-grid">
+              {["M", "T", "W", "T", "F", "S", "S"].map((label, index) => <span key={`h${index}`} className="ik-cal-head">{label}</span>)}
+              {Array.from({ length: blanks }, (_, index) => <span key={`b${index}`} />)}
+              {Array.from({ length: count }, (_, index) => {
+                const date = `${month.slice(0, 7)}-${String(index + 1).padStart(2, "0")}`;
+                const inRange = date >= from && date <= to;
+                const dayRows = byDate.get(date) || [];
+                const sum = dayRows.length ? inkoopOverviewSum(dayRows) : null;
+                const pct = sum?.matched_pct;
+                const level = !sum ? "empty" : pct === null ? "empty" : pct < 0.05 ? "l0" : pct < 50 ? "l1" : pct < 85 ? "l2" : pct < 99.95 ? "l3" : "l4";
+                const picked = day && date >= day.from && date <= day.to;
+                const tip = sum
+                  ? `${fustOverviewDate(date)}\n${pct === null ? "" : `✓ ${pct.toFixed(1)}% matched\n`}✗ invoice not matched: ${sum.not_matched_lines} lines ${formatInkoopEuro(sum.not_matched_value)}\n✗ only in Connect: ${sum.connect_only_lines} lots ${formatInkoopEuro(sum.connect_only_value)}\n⚠ figures differ: ${sum.mismatch_lines} lines\nInvoiced ${formatInkoopEuro(sum.invoice_value)} · Connect ${formatInkoopEuro(sum.connect_value)}`
+                  : `${fustOverviewDate(date)}: nothing compared`;
+                return (
+                  <button key={date} type="button" className={`ik-cal-day ${level}${inRange ? "" : " out"}${picked ? " picked" : ""}`} title={tip} disabled={!inRange} onClick={(event) => pick(date, event)}>
+                    {index + 1}
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+        );
+      })}
+      <div className="ik-cal-key muted"><span className="ik-cal-day l0" />0% <span className="ik-cal-day l2" /> <span className="ik-cal-day l4" />100% <span className="ik-cal-day empty" />none</div>
+    </div>
+  );
+}
+
+// The overview columns chosen (shared with the Day by day table).
+function useInkoopOverviewColumns() {
+  const [columns, setColumns] = useState(() => {
+    try {
+      const saved = JSON.parse(window.localStorage.getItem("inkoop-overview-columns") || "null");
+      if (Array.isArray(saved) && saved.length) return saved;
+    } catch { /* per-browser only */ }
+    return INKOOP_OVERVIEW_COLUMNS.map(([key]) => key);
+  });
+  const toggle = (key) => setColumns((current) => {
+    const next = current.includes(key) ? current.filter((item) => item !== key) : [...current, key];
+    try { window.localStorage.setItem("inkoop-overview-columns", JSON.stringify(next)); } catch { /* per-browser only */ }
+    return next;
+  });
+  return [columns, toggle];
+}
+
+function IkColumnPicker({ columns, toggle }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <span className="ik-colpick">
+      <button type="button" className="ik-chip" onClick={() => setOpen((current) => !current)}>Columns {columns.length}/{INKOOP_OVERVIEW_COLUMNS.length}</button>
+      {open && (
+        <span className="ik-colpick-menu">
+          {INKOOP_OVERVIEW_COLUMNS.map(([key, label]) => (
+            <label key={key} className="checkbox-label"><input type="checkbox" checked={columns.includes(key)} onChange={() => toggle(key)} /><span>{label}</span></label>
+          ))}
+        </span>
+      )}
+    </span>
+  );
+}
+
+const IK_STATUS_ICON = { matched: "✓", mismatch: "⚠", not_matched: "✗", connect_only: "✗", packaging: "▢" };
+const IK_STATUS_LABEL = { matched: "Matched", mismatch: "Matched, figures differ", not_matched: "Invoice, no Connect lot", connect_only: "Connect lot, no invoice", packaging: "Packaging" };
+
+// A grower's stored lines (one request per grower and period), each as a
+// pair: the invoice side | the difference | the Connect side.
+function IkPairLines({ from, to, company, grower, bar, flow = "", date = "", statuses = null }) {
+  const [data, setData] = useState(null);
+  const [error, setError] = useState("");
+  useEffect(() => {
+    let cancelled = false;
+    setData(null);
+    setError("");
+    const params = new URLSearchParams({ from, to, grower });
+    if (company) params.set("company", company);
+    apiJson(`/api/inkoop/overview-lines?${params.toString()}`)
+      .then((payload) => { if (!cancelled) setData(payload); })
+      .catch((loadError) => { if (!cancelled) setError(loadError.message); });
+    return () => { cancelled = true; };
+  }, [from, to, company, grower]);
+  const lines = (data?.lines || []).filter((line) => (
+    (!bar.bw?.length || bar.bw.includes(line.bw || "?"))
+    && (!bar.flows?.length || bar.flows.includes(line.flow))
+    && (!flow || line.flow === flow)
+    && (!date || line.date === date)
+    && (!statuses || statuses.includes(line.status))
+  )).sort((left, right) => left.date.localeCompare(right.date) || Object.keys(IK_STATUS_ICON).indexOf(right.status) - Object.keys(IK_STATUS_ICON).indexOf(left.status));
+  if (error) return <div className="notice danger">{error}</div>;
+  if (!data) return <div className="muted">Loading lines…</div>;
+  if (!lines.length) return <div className="muted">No lines for this choice.</div>;
+  const side = (quantity, price, total) => (total === null || total === undefined ? "" : `${quantity ?? "?"} pcs @ ${price !== null && price !== undefined ? formatInkoopEuro(price) : "?"} = ${formatInkoopEuro(total)}`);
+  return (
+    <div className="table-wrap">
+      <table className="data-table balance-table ik-table ik-pairs">
+        <thead>
+          <tr><th /><th>Date</th><th className="ik-inv-head">Invoice</th><th>Difference</th><th className="ik-con-head">Connect</th><th>Flow</th><th>Note</th></tr>
+        </thead>
+        <tbody>
+          {lines.map((line, index) => {
+            const invoiceSide = line.status !== "connect_only";
+            const connectSide = line.status === "matched" || line.status === "mismatch" || line.status === "connect_only";
+            return (
+              <tr key={`${line.invoice_number}-${line.lot}-${index}`} className={`ik-status-${line.status}`}>
+                <td title={IK_STATUS_LABEL[line.status] || line.status} className="ik-status-icon">{IK_STATUS_ICON[line.status] || "·"}</td>
+                <td>{fustOverviewDate(line.date)}</td>
+                <td className="ik-inv">
+                  {invoiceSide ? (
+                    <span className="ik-oneline">
+                      {line.invoice_number ? <InkoopInvoiceLink invoiceNumber={line.invoice_number} /> : null}
+                      {line.pav ? <span className="muted">{line.pav}</span> : null}
+                      <strong>{line.description}</strong>
+                      <span>{side(line.invoice_quantity, line.invoice_price, line.invoice_total)}</span>
+                    </span>
+                  ) : <span className="muted">—</span>}
+                </td>
+                <td>{line.difference_total ? <InkoopMoneyDiff value={line.difference_total} /> : line.status === "matched" ? "✓" : ""}</td>
+                <td className="ik-con">
+                  {connectSide ? (
+                    <span className="ik-oneline">
+                      {line.lot ? <span className="muted">Lot {String(line.lot).split("+").length > 3 ? `${String(line.lot).split("+").length} lots (pool)` : line.lot}</span> : null}
+                      {line.status === "connect_only" && <strong>{line.description}</strong>}
+                      <span>{side(line.erp_quantity, line.erp_price, line.erp_total)}</span>
+                    </span>
+                  ) : <span className="muted">—</span>}
+                </td>
+                <td><i className="ik-dot" style={{ background: INKOOP_FLOW_COLORS[line.flow] }} />{line.flow}</td>
+                <td className="muted">{line.note}</td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
+      {data.capped && <div className="muted">The first 3000 lines.</div>}
+    </div>
+  );
+}
+
+// The money trace, drilled the Fust way: a click on a row shows what's in
+// it (growers → flows → days → the pairs); the path above goes back.
+function IkTraceTable({ rows, from, to, company, bar, setBar }) {
+  const [columns, toggleColumn] = useInkoopOverviewColumns();
+  const [path, setPath] = useState({ grower: "", flow: "", date: "" });
+  const [sortKey, setSortKey] = useState("open");
+  const [sortDir, setSortDir] = useState(-1);
+  // A grower typed in the bar: opened at once.
+  useEffect(() => {
+    const match = bar.grower ? [...new Set(rows.map((row) => row.grower))].find((name) => inkoopSameGrower(name, bar.grower)) : "";
+    setPath(match ? { grower: match, flow: "", date: "" } : { grower: "", flow: "", date: "" });
+  }, [bar.grower]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => { setPath((current) => ({ ...current, date: "" })); }, [from, to]);
+  const level = !path.grower ? 0 : !path.flow ? 1 : !path.date ? 2 : 3;
+  const scoped = rows.filter((row) => (!path.grower || row.grower === path.grower) && (!path.flow || row.flow === path.flow));
+  const groupKey = level === 0 ? "grower" : level === 1 ? "flow" : "date";
+  const groups = new Map();
+  if (level < 3) for (const row of scoped) groups.set(row[groupKey], [...(groups.get(row[groupKey]) || []), row]);
+  const openOf = (sum) => sum.not_matched_value + sum.connect_only_value + Math.abs(sum.difference);
+  const items = [...groups.entries()].map(([key, groupRows]) => ({ key, rows: groupRows, sum: inkoopOverviewSum(groupRows) }))
+    .sort((left, right) => {
+      if (groupKey === "date" && sortKey === "open") return left.key.localeCompare(right.key);
+      if (groupKey === "flow" && sortKey === "open") return INKOOP_FLOWS.indexOf(left.key) - INKOOP_FLOWS.indexOf(right.key);
+      const value = (item) => (sortKey === "open" ? openOf(item.sum) : sortKey === "name" ? String(item.key) : Number(item.sum[sortKey]) || 0);
+      const a = value(left);
+      const b = value(right);
+      return (typeof a === "string" ? a.localeCompare(b) : a - b) * sortDir;
+    });
+  const sortBy = (key) => { if (sortKey === key) setSortDir((dir) => -dir); else { setSortKey(key); setSortDir(key === "name" ? 1 : -1); } };
+  const open = (key) => setPath((current) => (level === 0 ? { grower: key, flow: "", date: "" } : level === 1 ? { ...current, flow: key } : { ...current, date: key }));
+  const shownColumns = INKOOP_OVERVIEW_COLUMNS.filter(([key]) => columns.includes(key));
+  const labelOf = (key) => (groupKey === "date" ? fustOverviewDate(key) : key);
+  const exportCsv = () => {
+    const head = [groupKey === "grower" ? "Grower" : groupKey === "flow" ? "Flow" : "Date", "Invoice lines", "Invoice value", "Matched lines", "Matched value", "Not matched lines", "Not matched value", "Only in Connect lots", "Only in Connect value", "Connect total", "Difference", "Matched %"];
+    const body = items.map((item) => [labelOf(item.key), item.sum.invoice_lines, item.sum.invoice_value.toFixed(2), item.sum.matched_lines, item.sum.matched_value.toFixed(2), item.sum.not_matched_lines, item.sum.not_matched_value.toFixed(2), item.sum.connect_only_lines, item.sum.connect_only_value.toFixed(2), item.sum.connect_value.toFixed(2), item.sum.difference.toFixed(2), item.sum.matched_pct === null ? "" : item.sum.matched_pct.toFixed(1)]);
+    inkoopDownloadCsv(`money-trace-${from}-${to}${path.grower ? `-${inkoopGrowerKey(path.grower)}` : ""}${path.flow ? `-${path.flow}` : ""}.csv`, [head, ...body]);
+  };
+  const crumbs = [
+    ["All growers", () => { setPath({ grower: "", flow: "", date: "" }); if (bar.grower) setBar((current) => ({ ...current, grower: "" })); }],
+    ...(path.grower ? [[path.grower, () => setPath((current) => ({ ...current, flow: "", date: "" }))]] : []),
+    ...(path.flow ? [[path.flow, () => setPath((current) => ({ ...current, date: "" }))]] : []),
+    ...(path.date ? [[fustOverviewDate(path.date), () => {}]] : []),
+  ];
+  return (
+    <div className="data-table-card ik-card">
+      <div className="ik-card-head">
+        <div className="ik-crumbs">
+          {crumbs.map(([label, go], index) => (
+            <span key={`${label}-${index}`}>{index > 0 && <span className="muted"> › </span>}
+              {index < crumbs.length - 1 ? <button type="button" className="link-button" onClick={go}>{label}</button> : <strong>{label}</strong>}
+            </span>
+          ))}
+        </div>
+        <div className="row-actions">
+          {level === 0 && <IkFlowLegend flows={INKOOP_FLOWS.filter((flow) => rows.some((row) => row.flow === flow))} />}
+          {level < 3 && <IkColumnPicker columns={columns} toggle={toggleColumn} />}
+          {level < 3 && <button type="button" className="ik-chip" onClick={exportCsv}>CSV</button>}
+        </div>
+      </div>
+      {level === 3 ? (
+        <IkPairLines from={path.date} to={path.date} company={company} grower={path.grower} bar={bar} flow={path.flow} date={path.date} />
+      ) : (
+        <div className="table-wrap">
+          <table className="data-table balance-table ik-table">
+            <thead>
+              <tr>
+                <th className="ik-sortable" onClick={() => sortBy("name")}>{groupKey === "grower" ? "Grower" : groupKey === "flow" ? "Flow" : "Date"}{sortKey === "name" ? (sortDir > 0 ? " ▲" : " ▼") : ""}</th>
+                {level === 0 && <th>Flows</th>}
+                {shownColumns.map(([key, label]) => <th key={key} className="ik-sortable" onClick={() => sortBy(key)}>{label}{sortKey === key ? (sortDir > 0 ? " ▲" : " ▼") : ""}</th>)}
+              </tr>
+            </thead>
+            <tbody>
+              {items.map((item) => (
+                <tr key={item.key} className="clickable-row" onClick={() => open(item.key)} title="Click: what's in it">
+                  <td>
+                    {groupKey === "flow" && <i className="ik-dot" style={{ background: INKOOP_FLOW_COLORS[item.key] }} />}
+                    <strong>{labelOf(item.key)}</strong>
+                  </td>
+                  {level === 0 && <td><IkSplitBar parts={inkoopFlowParts(item.rows)} /></td>}
+                  <InkoopOverviewCells sum={item.sum} columns={columns} />
+                </tr>
+              ))}
+              {!items.length && <tr><td colSpan={shownColumns.length + 2}>Nothing compared for this choice.</td></tr>}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// Dashboard: the money trace for the bank -- the numbers, the days, the
+// chart, then grower → flow → day → pairs.
+function InkoopTraceWorkspace({ bar, setBar, overview, company }) {
+  const [showChart, setShowChart] = useState(false);
+  const allRows = overview.rows || [];
+  const rows = inkoopBarRows(allRows, bar);
+  const calendarRows = inkoopBarRows(allRows, bar, { useDay: false });
+  const from = bar.day?.from || bar.from;
+  const to = bar.day?.to || bar.to;
+  const byDay = new Map();
+  for (const row of rows) byDay.set(row.date, [...(byDay.get(row.date) || []), row]);
+  const chartRows = [...byDay.keys()].sort().map((date) => {
+    const sum = inkoopOverviewSum(byDay.get(date));
+    return { key: date, label: date.slice(8, 10), invoiced: sum.invoice_value, connect: sum.connect_value };
+  });
+  if (overview.error) return <div className="notice danger">{overview.error}</div>;
+  if (!overview.rows) return <div className="notice">Loading…</div>;
+  return (
+    <>
+      <div className="ik-top">
+        <div className="data-table-card ik-card ik-top-kpis">
+          <IkKpiStrip rows={rows} />
+          <button type="button" className="link-button" onClick={() => setShowChart((current) => !current)}>{showChart ? "▾" : "▸"} Invoiced vs Connect per day</button>
+          {showChart && (
+            <InkoopBarChart rows={chartRows} height={180} series={[
+              { name: "Invoiced", color: "var(--ik-invoice)", value: (row) => row.invoiced },
+              { name: "Connect", color: "var(--ik-connect)", value: (row) => row.connect },
+            ]} onBarClick={(row) => setBar((current) => ({ ...current, day: { from: row.key, to: row.key } }))} />
+          )}
+        </div>
+        <div className="data-table-card ik-card">
+          <IkMiniCalendar rows={calendarRows} from={bar.from} to={bar.to} day={bar.day} onDay={(day) => setBar((current) => ({ ...current, day }))} />
+        </div>
+      </div>
+      <IkTraceTable rows={rows} from={from} to={to} company={company} bar={bar} setBar={setBar} />
+    </>
+  );
+}
+
+// Track & Trace: a grower's money side by side -- what's matched folded up,
+// the open invoice lines left and the open Connect lots right, tick both
+// and link. Status / who / note per line in the side panel.
+function InkoopTrackTraceWorkspace({ bar, setBar, overview, company, matchRound = 0 }) {
+  const allRows = overview.rows || [];
+  const growerRows = inkoopBarRows(allRows, bar, { useGrower: false });
+  const calendarRows = inkoopBarRows(allRows, bar, { useDay: false });
+  const from = bar.day?.from || bar.from;
+  const to = bar.day?.to || bar.to;
+  // The issues (with line ids for linking) are read per 31 days at most.
+  const issueFrom = inkoopDaysBetween(from, to) > 30 ? addDaysToIso(to, -30) : from;
+  const [issues, setIssues] = useState(null);
+  const [issueError, setIssueError] = useState("");
+  const [issueRound, setIssueRound] = useState(0);
+  const [picked, setPicked] = useState({});
+  const [pairNote, setPairNote] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [drawer, setDrawer] = useState(null);
+  const [draft, setDraft] = useState(null);
+  const [pairsKey, setPairsKey] = useState(0);
+  const [showMatched, setShowMatched] = useState(false);
+  const [sorts, setSorts] = useState({ left: "date", right: "date" });
+  const [growerFilter, setGrowerFilter] = useState("");
+  useEffect(() => {
+    let cancelled = false;
+    setIssueError("");
+    const params = new URLSearchParams({ from: issueFrom, to });
+    if (company) params.set("company", company);
+    apiJson(`/api/inkoop/issues?${params.toString()}`)
+      .then((payload) => { if (!cancelled) setIssues(payload.issues || []); })
+      .catch((loadError) => { if (!cancelled) { setIssueError(loadError.message); setIssues([]); } });
+    return () => { cancelled = true; };
+  }, [issueFrom, to, company, issueRound, matchRound]);
+  useEffect(() => { setPicked({}); }, [bar.grower, from, to]);
+
+  // The growers of the period, most open money first.
+  const byGrower = new Map();
+  for (const row of growerRows) byGrower.set(row.grower, [...(byGrower.get(row.grower) || []), row]);
+  const growers = [...byGrower.entries()].map(([name, rows]) => ({ name, rows, sum: inkoopOverviewSum(rows) }))
+    .map((entry) => ({ ...entry, open: entry.sum.not_matched_value + entry.sum.connect_only_value }))
+    .filter((entry) => !growerFilter || inkoopGrowerKey(entry.name).includes(inkoopGrowerKey(growerFilter)))
+    .sort((left, right) => right.open - left.open || Math.abs(right.sum.difference) - Math.abs(left.sum.difference));
+  const chosen = bar.grower ? [...byGrower.keys()].find((name) => inkoopSameGrower(name, bar.grower)) || bar.grower : "";
+  const chosenRows = chosen ? growerRows.filter((row) => row.grower === chosen) : [];
+  const chosenSum = inkoopOverviewSum(chosenRows);
+
+  // The chosen grower's open lines, by side.
+  const flowOfIssue = (issue) => (issue.issue_type === "gap_erp" ? "No invoice"
+    : ({ klokfactuur: "Klok", connect: "Connect", handel: "Handel", ai2: "AI2" })[String(issue.detail?.invoice_type || "").toLowerCase()] || (/^ai2/i.test(issue.invoice_number || "") ? "AI2" : "Other"));
+  const growerIssues = (issues || []).filter((issue) => chosen && inkoopSameGrower(issue.grower, chosen)
+    && ["mismatch", "gap_invoice", "gap_erp"].includes(issue.issue_type)
+    && (!bar.bw?.length || bar.bw.includes(issue.bw || "?"))
+    && (!bar.flows?.length || bar.flows.includes(flowOfIssue(issue)))
+    && (() => { const day = inkoopIssueInvoiceDay(issue); return day >= from && day <= to; })());
+  const priceOf = (issue) => Number(issue.detail?.unit_price ?? issue.erp_row?.price ?? issue.detail?.price) || 0;
+  const sorter = (key) => (left, right) => {
+    if (key === "price") return priceOf(left) - priceOf(right) || inkoopIssueInvoiceDay(left).localeCompare(inkoopIssueInvoiceDay(right));
+    if (key === "value") return (Number(right.value) || 0) - (Number(left.value) || 0);
+    if (key === "name") return String(left.description || "").localeCompare(String(right.description || ""));
+    return inkoopIssueInvoiceDay(left).localeCompare(inkoopIssueInvoiceDay(right)) || priceOf(left) - priceOf(right);
+  };
+  const leftIssues = growerIssues.filter((issue) => issue.issue_type !== "gap_erp").sort(sorter(sorts.left));
+  const rightIssues = growerIssues.filter((issue) => issue.issue_type === "gap_erp").sort(sorter(sorts.right));
+
+  // Linking (as the Follow-up): ticked lines and lots; a ticked mismatch
+  // line brings its own lot(s).
+  const pickKey = (issue) => (issue.issue_type === "gap_erp" ? (issue.erp_row?.lot ? `lot:${issue.erp_row.lot}` : "") : issue.detail?.id ? `line:${issue.detail.id}` : "");
+  const pickedList = Object.values(picked);
+  const pickedLines = pickedList.filter((issue) => issue.issue_type !== "gap_erp");
+  const pickedLots = pickedList.filter((issue) => issue.issue_type === "gap_erp");
+  const ownLots = pickedLines.filter((issue) => issue.issue_type === "mismatch" && issue.erp_row?.lot)
+    .map((issue) => ({ lots: String(issue.erp_row.lot).split("+").filter(Boolean), pieces: Number(issue.erp_row.pieces) || 0, value: parseFloat(issue.erp_row.t_price) || 0, date: issue.erp_row.date }));
+  const linkLots = [...new Set([...ownLots.flatMap((own) => own.lots), ...pickedLots.map((issue) => String(issue.erp_row.lot))])];
+  const invoicePieces = pickedLines.reduce((sum, issue) => sum + (Number(issue.detail?.quantity) || 0), 0);
+  const invoiceValue = pickedLines.reduce((sum, issue) => sum + (Number(issue.detail?.total) || 0), 0);
+  const connectPieces = pickedLots.reduce((sum, issue) => sum + (Number(issue.erp_row?.pieces) || 0), 0) + ownLots.reduce((sum, own) => sum + own.pieces, 0);
+  const connectValue = pickedLots.reduce((sum, issue) => sum + (parseFloat(issue.erp_row?.t_price) || 0), 0) + ownLots.reduce((sum, own) => sum + own.value, 0);
+  const togglePick = (issue) => setPicked((current) => {
+    const key = pickKey(issue);
+    const next = { ...current };
+    if (next[key]) delete next[key]; else next[key] = issue;
+    return next;
+  });
+  async function linkPicked() {
+    setBusy(true);
+    setIssueError("");
+    try {
+      await inkoopSaveManualPair({
+        lineIds: pickedLines.map((issue) => issue.detail.id),
+        lots: linkLots,
+        dates: [...pickedLines.map((issue) => issue.detail?.invoice_date || issue.date), ...pickedLots.map((issue) => issue.erp_row?.date || issue.date), ...ownLots.map((own) => own.date)].filter(Boolean),
+        note: pairNote,
+        source: "hand",
+      });
+      setPicked({});
+      setPairNote("");
+      setPairsKey((value) => value + 1);
+      setIssueRound((value) => value + 1);
+      overview.reload();
+    } catch (linkError) {
+      setIssueError(linkError.message);
+    } finally {
+      setBusy(false);
+    }
+  }
+  async function saveDraft() {
+    if (!drawer || !draft) return;
+    setBusy(true);
+    try {
+      await apiJson(`/api/inkoop/issues/${encodeURIComponent(drawer.id)}`, { method: "POST", body: JSON.stringify(draft) });
+      setDrawer(null);
+      setIssueRound((value) => value + 1);
+    } catch (saveError) {
+      setIssueError(saveError.message);
+    } finally {
+      setBusy(false);
+    }
+  }
+  const openDrawer = (issue) => { setDrawer(issue); setDraft({ status: issue.status, assigned_to: issue.assigned_to, note: issue.note }); };
+
+  const sortSelect = (sideKey) => (
+    <select value={sorts[sideKey]} onChange={(event) => setSorts((current) => ({ ...current, [sideKey]: event.target.value }))} title="Order">
+      <option value="date">by date</option>
+      <option value="price">by € / piece</option>
+      <option value="value">by value</option>
+      <option value="name">A–Z</option>
+    </select>
+  );
+  const issueRow = (issue, sideKey) => {
+    const key = pickKey(issue);
+    const isPicked = Boolean(picked[key]);
+    return (
+      <div key={issue.id} className={`ik-item ${sideKey}${isPicked ? " picked" : ""}${issue.status !== "open" ? " handled" : ""}`}>
+        <span className="ik-item-tick">
+          {issue.detail?.manual_pair_id ? <span title="Linked by hand">🔗</span> : key ? <input type="checkbox" checked={isPicked} onChange={() => togglePick(issue)} /> : null}
+        </span>
+        <button type="button" className="ik-item-body" onClick={() => openDrawer(issue)} title="Status, who's checking, note">
+          <span className="ik-item-top">
+            <span>{issue.issue_type === "mismatch" ? "⚠" : "✗"} {fustOverviewDate(inkoopIssueInvoiceDay(issue))}</span>
+            <strong>{issue.description}</strong>
+            <span className="ik-item-money">{priceOf(issue) ? `${formatInkoopEuro(priceOf(issue))}/pc · ` : ""}{formatInkoopEuro(issue.value)}</span>
+          </span>
+          <span className="muted ik-item-sub">
+            {issue.issue_type === "gap_erp" ? inkoopErpTranscript(issue.erp_row) : inkoopInvoiceTranscript(issue.detail)}
+          </span>
+          {issue.issue_type === "mismatch" && <span className="ik-item-sub ik-con-text">Connect: {inkoopErpTranscript(issue.erp_row)} · difference <InkoopMoneyDiff value={issue.money_diff} /></span>}
+          {issue.status !== "open" && <span className="ik-item-sub">{issue.status}{issue.assigned_to ? ` · ${issue.assigned_to}` : ""}{issue.note ? ` · ${issue.note}` : ""}</span>}
+        </button>
+      </div>
+    );
+  };
+
+  if (overview.error) return <div className="notice danger">{overview.error}</div>;
+  if (!overview.rows) return <div className="notice">Loading…</div>;
+  return (
+    <div className="ik-tt">
+      <aside className="ik-tt-rail">
+        <div className="data-table-card ik-card">
+          <IkMiniCalendar rows={calendarRows} from={bar.from} to={bar.to} day={bar.day} onDay={(day) => setBar((current) => ({ ...current, day }))} />
+        </div>
+        <div className="data-table-card ik-card ik-growers">
+          <input value={growerFilter} onChange={(event) => setGrowerFilter(event.target.value)} placeholder="Find a grower…" />
+          <div className="ik-grower-list">
+            {growers.map((entry) => (
+              <button key={entry.name} type="button" className={`ik-grower${entry.name === chosen ? " on" : ""}`} onClick={() => setBar((current) => ({ ...current, grower: entry.name === chosen ? "" : entry.name }))}>
+                <span className="ik-grower-name">{entry.name}</span>
+                <span className={entry.open ? "money-loss" : "muted"}>{entry.open ? formatInkoopEuro(entry.open) : "✓"}</span>
+                <IkBar pct={entry.sum.matched_pct} />
+              </button>
+            ))}
+            {!growers.length && <div className="muted">No growers for this choice.</div>}
+          </div>
+        </div>
+      </aside>
+      <section className="ik-tt-main">
+        {!chosen ? (
+          <div className="data-table-card ik-card">
+            <IkKpiStrip rows={inkoopBarRows(allRows, bar)} />
+            <div className="notice">Pick a grower on the left, or type it in the bar above. Its invoice lines and Connect lots then stand side by side to check and link.</div>
+          </div>
+        ) : (
+          <>
+            <div className="data-table-card ik-card ik-tt-head">
+              <IkRing pct={chosenSum.matched_pct} size={68} />
+              <div className="ik-tt-title">
+                <h3>{chosen}</h3>
+                <div className="muted">{fustOverviewDate(from)}{from !== to ? ` – ${fustOverviewDate(to)}` : ""}</div>
+                <IkSplitBar parts={inkoopFlowParts(chosenRows)} />
+                <IkFlowLegend flows={inkoopFlowParts(chosenRows).map((part) => part.label)} />
+              </div>
+              <div className="ik-tt-nums">
+                <span>Invoiced <strong>{formatInkoopEuro(chosenSum.invoice_value)}</strong></span>
+                <span>Connect <strong>{formatInkoopEuro(chosenSum.connect_value)}</strong></span>
+                <span>Difference <InkoopMoneyDiff value={chosenSum.difference} /></span>
+                <span className="money-loss">✗ open {formatInkoopEuro(chosenSum.not_matched_value + chosenSum.connect_only_value)}</span>
+              </div>
+            </div>
+            <div className="data-table-card ik-card">
+              <button type="button" className="link-button" onClick={() => setShowMatched((current) => !current)}>
+                {showMatched ? "▾" : "▸"} ✓ {chosenSum.matched_lines} matched line(s) · {formatInkoopEuro(chosenSum.matched_value)}{chosenSum.mismatch_lines ? ` · ⚠ ${chosenSum.mismatch_lines} with figures that differ` : ""}
+              </button>
+              {showMatched && <IkPairLines from={from} to={to} company={company} grower={chosen} bar={bar} statuses={["matched", "mismatch"]} />}
+            </div>
+            {issueError && <div className="notice danger">{issueError}</div>}
+            {inkoopDaysBetween(from, to) > 30 && <div className="notice">Open lines to link: the last 31 days of the period ({fustOverviewDate(issueFrom)} – {fustOverviewDate(to)}).</div>}
+            {!!pickedList.length && (
+              <div className="ik-linkbar">
+                <span><strong>Link:</strong> invoice {pickedLines.length} line(s) {invoicePieces} pcs {formatInkoopEuro(invoiceValue)}</span>
+                <span>Connect {linkLots.length} lot(s) {connectPieces} pcs {formatInkoopEuro(connectValue)}</span>
+                <span>difference <InkoopMoneyDiff value={Math.round((invoiceValue - connectValue) * 100) / 100} /></span>
+                <input value={pairNote} onChange={(event) => setPairNote(event.target.value)} placeholder="Note (why they belong together)" size={30} />
+                <button type="button" className="primary" onClick={linkPicked} disabled={busy || !pickedLines.length || !linkLots.length}>Link</button>
+                <button type="button" onClick={() => setPicked({})}>Clear</button>
+              </div>
+            )}
+            <div className="ik-split-view">
+              <div className="data-table-card ik-card ik-side inv">
+                <div className="ik-side-head"><strong>Invoice lines without (all) their lot</strong><span className="muted">{leftIssues.length}</span>{sortSelect("left")}</div>
+                {!issues ? <div className="muted">Loading…</div> : leftIssues.length ? leftIssues.map((issue) => issueRow(issue, "inv")) : <div className="muted">✓ Nothing open on the invoice side.</div>}
+              </div>
+              <div className="data-table-card ik-card ik-side con">
+                <div className="ik-side-head"><strong>Connect lots without an invoice</strong><span className="muted">{rightIssues.length}</span>{sortSelect("right")}</div>
+                {!issues ? <div className="muted">Loading…</div> : rightIssues.length ? rightIssues.map((issue) => issueRow(issue, "con")) : <div className="muted">✓ Nothing open on the Connect side.</div>}
+              </div>
+            </div>
+            <InkoopDetectiveCard from={from} to={to} company={company} onLinked={() => { setPairsKey((value) => value + 1); setIssueRound((value) => value + 1); overview.reload(); }} />
+            <InkoopManualPairsCard from={from} to={to} refreshKey={pairsKey} onChanged={() => { setIssueRound((value) => value + 1); overview.reload(); }} />
+          </>
+        )}
+      </section>
+      {drawer && draft && (
+        <div className="ik-drawer" role="dialog">
+          <div className="ik-drawer-head">
+            <strong>{inkoopIssueTypeLabel(drawer.issue_type)}</strong>
+            <button type="button" onClick={() => setDrawer(null)}>Close</button>
+          </div>
+          <div><strong>{drawer.description}</strong></div>
+          {drawer.invoice_number && <div>Invoice <InkoopInvoiceLink invoiceNumber={drawer.invoice_number} /></div>}
+          {drawer.issue_type !== "gap_erp" && <div className="ik-inv-text">{inkoopInvoiceTranscript(drawer.detail)}</div>}
+          {drawer.erp_row && <div className="ik-con-text">{inkoopErpTranscript(drawer.erp_row)}</div>}
+          <div>Value {formatInkoopEuro(drawer.value)} · difference <InkoopMoneyDiff value={drawer.money_diff} /></div>
+          <label>Status
+            <select value={draft.status} onChange={(event) => setDraft((current) => ({ ...current, status: event.target.value }))}>
+              <option value="open">Open</option>
+              <option value="investigating">Investigating</option>
+              <option value="resolved">Resolved</option>
+            </select>
+          </label>
+          <label>Who's checking<input value={draft.assigned_to || ""} onChange={(event) => setDraft((current) => ({ ...current, assigned_to: event.target.value }))} /></label>
+          <label>Note<textarea rows={3} value={draft.note || ""} onChange={(event) => setDraft((current) => ({ ...current, note: event.target.value }))} /></label>
+          <div className="row-actions">
+            <button type="button" className="primary" onClick={saveDraft} disabled={busy}>Save</button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// The Inkoop menu: the workspaces as tiles (as the Fust menu), each with one
+// live figure of this month.
+const INKOOP_WORKSPACES = [
+  ["trace", "Dashboard", "The money trace: totals, days, growers, flows, pairs"],
+  ["tracktrace", "Track & Trace", "A grower's invoice lines and Connect lots side by side; check and link"],
+  ["search", "Search", "Invoice lines and Connect lots, side by side"],
+  ["destinations", "Corrections", "The corrections check; sold per country"],
+  ["setup", "Setup", "Upload & compare, invoices, growers, King, settings"],
+];
+const INKOOP_SETUP_TILES = [
+  ["compare", "Upload & compare", "Upload Connect, invoices, night files; compare a day"],
+  ["overview", "Invoices overview", "The uploaded invoices per company"],
+  ["growers", "Growers", "Grower directory and betaalwijze"],
+  ["linkgrowers", "Link growers", "Link invoice growers to Connect codes"],
+  ["data", "Data", "Every stored table"],
+  ["king", "Import naar King", "Journal posts and PDFs to King"],
+  ["settings", "Settings", "Master data, facturation groups, start fresh"],
+];
+const INKOOP_CLASSIC_TILES = [
+  ["calendar", "Calendar (classic)", "The month calendar and the day's result tables"],
+  ["followup", "Follow-up (classic)", "Open lines per grower with status and notes"],
+  ["dashboard", "Financial Dashboard (classic)", "Charts, reports, grower totals"],
+];
+const INKOOP_TAB_TITLES = Object.fromEntries([...INKOOP_WORKSPACES, ...INKOOP_SETUP_TILES, ...INKOOP_CLASSIC_TILES].map(([key, title]) => [key, title]));
+const INKOOP_SETUP_KEYS = new Set([...INKOOP_SETUP_TILES, ...INKOOP_CLASSIC_TILES].map(([key]) => key));
+
+function InkoopMenu({ onOpen, monthRows }) {
+  const sum = monthRows ? inkoopOverviewSum(monthRows) : null;
+  const figure = {
+    trace: sum ? <span className="ik-tile-ring"><IkRing pct={sum.matched_pct} size={64} label="matched" /><span className="muted">this month</span></span> : null,
+    tracktrace: sum ? <span className={sum.not_matched_value + sum.connect_only_value ? "money-loss" : ""}>✗ {formatInkoopEuro(sum.not_matched_value + sum.connect_only_value)} open</span> : null,
+  };
+  return (
+    <div className="fust-tile-grid ik-menu" aria-label="Inkoop menu">
+      {INKOOP_WORKSPACES.map(([key, title, hint]) => (
+        <button key={key} type="button" className="fust-tile ik-tile" onClick={() => onOpen(key)}>
+          <strong>{title}</strong>
+          <small className="muted">{hint}</small>
+          {figure[key] && <span className="ik-tile-figure">{figure[key]}</span>}
+        </button>
+      ))}
+    </div>
+  );
+}
+
+function InkoopSetupMenu({ onOpen }) {
+  return (
+    <>
+      <div className="fust-tile-grid ik-menu">
+        {INKOOP_SETUP_TILES.map(([key, title, hint]) => (
+          <button key={key} type="button" className="fust-tile ik-tile" onClick={() => onOpen(key)}><strong>{title}</strong><small className="muted">{hint}</small></button>
+        ))}
+      </div>
+      <h3 className="ik-subhead">Classic views</h3>
+      <div className="fust-tile-grid ik-menu">
+        {INKOOP_CLASSIC_TILES.map(([key, title, hint]) => (
+          <button key={key} type="button" className="fust-tile ik-tile classic" onClick={() => onOpen(key)}><strong>{title}</strong><small className="muted">{hint}</small></button>
+        ))}
+      </div>
+    </>
+  );
+}
+
 function InkoopControlePage({ currentUser }) {
   const [loading, setLoading] = useState(true);
   const [comparing, setComparing] = useState(false);
-  const [activeTab, setActiveTab] = useState("overview");
+  // "" = the Inkoop menu (tiles, as the Fust menu).
+  const [activeTab, setActiveTab] = useState("");
+  // The workspaces' filter bar: period, betaalwijze, flows, grower, the
+  // day(s) picked in the calendar.
+  const [bar, setBar] = useState(() => {
+    let bw = ["V", "A", "?"];
+    try {
+      const saved = JSON.parse(window.localStorage.getItem("inkoop-bar-bw") || "null");
+      if (Array.isArray(saved)) bw = saved;
+    } catch { /* per-browser only */ }
+    return { from: `${localDateIso().slice(0, 7)}-01`, to: localDateIso(), bw, flows: [], grower: "", day: null };
+  });
   const canClearUploads = hasPermission(currentUser, PERMISSIONS.SETTINGS_MANAGE);
   const [clearingUploads, setClearingUploads] = useState(false);
   const [imports, setImports] = useState([]);
@@ -17061,9 +17916,29 @@ function InkoopControlePage({ currentUser }) {
   // import history / master-data counts below wait for this (was: nothing
   // shown until it arrived).
   const pageDataNote = loading ? <div className="notice info">Loading import history and master data...</div> : null;
+  const inWorkspace = activeTab === "trace" || activeTab === "tracktrace";
+  const barTooLong = inkoopDaysBetween(bar.from, bar.to) > 92;
+  const overview = useInkoopOverviewRows(inWorkspace && !barTooLong ? bar.from : "", inWorkspace && !barTooLong ? bar.to : "", selectedCompany);
+  const menuOverview = useInkoopOverviewRows(activeTab === "" ? `${localDateIso().slice(0, 7)}-01` : "", activeTab === "" ? localDateIso() : "", "");
+  const barGrowers = [...new Set((overview.rows || []).map((row) => row.grower))].sort();
 
   return (
-    <section className="overview-stack">
+    <section className="overview-stack inkoop-page">
+      {!activeTab ? null : (
+        <div className="section-header fust-section-nav">
+          <h2>{INKOOP_SETUP_KEYS.has(activeTab) ? <span className="muted">Setup › </span> : null}{INKOOP_TAB_TITLES[activeTab] || activeTab}</h2>
+          <div className="row-actions">
+            {INKOOP_SETUP_KEYS.has(activeTab) && <button type="button" onClick={() => setActiveTab("setup")}>Setup</button>}
+            <button type="button" onClick={() => setActiveTab("")}>Inkoop menu</button>
+          </div>
+        </div>
+      )}
+      {!activeTab && <InkoopMenu onOpen={setActiveTab} monthRows={menuOverview.rows} />}
+      {activeTab === "setup" && <InkoopSetupMenu onOpen={setActiveTab} />}
+      {inWorkspace && (
+        <IkFilterBar bar={bar} setBar={setBar} companies={companies} company={selectedCompany} setCompany={setSelectedCompany} growers={barGrowers} />
+      )}
+      {inWorkspace && barTooLong && <div className="notice danger">Choose at most 3 months.</div>}
       {/* Only on the tabs that filter by it (Overview, Corrections, King,
           Growers, Link growers and Settings are for every company). */}
       {INKOOP_COMPANY_TABS.has(activeTab) && (
@@ -17082,20 +17957,6 @@ function InkoopControlePage({ currentUser }) {
         </div>
       )}
 
-      <div className="tab-strip">
-        <button type="button" className={activeTab === "overview" ? "active" : ""} onClick={() => setActiveTab("overview")}>Overview</button>
-        <button type="button" className={activeTab === "compare" ? "active" : ""} onClick={() => setActiveTab("compare")}>Compare &amp; Reconcile</button>
-        <button type="button" className={activeTab === "calendar" ? "active" : ""} onClick={() => setActiveTab("calendar")}>Calendar</button>
-        <button type="button" className={activeTab === "dashboard" ? "active" : ""} onClick={() => setActiveTab("dashboard")}>Financial Dashboard</button>
-        <button type="button" className={activeTab === "followup" ? "active" : ""} onClick={() => setActiveTab("followup")}>Follow-up</button>
-        <button type="button" className={activeTab === "destinations" ? "active" : ""} onClick={() => setActiveTab("destinations")}>Corrections</button>
-        <button type="button" className={activeTab === "search" ? "active" : ""} onClick={() => setActiveTab("search")}>Search</button>
-        <button type="button" className={activeTab === "data" ? "active" : ""} onClick={() => setActiveTab("data")}>Data</button>
-        <button type="button" className={activeTab === "king" ? "active" : ""} onClick={() => setActiveTab("king")}>Import naar King</button>
-        <button type="button" className={activeTab === "growers" ? "active" : ""} onClick={() => setActiveTab("growers")}>Growers</button>
-        <button type="button" className={activeTab === "linkgrowers" ? "active" : ""} onClick={() => setActiveTab("linkgrowers")}>Link growers</button>
-        <button type="button" className={activeTab === "settings" ? "active" : ""} onClick={() => setActiveTab("settings")}>Settings</button>
-      </div>
       {inkoopMatchBusyCount(matchStatus) > 0 && (
         <div className="notice info">
           Comparing in the background: {inkoopMatchBusyCount(matchStatus)} day{inkoopMatchBusyCount(matchStatus) === 1 ? "" : "s"} waiting{matchStatus.running?.length ? ` (now: ${matchStatus.running.map(fustOverviewDate).join(", ")})` : ""}. The tabs show the last comparison meanwhile and update by themselves when it's done.
@@ -17119,6 +17980,9 @@ function InkoopControlePage({ currentUser }) {
       )}
 
       {activeTab === "followup" && <InkoopFollowUpTab matchRound={matchRound} company={selectedCompany} />}
+
+      {activeTab === "trace" && !barTooLong && <InkoopTraceWorkspace bar={bar} setBar={setBar} overview={overview} company={selectedCompany} />}
+      {activeTab === "tracktrace" && !barTooLong && <InkoopTrackTraceWorkspace bar={bar} setBar={setBar} overview={overview} company={selectedCompany} matchRound={matchRound} />}
 
       {activeTab === "dashboard" && <InkoopDashboardTab key={`dashboard-${matchRound}`} company={selectedCompany} />}
 
@@ -18934,7 +19798,7 @@ const INKOOP_OVERVIEW_COLUMNS = [
   ["connect_only_value", "Only in Connect value", (sum) => <td className={sum.connect_only_value ? "money-loss" : ""}>{inkoopOverviewEuro(sum.connect_only_value)}</td>],
   ["connect_value", "Connect total", (sum) => <td>{inkoopOverviewEuro(sum.connect_value)}</td>],
   ["difference", "Difference", (sum) => <td>{sum.invoice_value || sum.connect_value ? <InkoopMoneyDiff value={sum.difference} /> : ""}</td>],
-  ["matched_pct", "Matched %", (sum) => <td>{sum.matched_pct === null ? "" : `${sum.matched_pct >= 99.95 ? "✓" : sum.matched_pct < 0.05 ? "✗" : ""} ${sum.matched_pct.toFixed(1)}%`}</td>],
+  ["matched_pct", "Matched %", (sum) => <td>{sum.matched_pct === null ? "" : <IkBar pct={sum.matched_pct} />}</td>],
   ["packaging_value", "Packaging", (sum) => <td>{inkoopOverviewEuro(sum.packaging_value)}</td>],
 ];
 

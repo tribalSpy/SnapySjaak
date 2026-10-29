@@ -10296,6 +10296,19 @@ const INKOOP_OVERVIEW_STATUS = {
   only_in_erp: "connect_only", embalage_lines: "packaging",
 };
 
+// How the money was bought, from the invoice type: Klok / Connect / Handel /
+// AI2 / Other; a lot only in Connect has no invoice: "No invoice" (never a
+// guess -- the bank reads this).
+function inkoopOverviewFlow(row) {
+  if (row?.list === "only_in_erp") return "No invoice";
+  const type = String(row?.invoice_type || "").toLowerCase();
+  if (type === "klokfactuur") return "Klok";
+  if (type === "connect") return "Connect";
+  if (type === "handel") return "Handel";
+  if (type === "ai2" || /^ai2/i.test(String(row?.invoice_number || ""))) return "AI2";
+  return "Other";
+}
+
 // A stored match line's grower (the name of its code, else the invoice's
 // own name) and betaalwijze (its code's; an invoice line without one: A for
 // AI2, else V) -- the overview table's grouping.
@@ -25559,7 +25572,7 @@ async function handleApi(req, res, url) {
         sendJson(res, 200, {
           from, to,
           rows: totals.map((row) => ({
-            date: row.date, grower: view.growerOf(row), bw: view.bwOf(row), status: INKOOP_OVERVIEW_STATUS[row.list] || row.list,
+            date: row.date, grower: view.growerOf(row), bw: view.bwOf(row), flow: inkoopOverviewFlow(row), status: INKOOP_OVERVIEW_STATUS[row.list] || row.list,
             lines: row.lines, invoice_value: Math.round(row.invoice_value * 100) / 100, erp_value: Math.round(row.erp_value * 100) / 100,
           })),
         });
@@ -25571,7 +25584,7 @@ async function handleApi(req, res, url) {
       const lines = await getInkoopOverviewLines({ company, from, to, pairs });
       sendJson(res, 200, {
         from, to, grower,
-        lines: lines.map((row) => ({ ...row, bw: view.bwOf(row), status: INKOOP_OVERVIEW_STATUS[row.list] || row.list })),
+        lines: lines.map((row) => ({ ...row, bw: view.bwOf(row), flow: inkoopOverviewFlow(row), status: INKOOP_OVERVIEW_STATUS[row.list] || row.list })),
         capped: lines.length >= 3000,
       });
     } catch (error) {
