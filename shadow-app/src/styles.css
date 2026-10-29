@@ -2355,6 +2355,9 @@ button.fin-tile:hover { border-color: var(--fin-series-1); box-shadow: 0 0 14px 
 .fin-gain { color: var(--fin-good); font-weight: 600; }
 .fin-table { width: 100%; border-collapse: collapse; font-size: 0.82rem; }
 .fin-table th { color: var(--fin-text-2); text-align: left; font-weight: 600; border-bottom: 1px solid var(--fin-border); padding: 6px; }
+/* Financial Dashboard tables and its popups: the header stays while the table scrolls. */
+.fin-hero .table-wrap, .fin-card .table-wrap, .fin-modal .table-wrap { max-height: 70vh; overflow: auto; }
+.fin-hero .table-wrap > table > thead th, .fin-card .table-wrap > table > thead th, .fin-modal .table-wrap > table > thead th { position: sticky; top: 0; z-index: 2; background: var(--fin-surface-2); }
 .fin-table td { border-bottom: 1px solid var(--fin-grid); padding: 6px; font-variant-numeric: tabular-nums; }
 .fin-table tr.fin-click { cursor: pointer; }
 .fin-table tr.fin-click:hover td { background: rgba(57, 135, 229, 0.08); }

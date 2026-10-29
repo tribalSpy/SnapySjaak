@@ -18252,6 +18252,8 @@ function InkoopBarChart({ rows, series, signed = false, onBarClick, height = 220
 // against the Connect total of the period -- whether the lines match or
 // not -- and per day or week when a grower is opened.
 function InkoopGrowerTotals({ company, from, to, bwChoice }) {
+  // Folded by default (a long table): the header opens it.
+  const [collapsed, setCollapsed] = useState(true);
   const [data, setData] = useState(null);
   const [error, setError] = useState("");
   const [search, setSearch] = useState("");
@@ -18363,7 +18365,9 @@ function InkoopGrowerTotals({ company, from, to, bwChoice }) {
     <div className="fin-card" style={{ marginTop: 12 }}>
       <div className="fin-head" style={{ marginBottom: 6 }}>
         <div>
-          <h3>Growers: invoice vs Connect totals</h3>
+          <h3 className="clickable-cell" style={{ cursor: "pointer" }} onClick={() => setCollapsed((value) => !value)} title={collapsed ? "Click to open" : "Click to fold"}>
+            {collapsed ? "▸" : "▾"} Growers: invoice vs Connect totals{collapsed && data?.growers ? ` (${data.growers.length})` : ""}
+          </h3>
           <div className="fin-sub">
             Per grower (its links and facturation groups) -- totals, whether the lines match or not · click a grower for its weeks, a week for its days, a day for its lines
             {data && data.from !== from && <> · a quarter at most: {data.from} – {data.to}</>}
@@ -18388,8 +18392,8 @@ function InkoopGrowerTotals({ company, from, to, bwChoice }) {
         </div>
       </div>
       {error && <div className="notice danger">{error}</div>}
-      {!data && !error && <div className="fin-sub">Loading...</div>}
-      {data && (
+      {!collapsed && !data && !error && <div className="fin-sub">Loading...</div>}
+      {!collapsed && data && (
         <div className="table-wrap">
           <table className="fin-table">
             <thead><tr><th>Grower</th><th>Invoiced</th><th>Connect</th><th>Difference</th><th>% vs Connect</th><th>Pieces invoice / Connect</th></tr></thead>
