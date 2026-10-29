@@ -1618,13 +1618,24 @@ export async function getInkoopOverviewTotals({ company = "", from = "", to = ""
 export async function getInkoopOverviewLines({ company = "", from = "", to = "", pairs = [] } = {}) {
   if (!pool || !from || !to || !pairs.length) return [];
   const params = [from, to, pairs.map((pair) => pair[0]), pairs.map((pair) => pair[1])];
-  const where = ["match_date >= $1::date", "match_date <= $2::date", "list <> 'fee_lines'",
-    "(supplier_code, supplier_name) IN (SELECT * FROM unnest($3::text[], $4::text[]))"];
-  if (company) { params.push(company); where.push(`company_number = $${params.length}`, "list <> 'only_in_erp'"); }
+  const where = ["m.match_date >= $1::date", "m.match_date <= $2::date", "m.list <> 'fee_lines'",
+    "(m.supplier_code, m.supplier_name) IN (SELECT * FROM unnest($3::text[], $4::text[]))"];
+  if (company) { params.push(company); where.push(`m.company_number = $${params.length}`, "m.list <> 'only_in_erp'"); }
+  // The boxes (count × per box) from the invoice line itself (same invoice,
+  // pieces, total and product) and from the lot (a single lot only).
   const result = await pool.query(
-    `SELECT to_char(match_date, 'YYYY-MM-DD') AS date, list, invoice_number, invoice_type, pav, lot, supplier_code, supplier_name, description,
-            invoice_quantity::float8, invoice_price::float8, invoice_total::float8, erp_quantity::float8, erp_price::float8, erp_total::float8, difference_total::float8, note
-       FROM inkoop_match_rows WHERE ${where.join(" AND ")} ORDER BY match_date, list, description LIMIT 3000`,
+    `SELECT to_char(m.match_date, 'YYYY-MM-DD') AS date, m.list, m.invoice_number, m.invoice_type, m.pav, m.lot, m.supplier_code, m.supplier_name, m.description,
+            m.invoice_quantity::float8, m.invoice_price::float8, m.invoice_total::float8, m.erp_quantity::float8, m.erp_price::float8, m.erp_total::float8, m.difference_total::float8, m.note,
+            il.raw->>'packages' AS packages, il.raw->>'per_package' AS per_package, el.raw->>'items' AS lot_items, el.raw->>'cont' AS lot_cont
+       FROM inkoop_match_rows m
+       LEFT JOIN LATERAL (
+         SELECT i.raw FROM inkoop_invoice_lines i
+          WHERE m.invoice_number <> '' AND i.invoice_number = m.invoice_number AND i.quantity = m.invoice_quantity
+            AND i.total = m.invoice_total AND regexp_replace(btrim(COALESCE(i.description, '')), '\\s+', ' ', 'g') = m.description
+          LIMIT 1
+       ) il ON true
+       LEFT JOIN inkoop_erp_lines el ON el.lot = (CASE WHEN m.lot ~ '^[0-9]{1,18}$' THEN m.lot::bigint END)
+      WHERE ${where.join(" AND ")} ORDER BY m.match_date, m.list, m.description LIMIT 3000`,
     params,
   );
   return result.rows;

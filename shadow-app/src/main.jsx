@@ -16992,7 +16992,13 @@ function IkPairLines({ from, to, company, grower, bar, flow = "", date = "", sta
   if (error) return <div className="notice danger">{error}</div>;
   if (!data) return <div className="muted">Loading lines…</div>;
   if (!lines.length) return <div className="muted">No lines for this choice.</div>;
-  const side = (quantity, price, total) => (total === null || total === undefined ? "" : `${quantity ?? "?"} pcs @ ${price !== null && price !== undefined ? formatInkoopEuro(price) : "?"} = ${formatInkoopEuro(total)}`);
+  // "4 × 6 = 24 pcs @ €1.25 = €30.00" (the boxes when the line or lot has
+  // them and they add up).
+  const side = (quantity, price, total, boxes, perBox) => {
+    if (total === null || total === undefined) return "";
+    const boxText = inkoopBoxesText(quantity, boxes, perBox);
+    return `${boxText ? `${boxText} = ` : ""}${quantity ?? "?"} pcs @ ${price !== null && price !== undefined ? formatInkoopEuro(price) : "?"} = ${formatInkoopEuro(total)}`;
+  };
   return (
     <div className="table-wrap">
       <table className="data-table balance-table ik-table ik-pairs">
@@ -17013,7 +17019,7 @@ function IkPairLines({ from, to, company, grower, bar, flow = "", date = "", sta
                       {line.invoice_number ? <InkoopInvoiceLink invoiceNumber={line.invoice_number} /> : null}
                       {line.pav ? <span className="muted">{line.pav}</span> : null}
                       <strong>{line.description}</strong>
-                      <span>{side(line.invoice_quantity, line.invoice_price, line.invoice_total)}</span>
+                      <span>{side(line.invoice_quantity, line.invoice_price, line.invoice_total, line.packages, line.per_package)}</span>
                     </span>
                   ) : <span className="muted">—</span>}
                 </td>
@@ -17023,7 +17029,7 @@ function IkPairLines({ from, to, company, grower, bar, flow = "", date = "", sta
                     <span className="ik-oneline">
                       {line.lot ? <span className="muted">Lot {String(line.lot).split("+").length > 3 ? `${String(line.lot).split("+").length} lots (pool)` : line.lot}</span> : null}
                       {line.status === "connect_only" && <strong>{line.description}</strong>}
-                      <span>{side(line.erp_quantity, line.erp_price, line.erp_total)}</span>
+                      <span>{side(line.erp_quantity, line.erp_price, line.erp_total, line.lot_items, line.lot_cont)}</span>
                     </span>
                   ) : <span className="muted">—</span>}
                 </td>
@@ -17458,7 +17464,6 @@ function InkoopMenu({ onOpen, monthRows }) {
   const sum = monthRows ? inkoopOverviewSum(monthRows) : null;
   const figure = {
     trace: sum ? <span className="ik-tile-ring"><IkRing pct={sum.matched_pct} size={64} label="matched" /><span className="muted">this month</span></span> : null,
-    tracktrace: sum ? <span className={sum.not_matched_value + sum.connect_only_value ? "money-loss" : ""}>✗ {formatInkoopEuro(sum.not_matched_value + sum.connect_only_value)} open</span> : null,
   };
   return (
     <div className="fust-tile-grid ik-menu" aria-label="Inkoop menu">
