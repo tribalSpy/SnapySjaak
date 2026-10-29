@@ -15600,7 +15600,10 @@ function inkoopInvoiceTranscript(line) {
   if (!line || line.quantity === undefined || line.quantity === null) {
     return "";
   }
-  const boxes = inkoopBoxesText(line.quantity, line.packages, line.per_package);
+  // Boxes × per box = pieces; boxes that don't multiply out are shown too
+  // (≠), none kept: ? × ? (uploaded before they were kept).
+  const boxes = inkoopBoxesText(line.quantity, line.packages, line.per_package)
+    || (Number(line.packages) > 0 ? `${Number(line.packages)} × ${Number(line.per_package) || "?"} ≠` : "? × ?");
   return [
     line.invoice_date ? inkoopShortDate(line.invoice_date) : "",
     String(line.reference_bt || line.pav || "").trim(),
@@ -19651,6 +19654,13 @@ function InkoopFollowUpTab({ company, matchRound = 0 }) {
   // the same days.
   const [tableRange, setTableRange] = useState(null);
   const lookRange = tableRange || { from: selectedDay || period.from, to: selectedDay || period.to };
+  // Loaded: the calendar's month and the table's From / to -- the server
+  // takes 31 days at most; more: the table's days only.
+  const unionRange = {
+    from: tableRange && tableRange.from < period.from ? tableRange.from : period.from,
+    to: tableRange && tableRange.to > period.to ? tableRange.to : period.to,
+  };
+  const loadRange = (new Date(`${unionRange.to}T00:00:00`) - new Date(`${unionRange.from}T00:00:00`)) / 86400000 >= 31 ? tableRange : unionRange;
   const pickKey = (issue) => (issue.issue_type === "gap_erp" ? (issue.erp_row?.lot ? `lot:${issue.erp_row.lot}` : "") : (issue.issue_type === "gap_invoice" || issue.issue_type === "mismatch") && issue.detail?.id ? `line:${issue.detail.id}` : "");
   const pickedList = Object.values(picked);
   const pickedLines = pickedList.filter((issue) => issue.issue_type !== "gap_erp");
@@ -19684,7 +19694,37 @@ function InkoopFollowUpTab({ company, matchRound = 0 }) {
   }
   const typedIssues = issues.filter((issue) => typeFilter.includes(issue.issue_type));
   const filteredIssues = typedIssues.filter((issue) => !bwFilter || bwFilter.includes(issue.bw || "?"));
-  const shownIssues = selectedDay ? filteredIssues.filter((issue) => inkoopIssueInvoiceDay(issue) === selectedDay) : filteredIssues;
+  // The grower list: the overview table's From / to (else the clicked day,
+  // else the whole month as loaded).
+  const shownIssues = tableRange || selectedDay
+    ? filteredIssues.filter((issue) => { const day = inkoopIssueInvoiceDay(issue); return day >= lookRange.from && day <= lookRange.to; })
+    : filteredIssues;
+  // A grower's lines: by date first; a header click sorts by it (again:
+  // the other way round).
+  const [issueSort, setIssueSort] = useState({ key: "date", dir: 1 });
+  const issueSortValue = {
+    date: (issue) => inkoopIssueInvoiceDay(issue),
+    type: (issue) => inkoopIssueTypeLabel(issue.issue_type),
+    invoice: (issue) => issue.invoice_number || "",
+    description: (issue) => String(issue.description || "").toLowerCase(),
+    price: (issue) => Number(issue.detail?.unit_price ?? issue.erp_row?.price ?? issue.detail?.price) || 0,
+    value: (issue) => Number(issue.value) || 0,
+    difference: (issue) => Number(issue.money_diff) || 0,
+  };
+  const sortIssues = (list) => {
+    const valueOf = issueSortValue[issueSort.key] || issueSortValue.date;
+    return [...list].sort((left, right) => {
+      const a = valueOf(left);
+      const b = valueOf(right);
+      const order = typeof a === "number" ? a - b : String(a).localeCompare(String(b));
+      return (order || inkoopIssueInvoiceDay(left).localeCompare(inkoopIssueInvoiceDay(right))) * issueSort.dir;
+    });
+  };
+  const sortHeader = (key, label, title = "") => (
+    <th style={{ cursor: "pointer" }} title={title || `Sort by ${label.toLowerCase()}`} onClick={() => setIssueSort((current) => ({ key, dir: current.key === key ? -current.dir : 1 }))}>
+      {label}{issueSort.key === key ? (issueSort.dir > 0 ? " ▲" : " ▼") : ""}
+    </th>
+  );
   // Per invoice day: the open lines and their value (type and BW filters on).
   const issuesByDay = new Map();
   for (const issue of filteredIssues) {
@@ -19707,7 +19747,7 @@ function InkoopFollowUpTab({ company, matchRound = 0 }) {
     const params = new URLSearchParams();
     if (company) params.set("company", company);
     if (showResolved) params.set("show_resolved", "1");
-    for (const [key, value] of Object.entries(inkoopPeriodParams(period))) params.set(key, value);
+    for (const [key, value] of Object.entries(inkoopPeriodParams(loadRange))) params.set(key, value);
     return apiJson(`/api/inkoop/issues?${params.toString()}`)
       .then((payload) => setIssues(payload.issues || []))
       .catch((loadError) => setError(loadError.message))
@@ -19717,7 +19757,7 @@ function InkoopFollowUpTab({ company, matchRound = 0 }) {
   useEffect(() => {
     load().catch(() => {});
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [company, showResolved, month]);
+  }, [company, showResolved, month, loadRange.from, loadRange.to]);
 
   const firstRound = useRef(matchRound);
   useEffect(() => {
@@ -19885,10 +19925,16 @@ function InkoopFollowUpTab({ company, matchRound = 0 }) {
                         <td colSpan={INKOOP_ISSUE_TYPES.length + 6} style={{ background: "#f8fafc" }}>
                           <table className="data-table">
                             <thead>
-                              <tr><th title="Tick lines and lots to link them by hand">Link</th><th>Date</th><th>Type</th><th>Invoice</th><th>Description</th><th>Connect line</th><th>Value</th><th>Difference</th><th>Status</th><th>Assigned to</th><th>Note</th><th></th></tr>
+                              <tr>
+                                <th title="Tick lines and lots to link them by hand">Link</th>
+                                {sortHeader("date", "Date")}{sortHeader("type", "Type")}{sortHeader("invoice", "Invoice")}{sortHeader("description", "Description", "Sort A-Z")}
+                                <th>Connect line</th>
+                                {sortHeader("price", "€ / piece", "Sort by price per piece -- the same price together")}{sortHeader("value", "Value")}{sortHeader("difference", "Difference")}
+                                <th>Status</th><th>Assigned to</th><th>Note</th><th></th>
+                              </tr>
                             </thead>
                             <tbody>
-                              {group.issues.map((issue) => {
+                              {sortIssues(group.issues).map((issue) => {
                                 const draft = getDraft(issue);
                                 return (
                                   <tr key={issue.id}>
@@ -19918,6 +19964,7 @@ function InkoopFollowUpTab({ company, matchRound = 0 }) {
                                       )}
                                     </td>
                                     <td>{issue.issue_type === "aggregate_mismatch" ? inkoopAggregateMismatchTranscript(issue.detail) : inkoopErpTranscript(issue.erp_row)}</td>
+                                    <td>{issueSortValue.price(issue) ? formatInkoopEuro(issueSortValue.price(issue)) : ""}</td>
                                     <td>{formatInkoopEuro(issue.value)}</td>
                                     <td><InkoopMoneyDiff value={issue.money_diff} /></td>
                                     <td>
