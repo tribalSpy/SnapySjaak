@@ -1579,6 +1579,23 @@ export async function getInkoopUnmatchedInvoiceTotals({ unit = "day", company = 
   return new Map(result.rows.map((row) => [row.period, { value: Math.round(row.value * 100) / 100, lines: row.lines }]));
 }
 
+// The "only in Connect" value per period and lot code (a lot has no company)
+// -- the other side of the matched %.
+export async function getInkoopOnlyInConnectTotals({ unit = "day", from = "", to = "" } = {}) {
+  if (!pool) return [];
+  const format = unit === "year" ? "YYYY" : unit === "month" ? "YYYY-MM" : "YYYY-MM-DD";
+  const params = [];
+  const where = ["list = 'only_in_erp'"];
+  if (from) { params.push(from); where.push(`match_date >= $${params.length}::date`); }
+  if (to) { params.push(to); where.push(`match_date <= $${params.length}::date`); }
+  const result = await pool.query(
+    `SELECT to_char(match_date, '${format}') AS period, supplier_code, COALESCE(SUM(erp_total), 0)::float8 AS value
+       FROM inkoop_match_rows WHERE ${where.join(" AND ")} GROUP BY 1, 2`,
+    params,
+  );
+  return result.rows;
+}
+
 // Per day, grower code and invoice type: the invoiced value, and the part
 // of it without its Connect lot -- the calendar's matched % per betaalwijze.
 export async function getInkoopInvoiceTotalsByCode({ company = "", from = "", to = "" } = {}) {

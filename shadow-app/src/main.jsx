@@ -15546,6 +15546,23 @@ function inkoopBoxesText(total, boxes, perBox, erpRow = null) {
 
 // An invoice line the way a Connect lot is shown: "15-10 · FA4KNCK ·
 // 4 × 80 = 320 pcs @ €0.53 · = €169.60 · ON 18699288286645600004".
+// The matched %, both sides: the invoiced value that found its lot out of
+// everything that should pair -- the invoiced value plus what's only in
+// Connect. A day with Connect data but (still) no invoices is low, not 98%.
+// onlyConnect null (a company chosen): the invoice side alone.
+function inkoopMatchedShare(invoiced, unmatchedInvoice, onlyConnect) {
+  const total = (Number(invoiced) || 0) + (Number(onlyConnect) || 0);
+  if (!(total > 0)) return null;
+  return Math.max(0, Math.min(100, (((Number(invoiced) || 0) - (Number(unmatchedInvoice) || 0)) / total) * 100));
+}
+
+// A row's only-in-Connect value, of the chosen betaalwijzen (null: all).
+function inkoopOnlyConnectOf(row, bwChoice) {
+  if (row?.only_connect_value === undefined) return 0;
+  if (!bwChoice) return Number(row.only_connect_value) || 0;
+  return Object.entries(row.only_connect_by_bw || {}).filter(([bw]) => bwChoice.includes(bw)).reduce((sum, [, value]) => sum + (Number(value) || 0), 0);
+}
+
 function inkoopInvoiceTranscript(line) {
   if (!line || line.quantity === undefined || line.quantity === null) {
     return "";
@@ -18417,7 +18434,7 @@ function InkoopFinanceHero({ company, dayReport, period }) {
   // without one counts (unmatched_invoice_value), also when the grower's day
   // total happens to balance.
   const unmatchedOf = (row) => Number(row.unmatched_invoice_value ?? row.gap_invoice_value) || 0;
-  const matchedPct = (row) => (row.purchase_value > 0 ? Math.max(0, ((row.purchase_value - unmatchedOf(row)) / row.purchase_value) * 100) : 0);
+  const matchedPct = (row) => inkoopMatchedShare(row.purchase_value, unmatchedOf(row), inkoopOnlyConnectOf(row, bwChoice)) ?? 0;
   useEffect(() => {
     let cancelled = false;
     const params = new URLSearchParams();
@@ -18433,7 +18450,7 @@ function InkoopFinanceHero({ company, dayReport, period }) {
   const connect = dayReport.reduce((total, day) => total + connectOf(day), 0);
   const gapInvoice = sum("gap_invoice_value");
   const unmatchedInvoice = dayReport.reduce((total, day) => total + (Number(day.unmatched_invoice_value ?? day.gap_invoice_value) || 0), 0);
-  const matchedShare = invoiced > 0 ? Math.max(0, ((invoiced - unmatchedInvoice) / invoiced) * 100) : null;
+  const matchedShare = inkoopMatchedShare(invoiced, unmatchedInvoice, dayReport.reduce((total, day) => total + inkoopOnlyConnectOf(day, bwChoice), 0));
   const dates = dayReport.map((day) => day.date).sort();
   const from = dates[0];
   const to = dates[dates.length - 1];
@@ -18494,7 +18511,7 @@ function InkoopFinanceHero({ company, dayReport, period }) {
         <div className="fin-tile"><div className="fin-tile-label">Invoiced</div><div className="fin-tile-value">{formatInkoopEuro(invoiced)}</div><div className="fin-tile-note">FloraHolland invoices</div></div>
         <div className="fin-tile"><div className="fin-tile-label">Connect{bwChoice ? ` (BW ${bwChoice.join("+")})` : ""}</div><div className="fin-tile-value">{formatInkoopEuro(connect)}</div><div className="fin-tile-note">recorded purchases</div></div>
         <div className="fin-tile"><div className="fin-tile-label">Difference</div><div className="fin-tile-value"><InkoopMoneyDiff value={invoiced - connect} dark /></div><div className="fin-tile-note">invoice − Connect</div></div>
-        <div className="fin-tile"><div className="fin-tile-label">Matched</div><div className="fin-tile-value">{matchedShare === null ? "-" : `${matchedShare.toFixed(1)}%`}</div><div className="fin-tile-note">of the invoiced value</div></div>
+        <div className="fin-tile"><div className="fin-tile-label">Matched</div><div className="fin-tile-value">{matchedShare === null ? "-" : `${matchedShare.toFixed(1)}%`}</div><div className="fin-tile-note">of invoice + only-in-Connect value</div></div>
         <button type="button" className="fin-tile" onClick={() => open("Price / pieces differences", ["mismatch"])}>
           <div className="fin-tile-label">Mismatches</div><div className="fin-tile-value">{formatInkoopEuro(sum("mismatch_value"))}</div><div className="fin-tile-note">{sum("mismatch_count")} lines · click: growers</div>
         </button>
@@ -18525,11 +18542,11 @@ function InkoopFinanceHero({ company, dayReport, period }) {
             <h3>{matchMonth ? `Matched share per day -- ${new Date(`${matchMonth.period}-01T00:00:00`).toLocaleDateString("nl-NL", { month: "long", year: "numeric" })}` : "Matched share per month"}</h3>
             {matchMonth && <button type="button" className="link-button" onClick={() => { setMatchMonth(null); setMatchDays(null); }}>← Back to the year</button>}
           </div>
-          <div className="fin-legend"><span><i style={{ background: "var(--fin-series-1)" }} />% of the invoiced value matched</span>{!matchMonth && <span className="fin-sub">click a month for its days</span>}</div>
+          <div className="fin-legend"><span><i style={{ background: "var(--fin-series-1)" }} />% matched (of invoice + only-in-Connect value)</span>{!matchMonth && <span className="fin-sub">click a month for its days</span>}</div>
           {matchMonth ? (
             !matchDays ? <div className="fin-sub">Loading the days...</div>
               : matchDays.some((day) => Number(day.purchase_value) > 0)
-                ? <InkoopBarChart rows={matchDays.filter((day) => Number(day.purchase_value) > 0).sort((left, right) => (left.date < right.date ? -1 : 1)).map((day) => ({ ...day, key: day.date, label: day.date.slice(8, 10), matched: matchedPct(day) }))} series={[{ name: "Matched", color: "var(--fin-series-1)", value: (row) => row.matched, format: (value) => `${value.toFixed(1)}%` }]} onBarClick={(row) => setPopup({ title: `Growers -- ${row.date}`, types: null, from: row.date, to: row.date })} />
+                ? <InkoopBarChart rows={matchDays.filter((day) => Number(day.purchase_value) > 0 || inkoopOnlyConnectOf(day, bwChoice) > 0).sort((left, right) => (left.date < right.date ? -1 : 1)).map((day) => ({ ...day, key: day.date, label: day.date.slice(8, 10), matched: matchedPct(day) }))} series={[{ name: "Matched", color: "var(--fin-series-1)", value: (row) => row.matched, format: (value) => `${value.toFixed(1)}%` }]} onBarClick={(row) => setPopup({ title: `Growers -- ${row.date}`, types: null, from: row.date, to: row.date })} />
                 : <div className="fin-sub">No invoiced days in this month.</div>
           ) : monthRows.length
             ? <InkoopBarChart rows={monthRows.map((row) => ({ ...row, matched: matchedPct(row) }))} series={[{ name: "Matched", color: "var(--fin-series-1)", value: (row) => row.matched, format: (value) => `${value.toFixed(1)}%` }]} onBarClick={openMatchMonth} />
@@ -18896,9 +18913,7 @@ function InkoopCalendarTab({ company, manualLinkDrafts, setManualLinkDrafts, onL
   // How much of the day's invoiced value found its Connect lot (null: no
   // invoiced value).
   function dayMatchedPct(day) {
-    if (!(day.purchase_value > 0)) return null;
-    const unmatchedValue = Number(day.unmatched_invoice_value ?? day.gap_invoice_value) || 0;
-    return Math.max(0, Math.min(100, ((day.purchase_value - unmatchedValue) / day.purchase_value) * 100));
+    return inkoopMatchedShare(day.purchase_value, Number(day.unmatched_invoice_value ?? day.gap_invoice_value) || 0, inkoopOnlyConnectOf(day, calendarBw));
   }
 
   // All matched green, nothing matched dark red, nothing in it blue; in
@@ -18962,7 +18977,7 @@ function InkoopCalendarTab({ company, manualLinkDrafts, setManualLinkDrafts, onL
                         value found its Connect lot (as the Financial
                         Dashboard's matched %). */}
                     {day.mismatch_value > 0 && <span>{formatInkoopEuro(day.mismatch_value)} mistakes</span>}
-                    {day.purchase_value > 0 && (() => {
+                    {dayMatchedPct(day) !== null && (() => {
                       const matched = dayMatchedPct(day);
                       return (
                         <>

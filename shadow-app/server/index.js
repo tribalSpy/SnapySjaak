@@ -111,6 +111,7 @@ import {
   getInkoopAfgemeldMessages,
   getInkoopUnmatchedInvoiceTotals,
   getInkoopInvoiceTotalsByCode,
+  getInkoopOnlyInConnectTotals,
   listInkoopInvoiceNumbers,
   saveStateFileSnapshot,
   pruneStateFileHistory,
@@ -10063,6 +10064,29 @@ function inkoopDetectiveAnswer(job) {
     summary: normalizeUkdocsText(parsed.summary), unexplained: normalizeUkdocsText(parsed.unexplained),
     pairs, rejected, lines: given.lines || [], lots: given.lots || [],
   };
+}
+
+// Only-in-Connect value per period, in all and per betaalwijze (of the
+// lot's code; "?" without one) -- null with a company chosen (a Connect lot
+// has no company, so the matched % stays the invoice side's).
+async function inkoopOnlyConnectByPeriod(state, { unit = "day", from = "", to = "", company = "" } = {}) {
+  const byPeriod = new Map();
+  if (normalizeUkdocsText(company)) return byPeriod;
+  const rows = await getInkoopOnlyInConnectTotals({ unit, from, to }).catch(() => []);
+  for (const row of rows) {
+    const bw = String(row.supplier_code || "").split(/[\s/+]+/).map((part) => state.supplier_bw_map?.[normalizeInkoopKey(part)]?.bw).find(Boolean) || "?";
+    const entry = byPeriod.get(row.period) || { value: 0, by_bw: {} };
+    const value = Number(row.value) || 0;
+    entry.value = Math.round((entry.value + value) * 100) / 100;
+    entry.by_bw[bw] = Math.round(((entry.by_bw[bw] || 0) + value) * 100) / 100;
+    byPeriod.set(row.period, entry);
+  }
+  return byPeriod;
+}
+
+function inkoopWithOnlyConnect(row, entry, company) {
+  if (normalizeUkdocsText(company)) return row;
+  return { ...row, only_connect_value: entry?.value || 0, only_connect_by_bw: entry?.by_bw || {} };
 }
 
 function inkoopRangeFromRequest(url, defaultDays = INKOOP_RANGE_DEFAULT_DAYS) {
@@ -24944,8 +24968,13 @@ async function handleApi(req, res, url) {
       getInkoopUnmatchedInvoiceTotals({ unit: "month", company }),
       getInkoopUnmatchedInvoiceTotals({ unit: "year", company }),
     ]);
-    const withUnmatched = (rows, unmatched) => rows.map((row) => ({ ...row, unmatched_invoice_value: unmatched.get(row.period)?.value || 0, unmatched_invoice_lines: unmatched.get(row.period)?.lines || 0 }));
-    sendJson(res, 200, { months: withUnmatched(months, unmatchedMonths), years: withUnmatched(years, unmatchedYears), pending_days: (status.counts?.pending || 0) + (status.counts?.running || 0) });
+    const state = await readInkoopState();
+    const [connectMonths, connectYears] = await Promise.all([
+      inkoopOnlyConnectByPeriod(state, { unit: "month", company }),
+      inkoopOnlyConnectByPeriod(state, { unit: "year", company }),
+    ]);
+    const withUnmatched = (rows, unmatched, connect) => rows.map((row) => inkoopWithOnlyConnect({ ...row, unmatched_invoice_value: unmatched.get(row.period)?.value || 0, unmatched_invoice_lines: unmatched.get(row.period)?.lines || 0 }, connect.get(row.period), company));
+    sendJson(res, 200, { months: withUnmatched(months, unmatchedMonths, connectMonths), years: withUnmatched(years, unmatchedYears, connectYears), pending_days: (status.counts?.pending || 0) + (status.counts?.running || 0) });
     return;
   }
 
@@ -24961,12 +24990,14 @@ async function handleApi(req, res, url) {
     if (from > to) [from, to] = [to, from];
     if (addDaysToIsoDate(from, 400) < to) from = addDaysToIsoDate(to, -400);
     const company = normalizeUkdocsText(url.searchParams.get("company"));
-    const [rows, unmatched] = await Promise.all([
+    const state = await readInkoopState();
+    const [rows, unmatched, onlyConnect] = await Promise.all([
       getInkoopDaySummaries({ from, to }),
       getInkoopUnmatchedInvoiceTotals({ unit: "day", company, from, to }),
+      inkoopOnlyConnectByPeriod(state, { unit: "day", from, to, company }),
     ]);
     const days = rows.filter((row) => row.company === company)
-      .map((row) => ({ ...row.bucket, date: row.date, unmatched_invoice_value: unmatched.get(row.date)?.value || 0, unmatched_invoice_lines: unmatched.get(row.date)?.lines || 0 }))
+      .map((row) => inkoopWithOnlyConnect({ ...row.bucket, date: row.date, unmatched_invoice_value: unmatched.get(row.date)?.value || 0, unmatched_invoice_lines: unmatched.get(row.date)?.lines || 0 }, onlyConnect.get(row.date), company))
       .sort((left, right) => (left.date < right.date ? 1 : -1));
     sendJson(res, 200, { from, to, days });
     return;
@@ -25195,7 +25226,8 @@ async function handleApi(req, res, url) {
         const bucket = bucketInkoopResultsByDate(filterInkoopResultsByCompany(day.result, company), day.aggregateContext).get(day.date);
         if (bucket) dayBuckets.set(day.date, bucket);
       }
-      const dayReport = inkoopDateBucketsToSortedArray(dayBuckets);
+      const onlyConnect = await inkoopOnlyConnectByPeriod(state, { unit: "day", from: range.from, to: range.to, company });
+      const dayReport = inkoopDateBucketsToSortedArray(dayBuckets).map((day) => inkoopWithOnlyConnect(day, onlyConnect.get(day.date), company));
       const weekReport = inkoopBucketDayReportsByWeek(dayReport);
       const embalageSummary = buildInkoopEmbalageSummary(result);
       const todayBundle = dayBundles.find((day) => day.date === localDateIso()) || await computeInkoopDay(state, localDateIso());
@@ -25257,6 +25289,7 @@ async function handleApi(req, res, url) {
           getInkoopUnmatchedInvoiceTotals({ unit: "day", company, from: monthStart, to: lastDay }).catch(() => new Map()),
           getInkoopInvoiceTotalsByCode({ company, from: monthStart, to: lastDay }).catch(() => []),
         ]);
+        const onlyConnect = await inkoopOnlyConnectByPeriod(state, { unit: "day", from: monthStart, to: lastDay, company });
         // Per day and betaalwijze (of the line's grower code; else A for an
         // AI2 nota, V for FloraHolland's): invoiced and unmatched value --
         // the calendar's matched % for the ticked betaalwijzen.
@@ -25275,10 +25308,10 @@ async function handleApi(req, res, url) {
         const summarized = new Set(stored.filter((row) => row.company === "").map((row) => row.date));
         for (const row of stored) {
           if (row.company === company) {
-            buckets.set(row.date, {
+            buckets.set(row.date, inkoopWithOnlyConnect({
               ...row.bucket, date: row.date, unmatched_invoice_value: unmatched.get(row.date)?.value || 0, unmatched_invoice_lines: unmatched.get(row.date)?.lines || 0,
               invoice_by_bw: byBw.get(row.date)?.invoice || null, unmatched_by_bw: byBw.get(row.date)?.unmatched || null,
-            });
+            }, onlyConnect.get(row.date), company));
           }
         }
         const missingSummary = [];
