@@ -1596,6 +1596,40 @@ export async function getInkoopOnlyInConnectTotals({ unit = "day", from = "", to
   return result.rows;
 }
 
+// The overview table (day -> grower -> status): lines and value per day,
+// list, grower code / name and invoice type, from the stored match lines.
+export async function getInkoopOverviewTotals({ company = "", from = "", to = "" } = {}) {
+  if (!pool || !from || !to) return [];
+  const params = [from, to];
+  const where = ["match_date >= $1::date", "match_date <= $2::date", "list <> 'fee_lines'"];
+  // A Connect lot has no company: with one chosen, the invoice side only.
+  if (company) { params.push(company); where.push(`company_number = $${params.length}`, "list <> 'only_in_erp'"); }
+  const result = await pool.query(
+    `SELECT to_char(match_date, 'YYYY-MM-DD') AS date, list, supplier_code, supplier_name, invoice_type, COUNT(*)::int AS lines,
+            COALESCE(SUM(invoice_total), 0)::float8 AS invoice_value, COALESCE(SUM(erp_total), 0)::float8 AS erp_value
+       FROM inkoop_match_rows WHERE ${where.join(" AND ")} GROUP BY 1, 2, 3, 4, 5`,
+    params,
+  );
+  return result.rows;
+}
+
+// The stored match lines of a period for some (grower code, grower name)
+// pairs -- the overview table's deepest level.
+export async function getInkoopOverviewLines({ company = "", from = "", to = "", pairs = [] } = {}) {
+  if (!pool || !from || !to || !pairs.length) return [];
+  const params = [from, to, pairs.map((pair) => pair[0]), pairs.map((pair) => pair[1])];
+  const where = ["match_date >= $1::date", "match_date <= $2::date", "list <> 'fee_lines'",
+    "(supplier_code, supplier_name) IN (SELECT * FROM unnest($3::text[], $4::text[]))"];
+  if (company) { params.push(company); where.push(`company_number = $${params.length}`, "list <> 'only_in_erp'"); }
+  const result = await pool.query(
+    `SELECT to_char(match_date, 'YYYY-MM-DD') AS date, list, invoice_number, invoice_type, pav, lot, supplier_code, supplier_name, description,
+            invoice_quantity::float8, invoice_price::float8, invoice_total::float8, erp_quantity::float8, erp_price::float8, erp_total::float8, difference_total::float8, note
+       FROM inkoop_match_rows WHERE ${where.join(" AND ")} ORDER BY match_date, list, description LIMIT 3000`,
+    params,
+  );
+  return result.rows;
+}
+
 // Per day, grower code and invoice type: the invoiced value, and the part
 // of it without its Connect lot -- the calendar's matched % per betaalwijze.
 export async function getInkoopInvoiceTotalsByCode({ company = "", from = "", to = "" } = {}) {

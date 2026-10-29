@@ -17708,7 +17708,7 @@ function InkoopResultTables({ result, windowDays, manualLinkDrafts, setManualLin
       )}
 
       {!!result.only_in_erp.length && (
-        <InkoopCollapsibleCard title="Only in Connect" count={erpBwFilter ? `${erpRowsShown.length} of ${inkoopResultCount(result, "only_in_erp")}` : inkoopResultCount(result, "only_in_erp")}>
+        <InkoopCollapsibleCard title="Only in Connect" count={erpBwFilter ? erpRowsShown.length : inkoopResultCount(result, "only_in_erp")}>
           <InkoopTruncatedNote result={result} list="only_in_erp" />
           <div className="row-actions" style={{ marginBottom: 8 }}>
             <strong>Betaalwijze:</strong>
@@ -18883,6 +18883,215 @@ function InkoopDashboardTab({ company }) {
   );
 }
 
+// The overview table's figures of some rows (/api/inkoop/overview-table):
+// invoice lines and value (matched incl. mismatch + not matched), the
+// matched and not matched part, the lots only in Connect, Connect's total
+// and the difference.
+function inkoopOverviewSum(rows) {
+  const sum = { invoice_lines: 0, invoice_value: 0, matched_lines: 0, matched_value: 0, mismatch_lines: 0, not_matched_lines: 0, not_matched_value: 0, connect_only_lines: 0, connect_only_value: 0, connect_value: 0, packaging_value: 0 };
+  for (const row of rows) {
+    if (row.status === "matched" || row.status === "mismatch") {
+      sum.invoice_lines += row.lines; sum.invoice_value += row.invoice_value;
+      sum.matched_lines += row.lines; sum.matched_value += row.invoice_value;
+      sum.connect_value += row.erp_value;
+      if (row.status === "mismatch") sum.mismatch_lines += row.lines;
+    } else if (row.status === "not_matched") {
+      sum.invoice_lines += row.lines; sum.invoice_value += row.invoice_value;
+      sum.not_matched_lines += row.lines; sum.not_matched_value += row.invoice_value;
+    } else if (row.status === "connect_only") {
+      sum.connect_only_lines += row.lines; sum.connect_only_value += row.erp_value;
+      sum.connect_value += row.erp_value;
+    } else if (row.status === "packaging") {
+      sum.packaging_value += row.invoice_value;
+    }
+  }
+  sum.difference = Math.round((sum.invoice_value - sum.connect_value) * 100) / 100;
+  sum.matched_pct = inkoopMatchedShare(sum.invoice_value, sum.not_matched_value, sum.connect_only_value);
+  return sum;
+}
+
+const INKOOP_OVERVIEW_STATUSES = [
+  ["matched", "✓ Matched"],
+  ["mismatch", "⚠ Matched, figures differ"],
+  ["not_matched", "✗ Invoice, not matched"],
+  ["connect_only", "✗ Only in Connect"],
+  ["packaging", "Packaging"],
+];
+
+function InkoopOverviewCells({ sum }) {
+  const euro = (value) => (value ? formatInkoopEuro(value) : "");
+  const count = (value) => value || "";
+  return (
+    <>
+      <td>{count(sum.invoice_lines)}</td>
+      <td>{euro(sum.invoice_value)}</td>
+      <td>{count(sum.matched_lines)}{sum.mismatch_lines ? <small className="muted"> ⚠{sum.mismatch_lines}</small> : null}</td>
+      <td>{euro(sum.matched_value)}</td>
+      <td className={sum.not_matched_lines ? "money-loss" : ""}>{count(sum.not_matched_lines)}</td>
+      <td className={sum.not_matched_value ? "money-loss" : ""}>{euro(sum.not_matched_value)}</td>
+      <td className={sum.connect_only_lines ? "money-loss" : ""}>{count(sum.connect_only_lines)}</td>
+      <td className={sum.connect_only_value ? "money-loss" : ""}>{euro(sum.connect_only_value)}</td>
+      <td>{euro(sum.connect_value)}</td>
+      <td>{sum.invoice_value || sum.connect_value ? <InkoopMoneyDiff value={sum.difference} /> : ""}</td>
+      <td>{sum.matched_pct === null ? "" : `${sum.matched_pct >= 99.95 ? "✓" : sum.matched_pct < 0.05 ? "✗" : ""} ${sum.matched_pct.toFixed(1)}%`}</td>
+      <td>{euro(sum.packaging_value)}</td>
+    </>
+  );
+}
+
+// One grower's lines of a period, per status (levels 3 and 4).
+function InkoopOverviewGrowerLines({ from, to, company, grower, bwChoice }) {
+  const [data, setData] = useState(null);
+  const [error, setError] = useState("");
+  const [openStatus, setOpenStatus] = useState(() => new Set(["mismatch", "not_matched", "connect_only"]));
+  useEffect(() => {
+    let cancelled = false;
+    setData(null);
+    const params = new URLSearchParams({ from, to, grower });
+    if (company) params.set("company", company);
+    apiJson(`/api/inkoop/overview-lines?${params.toString()}`)
+      .then((payload) => { if (!cancelled) setData(payload); })
+      .catch((loadError) => { if (!cancelled) setError(loadError.message); });
+    return () => { cancelled = true; };
+  }, [from, to, company, grower]);
+  if (error) return <tr><td colSpan="13" className="money-loss">{error}</td></tr>;
+  if (!data) return <tr><td colSpan="13" className="muted inkoop-xt-l3">Loading lines...</td></tr>;
+  const lines = data.lines.filter((line) => !bwChoice || bwChoice.includes(line.bw || "?"));
+  const side = (quantity, price, total) => (total === null || total === undefined ? "-" : `${quantity ?? "?"} × ${price ?? "?"} = ${formatInkoopEuro(total)}`);
+  return INKOOP_OVERVIEW_STATUSES.map(([status, label]) => {
+    const ofStatus = lines.filter((line) => line.status === status);
+    if (!ofStatus.length) return null;
+    const sum = inkoopOverviewSum(ofStatus.map((line) => ({ status, lines: 1, invoice_value: Number(line.invoice_total) || 0, erp_value: Number(line.erp_total) || 0 })));
+    const open = openStatus.has(status);
+    return (
+      <Fragment key={status}>
+        <tr className="inkoop-xt-row l3" onClick={() => setOpenStatus((current) => { const next = new Set(current); if (next.has(status)) next.delete(status); else next.add(status); return next; })}>
+          <td className="inkoop-xt-l3">{open ? "▾" : "▸"} {label}</td>
+          <InkoopOverviewCells sum={sum} />
+        </tr>
+        {open && (
+          <tr className="inkoop-xt-lines">
+            <td colSpan="13">
+              <table className="inkoop-xtable inner">
+                <thead><tr><th>Date</th><th>Invoice</th><th>Brief / lot</th><th>Product</th><th>Invoice</th><th>Connect</th><th>Difference</th><th>Note</th></tr></thead>
+                <tbody>
+                  {ofStatus.map((line, index) => (
+                    <tr key={`${line.invoice_number}-${line.lot}-${index}`}>
+                      <td>{inkoopShortDate(line.date)}</td>
+                      <td>{line.invoice_number ? <InkoopInvoiceLink invoiceNumber={line.invoice_number} /> : "-"}</td>
+                      <td>{line.pav || "-"}{line.lot ? ` · ${String(line.lot).split("+").length > 3 ? `${String(line.lot).split("+").length} lots` : line.lot}` : ""}</td>
+                      <td>{line.description}</td>
+                      <td>{side(line.invoice_quantity, line.invoice_price, line.invoice_total)}</td>
+                      <td>{side(line.erp_quantity, line.erp_price, line.erp_total)}</td>
+                      <td>{line.difference_total ? <InkoopMoneyDiff value={line.difference_total} /> : ""}</td>
+                      <td className="muted">{line.note}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+              {data.capped && <div className="muted">The first 3000 lines.</div>}
+            </td>
+          </tr>
+        )}
+      </Fragment>
+    );
+  });
+}
+
+// The drill-down table (as the Fust overview): the period's total and each
+// day -> its growers -> matched / not matched / only in Connect -> the lines.
+// A grower under "Period total" nets all its days: an invoice of the 16th
+// that Connect has on the 19th balances there.
+function InkoopOverviewTable({ from, to, company, bwChoice, focusDate = "", title = "Overview" }) {
+  const [rows, setRows] = useState(null);
+  const [error, setError] = useState("");
+  const [range, setRange] = useState({ from, to });
+  const [openDays, setOpenDays] = useState(() => new Set());
+  const [openGrowers, setOpenGrowers] = useState(() => new Set());
+  useEffect(() => { setRange({ from, to }); }, [from, to]);
+  useEffect(() => {
+    if (focusDate) setOpenDays(new Set([focusDate]));
+  }, [focusDate]);
+  useEffect(() => {
+    if (!range.from || !range.to || range.from > range.to) {
+      setRows([]);
+      return undefined;
+    }
+    let cancelled = false;
+    setRows(null);
+    setError("");
+    const params = new URLSearchParams(range);
+    if (company) params.set("company", company);
+    apiJson(`/api/inkoop/overview-table?${params.toString()}`)
+      .then((payload) => { if (!cancelled) setRows(payload.rows || []); })
+      .catch((loadError) => { if (!cancelled) setError(loadError.message); });
+    return () => { cancelled = true; };
+  }, [range.from, range.to, company]);
+  const shown = (rows || []).filter((row) => !bwChoice || bwChoice.includes(row.bw || "?"));
+  const days = [...new Set(shown.map((row) => row.date))].sort().reverse();
+  const toggle = (setter, key) => setter((current) => { const next = new Set(current); if (next.has(key)) next.delete(key); else next.add(key); return next; });
+  // Growers with the most open money first.
+  const growersOf = (dayRows) => {
+    const byGrower = new Map();
+    for (const row of dayRows) byGrower.set(row.grower, [...(byGrower.get(row.grower) || []), row]);
+    return [...byGrower.entries()].map(([grower, growerRows]) => ({ grower, sum: inkoopOverviewSum(growerRows) }))
+      .sort((left, right) => (right.sum.not_matched_value + right.sum.connect_only_value + Math.abs(right.sum.difference)) - (left.sum.not_matched_value + left.sum.connect_only_value + Math.abs(left.sum.difference)));
+  };
+  const renderGrowers = (key, dayRows, growerFrom, growerTo) => growersOf(dayRows).map(({ grower, sum }) => {
+    const growerKey = `${key}|${grower}`;
+    return (
+      <Fragment key={growerKey}>
+        <tr className="inkoop-xt-row l2" onClick={() => toggle(setOpenGrowers, growerKey)}>
+          <td className="inkoop-xt-l2">{openGrowers.has(growerKey) ? "▾" : "▸"} {grower}</td>
+          <InkoopOverviewCells sum={sum} />
+        </tr>
+        {openGrowers.has(growerKey) && <InkoopOverviewGrowerLines from={growerFrom} to={growerTo} company={company} grower={grower} bwChoice={bwChoice} />}
+      </Fragment>
+    );
+  });
+  const levelOne = [
+    ...(days.length > 1 ? [{ key: "period", label: `Period ${fustOverviewDate(range.from)} – ${fustOverviewDate(range.to)}`, rows: shown, from: range.from, to: range.to }] : []),
+    ...days.map((date) => ({ key: date, label: fustOverviewDate(date), rows: shown.filter((row) => row.date === date), from: date, to: date })),
+  ];
+  return (
+    <div className="inkoop-xt-card">
+      <div className="row-actions" style={{ margin: "4px 0" }}>
+        <strong>{title}</strong>
+        <label className="checkbox-label">From <input type="date" value={range.from} onChange={(event) => setRange((current) => ({ ...current, from: event.target.value }))} /></label>
+        <label className="checkbox-label">to <input type="date" value={range.to} onChange={(event) => setRange((current) => ({ ...current, to: event.target.value }))} /></label>
+        <span className="muted">▸ opens a row: day → grower → status → lines. The period row nets each grower over all its days.</span>
+      </div>
+      {error && <div className="notice danger">{error}</div>}
+      {!rows && !error && <div className="muted">Loading...</div>}
+      {rows && (
+        <div className="table-wrap inkoop-xt-wrap">
+          <table className="inkoop-xtable">
+            <thead>
+              <tr>
+                <th>Day / grower</th><th>Invoice lines</th><th>Invoice value</th><th>Matched lines</th><th>Matched value</th>
+                <th>Not matched lines</th><th>Not matched value</th><th>Only in Connect</th><th>Only in Connect value</th>
+                <th>Connect total</th><th>Difference</th><th>Matched %</th><th>Packaging</th>
+              </tr>
+            </thead>
+            <tbody>
+              {levelOne.map((entry) => (
+                <Fragment key={entry.key}>
+                  <tr className={`inkoop-xt-row l1${entry.key === "period" ? " period" : ""}${focusDate === entry.key ? " focus" : ""}`} onClick={() => toggle(setOpenDays, entry.key)}>
+                    <td>{openDays.has(entry.key) ? "▾" : "▸"} {entry.label}</td>
+                    <InkoopOverviewCells sum={inkoopOverviewSum(entry.rows)} />
+                  </tr>
+                  {openDays.has(entry.key) && renderGrowers(entry.key, entry.rows, entry.from, entry.to)}
+                </Fragment>
+              ))}
+              {!levelOne.length && <tr><td colSpan="13">Nothing compared in this period.</td></tr>}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function InkoopCalendarTab({ company, manualLinkDrafts, setManualLinkDrafts, onLinkSupplier, manualLinks }) {
   const [month, setMonth] = useState(() => localDateIso().slice(0, 7));
   const [days, setDays] = useState([]);
@@ -19018,21 +19227,12 @@ function InkoopCalendarTab({ company, manualLinkDrafts, setManualLinkDrafts, onL
           <button type="button" onClick={() => shiftMonth(1)}>Next &gt;</button>
         </div>
         {!!pendingDays && <div className="notice">Calculating {pendingDays} day(s) in the background -- they fill in by themselves. Once calculated, this month opens instantly.</div>}
-        <div className="row-actions" style={{ margin: "6px 0" }}>
-          <strong>Betaalwijze (matched % and "only in Connect" gaps):</strong>
-          {calendarBwCodes.map((bw) => (
-            <label key={bw} className="checkbox-label" title={bw === "?" ? "Connect codes without a BW" : INKOOP_BW_LABELS[bw] || ""}>
-              <input type="checkbox" checked={calendarBw.includes(bw)} onChange={() => toggleCalendarBw(bw)} />
-              <span>{bw === "?" ? "? (no BW)" : `${bw}${INKOOP_BW_LABELS[bw] ? ` (${INKOOP_BW_LABELS[bw]})` : ""}`}</span>
-            </label>
-          ))}
-          {!!daysOlderThanBw && <span className="muted">{daysOlderThanBw} day(s) still have figures without BW -- they follow the filter once compared again.</span>}
-        </div>
         {error && <div className="notice danger">{error}</div>}
         {loading ? (
           <div className="notice">Loading calendar...</div>
         ) : (
-          <>
+          <div className="inkoop-cal-layout">
+          <div className="inkoop-cal-main">
             <div className="inkoop-calendar-grid inkoop-calendar-weekdays">
               {weekdayLabels.map((label) => <div key={label} className="inkoop-calendar-weekday">{label}</div>)}
             </div>
@@ -19063,7 +19263,53 @@ function InkoopCalendarTab({ company, manualLinkDrafts, setManualLinkDrafts, onL
                 </button>
               ))}
             </div>
-          </>
+          </div>
+          {/* Next to the calendar: the filter and the chosen day's (else
+              the month's) figures. */}
+          <div className="inkoop-cal-side">
+            <strong>Betaalwijze (matched % and "only in Connect"):</strong>
+            <div className="inkoop-cal-side-checks">
+              {calendarBwCodes.map((bw) => (
+                <label key={bw} className="checkbox-label" title={bw === "?" ? "Connect codes without a BW" : INKOOP_BW_LABELS[bw] || ""}>
+                  <input type="checkbox" checked={calendarBw.includes(bw)} onChange={() => toggleCalendarBw(bw)} />
+                  <span>{bw === "?" ? "? (no BW)" : `${bw}${INKOOP_BW_LABELS[bw] ? ` (${INKOOP_BW_LABELS[bw]})` : ""}`}</span>
+                </label>
+              ))}
+            </div>
+            {!!daysOlderThanBw && <div className="muted">{daysOlderThanBw} day(s) still have figures without BW -- they follow the filter once compared again.</div>}
+            {(() => {
+              const picked = days.map(shownDay).filter((day) => !selectedDate || day.date === selectedDate);
+              const invoiced = picked.reduce((sum, day) => sum + (Number(day.purchase_value) || 0), 0);
+              const unmatchedValue = picked.reduce((sum, day) => sum + (Number(day.unmatched_invoice_value ?? day.gap_invoice_value) || 0), 0);
+              const onlyConnect = picked.reduce((sum, day) => sum + inkoopOnlyConnectOf(day, calendarBw), 0);
+              const mistakes = picked.reduce((sum, day) => sum + (Number(day.mismatch_value) || 0), 0);
+              const share = inkoopMatchedShare(invoiced, unmatchedValue, onlyConnect);
+              return (
+                <table className="inkoop-xtable kv">
+                  <tbody>
+                    <tr><th colSpan="2">{selectedDate ? fustOverviewDate(selectedDate) : `Month ${month}`}</th></tr>
+                    <tr><td>Invoiced</td><td>{formatInkoopEuro(invoiced)}</td></tr>
+                    <tr><td>✓ Matched</td><td>{formatInkoopEuro(invoiced - unmatchedValue)}{share !== null ? ` · ${share.toFixed(1)}%` : ""}</td></tr>
+                    <tr><td>✗ Invoice not matched</td><td className={unmatchedValue ? "money-loss" : ""}>{formatInkoopEuro(unmatchedValue)}</td></tr>
+                    <tr><td>✗ Only in Connect</td><td className={onlyConnect ? "money-loss" : ""}>{formatInkoopEuro(onlyConnect)}</td></tr>
+                    <tr><td>⚠ Mistakes (price / pieces)</td><td>{formatInkoopEuro(mistakes)}</td></tr>
+                  </tbody>
+                </table>
+              );
+            })()}
+            <div className="muted">Click a day for its figures and lines; the table below opens on it.</div>
+          </div>
+          </div>
+        )}
+        {!loading && (
+          <InkoopOverviewTable
+            from={`${month}-01`}
+            to={(() => { const [year, monthNumber] = month.split("-").map(Number); const last = `${month}-${String(new Date(year, monthNumber, 0).getDate()).padStart(2, "0")}`; return last < localDateIso() ? last : localDateIso(); })()}
+            company={company}
+            bwChoice={calendarBw}
+            focusDate={selectedDate}
+            title="Day by day"
+          />
         )}
       </div>
 
@@ -19498,6 +19744,8 @@ function InkoopFollowUpTab({ company, matchRound = 0 }) {
         </label>
       </div>
       <div className="notice">By <strong>invoice date</strong> (a Connect lot without an invoice line: its own date). Click a day for its lines, again for the whole month.</div>
+      <div className="inkoop-cal-layout">
+      <div className="inkoop-cal-main">
       <div className="inkoop-calendar-grid inkoop-calendar-weekdays">
         {["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"].map((label) => <div key={label} className="inkoop-calendar-weekday">{label}</div>)}
       </div>
@@ -19529,6 +19777,10 @@ function InkoopFollowUpTab({ company, matchRound = 0 }) {
           ];
         })()}
       </div>
+      </div>
+      {/* Next to the calendar: the filters, the figures, the detective and
+          the links made by hand. */}
+      <div className="inkoop-cal-side">
       {error && <div className="notice danger">{error}</div>}
       {loading ? (
         <div className="notice">Loading...</div>
@@ -19554,6 +19806,13 @@ function InkoopFollowUpTab({ company, matchRound = 0 }) {
           </div>
           <InkoopDetectiveCard from={selectedDay || period.from} to={selectedDay || period.to} company={company} onLinked={() => setPairsKey((value) => value + 1)} />
           <InkoopManualPairsCard from={selectedDay || period.from} to={selectedDay || period.to} refreshKey={pairsKey} onChanged={() => load().catch(() => {})} />
+        </>
+      )}
+      </div>
+      </div>
+      <InkoopOverviewTable from={selectedDay || period.from} to={selectedDay || period.to} company={company} bwChoice={bwFilter} focusDate={selectedDay} title="Invoice vs Connect" />
+      {!loading && !!issues.length && (
+        <>
           {!!pickedList.length && (() => {
             const invoicePieces = pickedLines.reduce((sum, issue) => sum + (Number(issue.detail?.quantity) || 0), 0);
             const invoiceValue = pickedLines.reduce((sum, issue) => sum + (Number(issue.detail?.total) || 0), 0);

@@ -112,6 +112,8 @@ import {
   getInkoopUnmatchedInvoiceTotals,
   getInkoopInvoiceTotalsByCode,
   getInkoopOnlyInConnectTotals,
+  getInkoopOverviewTotals,
+  getInkoopOverviewLines,
   listInkoopInvoiceNumbers,
   saveStateFileSnapshot,
   pruneStateFileHistory,
@@ -10285,6 +10287,26 @@ function deserializeInkoopAggregate(stored) {
 function inkoopNumberOrNull(value) {
   const number = typeof value === "string" ? parseFloat(value) : Number(value);
   return Number.isFinite(number) ? number : null;
+}
+
+// The overview table's statuses per result list.
+const INKOOP_OVERVIEW_STATUS = {
+  matched_ok: "matched", matched_mismatch: "mismatch",
+  only_in_invoice: "not_matched", supplier_not_linked: "not_matched", ambiguous_matches: "not_matched",
+  only_in_erp: "connect_only", embalage_lines: "packaging",
+};
+
+// A stored match line's grower (the name of its code, else the invoice's
+// own name) and betaalwijze (its code's; an invoice line without one: A for
+// AI2, else V) -- the overview table's grouping.
+function inkoopOverviewNaming(state) {
+  const codeToName = buildInkoopCodeNameMap(state.supplier_map, state.supplier_name_map, state.supplier_fh_map, state.facturation_groups);
+  const codesOf = (row) => String(row?.supplier_code || "").split(/[\s/+]+/).map((code) => normalizeInkoopKey(code)).filter(Boolean);
+  return {
+    growerOf: (row) => codesOf(row).map((code) => codeToName.get(code)).find(Boolean) || normalizeInkoopSupplierName(row?.supplier_name) || codesOf(row)[0] || "(grower unknown)",
+    bwOf: (row) => codesOf(row).map((code) => state.supplier_bw_map?.[code]?.bw).find(Boolean)
+      || (row?.list === "only_in_erp" ? "?" : /^ai2/i.test(String(row?.invoice_type || row?.invoice_number || "")) ? "A" : "V"),
+  };
 }
 
 // The result lines as table rows (the Data tab).
@@ -25518,6 +25540,46 @@ async function handleApi(req, res, url) {
   // Growers popup drill-down: every invoice line and Connect lot of one
   // grower in a range (matched or not), named the way the popup groups
   // them -- what's behind its Invoice and Connect values.
+  // The overview table: per day, grower, betaalwijze and status (matched /
+  // mismatch / not matched / only in Connect / packaging) the lines and
+  // values, from the stored match lines; /overview-lines: one grower's lines.
+  if ((url.pathname === "/api/inkoop/overview-table" || url.pathname === "/api/inkoop/overview-lines") && req.method === "GET") {
+    if (!requirePermission(res, requestUser, PERMISSIONS.INKOOP_VIEW)) {
+      return;
+    }
+    try {
+      const state = await readInkoopState();
+      const from = String(url.searchParams.get("from") || "").slice(0, 10);
+      const to = String(url.searchParams.get("to") || from).slice(0, 10);
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(from) || !/^\d{4}-\d{2}-\d{2}$/.test(to)) throw new Error("from / to must be YYYY-MM-DD");
+      const company = normalizeUkdocsText(url.searchParams.get("company"));
+      const view = inkoopOverviewNaming(state);
+      const totals = await getInkoopOverviewTotals({ company, from, to });
+      if (url.pathname === "/api/inkoop/overview-table") {
+        sendJson(res, 200, {
+          from, to,
+          rows: totals.map((row) => ({
+            date: row.date, grower: view.growerOf(row), bw: view.bwOf(row), status: INKOOP_OVERVIEW_STATUS[row.list] || row.list,
+            lines: row.lines, invoice_value: Math.round(row.invoice_value * 100) / 100, erp_value: Math.round(row.erp_value * 100) / 100,
+          })),
+        });
+        return;
+      }
+      const grower = normalizeUkdocsText(url.searchParams.get("grower"));
+      const pairs = [...new Map(totals.filter((row) => view.growerOf(row) === grower)
+        .map((row) => [`${row.supplier_code}|${row.supplier_name}`, [row.supplier_code, row.supplier_name]])).values()];
+      const lines = await getInkoopOverviewLines({ company, from, to, pairs });
+      sendJson(res, 200, {
+        from, to, grower,
+        lines: lines.map((row) => ({ ...row, bw: view.bwOf(row), status: INKOOP_OVERVIEW_STATUS[row.list] || row.list })),
+        capped: lines.length >= 3000,
+      });
+    } catch (error) {
+      sendJson(res, 400, { error: error instanceof Error ? error.message : String(error) });
+    }
+    return;
+  }
+
   if (url.pathname === "/api/inkoop/grower-lines" && req.method === "GET") {
     if (!requirePermission(res, requestUser, PERMISSIONS.INKOOP_VIEW)) {
       return;

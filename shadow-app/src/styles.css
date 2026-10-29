@@ -2381,3 +2381,120 @@ button.fin-tile:hover { border-color: var(--fin-series-1); box-shadow: 0 0 14px 
 .fin-hero .checkbox-label, .fin-hero .checkbox-label span { color: var(--fin-text); opacity: 1; }
 .fin-head .row-actions { flex-wrap: wrap; gap: 8px; }
 .fin-head .row-actions input, .fin-head .row-actions select { width: auto; min-width: 140px; }
+
+/* Inkoop: the calendar with its filters / figures beside it, and the
+   drill-down table (day -> grower -> status -> lines), Excel-like. */
+.inkoop-cal-layout {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 16px;
+  align-items: flex-start;
+}
+
+.inkoop-cal-main {
+  flex: 0 1 820px;
+  min-width: 0;
+}
+
+.inkoop-cal-side {
+  flex: 1 1 360px;
+  min-width: 0;
+  display: grid;
+  gap: 8px;
+  align-content: start;
+}
+
+.inkoop-cal-side .inkoop-summary-cards {
+  margin: 0;
+}
+
+.inkoop-cal-side-checks {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px 12px;
+}
+
+.inkoop-xt-card {
+  margin-top: 12px;
+}
+
+.inkoop-xt-wrap {
+  max-height: 75vh;
+}
+
+.inkoop-xtable {
+  border-collapse: collapse;
+  width: 100%;
+  font-size: 0.8em;
+}
+
+.inkoop-xtable th,
+.inkoop-xtable td {
+  border: 1px solid #d9dee4;
+  padding: 2px 6px;
+  white-space: nowrap;
+  text-align: right;
+}
+
+.inkoop-xtable th:first-child,
+.inkoop-xtable td:first-child {
+  text-align: left;
+}
+
+.inkoop-xtable > thead th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background: #eef2f6;
+  font-weight: 600;
+}
+
+.inkoop-xtable.kv {
+  width: auto;
+  font-size: 0.85em;
+}
+
+.inkoop-xtable.kv th {
+  position: static;
+  text-align: left;
+}
+
+.inkoop-xtable.inner td {
+  white-space: normal;
+  text-align: left;
+}
+
+.inkoop-xt-row {
+  cursor: pointer;
+}
+
+.inkoop-xt-row:hover {
+  background: #f3f7fb;
+}
+
+.inkoop-xt-row.l1 td {
+  font-weight: 600;
+  background: #f7f9fb;
+}
+
+.inkoop-xt-row.l1.period td {
+  background: #e8f1ea;
+}
+
+.inkoop-xt-row.l1.focus td {
+  background: #fff6db;
+}
+
+.inkoop-xt-l2 {
+  padding-left: 22px !important;
+}
+
+.inkoop-xt-l3 {
+  padding-left: 40px !important;
+  font-style: italic;
+}
+
+.inkoop-xt-lines > td {
+  padding: 4px 6px 8px 56px !important;
+  background: #fbfcfd;
+}
