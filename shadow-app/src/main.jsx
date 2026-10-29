@@ -17028,19 +17028,23 @@ function InkoopControlePage({ currentUser }) {
 
   return (
     <section className="overview-stack">
-      <div className="row-actions spread-actions">
-        <label>
-          <span>Company</span>
-          <select value={selectedCompany} onChange={(event) => setSelectedCompany(event.target.value)}>
-            <option value="">All companies</option>
-            {companies.map((company) => (
-              <option key={company.company_number} value={company.company_number}>
-                {company.company_number}{company.company_name ? ` - ${company.company_name}` : ""}
-              </option>
-            ))}
-          </select>
-        </label>
-      </div>
+      {/* Only on the tabs that filter by it (Overview, Corrections, King,
+          Growers, Link growers and Settings are for every company). */}
+      {INKOOP_COMPANY_TABS.has(activeTab) && (
+        <div className="row-actions spread-actions">
+          <label>
+            <span>Company</span>
+            <select value={selectedCompany} onChange={(event) => setSelectedCompany(event.target.value)}>
+              <option value="">All companies</option>
+              {companies.map((company) => (
+                <option key={company.company_number} value={company.company_number}>
+                  {company.company_number}{company.company_name ? ` - ${company.company_name}` : ""}
+                </option>
+              ))}
+            </select>
+          </label>
+        </div>
+      )}
 
       <div className="tab-strip">
         <button type="button" className={activeTab === "overview" ? "active" : ""} onClick={() => setActiveTab("overview")}>Overview</button>
@@ -19620,6 +19624,9 @@ function InkoopFollowUpTab({ company, matchRound = 0 }) {
 // (the AI2 nota) -- the Connect side's default, or AI2 growers (Dutch Green
 // Centre) show their invoices against no Connect value.
 const INKOOP_INVOICED_BW = ["V", "A"];
+
+// The Inkoop Controle tabs the company choice filters.
+const INKOOP_COMPANY_TABS = new Set(["compare", "calendar", "dashboard", "followup", "search", "data"]);
 
 const INKOOP_BW_LABELS = {
   A: "AI2",
