@@ -25624,6 +25624,17 @@ async function handleApi(req, res, url) {
       // the Calendar/day-report/today-summary views via
       // buildInkoopAggregateContext so all of them agree.
       const issues = [];
+      // Per grower and betaalwijze, the whole picture (the popup's Invoice /
+      // Connect): every invoice line, and the Connect side -- a matched lot
+      // for its invoice line's grower (with the line's BW, so a matched pair
+      // never differs), the free lots for their own grower.
+      const growerTotals = new Map();
+      const addTotal = (grower, bw, side, value) => {
+        const key = `${grower}|${bw}`;
+        const entry = growerTotals.get(key) || { grower, bw, invoice_value: 0, connect_value: 0 };
+        entry[side] = Math.round((entry[side] + (Number(value) || 0)) * 100) / 100;
+        growerTotals.set(key, entry);
+      };
       for (const day of dayBundles) {
       const result = filterInkoopResultsByCompany(day.result, company);
       const { aggregateResult: dayAggregate, codeToName, validSupplierCodes, supplierMap, supplierNameMap, manualLinks, supplierFhMap } = day.aggregateContext;
@@ -25687,6 +25698,18 @@ async function handleApi(req, res, url) {
           if (name && !bwOfGrower.has(name)) bwOfGrower.set(name, bwOfInvoice(row));
         }
       }
+      for (const key of ["matched_ok", "matched_mismatch", "only_in_invoice", "supplier_not_linked", "ambiguous_matches"]) {
+        for (const row of result[key] || []) {
+          if (inkoopInvoiceLineIsNotAPurchase(row)) continue;
+          const grower = growerOfInvoice(row);
+          const bw = bwOfInvoice(row);
+          addTotal(grower, bw, "invoice_value", inkoopInvoiceLineTotal(row));
+          if (row.erp_row && (key === "matched_ok" || key === "matched_mismatch")) addTotal(grower, bw, "connect_value", inkoopErpRowTotal(row.erp_row));
+        }
+      }
+      for (const row of result.only_in_erp || []) {
+        addTotal(inkoopGrowerNameForErpRow(row, codeToName, validSupplierCodes) || normalizeUkdocsText(row?.suppl), bwOfErp(row), "connect_value", inkoopErpRowTotal(row));
+      }
       for (const mismatch of aggregateResult.mismatches) {
         const pieceDiff = mismatch.invoice_pieces - mismatch.erp_pieces;
         const valueDiff = mismatch.invoice_value - mismatch.erp_value;
@@ -25719,7 +25742,7 @@ async function handleApi(req, res, url) {
       });
       const filtered = showResolved ? merged : merged.filter((issue) => issue.status !== "resolved");
       filtered.sort((left, right) => right.value - left.value);
-      sendJson(res, 200, { issues: filtered, from: range.from, to: range.to, pending_days: dayBundles.pending_days || [] });
+      sendJson(res, 200, { issues: filtered, grower_totals: [...growerTotals.values()], from: range.from, to: range.to, pending_days: dayBundles.pending_days || [] });
     } catch (error) {
       sendJson(res, 400, { error: error instanceof Error ? error.message : String(error) });
     }

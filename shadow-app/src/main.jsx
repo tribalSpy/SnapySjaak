@@ -18093,6 +18093,9 @@ function InkoopGrowerLines({ from, to, company, grower, side }) {
 
 function InkoopGrowerPopup({ from, to, types, title, company, onClose }) {
   const [issues, setIssues] = useState(null);
+  // Per grower and BW: all invoice lines and all Connect lots (matched ones
+  // too) -- the Invoice / Connect columns, not only the open lines'.
+  const [growerTotals, setGrowerTotals] = useState(null);
   const [error, setError] = useState("");
   const [bwFilter, setBwFilter] = useState(INKOOP_INVOICED_BW);
   // Clicked: a grower's invoice lines, Connect lots, or both.
@@ -18103,7 +18106,11 @@ function InkoopGrowerPopup({ from, to, types, title, company, onClose }) {
     const params = new URLSearchParams({ from, to });
     if (company) params.set("company", company);
     apiJson(`/api/inkoop/issues?${params.toString()}`)
-      .then((payload) => { if (!cancelled) setIssues(payload.issues || []); })
+      .then((payload) => {
+        if (cancelled) return;
+        setIssues(payload.issues || []);
+        setGrowerTotals(Array.isArray(payload.grower_totals) ? payload.grower_totals : null);
+      })
       .catch((loadError) => { if (!cancelled) setError(loadError.message); });
     return () => { cancelled = true; };
   }, [from, to, company]);
@@ -18114,8 +18121,25 @@ function InkoopGrowerPopup({ from, to, types, title, company, onClose }) {
   }, [onClose]);
   const ofType = (issues || []).filter((issue) => !types || types.includes(issue.issue_type));
   const shown = ofType.filter((issue) => !bwFilter || bwFilter.includes(issue.bw || "?"));
-  const groups = inkoopGroupIssuesByGrower(shown);
-  const net = shown.reduce((sum, issue) => sum + (Number(issue.money_diff) || 0), 0);
+  // All lines (no type filter): the grower's whole invoice and Connect value
+  // of the ticked BWs -- a matched pair is in both, only what's open differs.
+  const totalsByGrower = new Map();
+  if (!types && growerTotals) {
+    for (const entry of growerTotals) {
+      if (bwFilter && !bwFilter.includes(entry.bw || "?")) continue;
+      const total = totalsByGrower.get(entry.grower) || { invoice: 0, connect: 0 };
+      total.invoice += Number(entry.invoice_value) || 0;
+      total.connect += Number(entry.connect_value) || 0;
+      totalsByGrower.set(entry.grower, total);
+    }
+  }
+  const groups = inkoopGroupIssuesByGrower(shown).map((group) => {
+    const total = totalsByGrower.get(group.grower);
+    if (!total) return group;
+    const difference = Math.round((total.invoice - total.connect) * 100) / 100;
+    return { ...group, invoice_value: total.invoice, connect_value: total.connect, money_diff: difference, pct_vs_connect: total.connect > 0 ? (difference / total.connect) * 100 : null };
+  });
+  const net = groups.reduce((sum, group) => sum + (Number(group.money_diff) || 0), 0);
   return (
     <div className="fin-modal-backdrop" onClick={onClose}>
       <div className="fin-hero fin-modal" onClick={(event) => event.stopPropagation()}>
