@@ -9853,12 +9853,17 @@ function inkoopDetectiveCheck(lines, lots) {
   const namedLots = lots.filter((lot) => lineWords.some((word) => `${lot.description} ${lot.uniware}`.toUpperCase().replace(/[^A-Z]/g, "").includes(word))).length;
   // Every name word found counts: PASTELA ROSE is "Pastela Rose" before "Pastela Pink".
   const nameWords = lines.reduce((sum, line) => sum + inkoopDetectiveWords(line.description).filter((word) => lotNames.includes(word)).length, 0);
+  // Per box, when the invoice lines have it: 5 x 50 against 5 x 50 fits,
+  // 2 x 125 against 5 x 50 doesn't (null: not known).
+  const linePerBox = new Set(lines.map((line) => Number(line.per_box) || 0));
+  const lotPerBox = new Set(lots.map((lot) => Number(lot.per_box) || 0));
+  const samePerBox = linePerBox.has(0) || lotPerBox.has(0) ? null : [...linePerBox].every((value) => lotPerBox.has(value));
   const dates = [...lines.map((line) => line.date), ...lots.map((lot) => lot.date)].filter(Boolean).map((date) => Date.parse(date));
   const spanDays = dates.length ? Math.round((Math.max(...dates) - Math.min(...dates)) / 86400000) : 0;
   return {
     same_pieces: Math.abs(linePieces - lotPieces) < 0.5, same_total: Math.abs(lineValue - lotValue) <= 0.02,
     invoice_pieces: linePieces, connect_pieces: lotPieces, invoice_value: lineValue, connect_value: lotValue,
-    difference: round2(lineValue - lotValue), named_lines: named, named_lots: namedLots, name_words: nameWords, span_days: spanDays,
+    difference: round2(lineValue - lotValue), named_lines: named, named_lots: namedLots, name_words: nameWords, span_days: spanDays, same_per_box: samePerBox,
   };
 }
 
@@ -9964,7 +9969,7 @@ function inkoopDetectiveSuggestions(lines, lots) {
       if (!allNamed && !(check.same_total && check.same_pieces && check.span_days <= 1)) continue;
       // A one-to-one pair at the same price and pieces the rules already
       // look at: only worth showing when the name fits.
-      const score = (allNamed ? 4 : 0) + Math.min(3, check.name_words / lineSet.length - 1) + (check.same_total ? 3 : 0) + (check.same_pieces ? 2 : 0) + (check.span_days === 0 ? 1 : 0)
+      const score = (allNamed ? 4 : 0) + Math.min(3, check.name_words / lineSet.length - 1) + (check.same_total ? 3 : 0) + (check.same_pieces ? 2 : 0) + (check.span_days === 0 ? 1 : 0) + (check.same_per_box === true ? 1 : check.same_per_box === false ? -1 : 0)
         - (lineSet.length + lotSet.length - 2) - Math.min(3, Math.abs(check.difference) / Math.max(1, check.invoice_value) * 10);
       candidates.push({ line_ids: lineSet.map((line) => line.id), lots: lotSet.map((lot) => lot.lot), kind: check.same_pieces && check.same_total ? "same pieces and total" : check.same_pieces ? "same pieces, other price" : "same total, other pieces", score: Math.round(score * 10) / 10, ...check });
     }
