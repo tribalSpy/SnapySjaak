@@ -17236,7 +17236,11 @@ function InkoopTrackTraceWorkspace({ bar, setBar, overview, company, matchRound 
     if (key === "name") return String(left.description || "").localeCompare(String(right.description || ""));
     return inkoopIssueInvoiceDay(left).localeCompare(inkoopIssueInvoiceDay(right)) || priceOf(left) - priceOf(right);
   };
-  const leftIssues = growerIssues.filter((issue) => issue.issue_type !== "gap_erp").sort(sorter(sorts.left));
+  // Matched lines stay out (they're in the matched fold above) -- except one
+  // matched short in pieces (FA5N2DA: 6500 on the invoice, 4125 in its
+  // lot), which may need another lot linked.
+  const piecesShort = (issue) => issue.issue_type === "mismatch" && (issue.detail?.diffs || []).some((diff) => diff.field === "quantity");
+  const leftIssues = growerIssues.filter((issue) => issue.issue_type === "gap_invoice" || piecesShort(issue)).sort(sorter(sorts.left));
   const rightIssues = growerIssues.filter((issue) => issue.issue_type === "gap_erp").sort(sorter(sorts.right));
 
   // Linking (as the Follow-up): ticked lines and lots; a ticked mismatch
@@ -17313,7 +17317,7 @@ function InkoopTrackTraceWorkspace({ bar, setBar, overview, company, matchRound 
         </span>
         <button type="button" className="ik-item-body" onClick={() => openDrawer(issue)} title="Status, who's checking, note">
           <span className="ik-item-top">
-            <span>{issue.issue_type === "mismatch" ? "⚠" : "✗"} {fustOverviewDate(inkoopIssueInvoiceDay(issue))}</span>
+            <span title={issue.issue_type === "mismatch" ? "Matched, but the pieces differ: link the missing lot(s)" : "No Connect lot"}>{issue.issue_type === "mismatch" ? "⚠ pieces" : "✗"} {fustOverviewDate(inkoopIssueInvoiceDay(issue))}</span>
             <strong>{issue.description}</strong>
             <span className="ik-item-money">{priceOf(issue) ? `${formatInkoopEuro(priceOf(issue))}/pc · ` : ""}{formatInkoopEuro(issue.value)}</span>
           </span>
@@ -17392,7 +17396,7 @@ function InkoopTrackTraceWorkspace({ bar, setBar, overview, company, matchRound 
             )}
             <div className="ik-split-view">
               <div className="data-table-card ik-card ik-side inv">
-                <div className="ik-side-head"><strong>Invoice lines without (all) their lot</strong><span className="muted">{leftIssues.length}</span>{sortSelect("left")}</div>
+                <div className="ik-side-head"><strong>Invoice lines without their lot</strong><span className="muted">{leftIssues.length}</span>{sortSelect("left")}</div>
                 {!issues ? <div className="muted">Loading…</div> : leftIssues.length ? leftIssues.map((issue) => issueRow(issue, "inv")) : <div className="muted">✓ Nothing open on the invoice side.</div>}
               </div>
               <div className="data-table-card ik-card ik-side con">
