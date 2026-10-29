@@ -19138,7 +19138,7 @@ function InkoopDetectiveCard({ from, to, company, onLinked }) {
   return (
     <InkoopCollapsibleCard title={`Detective -- leftovers ${from === to ? fustOverviewDate(from) : `${fustOverviewDate(from)} - ${fustOverviewDate(to)}`}`} count={data ? data.growers.reduce((sum, group) => sum + group.suggestions.length, 0) : undefined} defaultOpen={false}>
       <div className="notice">
-        Open invoice lines and free Connect lots of one grower that fit together: <strong>the same pieces at another price</strong> (a price typed wrong: Limoncello 480 @ 0.58 + 320 @ 0.53 = lot 800 @ 0.53, €24 too much) or <strong>the same total in other pieces</strong> (resold per 5 / 10), within 4 days, with the name. The differences are worked out here.
+        Open invoice lines and free Connect lots of one grower that fit together: <strong>the same pieces at another price</strong> (a price typed wrong: Limoncello 480 @ 0.58 + 320 @ 0.53 = lot 800 @ 0.53, €24 too much) or <strong>the same total in other pieces</strong> (resold per 5 / 10), within 4 days, with the name -- the 4 days around the chosen ones are searched too (a line of 14-10, its lot booked on 17-10); only groups with a line or lot of the chosen days are shown. The differences are worked out here.
         <strong> Accept</strong> links them by hand -- the comparison then counts them as matched and the difference as a mistake. <strong>Ask the AI</strong> sends a grower's leftovers to the LLM poller for a summary of what happened and the pairs it would make; nothing is linked without Accept.
       </div>
       <div className="row-actions">

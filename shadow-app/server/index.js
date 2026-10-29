@@ -9862,8 +9862,11 @@ function inkoopDetectiveCheck(lines, lots) {
   };
 }
 
+// The days around the period too (a line of 14-10, its lot booked on
+// 17-10): only groups with a line or lot of the period itself are shown.
 async function inkoopDetectiveSearch(state, range, company, onlyGrower) {
-  const days = await computeInkoopDays(state, range.from, range.to);
+  const days = await computeInkoopDays(state, addDaysToIsoDate(range.from, -INKOOP_DAY_TOLERANCE_DAYS), addDaysToIsoDate(range.to, INKOOP_DAY_TOLERANCE_DAYS));
+  const inPeriod = (date) => Boolean(date) && date >= range.from && date <= range.to;
   const wanted = normalizeUkdocsText(onlyGrower).toLowerCase();
   const growers = new Map();
   const seenLines = new Set();
@@ -9901,7 +9904,12 @@ async function inkoopDetectiveSearch(state, range, company, onlyGrower) {
     const orphans = orphanLots.filter((lot) => [...words].some((word) => `${lot.description} ${lot.uniware}`.toUpperCase().replace(/[^A-Z]/g, "").includes(word)));
     const lines = [...group.lines].sort((left, right) => right.total - left.total).slice(0, 300);
     const lots = [...group.lots, ...orphans].sort((left, right) => right.total - left.total).slice(0, 300);
-    list.push({ grower: group.grower, lines, lots, suggestions: inkoopDetectiveSuggestions(lines, lots) });
+    if (!lines.some((line) => inPeriod(line.date)) && !lots.some((lot) => inPeriod(lot.date))) continue;
+    const lineDate = new Map(lines.map((line) => [line.id, line.date]));
+    const lotDate = new Map(lots.map((lot) => [lot.lot, lot.date]));
+    const suggestions = inkoopDetectiveSuggestions(lines, lots)
+      .filter((item) => item.line_ids.some((id) => inPeriod(lineDate.get(id))) || item.lots.some((lot) => inPeriod(lotDate.get(lot))));
+    list.push({ grower: group.grower, lines, lots, suggestions, period_lines: lines.filter((line) => inPeriod(line.date)).length });
   }
   list.sort((left, right) => right.lines.reduce((sum, line) => sum + line.total, 0) - left.lines.reduce((sum, line) => sum + line.total, 0));
   return { growers: list };
