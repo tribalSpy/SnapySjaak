@@ -7123,6 +7123,50 @@ function inkoopBestNamedRow(rows, line) {
   return scored[0].row;
 }
 
+// Among lots with the same pieces and price only: the name with the short
+// words too (2+ letters) -- "HED HE GEM 3 SRT" shares HED HE GEM SRT with
+// "Hed He Gem 3 Srt" and only GEM SRT with "Ro Pathit Gem 5 Srt", where the
+// 4-letter words found nothing (both 0).
+function inkoopFineNameScore(line, row) {
+  const words = (text) => new Set(String(text || "").toUpperCase().split(/[^A-Z]+/).filter((word) => word.length >= 2));
+  // Looked for inside the lot's name: CALLU NOVA in "Callunova Twins".
+  const lotName = inkoopLotNameText(row).toUpperCase().replace(/[^A-Z]/g, "");
+  let shared = 0;
+  for (const word of words(line?.description)) if (lotName.includes(word)) shared += 1;
+  const vbn = String(line?.vbn_code || "").replace(/^0+/, "").trim();
+  return shared + (vbn && inkoopLotVbnCodes(row).has(vbn) ? 3 : 0);
+}
+
+function inkoopFineNamedRow(rows, line) {
+  const scored = rows.map((row) => ({ row, score: inkoopFineNameScore(line, row) })).sort((left, right) => right.score - left.score);
+  if (!scored.length || !(scored[0].score > 0)) return null;
+  if (scored.length > 1 && scored[1].score === scored[0].score) return null;
+  return scored[0].row;
+}
+
+// Lines and lots all alike in pieces and price: each line first the lot
+// with clearly its own name (the biggest lead first), the rest in order --
+// SCHEF AR CHARLOTTE / ANTHU AN MADURAL used to swap their lots.
+function inkoopPairByName(entries, candidates) {
+  const free = [...candidates];
+  const pairs = new Map();
+  for (;;) {
+    let best = null;
+    for (const entry of entries) {
+      if (pairs.has(entry)) continue;
+      const scored = free.map((row) => ({ row, score: inkoopFineNameScore(entry, row) })).sort((left, right) => right.score - left.score);
+      if (!scored.length || !(scored[0].score > 0) || (scored.length > 1 && scored[1].score === scored[0].score)) continue;
+      const lead = scored[0].score - (scored[1]?.score || 0);
+      if (!best || lead > best.lead) best = { entry, row: scored[0].row, lead };
+    }
+    if (!best) break;
+    pairs.set(best.entry, best.row);
+    free.splice(free.indexOf(best.row), 1);
+  }
+  for (const entry of entries) if (!pairs.has(entry) && free.length) pairs.set(entry, free.shift());
+  return pairs;
+}
+
 function inkoopDescriptionsShareName(invoiceDescription, connectDescription) {
   const connectWords = inkoopDescriptionWords(connectDescription);
   if (!connectWords.size) return false;
@@ -7758,7 +7802,13 @@ function matchInkoopVeilingLines(erpRows, invoices, supplierMap = {}, supplierNa
     // The lot whose name fits clearly best -- not just any lot sharing one
     // word (every Anthurium shares "ANTHU").
     if (picked.ambiguous) {
-      const named = inkoopBestNamedRow(picked.candidates || [], line);
+      // Still none clearly by name on the line's own day: the lot of the
+      // same pieces and price within 4 days whose name clearly fits best
+      // (16-10 RO PATHIT GEM 5 SRT: "Ro Pathit Gem 5 Srt" of 19-10).
+      const lineDay = Date.parse(normalizeUkdocsText(line?.invoice_date).slice(0, 10));
+      const nearExact = candidates.filter((row) => !consumedErpRows.has(row) && !inkoopValuesDiffer(row.pieces, line.quantity) && priceFits(row, line.unit_price)
+        && !(Math.abs(Date.parse(String(row?.date || "").slice(0, 10)) - lineDay) / 86400000 > 4));
+      const named = inkoopBestNamedRow(picked.candidates || [], line) || inkoopFineNamedRow(picked.candidates || [], line) || inkoopFineNamedRow(nearExact, line);
       if (named) picked = { row: named, ambiguous: false };
     } else if (!picked.row || (inkoopValuesDiffer(picked.row.pieces, line.quantity) && !priceFits(picked.row, line.unit_price) && !nameMatches(picked.row))) {
       const named = inkoopBestNamedRow(candidates.filter((row) => !consumedErpRows.has(row)
@@ -8091,9 +8141,10 @@ function matchInkoopVeilingLines(erpRows, invoices, supplierMap = {}, supplierNa
         consumedErpRows.add(candidate);
       }
       // One lot per line (all the same pieces and price): the Connect value
-      // counts too (without a lot it was in no total).
-      group.entries.forEach((entry, index) => {
-        matchedOk.push({ ...entry, erp_row: group.candidates[index], matched_as_group: true });
+      // counts too (without a lot it was in no total). By name first.
+      const pairs = inkoopPairByName(group.entries, group.candidates);
+      group.entries.forEach((entry) => {
+        matchedOk.push({ ...entry, erp_row: pairs.get(entry), matched_as_group: true });
       });
     } else {
       // The same party bought more than once (same brief number, pieces
@@ -8101,11 +8152,12 @@ function matchInkoopVeilingLines(erpRows, invoices, supplierMap = {}, supplierNa
       // with one as far as they go; only the rest stays unmatched (lines
       // left -> only in invoice, lots left -> only in Connect).
       const free = group.candidates.filter((candidate) => !consumedErpRows.has(candidate));
-      const pairs = Math.min(free.length, group.entries.length);
-      group.entries.forEach((entry, index) => {
-        if (index < pairs) {
-          consumedErpRows.add(free[index]);
-          matchedOk.push({ ...entry, erp_row: free[index], matched_as_group: true });
+      const pairs = inkoopPairByName(group.entries, free);
+      group.entries.forEach((entry) => {
+        const row = pairs.get(entry);
+        if (row) {
+          consumedErpRows.add(row);
+          matchedOk.push({ ...entry, erp_row: row, matched_as_group: true });
         } else {
           onlyInInvoice.push(entry);
         }
@@ -10132,7 +10184,7 @@ const INKOOP_EMPTY_DAY_BUCKET = {
 // compared again once (at start-up), not only days whose data changed.
 // 2026-10-21: grower directory (learned links, Handel evidence), supplier
 // pairs stored on the invoice date.
-const INKOOP_MATCH_RULES_VERSION = "2026-10-28i";
+const INKOOP_MATCH_RULES_VERSION = "2026-10-29a";
 
 function inkoopStateFingerprint(state) {
   return crypto.createHash("sha1").update(JSON.stringify([
