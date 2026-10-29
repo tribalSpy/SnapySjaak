@@ -6118,6 +6118,8 @@ function UkdocsPrintPage({ currentUser }) {
                     visibleKeys.add("ipaffs_file");
                     visibleKeys.add("ipaffs_plants_file");
                   }
+                  // Uploaded on Phyto inspection; here in All linked files.
+                  visibleKeys.delete("extra_docs");
                   return visibleKeys.has(documentDefinition.key);
                 }).map((documentDefinition) => {
                   const document = documentDefinition.key === "phyto"
