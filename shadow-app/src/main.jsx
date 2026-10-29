@@ -19003,7 +19003,8 @@ function InkoopOverviewGrowerLines({ from, to, company, grower, bwChoice, column
 // day -> its growers -> matched / not matched / only in Connect -> the lines.
 // A grower under "Period total" nets all its days: an invoice of the 16th
 // that Connect has on the 19th balances there.
-function InkoopOverviewTable({ from, to, company, bwChoice, focusDate = "", title = "Overview" }) {
+// onRangeChange: told the From / to chosen (the Detective follows it).
+function InkoopOverviewTable({ from, to, company, bwChoice, focusDate = "", title = "Overview", onRangeChange = null }) {
   const [rows, setRows] = useState(null);
   const [error, setError] = useState("");
   const [range, setRange] = useState({ from, to });
@@ -19025,6 +19026,7 @@ function InkoopOverviewTable({ from, to, company, bwChoice, focusDate = "", titl
   });
   const span = columns.length + 1;
   useEffect(() => { setRange({ from, to }); }, [from, to]);
+  useEffect(() => { if (onRangeChange && range.from && range.to && range.from <= range.to) onRangeChange(range); }, [range.from, range.to]); // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => {
     if (focusDate) setOpenDays(new Set([focusDate]));
   }, [focusDate]);
@@ -19645,6 +19647,10 @@ function InkoopFollowUpTab({ company, matchRound = 0 }) {
   const [picked, setPicked] = useState({});
   const [pairNote, setPairNote] = useState("");
   const [pairsKey, setPairsKey] = useState(0);
+  // The overview table's From / to: the Detective and Linked by hand look at
+  // the same days.
+  const [tableRange, setTableRange] = useState(null);
+  const lookRange = tableRange || { from: selectedDay || period.from, to: selectedDay || period.to };
   const pickKey = (issue) => (issue.issue_type === "gap_erp" ? (issue.erp_row?.lot ? `lot:${issue.erp_row.lot}` : "") : (issue.issue_type === "gap_invoice" || issue.issue_type === "mismatch") && issue.detail?.id ? `line:${issue.detail.id}` : "");
   const pickedList = Object.values(picked);
   const pickedLines = pickedList.filter((issue) => issue.issue_type !== "gap_erp");
@@ -19830,13 +19836,13 @@ function InkoopFollowUpTab({ company, matchRound = 0 }) {
             <div className="inkoop-summary-card"><div className="inkoop-summary-value">{formatInkoopEuro(shownIssues.reduce((sum, issue) => sum + (Number(issue.value) || 0), 0))}</div><div className="inkoop-summary-label">Value at stake</div></div>
             <div className="inkoop-summary-card"><div className="inkoop-summary-value"><InkoopMoneyDiff value={shownIssues.reduce((sum, issue) => sum + (Number(issue.money_diff) || 0), 0)} /></div><div className="inkoop-summary-label">Net (invoice − Connect)</div></div>
           </div>
-          <InkoopDetectiveCard from={selectedDay || period.from} to={selectedDay || period.to} company={company} onLinked={() => setPairsKey((value) => value + 1)} />
-          <InkoopManualPairsCard from={selectedDay || period.from} to={selectedDay || period.to} refreshKey={pairsKey} onChanged={() => load().catch(() => {})} />
+          <InkoopDetectiveCard from={lookRange.from} to={lookRange.to} company={company} onLinked={() => setPairsKey((value) => value + 1)} />
+          <InkoopManualPairsCard from={lookRange.from} to={lookRange.to} refreshKey={pairsKey} onChanged={() => load().catch(() => {})} />
         </>
       )}
       </div>
       </div>
-      <InkoopOverviewTable from={selectedDay || period.from} to={selectedDay || period.to} company={company} bwChoice={bwFilter} focusDate={selectedDay} title="Invoice vs Connect" />
+      <InkoopOverviewTable from={selectedDay || period.from} to={selectedDay || period.to} company={company} bwChoice={bwFilter} focusDate={selectedDay} title="Invoice vs Connect" onRangeChange={setTableRange} />
       {!loading && !!issues.length && (
         <>
           {!!pickedList.length && (() => {
