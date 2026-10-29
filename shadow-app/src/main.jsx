@@ -19178,7 +19178,8 @@ function InkoopDetectiveCard({ from, to, company, onLinked }) {
                 </table>
               </div>
             )}
-            {askState?.status === "failed" && <div className="notice danger">AI: {askState.error || "failed"}</div>}
+            {askState?.status === "failed" && <div className="notice danger">AI{askState.agent_name ? ` (poller ${askState.agent_name})` : ""}: {askState.error || "failed"}</div>}
+            {askState?.status === "done" && askState.agent_name && <div className="muted">Answered by poller {askState.agent_name}</div>}
             {askState?.status === "done" && (
               <>
                 <div className="notice info"><strong>AI summary:</strong> {askState.summary || "(no summary)"}{askState.unexplained ? <div style={{ marginTop: 4 }}><strong>Still open:</strong> {askState.unexplained}</div> : null}</div>

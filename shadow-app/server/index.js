@@ -25552,7 +25552,7 @@ async function handleApi(req, res, url) {
       sendJson(res, 404, { error: "Not found" });
       return;
     }
-    sendJson(res, 200, { status: job.status, error: job.error_text || "", ...(job.status === "done" ? inkoopDetectiveAnswer(job) : {}) });
+    sendJson(res, 200, { status: job.status, error: job.error_text || "", agent_name: job.agent_name || "", ...(job.status === "done" ? inkoopDetectiveAnswer(job) : {}) });
     return;
   }
 
