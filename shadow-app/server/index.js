@@ -9982,7 +9982,7 @@ function inkoopDetectivePrompt(group) {
   return [
     {
       role: "system",
-      content: "You check a flower wholesaler's purchases: FloraHolland invoice lines against the Connect (stock) lots of the same grower. Every listed line and lot is still unpaired. Find what probably belongs together and why: a price typed wrong, a brief number typed wrong, one purchase split differently over lines and lots, resold per 5/10 (a lot 'x5 ...' is the invoice line with pieces / 5 and price x 5, the same total), booked a day or two later, or booked under another name. Only pair what you can explain. Never invent ids. Answer in JSON only: {\"summary\": \"3-6 sentences in English: what happened with this grower's leftovers\", \"pairs\": [{\"line_ids\": [\"...\"], \"lots\": [\"...\"], \"reason\": \"one sentence\", \"confidence\": \"high|medium|low\"}], \"unexplained\": \"what stays open and what to check\"}",
+      content: "You check a flower wholesaler's purchases: FloraHolland invoice lines against the Connect (stock) lots of the same grower. Every listed line and lot is still unpaired. Find what probably belongs together and why: a price typed wrong, a brief number typed wrong, one purchase split differently over lines and lots, resold per 5/10 (a lot 'x5 ...' is the invoice line with pieces / 5 and price x 5, the same total), booked a day or two later, or booked under another name. Only pair what you can explain. Never invent ids. Answer in JSON only: {\"summary\": \"3-6 sentences in English: what happened with this grower's leftovers\", \"pairs\": [{\"line_ids\": [\"...\"], \"lots\": [\"...\"], \"reason\": \"one sentence\", \"confidence\": \"high|medium|low\"}], \"unexplained\": \"one or two sentences, no list of ids: what stays open and what to check\"}. Each id at most once in all pairs.",
     },
     {
       role: "user",
@@ -10002,11 +10002,30 @@ function inkoopDetectivePrompt(group) {
   ];
 }
 
+// An answer cut off at the length cap: the summary and every complete pair
+// before the cut.
+function inkoopSalvageDetectiveJson(text) {
+  const source = String(text || "");
+  const summary = source.match(/"summary"\s*:\s*"((?:[^"\\]|\\.)*)"/)?.[1] || "";
+  const pairs = [];
+  const start = source.indexOf("\"pairs\"");
+  if (start >= 0) {
+    for (const match of source.slice(start).matchAll(/\{[^{}]*"line_ids"[^{}]*\}/g)) {
+      try {
+        pairs.push(JSON.parse(match[0]));
+      } catch {
+        // an incomplete last pair
+      }
+    }
+  }
+  return { summary: summary.replace(/\\"/g, "\""), pairs, unexplained: "" };
+}
+
 // The model's answer, checked: only lines and lots it was given, each once;
 // the difference worked out here.
 function inkoopDetectiveAnswer(job) {
   const content = job?.result_json?.ollama_response?.message?.content || job?.result_json?.ollama_response?.message?.thinking || "";
-  const parsed = extractJsonObjectFromText(content) || {};
+  const parsed = extractJsonObjectFromText(content) || inkoopSalvageDetectiveJson(content);
   const given = job?.payload_json?.detective || {};
   const lineById = new Map((given.lines || []).map((line) => [String(line.id), line]));
   const lotByNumber = new Map((given.lots || []).map((lot) => [String(lot.lot), lot]));
@@ -25507,10 +25526,14 @@ async function handleApi(req, res, url) {
         priority: 20,
         max_attempts: 2,
         payload_json: {
+          // No forced JSON mode: on a laptop without a GPU it kept writing
+          // for 25 minutes; the answer is capped and a cut-off one is read
+          // as far as it goes. INKOOP_DETECTIVE_MODEL picks the model (else
+          // the poller's own).
+          ...(process.env.INKOOP_DETECTIVE_MODEL ? { model: process.env.INKOOP_DETECTIVE_MODEL } : {}),
           messages: inkoopDetectivePrompt(group),
-          format: "json",
           think: false,
-          options: { temperature: 0.1, num_ctx: 16384 },
+          options: { temperature: 0.1, num_ctx: 16384, num_predict: 1500 },
           detective: { grower: group.grower, from: range.from, to: range.to, lines: group.lines.slice(0, 150), lots: group.lots.slice(0, 150) },
         },
       });

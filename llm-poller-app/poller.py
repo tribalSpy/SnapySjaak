@@ -52,6 +52,8 @@ def load_config():
         "poll_interval_seconds": int(env_or_config("SHADOW_POLLER_INTERVAL_SECONDS", config, "poll_interval_seconds", 10) or 10),
         "ollama_url": str(env_or_config("OLLAMA_URL", config, "ollama_url", "http://127.0.0.1:11434")).rstrip("/"),
         "capabilities": config.get("capabilities", ["ollama_chat"]),
+        # How long one Ollama answer may take: a PC without a GPU needs longer.
+        "ollama_timeout_seconds": int(env_or_config("OLLAMA_TIMEOUT_SECONDS", config, "ollama_timeout_seconds", 600) or 600),
     }
     if not isinstance(loaded["capabilities"], list):
         loaded["capabilities"] = ["ollama_chat"]
@@ -113,7 +115,7 @@ def ollama_chat(config: dict, payload: dict):
         data=json.dumps(request_body).encode("utf-8"),
     )
     try:
-        with urllib.request.urlopen(request, timeout=600) as response:
+        with urllib.request.urlopen(request, timeout=config.get("ollama_timeout_seconds", 600)) as response:
             body = response.read().decode("utf-8")
             return json.loads(body) if body else {}
     except urllib.error.HTTPError as error:

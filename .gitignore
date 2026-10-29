@@ -24,3 +24,6 @@ shadow-app/dist/
 shadow-app-contained/
 dist/
 node_modules/
+
+# LLM poller: its own config (API key)
+llm-poller-app/config.json

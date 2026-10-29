@@ -58,6 +58,11 @@ pip install pywin32
 }
 ```
 
+`model_name` must be a name exactly as `ollama list` shows it (a wrong one:
+"Ollama HTTP 404: model ... not found"). `ollama_timeout_seconds` (default
+600) is how long one answer may take -- a PC without a GPU needs more (the
+Inkoop detective on a laptop: 1500). `config.json` is not in git (API key).
+
 ## Render env var
 
 Set this on the Shadow Render service:
