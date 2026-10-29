@@ -25446,7 +25446,8 @@ async function handleApi(req, res, url) {
             if (invoiceSide) invoiceLines.push(lineOut(row, status));
             // The lot behind a match counts for its own grower (it can be
             // booked under another one than the invoice line's).
-            if (row.erp_row && (key === "matched_ok" || key === "matched_mismatch") && growerOfLot(row.erp_row) === wanted) {
+            // ... and for the invoice line's grower: matched is matched.
+            if (row.erp_row && (key === "matched_ok" || key === "matched_mismatch") && (invoiceSide || growerOfLot(row.erp_row) === wanted)) {
               connectLots.push(lotOut(row.erp_row, status, `${row.invoice_number || ""} ${row.reference_bt || ""}`.trim(), String(row.erp_row?.date || "").slice(0, 10)));
             }
           }
