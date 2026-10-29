@@ -25847,10 +25847,20 @@ async function handleApi(req, res, url) {
           transaction_cost: row.transaction_cost || null,
         });
       }
+      // The open lines per grower, day and product (as the day totals key
+      // them): a "Grower total off" row they add up to only repeats them.
+      const openByProduct = new Map();
+      const addOpen = (grower, date, description, field, value) => {
+        const key = inkoopAggregateKey(grower, String(date || "").slice(0, 10), normalizeInkoopProductName(description));
+        const entry = openByProduct.get(key) || { erp: 0, invoice: 0 };
+        entry[field] += value;
+        openByProduct.set(key, entry);
+      };
       for (const row of result.only_in_erp || []) {
         if (inkoopGapIsExplainedByAggregate(row, inkoopGrowerNameForErpRow(row, codeToName, validSupplierCodes), aggregateResult)) {
           continue;
         }
+        addOpen(inkoopGrowerNameForErpRow(row, codeToName, validSupplierCodes), row?.date, row?.description, "erp", inkoopErpRowTotal(row));
         // No invoice side exists for a "missing from invoice" gap -- no
         // invoice_number to link a PDF from, same asymmetry as AVC/company.
         issues.push({
@@ -25864,6 +25874,7 @@ async function handleApi(req, res, url) {
         if (inkoopGapIsExplainedByAggregate(row, invoiceGrowerName, aggregateResult)) {
           continue;
         }
+        addOpen(invoiceGrowerName, row?.invoice_date, row?.description, "invoice", inkoopInvoiceLineTotal(row));
         issues.push({
           id: inkoopIssueId("gap_invoice", row), issue_type: "gap_invoice", date: inkoopDateKeyFromInvoiceAnchor(row), description: row.description, value: inkoopInvoiceLineTotal(row), invoice_number: row.invoice_number || "", erp_row: null, detail: row,
           // An invoice line is FloraHolland: via veiling.
@@ -25890,6 +25901,10 @@ async function handleApi(req, res, url) {
         addTotal(inkoopGrowerNameForErpRow(row, codeToName, validSupplierCodes) || normalizeUkdocsText(row?.suppl), bwOfErp(row), "connect_value", inkoopErpRowTotal(row));
       }
       for (const mismatch of aggregateResult.mismatches) {
+        const open = mismatch.product_name ? openByProduct.get(inkoopAggregateKey(mismatch.grower_name, mismatch.date, mismatch.product_name)) : null;
+        if (open && Math.abs(open.erp - mismatch.erp_value) <= INKOOP_AGGREGATE_VALUE_TOLERANCE && Math.abs(open.invoice - mismatch.invoice_value) <= INKOOP_AGGREGATE_VALUE_TOLERANCE) {
+          continue;
+        }
         const pieceDiff = mismatch.invoice_pieces - mismatch.erp_pieces;
         const valueDiff = mismatch.invoice_value - mismatch.erp_value;
         issues.push({
