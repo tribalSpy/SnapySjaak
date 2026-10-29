@@ -18918,29 +18918,30 @@ const INKOOP_OVERVIEW_STATUSES = [
   ["packaging", "Packaging"],
 ];
 
-function InkoopOverviewCells({ sum }) {
-  const euro = (value) => (value ? formatInkoopEuro(value) : "");
-  const count = (value) => value || "";
-  return (
-    <>
-      <td>{count(sum.invoice_lines)}</td>
-      <td>{euro(sum.invoice_value)}</td>
-      <td>{count(sum.matched_lines)}{sum.mismatch_lines ? <small className="muted"> ⚠{sum.mismatch_lines}</small> : null}</td>
-      <td>{euro(sum.matched_value)}</td>
-      <td className={sum.not_matched_lines ? "money-loss" : ""}>{count(sum.not_matched_lines)}</td>
-      <td className={sum.not_matched_value ? "money-loss" : ""}>{euro(sum.not_matched_value)}</td>
-      <td className={sum.connect_only_lines ? "money-loss" : ""}>{count(sum.connect_only_lines)}</td>
-      <td className={sum.connect_only_value ? "money-loss" : ""}>{euro(sum.connect_only_value)}</td>
-      <td>{euro(sum.connect_value)}</td>
-      <td>{sum.invoice_value || sum.connect_value ? <InkoopMoneyDiff value={sum.difference} /> : ""}</td>
-      <td>{sum.matched_pct === null ? "" : `${sum.matched_pct >= 99.95 ? "✓" : sum.matched_pct < 0.05 ? "✗" : ""} ${sum.matched_pct.toFixed(1)}%`}</td>
-      <td>{euro(sum.packaging_value)}</td>
-    </>
-  );
+// The overview table's columns: [key, header, cell of a sum].
+const inkoopOverviewEuro = (value) => (value ? formatInkoopEuro(value) : "");
+const INKOOP_OVERVIEW_COLUMNS = [
+  ["invoice_lines", "Invoice lines", (sum) => <td>{sum.invoice_lines || ""}</td>],
+  ["invoice_value", "Invoice value", (sum) => <td>{inkoopOverviewEuro(sum.invoice_value)}</td>],
+  ["matched_lines", "Matched lines", (sum) => <td>{sum.matched_lines || ""}{sum.mismatch_lines ? <small className="muted"> ⚠{sum.mismatch_lines}</small> : null}</td>],
+  ["matched_value", "Matched value", (sum) => <td>{inkoopOverviewEuro(sum.matched_value)}</td>],
+  ["not_matched_lines", "Not matched lines", (sum) => <td className={sum.not_matched_lines ? "money-loss" : ""}>{sum.not_matched_lines || ""}</td>],
+  ["not_matched_value", "Not matched value", (sum) => <td className={sum.not_matched_value ? "money-loss" : ""}>{inkoopOverviewEuro(sum.not_matched_value)}</td>],
+  ["connect_only_lines", "Only in Connect", (sum) => <td className={sum.connect_only_lines ? "money-loss" : ""}>{sum.connect_only_lines || ""}</td>],
+  ["connect_only_value", "Only in Connect value", (sum) => <td className={sum.connect_only_value ? "money-loss" : ""}>{inkoopOverviewEuro(sum.connect_only_value)}</td>],
+  ["connect_value", "Connect total", (sum) => <td>{inkoopOverviewEuro(sum.connect_value)}</td>],
+  ["difference", "Difference", (sum) => <td>{sum.invoice_value || sum.connect_value ? <InkoopMoneyDiff value={sum.difference} /> : ""}</td>],
+  ["matched_pct", "Matched %", (sum) => <td>{sum.matched_pct === null ? "" : `${sum.matched_pct >= 99.95 ? "✓" : sum.matched_pct < 0.05 ? "✗" : ""} ${sum.matched_pct.toFixed(1)}%`}</td>],
+  ["packaging_value", "Packaging", (sum) => <td>{inkoopOverviewEuro(sum.packaging_value)}</td>],
+];
+
+function InkoopOverviewCells({ sum, columns }) {
+  return INKOOP_OVERVIEW_COLUMNS.filter(([key]) => columns.includes(key)).map(([key, , cell]) => <Fragment key={key}>{cell(sum)}</Fragment>);
 }
 
 // One grower's lines of a period, per status (levels 3 and 4).
-function InkoopOverviewGrowerLines({ from, to, company, grower, bwChoice }) {
+function InkoopOverviewGrowerLines({ from, to, company, grower, bwChoice, columns }) {
+  const span = columns.length + 1;
   const [data, setData] = useState(null);
   const [error, setError] = useState("");
   const [openStatus, setOpenStatus] = useState(() => new Set(["mismatch", "not_matched", "connect_only"]));
@@ -18954,8 +18955,8 @@ function InkoopOverviewGrowerLines({ from, to, company, grower, bwChoice }) {
       .catch((loadError) => { if (!cancelled) setError(loadError.message); });
     return () => { cancelled = true; };
   }, [from, to, company, grower]);
-  if (error) return <tr><td colSpan="13" className="money-loss">{error}</td></tr>;
-  if (!data) return <tr><td colSpan="13" className="muted inkoop-xt-l3">Loading lines...</td></tr>;
+  if (error) return <tr><td colSpan={span} className="money-loss">{error}</td></tr>;
+  if (!data) return <tr><td colSpan={span} className="muted inkoop-xt-l3">Loading lines...</td></tr>;
   const lines = data.lines.filter((line) => !bwChoice || bwChoice.includes(line.bw || "?"));
   const side = (quantity, price, total) => (total === null || total === undefined ? "-" : `${quantity ?? "?"} × ${price ?? "?"} = ${formatInkoopEuro(total)}`);
   return INKOOP_OVERVIEW_STATUSES.map(([status, label]) => {
@@ -18967,11 +18968,11 @@ function InkoopOverviewGrowerLines({ from, to, company, grower, bwChoice }) {
       <Fragment key={status}>
         <tr className="inkoop-xt-row l3" onClick={() => setOpenStatus((current) => { const next = new Set(current); if (next.has(status)) next.delete(status); else next.add(status); return next; })}>
           <td className="inkoop-xt-l3">{open ? "▾" : "▸"} {label}</td>
-          <InkoopOverviewCells sum={sum} />
+          <InkoopOverviewCells sum={sum} columns={columns} />
         </tr>
         {open && (
           <tr className="inkoop-xt-lines">
-            <td colSpan="13">
+            <td colSpan={span}>
               <table className="inkoop-xtable inner">
                 <thead><tr><th>Date</th><th>Invoice</th><th>Brief / lot</th><th>Product</th><th>Invoice</th><th>Connect</th><th>Difference</th><th>Note</th></tr></thead>
                 <tbody>
@@ -19008,6 +19009,21 @@ function InkoopOverviewTable({ from, to, company, bwChoice, focusDate = "", titl
   const [range, setRange] = useState({ from, to });
   const [openDays, setOpenDays] = useState(() => new Set());
   const [openGrowers, setOpenGrowers] = useState(() => new Set());
+  // The columns shown (ticked), remembered in this browser.
+  const [columns, setColumns] = useState(() => {
+    try {
+      const saved = JSON.parse(window.localStorage.getItem("inkoop-overview-columns") || "null");
+      if (Array.isArray(saved) && saved.length) return saved;
+    } catch { /* per-browser only */ }
+    return INKOOP_OVERVIEW_COLUMNS.map(([key]) => key);
+  });
+  const [pickColumns, setPickColumns] = useState(false);
+  const toggleColumn = (key) => setColumns((current) => {
+    const next = current.includes(key) ? current.filter((item) => item !== key) : [...current, key];
+    try { window.localStorage.setItem("inkoop-overview-columns", JSON.stringify(next)); } catch { /* per-browser only */ }
+    return next;
+  });
+  const span = columns.length + 1;
   useEffect(() => { setRange({ from, to }); }, [from, to]);
   useEffect(() => {
     if (focusDate) setOpenDays(new Set([focusDate]));
@@ -19043,9 +19059,9 @@ function InkoopOverviewTable({ from, to, company, bwChoice, focusDate = "", titl
       <Fragment key={growerKey}>
         <tr className="inkoop-xt-row l2" onClick={() => toggle(setOpenGrowers, growerKey)}>
           <td className="inkoop-xt-l2">{openGrowers.has(growerKey) ? "▾" : "▸"} {grower}</td>
-          <InkoopOverviewCells sum={sum} />
+          <InkoopOverviewCells sum={sum} columns={columns} />
         </tr>
-        {openGrowers.has(growerKey) && <InkoopOverviewGrowerLines from={growerFrom} to={growerTo} company={company} grower={grower} bwChoice={bwChoice} />}
+        {openGrowers.has(growerKey) && <InkoopOverviewGrowerLines from={growerFrom} to={growerTo} company={company} grower={grower} bwChoice={bwChoice} columns={columns} />}
       </Fragment>
     );
   });
@@ -19059,8 +19075,19 @@ function InkoopOverviewTable({ from, to, company, bwChoice, focusDate = "", titl
         <strong>{title}</strong>
         <label className="checkbox-label">From <input type="date" value={range.from} onChange={(event) => setRange((current) => ({ ...current, from: event.target.value }))} /></label>
         <label className="checkbox-label">to <input type="date" value={range.to} onChange={(event) => setRange((current) => ({ ...current, to: event.target.value }))} /></label>
+        <button type="button" onClick={() => setPickColumns((current) => !current)}>Columns ({columns.length}/{INKOOP_OVERVIEW_COLUMNS.length})</button>
         <span className="muted">▸ opens a row: day → grower → status → lines. The period row nets each grower over all its days.</span>
       </div>
+      {pickColumns && (
+        <div className="row-actions inkoop-cal-side-checks" style={{ margin: "4px 0" }}>
+          {INKOOP_OVERVIEW_COLUMNS.map(([key, label]) => (
+            <label key={key} className="checkbox-label">
+              <input type="checkbox" checked={columns.includes(key)} onChange={() => toggleColumn(key)} />
+              <span>{label}</span>
+            </label>
+          ))}
+        </div>
+      )}
       {error && <div className="notice danger">{error}</div>}
       {!rows && !error && <div className="muted">Loading...</div>}
       {rows && (
@@ -19068,9 +19095,8 @@ function InkoopOverviewTable({ from, to, company, bwChoice, focusDate = "", titl
           <table className="inkoop-xtable">
             <thead>
               <tr>
-                <th>Day / grower</th><th>Invoice lines</th><th>Invoice value</th><th>Matched lines</th><th>Matched value</th>
-                <th>Not matched lines</th><th>Not matched value</th><th>Only in Connect</th><th>Only in Connect value</th>
-                <th>Connect total</th><th>Difference</th><th>Matched %</th><th>Packaging</th>
+                <th>Day / grower</th>
+                {INKOOP_OVERVIEW_COLUMNS.filter(([key]) => columns.includes(key)).map(([key, label]) => <th key={key}>{label}</th>)}
               </tr>
             </thead>
             <tbody>
@@ -19078,12 +19104,12 @@ function InkoopOverviewTable({ from, to, company, bwChoice, focusDate = "", titl
                 <Fragment key={entry.key}>
                   <tr className={`inkoop-xt-row l1${entry.key === "period" ? " period" : ""}${focusDate === entry.key ? " focus" : ""}`} onClick={() => toggle(setOpenDays, entry.key)}>
                     <td>{openDays.has(entry.key) ? "▾" : "▸"} {entry.label}</td>
-                    <InkoopOverviewCells sum={inkoopOverviewSum(entry.rows)} />
+                    <InkoopOverviewCells sum={inkoopOverviewSum(entry.rows)} columns={columns} />
                   </tr>
                   {openDays.has(entry.key) && renderGrowers(entry.key, entry.rows, entry.from, entry.to)}
                 </Fragment>
               ))}
-              {!levelOne.length && <tr><td colSpan="13">Nothing compared in this period.</td></tr>}
+              {!levelOne.length && <tr><td colSpan={span}>Nothing compared in this period.</td></tr>}
             </tbody>
           </table>
         </div>
