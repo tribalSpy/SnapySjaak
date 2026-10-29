@@ -17061,7 +17061,7 @@ function InkoopControlePage({ currentUser }) {
         />
       )}
 
-      {activeTab === "followup" && <InkoopFollowUpTab key={`followup-${matchRound}`} company={selectedCompany} />}
+      {activeTab === "followup" && <InkoopFollowUpTab matchRound={matchRound} company={selectedCompany} />}
 
       {activeTab === "dashboard" && <InkoopDashboardTab key={`dashboard-${matchRound}`} company={selectedCompany} />}
 
@@ -19250,7 +19250,7 @@ function InkoopManualPairsCard({ from, to, refreshKey, onChanged }) {
   );
 }
 
-function InkoopFollowUpTab({ company }) {
+function InkoopFollowUpTab({ company, matchRound = 0 }) {
   // A month in a calendar by invoice date; a clicked day narrows the list.
   const [month, setMonth] = useState(() => todayIso().slice(0, 7));
   const [selectedDay, setSelectedDay] = useState("");
@@ -19330,8 +19330,10 @@ function InkoopFollowUpTab({ company }) {
   const typedCounts = {};
   for (const issue of issues.filter((item) => !bwFilter || bwFilter.includes(item.bw || "?"))) typedCounts[issue.issue_type] = (typedCounts[issue.issue_type] || 0) + 1;
 
-  function load() {
-    setLoading(true);
+  // quiet: new comparison results -- the list is refreshed in place (month,
+  // day, ticks and the detective stay as they are).
+  function load({ quiet = false } = {}) {
+    if (!quiet) setLoading(true);
     setError("");
     const params = new URLSearchParams();
     if (company) params.set("company", company);
@@ -19347,6 +19349,14 @@ function InkoopFollowUpTab({ company }) {
     load().catch(() => {});
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [company, showResolved, month]);
+
+  const firstRound = useRef(matchRound);
+  useEffect(() => {
+    if (matchRound === firstRound.current) return;
+    firstRound.current = matchRound;
+    load({ quiet: true }).catch(() => {});
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [matchRound]);
 
   function getDraft(issue) {
     return drafts[issue.id] || { status: issue.status, assigned_to: issue.assigned_to, note: issue.note };
