@@ -15553,18 +15553,6 @@ function InkoopInvoiceLink({ invoiceNumber }) {
 // A compact, readable transcript of the matched ERP line -- so someone
 // checking a mismatch/follow-up item can see the full original record, not
 // just whichever field(s) differed.
-// Pieces with the boxes behind them: "33 × 80 = 2640" (Aantal × Stuks),
-// just the total when the boxes aren't known or don't add up.
-function inkoopPiecesText(total, boxes, perBox) {
-  const pieces = Number(total);
-  const count = Number(boxes);
-  const each = Number(perBox);
-  if (count > 0 && each > 0 && Number.isFinite(pieces) && Math.abs(count * each - pieces) < 0.01) {
-    return `${count} × ${each} = ${pieces}`;
-  }
-  return total ?? "";
-}
-
 // Boxes x pieces per box ("7 × 100") for its own column before the
 // quantity: the invoice line's Aantal x Stuks, else -- an invoice uploaded
 // before those were kept -- its matched Connect lot's Items x Cont. when
@@ -15596,34 +15584,55 @@ function inkoopOnlyConnectOf(row, bwChoice) {
   return Object.entries(row.only_connect_by_bw || {}).filter(([bw]) => bwChoice.includes(bw)).reduce((sum, [, value]) => sum + (Number(value) || 0), 0);
 }
 
+// One way to write an invoice line or a Connect lot everywhere:
+// "16-10-2026 · FA5N2DA · 52 × 125 = 6500 pcs @ €0.34 = €2 210.00 · …".
+function inkoopLineText({ date = "", parts = [], boxes = "", pieces, price, total, extras = [] }) {
+  const money = pieces === undefined || pieces === null || pieces === ""
+    ? ""
+    : `${boxes ? `${boxes} = ` : ""}${pieces} pcs @ ${price === null || price === undefined || price === "" ? "?" : formatInkoopEuro(price)}${total === undefined || total === null || total === "" ? "" : ` = ${formatInkoopEuro(total)}`}`;
+  return [date ? fustOverviewDate(date) : "", ...parts, money, ...extras].map((part) => String(part ?? "").trim()).filter(Boolean).join(" · ");
+}
+
+// The boxes of an invoice line: "4 × 6" when they add up, "4 × 7 ≠" when
+// they don't, "? × ?" when not kept (uploaded before they were).
+function inkoopInvoiceBoxes(quantity, boxes, perBox) {
+  return inkoopBoxesText(quantity, boxes, perBox)
+    || (Number(boxes) > 0 ? `${Number(boxes)} × ${Number(perBox) || "?"} ≠` : "? × ?");
+}
+
 function inkoopInvoiceTranscript(line) {
   if (!line || line.quantity === undefined || line.quantity === null) {
     return "";
   }
-  // Boxes × per box = pieces; boxes that don't multiply out are shown too
-  // (≠), none kept: ? × ? (uploaded before they were kept).
-  const boxes = inkoopBoxesText(line.quantity, line.packages, line.per_package)
-    || (Number(line.packages) > 0 ? `${Number(line.packages)} × ${Number(line.per_package) || "?"} ≠` : "? × ?");
-  return [
-    line.invoice_date ? inkoopShortDate(line.invoice_date) : "",
-    String(line.reference_bt || line.pav || "").trim(),
-    `${boxes ? `${boxes} = ` : ""}${line.quantity} pcs @ ${formatInkoopEuro(line.unit_price)}`,
-    line.total !== undefined && line.total !== null ? `= ${formatInkoopEuro(line.total)}` : "",
-    line.order_number ? `ON ${line.order_number}` : "",
-    line.supplier_name ? String(line.supplier_name).trim() : "",
-  ].filter(Boolean).join(" · ");
+  return inkoopLineText({
+    date: line.invoice_date,
+    parts: [line.reference_bt || line.pav],
+    boxes: inkoopInvoiceBoxes(line.quantity, line.packages, line.per_package),
+    pieces: line.quantity,
+    price: line.unit_price,
+    total: line.total,
+    extras: [line.order_number ? `ON ${line.order_number}` : "", line.supplier_name],
+  });
 }
 
 function inkoopErpTranscript(erpRow) {
   if (!erpRow) {
     return "-";
   }
-  const parts = [
-    inkoopShortDate(erpRow.date),
-    String(erpRow.suppl || erpRow.transp || "").trim(),
-    erpRow.lot ? `Lot ${erpRow.lot}` : "",
-    (erpRow.pieces !== undefined && erpRow.pieces !== null) ? `${inkoopPiecesText(erpRow.pieces, erpRow.items, erpRow.cont)} pcs @ ${formatInkoopEuro(erpRow.price)}` : "",
-    erpRow.t_price !== undefined ? `= ${formatInkoopEuro(erpRow.t_price)}` : "",
+  return inkoopLineText({
+    date: erpRow.date,
+    parts: [erpRow.suppl || erpRow.transp, erpRow.lot ? `Lot ${erpRow.lot}` : ""],
+    boxes: inkoopBoxesText(erpRow.pieces, erpRow.items, erpRow.cont),
+    pieces: erpRow.pieces,
+    price: erpRow.price,
+    total: erpRow.t_price,
+    extras: inkoopErpExtras(erpRow),
+  });
+}
+
+// A lot's other names and codes (Fust, Avc, Uniware, Levering BB, Aanv.).
+function inkoopErpExtras(erpRow) {
+  return [
     erpRow.fust ? `Fust ${String(erpRow.fust).trim()}` : "",
     erpRow.avc ? `Avc ${String(erpRow.avc).trim()}` : "",
     // Extra names, next to Connect's own: Uniware (night action) and Levering BB.
@@ -15631,7 +15640,6 @@ function inkoopErpTranscript(erpRow) {
     erpRow.levering_description && erpRow.levering_description !== erpRow.uniware_description ? `Levering BB: ${erpRow.levering_vbn ? `${erpRow.levering_vbn} ` : ""}${erpRow.levering_description}` : "",
     erpRow.uniware_aanv ? `Aanv. ${erpRow.uniware_aanv}` : "",
   ].filter(Boolean);
-  return parts.join(" · ");
 }
 
 const INKOOP_INVOICE_TYPE_LABELS = { klokfactuur: "Klokfactuur", connect: "Connect", handel: "Handel", ai2: "AI2", dienst: "Dienst (FD)", handel_verkoop: "Handel verkoop (HV)" };
@@ -15864,7 +15872,7 @@ const INKOOP_SEARCH_KINDS = {
   },
 };
 
-function InkoopSearchPanel({ kind, company, request, onFindOther, otherTitle }) {
+function InkoopSearchPanel({ kind, company, request, onFindOther, otherTitle, defaults = null }) {
   const config = INKOOP_SEARCH_KINDS[kind];
   const blank = () => ({ from: addDaysToIso(todayIso(), -6), to: todayIso(), ...Object.fromEntries(config.fields.map((field) => [field.key, ""])), ...(config.utilities ? { utilities: false } : {}) });
   const [filters, setFilters] = useState(blank);
@@ -15908,6 +15916,13 @@ function InkoopSearchPanel({ kind, company, request, onFindOther, otherTitle }) 
     setFilters(next);
     search(next);
   }, [request]);
+
+  // The filter bar's period (and, for the invoices, its grower) fill the
+  // fields; searching stays a click.
+  useEffect(() => {
+    if (!defaults?.from || !defaults?.to) return;
+    setFilters((current) => ({ ...current, from: defaults.from, to: defaults.to, ...(kind === "invoices" ? { supplier: defaults.grower || "" } : {}) }));
+  }, [defaults?.from, defaults?.to, defaults?.grower]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const lines = result?.lines || [];
   return (
@@ -15981,14 +15996,15 @@ function InkoopSearchPanel({ kind, company, request, onFindOther, otherTitle }) 
 // Search: the invoices on top, the ERP below -- each searched on its own,
 // both results stay visible to compare. A PAV's arrow looks it up in the
 // other half.
-function InkoopSearchTab({ company }) {
+function InkoopSearchTab({ company, bar = null }) {
   const [invoiceRequest, setInvoiceRequest] = useState(null);
   const [erpRequest, setErpRequest] = useState(null);
+  const defaults = bar ? { from: bar.day?.from || bar.from, to: bar.day?.to || bar.to, grower: bar.grower } : null;
   // Side by side on a wide screen: invoices left, Connect right.
   return (
     <div className="ik-search-split">
-      <InkoopSearchPanel kind="invoices" company={company} request={invoiceRequest} otherTitle="Connect" onFindOther={(request) => setErpRequest({ ...request, at: Date.now() })} />
-      <InkoopSearchPanel kind="erp" company={company} request={erpRequest} otherTitle="invoices" onFindOther={(request) => setInvoiceRequest({ ...request, at: Date.now() })} />
+      <InkoopSearchPanel kind="invoices" company={company} request={invoiceRequest} otherTitle="Connect" defaults={defaults} onFindOther={(request) => setErpRequest({ ...request, at: Date.now() })} />
+      <InkoopSearchPanel kind="erp" company={company} request={erpRequest} otherTitle="invoices" defaults={defaults} onFindOther={(request) => setInvoiceRequest({ ...request, at: Date.now() })} />
     </div>
   );
 }
@@ -16804,7 +16820,8 @@ function inkoopBarRows(rows, bar, { useDay = true, useGrower = true } = {}) {
 
 // One filter bar for the workspaces: period, company, betaalwijze, flow and
 // grower.
-function IkFilterBar({ bar, setBar, companies, company, setCompany, growers = [] }) {
+// parts: what the page uses (Search: period, company and grower only).
+function IkFilterBar({ bar, setBar, companies, company, setCompany, growers = [], parts = ["period", "company", "bw", "flow", "grower"] }) {
   const today = localDateIso();
   const setPeriod = (from, to) => setBar((current) => ({ ...current, from, to, day: null }));
   const presets = [
@@ -16822,24 +16839,26 @@ function IkFilterBar({ bar, setBar, companies, company, setCompany, growers = []
   const tooLong = inkoopDaysBetween(bar.from, bar.to) > 92;
   return (
     <div className="ik-filterbar">
-      <div className="ik-filter-group">
+      {parts.includes("period") && <div className="ik-filter-group">
         {presets.map(([label, run]) => <button key={label} type="button" className="ik-chip" onClick={run}>{label}</button>)}
         <input type="date" value={bar.from} max={bar.to} onChange={(event) => event.target.value && setPeriod(event.target.value, bar.to)} />
         <span className="muted">–</span>
         <input type="date" value={bar.to} min={bar.from} onChange={(event) => event.target.value && setPeriod(bar.from, event.target.value)} />
         {tooLong && <span className="money-loss" title="At most 3 months at once">max. 3 months</span>}
-      </div>
+      </div>}
       <div className="ik-filter-group">
-        <select value={company} onChange={(event) => setCompany(event.target.value)} title="Company (a Connect lot has no company: with one chosen, the invoice side only)">
+        {parts.includes("company") && <select value={company} onChange={(event) => setCompany(event.target.value)} title="Company (a Connect lot has no company: with one chosen, the invoice side only)">
           <option value="">All companies</option>
           {companies.map((entry) => <option key={entry.company_number} value={entry.company_number}>{entry.company_number}{entry.company_name ? ` - ${entry.company_name}` : ""}</option>)}
-        </select>
-        <span className="ik-filter-label">BW</span>
-        {INKOOP_BAR_BW.map((bw) => (
-          <button key={bw} type="button" className={`ik-chip${bar.bw.includes(bw) ? " on" : ""}`} title={bw === "?" ? "Connect codes without a BW" : INKOOP_BW_LABELS[bw] || bw} onClick={() => toggle("bw", bw)}>{bw}</button>
-        ))}
+        </select>}
+        {parts.includes("bw") && <>
+          <span className="ik-filter-label">BW</span>
+          {INKOOP_BAR_BW.map((bw) => (
+            <button key={bw} type="button" className={`ik-chip${bar.bw.includes(bw) ? " on" : ""}`} title={bw === "?" ? "Connect codes without a BW" : INKOOP_BW_LABELS[bw] || bw} onClick={() => toggle("bw", bw)}>{bw}</button>
+          ))}
+        </>}
       </div>
-      <div className="ik-filter-group">
+      {parts.includes("flow") && <div className="ik-filter-group">
         <span className="ik-filter-label">Flow</span>
         <button type="button" className={`ik-chip${!bar.flows.length ? " on" : ""}`} onClick={() => setBar((current) => ({ ...current, flows: [] }))}>All</button>
         {INKOOP_FLOWS.map((flow) => (
@@ -16847,7 +16866,7 @@ function IkFilterBar({ bar, setBar, companies, company, setCompany, growers = []
             <i className="ik-dot" style={{ background: INKOOP_FLOW_COLORS[flow] }} />{flow}
           </button>
         ))}
-      </div>
+      </div>}
       <div className="ik-filter-group">
         <input list="ik-grower-list" value={bar.grower} placeholder="Grower / supplier…" onChange={(event) => setBar((current) => ({ ...current, grower: event.target.value }))} style={{ minWidth: 220 }} />
         <datalist id="ik-grower-list">{growers.map((name) => <option key={name} value={name} />)}</datalist>
@@ -17175,6 +17194,128 @@ function InkoopTraceWorkspace({ bar, setBar, overview, company }) {
   );
 }
 
+// The detective's suggested pairs for one grower, inline in Track & Trace:
+// dashed rows, invoice side | why and difference | Connect side; Accept
+// them and Save. "Ask the AI" sends this grower's leftovers to the poller.
+function IkSuggestions({ from, to, company, grower, onLinked }) {
+  const [data, setData] = useState(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState("");
+  const [accepted, setAccepted] = useState({});
+  const [saved, setSaved] = useState(() => new Set());
+  const [saving, setSaving] = useState(false);
+  const [ai, setAi] = useState(null);
+  const timer = useRef(null);
+  useEffect(() => () => window.clearTimeout(timer.current), []);
+  useEffect(() => { setData(null); setAccepted({}); setAi(null); setError(""); window.clearTimeout(timer.current); }, [from, to, company, grower]);
+  const group = (data?.growers || []).find((entry) => inkoopSameGrower(entry.grower, grower)) || null;
+  function search() {
+    setLoading(true);
+    setError("");
+    const params = new URLSearchParams({ from, to });
+    if (company) params.set("company", company);
+    apiJson(`/api/inkoop/detective?${params.toString()}`)
+      .then((payload) => setData(payload))
+      .catch((loadError) => setError(loadError.message))
+      .finally(() => setLoading(false));
+  }
+  function poll(jobId, startedAt) {
+    apiJson(`/api/inkoop/detective/ask/${encodeURIComponent(jobId)}`)
+      .then((payload) => {
+        if (payload.status === "done" || payload.status === "failed") { setAi(payload); return; }
+        setAi({ status: payload.status, waited: Math.round((Date.now() - startedAt) / 1000) });
+        timer.current = window.setTimeout(() => poll(jobId, startedAt), 5000);
+      })
+      .catch((pollError) => setAi({ status: "failed", error: pollError.message }));
+  }
+  async function ask() {
+    if (!group) return;
+    setAi({ status: "sending" });
+    try {
+      const payload = await apiJson("/api/inkoop/detective/ask", { method: "POST", body: JSON.stringify({ from, to, company, grower: group.grower }) });
+      poll(payload.job_id, Date.now());
+    } catch (askError) {
+      setAi({ status: "failed", error: askError.message });
+    }
+  }
+  const accept = (key, item, lines, lots, note) => setAccepted((current) => {
+    const next = { ...current };
+    if (next[key]) { delete next[key]; return next; }
+    for (const [otherKey, other] of Object.entries(next)) {
+      if (other.item.line_ids.some((id) => item.line_ids.includes(id)) || other.item.lots.some((lot) => item.lots.includes(lot))) delete next[otherKey];
+    }
+    next[key] = { item, lines, lots, note };
+    return next;
+  });
+  async function saveAccepted() {
+    setSaving(true);
+    setError("");
+    const done = [];
+    try {
+      for (const [key, { item, lines, lots, note }] of Object.entries(accepted)) {
+        const lineById = new Map(lines.map((line) => [line.id, line]));
+        const lotByNumber = new Map(lots.map((lot) => [lot.lot, lot]));
+        const dates = [...item.line_ids.map((id) => lineById.get(id)?.date), ...item.lots.map((lot) => lotByNumber.get(lot)?.date)].filter(Boolean);
+        await inkoopSaveManualPair({ lineIds: item.line_ids, lots: item.lots, dates, note, source: note.startsWith("AI") ? "ai" : "detective" });
+        done.push(key);
+      }
+    } catch (saveError) {
+      setError(`${done.length} saved, then: ${saveError.message}`);
+    } finally {
+      setSaved((current) => new Set([...current, ...done]));
+      setAccepted((current) => Object.fromEntries(Object.entries(current).filter(([key]) => !done.includes(key))));
+      setSaving(false);
+      if (done.length) onLinked?.();
+    }
+  }
+  const rows = (items, lines, lots, notePrefix) => {
+    const lineById = new Map(lines.map((line) => [line.id, line]));
+    const lotByNumber = new Map(lots.map((lot) => [lot.lot, lot]));
+    return items.map((item) => {
+      const key = `${item.line_ids.join(",")}|${item.lots.join(",")}`;
+      const isSaved = saved.has(key);
+      return (
+        <div key={key} className={`ik-suggest${accepted[key] ? " on" : ""}${isSaved ? " saved" : ""}`}>
+          <div className="ik-inv-text">{item.line_ids.map((id) => <div key={id}>{inkoopDetectiveLineText(lineById.get(id))}</div>)}</div>
+          <div className="ik-suggest-why">
+            <span>{item.reason || item.kind}</span>
+            <span>{item.invoice_pieces} / {item.connect_pieces} pcs · <InkoopMoneyDiff value={item.difference} /></span>
+            {isSaved ? <span className="ukdocs-status-badge">linked</span> : (
+              <label className="checkbox-label"><input type="checkbox" checked={Boolean(accepted[key])} onChange={() => accept(key, item, lines, lots, `${notePrefix}${item.reason || item.kind}`.slice(0, 280))} /><span>Accept</span></label>
+            )}
+          </div>
+          <div className="ik-con-text">{item.lots.map((lot) => <div key={lot}>{inkoopDetectiveLotText(lotByNumber.get(lot))}</div>)}</div>
+        </div>
+      );
+    });
+  };
+  const busyAi = ai && !["done", "failed"].includes(ai.status);
+  return (
+    <div className="data-table-card ik-card">
+      <div className="ik-side-head">
+        <strong>🔎 Suggested pairs</strong>
+        <span className="muted">same pieces at another price, or the same total in other pieces -- within 4 days, with the name</span>
+        <span className="row-actions" style={{ marginLeft: "auto" }}>
+          <button type="button" onClick={search} disabled={loading}>{loading ? "Searching…" : data ? "Search again" : "Find pairs"}</button>
+          {group && <button type="button" onClick={ask} disabled={busyAi}>{busyAi ? `AI working${ai.waited ? ` (${ai.waited}s)` : ""}…` : ai?.status === "done" ? "Ask the AI again" : "Ask the AI"}</button>}
+          <button type="button" className="primary" onClick={saveAccepted} disabled={saving || !Object.keys(accepted).length}>{saving ? "Saving…" : `Save ${Object.keys(accepted).length || ""} accepted`.replace("  ", " ")}</button>
+        </span>
+      </div>
+      {error && <div className="notice danger">{error}</div>}
+      {data && !group && <div className="muted">No open lines or free lots of this grower to pair in these days.</div>}
+      {group && !group.suggestions.length && <div className="muted">Nothing that fits by the rules -- try "Ask the AI".</div>}
+      {group && rows(group.suggestions, group.lines, group.lots, "detective: ")}
+      {ai?.status === "failed" && <div className="notice danger">AI{ai.agent_name ? ` (poller ${ai.agent_name})` : ""}: {ai.error || "failed"}</div>}
+      {ai?.status === "done" && (
+        <>
+          <div className="notice info"><strong>AI summary:</strong> {ai.summary || "(no summary)"}{ai.unexplained ? <div style={{ marginTop: 4 }}><strong>Still open:</strong> {ai.unexplained}</div> : null}</div>
+          {rows(ai.pairs || [], ai.lines || group?.lines || [], ai.lots || group?.lots || [], "AI: ")}
+        </>
+      )}
+    </div>
+  );
+}
+
 // Track & Trace: a grower's money side by side -- what's matched folded up,
 // the open invoice lines left and the open Connect lots right, tick both
 // and link. Status / who / note per line in the side panel.
@@ -17195,6 +17336,7 @@ function InkoopTrackTraceWorkspace({ bar, setBar, overview, company, matchRound 
   const [drawer, setDrawer] = useState(null);
   const [draft, setDraft] = useState(null);
   const [pairsKey, setPairsKey] = useState(0);
+  const [pairsOpen, setPairsOpen] = useState(false);
   const [showMatched, setShowMatched] = useState(false);
   const [sorts, setSorts] = useState({ left: "date", right: "date" });
   const [growerFilter, setGrowerFilter] = useState("");
@@ -17374,6 +17516,7 @@ function InkoopTrackTraceWorkspace({ bar, setBar, overview, company, matchRound 
                 <span>Connect <strong>{formatInkoopEuro(chosenSum.connect_value)}</strong></span>
                 <span>Difference <InkoopMoneyDiff value={chosenSum.difference} /></span>
                 <span className="money-loss">✗ open {formatInkoopEuro(chosenSum.not_matched_value + chosenSum.connect_only_value)}</span>
+                <button type="button" className="ik-chip" onClick={() => setPairsOpen(true)}>🔗 Linked by hand</button>
               </div>
             </div>
             <div className="data-table-card ik-card">
@@ -17404,11 +17547,19 @@ function InkoopTrackTraceWorkspace({ bar, setBar, overview, company, matchRound 
                 {!issues ? <div className="muted">Loading…</div> : rightIssues.length ? rightIssues.map((issue) => issueRow(issue, "con")) : <div className="muted">✓ Nothing open on the Connect side.</div>}
               </div>
             </div>
-            <InkoopDetectiveCard from={from} to={to} company={company} onLinked={() => { setPairsKey((value) => value + 1); setIssueRound((value) => value + 1); overview.reload(); }} />
-            <InkoopManualPairsCard from={from} to={to} refreshKey={pairsKey} onChanged={() => { setIssueRound((value) => value + 1); overview.reload(); }} />
+            <IkSuggestions from={from} to={to} company={company} grower={chosen} onLinked={() => { setPairsKey((value) => value + 1); setIssueRound((value) => value + 1); overview.reload(); }} />
           </>
         )}
       </section>
+      {pairsOpen && (
+        <div className="ik-drawer wide" role="dialog">
+          <div className="ik-drawer-head">
+            <strong>🔗 Linked by hand -- {fustOverviewDate(from)}{from !== to ? ` – ${fustOverviewDate(to)}` : ""}</strong>
+            <button type="button" onClick={() => setPairsOpen(false)}>Close</button>
+          </div>
+          <InkoopManualPairsCard from={from} to={to} refreshKey={pairsKey} onChanged={() => { setIssueRound((value) => value + 1); overview.reload(); }} />
+        </div>
+      )}
       {drawer && draft && (
         <div className="ik-drawer" role="dialog">
           <div className="ik-drawer-head">
@@ -17926,8 +18077,9 @@ function InkoopControlePage({ currentUser }) {
   // shown until it arrived).
   const pageDataNote = loading ? <div className="notice info">Loading import history and master data...</div> : null;
   const inWorkspace = activeTab === "trace" || activeTab === "tracktrace";
+  const withBar = inWorkspace || activeTab === "search";
   const barTooLong = inkoopDaysBetween(bar.from, bar.to) > 92;
-  const overview = useInkoopOverviewRows(inWorkspace && !barTooLong ? bar.from : "", inWorkspace && !barTooLong ? bar.to : "", selectedCompany);
+  const overview = useInkoopOverviewRows(withBar && !barTooLong ? bar.from : "", withBar && !barTooLong ? bar.to : "", selectedCompany);
   const menuOverview = useInkoopOverviewRows(activeTab === "" ? `${localDateIso().slice(0, 7)}-01` : "", activeTab === "" ? localDateIso() : "", "");
   const barGrowers = [...new Set((overview.rows || []).map((row) => row.grower))].sort();
 
@@ -17944,13 +18096,14 @@ function InkoopControlePage({ currentUser }) {
       )}
       {!activeTab && <InkoopMenu onOpen={setActiveTab} monthRows={menuOverview.rows} />}
       {activeTab === "setup" && <InkoopSetupMenu onOpen={setActiveTab} />}
-      {inWorkspace && (
-        <IkFilterBar bar={bar} setBar={setBar} companies={companies} company={selectedCompany} setCompany={setSelectedCompany} growers={barGrowers} />
+      {withBar && (
+        <IkFilterBar bar={bar} setBar={setBar} companies={companies} company={selectedCompany} setCompany={setSelectedCompany} growers={barGrowers}
+          parts={activeTab === "search" ? ["period", "company", "grower"] : undefined} />
       )}
-      {inWorkspace && barTooLong && <div className="notice danger">Choose at most 3 months.</div>}
+      {withBar && barTooLong && <div className="notice danger">Choose at most 3 months.</div>}
       {/* Only on the tabs that filter by it (Overview, Corrections, King,
           Growers, Link growers and Settings are for every company). */}
-      {INKOOP_COMPANY_TABS.has(activeTab) && (
+      {INKOOP_COMPANY_TABS.has(activeTab) && activeTab !== "search" && (
         <div className="row-actions spread-actions">
           <label>
             <span>Company</span>
@@ -18114,7 +18267,7 @@ function InkoopControlePage({ currentUser }) {
       {activeTab === "linkgrowers" && <InkoopLinkGrowersTab />}
 
       {/* Kept mounted: results stay when you look at another tab and come back. */}
-      <div style={activeTab === "search" ? undefined : { display: "none" }}><InkoopSearchTab company={selectedCompany} /></div>
+      <div style={activeTab === "search" ? undefined : { display: "none" }}><InkoopSearchTab company={selectedCompany} bar={bar} /></div>
       {activeTab === "data" && <InkoopDataTab company={selectedCompany} />}
 
       {activeTab === "compare" && (
@@ -20250,13 +20403,12 @@ function inkoopIssueInvoiceDay(issue) {
 function inkoopDetectiveLineText(line) {
   if (!line) return "?";
   // Boxes unknown: an invoice uploaded before they were kept (upload it again).
-  const boxes = line.boxes && line.per_box ? `${line.boxes} × ${line.per_box} = ` : "? × ? = ";
-  return `${inkoopShortDate(line.date)} · ${line.brief || "-"} · ${line.description} · ${boxes}${line.quantity} pcs @ ${formatInkoopEuro(line.price)} = ${formatInkoopEuro(line.total)}`;
+  return inkoopLineText({ date: line.date, parts: [line.brief || "-", line.description], boxes: inkoopInvoiceBoxes(line.quantity, line.boxes, line.per_box), pieces: line.quantity, price: line.price, total: line.total });
 }
 
 function inkoopDetectiveLotText(lot) {
   if (!lot) return "?";
-  return `${inkoopShortDate(lot.date)} · ${lot.code} · Lot ${lot.lot} · ${lot.description}${lot.uniware ? ` (${lot.uniware})` : ""} · ${lot.boxes && lot.per_box ? `${lot.boxes} × ${lot.per_box} = ` : ""}${lot.pieces} pcs @ ${formatInkoopEuro(lot.price)} = ${formatInkoopEuro(lot.total)}`;
+  return inkoopLineText({ date: lot.date, parts: [lot.code, `Lot ${lot.lot}`, `${lot.description}${lot.uniware ? ` (${lot.uniware})` : ""}`], boxes: inkoopBoxesText(lot.pieces, lot.boxes, lot.per_box), pieces: lot.pieces, price: lot.price, total: lot.total });
 }
 
 // Link invoice line(s) and lot(s) by hand -- the comparison uses it first.
@@ -21694,19 +21846,31 @@ function InkoopDestinationsTab() {
   }, [period]);
 
   const changed = JSON.stringify(draftPeriod) !== JSON.stringify(period);
-  const correctionRows = corrections?.checks || [];
+  const allCorrections = corrections?.checks || [];
+  // Only what needs a look (paid for more than was received), or all.
+  const [onlyOver, setOnlyOver] = useState(false);
+  const [countriesOpen, setCountriesOpen] = useState(false);
+  const overRows = allCorrections.filter((item) => Number(item.over_invoiced) > 0);
+  const correctionRows = onlyOver ? overRows : allCorrections;
 
   return (
     <>
-      <div className="notice">
-        No separate upload here -- the same Connect export you upload on Compare &amp; Reconcile now also carries a "Dispatched to : &lt;code&gt;" row after every purchase lot, showing where that lot's stock actually went. It's read from that one upload automatically; nothing extra to do.
-      </div>
-
-      <div className="row-actions spread-actions">
-        <InkoopRangeSelect period={draftPeriod} onChange={setDraftPeriod} />
-        <button type="button" className="primary" onClick={() => setPeriod({ ...draftPeriod })} disabled={(loadingSummary || loadingCorrections) && !changed}>
-          {changed ? "Show" : "Show again"}
-        </button>
+      <div className="ik-filterbar">
+        <div className="ik-filter-group">
+          <InkoopRangeSelect period={draftPeriod} onChange={setDraftPeriod} />
+          <button type="button" className="primary" onClick={() => setPeriod({ ...draftPeriod })} disabled={(loadingSummary || loadingCorrections) && !changed}>
+            {changed ? "Show" : "Show again"}
+          </button>
+        </div>
+        {corrections && (
+          <div className="ik-filter-group">
+            <button type="button" className={`ik-chip${!onlyOver ? " on" : ""}`} onClick={() => setOnlyOver(false)}>All {allCorrections.length}</button>
+            <button type="button" className={`ik-chip${onlyOver ? " on" : ""}`} onClick={() => setOnlyOver(true)}>✗ Paid too much {overRows.length}</button>
+          </div>
+        )}
+        <div className="ik-filter-group" style={{ marginLeft: "auto" }}>
+          <button type="button" className="ik-chip" onClick={() => setCountriesOpen(true)} disabled={!summary}>Sold per country ›</button>
+        </div>
       </div>
       {changed && <div className="notice info">Click <strong>Show</strong> to load {inkoopPeriodLabel(draftPeriod)}.</div>}
       {(loadingSummary || loadingCorrections) && (
@@ -21717,12 +21881,17 @@ function InkoopDestinationsTab() {
       {error && <div className="notice danger">{error}</div>}
 
       <div style={loadingCorrections && corrections ? { opacity: 0.35, pointerEvents: "none" } : undefined}>
-      <InkoopCollapsibleCard title={corrections ? `Corrections check -- ${fustOverviewDate(corrections.from)} - ${fustOverviewDate(corrections.to)}` : "Corrections check"} count={correctionRows.length}>
-        <div className="notice">
-          A correction credits the whole invoiced lot and invoices the right amount again. What counts is whether what we <strong>pay</strong> is explained by what we <strong>received</strong> (the Connect lot): paying exactly for what came in (invoiced 200, credited 200, again 100, received 100) or less (invoiced 170, credited 50, again 40, received 170: 10 credited) is OK -- credited pieces don't have to go back to a retour customer; if they did, it says "credited and returned". Only <strong>paying for more than was received</strong> needs a look.
+      <div className="data-table-card ik-card">
+        <div className="ik-card-head">
+          <strong>{corrections ? `Corrections check -- ${fustOverviewDate(corrections.from)} – ${fustOverviewDate(corrections.to)}` : "Corrections check"}</strong>
+          <span className="muted">{correctionRows.length} correction(s){overRows.length ? ` · ✗ ${overRows.length} paid for more than was received` : " · ✓ nothing paid too much"}</span>
         </div>
+        <details className="ik-howto">
+          <summary>How it's checked</summary>
+          A correction credits the whole invoiced lot and invoices the right amount again. What counts is whether what we <strong>pay</strong> is explained by what we <strong>received</strong> (the Connect lot): paying exactly for what came in (invoiced 200, credited 200, again 100, received 100) or less (invoiced 170, credited 50, again 40, received 170: 10 credited) is OK -- credited pieces don't have to go back to a retour customer; if they did, it says "credited and returned". Only <strong>paying for more than was received</strong> needs a look. The Connect export's "Dispatched to" rows tell where each lot went -- nothing extra to upload.
+        </details>
         <div className="table-wrap">
-          <table className="data-table">
+          <table className="data-table balance-table ik-table ik-pairs">
             <thead>
               <tr><th>Date</th><th>Invoice</th><th>PAV</th><th>Description</th><th>Invoiced</th><th>Credited</th><th>Invoiced again</th><th>Received (Connect)</th><th>Credited pieces</th><th>At retour</th><th>Net value</th><th>Status</th><th>Destination(s)</th></tr>
             </thead>
@@ -21754,18 +21923,21 @@ function InkoopDestinationsTab() {
                 </tr>
               ))}
               {corrections && !correctionRows.length && (
-                <tr><td colSpan={13}>No corrections in this period.</td></tr>
+                <tr><td colSpan={13}>{onlyOver ? "✓ Nothing paid for more than was received." : "No corrections in this period."}</td></tr>
               )}
             </tbody>
           </table>
         </div>
-      </InkoopCollapsibleCard>
+      </div>
       </div>
 
-      {!summary && loadingSummary && <div className="notice">Loading destinations...</div>}
-      {summary && (
-        <div style={loadingSummary ? { opacity: 0.35, pointerEvents: "none" } : undefined}>
-        <InkoopCollapsibleCard title={`Sold per country -- ${fustOverviewDate(summary.from)} - ${fustOverviewDate(summary.to)}`}>
+      {countriesOpen && summary && (
+        <div className="ik-drawer wide" role="dialog">
+        <div className="ik-drawer-head">
+          <strong>Sold per country -- {fustOverviewDate(summary.from)} – {fustOverviewDate(summary.to)}</strong>
+          <button type="button" onClick={() => setCountriesOpen(false)}>Close</button>
+        </div>
+        <div>
           <div className="notice">
             {summary.lot_count} purchase lots, {summary.total_pieces.toLocaleString()} pieces dispatched, {formatInkoopEuro(summary.total_value)} (apportioned from each lot's own value by dispatched piece share) -- {summary.from} to {summary.to}.
           </div>
@@ -21808,7 +21980,7 @@ function InkoopDestinationsTab() {
               </div>
             </>
           )}
-        </InkoopCollapsibleCard>
+        </div>
         </div>
       )}
 
