@@ -19027,7 +19027,7 @@ async function inkoopSaveManualPair({ lineIds, lots, dates, note, source }) {
   });
 }
 
-function InkoopDetectiveSuggestionRow({ item, lineById, lotByNumber, accepted, onAccept, reason }) {
+function InkoopDetectiveSuggestionRow({ item, lineById, lotByNumber, accepted, saved, onAccept, reason }) {
   return (
     <tr>
       <td>{item.line_ids.map((id) => <div key={id}>{inkoopDetectiveLineText(lineById.get(id))}</div>)}</td>
@@ -19035,7 +19035,11 @@ function InkoopDetectiveSuggestionRow({ item, lineById, lotByNumber, accepted, o
       <td>{reason || item.kind}{item.confidence ? <div className="muted">{item.confidence}</div> : null}</td>
       <td>{item.invoice_pieces} / {item.connect_pieces}</td>
       <td><InkoopMoneyDiff value={item.difference} /></td>
-      <td>{accepted ? <span className="ukdocs-status-badge">linked</span> : <button type="button" onClick={onAccept}>Accept</button>}</td>
+      <td>
+        {saved ? <span className="ukdocs-status-badge">linked</span> : (
+          <label className="checkbox-label"><input type="checkbox" checked={accepted} onChange={onAccept} /><span>Accept</span></label>
+        )}
+      </td>
     </tr>
   );
 }
@@ -19047,7 +19051,11 @@ function InkoopDetectiveCard({ from, to, company, onLinked }) {
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
-  const [accepted, setAccepted] = useState(() => new Set());
+  // Accepted: chosen, saved together with Save (no reload in between).
+  const [accepted, setAccepted] = useState({});
+  const [saved, setSaved] = useState(() => new Set());
+  const [saving, setSaving] = useState(false);
+  const [savedMessage, setSavedMessage] = useState("");
   const [asks, setAsks] = useState({});
   const timers = useRef({});
   useEffect(() => () => Object.values(timers.current).forEach((timer) => window.clearTimeout(timer)), []);
@@ -19064,17 +19072,43 @@ function InkoopDetectiveCard({ from, to, company, onLinked }) {
       .finally(() => setLoading(false));
   }
 
-  async function accept(key, item, lines, lots, note) {
+  // A line or lot in two accepted groups can't be: the later one replaces it.
+  function accept(key, item, lines, lots, note) {
+    setSavedMessage("");
+    setAccepted((current) => {
+      const next = { ...current };
+      if (next[key]) {
+        delete next[key];
+        return next;
+      }
+      for (const [otherKey, other] of Object.entries(next)) {
+        if (other.item.line_ids.some((id) => item.line_ids.includes(id)) || other.item.lots.some((lot) => item.lots.includes(lot))) delete next[otherKey];
+      }
+      next[key] = { item, lines, lots, note };
+      return next;
+    });
+  }
+
+  async function saveAccepted() {
+    setSaving(true);
     setError("");
+    const done = [];
     try {
-      const lineById = new Map(lines.map((line) => [line.id, line]));
-      const lotByNumber = new Map(lots.map((lot) => [lot.lot, lot]));
-      const dates = [...item.line_ids.map((id) => lineById.get(id)?.date), ...item.lots.map((lot) => lotByNumber.get(lot)?.date)].filter(Boolean);
-      await inkoopSaveManualPair({ lineIds: item.line_ids, lots: item.lots, dates, note, source: note.startsWith("AI") ? "ai" : "detective" });
-      setAccepted((current) => new Set([...current, key]));
-      onLinked?.();
+      for (const [key, { item, lines, lots, note }] of Object.entries(accepted)) {
+        const lineById = new Map(lines.map((line) => [line.id, line]));
+        const lotByNumber = new Map(lots.map((lot) => [lot.lot, lot]));
+        const dates = [...item.line_ids.map((id) => lineById.get(id)?.date), ...item.lots.map((lot) => lotByNumber.get(lot)?.date)].filter(Boolean);
+        await inkoopSaveManualPair({ lineIds: item.line_ids, lots: item.lots, dates, note, source: note.startsWith("AI") ? "ai" : "detective" });
+        done.push(key);
+      }
+      setSavedMessage(`${done.length} link(s) saved -- the days are compared again in the background; the Follow-up list shows them once you load it again.`);
     } catch (saveError) {
-      setError(saveError.message);
+      setError(`${done.length} saved, then: ${saveError.message}`);
+    } finally {
+      setSaved((current) => new Set([...current, ...done]));
+      setAccepted((current) => Object.fromEntries(Object.entries(current).filter(([key]) => !done.includes(key))));
+      setSaving(false);
+      if (done.length) onLinked?.();
     }
   }
 
@@ -19109,7 +19143,11 @@ function InkoopDetectiveCard({ from, to, company, onLinked }) {
       </div>
       <div className="row-actions">
         <button type="button" className="primary" onClick={search} disabled={loading}>{loading ? "Searching..." : data ? "Search again" : "Search leftovers"}</button>
+        <button type="button" className="primary" onClick={saveAccepted} disabled={saving || !Object.keys(accepted).length}>
+          {saving ? "Saving..." : `Save ${Object.keys(accepted).length || ""} accepted`.replace("  ", " ")}
+        </button>
       </div>
+      {savedMessage && <div className="notice info">{savedMessage}</div>}
       {error && <div className="notice danger">{error}</div>}
       {data && !data.growers.length && <div className="notice">No open invoice lines in this period.</div>}
       {data && data.growers.map((group) => {
@@ -19134,7 +19172,7 @@ function InkoopDetectiveCard({ from, to, company, onLinked }) {
                   <tbody>
                     {group.suggestions.map((item) => {
                       const key = `${item.line_ids.join(",")}|${item.lots.join(",")}`;
-                      return <InkoopDetectiveSuggestionRow key={key} item={item} lineById={lineById} lotByNumber={lotByNumber} accepted={accepted.has(key)} onAccept={() => accept(key, item, group.lines, group.lots, `detective: ${item.kind}`)} />;
+                      return <InkoopDetectiveSuggestionRow key={key} item={item} lineById={lineById} lotByNumber={lotByNumber} accepted={Boolean(accepted[key])} saved={saved.has(key)} onAccept={() => accept(key, item, group.lines, group.lots, `detective: ${item.kind}`)} />;
                     })}
                   </tbody>
                 </table>
@@ -19151,7 +19189,7 @@ function InkoopDetectiveCard({ from, to, company, onLinked }) {
                       <tbody>
                         {askState.pairs.map((item) => {
                           const key = `${item.line_ids.join(",")}|${item.lots.join(",")}`;
-                          return <InkoopDetectiveSuggestionRow key={key} item={item} lineById={aiLines} lotByNumber={aiLots} reason={item.reason} accepted={accepted.has(key)} onAccept={() => accept(key, item, askState.lines || group.lines, askState.lots || group.lots, `AI: ${item.reason}`.slice(0, 280))} />;
+                          return <InkoopDetectiveSuggestionRow key={key} item={item} lineById={aiLines} lotByNumber={aiLots} reason={item.reason} accepted={Boolean(accepted[key])} saved={saved.has(key)} onAccept={() => accept(key, item, askState.lines || group.lines, askState.lots || group.lots, `AI: ${item.reason}`.slice(0, 280))} />;
                         })}
                       </tbody>
                     </table>
@@ -19413,7 +19451,7 @@ function InkoopFollowUpTab({ company }) {
             <div className="inkoop-summary-card"><div className="inkoop-summary-value">{formatInkoopEuro(shownIssues.reduce((sum, issue) => sum + (Number(issue.value) || 0), 0))}</div><div className="inkoop-summary-label">Value at stake</div></div>
             <div className="inkoop-summary-card"><div className="inkoop-summary-value"><InkoopMoneyDiff value={shownIssues.reduce((sum, issue) => sum + (Number(issue.money_diff) || 0), 0)} /></div><div className="inkoop-summary-label">Net (invoice − Connect)</div></div>
           </div>
-          <InkoopDetectiveCard from={selectedDay || period.from} to={selectedDay || period.to} company={company} onLinked={() => { setPairsKey((value) => value + 1); load().catch(() => {}); }} />
+          <InkoopDetectiveCard from={selectedDay || period.from} to={selectedDay || period.to} company={company} onLinked={() => setPairsKey((value) => value + 1)} />
           <InkoopManualPairsCard from={selectedDay || period.from} to={selectedDay || period.to} refreshKey={pairsKey} onChanged={() => load().catch(() => {})} />
           {!!pickedList.length && (() => {
             const invoicePieces = pickedLines.reduce((sum, issue) => sum + (Number(issue.detail?.quantity) || 0), 0);
