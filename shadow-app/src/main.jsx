@@ -18116,7 +18116,16 @@ function InkoopGrowerLines({ from, to, company, grower, side }) {
                   <td>{lot.price}</td>
                   <td>{formatInkoopEuro(lot.t_price)}</td>
                   <td className={statusClass(lot.status)}>{lot.status}</td>
-                  <td>{lot.matched_to || "-"}</td>
+                  <td>
+                    {lot.matched_to || "-"}
+                    {/* A mismatch: the invoice line it's about, as the Connect line. */}
+                    {(lot.invoice_lines || []).map((line, lineIndex) => (
+                      <div key={`${line.reference_bt}-${lineIndex}`} className="fin-loss">
+                        {line.reference_bt || "-"} · {line.description} · {inkoopBoxesText(line.quantity, line.packages, line.per_package) ? `${inkoopBoxesText(line.quantity, line.packages, line.per_package)} = ` : ""}{line.quantity} / {line.unit_price} = {formatInkoopEuro(line.total)}
+                        {line.diffs?.length ? ` (Connect: ${line.diffs.map((diff) => `${diff.field} ${diff.erp}`).join(", ")})` : ""}
+                      </div>
+                    ))}
+                  </td>
                 </tr>
               ))}
               {!data.connect_lots.length && <tr><td colSpan="11">No Connect lots.</td></tr>}
@@ -19036,21 +19045,20 @@ function InkoopCalendarTab({ company, manualLinkDrafts, setManualLinkDrafts, onL
                   className={`inkoop-calendar-cell ${dayStatus(day)}${selectedDate === day.date ? " selected" : ""}`}
                   onClick={() => openDay(day.date)}
                 >
+                  {/* Compact: the date, then ✓ matched % / ✗ unmatched % and
+                      ⚠ the mistakes' amount (the words in the tooltip). */}
                   <div className="inkoop-calendar-date">{Number(day.date.slice(8, 10))}</div>
                   <div className="inkoop-calendar-summary">
-                    {/* The mistakes' amount and how much of the invoiced
-                        value found its Connect lot (as the Financial
-                        Dashboard's matched %). */}
-                    {day.mismatch_value > 0 && <span>{formatInkoopEuro(day.mismatch_value)} mistakes</span>}
                     {dayMatchedPct(day) !== null && (() => {
                       const matched = dayMatchedPct(day);
                       return (
-                        <>
-                          <span>{matched.toFixed(1)}% matched</span>
-                          <span>{(100 - matched).toFixed(1)}% unmatched</span>
-                        </>
+                        <span className="inkoop-calendar-icons">
+                          <span title={`${matched.toFixed(1)}% matched`}>✓ {Math.round(matched)}%</span>
+                          <span title={`${(100 - matched).toFixed(1)}% unmatched`}>✗ {Math.round(100 - matched)}%</span>
+                        </span>
                       );
                     })()}
+                    {day.mismatch_value > 0 && <span title={`${formatInkoopEuro(day.mismatch_value)} mistakes`}>⚠ {formatInkoopEuro(day.mismatch_value)}</span>}
                   </div>
                 </button>
               ))}
@@ -19510,11 +19518,10 @@ function InkoopFollowUpTab({ company, matchRound = 0 }) {
                   <div className="inkoop-calendar-summary">
                     {entry ? (
                       <>
-                        <span>{entry.lines} open</span>
-                        <span>{formatInkoopEuro(entry.value)} at stake</span>
-                        <span>net {formatInkoopEuro(entry.net)}</span>
+                        <span title={`${entry.lines} open line(s), ${formatInkoopEuro(entry.value)} at stake`}>✗ {entry.lines} · {formatInkoopEuro(entry.value)}</span>
+                        <span title="net difference">± {formatInkoopEuro(entry.net)}</span>
                       </>
-                    ) : date <= todayIso() && !loading ? <span>nothing open</span> : null}
+                    ) : date <= todayIso() && !loading ? <span title="nothing open">✓</span> : null}
                   </div>
                 </button>
               );

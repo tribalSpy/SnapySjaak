@@ -8441,11 +8441,16 @@ function matchInkoopVeilingLines(erpRows, invoices, supplierMap = {}, supplierNa
       const value = lots.reduce((sum, row) => sum + (parseFloat(row.t_price) || 0), 0);
       const lotLabel = lots.map((row) => row.lot).join("+");
       let left = Math.round(value * 100) / 100;
+      const lotPieces = total(lots);
       pool.lines.forEach((line, index) => {
-        const share = index === pool.lines.length - 1 ? left : Math.round((value * Number(line.quantity) / wantedNow) * 100) / 100;
+        // Connect short: every line but the last gets its own pieces at the
+        // lots' price, the last what's left (its missing pieces cost nothing)
+        // -- not a share of the invoice's pieces, which handed the short line
+        // the others' value (0 pieces, €173).
+        const base = short && lotPieces > 0 ? lotPieces : wantedNow;
+        const share = index === pool.lines.length - 1 ? left : Math.round((value * Number(line.quantity) / base) * 100) / 100;
         left = Math.round((left - share) * 100) / 100;
         const last = index === pool.lines.length - 1;
-        const lotPieces = total(lots);
         const pair = {
           ...line,
           supplier_code: line.supplier_code || resolveErpRowSupplierCode(lots[0], validSupplierCodes),
@@ -9279,7 +9284,12 @@ function computeInkoopGrowerDayTotals(erpRows, invoiceLines, supplierMap, suppli
   const erpByGrowerDayProduct = new Map();
   for (const row of Array.isArray(erpRows) ? erpRows : []) {
     const code = resolveErpRowSupplierCode(row, validSupplierCodes);
-    const growerName = codeToName.get(code);
+    // A matched lot: its invoice line's grower, named as below (the line
+    // can fall back to its own name while the lot's code is named
+    // otherwise -- "greencorner" vs "thegreencorneraalsmeer", 1044 each side).
+    const growerName = row?.matched_invoice_line
+      ? inkoopGrowerNameForInvoiceLine(row.matched_invoice_line, codeToName, supplierMap, supplierNameMap, manualLinks, supplierFhMap)
+      : codeToName.get(code);
     const dateKey = String(row?.date || "").slice(0, 10);
     if (!growerName || !dateKey) {
       continue;
@@ -9421,7 +9431,9 @@ function inkoopGapIsExplainedByAggregate(row, growerName, aggregateResult) {
 // whatever code it is booked under (a trader's, FloraHolland's WEST / VBA);
 // a lot with no grower code at all goes by its Aanv. (night action).
 // The day's matches: per Connect lot, the grower codes of the invoice line
-// it was matched to (a pool's / split's every lot).
+// it was matched to (a pool's / split's every lot). The array also carries
+// .invoiceLine (the line's GLN / FH / name): the grower totals name the lot
+// as they name that line, so a pair is never split over two growers.
 function inkoopMatchedLotCodes(match, { supplierMap, supplierNameMap, manualLinks, supplierFhMap }) {
   const byLot = new Map();
   for (const row of [...(match?.matched_ok || []), ...(match?.matched_mismatch || [])]) {
@@ -9429,6 +9441,7 @@ function inkoopMatchedLotCodes(match, { supplierMap, supplierNameMap, manualLink
     const resolved = resolveInkoopSupplierCode(row?.supplier_gln, row?.supplier_fh_number, row?.supplier_name, supplierMap, supplierNameMap, manualLinks, supplierFhMap);
     const codes = [...new Set([...(resolved.codes || []), ...String(row.supplier_code || "").split(/[/+]/)].map((code) => normalizeInkoopKey(code)).filter(Boolean))];
     if (!codes.length) continue;
+    codes.invoiceLine = { supplier_gln: row.supplier_gln, supplier_fh_number: row.supplier_fh_number, supplier_name: row.supplier_name };
     const lots = Array.isArray(row.split_lots) && row.split_lots.length ? row.split_lots : String(row.erp_row.lot || "").split("+");
     for (const lot of lots) if (String(lot).trim() && !byLot.has(String(lot).trim())) byLot.set(String(lot).trim(), codes);
   }
@@ -9470,8 +9483,9 @@ function inkoopErpRowsForInvoiceGrowers(erpRows, invoiceLines, { supplierMap, su
     const positions = [row?.suppl, row?.avc, row?.transp].map((value) => normalizeInkoopKey(value)).filter(Boolean);
     const matchedCodes = matchedLotCodes?.get(String(row?.lot ?? "").trim());
     if (matchedCodes?.length) {
-      return matchedCodes.some((code) => positions.includes(code)) ? row
+      const own = matchedCodes.some((code) => positions.includes(code)) ? row
         : { ...row, suppl: matchedCodes[0], avc: matchedCodes[0], transp: "", booked_under: `${normalizeInkoopKey(row.suppl)} (matched to its invoice line)` };
+      return matchedCodes.invoiceLine ? { ...own, matched_invoice_line: matchedCodes.invoiceLine } : own;
     }
     if (byPav) {
       return positions.includes(byPav) ? row : { ...row, suppl: byPav, avc: byPav, transp: "", booked_under: `${normalizeInkoopKey(row.suppl)} (via brief number)` };
@@ -10188,7 +10202,8 @@ const INKOOP_EMPTY_DAY_BUCKET = {
 // compared again once (at start-up), not only days whose data changed.
 // 2026-10-21: grower directory (learned links, Handel evidence), supplier
 // pairs stored on the invoice date.
-const INKOOP_MATCH_RULES_VERSION = "2026-10-29a";
+// 2026-10-29b: a short product pool values each line by its own pieces.
+const INKOOP_MATCH_RULES_VERSION = "2026-10-29b";
 
 function inkoopStateFingerprint(state) {
   return crypto.createHash("sha1").update(JSON.stringify([
@@ -25501,10 +25516,16 @@ async function handleApi(req, res, url) {
       const dayBundles = await computeInkoopDays(state, range.from, range.to);
       const invoiceLines = [];
       const connectLots = [];
-      const lotOut = (row, status, matchedTo, date) => ({
+      const lotOut = (row, status, matchedTo, date, line = null) => ({
         date: date || String(row?.date || "").slice(0, 10), lot: row?.lot, pav: normalizeUkdocsText(row?.pav), suppl: normalizeUkdocsText(row?.suppl),
         description: normalizeUkdocsText(row?.description), items: row?.items ?? null, cont: row?.cont ?? null,
         pieces: row?.pieces, price: row?.price, t_price: row?.t_price, status, matched_to: matchedTo || "",
+        // A mismatch: the invoice line it is about (a pool's lots don't say
+        // which of its lines is short).
+        invoice_lines: line && status === "mismatch" ? [{
+          reference_bt: line.reference_bt || "", description: line.description || "", packages: line.packages ?? null, per_package: line.per_package ?? null,
+          quantity: line.quantity, unit_price: line.unit_price, total: line.total, diffs: line.diffs || null,
+        }] : [],
       });
       for (const day of dayBundles) {
         const result = filterInkoopResultsByCompany(day.result, company);
@@ -25527,7 +25548,7 @@ async function handleApi(req, res, url) {
             // booked under another one than the invoice line's).
             // ... and for the invoice line's grower: matched is matched.
             if (row.erp_row && (key === "matched_ok" || key === "matched_mismatch") && (invoiceSide || growerOfLot(row.erp_row) === wanted)) {
-              connectLots.push(lotOut(row.erp_row, status, `${row.invoice_number || ""} ${row.reference_bt || ""}`.trim(), String(row.erp_row?.date || "").slice(0, 10)));
+              connectLots.push(lotOut(row.erp_row, status, `${row.invoice_number || ""} ${row.reference_bt || ""}`.trim(), String(row.erp_row?.date || "").slice(0, 10), row));
             }
           }
         }
@@ -25548,6 +25569,7 @@ async function handleApi(req, res, url) {
         seen.pieces = (Number(seen.pieces) || 0) + (Number(row.pieces) || 0);
         seen.t_price = Math.round(((parseFloat(seen.t_price) || 0) + (parseFloat(row.t_price) || 0)) * 100) / 100;
         seen.matched_to = [...new Set(`${seen.matched_to}, ${row.matched_to}`.split(", ").filter(Boolean))].join(", ");
+        seen.invoice_lines = [...seen.invoice_lines, ...row.invoice_lines];
       }
       const lots = [...byLot.values()];
       sendJson(res, 200, { grower: wanted, from: range.from, to: range.to, invoice_lines: invoiceLines, connect_lots: lots });
