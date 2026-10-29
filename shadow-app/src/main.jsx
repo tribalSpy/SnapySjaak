@@ -3143,7 +3143,7 @@ function ukdocsInspectionDocumentKeys(collection) {
     return ["inspection_list", "locations_file"];
   }
   if (inspectionMode === "reinspection") {
-    return ["phyto", "inspection_list", "locations_file", "export_extra", "temp_phyto_plants_file", "exit_confirmation"];
+    return ["phyto", "inspection_list", "locations_file", "export_extra", "temp_phyto_plants_file", "extra_docs", "exit_confirmation"];
   }
   return ["phyto", "export_extra", "temp_phyto_plants_file", "exit_confirmation"];
 }
@@ -4974,6 +4974,9 @@ const UKDOCS_PRINT_DOCUMENTS = [
   { key: "ipaffs_file", label: "IPAFFS Flowers+ACC", accept: ".csv,.xlsx,.xls" },
   { key: "ipaffs_plants_file", label: "IPAFFS Plants", accept: ".csv,.xlsx,.xls" },
   { key: "exit_confirmation", label: "Confirmation of exit", accept: ".pdf,.xlsx,.xls" },
+  // Nakeuring: whatever else the specialist needs (another country's phyto,
+  // a certificate ...), as many files as needed.
+  { key: "extra_docs", label: "Extra docs", accept: ".pdf,.xlsx,.xls,.docx,.doc,.jpg,.jpeg,.png" },
 ];
 
 function ukdocsPrintStatusDefinition(status) {
@@ -5575,6 +5578,15 @@ function ukdocsCollectionDownloadEntries(collection, customer = null, menuKey = 
       "Locations file",
     );
   }
+
+  (collection.documents?.extra_docs_files || []).forEach((extraFile, index) => {
+    pushEntry(
+      "extra-docs",
+      extraFile,
+      `/api/ukdocs-print/collections/${collectionId}/documents/extra_docs/${index}`,
+      `Extra doc ${index + 1}`,
+    );
+  });
 
   return entries;
 }
@@ -6604,14 +6616,33 @@ function UkdocsInspectionPage({ currentUser }) {
                       <input
                         type="file"
                         accept={documentDefinition.accept}
-                        onChange={(event) => {
-                          const nextFile = event.target.files?.[0] || null;
+                        multiple={documentDefinition.key === "extra_docs"}
+                        onChange={async (event) => {
+                          const chosen = Array.from(event.target.files || []);
                           event.target.value = "";
-                          uploadCollectionFile(documentDefinition.key, nextFile);
+                          for (const nextFile of documentDefinition.key === "extra_docs" ? chosen : chosen.slice(0, 1)) {
+                            await uploadCollectionFile(documentDefinition.key, nextFile);
+                          }
                         }}
                         disabled={saving}
                       />
-                      {tempInstead ? (
+                      {documentDefinition.key === "extra_docs" ? (
+                        <>
+                          <small>{(selectedCollection.documents?.extra_docs_files || []).length ? `${selectedCollection.documents.extra_docs_files.length} extra document(s) -- for the specialist (e.g. the Spanish phyto for pistache to KZ).` : "Anything else the specialist needs, e.g. another country's phyto. Several files at once is fine."}</small>
+                          {!!(selectedCollection.documents?.extra_docs_files || []).length && (
+                            <div className="row-actions spread-actions">
+                              {selectedCollection.documents.extra_docs_files.map((extraFile, index) => (
+                                <span key={`${extraFile.storage_name}-${index}`} className="row-actions spread-actions">
+                                  <a href={`/api/ukdocs-print/collections/${encodeURIComponent(selectedCollection.id)}/documents/extra_docs/${index}`} target="_blank" rel="noreferrer">
+                                    {extraFile.original_name || `Extra doc ${index + 1}`}
+                                  </a>
+                                  <button type="button" onClick={() => deleteCollectionDocument("extra_docs", index)} disabled={saving}>Delete</button>
+                                </span>
+                              ))}
+                            </div>
+                          )}
+                        </>
+                      ) : tempInstead ? (
                         <>
                           <small>{tempFiles.length ? `${tempFiles.length} temporary phyto PDF(s) saved -- the original phyto is uploaded in Eric Docs after the inspection.` : "No file saved yet. The original phyto is uploaded in Eric Docs after the inspection."}</small>
                           {!!tempFiles.length && (
