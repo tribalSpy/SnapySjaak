@@ -25579,12 +25579,16 @@ async function handleApi(req, res, url) {
         return;
       }
       const grower = normalizeUkdocsText(url.searchParams.get("grower"));
-      const pairs = [...new Map(totals.filter((row) => view.growerOf(row) === grower)
-        .map((row) => [`${row.supplier_code}|${row.supplier_name}`, [row.supplier_code, row.supplier_name]])).values()];
-      const lines = await getInkoopOverviewLines({ company, from, to, pairs });
+      // lists=matched_mismatch,...: those lines of every grower (a KPI tile's
+      // lines), else one grower's lines.
+      const lists = String(url.searchParams.get("lists") || "").split(",").map((list) => list.trim()).filter((list) => INKOOP_OVERVIEW_STATUS[list]);
+      const pairs = grower ? [...new Map(totals.filter((row) => view.growerOf(row) === grower)
+        .map((row) => [`${row.supplier_code}|${row.supplier_name}`, [row.supplier_code, row.supplier_name]])).values()] : [];
+      if (!grower && !lists.length) throw new Error("grower or lists is required");
+      const lines = await getInkoopOverviewLines({ company, from, to, pairs, lists: grower ? [] : lists });
       sendJson(res, 200, {
         from, to, grower,
-        lines: lines.map((row) => ({ ...row, bw: view.bwOf(row), flow: inkoopOverviewFlow(row), status: INKOOP_OVERVIEW_STATUS[row.list] || row.list })),
+        lines: lines.map((row) => ({ ...row, grower: view.growerOf(row), bw: view.bwOf(row), flow: inkoopOverviewFlow(row), status: INKOOP_OVERVIEW_STATUS[row.list] || row.list })),
         capped: lines.length >= 3000,
       });
     } catch (error) {

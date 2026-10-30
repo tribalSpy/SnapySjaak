@@ -3387,3 +3387,23 @@ button.ik-kpi:hover {
     grid-template-columns: minmax(0, 1fr);
   }
 }
+
+/* A tile's lines: text left, the numbers right, what differs wraps. */
+.ik-lines-table th,
+.ik-lines-table td {
+  text-align: left !important;
+  font-size: 0.8rem;
+  padding: 3px 6px;
+}
+
+.ik-lines-table td:nth-child(n+8):nth-child(-n+10),
+.ik-lines-table th:nth-child(n+8):nth-child(-n+10),
+.ik-lines-table td:nth-child(n+13):nth-child(-n+16),
+.ik-lines-table th:nth-child(n+13):nth-child(-n+16) {
+  text-align: right !important;
+}
+
+.ik-lines-table td:last-child {
+  white-space: normal;
+  min-width: 220px;
+}

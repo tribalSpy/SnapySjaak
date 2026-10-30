@@ -1615,11 +1615,18 @@ export async function getInkoopOverviewTotals({ company = "", from = "", to = ""
 
 // The stored match lines of a period for some (grower code, grower name)
 // pairs -- the overview table's deepest level.
-export async function getInkoopOverviewLines({ company = "", from = "", to = "", pairs = [] } = {}) {
-  if (!pool || !from || !to || !pairs.length) return [];
-  const params = [from, to, pairs.map((pair) => pair[0]), pairs.map((pair) => pair[1])];
-  const where = ["m.match_date >= $1::date", "m.match_date <= $2::date", "m.list <> 'fee_lines'",
-    "(m.supplier_code, m.supplier_name) IN (SELECT * FROM unnest($3::text[], $4::text[]))"];
+// lists (no pairs): those result lists of every grower.
+export async function getInkoopOverviewLines({ company = "", from = "", to = "", pairs = [], lists = [] } = {}) {
+  if (!pool || !from || !to || (!pairs.length && !lists.length)) return [];
+  const params = [from, to];
+  const where = ["m.match_date >= $1::date", "m.match_date <= $2::date", "m.list <> 'fee_lines'"];
+  if (pairs.length) {
+    params.push(pairs.map((pair) => pair[0]), pairs.map((pair) => pair[1]));
+    where.push(`(m.supplier_code, m.supplier_name) IN (SELECT * FROM unnest($${params.length - 1}::text[], $${params.length}::text[]))`);
+  } else {
+    params.push(lists);
+    where.push(`m.list = ANY($${params.length}::text[])`);
+  }
   if (company) { params.push(company); where.push(`m.company_number = $${params.length}`, "m.list <> 'only_in_erp'"); }
   // The boxes (count × per box) from the invoice line itself (same invoice,
   // pieces, total and product) and from the lot (a single lot only).
@@ -1635,7 +1642,8 @@ export async function getInkoopOverviewLines({ company = "", from = "", to = "",
           LIMIT 1
        ) il ON true
        LEFT JOIN inkoop_erp_lines el ON el.lot = (CASE WHEN m.lot ~ '^[0-9]{1,18}$' THEN m.lot::bigint END)
-      WHERE ${where.join(" AND ")} ORDER BY m.match_date, m.list, m.description LIMIT 3000`,
+      WHERE ${where.join(" AND ")}
+      ORDER BY ${pairs.length ? "m.match_date, m.list, m.description" : "abs(COALESCE(m.difference_total, m.invoice_total, m.erp_total, 0)) DESC, m.match_date"} LIMIT 3000`,
     params,
   );
   return result.rows;
