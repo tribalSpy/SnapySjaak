@@ -17389,7 +17389,10 @@ function IkTraceTable({ rows, from, to, company, bar, setBar }) {
   const sortBy = (key) => { if (sortKey === key) setSortDir((dir) => -dir); else { setSortKey(key); setSortDir(key === "name" ? 1 : -1); } };
   const shownColumns = INKOOP_OVERVIEW_COLUMNS.filter(([key]) => columns.includes(key));
   const span = shownColumns.length + 2;
-  const chosenGrower = bar.grower ? growers.find((item) => inkoopSameGrower(item.key, bar.grower))?.key || "" : "";
+  // Every grower the bar's name matches ("melissa": melissaflowers,
+  // Melissa Jacoba, ...) -- the Excel holds them all.
+  const chosenGrowers = bar.grower ? growers.filter((item) => inkoopSameGrower(item.key, bar.grower)).map((item) => item.key) : [];
+  const chosenGrower = chosenGrowers.length === 1 ? chosenGrowers[0] : chosenGrowers.length ? bar.grower : "";
   const figures = (sum) => [sum.invoice_lines, sum.invoice_value.toFixed(2), sum.matched_lines, sum.matched_value.toFixed(2), sum.not_matched_lines, sum.not_matched_value.toFixed(2), sum.connect_only_lines, sum.connect_only_value.toFixed(2), sum.connect_value.toFixed(2), sum.difference.toFixed(2), sum.matched_pct === null ? "" : sum.matched_pct.toFixed(1)];
   const figureHead = ["Invoice lines", "Invoice value", "Matched lines", "Matched value", "Not matched lines", "Not matched value", "Only in Connect lots", "Only in Connect value", "Connect total", "Difference", "Matched %"];
   // Per grower its total, then per month, week and day.
@@ -17405,16 +17408,26 @@ function IkTraceTable({ rows, from, to, company, bar, setBar }) {
     }
     inkoopDownloadCsv(`money-trace-periods-${chosenGrower ? `${inkoopGrowerKey(chosenGrower)}-` : ""}${from}-${to}.csv`, [["Grower", "Level", "Period", ...figureHead], ...body]);
   };
-  // The chosen grower in one Excel file, a tab each: the totals per month /
-  // week / day, the invoice data and the Connect data.
+  // The chosen grower(s) in one Excel file, a tab each: the totals per
+  // month / week / day, the invoice data and the Connect data -- every
+  // matching grower, with its name in the first column.
   const exportExcel = async () => {
-    if (!chosenGrower) return;
+    if (!chosenGrowers.length) return;
     setExporting("excel");
     try {
-      const params = new URLSearchParams({ from, to, grower: chosenGrower });
-      if (company) params.set("company", company);
-      const [payload, ExcelModule] = await Promise.all([apiJson(`/api/inkoop/grower-export?${params.toString()}`), import("exceljs")]);
+      const fetchOne = (name) => {
+        const params = new URLSearchParams({ from, to, grower: name });
+        if (company) params.set("company", company);
+        return apiJson(`/api/inkoop/grower-export?${params.toString()}`).then((data) => ({ name, data }));
+      };
+      const [parts, ExcelModule] = await Promise.all([Promise.all(chosenGrowers.map(fetchOne)), import("exceljs")]);
       const ExcelJS = ExcelModule.default || ExcelModule;
+      const seenLots = new Set();
+      const payload = {
+        invoice_lines: parts.flatMap(({ name, data }) => (data.invoice_lines || []).map((line) => ({ ...line, our_grower: name }))),
+        // A lot under two growers' names: once.
+        lots: parts.flatMap(({ name, data }) => (data.lots || []).filter((lot) => !seenLots.has(lot.lot) && seenLots.add(lot.lot)).map((lot) => ({ ...lot, our_grower: name }))),
+      };
       const book = new ExcelJS.Workbook();
       const sheet = (name, head, body, euroColumns) => {
         const ws = book.addWorksheet(name, { views: [{ state: "frozen", ySplit: 1 }] });
@@ -17428,17 +17441,19 @@ function IkTraceTable({ rows, from, to, company, bar, setBar }) {
         });
       };
       const num = (value) => (value === null || value === undefined || value === "" ? "" : Number(value));
-      const grower = growers.find((item) => item.key === chosenGrower);
+      const chosen = growers.filter((item) => chosenGrowers.includes(item.key));
       const periodRows = [];
-      if (grower) {
-        periodRows.push(["Total", `${from} – ${to}`, ...figures(grower.sum).map(num)]);
+      const periodsOf = (label, list) => {
+        periodRows.push([label, "Total", `${from} – ${to}`, ...figures(inkoopOverviewSum(list)).map(num)]);
         for (const level of ["month", "week", "day"]) {
-          for (const item of group(grower.rows, keyOfLevel[level]).sort((left, right) => left.key.localeCompare(right.key))) {
-            periodRows.push([level[0].toUpperCase() + level.slice(1), item.key, ...figures(item.sum).map(num)]);
+          for (const item of group(list, keyOfLevel[level]).sort((left, right) => left.key.localeCompare(right.key))) {
+            periodRows.push([label, level[0].toUpperCase() + level.slice(1), item.key, ...figures(item.sum).map(num)]);
           }
         }
-      }
-      sheet("Per month-week-day", ["Level", "Period", ...figureHead], periodRows, ["Invoice value", "Matched value", "Not matched value", "Only in Connect value", "Connect total", "Difference"]);
+      };
+      if (chosen.length > 1) periodsOf(`All ${chosen.length} growers`, chosen.flatMap((item) => item.rows));
+      for (const item of chosen) periodsOf(item.key, item.rows);
+      sheet("Per month-week-day", ["Grower", "Level", "Period", ...figureHead], periodRows, ["Invoice value", "Matched value", "Not matched value", "Only in Connect value", "Connect total", "Difference"]);
       // Every field the upload kept: the fixed columns, then all the rest of
       // the line's own data (whatever the invoice / Connect file held).
       const cell = (value) => (value === null || value === undefined ? "" : typeof value === "object" ? JSON.stringify(value) : value);
@@ -17447,8 +17462,8 @@ function IkTraceTable({ rows, from, to, company, bar, setBar }) {
         .sort((left, right) => String(left.invoice_date).localeCompare(String(right.invoice_date)) || String(left.id).localeCompare(String(right.id)));
       const invoiceExtra = rawKeys(invoiceRows, "raw", ["packages", "per_package"]);
       sheet("Invoice data",
-        ["Invoice date", "Invoice", "Type", "Company", "Brief", "Product", "Grower", "FH number", "GLN", "Boxes", "Per box", "Pieces", "Price", "Total", ...invoiceExtra, "Source file", "Match", "Flow", "Matched Connect lot", "Difference", "Note"],
-        invoiceRows.map((line) => [line.invoice_date, line.invoice_number, line.invoice_type, line.company_name ? `${line.company_number} ${line.company_name}` : line.company_number,
+        ["Our grower", "Invoice date", "Invoice", "Type", "Company", "Brief", "Product", "Grower (invoice)", "FH number", "GLN", "Boxes", "Per box", "Pieces", "Price", "Total", ...invoiceExtra, "Source file", "Match", "Flow", "Matched Connect lot", "Difference", "Note"],
+        invoiceRows.map((line) => [line.our_grower, line.invoice_date, line.invoice_number, line.invoice_type, line.company_name ? `${line.company_number} ${line.company_name}` : line.company_number,
           line.reference_bt, line.description, line.supplier_name, line.supplier_fh_number, line.supplier_gln,
           num(line.raw?.packages), num(line.raw?.per_package), num(line.quantity), num(line.unit_price), num(line.total),
           ...invoiceExtra.map((key) => cell(line.raw?.[key])), line.source_file_name, IK_STATUS_LABEL[line.status] || line.status, line.flow,
@@ -17458,8 +17473,8 @@ function IkTraceTable({ rows, from, to, company, bar, setBar }) {
       const lotExtra = rawKeys(lots, "raw", ["items", "cont"]);
       const eppKeys = rawKeys(lots, "epp", ["source_file_name"]);
       sheet("Connect data",
-        ["Date", "Lot", "PAV", "Supplier", "Transport", "Avc", "Product", "Boxes", "Per box", "Pieces", "Price", "Total", "Deb no", "Inv no", ...lotExtra, ...eppKeys.map((key) => `Night action: ${key}`), "Dispatched to"],
-        lots.map((lot) => [lot.erp_date, lot.lot, lot.pav, lot.suppl, lot.transp, lot.avc, lot.description,
+        ["Our grower", "Date", "Lot", "PAV", "Supplier", "Transport", "Avc", "Product", "Boxes", "Per box", "Pieces", "Price", "Total", "Deb no", "Inv no", ...lotExtra, ...eppKeys.map((key) => `Night action: ${key}`), "Dispatched to"],
+        lots.map((lot) => [lot.our_grower, lot.erp_date, lot.lot, lot.pav, lot.suppl, lot.transp, lot.avc, lot.description,
           num(lot.raw?.items), num(lot.raw?.cont), num(lot.pieces), num(lot.price), num(lot.t_price), lot.deb_no, lot.inv_no,
           ...lotExtra.map((key) => cell(lot.raw?.[key])), ...eppKeys.map((key) => cell(lot.epp?.[key])),
           (Array.isArray(lot.dispatches) ? lot.dispatches : []).map(inkoopDispatchText).join(", ")]),
@@ -17508,7 +17523,7 @@ function IkTraceTable({ rows, from, to, company, bar, setBar }) {
           <IkColumnPicker columns={columns} toggle={toggleColumn} />
           <button type="button" className={`ik-chip${full ? " on" : ""}`} onClick={() => setFull((current) => !current)} title="Esc closes">{full ? "✕ Close full screen" : "⛶ Full screen"}</button>
           <button type="button" className="ik-chip" onClick={exportPeriods} title="Per grower: the total, every month, week and day">CSV per month / week / day</button>
-          {chosenGrower && <button type="button" className="ik-chip" onClick={exportExcel} disabled={Boolean(exporting)} title={`${chosenGrower} in one Excel file: a tab per month / week / day, a tab invoice data, a tab Connect data`}>{exporting ? "Exporting…" : `Excel: ${chosenGrower} (3 tabs)`}</button>}
+          {!!chosenGrowers.length && <button type="button" className="ik-chip" onClick={exportExcel} disabled={Boolean(exporting)} title={`${chosenGrowers.join(", ")} in one Excel file: a tab per month / week / day, a tab invoice data, a tab Connect data`}>{exporting ? "Exporting…" : `Excel: ${chosenGrowers.length === 1 ? chosenGrowers[0] : `${chosenGrowers.length} growers "${bar.grower}"`} (3 tabs)`}</button>}
         </div>
       </div>
       <div className="table-wrap">
