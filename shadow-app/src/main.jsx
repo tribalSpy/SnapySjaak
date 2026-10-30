@@ -22209,6 +22209,35 @@ function inkoopPeriodLabel(period) {
   return period?.from && period?.to ? `${fustOverviewDate(period.from)} - ${fustOverviewDate(period.to)}` : `the last ${period?.days || 7} days`;
 }
 
+// Where a lot went, folded: the retour destinations written out, the other
+// customers as "+33 customers · 31 FR / 2 GB · 312 pcs"; a click lists them.
+function IkDestinations({ destinations }) {
+  const [open, setOpen] = useState(false);
+  if (!destinations.length) return "-";
+  const line = (dest, index) => (
+    <div key={`${dest.code}-${index}`}>
+      {dest.pieces} &rarr; {dest.code}{dest.name ? ` (${dest.name}${dest.land ? `, ${dest.land}` : ""})` : ""}{dest.is_retour ? " [retour 119]" : ""}{!dest.is_retour && dest.bw ? ` [intern: ${INKOOP_BW_LABELS[dest.bw] || `BW ${dest.bw}`}]` : ""}
+    </div>
+  );
+  const retour = destinations.filter((dest) => dest.is_retour);
+  const others = destinations.filter((dest) => !dest.is_retour);
+  const byLand = new Map();
+  for (const dest of others) byLand.set(dest.land || "?", (byLand.get(dest.land || "?") || 0) + 1);
+  const lands = [...byLand.entries()].sort((left, right) => right[1] - left[1]).map(([land, count]) => `${count} ${land}`).join(" / ");
+  const pieces = others.reduce((sum, dest) => sum + (Number(dest.pieces) || 0), 0);
+  return (
+    <>
+      {retour.map(line)}
+      {!!others.length && (
+        <button type="button" className="link-button" onClick={() => setOpen((current) => !current)} title={open ? "Fold" : "List the customers"}>
+          {open ? "▾" : "▸"} +{others.length} customer{others.length === 1 ? "" : "s"} · {lands} · {pieces} pcs
+        </button>
+      )}
+      {open && others.map(line)}
+    </>
+  );
+}
+
 function InkoopDestinationsTab() {
   // The period being picked vs the one shown: nothing loads until "Show",
   // so picking two dates doesn't fire a request per click.
@@ -22307,15 +22336,7 @@ function InkoopDestinationsTab() {
                   <td>{item.retour_pieces || 0}</td>
                   <td>{formatInkoopEuro(item.total)}</td>
                   <td><InkoopRetourStatusBadge status={item.status} /></td>
-                  <td>
-                    {item.lots.flatMap((lot) => lot.destinations).length
-                      ? item.lots.flatMap((lot) => lot.destinations).map((dest, destIndex) => (
-                        <div key={`${dest.code}-${destIndex}`}>
-                          {dest.pieces} &rarr; {dest.code}{dest.name ? ` (${dest.name}${dest.land ? `, ${dest.land}` : ""})` : ""}{dest.is_retour ? " [retour 119]" : ""}{!dest.is_retour && dest.bw ? ` [intern: ${INKOOP_BW_LABELS[dest.bw] || `BW ${dest.bw}`}]` : ""}
-                        </div>
-                      ))
-                      : "-"}
-                  </td>
+                  <td><IkDestinations destinations={item.lots.flatMap((lot) => lot.destinations)} /></td>
                 </tr>
               ))}
               {corrections && !correctionRows.length && (
