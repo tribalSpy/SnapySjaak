@@ -3532,3 +3532,15 @@ button.ik-kpi:hover {
     grid-template-columns: minmax(0, 1fr) minmax(0, 370px);
   }
 }
+
+/* Track & Trace: a search box per side, before the sort choice. */
+.ik-side-search {
+  margin-left: auto;
+  width: 160px;
+  padding: 3px 6px;
+  font-size: 0.8rem;
+}
+
+.ik-side-head .ik-side-search + select {
+  margin-left: 0;
+}

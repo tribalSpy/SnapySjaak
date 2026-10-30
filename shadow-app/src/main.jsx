@@ -17759,6 +17759,7 @@ function InkoopTrackTraceWorkspace({ bar, setBar, overview, company, matchRound 
   const [pairsOpen, setPairsOpen] = useState(false);
   const [showMatched, setShowMatched] = useState(false);
   const [sorts, setSorts] = useState({ left: "date", right: "date" });
+  const [searches, setSearches] = useState({ left: "", right: "" });
   const [growerFilter, setGrowerFilter] = useState("");
   useEffect(() => {
     let cancelled = false;
@@ -17802,8 +17803,17 @@ function InkoopTrackTraceWorkspace({ bar, setBar, overview, company, matchRound 
   // matched short in pieces (FA5N2DA: 6500 on the invoice, 4125 in its
   // lot), which may need another lot linked.
   const piecesShort = (issue) => issue.issue_type === "mismatch" && (issue.detail?.diffs || []).some((diff) => diff.field === "quantity");
-  const leftIssues = growerIssues.filter((issue) => issue.issue_type === "gap_invoice" || piecesShort(issue)).sort(sorter(sorts.left));
-  const rightIssues = growerIssues.filter((issue) => issue.issue_type === "gap_erp").sort(sorter(sorts.right));
+  // A search per side: every word typed must be in the line (product,
+  // brief / Uw ref., lot, invoice, pieces, price).
+  const searchHit = (issue, text) => {
+    const words = String(text || "").toLowerCase().split(/\s+/).filter(Boolean);
+    if (!words.length) return true;
+    const haystack = [issue.description, issue.invoice_number, issue.issue_type === "gap_erp" ? inkoopErpTranscript(issue.erp_row) : inkoopInvoiceTranscript(issue.detail),
+      issue.detail?.your_reference, issue.erp_row?.lot, issue.erp_row?.pav].map((value) => String(value ?? "")).join(" ").toLowerCase();
+    return words.every((word) => haystack.includes(word));
+  };
+  const leftIssues = growerIssues.filter((issue) => (issue.issue_type === "gap_invoice" || piecesShort(issue)) && searchHit(issue, searches.left)).sort(sorter(sorts.left));
+  const rightIssues = growerIssues.filter((issue) => issue.issue_type === "gap_erp" && searchHit(issue, searches.right)).sort(sorter(sorts.right));
 
   // Linking (as the Follow-up): ticked lines and lots; a ticked mismatch
   // line brings its own lot(s).
@@ -17861,6 +17871,10 @@ function InkoopTrackTraceWorkspace({ bar, setBar, overview, company, matchRound 
   }
   const openDrawer = (issue) => { setDrawer(issue); setDraft({ status: issue.status, assigned_to: issue.assigned_to, note: issue.note }); };
 
+  const searchBox = (sideKey) => (
+    <input className="ik-side-search" value={searches[sideKey]} placeholder="Search…" title="Product, brief / ref., lot, invoice, pieces or price -- every word"
+      onChange={(event) => setSearches((current) => ({ ...current, [sideKey]: event.target.value }))} />
+  );
   const sortSelect = (sideKey) => (
     <select value={sorts[sideKey]} onChange={(event) => setSorts((current) => ({ ...current, [sideKey]: event.target.value }))} title="Order">
       <option value="date">by date</option>
@@ -17959,11 +17973,11 @@ function InkoopTrackTraceWorkspace({ bar, setBar, overview, company, matchRound 
             )}
             <div className="ik-split-view">
               <div className="data-table-card ik-card ik-side inv">
-                <div className="ik-side-head"><strong>Invoice lines without their lot</strong><span className="muted">{leftIssues.length}</span>{sortSelect("left")}</div>
+                <div className="ik-side-head"><strong>Invoice lines without their lot</strong><span className="muted">{leftIssues.length}</span>{searchBox("left")}{sortSelect("left")}</div>
                 {!issues ? <div className="muted">Loading…</div> : leftIssues.length ? leftIssues.map((issue) => issueRow(issue, "inv")) : <div className="muted">✓ Nothing open on the invoice side.</div>}
               </div>
               <div className="data-table-card ik-card ik-side con">
-                <div className="ik-side-head"><strong>Connect lots without an invoice</strong><span className="muted">{rightIssues.length}</span>{sortSelect("right")}</div>
+                <div className="ik-side-head"><strong>Connect lots without an invoice</strong><span className="muted">{rightIssues.length}</span>{searchBox("right")}{sortSelect("right")}</div>
                 {!issues ? <div className="muted">Loading…</div> : rightIssues.length ? rightIssues.map((issue) => issueRow(issue, "con")) : <div className="muted">✓ Nothing open on the Connect side.</div>}
               </div>
             </div>
