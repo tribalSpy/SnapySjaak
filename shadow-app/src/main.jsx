@@ -17092,15 +17092,21 @@ function IkKpiStrip({ rows, onGrower = null, from = "", to = "", company = "", b
 function IkMiniCalendar({ rows, from, to, day, onDay }) {
   const byDate = new Map();
   for (const row of rows || []) byDate.set(row.date, [...(byDate.get(row.date) || []), row]);
+  // Every month of the period (a year for one grower), in a box that
+  // scrolls and opens on the newest month.
   const months = [];
-  for (let month = inkoopMonthStart(from); month <= to && months.length < 4; month = inkoopMonthStart(addDaysToIso(month, 32))) months.push(month);
+  for (let month = inkoopMonthStart(from); month <= to && months.length < 14; month = inkoopMonthStart(addDaysToIso(month, 32))) months.push(month);
+  const boxRef = useRef(null);
+  useEffect(() => {
+    if (boxRef.current) boxRef.current.scrollTop = boxRef.current.scrollHeight;
+  }, [from, to]);
   const pick = (date, event) => {
     if (day && day.from === date && day.to === date) return onDay(null);
     if (event.shiftKey && day) return onDay(date < day.from ? { from: date, to: day.to } : { from: day.from, to: date });
     return onDay({ from: date, to: date });
   };
   return (
-    <div className="ik-cal">
+    <div className="ik-cal" ref={boxRef}>
       {months.map((month) => {
         const [year, monthNumber] = month.split("-").map(Number);
         const blanks = (new Date(year, monthNumber - 1, 1).getDay() + 6) % 7;

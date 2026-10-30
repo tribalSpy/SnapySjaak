@@ -3503,3 +3503,18 @@ button.ik-kpi:hover {
 .ik-fullscreen .ik-card-head {
   padding-left: 56px;
 }
+
+/* Many months (a year): the calendar scrolls inside its card, the key stays
+   at the bottom of the box. */
+.ik-cal {
+  max-height: 440px;
+  overflow-y: auto;
+  align-content: flex-start;
+}
+
+.ik-cal-key {
+  position: sticky;
+  bottom: 0;
+  background: var(--ik-surface);
+  padding-top: 4px;
+}
