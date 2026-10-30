@@ -18102,6 +18102,9 @@ function InkoopTrackTraceWorkspace({ bar, setBar, overview, company, matchRound 
   const [showOthers, setShowOthers] = useState(false);
   const [otherGrower, setOtherGrower] = useState("");
   const [otherSearch, setOtherSearch] = useState("");
+  const [showOtherLines, setShowOtherLines] = useState(false);
+  const [otherLineGrower, setOtherLineGrower] = useState("");
+  const [otherLineSearch, setOtherLineSearch] = useState("");
   useEffect(() => {
     let cancelled = false;
     setIssueError("");
@@ -18160,27 +18163,37 @@ function InkoopTrackTraceWorkspace({ bar, setBar, overview, company, matchRound 
   // Naaldwijk, Aalsmeer, Connect with the...) or a wrong grower -- to link to
   // this grower's invoice line. With a line ticked, the most alike first
   // (same pieces, same € / piece, same product words, same day).
-  const otherLots = chosen ? (issues || []).filter((issue) => issue.issue_type === "gap_erp" && !inkoopSameGrower(issue.grower, chosen)
-    && (() => { const day = inkoopIssueInvoiceDay(issue); return day >= from && day <= to; })()) : [];
-  const otherGrowers = [...otherLots.reduce((map, issue) => map.set(issue.grower || "-", (map.get(issue.grower || "-") || 0) + 1), new Map()).entries()]
+  const inPeriod = (issue) => { const day = inkoopIssueInvoiceDay(issue); return day >= from && day <= to; };
+  const otherLots = chosen ? (issues || []).filter((issue) => issue.issue_type === "gap_erp" && !inkoopSameGrower(issue.grower, chosen) && inPeriod(issue)) : [];
+  // The same on the invoice side: invoice lines of other growers / the
+  // FloraHolland codes without their lot (or short in pieces).
+  const otherLines = chosen ? (issues || []).filter((issue) => (issue.issue_type === "gap_invoice" || piecesShort(issue)) && !inkoopSameGrower(issue.grower, chosen) && inPeriod(issue)) : [];
+  const growersOf = (list) => [...list.reduce((map, issue) => map.set(issue.grower || "-", (map.get(issue.grower || "-") || 0) + 1), new Map()).entries()]
     .sort((left, right) => Number(/floraholland/i.test(right[0])) - Number(/floraholland/i.test(left[0])) || right[1] - left[1]);
+  const otherGrowers = growersOf(otherLots);
+  const otherLineGrowers = growersOf(otherLines);
+  const piecesOfIssue = (issue) => Number(issue.issue_type === "gap_erp" ? issue.erp_row?.pieces : issue.detail?.quantity) || 0;
   const likeLine = Object.values(picked).find((issue) => issue.issue_type !== "gap_erp");
-  const likeness = (issue) => {
-    if (!likeLine) return { score: 0, why: [] };
+  const likeLot = Object.values(picked).find((issue) => issue.issue_type === "gap_erp");
+  // How alike an item is to the ticked one of the other side: same pieces,
+  // same € / piece, product words, same day.
+  const likenessTo = (base) => (issue) => {
+    if (!base) return { score: 0, why: [] };
     const why = [];
-    const linePieces = Number(likeLine.detail?.quantity) || 0;
-    const linePrice = Number(likeLine.detail?.unit_price) || 0;
-    if (linePieces && Number(issue.erp_row?.pieces) === linePieces) why.push("same pieces");
-    if (linePrice && Math.abs((Number(issue.erp_row?.price) || 0) - linePrice) < 0.006) why.push("same € / pc");
-    const words = new Set(String(likeLine.description || "").toUpperCase().split(/[^A-Z0-9]+/).filter((word) => word.length >= 3));
+    if (piecesOfIssue(base) && piecesOfIssue(issue) === piecesOfIssue(base)) why.push("same pieces");
+    if (priceOf(base) && Math.abs(priceOf(issue) - priceOf(base)) < 0.006) why.push("same € / pc");
+    const words = new Set(String(base.description || "").toUpperCase().split(/[^A-Z0-9]+/).filter((word) => word.length >= 3));
     const shared = String(issue.description || "").toUpperCase().split(/[^A-Z0-9]+/).filter((word) => words.has(word)).length;
     if (shared) why.push(`${shared} word(s) alike`);
-    if (inkoopIssueInvoiceDay(issue) === inkoopIssueInvoiceDay(likeLine)) why.push("same day");
+    if (inkoopIssueInvoiceDay(issue) === inkoopIssueInvoiceDay(base)) why.push("same day");
     return { score: (why.includes("same pieces") ? 4 : 0) + (why.includes("same € / pc") ? 3 : 0) + shared + (why.includes("same day") ? 1 : 0), why };
   };
   const otherShown = otherLots.filter((issue) => (!otherGrower || (issue.grower || "-") === otherGrower) && searchHit(issue, otherSearch))
-    .map((issue) => ({ issue, like: likeness(issue) }))
+    .map((issue) => ({ issue, like: likenessTo(likeLine)(issue) }))
     .sort((left, right) => right.like.score - left.like.score || sorter(sorts.right)(left.issue, right.issue));
+  const otherLinesShown = otherLines.filter((issue) => (!otherLineGrower || (issue.grower || "-") === otherLineGrower) && searchHit(issue, otherLineSearch))
+    .map((issue) => ({ issue, like: likenessTo(likeLot)(issue) }))
+    .sort((left, right) => right.like.score - left.like.score || sorter(sorts.left)(left.issue, right.issue));
 
   // Linking (as the Follow-up): ticked lines and lots; a ticked mismatch
   // line brings its own lot(s).
@@ -18331,6 +18344,26 @@ function InkoopTrackTraceWorkspace({ bar, setBar, overview, company, matchRound 
               <div className="data-table-card ik-card ik-side inv">
                 <div className="ik-side-head"><strong>Invoice lines without their lot</strong><span className="muted">{leftIssues.length}</span>{searchBox("left")}{sortSelect("left")}</div>
                 {!issues ? <div className="muted">Loading…</div> : leftIssues.length ? leftIssues.map((issue) => issueRow(issue, "inv")) : <div className="muted">✓ Nothing open on the invoice side.</div>}
+                <div className="ik-others">
+                  <button type="button" className="link-button" onClick={() => setShowOtherLines((value) => !value)} aria-expanded={showOtherLines}>
+                    {showOtherLines ? "▾" : "▸"} Invoice lines of other growers / FloraHolland pools ({otherLines.length})
+                  </button>
+                  {showOtherLines && (
+                    <>
+                      <div className="muted">An invoice line filed under a FloraHolland code or another grower: tick it with this grower's Connect lot and Link.{likeLot ? " The ones most like the ticked lot come first." : " Tick a Connect lot first to see the most alike first."}</div>
+                      <div className="ik-side-head">
+                        <select value={otherLineGrower} onChange={(event) => setOtherLineGrower(event.target.value)} title="Grower / pool">
+                          <option value="">All other growers ({otherLines.length})</option>
+                          {otherLineGrowers.map(([name, count]) => <option key={name} value={name}>{name} ({count})</option>)}
+                        </select>
+                        <input className="ik-side-search" value={otherLineSearch} placeholder="Search…" onChange={(event) => setOtherLineSearch(event.target.value)} title="Product, brief / ref., invoice, pieces, price -- every word" />
+                      </div>
+                      {otherLinesShown.slice(0, 150).map(({ issue, like }) => issueRow(issue, "inv other", like))}
+                      {otherLinesShown.length > 150 && <div className="muted">… {otherLinesShown.length - 150} more -- narrow it with the grower or the search.</div>}
+                      {!otherLinesShown.length && <div className="muted">No open invoice lines of other growers in this period.</div>}
+                    </>
+                  )}
+                </div>
               </div>
               <div className="data-table-card ik-card ik-side con">
                 <div className="ik-side-head"><strong>Connect lots without an invoice</strong><span className="muted">{rightIssues.length}</span>{searchBox("right")}{sortSelect("right")}</div>

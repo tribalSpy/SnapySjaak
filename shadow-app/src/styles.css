@@ -3889,7 +3889,8 @@ button.ik-kpi:hover {
 }
 
 .ik-item.other {
-  border-style: dashed;
+  border: 1px dashed var(--ik-border);
+  border-radius: 6px;
 }
 
 .ik-other-grower {
