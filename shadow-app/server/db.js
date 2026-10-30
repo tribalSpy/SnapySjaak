@@ -2693,6 +2693,18 @@ export async function getInkoopFollowupEvents({ itemId = "", claimId = "" } = {}
   return result.rows;
 }
 
+// The status and department changes of some lines, oldest first (the week
+// overview works out what was open where at each week's end).
+export async function getInkoopFollowupEventsForItems(itemIds) {
+  if (!pool || !itemIds?.length) return [];
+  const result = await pool.query(
+    `SELECT item_id, at, action, to_value FROM inkoop_followup_events
+      WHERE item_id = ANY($1::text[]) AND action IN ('status', 'department') ORDER BY at, id`,
+    [itemIds],
+  );
+  return result.rows;
+}
+
 // The last history row of some lines (the lists' "last action").
 export async function getInkoopFollowupLastEvents(itemIds) {
   if (!pool || !itemIds?.length) return [];

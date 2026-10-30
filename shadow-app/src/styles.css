@@ -3742,3 +3742,27 @@ button.ik-kpi:hover {
   background: var(--ik-surface-2);
   white-space: normal;
 }
+
+/* Week overview: a thin bar of the open money at each week's end. */
+.ik-fu-weekbar {
+  display: inline-block;
+  width: 70px;
+  height: 6px;
+  margin-right: 8px;
+  vertical-align: middle;
+  border-radius: 3px;
+  background: var(--ik-surface-2);
+}
+
+.ik-fu-weekbar span {
+  display: block;
+  height: 100%;
+  border-radius: 3px;
+  background: var(--ik-accent);
+}
+
+.ik-fu-top {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 18px;
+}

@@ -94,6 +94,7 @@ import {
   getInkoopClaims,
   updateInkoopClaim,
   getInkoopClaimItemStatuses,
+  getInkoopFollowupEventsForItems,
   setInkoopDayReady,
   getLlmQueueSnapshot,
   getActiveLlmJobsByType,
@@ -12477,6 +12478,114 @@ async function inkoopFollowupItemsForDates(state, dates) {
   }
   while (inkoopFollowupDayCache.size > 500) inkoopFollowupDayCache.delete(inkoopFollowupDayCache.keys().next().value);
   return { byDate, pending };
+}
+
+// The follow-up lines of a period: the ready days' lines (each once), the
+// days still waiting for data (with how many lines they hold) and the days
+// being compared again. 3 months at most; one grower a year.
+async function inkoopFollowupPeriodItems(state, from, to, grower = "") {
+  const span = from <= to ? inkoopDaySpan(from, to) : 0;
+  if (!span || span > (grower ? 370 : 92)) {
+    return { error: grower ? "One grower: a year at most." : "All growers: 3 months at most -- type one grower to see up to a year." };
+  }
+  const days = await getInkoopDataDayStatuses(from, to);
+  const readyDates = days.filter((day) => day.state === "ready").map((day) => day.date);
+  const counts = new Map((await getInkoopMatchDays({ from, to, withData: false })).map((row) => [row.date, row.counts || {}]));
+  const waiting = days.filter((day) => day.state === "waiting" || day.state === "hold").map((day) => {
+    const count = counts.get(day.date) || {};
+    return { date: day.date, state: day.state, missing: day.missing, lines: (count.only_in_invoice || 0) + (count.only_in_erp || 0) + (count.matched_mismatch || 0) };
+  });
+  const loaded = await inkoopFollowupItemsForDates(state, readyDates);
+  const items = [];
+  const seen = new Set();
+  for (const date of readyDates) {
+    for (const item of loaded.byDate.get(date) || []) {
+      if (seen.has(item.id)) continue;
+      seen.add(item.id);
+      items.push(item);
+    }
+  }
+  return { items, waiting, pending: loaded.pending };
+}
+
+// Days from..to, both counted (inkoopDatesInRange stops at 32).
+function inkoopDaySpan(from, to) {
+  return Math.round((Date.parse(`${to}T00:00:00Z`) - Date.parse(`${from}T00:00:00Z`)) / 86400000) + 1;
+}
+
+// ISO weeks (Monday-Sunday) touching a period: [{ week: "2026-W43", from, to }].
+function inkoopIsoWeeks(from, to) {
+  const weeks = [];
+  const start = new Date(`${from}T00:00:00Z`);
+  start.setUTCDate(start.getUTCDate() - ((start.getUTCDay() + 6) % 7));
+  for (let day = start; day.toISOString().slice(0, 10) <= to; day = new Date(day.getTime() + 7 * 86400000)) {
+    const monday = day.toISOString().slice(0, 10);
+    const thursday = new Date(day.getTime() + 3 * 86400000);
+    const yearStart = new Date(Date.UTC(thursday.getUTCFullYear(), 0, 1));
+    const number = Math.ceil(((thursday - yearStart) / 86400000 + 1) / 7);
+    weeks.push({ week: `${thursday.getUTCFullYear()}-W${String(number).padStart(2, "0")}`, from: monday, to: new Date(day.getTime() + 6 * 86400000).toISOString().slice(0, 10) });
+  }
+  return weeks;
+}
+
+// The week overview for the boss / the bank: per ISO week what came in,
+// what was resolved and what was still open at its end (count and money),
+// per department (as it was then, from the history) and category, and the
+// claims' money.
+function inkoopFollowupWeeks({ from, to, items, statusById, events, claims, departments, categories }) {
+  const at = (value) => (value ? new Date(value).toISOString().slice(0, 10) : "");
+  const byItem = new Map();
+  for (const event of events) byItem.set(event.item_id, [...(byItem.get(event.item_id) || []), event]);
+  const resolvedOn = (item) => {
+    const stored = statusById.get(item.id);
+    if (stored?.status !== "resolved") return "";
+    const last = (byItem.get(item.id) || []).filter((event) => event.action === "status" && event.to_value === "resolved").pop();
+    return at(last?.at || stored.updated_at);
+  };
+  const departmentOn = (item, day) => {
+    const moves = (byItem.get(item.id) || []).filter((event) => event.action === "department" && at(event.at) <= day);
+    return moves.length ? moves[moves.length - 1].to_value : "control";
+  };
+  const money = (item) => Math.abs(Number(item.money_diff) || 0);
+  const round = (value) => Math.round(value * 100) / 100;
+  const rows = inkoopIsoWeeks(from, to).map((week) => {
+    const opened = items.filter((item) => item.day >= week.from && item.day <= week.to);
+    const resolved = items.filter((item) => { const day = resolvedOn(item); return day && day >= week.from && day <= week.to; });
+    const stillOpen = items.filter((item) => item.day <= week.to && !(resolvedOn(item) && resolvedOn(item) <= week.to));
+    const perDepartment = Object.fromEntries(departments.map(([key]) => [key, { lines: 0, value: 0 }]));
+    for (const item of stillOpen) {
+      const entry = perDepartment[departmentOn(item, week.to)] || (perDepartment.control);
+      entry.lines += 1;
+      entry.value = round(entry.value + money(item));
+    }
+    const perCategory = Object.fromEntries(categories.map((category) => {
+      const open = stillOpen.filter((item) => statusById.get(item.id)?.category === category.name);
+      const oldest = open.reduce((max, item) => Math.max(max, Math.round((Date.parse(`${week.to}T00:00:00Z`) - Date.parse(`${item.day}T00:00:00Z`)) / 86400000)), 0);
+      return [category.name, { lines: open.length, value: round(open.reduce((sum, item) => sum + money(item), 0)), oldest_days: oldest }];
+    }));
+    const inWeek = (day) => day && day >= week.from && day <= week.to;
+    return {
+      ...week,
+      opened: { lines: opened.length, value: round(opened.reduce((sum, item) => sum + money(item), 0)) },
+      resolved: { lines: resolved.length, value: round(resolved.reduce((sum, item) => sum + money(item), 0)) },
+      open_at_end: { lines: stillOpen.length, value: round(stillOpen.reduce((sum, item) => sum + money(item), 0)) },
+      overdue_at_end: stillOpen.filter((item) => { const due = statusById.get(item.id)?.due_day; return due && due < week.to; }).length,
+      per_department: perDepartment,
+      per_category: perCategory,
+      claimed: round(claims.filter((claim) => inWeek(at(claim.created_at))).reduce((sum, claim) => sum + (Number(claim.amount_claimed) || 0), 0)),
+      credited: round(claims.filter((claim) => inWeek(claim.received_at)).reduce((sum, claim) => sum + (Number(claim.amount_credited) || 0), 0)),
+      written_off: round(claims.filter((claim) => claim.status === "written_off" && inWeek(claim.closed_at)).reduce((sum, claim) => sum + (Number(claim.amount_claimed) || 0) - (Number(claim.amount_credited) || 0), 0)),
+    };
+  });
+  const openNow = items.filter((item) => statusById.get(item.id)?.status !== "resolved");
+  const growers = new Map();
+  for (const item of openNow) {
+    const entry = growers.get(item.grower) || { grower: item.grower, lines: 0, value: 0 };
+    entry.lines += 1;
+    entry.value = round(entry.value + money(item));
+    growers.set(item.grower, entry);
+  }
+  return { weeks: rows, top_growers: [...growers.values()].sort((left, right) => right.value - left.value).slice(0, 10) };
 }
 
 function inkoopFollowupWithStatus(item, stored, last) {
@@ -25127,7 +25236,7 @@ async function handleApi(req, res, url) {
     }
     const to = inkoopIsoDate(url.searchParams.get("to")) || localDateIso();
     let from = inkoopIsoDate(url.searchParams.get("from")) || addDaysToIsoDate(to, -45);
-    if (from > to || inkoopDatesInRange(from, to).length > 400) from = addDaysToIsoDate(to, -45);
+    if (from > to || inkoopDaySpan(from, to) > 400) from = addDaysToIsoDate(to, -45);
     try {
       sendJson(res, 200, { from, to, files: INKOOP_DATA_FILES, days: await getInkoopDataDayStatuses(from, to) });
     } catch (error) {
@@ -26599,28 +26708,12 @@ async function handleApi(req, res, url) {
       } else {
         to = inkoopIsoDate(url.searchParams.get("to")) || localDateIso();
         from = inkoopIsoDate(url.searchParams.get("from")) || addDaysToIsoDate(to, -30);
-        const span = from <= to ? inkoopDatesInRange(from, to).length : 0;
-        if (!span || span > (grower ? 370 : 92)) {
-          sendJson(res, 400, { error: grower ? "One grower: a year at most." : "All growers: 3 months at most -- type one grower to see up to a year." });
+        const period = await inkoopFollowupPeriodItems(state, from, to, grower);
+        if (period.error) {
+          sendJson(res, 400, { error: period.error });
           return;
         }
-        const days = await getInkoopDataDayStatuses(from, to);
-        const readyDates = days.filter((day) => day.state === "ready").map((day) => day.date);
-        const counts = new Map((await getInkoopMatchDays({ from, to, withData: false })).map((row) => [row.date, row.counts || {}]));
-        waiting = days.filter((day) => day.state === "waiting" || day.state === "hold").map((day) => {
-          const count = counts.get(day.date) || {};
-          return { date: day.date, state: day.state, missing: day.missing, lines: (count.only_in_invoice || 0) + (count.only_in_erp || 0) + (count.matched_mismatch || 0) };
-        });
-        const loaded = await inkoopFollowupItemsForDates(state, readyDates);
-        pending = loaded.pending;
-        const seen = new Set();
-        for (const date of readyDates) {
-          for (const item of loaded.byDate.get(date) || []) {
-            if (seen.has(item.id)) continue;
-            seen.add(item.id);
-            items.push(item);
-          }
-        }
+        ({ items, waiting, pending } = period);
       }
       if (grower) items = items.filter((item) => String(item.grower || "").toLowerCase().includes(grower));
       let merged = items.map((item) => inkoopFollowupWithStatus(item, statusById.get(item.id)));
@@ -26793,6 +26886,43 @@ async function handleApi(req, res, url) {
         );
       }
       sendJson(res, 200, { ok: true, claim: saved });
+    } catch (error) {
+      sendJson(res, 400, { error: error instanceof Error ? error.message : String(error) });
+    }
+    return;
+  }
+
+  // The week overview (per ISO week: in, resolved, still open, per
+  // department and category, claims' money) and, with ?lines=1, the lines
+  // and claims for the Excel file.
+  if (url.pathname === "/api/inkoop/followup/weeks" && req.method === "GET") {
+    if (!requirePermission(res, requestUser, PERMISSIONS.INKOOP_VIEW)) {
+      return;
+    }
+    try {
+      const state = await readInkoopState();
+      const settings = normalizeInkoopFollowupSettings(state.followup);
+      const grower = String(url.searchParams.get("grower") || "").trim().toLowerCase();
+      const to = inkoopIsoDate(url.searchParams.get("to")) || localDateIso();
+      const from = inkoopIsoDate(url.searchParams.get("from")) || addDaysToIsoDate(to, -56);
+      const period = await inkoopFollowupPeriodItems(state, from, to, grower);
+      if (period.error) {
+        sendJson(res, 400, { error: period.error });
+        return;
+      }
+      const items = grower ? period.items.filter((item) => String(item.grower || "").toLowerCase().includes(grower)) : period.items;
+      const statuses = await getInkoopIssueStatuses();
+      const statusById = new Map(statuses.map((row) => [row.id, row]));
+      const events = await getInkoopFollowupEventsForItems(items.filter((item) => statusById.has(item.id)).map((item) => item.id));
+      const claims = (await getInkoopClaims({})).filter((claim) => !grower || String(claim.grower).toLowerCase().includes(grower));
+      const overview = inkoopFollowupWeeks({ from, to, items, statusById, events, claims, departments: INKOOP_FOLLOWUP_DEPARTMENTS, categories: settings.categories });
+      const payload = { from, to, departments: INKOOP_FOLLOWUP_DEPARTMENTS, categories: settings.categories, waiting_days: period.waiting, ...overview };
+      if (url.searchParams.get("lines") === "1") {
+        payload.items = items.map((item) => inkoopFollowupWithStatus(item, statusById.get(item.id)));
+        payload.claims = claims;
+        payload.events = events;
+      }
+      sendJson(res, 200, payload);
     } catch (error) {
       sendJson(res, 400, { error: error instanceof Error ? error.message : String(error) });
     }

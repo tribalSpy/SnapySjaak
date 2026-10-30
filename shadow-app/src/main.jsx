@@ -18804,6 +18804,139 @@ function IkFollowupGrowers({ items, claims, settings, onOpen, quick, onChanged }
   );
 }
 
+// The week overview for the boss / the bank: per ISO week what came in,
+// what was resolved and what was still open at its end, per department and
+// category, and the claims' money -- with an Excel file of it all.
+function IkFollowupWeeks({ bar }) {
+  const [data, setData] = useState(null);
+  const [error, setError] = useState("");
+  const [busy, setBusy] = useState(false);
+  const query = new URLSearchParams({ from: bar.from, to: bar.to, ...(bar.grower ? { grower: bar.grower } : {}) }).toString();
+  useEffect(() => {
+    let cancelled = false;
+    setError("");
+    apiJson(`/api/inkoop/followup/weeks?${query}`)
+      .then((payload) => { if (!cancelled) setData(payload); })
+      .catch((loadError) => { if (!cancelled) { setError(loadError.message); setData(null); } });
+    return () => { cancelled = true; };
+  }, [query]);
+  async function exportExcel() {
+    setBusy(true);
+    setError("");
+    try {
+      const [payload, ExcelModule] = await Promise.all([apiJson(`/api/inkoop/followup/weeks?${query}&lines=1`), import("exceljs")]);
+      const ExcelJS = ExcelModule.default || ExcelModule;
+      const book = new ExcelJS.Workbook();
+      const sheet = (name, head, body, euroColumns = []) => {
+        const ws = book.addWorksheet(name, { views: [{ state: "frozen", ySplit: 1 }] });
+        ws.addRow(head).font = { bold: true };
+        for (const row of body) ws.addRow(row.map((cell) => (cell === null || cell === undefined ? "" : cell)));
+        ws.autoFilter = { from: { row: 1, column: 1 }, to: { row: 1, column: head.length } };
+        head.forEach((title, index) => {
+          const column = ws.getColumn(index + 1);
+          column.width = Math.min(50, Math.max(10, title.length + 2, ...body.slice(0, 300).map((row) => String(row[index] ?? "").length + 1)));
+          if (euroColumns.includes(title)) column.numFmt = '"€"#,##0.00';
+        });
+      };
+      const departments = payload.departments || [];
+      const categories = payload.categories || [];
+      sheet("Week overview",
+        ["Week", "From", "To", "In (lines)", "In €", "Resolved (lines)", "Resolved €", "Open at end (lines)", "Open at end €", "Overdue at end",
+          ...departments.flatMap(([, label]) => [`${label} (lines)`, `${label} €`]), ...categories.flatMap((category) => [`${category.name} (lines)`, `${category.name} oldest (days)`]),
+          "Claimed €", "Credited €", "Written off €"],
+        (payload.weeks || []).map((week) => [week.week, week.from, week.to, week.opened.lines, week.opened.value, week.resolved.lines, week.resolved.value, week.open_at_end.lines, week.open_at_end.value, week.overdue_at_end,
+          ...departments.flatMap(([key]) => [week.per_department[key]?.lines || 0, week.per_department[key]?.value || 0]),
+          ...categories.flatMap((category) => [week.per_category[category.name]?.lines || 0, week.per_category[category.name]?.oldest_days || 0]),
+          week.claimed, week.credited, week.written_off]),
+        ["In €", "Resolved €", "Open at end €", ...departments.map(([, label]) => `${label} €`), "Claimed €", "Credited €", "Written off €"]);
+      const deptLabel = Object.fromEntries(departments);
+      sheet("Lines",
+        ["Day", "Grower", "Flow", "BW", "Type", "Product", "Invoice", "Invoice line", "Connect lot", "Invoice €", "Connect €", "Difference €", "Status", "Department", "Category", "Due", "Claim", "Note", "Earlier: who's checking", "Last change by", "Last change"],
+        (payload.items || []).map((item) => [item.day, item.grower, item.flow, item.bw, inkoopIssueTypeLabel(item.type), item.description, item.invoice_number, ikFollowupInvoiceText(item), ikFollowupLotText(item),
+          item.invoice_value, item.connect_value, item.money_diff, INKOOP_FU_STATUS_LABEL[item.status] || item.status, deptLabel[item.department] || item.department, item.category, item.due_date,
+          item.claim_id ? `C-${item.claim_id}` : "", item.note, item.earlier_assigned, item.updated_by, item.updated_at ? formatTimestamp(item.updated_at) : ""]),
+        ["Invoice €", "Connect €", "Difference €"]);
+      sheet("Claims",
+        ["Claim", "Grower", "Status", "Claimed €", "Credited €", "Still short €", "Credit note", "Created", "By", "Asked", "Credit received", "Closed", "Lines", "Note"],
+        (payload.claims || []).map((claim) => [`C-${claim.id}`, claim.grower, INKOOP_CLAIM_LABEL[claim.status] || claim.status, claim.amount_claimed, claim.amount_credited ?? "",
+          claim.amount_credited !== null && claim.amount_credited !== undefined ? Math.round((claim.amount_claimed - claim.amount_credited) * 100) / 100 : "",
+          claim.credit_note_number, String(claim.created_at || "").slice(0, 10), claim.created_by, claim.asked_at || "", claim.received_at || "", claim.closed_at || "", (claim.item_ids || []).length, claim.note]),
+        ["Claimed €", "Credited €", "Still short €"]);
+      sheet("Status & moves",
+        ["When", "Line", "Change", "To"],
+        (payload.events || []).map((event) => [formatTimestamp(event.at), event.item_id, INKOOP_FU_ACTION_LABEL[event.action] || event.action, event.action === "department" ? deptLabel[event.to_value] || event.to_value : INKOOP_FU_STATUS_LABEL[event.to_value] || event.to_value]));
+      const buffer = await book.xlsx.writeBuffer();
+      const url = URL.createObjectURL(new Blob([buffer], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" }));
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = `inkoop-follow-up-${payload.from}-${payload.to}${bar.grower ? `-${bar.grower}` : ""}.xlsx`;
+      link.click();
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+    } catch (exportError) {
+      setError(exportError.message);
+    } finally {
+      setBusy(false);
+    }
+  }
+  const weeks = data?.weeks || [];
+  const departments = data?.departments || [];
+  const categories = data?.categories || [];
+  const maxOpen = Math.max(1, ...weeks.map((week) => week.open_at_end.value));
+  return (
+    <div className="overview-stack">
+      <div className="row-actions">
+        <span className="muted">Per week (Monday–Sunday) of the period in the bar: the lines that came in, were resolved, and were still open at the week's end -- per department as it was then. Money = the difference, without its sign.</span>
+        <button type="button" className="primary" onClick={exportExcel} disabled={busy || !data}>{busy ? "Making the Excel file…" : "Excel (weeks, lines, claims, moves)"}</button>
+      </div>
+      {error && <div className="notice danger">{error}</div>}
+      {!data ? <div className="muted">Loading…</div> : (
+        <div className="table-wrap">
+          <table className="data-table balance-table ik-fu-table ik-fu-weeks">
+            <thead>
+              <tr>
+                <th>Week</th><th>In</th><th>Resolved</th><th>Open at the end</th><th>Overdue</th>
+                {departments.map(([key, label]) => <th key={key}>{label}</th>)}
+                {categories.map((category) => <th key={category.name}>⚑ {category.name}</th>)}
+                <th>Claimed</th><th>Credited</th><th>Written off</th>
+              </tr>
+            </thead>
+            <tbody>
+              {weeks.map((week) => (
+                <tr key={week.week}>
+                  <td title={`${fustOverviewDate(week.from)} – ${fustOverviewDate(week.to)}`}><strong>{week.week.replace(/^\d{4}-/, "")}</strong> <span className="muted">{fustOverviewDate(week.from).slice(0, 5)}</span></td>
+                  <td>{week.opened.lines} · {formatInkoopEuro(week.opened.value)}</td>
+                  <td>{week.resolved.lines} · {formatInkoopEuro(week.resolved.value)}</td>
+                  <td>
+                    <span className="ik-fu-weekbar" title={formatInkoopEuro(week.open_at_end.value)}><span style={{ width: `${(week.open_at_end.value / maxOpen) * 100}%` }} /></span>
+                    {week.open_at_end.lines} · {formatInkoopEuro(week.open_at_end.value)}
+                  </td>
+                  <td className={week.overdue_at_end ? "ik-fu-warn" : ""}>{week.overdue_at_end || ""}</td>
+                  {departments.map(([key]) => <td key={key}>{week.per_department[key]?.lines || 0} · {formatInkoopEuro(week.per_department[key]?.value || 0)}</td>)}
+                  {categories.map((category) => {
+                    const entry = week.per_category[category.name] || {};
+                    return <td key={category.name}>{entry.lines || 0}{entry.lines ? <span className="muted"> · oldest {entry.oldest_days} d</span> : null}</td>;
+                  })}
+                  <td>{week.claimed ? formatInkoopEuro(week.claimed) : ""}</td>
+                  <td>{week.credited ? formatInkoopEuro(week.credited) : ""}</td>
+                  <td>{week.written_off ? formatInkoopEuro(week.written_off) : ""}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+      {!!data?.top_growers?.length && (
+        <div className="data-table-card">
+          <div className="section-header"><h3>Most open money now</h3></div>
+          <div className="ik-fu-top">
+            {data.top_growers.map((grower) => <span key={grower.grower}><strong>{grower.grower}</strong> {grower.lines} · {formatInkoopEuro(grower.value)}</span>)}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function InkoopFollowupWorkspace({ bar, onOpenTrackTrace, onOpenConnectData, matchRound = 0 }) {
   const [settings, reloadSettings] = useInkoopFollowupSettings();
   const [tab, setTab] = useState("todo");
@@ -18885,6 +19018,7 @@ function InkoopFollowupWorkspace({ bar, onOpenTrackTrace, onOpenConnectData, mat
       <div className="tab-strip ik-fu-tabs" role="tablist">
         <button type="button" className={tab === "todo" ? "active" : ""} onClick={() => setTab("todo")}>To-do per department</button>
         <button type="button" className={tab === "growers" ? "active" : ""} onClick={() => setTab("growers")}>Per grower &amp; claims</button>
+        <button type="button" className={tab === "weeks" ? "active" : ""} onClick={() => setTab("weeks")}>Week overview</button>
         {(settings?.categories || []).map((cat) => (
           <button key={cat.name} type="button" className={tab === `cat:${cat.name}` ? "active" : ""} onClick={() => setTab(`cat:${cat.name}`)}>⚑ {cat.name}</button>
         ))}
@@ -18902,7 +19036,7 @@ function InkoopFollowupWorkspace({ bar, onOpenTrackTrace, onOpenConnectData, mat
       {!!data?.pending_days?.length && <div className="notice">Some days are being compared again; their lines are from the last comparison.</div>}
       {error && <div className="notice danger">{error}</div>}
       {quickError && <div className="notice danger">{quickError}</div>}
-      {tab === "growers" ? null : !category ? (
+      {tab === "growers" || tab === "weeks" ? null : !category ? (
         <div className="ik-fu-depts" role="group" aria-label="Department">
           {departments.map(([key, label]) => (
             <button key={key} type="button" className={`ik-fu-dept${department === key ? " on" : ""}`} onClick={() => chooseDepartment(key)}>
@@ -18920,7 +19054,7 @@ function InkoopFollowupWorkspace({ bar, onOpenTrackTrace, onOpenConnectData, mat
           {loading && <span className="muted">Loading…</span>}
         </div>
       )}
-      {tab === "growers" ? (
+      {tab === "weeks" ? <IkFollowupWeeks bar={bar} /> : tab === "growers" ? (
         data && <IkFollowupGrowers items={items.filter((item) => !bar.flows?.length || bar.flows.includes(item.flow))} claims={claims} settings={settings} onOpen={setDrawer} quick={quick} onChanged={reload} />
       ) : (
         <>
