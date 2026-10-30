@@ -114,6 +114,7 @@ import {
   getInkoopOnlyInConnectTotals,
   getInkoopOverviewTotals,
   getInkoopOverviewLines,
+  getInkoopGrowerExport,
   listInkoopInvoiceNumbers,
   saveStateFileSnapshot,
   pruneStateFileHistory,
@@ -25556,7 +25557,7 @@ async function handleApi(req, res, url) {
   // The overview table: per day, grower, betaalwijze and status (matched /
   // mismatch / not matched / only in Connect / packaging) the lines and
   // values, from the stored match lines; /overview-lines: one grower's lines.
-  if ((url.pathname === "/api/inkoop/overview-table" || url.pathname === "/api/inkoop/overview-lines") && req.method === "GET") {
+  if ((url.pathname === "/api/inkoop/overview-table" || url.pathname === "/api/inkoop/overview-lines" || url.pathname === "/api/inkoop/grower-export") && req.method === "GET") {
     if (!requirePermission(res, requestUser, PERMISSIONS.INKOOP_VIEW)) {
       return;
     }
@@ -25584,6 +25585,19 @@ async function handleApi(req, res, url) {
         return;
       }
       const grower = normalizeUkdocsText(url.searchParams.get("grower"));
+      // A grower's export: every field of its invoice lines and its lots.
+      if (url.pathname === "/api/inkoop/grower-export") {
+        if (!grower) throw new Error("grower is required");
+        const exportPairs = [...new Map(totals.filter((row) => view.growerOf(row) === grower)
+          .map((row) => [`${row.supplier_code}|${row.supplier_name}`, [row.supplier_code, row.supplier_name]])).values()];
+        const data = await getInkoopGrowerExport({ company, from, to, pairs: exportPairs });
+        sendJson(res, 200, {
+          from, to, grower,
+          invoice_lines: data.invoice_lines.map((row) => ({ ...row, status: INKOOP_OVERVIEW_STATUS[row.list] || row.list, flow: inkoopOverviewFlow(row) })),
+          lots: data.lots,
+        });
+        return;
+      }
       // lists=matched_mismatch,...: those lines of every grower (a KPI tile's
       // lines), else one grower's lines.
       const lists = String(url.searchParams.get("lists") || "").split(",").map((list) => list.trim()).filter((list) => INKOOP_OVERVIEW_STATUS[list]);

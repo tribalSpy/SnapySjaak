@@ -17411,12 +17411,10 @@ function IkTraceTable({ rows, from, to, company, bar, setBar }) {
     if (!chosenGrower) return;
     setExporting("excel");
     try {
-      const params = new URLSearchParams({ from, to, grower: chosenGrower, limit: "50000" });
+      const params = new URLSearchParams({ from, to, grower: chosenGrower });
       if (company) params.set("company", company);
-      const [payload, ExcelModule] = await Promise.all([apiJson(`/api/inkoop/overview-lines?${params.toString()}`), import("exceljs")]);
+      const [payload, ExcelModule] = await Promise.all([apiJson(`/api/inkoop/grower-export?${params.toString()}`), import("exceljs")]);
       const ExcelJS = ExcelModule.default || ExcelModule;
-      const lines = (payload.lines || []).filter((line) => (!bar.bw?.length || bar.bw.includes(line.bw || "?")) && (!bar.flows?.length || bar.flows.includes(line.flow)))
-        .sort((left, right) => left.date.localeCompare(right.date));
       const book = new ExcelJS.Workbook();
       const sheet = (name, head, body, euroColumns) => {
         const ws = book.addWorksheet(name, { views: [{ state: "frozen", ySplit: 1 }] });
@@ -17441,17 +17439,30 @@ function IkTraceTable({ rows, from, to, company, bar, setBar }) {
         }
       }
       sheet("Per month-week-day", ["Level", "Period", ...figureHead], periodRows, ["Invoice value", "Matched value", "Not matched value", "Only in Connect value", "Connect total", "Difference"]);
+      // Every field the upload kept: the fixed columns, then all the rest of
+      // the line's own data (whatever the invoice / Connect file held).
+      const cell = (value) => (value === null || value === undefined ? "" : typeof value === "object" ? JSON.stringify(value) : value);
+      const rawKeys = (rows, field, skip) => [...new Set(rows.flatMap((row) => Object.keys(row[field] || {})))].filter((key) => !skip.includes(key)).sort();
+      const invoiceRows = (payload.invoice_lines || []).filter((line) => !bar.flows?.length || bar.flows.includes(line.flow))
+        .sort((left, right) => String(left.invoice_date).localeCompare(String(right.invoice_date)) || String(left.id).localeCompare(String(right.id)));
+      const invoiceExtra = rawKeys(invoiceRows, "raw", ["packages", "per_package"]);
       sheet("Invoice data",
-        ["Date", "Status", "Flow", "Invoice", "Brief", "Product", "Boxes", "Pieces", "Price", "Total", "Connect lot", "Difference", "Note"],
-        lines.filter((line) => line.status !== "connect_only").map((line) => [line.date, IK_STATUS_LABEL[line.status] || line.status, line.flow, line.invoice_number, line.pav, line.description,
-          inkoopBoxesText(line.invoice_quantity, line.packages, line.per_package), num(line.invoice_quantity), num(line.invoice_price), num(line.invoice_total),
-          line.status === "matched" || line.status === "mismatch" ? line.lot : "", num(line.difference_total), line.note]),
+        ["Invoice date", "Invoice", "Type", "Company", "Brief", "Product", "Grower", "FH number", "GLN", "Boxes", "Per box", "Pieces", "Price", "Total", ...invoiceExtra, "Source file", "Match", "Flow", "Matched Connect lot", "Difference", "Note"],
+        invoiceRows.map((line) => [line.invoice_date, line.invoice_number, line.invoice_type, line.company_name ? `${line.company_number} ${line.company_name}` : line.company_number,
+          line.reference_bt, line.description, line.supplier_name, line.supplier_fh_number, line.supplier_gln,
+          num(line.raw?.packages), num(line.raw?.per_package), num(line.quantity), num(line.unit_price), num(line.total),
+          ...invoiceExtra.map((key) => cell(line.raw?.[key])), line.source_file_name, IK_STATUS_LABEL[line.status] || line.status, line.flow,
+          line.status === "matched" || line.status === "mismatch" ? line.matched_lot : "", num(line.difference), line.note]),
         ["Total", "Difference"]);
+      const lots = [...(payload.lots || [])].sort((left, right) => String(left.erp_date).localeCompare(String(right.erp_date)) || String(left.lot).localeCompare(String(right.lot)));
+      const lotExtra = rawKeys(lots, "raw", ["items", "cont"]);
+      const eppKeys = rawKeys(lots, "epp", ["source_file_name"]);
       sheet("Connect data",
-        ["Date", "Status", "Flow", "Lot", "Brief / PAV", "Product", "Boxes", "Pieces", "Price", "Total", "Invoice", "Note"],
-        lines.filter((line) => line.status === "matched" || line.status === "mismatch" || line.status === "connect_only").map((line) => [line.date, IK_STATUS_LABEL[line.status] || line.status, line.flow, line.lot, line.pav, line.description,
-          inkoopBoxesText(line.erp_quantity, line.lot_items, line.lot_cont), num(line.erp_quantity), num(line.erp_price), num(line.erp_total),
-          line.status === "connect_only" ? "no invoice" : line.invoice_number, line.note]),
+        ["Date", "Lot", "PAV", "Supplier", "Transport", "Avc", "Product", "Boxes", "Per box", "Pieces", "Price", "Total", "Deb no", "Inv no", ...lotExtra, ...eppKeys.map((key) => `Night action: ${key}`), "Dispatched to"],
+        lots.map((lot) => [lot.erp_date, lot.lot, lot.pav, lot.suppl, lot.transp, lot.avc, lot.description,
+          num(lot.raw?.items), num(lot.raw?.cont), num(lot.pieces), num(lot.price), num(lot.t_price), lot.deb_no, lot.inv_no,
+          ...lotExtra.map((key) => cell(lot.raw?.[key])), ...eppKeys.map((key) => cell(lot.epp?.[key])),
+          (Array.isArray(lot.dispatches) ? lot.dispatches : []).map(inkoopDispatchText).join(", ")]),
         ["Total"]);
       const buffer = await book.xlsx.writeBuffer();
       const url = URL.createObjectURL(new Blob([buffer], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" }));
@@ -17460,7 +17471,7 @@ function IkTraceTable({ rows, from, to, company, bar, setBar }) {
       link.download = `money-trace-${inkoopGrowerKey(chosenGrower)}-${from}-${to}.xlsx`;
       link.click();
       setTimeout(() => URL.revokeObjectURL(url), 1000);
-      if (payload.capped) window.alert("The file holds the first 50 000 lines -- choose a shorter period for the rest.");
+      if ((payload.invoice_lines || []).length >= 50000 || (payload.lots || []).length >= 50000) window.alert("The file holds the first 50 000 lines -- choose a shorter period for the rest.");
     } catch (exportError) {
       window.alert(exportError.message);
     } finally {

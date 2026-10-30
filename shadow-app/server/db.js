@@ -1649,6 +1649,45 @@ export async function getInkoopOverviewLines({ company = "", from = "", to = "",
   return result.rows;
 }
 
+// A grower's export: its invoice lines with everything the upload kept
+// (the PDF's line) and its Connect lots with everything Connect, the night
+// action / EPP and the dispatches hold -- for some (grower code, grower
+// name) pairs of the stored match lines. Read only.
+export async function getInkoopGrowerExport({ company = "", from = "", to = "", pairs = [] } = {}) {
+  if (!pool || !from || !to || !pairs.length) return { invoice_lines: [], lots: [] };
+  const params = [from, to, pairs.map((pair) => pair[0]), pairs.map((pair) => pair[1])];
+  const where = ["m.match_date >= $1::date", "m.match_date <= $2::date", "m.list <> 'fee_lines'",
+    "(m.supplier_code, m.supplier_name) IN (SELECT * FROM unnest($3::text[], $4::text[]))"];
+  if (company) { params.push(company); where.push(`m.company_number = $${params.length}`); }
+  const [invoiceResult, lotResult] = await Promise.all([
+    pool.query(
+      `SELECT DISTINCT ON (i.id) i.id, to_char(i.invoice_date, 'YYYY-MM-DD') AS invoice_date, i.invoice_number, i.invoice_type, i.company_number, i.company_name,
+              i.reference_bt, i.supplier_gln, i.supplier_fh_number, i.supplier_name, i.description, i.quantity::float8, i.unit_price::float8, i.total::float8,
+              i.source_file_name, i.raw, m.list, m.lot AS matched_lot, m.difference_total::float8 AS difference, m.note
+         FROM inkoop_match_rows m
+         JOIN inkoop_invoice_lines i ON m.invoice_number <> '' AND i.invoice_number = m.invoice_number AND i.quantity = m.invoice_quantity
+          AND i.total = m.invoice_total AND regexp_replace(btrim(COALESCE(i.description, '')), '\\s+', ' ', 'g') = m.description
+        WHERE ${where.join(" AND ")}
+        ORDER BY i.id LIMIT 50000`,
+      params,
+    ),
+    pool.query(
+      `SELECT DISTINCT ON (e.lot) e.lot::text AS lot, to_char(e.erp_date, 'YYYY-MM-DD') AS erp_date, e.pav, e.suppl, e.transp, e.avc, e.description,
+              e.pieces::float8, e.price::float8, e.t_price::float8, e.deb_no, e.inv_no, e.raw,
+              to_jsonb(ep) - 'lot' - 'imported_at' AS epp, d.dispatches
+         FROM inkoop_match_rows m
+         CROSS JOIN LATERAL unnest(string_to_array(m.lot, '+')) AS l(lot)
+         JOIN inkoop_erp_lines e ON e.lot = (CASE WHEN btrim(l.lot) ~ '^[0-9]{1,18}$' THEN btrim(l.lot)::bigint END)
+         LEFT JOIN inkoop_lot_epp ep ON ep.lot = e.lot
+         LEFT JOIN inkoop_dispatch_lots d ON d.lot = e.lot
+        WHERE ${where.filter((clause) => !clause.startsWith("m.company_number")).join(" AND ")} AND m.lot <> ''
+        ORDER BY e.lot LIMIT 50000`,
+      params.slice(0, 4),
+    ),
+  ]);
+  return { invoice_lines: invoiceResult.rows, lots: lotResult.rows };
+}
+
 // Per day, grower code and invoice type: the invoiced value, and the part
 // of it without its Connect lot -- the calendar's matched % per betaalwijze.
 export async function getInkoopInvoiceTotalsByCode({ company = "", from = "", to = "" } = {}) {
