@@ -18058,6 +18058,9 @@ function InkoopTrackTraceWorkspace({ bar, setBar, overview, company, matchRound 
   const [sorts, setSorts] = useState({ left: "date", right: "date" });
   const [searches, setSearches] = useState({ left: "", right: "" });
   const [growerFilter, setGrowerFilter] = useState("");
+  const [showOthers, setShowOthers] = useState(false);
+  const [otherGrower, setOtherGrower] = useState("");
+  const [otherSearch, setOtherSearch] = useState("");
   useEffect(() => {
     let cancelled = false;
     setIssueError("");
@@ -18111,6 +18114,32 @@ function InkoopTrackTraceWorkspace({ bar, setBar, overview, company, matchRound 
   };
   const leftIssues = growerIssues.filter((issue) => (issue.issue_type === "gap_invoice" || piecesShort(issue)) && searchHit(issue, searches.left)).sort(sorter(sorts.left));
   const rightIssues = growerIssues.filter((issue) => issue.issue_type === "gap_erp" && searchHit(issue, searches.right)).sort(sorter(sorts.right));
+
+  // Lots filed under another grower -- a FloraHolland pool code (Westland
+  // Naaldwijk, Aalsmeer, Connect with the...) or a wrong grower -- to link to
+  // this grower's invoice line. With a line ticked, the most alike first
+  // (same pieces, same € / piece, same product words, same day).
+  const otherLots = chosen ? (issues || []).filter((issue) => issue.issue_type === "gap_erp" && !inkoopSameGrower(issue.grower, chosen)
+    && (() => { const day = inkoopIssueInvoiceDay(issue); return day >= from && day <= to; })()) : [];
+  const otherGrowers = [...otherLots.reduce((map, issue) => map.set(issue.grower || "-", (map.get(issue.grower || "-") || 0) + 1), new Map()).entries()]
+    .sort((left, right) => Number(/floraholland/i.test(right[0])) - Number(/floraholland/i.test(left[0])) || right[1] - left[1]);
+  const likeLine = Object.values(picked).find((issue) => issue.issue_type !== "gap_erp");
+  const likeness = (issue) => {
+    if (!likeLine) return { score: 0, why: [] };
+    const why = [];
+    const linePieces = Number(likeLine.detail?.quantity) || 0;
+    const linePrice = Number(likeLine.detail?.unit_price) || 0;
+    if (linePieces && Number(issue.erp_row?.pieces) === linePieces) why.push("same pieces");
+    if (linePrice && Math.abs((Number(issue.erp_row?.price) || 0) - linePrice) < 0.006) why.push("same € / pc");
+    const words = new Set(String(likeLine.description || "").toUpperCase().split(/[^A-Z0-9]+/).filter((word) => word.length >= 3));
+    const shared = String(issue.description || "").toUpperCase().split(/[^A-Z0-9]+/).filter((word) => words.has(word)).length;
+    if (shared) why.push(`${shared} word(s) alike`);
+    if (inkoopIssueInvoiceDay(issue) === inkoopIssueInvoiceDay(likeLine)) why.push("same day");
+    return { score: (why.includes("same pieces") ? 4 : 0) + (why.includes("same € / pc") ? 3 : 0) + shared + (why.includes("same day") ? 1 : 0), why };
+  };
+  const otherShown = otherLots.filter((issue) => (!otherGrower || (issue.grower || "-") === otherGrower) && searchHit(issue, otherSearch))
+    .map((issue) => ({ issue, like: likeness(issue) }))
+    .sort((left, right) => right.like.score - left.like.score || sorter(sorts.right)(left.issue, right.issue));
 
   // Linking (as the Follow-up): ticked lines and lots; a ticked mismatch
   // line brings its own lot(s).
@@ -18168,7 +18197,7 @@ function InkoopTrackTraceWorkspace({ bar, setBar, overview, company, matchRound 
       <option value="name">A–Z</option>
     </select>
   );
-  const issueRow = (issue, sideKey) => {
+  const issueRow = (issue, sideKey, like = null) => {
     const key = pickKey(issue);
     const isPicked = Boolean(picked[key]);
     return (
@@ -18182,6 +18211,7 @@ function InkoopTrackTraceWorkspace({ bar, setBar, overview, company, matchRound 
             <strong>{issue.description}</strong>
             <span className="ik-item-money">{priceOf(issue) ? `${formatInkoopEuro(priceOf(issue))}/pc · ` : ""}{formatInkoopEuro(issue.value)}</span>
           </span>
+          {like && <span className="ik-item-sub"><span className="ik-other-grower">{issue.grower}</span>{like.why.length ? <span className="ik-like"> · {like.why.join(" · ")}</span> : null}</span>}
           <span className="muted ik-item-sub">
             {issue.issue_type === "gap_erp" ? inkoopErpTranscript(issue.erp_row) : inkoopInvoiceTranscript(issue.detail)}
           </span>
@@ -18264,6 +18294,26 @@ function InkoopTrackTraceWorkspace({ bar, setBar, overview, company, matchRound 
               <div className="data-table-card ik-card ik-side con">
                 <div className="ik-side-head"><strong>Connect lots without an invoice</strong><span className="muted">{rightIssues.length}</span>{searchBox("right")}{sortSelect("right")}</div>
                 {!issues ? <div className="muted">Loading…</div> : rightIssues.length ? rightIssues.map((issue) => issueRow(issue, "con")) : <div className="muted">✓ Nothing open on the Connect side.</div>}
+                <div className="ik-others">
+                  <button type="button" className="link-button" onClick={() => setShowOthers((value) => !value)} aria-expanded={showOthers}>
+                    {showOthers ? "▾" : "▸"} Lots of other growers / FloraHolland pools ({otherLots.length})
+                  </button>
+                  {showOthers && (
+                    <>
+                      <div className="muted">A lot filed under a FloraHolland code or another grower: tick it with this grower's invoice line and Link.{likeLine ? " The ones most like the ticked line come first." : " Tick an invoice line first to see the most alike first."}</div>
+                      <div className="ik-side-head">
+                        <select value={otherGrower} onChange={(event) => setOtherGrower(event.target.value)} title="Grower / pool">
+                          <option value="">All other growers ({otherLots.length})</option>
+                          {otherGrowers.map(([name, count]) => <option key={name} value={name}>{name} ({count})</option>)}
+                        </select>
+                        <input className="ik-side-search" value={otherSearch} placeholder="Search…" onChange={(event) => setOtherSearch(event.target.value)} title="Product, lot, pieces, price -- every word" />
+                      </div>
+                      {otherShown.slice(0, 150).map(({ issue, like }) => issueRow(issue, "con other", like))}
+                      {otherShown.length > 150 && <div className="muted">… {otherShown.length - 150} more -- narrow it with the grower or the search.</div>}
+                      {!otherShown.length && <div className="muted">No open lots of other growers in this period.</div>}
+                    </>
+                  )}
+                </div>
               </div>
             </div>
             <IkSuggestions from={from} to={to} company={company} grower={chosen} onLinked={() => { setPairsKey((value) => value + 1); setIssueRound((value) => value + 1); overview.reload(); }} />
@@ -19701,6 +19751,11 @@ function InkoopControlePage({ currentUser }) {
   // shown until it arrived).
   const pageDataNote = loading ? <div className="notice info">Loading import history and master data...</div> : null;
   const inWorkspace = activeTab === "trace" || activeTab === "tracktrace" || activeTab === "fu";
+  // Track & Trace opened from a Follow-up line ("Link"): the way back, with
+  // the Follow-up's own period and grower.
+  const [ttReturn, setTtReturn] = useState(null);
+  useEffect(() => { if (activeTab !== "tracktrace" && activeTab !== "fu") setTtReturn(null); }, [activeTab]);
+  const backToFollowup = () => { if (ttReturn?.bar) setBar(ttReturn.bar); setTtReturn(null); setActiveTab("fu"); };
   const withBar = inWorkspace || activeTab === "search";
   // All growers: 3 months at most; one grower (the bar's) up to a year --
   // then only that grower's rows are read.
@@ -19722,6 +19777,7 @@ function InkoopControlePage({ currentUser }) {
         <div className="section-header fust-section-nav">
           <h2>{INKOOP_SETUP_KEYS.has(activeTab) ? <span className="muted">Setup › </span> : null}{INKOOP_TAB_TITLES[activeTab] || activeTab}</h2>
           <div className="row-actions">
+            {activeTab === "tracktrace" && ttReturn && <button type="button" className="primary" onClick={backToFollowup}>← Back to Follow-up</button>}
             {INKOOP_SETUP_KEYS.has(activeTab) && <button type="button" onClick={() => setActiveTab("setup")}>Setup</button>}
             <button type="button" onClick={() => setActiveTab("")}>Inkoop menu</button>
           </div>
@@ -19779,7 +19835,7 @@ function InkoopControlePage({ currentUser }) {
       {activeTab === "trace" && !barTooLong && <InkoopTraceWorkspace bar={bar} setBar={setBar} overview={overview} company={selectedCompany} />}
       {activeTab === "fu" && !barTooLong && (
         <InkoopFollowupWorkspace bar={bar} matchRound={matchRound} onOpenConnectData={() => setActiveTab("connectdata")}
-          onOpenTrackTrace={(item) => { setBar((current) => ({ ...current, grower: item.grower, from: item.day || item.date, to: item.day || item.date, day: null })); setActiveTab("tracktrace"); }} />
+          onOpenTrackTrace={(item) => { setTtReturn({ bar }); setBar((current) => ({ ...current, grower: item.grower, from: item.day || item.date, to: item.day || item.date, day: null })); setActiveTab("tracktrace"); }} />
       )}
       {activeTab === "tracktrace" && !barTooLong && <InkoopTrackTraceWorkspace bar={bar} setBar={setBar} overview={overview} company={selectedCompany} matchRound={matchRound} />}
 

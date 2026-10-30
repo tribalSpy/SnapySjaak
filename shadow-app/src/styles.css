@@ -3878,3 +3878,24 @@ button.ik-kpi:hover {
   border-left: 3px solid var(--ik-accent);
   background: var(--ik-surface-2);
 }
+
+/* Track & Trace: lots of other growers / FloraHolland pools to link. */
+.ik-others {
+  display: grid;
+  gap: 6px;
+  margin-top: 10px;
+  padding-top: 8px;
+  border-top: 1px dashed var(--ik-border);
+}
+
+.ik-item.other {
+  border-style: dashed;
+}
+
+.ik-other-grower {
+  font-weight: 600;
+}
+
+.ik-like {
+  color: var(--ik-accent);
+}
