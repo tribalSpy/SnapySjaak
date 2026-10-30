@@ -3862,3 +3862,19 @@ button.ik-kpi:hover {
   border: 1px solid var(--ik-accent);
   border-radius: 8px;
 }
+
+/* An opened grower tile: its lines per flow. */
+.ik-fu-flow {
+  display: grid;
+  gap: 4px;
+}
+
+.ik-fu-flow-head {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 18px;
+  align-items: baseline;
+  padding: 4px 8px;
+  border-left: 3px solid var(--ik-accent);
+  background: var(--ik-surface-2);
+}

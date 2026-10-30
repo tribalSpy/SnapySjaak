@@ -19022,7 +19022,26 @@ function IkFollowupDayTree({ items, settings, picked, setPicked, onOpen, quick }
                       <strong>{opened.grower} · {fustOverviewDate(day)}</strong>
                       <button type="button" className="link-button" onClick={() => setOpenTile("")}>Close</button>
                     </div>
-                    <IkFollowupTable items={opened.list} settings={settings} picked={picked} setPicked={setPicked} onOpen={onOpen} quick={quick} />
+                    {/* Per flow (Klok, Connect, Handel, AI2, Other, No invoice): each its own block. */}
+                    {INKOOP_FLOWS.filter((flow) => opened.list.some((item) => item.flow === flow))
+                      .concat([...new Set(opened.list.map((item) => item.flow))].filter((flow) => !INKOOP_FLOWS.includes(flow)))
+                      .map((flow) => {
+                        const list = opened.list.filter((item) => item.flow === flow);
+                        const flowSum = ikFollowupGroupSum(list);
+                        return (
+                          <div key={flow} className="ik-fu-flow">
+                            <div className="ik-fu-flow-head">
+                              <strong>{flow}</strong>
+                              <span>{flowSum.lines} line(s)</span>
+                              {flowSum.not_matched_lines > 0 && <span>✗ not matched {formatInkoopEuro(flowSum.not_matched)}</span>}
+                              {flowSum.connect_only_lines > 0 && <span>✗ only in Connect {formatInkoopEuro(flowSum.connect_only)}</span>}
+                              {flowSum.mismatch_lines > 0 && <span>⚠ figures differ {formatInkoopEuro(flowSum.mismatch)}</span>}
+                              <span>net <InkoopMoneyDiff value={flowSum.net} /></span>
+                            </div>
+                            <IkFollowupTable items={list} settings={settings} picked={picked} setPicked={setPicked} onOpen={onOpen} quick={quick} />
+                          </div>
+                        );
+                      })}
                   </div>
                 )}
               </div>
