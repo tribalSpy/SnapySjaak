@@ -18937,6 +18937,103 @@ function IkFollowupWeeks({ bar }) {
   );
 }
 
+// A grower-day's figures for Control: lines, invoice not matched, only in
+// Connect, wrong figures, net difference, flows, what is past due / quiet.
+function ikFollowupGroupSum(items) {
+  const sum = { lines: items.length, not_matched: 0, not_matched_lines: 0, connect_only: 0, connect_only_lines: 0, mismatch: 0, mismatch_lines: 0, net: 0, flows: new Set(), categories: new Set(), overdue: 0, moved: 0 };
+  const today = localDateIso();
+  for (const item of items) {
+    const diff = Number(item.money_diff) || 0;
+    sum.net += diff;
+    if (item.type === "gap_invoice") { sum.not_matched += Number(item.invoice_value) || diff; sum.not_matched_lines += 1; }
+    else if (item.type === "gap_erp") { sum.connect_only += Number(item.connect_value) || -diff; sum.connect_only_lines += 1; }
+    else { sum.mismatch += diff; sum.mismatch_lines += 1; }
+    if (item.flow) sum.flows.add(item.flow);
+    if (item.category) sum.categories.add(item.category);
+    if (item.due_date && item.due_date < today && item.status !== "resolved") sum.overdue += 1;
+    if (item.status !== "open") sum.moved += 1;
+  }
+  for (const key of ["not_matched", "connect_only", "mismatch", "net"]) sum[key] = Math.round(sum[key] * 100) / 100;
+  return sum;
+}
+
+// The department's lines folded: day (closed at the start) -> its growers as
+// tiles with the figures Control needs -> a tile opens its lines below.
+function IkFollowupDayTree({ items, settings, picked, setPicked, onOpen, quick }) {
+  const [openDays, setOpenDays] = useState({});
+  const [openTile, setOpenTile] = useState("");
+  const byDay = new Map();
+  for (const item of items) {
+    const day = item.day || item.date;
+    byDay.set(day, [...(byDay.get(day) || []), item]);
+  }
+  const days = [...byDay.entries()].sort((left, right) => right[0].localeCompare(left[0]));
+  if (!days.length) return <div className="muted">No lines.</div>;
+  const allOpen = days.every(([day]) => openDays[day]);
+  return (
+    <div className="ik-fu-tree">
+      <div className="row-actions">
+        <button type="button" className="link-button" onClick={() => setOpenDays(allOpen ? {} : Object.fromEntries(days.map(([day]) => [day, true])))}>{allOpen ? "Close all days" : "Open all days"}</button>
+      </div>
+      {days.map(([day, dayItems]) => {
+        const isOpen = !!openDays[day];
+        const sum = ikFollowupGroupSum(dayItems);
+        const growers = new Map();
+        for (const item of dayItems) growers.set(item.grower || "-", [...(growers.get(item.grower || "-") || []), item]);
+        const tiles = [...growers.entries()].map(([grower, list]) => ({ grower, list, sum: ikFollowupGroupSum(list) }))
+          .sort((left, right) => (Math.abs(right.sum.not_matched) + Math.abs(right.sum.connect_only) + Math.abs(right.sum.mismatch)) - (Math.abs(left.sum.not_matched) + Math.abs(left.sum.connect_only) + Math.abs(left.sum.mismatch)));
+        const tileKey = (grower) => `${day}|${grower}`;
+        const opened = tiles.find((tile) => tileKey(tile.grower) === openTile);
+        return (
+          <div key={day} className={`ik-fu-day${isOpen ? " open" : ""}`}>
+            <button type="button" className="ik-fu-day-head" onClick={() => setOpenDays((current) => ({ ...current, [day]: !current[day] }))} aria-expanded={isOpen}>
+              <strong>{isOpen ? "▾" : "▸"} {fustOverviewDate(day)}</strong>
+              <span>{tiles.length} grower(s) · {sum.lines} lines</span>
+              <span title="Invoice lines without their Connect lot">✗ not matched <strong>{formatInkoopEuro(sum.not_matched)}</strong></span>
+              <span title="Connect lots without an invoice line">✗ only in Connect <strong>{formatInkoopEuro(sum.connect_only)}</strong></span>
+              {sum.mismatch_lines > 0 && <span title="Matched, but the figures differ">⚠ figures differ <strong>{formatInkoopEuro(sum.mismatch)}</strong></span>}
+              <span>net <InkoopMoneyDiff value={sum.net} /></span>
+              {sum.overdue > 0 && <span className="ik-fu-warn">⚠ {sum.overdue} overdue</span>}
+            </button>
+            {isOpen && (
+              <div className="ik-fu-day-body">
+                <div className="ik-fu-tiles">
+                  {tiles.map((tile) => {
+                    const on = tileKey(tile.grower) === openTile;
+                    return (
+                      <button key={tile.grower} type="button" className={`ik-fu-tile${on ? " on" : ""}`} onClick={() => setOpenTile(on ? "" : tileKey(tile.grower))} aria-expanded={on}>
+                        <span className="ik-fu-tile-head"><strong>{tile.grower}</strong><span className="muted">{tile.sum.lines} line(s)</span></span>
+                        <span className="ik-fu-tile-net">net <InkoopMoneyDiff value={tile.sum.net} /></span>
+                        {tile.sum.not_matched_lines > 0 && <span>✗ not matched {tile.sum.not_matched_lines} · {formatInkoopEuro(tile.sum.not_matched)}</span>}
+                        {tile.sum.connect_only_lines > 0 && <span>✗ only in Connect {tile.sum.connect_only_lines} · {formatInkoopEuro(tile.sum.connect_only)}</span>}
+                        {tile.sum.mismatch_lines > 0 && <span>⚠ figures differ {tile.sum.mismatch_lines} · {formatInkoopEuro(tile.sum.mismatch)}</span>}
+                        <span className="ik-fu-tile-foot">
+                          <span className="muted">{[...tile.sum.flows].join(" · ")}</span>
+                          {[...tile.sum.categories].map((name) => <IkCategoryChip key={name} name={name} categories={settings?.categories} />)}
+                          {tile.sum.overdue > 0 && <span className="ik-fu-warn">⚠ {tile.sum.overdue} overdue</span>}
+                        </span>
+                      </button>
+                    );
+                  })}
+                </div>
+                {opened && (
+                  <div className="ik-fu-tile-lines">
+                    <div className="row-actions">
+                      <strong>{opened.grower} · {fustOverviewDate(day)}</strong>
+                      <button type="button" className="link-button" onClick={() => setOpenTile("")}>Close</button>
+                    </div>
+                    <IkFollowupTable items={opened.list} settings={settings} picked={picked} setPicked={setPicked} onOpen={onOpen} quick={quick} />
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
 function InkoopFollowupWorkspace({ bar, onOpenTrackTrace, onOpenConnectData, matchRound = 0 }) {
   const [settings, reloadSettings] = useInkoopFollowupSettings();
   const [tab, setTab] = useState("todo");
@@ -18973,12 +19070,12 @@ function InkoopFollowupWorkspace({ bar, onOpenTrackTrace, onOpenConnectData, mat
     }
   };
   const reload = () => setRound((value) => value + 1);
-  const items = data?.items || [];
+  // The bar's flows and betaalwijze (a line without a BW is "?").
+  const items = (data?.items || []).filter((item) => (!bar.flows?.length || bar.flows.includes(item.flow)) && (!bar.bw?.length || bar.bw.includes(item.bw || "?")));
   const departments = settings?.departments || data?.departments || [];
   const countBy = (key) => items.filter((item) => item.department === key).length;
   const valueBy = (key) => items.filter((item) => item.department === key).reduce((sum, item) => sum + Math.abs(Number(item.money_diff) || 0), 0);
-  let shown = category ? [...items].sort((left, right) => ikFollowupAgeDays(right) - ikFollowupAgeDays(left)) : items.filter((item) => item.department === department);
-  if (!category && bar.flows?.length) shown = shown.filter((item) => bar.flows.includes(item.flow));
+  const shown = category ? [...items].sort((left, right) => ikFollowupAgeDays(right) - ikFollowupAgeDays(left)) : items.filter((item) => item.department === department);
   async function quickMove(item, to) {
     const label = (departments.find(([key]) => key === to) || [])[1] || to;
     const reason = window.prompt(`Move to ${label} -- reason:`, "");
@@ -19055,11 +19152,13 @@ function InkoopFollowupWorkspace({ bar, onOpenTrackTrace, onOpenConnectData, mat
         </div>
       )}
       {tab === "weeks" ? <IkFollowupWeeks bar={bar} /> : tab === "growers" ? (
-        data && <IkFollowupGrowers items={items.filter((item) => !bar.flows?.length || bar.flows.includes(item.flow))} claims={claims} settings={settings} onOpen={setDrawer} quick={quick} onChanged={reload} />
+        data && <IkFollowupGrowers items={items} claims={claims} settings={settings} onOpen={setDrawer} quick={quick} onChanged={reload} />
       ) : (
         <>
           <IkFollowupBulkBar picked={picked} setPicked={setPicked} settings={settings} onDone={reload} />
-          {data && <IkFollowupTable items={shown} settings={settings} picked={picked} setPicked={setPicked} onOpen={setDrawer} quick={quick} showAge={!!category} />}
+          {data && (category
+            ? <IkFollowupTable items={shown} settings={settings} picked={picked} setPicked={setPicked} onOpen={setDrawer} quick={quick} showAge />
+            : <IkFollowupDayTree key={department} items={shown} settings={settings} picked={picked} setPicked={setPicked} onOpen={setDrawer} quick={quick} />)}
         </>
       )}
       {drawer && (
@@ -19613,7 +19712,7 @@ function InkoopControlePage({ currentUser }) {
       {activeTab === "setup" && <InkoopSetupMenu onOpen={setActiveTab} />}
       {withBar && (
         <IkFilterBar bar={bar} setBar={setBar} companies={companies} company={selectedCompany} setCompany={setSelectedCompany} growers={barGrowers}
-          parts={activeTab === "search" ? ["period", "company", "grower"] : activeTab === "fu" ? ["period", "flow", "grower"] : undefined} />
+          parts={activeTab === "search" ? ["period", "company", "grower"] : activeTab === "fu" ? ["period", "bw", "flow", "grower"] : undefined} />
       )}
       {withBar && barTooLong && <div className="notice danger">{bar.grower ? "One grower: a year at most." : "All growers: 3 months at most -- type one grower in the bar to search up to a year."}</div>}
       {/* Only on the tabs that filter by it (Overview, Corrections, King,
