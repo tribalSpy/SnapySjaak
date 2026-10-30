@@ -125,6 +125,8 @@ import {
   saveInkoopLeveringBb,
   applyInkoopLeveringBbBridge,
   getInkoopLeveringBbStatus,
+  saveInkoopLeveringBbLinked,
+  getInkoopLeveringBbDays,
   getInkoopErpDatesForLots,
   saveInkoopLotEpp,
   applyInkoopEppBridge,
@@ -25765,7 +25767,9 @@ async function handleApi(req, res, url) {
       return;
     }
     const saved = await saveInkoopLeveringBb(rows, String(body.file.name || ""));
-    // "Gekoppeld" rows: their Connect lot found by pieces, price and name.
+    // Every "gekoppeld" row's brief number is kept: Connect data per day
+    // then sees the Levering BB of its lots' day (Connect linked them itself).
+    const linkedKept = await saveInkoopLeveringBbLinked(linkedRows, String(body.file.name || "")).catch(() => 0);
     const linkedBridges = await bridgeInkoopLeveringLinkedRows(linkedRows, rows).catch((bridgeError) => {
       console.error("Levering BB gekoppeld rows failed:", bridgeError instanceof Error ? bridgeError.message : bridgeError);
       return [];
@@ -25779,7 +25783,8 @@ async function handleApi(req, res, url) {
         .catch((queueError) => console.error("Queueing the Inkoop comparison failed:", queueError instanceof Error ? queueError.message : queueError));
       kickInkoopMatchWorker();
     }
-    sendJson(res, 200, { ok: true, lines: counts.lines, bridges: saved, already_linked: counts.linked, linked_found: linkedBridges.length, linked_with_brief: linkedRows.length, cancelled: counts.cancelled, other: counts.other, filled_now: filled.length, ...status });
+    sendJson(res, 200, { ok: true, lines: counts.lines, bridges: saved, already_linked: counts.linked, linked_found: linkedBridges.length, linked_with_brief: linkedRows.length, linked_kept: linkedKept,
+      connect_days: await getInkoopLeveringBbDays(rows.map((row) => row.lot), linkedRows.map((row) => row.pav)).catch(() => []), cancelled: counts.cancelled, other: counts.other, filled_now: filled.length, ...status });
     return;
   }
 

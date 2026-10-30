@@ -782,6 +782,41 @@ export async function getInkoopErpDatesForLots(lots) {
   return { from: result.rows[0]?.from || "", to: result.rows[0]?.to || "" };
 }
 
+// The "gekoppeld" rows of a Levering BB upload, by brief number (upper case).
+export async function saveInkoopLeveringBbLinked(rows, sourceFileName = "") {
+  const valid = dedupeByKeyKeepingLast((rows || []).filter((row) => row?.pav), (row) => String(row.pav).toUpperCase());
+  if (!pool || !valid.length) return 0;
+  for (const chunk of chunkArray(valid, INKOOP_UPSERT_CHUNK_SIZE)) {
+    const values = [];
+    const placeholders = chunk.map((row) => {
+      const base = values.length;
+      values.push(String(row.pav).toUpperCase(), row.info || "", row.order_nr || "", row.vbn || "", row.description || "", numberOrNull(row.quantity), numberOrNull(row.price), sourceFileName);
+      return `($${base + 1}, $${base + 2}, $${base + 3}, $${base + 4}, $${base + 5}, $${base + 6}, $${base + 7}, $${base + 8})`;
+    });
+    await pool.query(
+      `INSERT INTO inkoop_levering_bb_linked (pav, info, order_nr, vbn, description, quantity, price, source_file_name)
+       VALUES ${placeholders.join(", ")}
+       ON CONFLICT (pav) DO UPDATE SET info = EXCLUDED.info, order_nr = EXCLUDED.order_nr, vbn = EXCLUDED.vbn, description = EXCLUDED.description,
+         quantity = EXCLUDED.quantity, price = EXCLUDED.price, source_file_name = EXCLUDED.source_file_name, imported_at = now()`,
+      values,
+    );
+  }
+  return valid.length;
+}
+
+// Which Connect days a Levering BB file belongs to: its lots (by number)
+// and its "gekoppeld" rows (by the lots' own brief number), per day.
+export async function getInkoopLeveringBbDays(lots, pavs) {
+  if (!pool || (!lots?.length && !pavs?.length)) return [];
+  const result = await pool.query(
+    `SELECT to_char(erp_date, 'YYYY-MM-DD') AS date, COUNT(*)::int AS lots FROM inkoop_erp_lines
+      WHERE lot = ANY($1::bigint[]) OR (btrim(COALESCE(pav, '')) !~ '^0*$' AND upper(btrim(pav)) = ANY($2::text[]))
+      GROUP BY 1 ORDER BY 1`,
+    [lots || [], (pavs || []).map((pav) => String(pav).toUpperCase())],
+  );
+  return result.rows;
+}
+
 export async function getInkoopLeveringBbStatus(lots) {
   if (!pool || !Array.isArray(lots) || !lots.length) {
     return { own_pav: 0, bridged: 0, not_in_connect: 0 };
@@ -2744,11 +2779,15 @@ export async function getInkoopDataDays(from, to) {
               COUNT(*) FILTER (WHERE COALESCE(e.pav, '') ~ '^0*$')::int AS lots_no_pav,
               COUNT(ep.lot)::int AS night_lots, MAX(ep.imported_at) AS night_at,
               (array_agg(ep.source_file_name ORDER BY ep.imported_at DESC) FILTER (WHERE ep.lot IS NOT NULL))[1] AS night_file,
-              COUNT(bb.lot)::int AS bb_lots, MAX(bb.imported_at) AS bb_at,
-              (array_agg(bb.source_file_name ORDER BY bb.imported_at DESC) FILTER (WHERE bb.lot IS NOT NULL))[1] AS bb_file
+              COUNT(*) FILTER (WHERE bb.lot IS NOT NULL OR bl.pav IS NOT NULL)::int AS bb_lots,
+              COUNT(*) FILTER (WHERE bb.lot IS NULL AND bl.pav IS NOT NULL)::int AS bb_linked_lots,
+              GREATEST(MAX(bb.imported_at), MAX(bl.imported_at)) AS bb_at,
+              (array_agg(COALESCE(bb.source_file_name, bl.source_file_name) ORDER BY COALESCE(bb.imported_at, bl.imported_at) DESC) FILTER (WHERE bb.lot IS NOT NULL OR bl.pav IS NOT NULL))[1] AS bb_file
          FROM inkoop_erp_lines e
          LEFT JOIN inkoop_lot_epp ep ON ep.lot = e.lot
          LEFT JOIN inkoop_levering_bb bb ON bb.lot = e.lot
+         -- A "gekoppeld" row: the lot's own brief number.
+         LEFT JOIN inkoop_levering_bb_linked bl ON bl.pav = upper(btrim(e.pav)) AND btrim(COALESCE(e.pav, '')) !~ '^0*$'
         WHERE e.erp_date BETWEEN $1::date AND $2::date GROUP BY 1
      ),
      af AS (
@@ -2759,7 +2798,7 @@ export async function getInkoopDataDays(from, to) {
             COALESCE(inv.lines, 0) AS invoice_lines, COALESCE(inv.value, 0) AS invoice_value, inv.at AS invoice_at, inv.file AS invoice_file,
             COALESCE(erp.lots, 0) AS lots, COALESCE(erp.lots_no_pav, 0) AS lots_no_pav, erp.at AS lots_at,
             COALESCE(erp.night_lots, 0) AS night_lots, erp.night_at, erp.night_file, COALESCE(af.rows, 0) AS afgemeld_rows, af.at AS afgemeld_at,
-            COALESCE(erp.bb_lots, 0) AS bb_lots, erp.bb_at, erp.bb_file,
+            COALESCE(erp.bb_lots, 0) AS bb_lots, COALESCE(erp.bb_linked_lots, 0) AS bb_linked_lots, erp.bb_at, erp.bb_file,
             r.state AS override, r.note AS override_note, r.set_by AS override_by, r.set_at AS override_at
        FROM days LEFT JOIN inv ON inv.d = days.d LEFT JOIN erp ON erp.d = days.d LEFT JOIN af ON af.d = days.d
        LEFT JOIN inkoop_day_ready r ON r.ready_date = days.d
@@ -4321,6 +4360,22 @@ const databaseMigrations = [
     )
   `,
   `CREATE INDEX IF NOT EXISTS inkoop_claims_grower_idx ON inkoop_claims (grower, status)`,
+  // Levering BB rows "gekoppeld" (no lot number, Connect linked them
+  // itself): their brief numbers, so the day of their lots counts as having
+  // its Levering BB (Connect data per day).
+  `
+    CREATE TABLE IF NOT EXISTS inkoop_levering_bb_linked (
+      pav text PRIMARY KEY,
+      info text NOT NULL DEFAULT '',
+      order_nr text NOT NULL DEFAULT '',
+      vbn text NOT NULL DEFAULT '',
+      description text NOT NULL DEFAULT '',
+      quantity numeric,
+      price numeric,
+      source_file_name text NOT NULL DEFAULT '',
+      imported_at timestamptz NOT NULL DEFAULT now()
+    )
+  `,
   // A day marked by hand for the follow-up: 'ready' (all its data is in,
   // e.g. no Levering BB that day) or 'hold' (not yet).
   `

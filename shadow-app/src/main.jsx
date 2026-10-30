@@ -16666,7 +16666,7 @@ function inkoopDataFileCell(day, key) {
     return { ok: day.night_lots > 0 || day.afgemeld_rows > 0, text: day.night_lots || day.afgemeld_rows ? `${day.night_lots} lots${share(day.night_lots)}${day.afgemeld_rows ? ` + ${day.afgemeld_rows} afgemeld` : ""}` : "-",
       title: day.night_at || day.afgemeld_at ? `last upload ${formatTimestamp(day.night_at || day.afgemeld_at)}${day.night_file ? ` -- ${day.night_file}` : ""}` : "" };
   }
-  return { ok: day.bb_lots > 0, text: day.bb_lots ? `${day.bb_lots} lots${share(day.bb_lots)}` : "-", title: day.bb_at ? `last upload ${formatTimestamp(day.bb_at)}${day.bb_file ? ` -- ${day.bb_file}` : ""}${day.lots_no_pav ? ` · ${day.lots_no_pav} lots without a brief number in Connect` : ""}` : "" };
+  return { ok: day.bb_lots > 0, text: day.bb_lots ? `${day.bb_lots} lots${share(day.bb_lots)}` : "-", title: day.bb_at ? `last upload ${formatTimestamp(day.bb_at)}${day.bb_file ? ` -- ${day.bb_file}` : ""}${day.bb_linked_lots ? ` · ${day.bb_linked_lots} by their brief number ("gekoppeld")` : ""}${day.lots_no_pav ? ` · ${day.lots_no_pav} lots without a brief number in Connect` : ""}` : "" };
 }
 
 function useInkoopDataDays(from, to, refreshKey) {
@@ -19501,6 +19501,7 @@ function InkoopControlePage({ currentUser }) {
     // (all gekoppeld, or not a Levering BB export) is named, the rest goes on.
     const total = { lines: 0, bridges: 0, already_linked: 0, linked_found: 0, linked_with_brief: 0, cancelled: 0, filled_now: 0, own_pav: 0, not_in_connect: 0 };
     const skipped = [];
+    const fileDays = [];
     let done = 0;
     let lastBridged = 0;
     try {
@@ -19514,6 +19515,8 @@ function InkoopControlePage({ currentUser }) {
           done += 1;
           for (const key of Object.keys(total)) total[key] += Number(payload?.[key] || 0);
           lastBridged = Number(payload?.bridged || lastBridged);
+          // Which Connect days the file belongs to (by its lots and brief numbers).
+          fileDays.push(`${file.name}: ${(payload?.connect_days || []).length ? payload.connect_days.map((day) => `${fustOverviewDate(day.date)} (${day.lots})`).join(", ") : "no Connect day found yet"}`);
         } catch (fileError) {
           skipped.push(`${file.name}: ${fileError.message}`);
         }
@@ -19522,7 +19525,7 @@ function InkoopControlePage({ currentUser }) {
         ? `Levering BB: ${done} file(s), ${total.lines} lines -- ${total.bridges} with a Connect lot (bridge), ${total.already_linked} "gekoppeld" (no lot number: for ${total.linked_found} of the ${total.linked_with_brief} with a brief number the Connect lot was found by pieces, price and name)${total.cancelled ? `, ${total.cancelled} cancelled` : ""}. `
           + `Connect lots filled in now: ${total.filled_now} (in all ${lastBridged}); ${total.own_pav} had their own brief number; ${total.not_in_connect} not in the uploaded Connect data yet (filled in when that is uploaded). The days affected are compared again.`
         : "Levering BB: nothing read.";
-      setMessage(summary);
+      setMessage(`${summary}${fileDays.length ? ` Connect days of the file(s) -- ${fileDays.join(" | ")}.` : ""}`);
       if (skipped.length) setError(`Skipped ${skipped.length} file(s): ${skipped.join(" | ")}`);
     } finally {
       setLeveringBusy(false);
