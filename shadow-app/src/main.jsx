@@ -17397,22 +17397,62 @@ function IkTraceTable({ rows, from, to, company, bar, setBar }) {
     }
     inkoopDownloadCsv(`money-trace-periods-${chosenGrower ? `${inkoopGrowerKey(chosenGrower)}-` : ""}${from}-${to}.csv`, [["Grower", "Level", "Period", ...figureHead], ...body]);
   };
-  // Every line of the chosen grower: the invoice side and the Connect side
-  // next to each other.
-  const exportLines = async () => {
+  // The chosen grower in one Excel file, a tab each: the totals per month /
+  // week / day, the invoice data and the Connect data.
+  const exportExcel = async () => {
     if (!chosenGrower) return;
-    setExporting("lines");
+    setExporting("excel");
     try {
       const params = new URLSearchParams({ from, to, grower: chosenGrower, limit: "50000" });
       if (company) params.set("company", company);
-      const payload = await apiJson(`/api/inkoop/overview-lines?${params.toString()}`);
-      const lines = (payload.lines || []).filter((line) => (!bar.bw?.length || bar.bw.includes(line.bw || "?")) && (!bar.flows?.length || bar.flows.includes(line.flow)));
-      const head = ["Date", "Status", "Flow", "Invoice", "Brief", "Product", "Invoice boxes", "Invoice pieces", "Invoice price", "Invoice total", "Lot", "Lot boxes", "Lot pieces", "Lot price", "Lot total", "Difference", "Note"];
-      const body = lines.map((line) => [line.date, IK_STATUS_LABEL[line.status] || line.status, line.flow, line.invoice_number, line.pav, line.description,
-        inkoopBoxesText(line.invoice_quantity, line.packages, line.per_package), line.invoice_quantity, line.invoice_price, line.invoice_total,
-        line.lot, inkoopBoxesText(line.erp_quantity, line.lot_items, line.lot_cont), line.erp_quantity, line.erp_price, line.erp_total, line.difference_total, line.note]);
-      inkoopDownloadCsv(`money-trace-lines-${inkoopGrowerKey(chosenGrower)}-${from}-${to}.csv`, [head, ...body]);
-      if (payload.capped) window.alert("The export holds the first 50 000 lines -- choose a shorter period for the rest.");
+      const [payload, ExcelModule] = await Promise.all([apiJson(`/api/inkoop/overview-lines?${params.toString()}`), import("exceljs")]);
+      const ExcelJS = ExcelModule.default || ExcelModule;
+      const lines = (payload.lines || []).filter((line) => (!bar.bw?.length || bar.bw.includes(line.bw || "?")) && (!bar.flows?.length || bar.flows.includes(line.flow)))
+        .sort((left, right) => left.date.localeCompare(right.date));
+      const book = new ExcelJS.Workbook();
+      const sheet = (name, head, body, euroColumns) => {
+        const ws = book.addWorksheet(name, { views: [{ state: "frozen", ySplit: 1 }] });
+        ws.addRow(head).font = { bold: true };
+        for (const row of body) ws.addRow(row.map((cell) => (cell === null || cell === undefined ? "" : cell)));
+        ws.autoFilter = { from: { row: 1, column: 1 }, to: { row: 1, column: head.length } };
+        head.forEach((title, index) => {
+          const column = ws.getColumn(index + 1);
+          column.width = Math.min(45, Math.max(10, title.length + 2, ...body.slice(0, 300).map((row) => String(row[index] ?? "").length + 1)));
+          if (euroColumns.includes(title)) column.numFmt = '"€"#,##0.00';
+        });
+      };
+      const num = (value) => (value === null || value === undefined || value === "" ? "" : Number(value));
+      const grower = growers.find((item) => item.key === chosenGrower);
+      const periodRows = [];
+      if (grower) {
+        periodRows.push(["Total", `${from} – ${to}`, ...figures(grower.sum).map(num)]);
+        for (const level of ["month", "week", "day"]) {
+          for (const item of group(grower.rows, keyOfLevel[level]).sort((left, right) => left.key.localeCompare(right.key))) {
+            periodRows.push([level[0].toUpperCase() + level.slice(1), item.key, ...figures(item.sum).map(num)]);
+          }
+        }
+      }
+      sheet("Per month-week-day", ["Level", "Period", ...figureHead], periodRows, ["Invoice value", "Matched value", "Not matched value", "Only in Connect value", "Connect total", "Difference"]);
+      sheet("Invoice data",
+        ["Date", "Status", "Flow", "Invoice", "Brief", "Product", "Boxes", "Pieces", "Price", "Total", "Connect lot", "Difference", "Note"],
+        lines.filter((line) => line.status !== "connect_only").map((line) => [line.date, IK_STATUS_LABEL[line.status] || line.status, line.flow, line.invoice_number, line.pav, line.description,
+          inkoopBoxesText(line.invoice_quantity, line.packages, line.per_package), num(line.invoice_quantity), num(line.invoice_price), num(line.invoice_total),
+          line.status === "matched" || line.status === "mismatch" ? line.lot : "", num(line.difference_total), line.note]),
+        ["Total", "Difference"]);
+      sheet("Connect data",
+        ["Date", "Status", "Flow", "Lot", "Brief / PAV", "Product", "Boxes", "Pieces", "Price", "Total", "Invoice", "Note"],
+        lines.filter((line) => line.status === "matched" || line.status === "mismatch" || line.status === "connect_only").map((line) => [line.date, IK_STATUS_LABEL[line.status] || line.status, line.flow, line.lot, line.pav, line.description,
+          inkoopBoxesText(line.erp_quantity, line.lot_items, line.lot_cont), num(line.erp_quantity), num(line.erp_price), num(line.erp_total),
+          line.status === "connect_only" ? "no invoice" : line.invoice_number, line.note]),
+        ["Total"]);
+      const buffer = await book.xlsx.writeBuffer();
+      const url = URL.createObjectURL(new Blob([buffer], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" }));
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = `money-trace-${inkoopGrowerKey(chosenGrower)}-${from}-${to}.xlsx`;
+      link.click();
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+      if (payload.capped) window.alert("The file holds the first 50 000 lines -- choose a shorter period for the rest.");
     } catch (exportError) {
       window.alert(exportError.message);
     } finally {
@@ -17449,7 +17489,7 @@ function IkTraceTable({ rows, from, to, company, bar, setBar }) {
           <IkColumnPicker columns={columns} toggle={toggleColumn} />
           <button type="button" className={`ik-chip${full ? " on" : ""}`} onClick={() => setFull((current) => !current)} title="Esc closes">{full ? "✕ Close full screen" : "⛶ Full screen"}</button>
           <button type="button" className="ik-chip" onClick={exportPeriods} title="Per grower: the total, every month, week and day">CSV per month / week / day</button>
-          {chosenGrower && <button type="button" className="ik-chip" onClick={exportLines} disabled={Boolean(exporting)} title={`Every line of ${chosenGrower}: invoice side and Connect side`}>{exporting ? "Exporting…" : `CSV all lines of ${chosenGrower}`}</button>}
+          {chosenGrower && <button type="button" className="ik-chip" onClick={exportExcel} disabled={Boolean(exporting)} title={`${chosenGrower} in one Excel file: a tab per month / week / day, a tab invoice data, a tab Connect data`}>{exporting ? "Exporting…" : `Excel: ${chosenGrower} (3 tabs)`}</button>}
         </div>
       </div>
       <div className="table-wrap">
