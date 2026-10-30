@@ -3297,3 +3297,31 @@ button.fin-tile:hover { border-color: var(--fin-series-1); box-shadow: 0 0 14px 
 .inkoop-page > * {
   min-width: 0;
 }
+
+/* KPI tiles are buttons; the open one is marked, its growers underneath. */
+button.ik-kpi {
+  text-align: left;
+  font: inherit;
+  color: inherit;
+  cursor: pointer;
+}
+
+button.ik-kpi:hover {
+  border-color: var(--ik-accent);
+}
+
+.ik-kpi.on {
+  border-color: var(--ik-accent);
+  background: #e7f3ee;
+  box-shadow: inset 0 -3px 0 var(--ik-accent);
+}
+
+.ik-kpi-detail {
+  margin: 6px 0 4px;
+  padding-top: 8px;
+  border-top: 1px solid var(--ik-border);
+}
+
+.ik-kpi-detail .table-wrap {
+  max-height: 45vh;
+}
