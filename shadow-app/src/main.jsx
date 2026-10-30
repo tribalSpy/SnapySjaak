@@ -8219,6 +8219,7 @@ function UkdocsPipelineMonitorPage({ onNavigate }) {
 
       <InkoopMatchMonitorCard />
       <InkoopMailImportCard editable={false} />
+      <InkoopDataDaysMonitorLine />
 
       {data && (
         <div className="notice">
@@ -16652,6 +16653,126 @@ function InkoopKingPollerCard({ settings, onUsePdfDir }) {
 
 // Import naar King: every date with uploaded invoices not (yet) in King,
 // newest first -- a click opens that date.
+// Per day, which of its data is in: the invoices, the Connect export, the
+// Communications (night action) file and Levering BB. A day's follow-up
+// starts once all of it is there (or the day is marked ready by hand).
+const INKOOP_DATA_STATE_LABEL = { ready: "✓ ready", waiting: "⏳ waiting for data", hold: "⏸ on hold", empty: "no data" };
+
+function inkoopDataFileCell(day, key) {
+  if (key === "invoices") return { ok: day.invoice_lines > 0, text: day.invoice_lines ? `${day.invoice_lines} lines · ${formatInkoopEuro(day.invoice_value)}` : "-", title: day.invoice_at ? `last upload ${formatTimestamp(day.invoice_at)}${day.invoice_file ? ` -- ${day.invoice_file}` : ""}` : "" };
+  if (key === "connect") return { ok: day.lots > 0, text: day.lots ? `${day.lots} lots` : "-", title: day.lots_at ? `last upload ${formatTimestamp(day.lots_at)}` : "" };
+  const share = (count) => (day.lots ? ` (${Math.round((count / day.lots) * 100)}%)` : "");
+  if (key === "communications") {
+    return { ok: day.night_lots > 0 || day.afgemeld_rows > 0, text: day.night_lots || day.afgemeld_rows ? `${day.night_lots} lots${share(day.night_lots)}${day.afgemeld_rows ? ` + ${day.afgemeld_rows} afgemeld` : ""}` : "-",
+      title: day.night_at || day.afgemeld_at ? `last upload ${formatTimestamp(day.night_at || day.afgemeld_at)}${day.night_file ? ` -- ${day.night_file}` : ""}` : "" };
+  }
+  return { ok: day.bb_lots > 0, text: day.bb_lots ? `${day.bb_lots} lots${share(day.bb_lots)}` : "-", title: day.bb_at ? `last upload ${formatTimestamp(day.bb_at)}${day.bb_file ? ` -- ${day.bb_file}` : ""}${day.lots_no_pav ? ` · ${day.lots_no_pav} lots without a brief number in Connect` : ""}` : "" };
+}
+
+function useInkoopDataDays(from, to, refreshKey) {
+  const [data, setData] = useState(null);
+  const [error, setError] = useState("");
+  const [round, setRound] = useState(0);
+  useEffect(() => {
+    let cancelled = false;
+    apiJson(`/api/inkoop/data-days?from=${from}&to=${to}`)
+      .then((payload) => { if (!cancelled) { setData(payload); setError(""); } })
+      .catch((loadError) => { if (!cancelled) setError(loadError.message); });
+    return () => { cancelled = true; };
+  }, [from, to, refreshKey, round]);
+  return { data, error, reload: () => setRound((value) => value + 1) };
+}
+
+function InkoopDataDaysCard() {
+  const [to, setTo] = useState(() => localDateIso());
+  const [from, setFrom] = useState(() => addDaysToIso(localDateIso(), -45));
+  const [onlyOpen, setOnlyOpen] = useState(false);
+  const [busy, setBusy] = useState("");
+  const [error, setError] = useState("");
+  const { data, error: loadError, reload } = useInkoopDataDays(from, to);
+  async function mark(day, state) {
+    const note = state === "ready" ? window.prompt(`Mark ${fustOverviewDate(day.date)} ready although ${day.missing.length ? day.missing.join(", ") : "nothing"} is missing? Reason:`, "") : state === "hold" ? window.prompt(`Hold ${fustOverviewDate(day.date)} out of the follow-up. Reason:`, "") : "";
+    if (note === null) return;
+    setBusy(day.date);
+    setError("");
+    try {
+      await apiJson(`/api/inkoop/data-days/${day.date}`, { method: "POST", body: JSON.stringify({ state, note }) });
+      reload();
+    } catch (markError) {
+      setError(markError.message);
+    } finally {
+      setBusy("");
+    }
+  }
+  const files = data?.files || [];
+  const days = (data?.days || []).filter((day) => day.state !== "empty" && (!onlyOpen || day.state !== "ready"));
+  const waiting = (data?.days || []).filter((day) => day.state === "waiting");
+  return (
+    <div className="data-table-card">
+      <div className="section-header"><h2>Connect data per day</h2></div>
+      <div className="notice">
+        A day needs four files: the invoices, the Connect export (lots and dispatches), the Communications / night action file and Levering BB. Its follow-up starts only when all four are in, so nobody works on a day that is still incomplete. A day without Levering BB deliveries can be marked ready by hand.
+      </div>
+      <div className="row-actions ik-data-days-bar">
+        <label><span>From</span><input type="date" value={from} onChange={(event) => setFrom(event.target.value)} /></label>
+        <label><span>To</span><input type="date" value={to} onChange={(event) => setTo(event.target.value)} /></label>
+        <label className="checkbox-label"><input type="checkbox" checked={onlyOpen} onChange={(event) => setOnlyOpen(event.target.checked)} /><span>Only days not ready</span></label>
+        {waiting.length ? <span className="ukdocs-status-badge info">{waiting.length} day(s) waiting for data</span> : data ? <span className="ukdocs-status-badge success">✓ every day complete</span> : null}
+      </div>
+      {(error || loadError) && <div className="notice danger">{error || loadError}</div>}
+      {!data ? <div className="muted">Loading...</div> : (
+        <div className="table-wrap">
+          <table className="data-table balance-table ik-data-days">
+            <thead><tr><th>Date</th>{files.map(([key, label]) => <th key={key}>{label}</th>)}<th>Follow-up</th><th /></tr></thead>
+            <tbody>
+              {days.map((day) => (
+                <tr key={day.date}>
+                  <td>{fustOverviewDate(day.date)}</td>
+                  {files.map(([key]) => {
+                    const cell = inkoopDataFileCell(day, key);
+                    return <td key={key} title={cell.title} className={cell.ok ? "" : "ik-data-missing"}>{cell.ok ? "✓" : "✗"} {cell.text}</td>;
+                  })}
+                  <td title={day.by_hand ? `${day.override === "ready" ? "marked ready" : "held"} by ${day.override_by} ${formatTimestamp(day.override_at)}${day.override_note ? ` -- ${day.override_note}` : ""}` : ""}>
+                    <span className={`ukdocs-status-badge ${day.state === "ready" ? "success" : day.state === "hold" ? "muted" : "info"}`}>{INKOOP_DATA_STATE_LABEL[day.state]}{day.by_hand ? " (by hand)" : ""}</span>
+                  </td>
+                  <td className="ik-data-actions">
+                    {day.by_hand
+                      ? <button type="button" className="link-button" disabled={busy === day.date} onClick={() => mark(day, "")}>Undo mark</button>
+                      : (
+                        <>
+                          {day.state === "waiting" && <button type="button" className="link-button" disabled={busy === day.date} onClick={() => mark(day, "ready")}>Mark ready</button>}
+                          <button type="button" className="link-button" disabled={busy === day.date} onClick={() => mark(day, "hold")}>Hold</button>
+                        </>
+                      )}
+                  </td>
+                </tr>
+              ))}
+              {!days.length && <tr><td colSpan={files.length + 3} className="muted">No days.</td></tr>}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// The Pipeline Monitor's line: the last 21 days still waiting for data.
+function InkoopDataDaysMonitorLine() {
+  const today = localDateIso();
+  const { data } = useInkoopDataDays(addDaysToIso(today, -21), today);
+  if (!data) return null;
+  const waiting = (data.days || []).filter((day) => day.state === "waiting");
+  const label = Object.fromEntries(data.files || []);
+  return (
+    <div className="data-table-card">
+      <div className="section-header"><h2>Inkoop Controle -- Connect data</h2></div>
+      {waiting.length
+        ? <div className="notice info">Waiting for data: {waiting.map((day) => `${fustOverviewDate(day.date)} (${day.missing.map((key) => label[key] || key).join(", ")})`).join(" · ")}</div>
+        : <div className="notice">✓ The last 21 days have all their data.</div>}
+    </div>
+  );
+}
+
 function InkoopKingPendingDays({ date, onPick, refreshKey }) {
   const [days, setDays] = useState(null);
   useEffect(() => {
@@ -18211,6 +18332,7 @@ const INKOOP_WORKSPACES = [
 ];
 const INKOOP_SETUP_TILES = [
   ["compare", "Upload & compare", "Upload Connect, invoices, night files; compare a day"],
+  ["connectdata", "Connect data", "Per day: invoices, Connect export, Communications, Levering BB"],
   ["overview", "Invoices overview", "The uploaded invoices per company"],
   ["growers", "Growers", "Grower directory and betaalwijze"],
   ["linkgrowers", "Link growers", "Link invoice growers to Connect codes"],
@@ -18893,6 +19015,7 @@ function InkoopControlePage({ currentUser }) {
       {activeTab === "overview" && <InkoopOverviewTab />}
 
       {activeTab === "king" && <InkoopKingTab />}
+      {activeTab === "connectdata" && <InkoopDataDaysCard />}
 
       {activeTab === "growers" && <InkoopGrowersTab />}
       {activeTab === "linkgrowers" && <InkoopLinkGrowersTab />}

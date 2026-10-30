@@ -2537,6 +2537,64 @@ export async function getInkoopIssueStatuses() {
   return result.rows;
 }
 
+// Per day, which of its data is in: the invoices, the Connect export (lots),
+// the Communications / night action (lots with a row, Afgemeld rows) and
+// Levering BB (lots with a row) -- counts, last upload and file name. Read
+// only; the follow-up starts on a day once all of it is there.
+export async function getInkoopDataDays(from, to) {
+  if (!pool || !from || !to) return [];
+  const result = await pool.query(
+    `WITH days AS (SELECT generate_series($1::date, $2::date, '1 day')::date AS d),
+     inv AS (
+       SELECT invoice_date AS d, COUNT(*)::int AS lines, COALESCE(SUM(total), 0)::float8 AS value, MAX(imported_at) AS at,
+              (array_agg(source_file_name ORDER BY imported_at DESC))[1] AS file
+         FROM inkoop_invoice_lines WHERE invoice_date BETWEEN $1::date AND $2::date GROUP BY 1
+     ),
+     erp AS (
+       SELECT e.erp_date AS d, COUNT(*)::int AS lots, MAX(e.imported_at) AS at,
+              COUNT(*) FILTER (WHERE COALESCE(e.pav, '') ~ '^0*$')::int AS lots_no_pav,
+              COUNT(ep.lot)::int AS night_lots, MAX(ep.imported_at) AS night_at,
+              (array_agg(ep.source_file_name ORDER BY ep.imported_at DESC) FILTER (WHERE ep.lot IS NOT NULL))[1] AS night_file,
+              COUNT(bb.lot)::int AS bb_lots, MAX(bb.imported_at) AS bb_at,
+              (array_agg(bb.source_file_name ORDER BY bb.imported_at DESC) FILTER (WHERE bb.lot IS NOT NULL))[1] AS bb_file
+         FROM inkoop_erp_lines e
+         LEFT JOIN inkoop_lot_epp ep ON ep.lot = e.lot
+         LEFT JOIN inkoop_levering_bb bb ON bb.lot = e.lot
+        WHERE e.erp_date BETWEEN $1::date AND $2::date GROUP BY 1
+     ),
+     af AS (
+       SELECT msg_date AS d, COUNT(*)::int AS rows, MAX(imported_at) AS at FROM inkoop_afgemeld_messages
+        WHERE msg_date BETWEEN $1::date AND $2::date GROUP BY 1
+     )
+     SELECT to_char(days.d, 'YYYY-MM-DD') AS date,
+            COALESCE(inv.lines, 0) AS invoice_lines, COALESCE(inv.value, 0) AS invoice_value, inv.at AS invoice_at, inv.file AS invoice_file,
+            COALESCE(erp.lots, 0) AS lots, COALESCE(erp.lots_no_pav, 0) AS lots_no_pav, erp.at AS lots_at,
+            COALESCE(erp.night_lots, 0) AS night_lots, erp.night_at, erp.night_file, COALESCE(af.rows, 0) AS afgemeld_rows, af.at AS afgemeld_at,
+            COALESCE(erp.bb_lots, 0) AS bb_lots, erp.bb_at, erp.bb_file,
+            r.state AS override, r.note AS override_note, r.set_by AS override_by, r.set_at AS override_at
+       FROM days LEFT JOIN inv ON inv.d = days.d LEFT JOIN erp ON erp.d = days.d LEFT JOIN af ON af.d = days.d
+       LEFT JOIN inkoop_day_ready r ON r.ready_date = days.d
+      ORDER BY days.d DESC`,
+    [from, to],
+  );
+  return result.rows;
+}
+
+// A day marked by hand: 'ready' (e.g. a day without Levering BB deliveries)
+// or 'hold' (kept out of the follow-up); '' removes the mark.
+export async function setInkoopDayReady(date, state, note, setBy) {
+  if (!pool || !date) return;
+  if (!state) {
+    await pool.query("DELETE FROM inkoop_day_ready WHERE ready_date = $1::date", [date]);
+    return;
+  }
+  await pool.query(
+    `INSERT INTO inkoop_day_ready (ready_date, state, note, set_by, set_at) VALUES ($1::date, $2, $3, $4, now())
+     ON CONFLICT (ready_date) DO UPDATE SET state = EXCLUDED.state, note = EXCLUDED.note, set_by = EXCLUDED.set_by, set_at = now()`,
+    [date, state, note || "", setBy || ""],
+  );
+}
+
 // Reference-code-level rows from the Fust API import (svdvyver.fr) -- kept
 // separate from fust_actions since a Code isn't a real customer for
 // CMR/Fustbon/confirmation purposes. A null metric here means "no data
@@ -4021,6 +4079,17 @@ const databaseMigrations = [
       note text,
       updated_by text,
       updated_at timestamptz NOT NULL DEFAULT now()
+    )
+  `,
+  // A day marked by hand for the follow-up: 'ready' (all its data is in,
+  // e.g. no Levering BB that day) or 'hold' (not yet).
+  `
+    CREATE TABLE IF NOT EXISTS inkoop_day_ready (
+      ready_date date PRIMARY KEY,
+      state text NOT NULL,
+      note text NOT NULL DEFAULT '',
+      set_by text NOT NULL DEFAULT '',
+      set_at timestamptz NOT NULL DEFAULT now()
     )
   `,
   // One row per ERP purchase lot, carrying the "Dispatched to : <customer

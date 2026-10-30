@@ -3562,3 +3562,21 @@ button.ik-kpi:hover {
 .ik-cal {
   max-width: 100%;
 }
+
+/* Connect data per day: a missing file stands out. */
+.ik-data-days td.ik-data-missing {
+  color: var(--ik-bad, #b42318);
+  font-weight: 600;
+}
+
+.ik-data-days .ik-data-actions {
+  white-space: nowrap;
+}
+
+.ik-data-days .ik-data-actions .link-button + .link-button {
+  margin-left: 14px;
+}
+
+.ik-data-days-bar .ukdocs-status-badge {
+  align-self: center;
+}

@@ -84,6 +84,8 @@ import {
   getInkoopErpLines,
   getInkoopInvoiceLines,
   getInkoopIssueStatuses,
+  getInkoopDataDays,
+  setInkoopDayReady,
   getLlmQueueSnapshot,
   getActiveLlmJobsByType,
   compactFinishedLlmJobs,
@@ -12221,6 +12223,34 @@ function buildInkoopDashboardSummary(matched) {
     by_company: sortDescNonZero(byCompany),
     by_product_group: sortDescNonZero(byProductGroup),
   };
+}
+
+// A day's data for the follow-up: what is missing of the invoices, the
+// Connect export, the Communications (night action) file and Levering BB.
+// Days are uploaded whole, so one row of a file says that file is in. A
+// day marked by hand ('ready' / 'hold') follows the mark.
+const INKOOP_DATA_FILES = [
+  ["invoices", "Invoices"],
+  ["connect", "Connect export"],
+  ["communications", "Communications"],
+  ["levering_bb", "Levering BB"],
+];
+
+function inkoopDataDayStatus(row) {
+  const missing = [];
+  if (!(row?.invoice_lines > 0)) missing.push("invoices");
+  if (!(row?.lots > 0)) missing.push("connect");
+  if (!(row?.night_lots > 0) && !(row?.afgemeld_rows > 0)) missing.push("communications");
+  if (!(row?.bb_lots > 0)) missing.push("levering_bb");
+  const empty = !(row?.invoice_lines > 0) && !(row?.lots > 0);
+  let state = empty ? "empty" : missing.length ? "waiting" : "ready";
+  if (row?.override === "ready" && !empty) state = "ready";
+  if (row?.override === "hold") state = "hold";
+  return { ...row, state, missing, by_hand: Boolean(row?.override) };
+}
+
+async function getInkoopDataDayStatuses(from, to) {
+  return (await getInkoopDataDays(from, to)).map(inkoopDataDayStatus);
 }
 
 // Stable ids for the follow-up queue -- must survive a recompute (the same
@@ -24846,6 +24876,44 @@ async function handleApi(req, res, url) {
   }
 
   // Import naar King: the dates with invoices not (yet) in King.
+  // Per day: which of its data is in (invoices, Connect export,
+  // Communications, Levering BB) and whether its follow-up has started.
+  if (url.pathname === "/api/inkoop/data-days" && req.method === "GET") {
+    if (!requirePermission(res, requestUser, PERMISSIONS.INKOOP_VIEW)) {
+      return;
+    }
+    const to = inkoopIsoDate(url.searchParams.get("to")) || localDateIso();
+    let from = inkoopIsoDate(url.searchParams.get("from")) || addDaysToIsoDate(to, -45);
+    if (from > to || inkoopDatesInRange(from, to).length > 400) from = addDaysToIsoDate(to, -45);
+    try {
+      sendJson(res, 200, { from, to, files: INKOOP_DATA_FILES, days: await getInkoopDataDayStatuses(from, to) });
+    } catch (error) {
+      sendJson(res, 400, { error: error instanceof Error ? error.message : String(error) });
+    }
+    return;
+  }
+
+  // Mark a day by hand: body { state: "ready" | "hold" | "", note }.
+  if (url.pathname.startsWith("/api/inkoop/data-days/") && req.method === "POST") {
+    if (!requirePermission(res, requestUser, PERMISSIONS.INKOOP_VIEW)) {
+      return;
+    }
+    const date = inkoopIsoDate(decodeURIComponent(url.pathname.slice("/api/inkoop/data-days/".length)));
+    const body = await readRequestJson(req);
+    const state = ["ready", "hold"].includes(body?.state) ? body.state : "";
+    if (!date) {
+      sendJson(res, 400, { error: "Missing date" });
+      return;
+    }
+    try {
+      await setInkoopDayReady(date, state, String(body?.note || "").trim().slice(0, 500), requestUser.username);
+      sendJson(res, 200, { ok: true, day: (await getInkoopDataDayStatuses(date, date))[0] || null });
+    } catch (error) {
+      sendJson(res, 400, { error: error instanceof Error ? error.message : String(error) });
+    }
+    return;
+  }
+
   if (url.pathname === "/api/inkoop/king/pending" && req.method === "GET") {
     if (!requirePermission(res, requestUser, PERMISSIONS.INKOOP_VIEW)) {
       return;
