@@ -16666,7 +16666,7 @@ function inkoopDataFileCell(day, key) {
     return { ok: day.night_lots > 0 || day.afgemeld_rows > 0, text: day.night_lots || day.afgemeld_rows ? `${day.night_lots} lots${share(day.night_lots)}${day.afgemeld_rows ? ` + ${day.afgemeld_rows} afgemeld` : ""}` : "-",
       title: day.night_at || day.afgemeld_at ? `last upload ${formatTimestamp(day.night_at || day.afgemeld_at)}${day.night_file ? ` -- ${day.night_file}` : ""}` : "" };
   }
-  return { ok: day.bb_lots > 0, text: day.bb_lots ? `${day.bb_lots} lots${share(day.bb_lots)}` : "-", title: day.bb_at ? `last upload ${formatTimestamp(day.bb_at)}${day.bb_file ? ` -- ${day.bb_file}` : ""}${day.bb_linked_lots ? ` · ${day.bb_linked_lots} by their brief number ("gekoppeld")` : ""}${day.lots_no_pav ? ` · ${day.lots_no_pav} lots without a brief number in Connect` : ""}` : "" };
+  return { ok: day.bb_lots > 0 || day.bb_invoice_lines > 0, text: day.bb_lots ? `${day.bb_lots} lots${share(day.bb_lots)}` : day.bb_invoice_lines ? `${day.bb_invoice_lines} invoice lines` : "-", title: day.bb_at ? `last upload ${formatTimestamp(day.bb_at)}${day.bb_file ? ` -- ${day.bb_file}` : ""}${day.bb_linked_lots ? ` · ${day.bb_linked_lots} by their brief number ("gekoppeld")` : ""}${day.lots_no_pav ? ` · ${day.lots_no_pav} lots without a brief number in Connect` : ""}` : "" };
 }
 
 function useInkoopDataDays(from, to, refreshKey) {
@@ -19516,7 +19516,7 @@ function InkoopControlePage({ currentUser }) {
           for (const key of Object.keys(total)) total[key] += Number(payload?.[key] || 0);
           lastBridged = Number(payload?.bridged || lastBridged);
           // Which Connect days the file belongs to (by its lots and brief numbers).
-          fileDays.push(`${file.name}: ${(payload?.connect_days || []).length ? payload.connect_days.map((day) => `${fustOverviewDate(day.date)} (${day.lots})`).join(", ") : "no Connect day found yet"}`);
+          fileDays.push(`${file.name}: ${(payload?.connect_days || []).length ? payload.connect_days.map((day) => `${fustOverviewDate(day.date)} (${[day.lots ? `${day.lots} lots` : "", day.invoice_lines ? `${day.invoice_lines} invoice lines` : ""].filter(Boolean).join(", ")})`).join("; ") : "no Connect day found yet"}`);
         } catch (fileError) {
           skipped.push(`${file.name}: ${fileError.message}`);
         }

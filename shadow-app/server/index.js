@@ -12254,7 +12254,7 @@ function inkoopDataDayStatus(row) {
   if (!(row?.invoice_lines > 0)) missing.push("invoices");
   if (!(row?.lots > 0)) missing.push("connect");
   if (!(row?.night_lots > 0) && !(row?.afgemeld_rows > 0)) missing.push("communications");
-  if (!(row?.bb_lots > 0)) missing.push("levering_bb");
+  if (!(row?.bb_lots > 0) && !(row?.bb_invoice_lines > 0)) missing.push("levering_bb");
   const empty = !(row?.invoice_lines > 0) && !(row?.lots > 0);
   let state = empty ? "empty" : missing.length ? "waiting" : "ready";
   if (row?.override === "ready" && !empty) state = "ready";
@@ -25784,7 +25784,7 @@ async function handleApi(req, res, url) {
       kickInkoopMatchWorker();
     }
     sendJson(res, 200, { ok: true, lines: counts.lines, bridges: saved, already_linked: counts.linked, linked_found: linkedBridges.length, linked_with_brief: linkedRows.length, linked_kept: linkedKept,
-      connect_days: await getInkoopLeveringBbDays(rows.map((row) => row.lot), linkedRows.map((row) => row.pav)).catch(() => []), cancelled: counts.cancelled, other: counts.other, filled_now: filled.length, ...status });
+      connect_days: await getInkoopLeveringBbDays(rows.map((row) => row.lot), [...rows, ...linkedRows].map((row) => row.pav)).catch(() => []), cancelled: counts.cancelled, other: counts.other, filled_now: filled.length, ...status });
     return;
   }
 

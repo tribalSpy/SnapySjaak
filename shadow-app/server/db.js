@@ -809,9 +809,16 @@ export async function saveInkoopLeveringBbLinked(rows, sourceFileName = "") {
 export async function getInkoopLeveringBbDays(lots, pavs) {
   if (!pool || (!lots?.length && !pavs?.length)) return [];
   const result = await pool.query(
-    `SELECT to_char(erp_date, 'YYYY-MM-DD') AS date, COUNT(*)::int AS lots FROM inkoop_erp_lines
-      WHERE lot = ANY($1::bigint[]) OR (btrim(COALESCE(pav, '')) !~ '^0*$' AND upper(btrim(pav)) = ANY($2::text[]))
-      GROUP BY 1 ORDER BY 1`,
+    `WITH l AS (
+       SELECT to_char(erp_date, 'YYYY-MM-DD') AS date, COUNT(*)::int AS lots FROM inkoop_erp_lines
+        WHERE lot = ANY($1::bigint[]) OR (btrim(COALESCE(pav, '')) !~ '^0*$' AND upper(btrim(pav)) = ANY($2::text[]))
+        GROUP BY 1
+     ), i AS (
+       SELECT to_char(invoice_date, 'YYYY-MM-DD') AS date, COUNT(*)::int AS invoice_lines FROM inkoop_invoice_lines
+        WHERE upper(btrim(reference_bt)) = ANY($2::text[]) GROUP BY 1
+     )
+     SELECT COALESCE(l.date, i.date) AS date, COALESCE(l.lots, 0) AS lots, COALESCE(i.invoice_lines, 0) AS invoice_lines
+       FROM l FULL JOIN i ON i.date = l.date ORDER BY 1`,
     [lots || [], (pavs || []).map((pav) => String(pav).toUpperCase())],
   );
   return result.rows;
@@ -2769,10 +2776,16 @@ export async function getInkoopDataDays(from, to) {
   if (!pool || !from || !to) return [];
   const result = await pool.query(
     `WITH days AS (SELECT generate_series($1::date, $2::date, '1 day')::date AS d),
+     -- Every brief number Levering BB brought (with a lot or "gekoppeld"):
+     -- a weekend's Connect lots carry none, its invoice lines do.
+     bbpav AS (SELECT pav FROM inkoop_levering_bb_linked UNION SELECT upper(btrim(pav)) FROM inkoop_levering_bb),
      inv AS (
-       SELECT invoice_date AS d, COUNT(*)::int AS lines, COALESCE(SUM(total), 0)::float8 AS value, MAX(imported_at) AS at,
-              (array_agg(source_file_name ORDER BY imported_at DESC))[1] AS file
-         FROM inkoop_invoice_lines WHERE invoice_date BETWEEN $1::date AND $2::date GROUP BY 1
+       SELECT i.invoice_date AS d, COUNT(*)::int AS lines, COALESCE(SUM(i.total), 0)::float8 AS value, MAX(i.imported_at) AS at,
+              (array_agg(i.source_file_name ORDER BY i.imported_at DESC))[1] AS file,
+              COUNT(bbp.pav)::int AS bb_lines
+         FROM inkoop_invoice_lines i
+         LEFT JOIN bbpav bbp ON bbp.pav = upper(btrim(i.reference_bt))
+        WHERE i.invoice_date BETWEEN $1::date AND $2::date GROUP BY 1
      ),
      erp AS (
        SELECT e.erp_date AS d, COUNT(*)::int AS lots, MAX(e.imported_at) AS at,
@@ -2798,7 +2811,7 @@ export async function getInkoopDataDays(from, to) {
             COALESCE(inv.lines, 0) AS invoice_lines, COALESCE(inv.value, 0) AS invoice_value, inv.at AS invoice_at, inv.file AS invoice_file,
             COALESCE(erp.lots, 0) AS lots, COALESCE(erp.lots_no_pav, 0) AS lots_no_pav, erp.at AS lots_at,
             COALESCE(erp.night_lots, 0) AS night_lots, erp.night_at, erp.night_file, COALESCE(af.rows, 0) AS afgemeld_rows, af.at AS afgemeld_at,
-            COALESCE(erp.bb_lots, 0) AS bb_lots, COALESCE(erp.bb_linked_lots, 0) AS bb_linked_lots, erp.bb_at, erp.bb_file,
+            COALESCE(erp.bb_lots, 0) AS bb_lots, COALESCE(erp.bb_linked_lots, 0) AS bb_linked_lots, COALESCE(inv.bb_lines, 0) AS bb_invoice_lines, erp.bb_at, erp.bb_file,
             r.state AS override, r.note AS override_note, r.set_by AS override_by, r.set_at AS override_at
        FROM days LEFT JOIN inv ON inv.d = days.d LEFT JOIN erp ON erp.d = days.d LEFT JOIN af ON af.d = days.d
        LEFT JOIN inkoop_day_ready r ON r.ready_date = days.d
