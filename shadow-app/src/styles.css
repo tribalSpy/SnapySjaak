@@ -3442,3 +3442,44 @@ button.ik-kpi:hover {
   font-size: 0.75rem;
   font-weight: 400;
 }
+
+/* A day in the money trace: status rows, flow rows, then the lines. */
+.ik-day-tree {
+  width: auto;
+  min-width: 560px;
+}
+
+.ik-day-tree > tbody > tr > td {
+  padding: 3px 10px;
+  text-align: left !important;
+}
+
+.ik-day-tree > tbody > tr > td:nth-child(n+2) {
+  text-align: right !important;
+}
+
+.ik-day-flow td:first-child {
+  padding-left: 26px !important;
+}
+
+.ik-day-tree .ik-tree-panel > td {
+  padding-left: 40px !important;
+}
+
+.ik-side-band th {
+  font-size: 0.72rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  text-align: center !important;
+  padding: 2px 6px;
+}
+
+.ik-side-band th.inv {
+  background: #e3eefb;
+  color: #1d5aa6;
+}
+
+.ik-side-band th.con {
+  background: #fbe9e1;
+  color: #9a3a16;
+}

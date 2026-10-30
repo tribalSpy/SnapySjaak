@@ -16915,6 +16915,16 @@ function IkTileLinesTable({ lines, sides }) {
   return (
     <table className="data-table balance-table ik-table ik-lines-table">
       <thead>
+        {/* Both sides: a band says which columns are the invoice's and
+            which the Connect lot's. */}
+        {invoice && connect && (
+          <tr className="ik-side-band">
+            <th colSpan={2} />
+            <th colSpan={7} className="inv">Invoice line</th>
+            <th colSpan={5} className="con">Connect lot</th>
+            <th colSpan={2} />
+          </tr>
+        )}
         <tr>
           <th /><th>Date</th>
           {invoice && <><th className="ik-inv-head">Invoice</th><th>Brief</th></>}
@@ -17238,12 +17248,21 @@ function IkPairLines({ from, to, company, grower, bar, flow = "", date = "", sta
   );
 }
 
-// One grower's day, opened in place: its invoice lines and its Connect lots
-// side by side -- matched, not matched and the lots without an invoice all
-// on one screen.
+// A grower's day, folded: first matched / figures differ / not matched /
+// only in Connect (lines and €), then per flow, then the lines -- each with
+// only its own side (a lot without an invoice: the Connect columns).
+const IK_DAY_STATUSES = [
+  ["mismatch", "⚠ Matched, figures differ", "both"],
+  ["not_matched", "✗ Invoice, no Connect lot", "invoice"],
+  ["connect_only", "✗ Connect lot, no invoice", "connect"],
+  ["matched", "✓ Matched", "both"],
+  ["packaging", "Packaging", "invoice"],
+];
+
 function IkDayPanel({ date, company, grower, bar }) {
   const [data, setData] = useState(null);
   const [error, setError] = useState("");
+  const [open, setOpen] = useState(() => new Set());
   useEffect(() => {
     let cancelled = false;
     setData(null);
@@ -17258,60 +17277,49 @@ function IkDayPanel({ date, company, grower, bar }) {
   if (error) return <div className="notice danger">{error}</div>;
   if (!data) return <div className="muted">Loading lines…</div>;
   const lines = (data.lines || []).filter((line) => (!bar.bw?.length || bar.bw.includes(line.bw || "?")) && (!bar.flows?.length || bar.flows.includes(line.flow)));
-  const order = { mismatch: 0, not_matched: 1, connect_only: 1, matched: 2, packaging: 3 };
-  const invoiceLines = lines.filter((line) => line.status !== "connect_only").sort((left, right) => order[left.status] - order[right.status]);
-  const lotLines = lines.filter((line) => line.status === "matched" || line.status === "mismatch" || line.status === "connect_only").sort((left, right) => order[left.status] - order[right.status]);
-  const money = (value) => (value === null || value === undefined ? "" : formatInkoopEuro(value));
-  const lotLabel = (lot) => (String(lot).split("+").length > 3 ? `${String(lot).split("+").length} lots (pool)` : String(lot || "-"));
-  const sum = (list, field) => list.reduce((total, line) => total + (Number(line[field]) || 0), 0);
+  const toggle = (key) => setOpen((current) => { const next = new Set(current); if (next.has(key)) next.delete(key); else next.add(key); return next; });
+  const valueOf = (line) => (line.status === "connect_only" ? Number(line.erp_total) || 0 : Number(line.invoice_total) || 0);
+  const order = (line) => -Math.abs(Number(line.difference_total ?? line.invoice_total ?? line.erp_total) || 0);
   return (
-    <div className="ik-day-panel">
-      <div className="ik-day-side inv">
-        <div className="ik-day-title">Invoice lines ({invoiceLines.length}) · {formatInkoopEuro(sum(invoiceLines, "invoice_total"))}</div>
-        <table className="data-table balance-table ik-table ik-day-table">
-          <thead><tr><th /><th>Invoice</th><th>Brief</th><th>Product</th><th>Boxes</th><th>Pieces</th><th>Price</th><th>Total</th><th>Connect lot</th></tr></thead>
-          <tbody>
-            {invoiceLines.map((line, index) => (
-              <tr key={`i${index}`} className={`ik-status-${line.status}`}>
-                <td className="ik-status-icon" title={IK_STATUS_LABEL[line.status]}>{IK_STATUS_ICON[line.status]}</td>
-                <td>{line.invoice_number ? <InkoopInvoiceLink invoiceNumber={line.invoice_number} /> : "-"}</td>
-                <td>{line.pav || "-"}</td>
-                <td title={line.flow}><i className="ik-dot" style={{ background: INKOOP_FLOW_COLORS[line.flow] }} />{line.description}</td>
-                <td>{inkoopBoxesText(line.invoice_quantity, line.packages, line.per_package)}</td>
-                <td>{line.invoice_quantity ?? ""}</td>
-                <td>{line.invoice_price ?? ""}</td>
-                <td>{money(line.invoice_total)}</td>
-                <td>{line.status === "matched" ? lotLabel(line.lot) : line.status === "mismatch" ? <span className="money-loss" title={line.note}>{lotLabel(line.lot)} · <InkoopMoneyDiff value={line.difference_total} /></span> : <span className="money-loss">—</span>}</td>
+    <table className="data-table balance-table ik-table ik-day-tree">
+      <tbody>
+        {IK_DAY_STATUSES.map(([status, label, sides]) => {
+          const ofStatus = lines.filter((line) => line.status === status);
+          if (!ofStatus.length) return null;
+          const statusKey = status;
+          const difference = ofStatus.reduce((sum, line) => sum + (Number(line.difference_total) || 0), 0);
+          return (
+            <Fragment key={statusKey}>
+              <tr className={`clickable-row ik-status-${status}`} onClick={() => toggle(statusKey)}>
+                <td><strong>{open.has(statusKey) ? "▾" : "▸"} {label}</strong></td>
+                <td>{ofStatus.length} {status === "connect_only" ? "lot(s)" : "line(s)"}</td>
+                <td>{formatInkoopEuro(ofStatus.reduce((sum, line) => sum + valueOf(line), 0))}</td>
+                <td>{status === "mismatch" ? <>difference <InkoopMoneyDiff value={Math.round(difference * 100) / 100} /></> : ""}</td>
               </tr>
-            ))}
-            {!invoiceLines.length && <tr><td colSpan={9} className="muted">None.</td></tr>}
-          </tbody>
-        </table>
-      </div>
-      <div className="ik-day-side con">
-        <div className="ik-day-title">Connect lots ({lotLines.length}) · {formatInkoopEuro(sum(lotLines, "erp_total"))}</div>
-        <table className="data-table balance-table ik-table ik-day-table">
-          <thead><tr><th /><th>Lot</th><th>PAV</th><th>Product</th><th>Boxes</th><th>Pieces</th><th>Price</th><th>Total</th><th>Invoice</th></tr></thead>
-          <tbody>
-            {lotLines.map((line, index) => (
-              <tr key={`c${index}`} className={`ik-status-${line.status}`}>
-                <td className="ik-status-icon" title={IK_STATUS_LABEL[line.status]}>{IK_STATUS_ICON[line.status]}</td>
-                <td>{lotLabel(line.lot)}</td>
-                <td>{line.pav || "-"}</td>
-                <td title={line.flow}><i className="ik-dot" style={{ background: INKOOP_FLOW_COLORS[line.flow] }} />{line.description}</td>
-                <td>{inkoopBoxesText(line.erp_quantity, line.lot_items, line.lot_cont)}</td>
-                <td>{line.erp_quantity ?? ""}</td>
-                <td>{line.erp_price ?? ""}</td>
-                <td>{money(line.erp_total)}</td>
-                <td>{line.status === "connect_only" ? <span className="money-loss">no invoice</span> : line.invoice_number || "-"}</td>
-              </tr>
-            ))}
-            {!lotLines.length && <tr><td colSpan={9} className="muted">None.</td></tr>}
-          </tbody>
-        </table>
-      </div>
-      {data.capped && <div className="muted">The first 3000 lines.</div>}
-    </div>
+              {open.has(statusKey) && INKOOP_FLOWS.map((flow) => {
+                const ofFlow = ofStatus.filter((line) => line.flow === flow);
+                if (!ofFlow.length) return null;
+                const flowKey = `${status}|${flow}`;
+                return (
+                  <Fragment key={flowKey}>
+                    <tr className="clickable-row ik-day-flow" onClick={() => toggle(flowKey)}>
+                      <td><span className="ik-flow-label">{open.has(flowKey) ? "▾" : "▸"} <i className="ik-dot" style={{ background: INKOOP_FLOW_COLORS[flow] }} />{flow}</span></td>
+                      <td>{ofFlow.length}</td>
+                      <td>{formatInkoopEuro(ofFlow.reduce((sum, line) => sum + valueOf(line), 0))}</td>
+                      <td>{status === "mismatch" ? <InkoopMoneyDiff value={Math.round(ofFlow.reduce((sum, line) => sum + (Number(line.difference_total) || 0), 0) * 100) / 100} /> : ""}</td>
+                    </tr>
+                    {open.has(flowKey) && (
+                      <tr className="ik-tree-panel"><td colSpan={4}><IkTileLinesTable lines={[...ofFlow].sort((left, right) => order(left) - order(right))} sides={sides} /></td></tr>
+                    )}
+                  </Fragment>
+                );
+              })}
+            </Fragment>
+          );
+        })}
+        {!lines.length && <tr><td colSpan={4} className="muted">No lines.</td></tr>}
+      </tbody>
+    </table>
   );
 }
 
