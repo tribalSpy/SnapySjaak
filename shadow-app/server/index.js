@@ -8448,7 +8448,19 @@ function matchInkoopVeilingLines(erpRows, invoices, supplierMap = {}, supplierNa
       if (!chosen) continue;
       pool.lines = chosen.lines;
       const lots = chosen.lots;
-      const short = chosen.short;
+      let short = chosen.short;
+      // Connect short by exactly one line's pieces (Altaj FAARTQB: 280 more
+      // on the invoice than the 24 lots hold): that line isn't in the pool --
+      // it stays an invoice line without its lot (to link or find), the rest
+      // matches exactly. Before, it was "matched" to the pool with 0 pieces.
+      if (short) {
+        const shortfall = pool.lines.reduce((sum, line) => sum + Number(line.quantity), 0) - total(lots);
+        const missing = pool.lines.filter((line) => !inkoopValuesDiffer(Number(line.quantity), shortfall));
+        if (missing.length === 1 && pool.lines.length > 1) {
+          pool.lines = pool.lines.filter((line) => line !== missing[0]);
+          short = false;
+        }
+      }
       const wantedNow = pool.lines.reduce((sum, line) => sum + Number(line.quantity), 0);
       if (!lots?.length || (pool.lines.length === 1 && lots.length === 1)) continue;
       for (const row of lots) consumedErpRows.add(row);
@@ -8473,8 +8485,22 @@ function matchInkoopVeilingLines(erpRows, invoices, supplierMap = {}, supplierNa
           matched_as_group: true,
           split_lots: lots.map((row) => row.lot),
         };
+        if (last && short && !(Number(pair.erp_row.pieces) > 0)) {
+          // Nothing of the lots left for it: not matched (an invoice line
+          // without its lot), never a 0-piece pair.
+          return;
+        }
         if (last && short) {
-          matchedMismatch.push({ ...pair, diffs: [{ field: "quantity", erp: pair.erp_row.pieces, invoice: Number(line.quantity) }, { field: "total", erp: share, invoice: Number(line.total) }] });
+          // More in Connect than invoiced (20-10: 2 boxes of 140 more in the
+          // Altaj lots): that surplus can be another day's invoice line
+          // (22-10 FAARTQB, 280) -- kept here for poolSurplusCarry.
+          const surplus = Number(pair.erp_row.pieces) - Number(line.quantity);
+          const surplusInfo = surplus > 0 ? {
+            pieces: surplus, value: Math.round(surplus * (value / lotPieces) * 100) / 100, day,
+            codes: [...pool.codes], price: Number(sample.unit_price), per_box: perBox,
+            product: normalizeInkoopKey(sample?.vbn_code) || normalizeInkoopKey(sample?.description),
+          } : null;
+          matchedMismatch.push({ ...pair, ...(surplusInfo ? { pool_surplus: surplusInfo } : {}), diffs: [{ field: "quantity", erp: pair.erp_row.pieces, invoice: Number(line.quantity) }, { field: "total", erp: share, invoice: Number(line.total) }] });
         } else {
           matchedOk.push(pair);
         }
@@ -8623,6 +8649,65 @@ function matchInkoopVeilingLines(erpRows, invoices, supplierMap = {}, supplierNa
   viaAfgemeld(supplierNotLinked);
 
   productPool(onlyInInvoice);
+
+  // A split delivery across days: a product pool with more pieces in
+  // Connect than invoiced (20-10 Zentoo Altaj: the 12 lots hold 280 more
+  // than the 5 lines) and an invoice line of exactly those pieces a few days
+  // on that found no lot (22-10 FAARTQB, 2 x 140 = 280 @ 0.62 -- Connect
+  // booked those 2 boxes in 20-10's lots). Same grower, product, price and
+  // per box, within the day tolerance: the line takes the surplus, the pool
+  // line keeps its own pieces -- both exact instead of -173.60 / +173.60.
+  const poolSurplusCarry = (unmatched) => {
+    const rest = [];
+    for (const item of unmatched) {
+      const quantity = Number(item?.quantity);
+      const resolved = resolveInkoopSupplierCode(item?.supplier_gln, item?.supplier_fh_number, item?.supplier_name, supplierMap, supplierNameMap, manualLinks, supplierFhMap);
+      const codes = new Set([...resolved.codes, ...String(item?.supplier_code || "").split(/[/+]/)].map((code) => normalizeInkoopKey(code)).filter(Boolean));
+      const product = normalizeInkoopKey(item?.vbn_code) || normalizeInkoopKey(item?.description);
+      const date = normalizeUkdocsText(item?.invoice_date).slice(0, 10);
+      const host = quantity > 0 && codes.size ? matchedMismatch.find((pair) => {
+        const surplus = pair.pool_surplus;
+        return surplus && !surplus.used && !inkoopValuesDiffer(surplus.pieces, quantity)
+          && surplus.product === product && Math.abs(surplus.price - Number(item?.unit_price)) < 0.0005
+          && (!surplus.per_box || !(Number(item?.per_package) > 0) || surplus.per_box === Number(item.per_package))
+          && surplus.codes.some((code) => codes.has(code))
+          && Math.abs((Date.parse(date) - Date.parse(surplus.day)) / 86400000) <= INKOOP_DAY_TOLERANCE_DAYS;
+      }) : null;
+      if (!host) {
+        rest.push(item);
+        continue;
+      }
+      const surplus = host.pool_surplus;
+      surplus.used = true;
+      // The pool's line: its own pieces and value -- exact, or what still differs.
+      const hostRow = { ...host.erp_row, pieces: Number(host.quantity), t_price: Math.round((parseFloat(host.erp_row.t_price) - surplus.value) * 100) / 100 };
+      const hostFixed = { ...host, erp_row: hostRow, pool_surplus: { ...surplus } };
+      const hostIndex = matchedMismatch.indexOf(host);
+      if (hostIndex >= 0) matchedMismatch.splice(hostIndex, 1);
+      if (inkoopValuesDiffer(hostRow.t_price, Number(host.total))) {
+        matchedMismatch.push({ ...hostFixed, diffs: [{ field: "total", erp: hostRow.t_price, invoice: Number(host.total) }] });
+      } else {
+        const { diffs, ...clean } = hostFixed;
+        matchedOk.push(clean);
+      }
+      const pair = {
+        ...item,
+        supplier_code: item.supplier_code || host.supplier_code,
+        supplier_match_type: `rest of the product pool of ${surplus.day}: ${quantity} pieces Connect booked in that day's lots (split delivery)`,
+        erp_row: { ...host.erp_row, pieces: quantity, t_price: surplus.value },
+        matched_as_group: true,
+        split_lots: host.split_lots,
+      };
+      if (inkoopValuesDiffer(surplus.value, Number(item?.total))) {
+        matchedMismatch.push({ ...pair, diffs: [{ field: "total", erp: surplus.value, invoice: Number(item?.total) }] });
+      } else {
+        matchedOk.push(pair);
+      }
+    }
+    unmatched.length = 0;
+    unmatched.push(...rest);
+  };
+  poolSurplusCarry(onlyInInvoice);
 
   // Last: import boxes resold per N ("x5 SL Sweet Revival Diya", 1 x 22 @
   // 0.95): the lot is the invoice line in another unit -- pieces x N, price
@@ -10482,7 +10567,10 @@ const INKOOP_EMPTY_DAY_BUCKET = {
 // 2026-10-21: grower directory (learned links, Handel evidence), supplier
 // pairs stored on the invoice date.
 // 2026-10-29b: a short product pool values each line by its own pieces.
-const INKOOP_MATCH_RULES_VERSION = "2026-10-29b";
+// 2026-10-30a: a pool short by exactly one line's pieces leaves that line
+// out (never a 0-piece pair); a pool's Connect surplus is another day's line
+// of exactly those pieces (split delivery 20-10 / 22-10 Zentoo Altaj).
+const INKOOP_MATCH_RULES_VERSION = "2026-10-30a";
 
 function inkoopStateFingerprint(state) {
   return crypto.createHash("sha1").update(JSON.stringify([
