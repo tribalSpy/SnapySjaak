@@ -89,6 +89,11 @@ import {
   getInkoopFollowupEvents,
   getInkoopFollowupLastEvents,
   getInkoopCategorisedStatuses,
+  createInkoopClaim,
+  deleteInkoopClaim,
+  getInkoopClaims,
+  updateInkoopClaim,
+  getInkoopClaimItemStatuses,
   setInkoopDayReady,
   getLlmQueueSnapshot,
   getActiveLlmJobsByType,
@@ -26682,6 +26687,112 @@ async function handleApi(req, res, url) {
         { by: requestUser.username, note },
       );
       sendJson(res, 200, { ok: true, saved: saved.length });
+    } catch (error) {
+      sendJson(res, 400, { error: error instanceof Error ? error.message : String(error) });
+    }
+    return;
+  }
+
+  // Claims to growers (credit notes): their lines (as saved) and history.
+  // ?grower= one grower's, ?open=1 only the claims not closed.
+  if (url.pathname === "/api/inkoop/claims" && req.method === "GET") {
+    if (!requirePermission(res, requestUser, PERMISSIONS.INKOOP_VIEW)) {
+      return;
+    }
+    try {
+      const claims = await getInkoopClaims({ grower: String(url.searchParams.get("grower") || ""), open: url.searchParams.get("open") === "1" });
+      const statuses = await getInkoopClaimItemStatuses(claims.map((claim) => claim.id));
+      const byClaim = new Map();
+      for (const row of statuses) {
+        const item = inkoopFollowupWithStatus(row.snapshot ? { ...row.snapshot, id: row.id } : { id: row.id, type: row.issue_type, day: row.item_day || "", description: row.id }, row);
+        byClaim.set(row.claim_id, [...(byClaim.get(row.claim_id) || []), item]);
+      }
+      sendJson(res, 200, { claims: claims.map((claim) => ({ ...claim, items: byClaim.get(claim.id) || [] })) });
+    } catch (error) {
+      sendJson(res, 400, { error: error instanceof Error ? error.message : String(error) });
+    }
+    return;
+  }
+
+  // A new claim from some open lines of one grower: body { items: [{ id,
+  // day }], note }. The lines become "claimed" with the claim's number.
+  if (url.pathname === "/api/inkoop/claims" && req.method === "POST") {
+    if (!requirePermission(res, requestUser, PERMISSIONS.INKOOP_VIEW)) {
+      return;
+    }
+    let claim = null;
+    try {
+      const body = await readRequestJson(req, 4 * 1024 * 1024);
+      const state = await readInkoopState();
+      const list = (Array.isArray(body?.items) ? body.items : []).filter((item) => item?.id).slice(0, 2000);
+      if (!list.length) throw new Error("Tick the lines to claim first.");
+      const { byDate } = await inkoopFollowupItemsForDates(state, list.map((item) => inkoopIsoDate(item.day)).filter(Boolean));
+      const found = new Map();
+      for (const items of byDate.values()) for (const item of items) found.set(item.id, item);
+      const items = list.map((item) => found.get(item.id)).filter(Boolean);
+      if (items.length !== list.length) throw new Error("Some lines are not open any more -- reload the list.");
+      const growers = [...new Set(items.map((item) => item.grower))];
+      if (growers.length !== 1) throw new Error(`One claim is for one grower (ticked: ${growers.join(", ")}).`);
+      const statuses = new Map((await getInkoopIssueStatuses()).map((row) => [row.id, row]));
+      const taken = items.filter((item) => statuses.get(item.id)?.claim_id);
+      if (taken.length) throw new Error(`${taken.length} line(s) are already in a claim.`);
+      const note = String(body?.note || "").trim().slice(0, 2000);
+      const amount = items.reduce((sum, item) => sum + (Number(item.money_diff) || 0), 0);
+      claim = await createInkoopClaim({ grower: growers[0], department: "finance", amount, itemIds: items.map((item) => item.id), note, by: requestUser.username });
+      await updateInkoopFollowupItems(
+        items.map((item) => ({ id: item.id, date: item.day, snapshot: inkoopFollowupSnapshot(item) })),
+        { status: "claimed", claim_id: claim.id },
+        { by: requestUser.username, note: `claim C-${claim.id}${note ? ` -- ${note}` : ""}` },
+      );
+      sendJson(res, 200, { ok: true, claim });
+    } catch (error) {
+      if (claim?.id) await deleteInkoopClaim(claim.id).catch(() => {});
+      sendJson(res, 400, { error: error instanceof Error ? error.message : String(error) });
+    }
+    return;
+  }
+
+  // A claim's next step: body { step: "asked" | "credit_received" | "closed"
+  // | "written_off", date, credit_note_number, amount_credited, note }.
+  // Closed / written off resolves its lines.
+  if (url.pathname.startsWith("/api/inkoop/claims/") && req.method === "POST") {
+    if (!requirePermission(res, requestUser, PERMISSIONS.INKOOP_VIEW)) {
+      return;
+    }
+    try {
+      const id = url.pathname.slice("/api/inkoop/claims/".length).replace(/^C-/i, "");
+      if (!/^\d+$/.test(id)) throw new Error("Unknown claim");
+      const body = await readRequestJson(req);
+      const step = String(body?.step || "");
+      const date = inkoopIsoDate(body?.date) || localDateIso();
+      const note = String(body?.note || "").trim().slice(0, 2000);
+      const claim = (await getInkoopClaims({ id }))[0];
+      if (!claim) throw new Error("Unknown claim");
+      if (["closed", "written_off"].includes(claim.status)) throw new Error("This claim is closed.");
+      let fields;
+      if (step === "asked") fields = { status: "asked", asked_at: date };
+      else if (step === "credit_received") {
+        const number = String(body?.credit_note_number || "").trim();
+        const credited = Number(String(body?.amount_credited ?? "").replace(",", "."));
+        if (!number) throw new Error("The credit note's number is needed.");
+        if (!Number.isFinite(credited)) throw new Error("The credited amount is needed.");
+        fields = { status: "credit_received", received_at: date, credit_note_number: number.slice(0, 80), amount_credited: Math.round(credited * 100) / 100 };
+      } else if (step === "closed") fields = { status: "closed", closed_at: date };
+      else if (step === "written_off") {
+        if (!note) throw new Error("Writing off needs a reason.");
+        fields = { status: "written_off", closed_at: date };
+      } else throw new Error("Unknown step");
+      const saved = await updateInkoopClaim(id, fields, { by: requestUser.username, note });
+      if (step === "closed" || step === "written_off") {
+        const rows = await getInkoopClaimItemStatuses([id]);
+        const credit = saved.credit_note_number ? ` (credit note ${saved.credit_note_number}, ${saved.amount_credited ?? ""})` : "";
+        await updateInkoopFollowupItems(
+          rows.map((row) => ({ id: row.id, date: row.item_day || null })),
+          { status: "resolved" },
+          { by: requestUser.username, note: `claim C-${id} ${step === "closed" ? `closed${credit}` : "written off"}${note ? ` -- ${note}` : ""}` },
+        );
+      }
+      sendJson(res, 200, { ok: true, claim: saved });
     } catch (error) {
       sendJson(res, 400, { error: error instanceof Error ? error.message : String(error) });
     }

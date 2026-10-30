@@ -3699,3 +3699,46 @@ button.ik-kpi:hover {
 .ik-tile-fu strong {
   display: inline;
 }
+
+/* Claims: a card per claim with its steps. */
+.ik-claim {
+  display: grid;
+  gap: 6px;
+  padding: 10px 12px;
+  border: 1px solid var(--ik-border);
+  border-left: 4px solid var(--ik-accent);
+  border-radius: 8px;
+  background: var(--ik-surface);
+}
+
+.ik-claim.closed {
+  border-left-color: var(--ik-border);
+  opacity: 0.85;
+}
+
+.ik-claim-head {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 14px;
+  align-items: center;
+}
+
+.ik-claim-steps {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 18px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  color: var(--ik-muted);
+}
+
+.ik-claim-steps li.done {
+  color: var(--ik-text);
+  font-weight: 600;
+}
+
+.ik-fu-growers tr.ik-fu-grower-open > td {
+  background: var(--ik-surface-2);
+  white-space: normal;
+}

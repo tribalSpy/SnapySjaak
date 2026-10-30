@@ -18613,6 +18613,197 @@ function IkFollowupCategoryEditor({ settings, onSaved }) {
   );
 }
 
+// Claims to a grower: asked -> credit note received -> closed (or written
+// off). Closing resolves the claim's lines.
+const INKOOP_CLAIM_STEPS = [["draft", "Draft"], ["asked", "Asked"], ["credit_received", "Credit received"], ["closed", "Closed"]];
+const INKOOP_CLAIM_LABEL = { draft: "Draft", asked: "Asked", credit_received: "Credit received", closed: "Closed", written_off: "Written off" };
+
+function inkoopClaimCsv(claim) {
+  inkoopDownloadCsv(`claim-C-${claim.id}-${claim.grower}.csv`, [
+    ["Claim", "Grower", "Day", "Invoice", "Reference", "Lot", "Product", "Invoice line", "Connect lot", "Invoice €", "Connect €", "Difference €"],
+    ...(claim.items || []).map((item) => [
+      `C-${claim.id}`, claim.grower, item.day || item.date, item.invoice_number || "", item.invoice?.reference || "", item.lot?.lot || "", item.description,
+      ikFollowupInvoiceText(item), ikFollowupLotText(item), item.invoice_value, item.connect_value, item.money_diff,
+    ]),
+    ["", "", "", "", "", "", "Total", "", "", "", "", claim.amount_claimed],
+  ]);
+}
+
+function IkClaimCard({ claim, onChanged }) {
+  const [open, setOpen] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const closed = claim.status === "closed" || claim.status === "written_off";
+  async function step(name) {
+    const body = { step: name };
+    if (name === "credit_received") {
+      const number = window.prompt("Credit note number:", "");
+      if (!number || !number.trim()) return;
+      const amount = window.prompt(`Credited amount (claimed ${formatInkoopEuro(claim.amount_claimed)}):`, String(claim.amount_claimed));
+      if (amount === null || amount.trim() === "") return;
+      body.credit_note_number = number.trim();
+      body.amount_credited = amount.trim();
+    }
+    if (name === "written_off") {
+      const reason = window.prompt("Write off -- reason:", "");
+      if (!reason || !reason.trim()) return;
+      body.note = reason.trim();
+    }
+    if (name === "closed" && !window.confirm(`Close claim C-${claim.id}? Its ${claim.items?.length || 0} line(s) become resolved.`)) return;
+    setBusy(true);
+    setError("");
+    try {
+      await apiJson(`/api/inkoop/claims/${claim.id}`, { method: "POST", body: JSON.stringify(body) });
+      onChanged();
+    } catch (stepError) {
+      setError(stepError.message);
+    } finally {
+      setBusy(false);
+    }
+  }
+  const at = { draft: String(claim.created_at || "").slice(0, 10), asked: claim.asked_at, credit_received: claim.received_at, closed: claim.closed_at };
+  const reached = (key) => {
+    const order = INKOOP_CLAIM_STEPS.map(([name]) => name);
+    if (claim.status === "written_off") return key === "draft" || (key === "asked" && claim.asked_at) || (key === "credit_received" && claim.received_at);
+    return order.indexOf(key) <= order.indexOf(claim.status);
+  };
+  const gap = claim.amount_credited !== null && claim.amount_credited !== undefined ? Math.round((claim.amount_claimed - claim.amount_credited) * 100) / 100 : null;
+  return (
+    <div className={`ik-claim${closed ? " closed" : ""}`}>
+      <div className="ik-claim-head">
+        <button type="button" className="link-button" onClick={() => setOpen((value) => !value)}>{open ? "▾" : "▸"} <strong>C-{claim.id}</strong></button>
+        <span>{claim.grower}</span>
+        <span className={`ukdocs-status-badge ${closed ? "muted" : claim.status === "credit_received" ? "success" : "info"}`}>{INKOOP_CLAIM_LABEL[claim.status] || claim.status}</span>
+        <span>claimed <strong>{formatInkoopEuro(claim.amount_claimed)}</strong></span>
+        {claim.amount_credited !== null && claim.amount_credited !== undefined && <span>credited <strong>{formatInkoopEuro(claim.amount_credited)}</strong>{claim.credit_note_number ? ` (${claim.credit_note_number})` : ""}</span>}
+        {gap ? <span className="ik-fu-warn">still {formatInkoopEuro(gap)}</span> : null}
+        <span className="muted">{claim.items?.length || 0} line(s) · {claim.created_by}</span>
+      </div>
+      <ol className="ik-claim-steps">
+        {INKOOP_CLAIM_STEPS.map(([key, label]) => (
+          <li key={key} className={reached(key) ? "done" : ""}>{reached(key) ? "✓" : "○"} {label}{reached(key) && at[key] ? ` ${fustOverviewDate(at[key])}` : ""}</li>
+        ))}
+        {claim.status === "written_off" && <li className="done">✗ Written off {fustOverviewDate(claim.closed_at)}</li>}
+      </ol>
+      <div className="row-actions">
+        {claim.status === "draft" && <button type="button" onClick={() => step("asked")} disabled={busy}>Mark asked</button>}
+        {(claim.status === "draft" || claim.status === "asked") && <button type="button" onClick={() => step("credit_received")} disabled={busy}>Credit note received…</button>}
+        {!closed && claim.status !== "draft" && <button type="button" className="primary" onClick={() => step("closed")} disabled={busy}>Close</button>}
+        {!closed && <button type="button" className="link-button" onClick={() => step("written_off")} disabled={busy}>Write off…</button>}
+        <button type="button" className="link-button" onClick={() => inkoopClaimCsv(claim)}>Export CSV (to send)</button>
+      </div>
+      {error && <div className="notice danger">{error}</div>}
+      {open && (
+        <div className="table-wrap">
+          <table className="data-table balance-table ik-fu-table">
+            <thead><tr><th>Day</th><th>Product</th><th>Invoice line</th><th>Connect lot</th><th>Difference</th><th>Status</th></tr></thead>
+            <tbody>
+              {(claim.items || []).map((item) => (
+                <tr key={item.id}>
+                  <td>{fustOverviewDate(item.day || item.date)}</td>
+                  <td className="ik-fu-ellipsis" title={item.description}>{item.description}</td>
+                  <td className="ik-fu-ellipsis ik-inv-text" title={ikFollowupInvoiceText(item)}>{ikFollowupInvoiceText(item) || "-"}</td>
+                  <td className="ik-fu-ellipsis ik-con-text" title={ikFollowupLotText(item)}>{ikFollowupLotText(item) || "-"}</td>
+                  <td><InkoopMoneyDiff value={item.money_diff} /></td>
+                  <td>{INKOOP_FU_STATUS_LABEL[item.status] || item.status}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// Per grower: the growers folded (open lines, difference, claims); open one
+// for its lines (tick → New claim) and its claims.
+function IkFollowupGrowers({ items, claims, settings, onOpen, quick, onChanged }) {
+  const [openGrower, setOpenGrower] = useState("");
+  const [picked, setPicked] = useState({});
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  useEffect(() => { setPicked({}); }, [openGrower]);
+  const growers = new Map();
+  for (const item of items) {
+    const entry = growers.get(item.grower) || { grower: item.grower, items: [], diff: 0 };
+    entry.items.push(item);
+    entry.diff += Number(item.money_diff) || 0;
+    growers.set(item.grower, entry);
+  }
+  for (const claim of claims) if (!growers.has(claim.grower)) growers.set(claim.grower, { grower: claim.grower, items: [], diff: 0 });
+  const rows = [...growers.values()].map((entry) => ({ ...entry, claims: claims.filter((claim) => claim.grower === entry.grower) }))
+    .sort((left, right) => Math.abs(right.diff) - Math.abs(left.diff) || left.grower.localeCompare(right.grower));
+  const openClaims = claims.filter((claim) => claim.status !== "closed" && claim.status !== "written_off");
+  async function newClaim(entry) {
+    const list = Object.values(picked);
+    const total = list.reduce((sum, item) => sum + (Number(item.money_diff) || 0), 0);
+    const note = window.prompt(`New claim to ${entry.grower}: ${list.length} line(s), ${formatInkoopEuro(total)}. Note (optional):`, "");
+    if (note === null) return;
+    setBusy(true);
+    setError("");
+    try {
+      await apiJson("/api/inkoop/claims", { method: "POST", body: JSON.stringify({ items: list.map((item) => ({ id: item.id, day: item.day })), note }) });
+      setPicked({});
+      onChanged();
+    } catch (claimError) {
+      setError(claimError.message);
+    } finally {
+      setBusy(false);
+    }
+  }
+  return (
+    <div className="overview-stack">
+      <div className="muted">{openClaims.length} open claim(s) · {formatInkoopEuro(openClaims.reduce((sum, claim) => sum + (Number(claim.amount_claimed) || 0), 0))} claimed, not closed yet</div>
+      {error && <div className="notice danger">{error}</div>}
+      <div className="table-wrap">
+        <table className="data-table balance-table ik-fu-table ik-fu-growers">
+          <thead><tr><th>Grower</th><th>Open lines</th><th>Difference</th><th>Control / Inkoop / Finance</th><th>Claims</th></tr></thead>
+          <tbody>
+            {rows.map((entry) => {
+              const isOpen = openGrower === entry.grower;
+              const dept = (key) => entry.items.filter((item) => item.department === key).length;
+              const ticked = Object.values(picked);
+              return (
+                <Fragment key={entry.grower}>
+                  <tr className={`clickable-row${isOpen ? " active-row" : ""}`} onClick={() => setOpenGrower(isOpen ? "" : entry.grower)}>
+                    <td>{isOpen ? "▾" : "▸"} <strong>{entry.grower || "-"}</strong></td>
+                    <td>{entry.items.length}</td>
+                    <td><InkoopMoneyDiff value={Math.round(entry.diff * 100) / 100} /></td>
+                    <td>{dept("control")} / {dept("inkoop")} / {dept("finance")}</td>
+                    <td>{entry.claims.length ? entry.claims.map((claim) => `C-${claim.id} ${INKOOP_CLAIM_LABEL[claim.status] || claim.status}`).join(" · ") : ""}</td>
+                  </tr>
+                  {isOpen && (
+                    <tr className="ik-fu-grower-open">
+                      <td colSpan={5}>
+                        <div className="overview-stack">
+                          {entry.items.length > 0 && (
+                            <>
+                              <div className="row-actions">
+                                <button type="button" className="primary" disabled={busy || !ticked.length} onClick={() => newClaim(entry)}>
+                                  New claim from {ticked.length} ticked{ticked.length ? ` (${formatInkoopEuro(ticked.reduce((sum, item) => sum + (Number(item.money_diff) || 0), 0))})` : ""}
+                                </button>
+                                <span className="muted">Tick the lines to claim from {entry.grower}; they become "Claimed" with the claim's number.</span>
+                              </div>
+                              <IkFollowupTable items={entry.items} settings={settings} picked={picked} setPicked={setPicked} onOpen={onOpen} quick={quick} />
+                            </>
+                          )}
+                          {entry.claims.map((claim) => <IkClaimCard key={claim.id} claim={claim} onChanged={onChanged} />)}
+                        </div>
+                      </td>
+                    </tr>
+                  )}
+                </Fragment>
+              );
+            })}
+            {!rows.length && <tr><td colSpan={5} className="muted">No open lines.</td></tr>}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
 function InkoopFollowupWorkspace({ bar, onOpenTrackTrace, onOpenConnectData, matchRound = 0 }) {
   const [settings, reloadSettings] = useInkoopFollowupSettings();
   const [tab, setTab] = useState("todo");
@@ -18634,6 +18825,11 @@ function InkoopFollowupWorkspace({ bar, onOpenTrackTrace, onOpenConnectData, mat
     ? { category, all_dates: "1", status: withResolved ? "all" : "open" }
     : { from: bar.from, to: bar.to, ...(bar.grower ? { grower: bar.grower } : {}) };
   const { data, error, loading } = useInkoopFollowup(query, `${round}|${matchRound}`);
+  const [claims, setClaims] = useState([]);
+  useEffect(() => {
+    if (tab !== "growers") return;
+    apiJson(`/api/inkoop/claims${bar.grower ? `?grower=${encodeURIComponent(bar.grower)}` : ""}`).then((payload) => setClaims(payload.claims || [])).catch(() => setClaims([]));
+  }, [tab, round, bar.grower]);
   useEffect(() => { setPicked({}); }, [tab, department, bar.from, bar.to, bar.grower]);
   const chooseDepartment = (key) => {
     setDepartment(key);
@@ -18688,6 +18884,7 @@ function InkoopFollowupWorkspace({ bar, onOpenTrackTrace, onOpenConnectData, mat
     <div className="overview-stack ik-fu">
       <div className="tab-strip ik-fu-tabs" role="tablist">
         <button type="button" className={tab === "todo" ? "active" : ""} onClick={() => setTab("todo")}>To-do per department</button>
+        <button type="button" className={tab === "growers" ? "active" : ""} onClick={() => setTab("growers")}>Per grower &amp; claims</button>
         {(settings?.categories || []).map((cat) => (
           <button key={cat.name} type="button" className={tab === `cat:${cat.name}` ? "active" : ""} onClick={() => setTab(`cat:${cat.name}`)}>⚑ {cat.name}</button>
         ))}
@@ -18705,7 +18902,7 @@ function InkoopFollowupWorkspace({ bar, onOpenTrackTrace, onOpenConnectData, mat
       {!!data?.pending_days?.length && <div className="notice">Some days are being compared again; their lines are from the last comparison.</div>}
       {error && <div className="notice danger">{error}</div>}
       {quickError && <div className="notice danger">{quickError}</div>}
-      {!category ? (
+      {tab === "growers" ? null : !category ? (
         <div className="ik-fu-depts" role="group" aria-label="Department">
           {departments.map(([key, label]) => (
             <button key={key} type="button" className={`ik-fu-dept${department === key ? " on" : ""}`} onClick={() => chooseDepartment(key)}>
@@ -18723,8 +18920,14 @@ function InkoopFollowupWorkspace({ bar, onOpenTrackTrace, onOpenConnectData, mat
           {loading && <span className="muted">Loading…</span>}
         </div>
       )}
-      <IkFollowupBulkBar picked={picked} setPicked={setPicked} settings={settings} onDone={reload} />
-      {data && <IkFollowupTable items={shown} settings={settings} picked={picked} setPicked={setPicked} onOpen={setDrawer} quick={quick} showAge={!!category} />}
+      {tab === "growers" ? (
+        data && <IkFollowupGrowers items={items.filter((item) => !bar.flows?.length || bar.flows.includes(item.flow))} claims={claims} settings={settings} onOpen={setDrawer} quick={quick} onChanged={reload} />
+      ) : (
+        <>
+          <IkFollowupBulkBar picked={picked} setPicked={setPicked} settings={settings} onDone={reload} />
+          {data && <IkFollowupTable items={shown} settings={settings} picked={picked} setPicked={setPicked} onOpen={setDrawer} quick={quick} showAge={!!category} />}
+        </>
+      )}
       {drawer && (
         <IkFollowupDrawer item={drawer} invoiceText={ikFollowupInvoiceText(drawer)} lotText={ikFollowupLotText(drawer)} settings={settings}
           onClose={() => setDrawer(null)} onSaved={reload} />

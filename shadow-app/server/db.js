@@ -2616,6 +2616,72 @@ export async function updateInkoopFollowupItems(items, changes, { by = "", note 
   }
 }
 
+const INKOOP_CLAIM_COLUMNS = `id::text AS id, grower, department, category, status, amount_claimed::float8 AS amount_claimed, amount_credited::float8 AS amount_credited,
+  credit_note_number, item_ids, note, created_by, created_at, to_char(asked_at, 'YYYY-MM-DD') AS asked_at, to_char(received_at, 'YYYY-MM-DD') AS received_at,
+  to_char(closed_at, 'YYYY-MM-DD') AS closed_at, updated_at`;
+
+export async function createInkoopClaim({ grower, department = "finance", category = "", amount = 0, itemIds = [], note = "", by = "" }) {
+  if (!pool) return null;
+  const row = (await pool.query(
+    `INSERT INTO inkoop_claims (grower, department, category, status, amount_claimed, item_ids, note, created_by)
+     VALUES ($1, $2, $3, 'draft', $4, $5::text[], $6, $7) RETURNING ${INKOOP_CLAIM_COLUMNS}`,
+    [grower, department, category || "", Math.round((Number(amount) || 0) * 100) / 100, itemIds, note || "", by || ""],
+  )).rows[0];
+  await insertInkoopFollowupEvents([{ claim_id: row.id, by, action: "claim", to: `draft ${row.amount_claimed}`, note: `${itemIds.length} line(s)${note ? ` -- ${note}` : ""}` }]);
+  return row;
+}
+
+export async function deleteInkoopClaim(id) {
+  if (!pool || !id) return;
+  await pool.query("DELETE FROM inkoop_claims WHERE id = $1::bigint", [id]);
+}
+
+export async function getInkoopClaims({ grower = "", open = false, id = "" } = {}) {
+  if (!pool) return [];
+  const params = [];
+  const where = [];
+  if (id) { params.push(id); where.push(`id = $${params.length}::bigint`); }
+  if (grower) { params.push(grower); where.push(`grower = $${params.length}`); }
+  if (open) where.push("status NOT IN ('closed', 'written_off')");
+  const result = await pool.query(`SELECT ${INKOOP_CLAIM_COLUMNS} FROM inkoop_claims ${where.length ? `WHERE ${where.join(" AND ")}` : ""} ORDER BY created_at DESC LIMIT 2000`, params);
+  return result.rows;
+}
+
+// A claim's next step: fields { status, asked_at, received_at, closed_at,
+// credit_note_number, amount_credited, department, note } -- each change a
+// history row with the note.
+export async function updateInkoopClaim(id, fields, { by = "", note = "" } = {}) {
+  if (!pool || !id) return null;
+  const before = (await getInkoopClaims({ id }))[0];
+  if (!before) return null;
+  const allowed = ["status", "asked_at", "received_at", "closed_at", "credit_note_number", "amount_credited", "department", "category", "note"];
+  const sets = [];
+  const params = [id];
+  const events = [];
+  for (const key of allowed) {
+    if (!Object.prototype.hasOwnProperty.call(fields || {}, key)) continue;
+    const value = fields[key] === "" && /_at$|amount/.test(key) ? null : fields[key];
+    if (String(value ?? "") === String(before[key] ?? "")) continue;
+    params.push(value);
+    sets.push(`${key} = $${params.length}${/_at$/.test(key) ? "::date" : ""}`);
+    events.push({ claim_id: String(id), by, action: `claim_${key}`, from: before[key] ?? "", to: value ?? "", note });
+  }
+  if (!sets.length) return before;
+  const row = (await pool.query(`UPDATE inkoop_claims SET ${sets.join(", ")}, updated_at = now() WHERE id = $1::bigint RETURNING ${INKOOP_CLAIM_COLUMNS}`, params)).rows[0];
+  await insertInkoopFollowupEvents(events);
+  return row;
+}
+
+// The follow-up lines of some claims (their saved state and snapshot).
+export async function getInkoopClaimItemStatuses(claimIds) {
+  if (!pool || !claimIds?.length) return [];
+  const result = await pool.query(
+    `SELECT *, to_char(due_date, 'YYYY-MM-DD') AS due_day, to_char(item_date, 'YYYY-MM-DD') AS item_day FROM inkoop_issue_status WHERE claim_id = ANY($1::text[])`,
+    [claimIds],
+  );
+  return result.rows;
+}
+
 // A follow-up line's (or a claim's) history, newest first.
 export async function getInkoopFollowupEvents({ itemId = "", claimId = "" } = {}) {
   if (!pool || (!itemId && !claimId)) return [];
@@ -4220,6 +4286,29 @@ const databaseMigrations = [
   `,
   `CREATE INDEX IF NOT EXISTS inkoop_followup_events_item_idx ON inkoop_followup_events (item_id, at)`,
   `CREATE INDEX IF NOT EXISTS inkoop_followup_events_claim_idx ON inkoop_followup_events (claim_id, at)`,
+  // A claim to a grower: some follow-up lines, asked -> credit note received
+  // -> closed (or written off). Never cleared by "start fresh".
+  `
+    CREATE TABLE IF NOT EXISTS inkoop_claims (
+      id bigserial PRIMARY KEY,
+      grower text NOT NULL,
+      department text NOT NULL DEFAULT 'finance',
+      category text NOT NULL DEFAULT '',
+      status text NOT NULL DEFAULT 'draft',
+      amount_claimed numeric NOT NULL DEFAULT 0,
+      amount_credited numeric,
+      credit_note_number text NOT NULL DEFAULT '',
+      item_ids text[] NOT NULL DEFAULT '{}',
+      note text NOT NULL DEFAULT '',
+      created_by text NOT NULL DEFAULT '',
+      created_at timestamptz NOT NULL DEFAULT now(),
+      asked_at date,
+      received_at date,
+      closed_at date,
+      updated_at timestamptz NOT NULL DEFAULT now()
+    )
+  `,
+  `CREATE INDEX IF NOT EXISTS inkoop_claims_grower_idx ON inkoop_claims (grower, status)`,
   // A day marked by hand for the follow-up: 'ready' (all its data is in,
   // e.g. no Levering BB that day) or 'hold' (not yet).
   `
