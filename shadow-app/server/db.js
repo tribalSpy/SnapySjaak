@@ -1634,7 +1634,7 @@ export async function getInkoopOverviewLines({ company = "", from = "", to = "",
     `SELECT to_char(m.match_date, 'YYYY-MM-DD') AS date, m.list, m.invoice_number, m.invoice_type, m.pav, m.lot, m.supplier_code, m.supplier_name, m.description,
             m.invoice_quantity::float8, m.invoice_price::float8, m.invoice_total::float8, m.erp_quantity::float8, m.erp_price::float8, m.erp_total::float8, m.difference_total::float8, m.note,
             il.raw->>'packages' AS packages, il.raw->>'per_package' AS per_package, il.raw->>'your_reference' AS your_reference,
-            el.raw->>'items' AS lot_items, el.raw->>'cont' AS lot_cont
+            el.raw->>'items' AS lot_items, el.raw->>'cont' AS lot_cont, el.description AS lot_description
        FROM inkoop_match_rows m
        LEFT JOIN LATERAL (
          SELECT i.raw FROM inkoop_invoice_lines i
@@ -1642,7 +1642,9 @@ export async function getInkoopOverviewLines({ company = "", from = "", to = "",
             AND i.total = m.invoice_total AND regexp_replace(btrim(COALESCE(i.description, '')), '\\s+', ' ', 'g') = m.description
           LIMIT 1
        ) il ON true
-       LEFT JOIN inkoop_erp_lines el ON el.lot = (CASE WHEN m.lot ~ '^[0-9]{1,18}$' THEN m.lot::bigint END)
+       -- The lot (a pool: its first lot -- its name; its boxes only count
+       -- when they add up to the pieces).
+       LEFT JOIN inkoop_erp_lines el ON el.lot = (CASE WHEN split_part(m.lot, '+', 1) ~ '^[0-9]{1,18}$' THEN split_part(m.lot, '+', 1)::bigint END)
       WHERE ${where.join(" AND ")}
       ORDER BY ${pairs.length ? "m.match_date, m.list, m.description" : "abs(COALESCE(m.difference_total, m.invoice_total, m.erp_total, 0)) DESC, m.match_date"} LIMIT ${Math.min(50000, Math.max(1, Math.floor(Number(limit) || 3000)))}`,
     params,

@@ -16925,7 +16925,7 @@ function IkTileLinesTable({ lines, sides }) {
           <tr className="ik-side-band">
             <th colSpan={2} />
             <th colSpan={7} className="inv">Invoice line</th>
-            <th colSpan={5} className="con">Connect lot</th>
+            <th colSpan={6} className="con">Connect lot</th>
             <th colSpan={2} />
           </tr>
         )}
@@ -16934,7 +16934,7 @@ function IkTileLinesTable({ lines, sides }) {
           {invoice && <><th className="ik-inv-head">Invoice</th><th>Brief</th></>}
           <th>Product</th>
           {invoice && <><th className="ik-num">Boxes</th><th className="ik-num">Pieces</th><th className="ik-num">Price</th><th className="ik-num">Total</th></>}
-          {connect && <><th className="ik-con-head">Lot</th>{!invoice && <th>PAV</th>}<th className="ik-num">Boxes</th><th className="ik-num">Pieces</th><th className="ik-num">Price</th><th className="ik-num">Total</th></>}
+          {connect && <><th className="ik-con-head">Lot</th>{!invoice && <th>PAV</th>}{invoice && <th>Product (Connect)</th>}<th className="ik-num">Boxes</th><th className="ik-num">Pieces</th><th className="ik-num">Price</th><th className="ik-num">Total</th></>}
           {invoice && connect && <><th className="ik-num">Difference</th><th>What differs</th></>}
         </tr>
       </thead>
@@ -16954,6 +16954,7 @@ function IkTileLinesTable({ lines, sides }) {
             {connect && <>
               <td className="ik-con">{lotLabel(line.lot)}</td>
               {!invoice && <td>{line.pav || "-"}</td>}
+              {invoice && <td className="ik-ellipsis" title={line.lot_description || ""}>{line.lot_description || ""}</td>}
               <td className="ik-num">{inkoopBoxesText(line.erp_quantity, line.lot_items, line.lot_cont)}</td>
               <td className="ik-num">{line.erp_quantity ?? ""}</td>
               <td className="ik-num">{line.erp_price ?? ""}</td>
