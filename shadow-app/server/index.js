@@ -10664,7 +10664,25 @@ function inkoopOverviewFlow(row) {
 // AI2, else V) -- the overview table's grouping.
 function inkoopOverviewNaming(state) {
   const codeToName = buildInkoopCodeNameMap(state.supplier_map, state.supplier_name_map, state.supplier_fh_map, state.facturation_groups);
-  const codesOf = (row) => String(row?.supplier_code || "").split(/[\s/+]+/).map((code) => normalizeInkoopKey(code)).filter(Boolean);
+  // An invoice line without a lot is stored without a code: its grower by
+  // the invoice's name through the links made by hand (Link growers: both
+  // "Alleblas Plantenbakk" GLNs -> AADALL) or the master data's names -- so
+  // it shows under the same grower as its matched lines, not as a second one.
+  const codesByName = new Map();
+  for (const link of state.manual_supplier_links || []) {
+    const key = normalizeInkoopSupplierName(link?.name);
+    if (key && link?.codes?.length && !codesByName.has(key)) codesByName.set(key, link.codes.map((code) => normalizeInkoopKey(code)));
+  }
+  for (const [name, entry] of Object.entries(state.supplier_name_map || {})) {
+    const key = normalizeInkoopSupplierName(name);
+    if (key && entry?.code && !codesByName.has(key)) codesByName.set(key, [normalizeInkoopKey(entry.code)]);
+  }
+  const ownCodes = (row) => String(row?.supplier_code || "").split(/[\s/+]+/).map((code) => normalizeInkoopKey(code)).filter(Boolean);
+  const codesOf = (row) => {
+    const own = ownCodes(row);
+    if (own.length || row?.list === "only_in_erp") return own;
+    return codesByName.get(normalizeInkoopSupplierName(row?.supplier_name)) || [];
+  };
   return {
     growerOf: (row) => codesOf(row).map((code) => codeToName.get(code)).find(Boolean) || normalizeInkoopSupplierName(row?.supplier_name) || codesOf(row)[0] || "(grower unknown)",
     bwOf: (row) => codesOf(row).map((code) => state.supplier_bw_map?.[code]?.bw).find(Boolean)
