@@ -3483,3 +3483,23 @@ button.ik-kpi:hover {
   background: #fbe9e1;
   color: #9a3a16;
 }
+
+/* The money trace over the whole window. */
+.ik-fullscreen {
+  position: fixed;
+  inset: 0;
+  z-index: 45;
+  margin: 0;
+  border-radius: 0;
+  overflow: auto;
+  background: var(--ik-surface);
+}
+
+.ik-fullscreen .table-wrap {
+  max-height: calc(100vh - 70px);
+}
+
+/* Room for the app's menu button in the top-left corner. */
+.ik-fullscreen .ik-card-head {
+  padding-left: 56px;
+}

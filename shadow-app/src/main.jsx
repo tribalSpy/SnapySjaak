@@ -16787,7 +16787,8 @@ function inkoopFlowParts(rows) {
 
 // The stored overview rows of a period (one request; every workspace part
 // filters them).
-function useInkoopOverviewRows(from, to, company) {
+// grower: only that grower's rows (a long search of one supplier).
+function useInkoopOverviewRows(from, to, company, grower = "") {
   const [state, setState] = useState({ rows: null, error: "" });
   const [round, setRound] = useState(0);
   useEffect(() => {
@@ -16799,11 +16800,12 @@ function useInkoopOverviewRows(from, to, company) {
     setState((current) => ({ rows: current.rows, error: "" }));
     const params = new URLSearchParams({ from, to });
     if (company) params.set("company", company);
+    if (grower) params.set("grower", grower);
     apiJson(`/api/inkoop/overview-table?${params.toString()}`)
       .then((payload) => { if (!cancelled) setState({ rows: payload.rows || [], error: "" }); })
       .catch((loadError) => { if (!cancelled) setState({ rows: [], error: loadError.message }); });
     return () => { cancelled = true; };
-  }, [from, to, company, round]);
+  }, [from, to, company, grower, round]);
   return { ...state, reload: () => setRound((value) => value + 1) };
 }
 
@@ -16829,6 +16831,8 @@ function IkFilterBar({ bar, setBar, companies, company, setCompany, growers = []
     ["This month", () => setPeriod(inkoopMonthStart(today), today)],
     ["Last month", () => { const start = inkoopMonthStart(addDaysToIso(inkoopMonthStart(today), -1)); setPeriod(start, addDaysToIso(inkoopMonthStart(today), -1)); }],
     ["3 months", () => setPeriod(inkoopMonthStart(addDaysToIso(inkoopMonthStart(addDaysToIso(inkoopMonthStart(today), -1)), -32)), today)],
+    // A whole year: for one grower (all growers together: 3 months at most).
+    ["12 months", () => setPeriod(inkoopMonthStart(addDaysToIso(today, -334)), today)],
   ];
   const toggle = (key, value) => setBar((current) => {
     const list = current[key] || [];
@@ -16836,7 +16840,7 @@ function IkFilterBar({ bar, setBar, companies, company, setCompany, growers = []
     if (key === "bw") { try { window.localStorage.setItem("inkoop-bar-bw", JSON.stringify(next)); } catch { /* per-browser only */ } }
     return { ...current, [key]: next };
   });
-  const tooLong = inkoopDaysBetween(bar.from, bar.to) > 92;
+  const tooLong = inkoopDaysBetween(bar.from, bar.to) > (bar.grower ? 370 : 92);
   return (
     <div className="ik-filterbar">
       {parts.includes("period") && <div className="ik-filter-group">
@@ -16844,7 +16848,7 @@ function IkFilterBar({ bar, setBar, companies, company, setCompany, growers = []
         <input type="date" value={bar.from} max={bar.to} onChange={(event) => event.target.value && setPeriod(event.target.value, bar.to)} />
         <span className="muted">–</span>
         <input type="date" value={bar.to} min={bar.from} onChange={(event) => event.target.value && setPeriod(bar.from, event.target.value)} />
-        {tooLong && <span className="money-loss" title="At most 3 months at once">max. 3 months</span>}
+        {tooLong && <span className="money-loss" title="All growers: 3 months at most; one grower: a year">{bar.grower ? "max. a year" : "max. 3 months -- or pick one grower for up to a year"}</span>}
       </div>}
       <div className="ik-filter-group">
         {parts.includes("company") && <select value={company} onChange={(event) => setCompany(event.target.value)} title="Company (a Connect lot has no company: with one chosen, the invoice side only)">
@@ -17337,17 +17341,35 @@ function IkTraceTable({ rows, from, to, company, bar, setBar }) {
   const [open, setOpen] = useState(() => new Set());
   const [sortKey, setSortKey] = useState("open");
   const [sortDir, setSortDir] = useState(-1);
-  const withWeeks = inkoopDaysBetween(from, to) > 13;
+  const [exporting, setExporting] = useState("");
+  // Full screen: the money trace over the whole window (Esc closes).
+  const [full, setFull] = useState(false);
+  useEffect(() => {
+    if (!full) return undefined;
+    const onKey = (event) => { if (event.key === "Escape") setFull(false); };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [full]);
+  // The levels under a grower: a long period by month ▸ week ▸ day, more
+  // than two weeks by week ▸ day, else the days.
+  const span_days = inkoopDaysBetween(from, to);
+  const levels = span_days > 62 ? ["month", "week", "day"] : span_days > 13 ? ["week", "day"] : ["day"];
   // A grower typed in the bar or clicked in a tile: opened at once.
   useEffect(() => {
     const match = bar.grower ? [...new Set(rows.map((row) => row.grower))].find((name) => inkoopSameGrower(name, bar.grower)) : "";
     if (match) setOpen((current) => new Set([...current, `g|${match}`]));
-  }, [bar.grower]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [bar.grower, rows.length]); // eslint-disable-line react-hooks/exhaustive-deps
   const toggle = (key) => setOpen((current) => { const next = new Set(current); if (next.has(key)) next.delete(key); else next.add(key); return next; });
   const group = (list, keyOf) => {
     const map = new Map();
     for (const row of list) { const key = keyOf(row); map.set(key, [...(map.get(key) || []), row]); }
     return [...map.entries()].map(([key, groupRows]) => ({ key, rows: groupRows, sum: inkoopOverviewSum(groupRows) }));
+  };
+  const keyOfLevel = { month: (row) => row.date.slice(0, 7), week: (row) => inkoopWeekStart(row.date), day: (row) => row.date };
+  const labelOfLevel = {
+    month: (key) => new Date(`${key}-01T00:00:00`).toLocaleDateString("en-GB", { month: "long", year: "numeric" }),
+    week: (key) => `week of ${fustOverviewDate(key)}`,
+    day: (key) => fustOverviewDate(key),
   };
   const openOf = (sum) => sum.not_matched_value + sum.connect_only_value + Math.abs(sum.difference);
   const growers = group(rows, (row) => row.grower).sort((left, right) => {
@@ -17359,42 +17381,82 @@ function IkTraceTable({ rows, from, to, company, bar, setBar }) {
   const sortBy = (key) => { if (sortKey === key) setSortDir((dir) => -dir); else { setSortKey(key); setSortDir(key === "name" ? 1 : -1); } };
   const shownColumns = INKOOP_OVERVIEW_COLUMNS.filter(([key]) => columns.includes(key));
   const span = shownColumns.length + 2;
-  const exportCsv = () => {
-    const head = ["Grower", "Invoice lines", "Invoice value", "Matched lines", "Matched value", "Not matched lines", "Not matched value", "Only in Connect lots", "Only in Connect value", "Connect total", "Difference", "Matched %"];
-    const body = growers.map((item) => [item.key, item.sum.invoice_lines, item.sum.invoice_value.toFixed(2), item.sum.matched_lines, item.sum.matched_value.toFixed(2), item.sum.not_matched_lines, item.sum.not_matched_value.toFixed(2), item.sum.connect_only_lines, item.sum.connect_only_value.toFixed(2), item.sum.connect_value.toFixed(2), item.sum.difference.toFixed(2), item.sum.matched_pct === null ? "" : item.sum.matched_pct.toFixed(1)]);
-    inkoopDownloadCsv(`money-trace-${from}-${to}.csv`, [head, ...body]);
+  const chosenGrower = bar.grower ? growers.find((item) => inkoopSameGrower(item.key, bar.grower))?.key || "" : "";
+  const figures = (sum) => [sum.invoice_lines, sum.invoice_value.toFixed(2), sum.matched_lines, sum.matched_value.toFixed(2), sum.not_matched_lines, sum.not_matched_value.toFixed(2), sum.connect_only_lines, sum.connect_only_value.toFixed(2), sum.connect_value.toFixed(2), sum.difference.toFixed(2), sum.matched_pct === null ? "" : sum.matched_pct.toFixed(1)];
+  const figureHead = ["Invoice lines", "Invoice value", "Matched lines", "Matched value", "Not matched lines", "Not matched value", "Only in Connect lots", "Only in Connect value", "Connect total", "Difference", "Matched %"];
+  // Per grower its total, then per month, week and day.
+  const exportPeriods = () => {
+    const body = [];
+    for (const grower of growers) {
+      body.push([grower.key, "Total", `${from} – ${to}`, ...figures(grower.sum)]);
+      for (const level of ["month", "week", "day"]) {
+        for (const item of group(grower.rows, keyOfLevel[level]).sort((left, right) => left.key.localeCompare(right.key))) {
+          body.push([grower.key, level[0].toUpperCase() + level.slice(1), level === "month" ? item.key : item.key, ...figures(item.sum)]);
+        }
+      }
+    }
+    inkoopDownloadCsv(`money-trace-periods-${chosenGrower ? `${inkoopGrowerKey(chosenGrower)}-` : ""}${from}-${to}.csv`, [["Grower", "Level", "Period", ...figureHead], ...body]);
   };
-  const dayRows = (growerKey, list, level) => group(list, (row) => row.date).sort((left, right) => left.key.localeCompare(right.key)).map((day) => {
-    const key = `d|${growerKey}|${day.key}`;
-    return (
-      <Fragment key={key}>
-        <tr className={`clickable-row ik-tree-row l${level}`} onClick={() => toggle(key)}>
-          <td><span className="ik-tree-label">{open.has(key) ? "▾" : "▸"} {fustOverviewDate(day.key)}</span></td>
-          <td><IkSplitBar parts={inkoopFlowParts(day.rows)} /></td>
-          <InkoopOverviewCells sum={day.sum} columns={columns} />
-        </tr>
-        {open.has(key) && (
-          <tr className="ik-tree-panel"><td colSpan={span}><IkDayPanel date={day.key} company={company} grower={growerKey} bar={bar} /></td></tr>
-        )}
-      </Fragment>
-    );
-  });
+  // Every line of the chosen grower: the invoice side and the Connect side
+  // next to each other.
+  const exportLines = async () => {
+    if (!chosenGrower) return;
+    setExporting("lines");
+    try {
+      const params = new URLSearchParams({ from, to, grower: chosenGrower, limit: "50000" });
+      if (company) params.set("company", company);
+      const payload = await apiJson(`/api/inkoop/overview-lines?${params.toString()}`);
+      const lines = (payload.lines || []).filter((line) => (!bar.bw?.length || bar.bw.includes(line.bw || "?")) && (!bar.flows?.length || bar.flows.includes(line.flow)));
+      const head = ["Date", "Status", "Flow", "Invoice", "Brief", "Product", "Invoice boxes", "Invoice pieces", "Invoice price", "Invoice total", "Lot", "Lot boxes", "Lot pieces", "Lot price", "Lot total", "Difference", "Note"];
+      const body = lines.map((line) => [line.date, IK_STATUS_LABEL[line.status] || line.status, line.flow, line.invoice_number, line.pav, line.description,
+        inkoopBoxesText(line.invoice_quantity, line.packages, line.per_package), line.invoice_quantity, line.invoice_price, line.invoice_total,
+        line.lot, inkoopBoxesText(line.erp_quantity, line.lot_items, line.lot_cont), line.erp_quantity, line.erp_price, line.erp_total, line.difference_total, line.note]);
+      inkoopDownloadCsv(`money-trace-lines-${inkoopGrowerKey(chosenGrower)}-${from}-${to}.csv`, [head, ...body]);
+      if (payload.capped) window.alert("The export holds the first 50 000 lines -- choose a shorter period for the rest.");
+    } catch (exportError) {
+      window.alert(exportError.message);
+    } finally {
+      setExporting("");
+    }
+  };
+  // One level of a grower's tree (month, week or day), and what's under it.
+  const levelRows = (growerName, list, depth, keyPrefix) => {
+    const level = levels[depth - 1];
+    return group(list, keyOfLevel[level]).sort((left, right) => left.key.localeCompare(right.key)).map((item) => {
+      const key = `${keyPrefix}|${level}|${item.key}`;
+      const days = level === "day" ? 0 : new Set(item.rows.map((row) => row.date)).size;
+      return (
+        <Fragment key={key}>
+          <tr className={`clickable-row ik-tree-row l${Math.min(depth, 3)}`} onClick={() => toggle(key)}>
+            <td><span className="ik-tree-label">{open.has(key) ? "▾" : "▸"} {labelOfLevel[level](item.key)}{days ? <span className="muted"> ({days} day{days === 1 ? "" : "s"})</span> : null}</span></td>
+            <td><IkSplitBar parts={inkoopFlowParts(item.rows)} /></td>
+            <InkoopOverviewCells sum={item.sum} columns={columns} />
+          </tr>
+          {open.has(key) && (level === "day"
+            ? <tr className="ik-tree-panel"><td colSpan={span}><IkDayPanel date={item.key} company={company} grower={growerName} bar={bar} /></td></tr>
+            : levelRows(growerName, item.rows, depth + 1, key))}
+        </Fragment>
+      );
+    });
+  };
   return (
-    <div className="data-table-card ik-card">
+    <div className={`data-table-card ik-card${full ? " ik-fullscreen" : ""}`}>
       <div className="ik-card-head">
         <strong>Money trace -- {fustOverviewDate(from)}{from !== to ? ` – ${fustOverviewDate(to)}` : ""} · {growers.length} grower(s)</strong>
         <div className="row-actions">
           <IkFlowLegend flows={INKOOP_FLOWS.filter((flow) => rows.some((row) => row.flow === flow))} />
           {!!open.size && <button type="button" className="ik-chip" onClick={() => setOpen(new Set())}>Fold all</button>}
           <IkColumnPicker columns={columns} toggle={toggleColumn} />
-          <button type="button" className="ik-chip" onClick={exportCsv}>CSV</button>
+          <button type="button" className={`ik-chip${full ? " on" : ""}`} onClick={() => setFull((current) => !current)} title="Esc closes">{full ? "✕ Close full screen" : "⛶ Full screen"}</button>
+          <button type="button" className="ik-chip" onClick={exportPeriods} title="Per grower: the total, every month, week and day">CSV per month / week / day</button>
+          {chosenGrower && <button type="button" className="ik-chip" onClick={exportLines} disabled={Boolean(exporting)} title={`Every line of ${chosenGrower}: invoice side and Connect side`}>{exporting ? "Exporting…" : `CSV all lines of ${chosenGrower}`}</button>}
         </div>
       </div>
       <div className="table-wrap">
         <table className="data-table balance-table ik-table">
           <thead>
             <tr>
-              <th className="ik-sortable" onClick={() => sortBy("name")}>Grower ▸ {withWeeks ? "week ▸ " : ""}day{sortKey === "name" ? (sortDir > 0 ? " ▲" : " ▼") : ""}</th>
+              <th className="ik-sortable" onClick={() => sortBy("name")}>Grower ▸ {levels.join(" ▸ ")}{sortKey === "name" ? (sortDir > 0 ? " ▲" : " ▼") : ""}</th>
               <th>Flows</th>
               {shownColumns.map(([key, label]) => <th key={key} className="ik-sortable" onClick={() => sortBy(key)}>{label}{sortKey === key ? (sortDir > 0 ? " ▲" : " ▼") : ""}</th>)}
             </tr>
@@ -17409,22 +17471,7 @@ function IkTraceTable({ rows, from, to, company, bar, setBar }) {
                     <td><IkSplitBar parts={inkoopFlowParts(grower.rows)} /></td>
                     <InkoopOverviewCells sum={grower.sum} columns={columns} />
                   </tr>
-                  {open.has(growerKey) && (withWeeks
-                    ? group(grower.rows, (row) => inkoopWeekStart(row.date)).sort((left, right) => left.key.localeCompare(right.key)).map((week) => {
-                      const weekKey = `w|${grower.key}|${week.key}`;
-                      const days = new Set(week.rows.map((row) => row.date)).size;
-                      return (
-                        <Fragment key={weekKey}>
-                          <tr className="clickable-row ik-tree-row l1" onClick={() => toggle(weekKey)}>
-                            <td><span className="ik-tree-label">{open.has(weekKey) ? "▾" : "▸"} week of {fustOverviewDate(week.key)} <span className="muted">({days} day{days === 1 ? "" : "s"})</span></span></td>
-                            <td><IkSplitBar parts={inkoopFlowParts(week.rows)} /></td>
-                            <InkoopOverviewCells sum={week.sum} columns={columns} />
-                          </tr>
-                          {open.has(weekKey) && dayRows(grower.key, week.rows, 2)}
-                        </Fragment>
-                      );
-                    })
-                    : dayRows(grower.key, grower.rows, 1))}
+                  {open.has(growerKey) && levelRows(grower.key, grower.rows, 1, growerKey)}
                 </Fragment>
               );
             })}
@@ -18359,8 +18406,17 @@ function InkoopControlePage({ currentUser }) {
   const pageDataNote = loading ? <div className="notice info">Loading import history and master data...</div> : null;
   const inWorkspace = activeTab === "trace" || activeTab === "tracktrace";
   const withBar = inWorkspace || activeTab === "search";
-  const barTooLong = inkoopDaysBetween(bar.from, bar.to) > 92;
-  const overview = useInkoopOverviewRows(withBar && !barTooLong ? bar.from : "", withBar && !barTooLong ? bar.to : "", selectedCompany);
+  // All growers: 3 months at most; one grower (the bar's) up to a year --
+  // then only that grower's rows are read.
+  const barLong = inkoopDaysBetween(bar.from, bar.to) > 92;
+  const barTooLong = inkoopDaysBetween(bar.from, bar.to) > (bar.grower ? 370 : 92);
+  // The typed grower once typing stops (a year is not read per keystroke).
+  const [settledGrower, setSettledGrower] = useState(bar.grower);
+  useEffect(() => {
+    const timer = window.setTimeout(() => setSettledGrower(bar.grower), 600);
+    return () => window.clearTimeout(timer);
+  }, [bar.grower]);
+  const overview = useInkoopOverviewRows(withBar && !barTooLong ? bar.from : "", withBar && !barTooLong ? bar.to : "", selectedCompany, barLong ? settledGrower : "");
   const menuOverview = useInkoopOverviewRows(activeTab === "" ? `${localDateIso().slice(0, 7)}-01` : "", activeTab === "" ? localDateIso() : "", "");
   const barGrowers = [...new Set((overview.rows || []).map((row) => row.grower))].sort();
 
@@ -18381,7 +18437,7 @@ function InkoopControlePage({ currentUser }) {
         <IkFilterBar bar={bar} setBar={setBar} companies={companies} company={selectedCompany} setCompany={setSelectedCompany} growers={barGrowers}
           parts={activeTab === "search" ? ["period", "company", "grower"] : undefined} />
       )}
-      {withBar && barTooLong && <div className="notice danger">Choose at most 3 months.</div>}
+      {withBar && barTooLong && <div className="notice danger">{bar.grower ? "One grower: a year at most." : "All growers: 3 months at most -- type one grower in the bar to search up to a year."}</div>}
       {/* Only on the tabs that filter by it (Overview, Corrections, King,
           Growers, Link growers and Settings are for every company). */}
       {INKOOP_COMPANY_TABS.has(activeTab) && activeTab !== "search" && (

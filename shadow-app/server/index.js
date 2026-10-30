@@ -25569,9 +25569,14 @@ async function handleApi(req, res, url) {
       const view = inkoopOverviewNaming(state);
       const totals = await getInkoopOverviewTotals({ company, from, to });
       if (url.pathname === "/api/inkoop/overview-table") {
+        // grower=: only that grower's rows (a long search -- a whole year of
+        // one supplier); matched by name as the page does.
+        const growerKey = (value) => String(value || "").toLowerCase().replace(/\(verkoop\)/g, "").replace(/[^a-z0-9]/g, "");
+        const wanted = growerKey(url.searchParams.get("grower"));
+        const sameGrower = (name) => { const key = growerKey(name); return !wanted || (key && (key === wanted || key.startsWith(wanted) || wanted.startsWith(key))); };
         sendJson(res, 200, {
           from, to,
-          rows: totals.map((row) => ({
+          rows: totals.filter((row) => sameGrower(view.growerOf(row))).map((row) => ({
             date: row.date, grower: view.growerOf(row), bw: view.bwOf(row), flow: inkoopOverviewFlow(row), status: INKOOP_OVERVIEW_STATUS[row.list] || row.list,
             lines: row.lines, invoice_value: Math.round(row.invoice_value * 100) / 100, erp_value: Math.round(row.erp_value * 100) / 100,
           })),
@@ -25585,11 +25590,13 @@ async function handleApi(req, res, url) {
       const pairs = grower ? [...new Map(totals.filter((row) => view.growerOf(row) === grower)
         .map((row) => [`${row.supplier_code}|${row.supplier_name}`, [row.supplier_code, row.supplier_name]])).values()] : [];
       if (!grower && !lists.length) throw new Error("grower or lists is required");
-      const lines = await getInkoopOverviewLines({ company, from, to, pairs, lists: grower ? [] : lists });
+      // limit=: one grower's export (a year) may hold more than the 3000 shown.
+      const limit = grower ? Math.min(50000, Math.max(3000, Number(url.searchParams.get("limit")) || 3000)) : 3000;
+      const lines = await getInkoopOverviewLines({ company, from, to, pairs, lists: grower ? [] : lists, limit });
       sendJson(res, 200, {
         from, to, grower,
         lines: lines.map((row) => ({ ...row, grower: view.growerOf(row), bw: view.bwOf(row), flow: inkoopOverviewFlow(row), status: INKOOP_OVERVIEW_STATUS[row.list] || row.list })),
-        capped: lines.length >= 3000,
+        capped: lines.length >= limit,
       });
     } catch (error) {
       sendJson(res, 400, { error: error instanceof Error ? error.message : String(error) });

@@ -1616,7 +1616,7 @@ export async function getInkoopOverviewTotals({ company = "", from = "", to = ""
 // The stored match lines of a period for some (grower code, grower name)
 // pairs -- the overview table's deepest level.
 // lists (no pairs): those result lists of every grower.
-export async function getInkoopOverviewLines({ company = "", from = "", to = "", pairs = [], lists = [] } = {}) {
+export async function getInkoopOverviewLines({ company = "", from = "", to = "", pairs = [], lists = [], limit = 3000 } = {}) {
   if (!pool || !from || !to || (!pairs.length && !lists.length)) return [];
   const params = [from, to];
   const where = ["m.match_date >= $1::date", "m.match_date <= $2::date", "m.list <> 'fee_lines'"];
@@ -1643,7 +1643,7 @@ export async function getInkoopOverviewLines({ company = "", from = "", to = "",
        ) il ON true
        LEFT JOIN inkoop_erp_lines el ON el.lot = (CASE WHEN m.lot ~ '^[0-9]{1,18}$' THEN m.lot::bigint END)
       WHERE ${where.join(" AND ")}
-      ORDER BY ${pairs.length ? "m.match_date, m.list, m.description" : "abs(COALESCE(m.difference_total, m.invoice_total, m.erp_total, 0)) DESC, m.match_date"} LIMIT 3000`,
+      ORDER BY ${pairs.length ? "m.match_date, m.list, m.description" : "abs(COALESCE(m.difference_total, m.invoice_total, m.erp_total, 0)) DESC, m.match_date"} LIMIT ${Math.min(50000, Math.max(1, Math.floor(Number(limit) || 3000)))}`,
     params,
   );
   return result.rows;
