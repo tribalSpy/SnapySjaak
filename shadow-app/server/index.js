@@ -24692,7 +24692,14 @@ async function handleApi(req, res, url) {
       }
       inkoopSummaryCache.set(cacheKey, buildInkoopInvoiceSummaryFromInvoices(invoices));
     }
-    sendJson(res, 200, { from, to, companies: inkoopSummaryCache.get(cacheKey) });
+    // Whether each invoice's PDF is on the server now (not cached: a
+    // re-upload adds it).
+    const hasPdf = (number) => existsSync(inkoopInvoicePdfPath(number)) || existsSync(inkoopInvoicePdfPath(String(number || "").replace(/\s*\(\d+\)\s*$/, "")));
+    const companies = (inkoopSummaryCache.get(cacheKey) || []).map((company) => ({
+      ...company,
+      invoices: (company.invoices || []).map((invoice) => ({ ...invoice, has_pdf: hasPdf(invoice.invoice_number) })),
+    }));
+    sendJson(res, 200, { from, to, companies });
     return;
   }
 

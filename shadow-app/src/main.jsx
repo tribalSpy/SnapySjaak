@@ -15648,7 +15648,7 @@ const INKOOP_INVOICE_TYPE_LABELS = { klokfactuur: "Klokfactuur", connect: "Conne
 // own PDF link, same as the rest of Inkoop Controle.
 function InkoopCompanyInvoiceList({ company }) {
   return (
-    <InkoopCollapsibleCard title={`${company.company_number || "?"}${company.company_name ? ` - ${company.company_name}` : ""} -- invoices`} count={company.invoices.length} defaultOpen={false}>
+    <InkoopCollapsibleCard title={`${company.company_number || "?"}${company.company_name ? ` - ${company.company_name}` : ""} -- invoices${company.invoices.some((invoice) => invoice.has_pdf === false) ? ` (✗ ${company.invoices.filter((invoice) => invoice.has_pdf === false).length} without PDF)` : ""}`} count={company.invoices.length} defaultOpen={false}>
       <div className="table-wrap">
         <table className="data-table">
           <thead><tr><th>Factuurdatum</th><th>Invoice</th><th>Type</th><th>Products</th><th>Emballage</th><th>Fees</th><th>Total</th><th>Lines</th></tr></thead>
@@ -15656,7 +15656,10 @@ function InkoopCompanyInvoiceList({ company }) {
             {company.invoices.map((invoice) => (
               <tr key={`${invoice.invoice_number}-${invoice.invoice_type}`}>
                 <td>{fustOverviewDate(invoice.invoice_date)}</td>
-                <td><InkoopInvoiceLink invoiceNumber={invoice.invoice_number} /></td>
+                <td>
+                  <InkoopInvoiceLink invoiceNumber={invoice.invoice_number} />
+                  {invoice.has_pdf === false && <span className="money-loss" title="No PDF of this invoice on the server -- upload its email again"> ✗ no PDF</span>}
+                </td>
                 <td>{INKOOP_INVOICE_TYPE_LABELS[invoice.invoice_type] || invoice.invoice_type || "-"}</td>
                 <td>{formatInkoopEuro(invoice.products)}</td>
                 <td>{formatInkoopEuro(invoice.emballage)}</td>
