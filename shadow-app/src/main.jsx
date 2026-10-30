@@ -3,6 +3,46 @@ import { createRoot } from "react-dom/client";
 import JSZip from "jszip";
 import "./styles.css";
 
+// Night mode (the lamp, top right): kept per browser, set before the first
+// paint so a page never flashes white. The colours come from styles.css
+// (vite-dark-theme.js).
+const THEME_KEY = "snappysjaak-theme";
+
+function readTheme() {
+  try {
+    return window.localStorage.getItem(THEME_KEY) === "dark" ? "dark" : "light";
+  } catch {
+    return "light";
+  }
+}
+
+document.documentElement.dataset.theme = readTheme();
+
+function ThemeLamp() {
+  const [theme, setTheme] = useState(readTheme);
+  const night = theme === "dark";
+  function toggle() {
+    const next = night ? "light" : "dark";
+    document.documentElement.dataset.theme = next;
+    try {
+      window.localStorage.setItem(THEME_KEY, next);
+    } catch {
+      // Not kept: this page still switches.
+    }
+    setTheme(next);
+  }
+  return (
+    <button type="button" className={`theme-lamp${night ? " off" : ""}`} onClick={toggle} aria-pressed={night}
+      aria-label={night ? "Day mode (lamp on)" : "Night mode (lamp off)"} title={night ? "Day mode" : "Night mode"}>
+      <svg viewBox="0 0 24 24" width="24" height="24" aria-hidden="true">
+        {!night && <g className="theme-lamp-rays"><path d="M12 1.5v2M4.6 4.6l1.4 1.4M19.4 4.6 18 6M2 11.5h2M20 11.5h2" /></g>}
+        <path className="theme-lamp-bulb" d="M12 5.5a6 6 0 0 0-3.6 10.8c.7.5 1.1 1.3 1.1 2.1v.6h5v-.6c0-.8.4-1.6 1.1-2.1A6 6 0 0 0 12 5.5z" />
+        <path className="theme-lamp-base" d="M9.6 21h4.8M10 19h4" />
+      </svg>
+    </button>
+  );
+}
+
 const REFRESH_INTERVAL_MS = 15000;
 const HEARTBEAT_INTERVAL_MS = 20000;
 const HEARTBEAT_FAILURES_BEFORE_OVERLAY = 4;
@@ -10721,6 +10761,7 @@ function App() {
         <span />
         <span />
       </button>
+      <ThemeLamp />
       {sidebarOpen && (
         <button
           type="button"

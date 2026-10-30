@@ -3899,3 +3899,45 @@ button.ik-kpi:hover {
 .ik-like {
   color: var(--ik-accent);
 }
+
+/* The night-mode lamp, top right: lit by day, off at night. */
+.theme-lamp {
+  position: fixed;
+  top: 12px;
+  right: 12px;
+  z-index: 130;
+  width: 44px;
+  height: 44px;
+  display: grid;
+  place-items: center;
+  padding: 0;
+  background: #ffffff;
+  box-shadow: 0 4px 16px rgba(23, 32, 42, 0.16);
+}
+
+.theme-lamp svg {
+  fill: none;
+  stroke: #4a5561;
+  stroke-width: 1.6;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.theme-lamp .theme-lamp-bulb {
+  fill: #f6c445;
+  stroke: #b7791f;
+}
+
+.theme-lamp .theme-lamp-rays {
+  stroke: #d69e2e;
+}
+
+.theme-lamp.off .theme-lamp-bulb {
+  fill: none;
+  stroke: #9aa5b1;
+}
+
+/* A drawer open on the right: the lamp steps aside (its Close button). */
+:root:has(.ik-drawer) .theme-lamp {
+  display: none;
+}
