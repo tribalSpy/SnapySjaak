@@ -17092,13 +17092,13 @@ function IkKpiStrip({ rows, onGrower = null, from = "", to = "", company = "", b
 function IkMiniCalendar({ rows, from, to, day, onDay }) {
   const byDate = new Map();
   for (const row of rows || []) byDate.set(row.date, [...(byDate.get(row.date) || []), row]);
-  // Every month of the period (a year for one grower), in a box that
-  // scrolls and opens on the newest month.
+  // Every month of the period (a year for one grower), side by side in a
+  // row that scrolls sideways and opens on the newest month.
   const months = [];
   for (let month = inkoopMonthStart(from); month <= to && months.length < 14; month = inkoopMonthStart(addDaysToIso(month, 32))) months.push(month);
   const boxRef = useRef(null);
   useEffect(() => {
-    if (boxRef.current) boxRef.current.scrollTop = boxRef.current.scrollHeight;
+    if (boxRef.current) boxRef.current.scrollLeft = boxRef.current.scrollWidth;
   }, [from, to]);
   const pick = (date, event) => {
     if (day && day.from === date && day.to === date) return onDay(null);
@@ -17106,6 +17106,7 @@ function IkMiniCalendar({ rows, from, to, day, onDay }) {
     return onDay({ from: date, to: date });
   };
   return (
+    <div className="ik-cal-box">
     <div className="ik-cal" ref={boxRef}>
       {months.map((month) => {
         const [year, monthNumber] = month.split("-").map(Number);
@@ -17138,7 +17139,8 @@ function IkMiniCalendar({ rows, from, to, day, onDay }) {
           </div>
         );
       })}
-      <div className="ik-cal-key muted"><span className="ik-cal-day l0" />0% <span className="ik-cal-day l2" /> <span className="ik-cal-day l4" />100% <span className="ik-cal-day empty" />none</div>
+    </div>
+      <div className="ik-cal-key muted"><span className="ik-cal-day l0" />0% <span className="ik-cal-day l2" /> <span className="ik-cal-day l4" />100% <span className="ik-cal-day empty" />none{months.length > 1 ? " · scroll sideways for the other months" : ""}</div>
     </div>
   );
 }

@@ -3504,17 +3504,31 @@ button.ik-kpi:hover {
   padding-left: 56px;
 }
 
-/* Many months (a year): the calendar scrolls inside its card, the key stays
-   at the bottom of the box. */
+/* Many months (a year): one row that scrolls sideways inside a fixed box
+   on the right; the key under it. */
+.ik-cal-box {
+  min-width: 0;
+}
+
 .ik-cal {
-  max-height: 440px;
-  overflow-y: auto;
-  align-content: flex-start;
+  flex-wrap: nowrap;
+  overflow-x: auto;
+  overflow-y: hidden;
+  padding-bottom: 6px;
+  scroll-snap-type: x proximity;
+}
+
+.ik-cal-month {
+  flex: 0 0 auto;
+  scroll-snap-align: end;
 }
 
 .ik-cal-key {
-  position: sticky;
-  bottom: 0;
-  background: var(--ik-surface);
-  padding-top: 4px;
+  margin-top: 4px;
+}
+
+@media (min-width: 1101px) {
+  .ik-top {
+    grid-template-columns: minmax(0, 1fr) minmax(0, 370px);
+  }
 }
