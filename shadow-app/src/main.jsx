@@ -8009,6 +8009,117 @@ function inkoopMatchBusyCount(status) {
   return (status?.counts?.pending || 0) + (status?.counts?.running || 0);
 }
 
+// The daily invoice-email import (Gmail -> Inkoop Controle): its settings,
+// "Run now" for a date, and what each run did. In the Pipeline Monitor and
+// in Inkoop's Settings.
+function InkoopMailImportCard({ editable = true }) {
+  const [data, setData] = useState(null);
+  const [hidden, setHidden] = useState(false);
+  const [draft, setDraft] = useState(null);
+  const [runDate, setRunDate] = useState(() => localDateIso());
+  const [busy, setBusy] = useState(false);
+  const [message, setMessage] = useState("");
+  const [error, setError] = useState("");
+  const [openRun, setOpenRun] = useState(null);
+  function load() {
+    return apiJson("/api/inkoop/mail-import")
+      .then((payload) => { setData(payload); setDraft((current) => current || payload.settings); })
+      .catch((loadError) => { if (/403|permission/i.test(loadError.message)) setHidden(true); else setError(loadError.message); });
+  }
+  useEffect(() => {
+    load();
+    const interval = setInterval(load, 30000);
+    return () => clearInterval(interval);
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  if (hidden || !data || !draft) return null;
+  async function save() {
+    setBusy(true);
+    setError("");
+    try {
+      const payload = await apiJson("/api/inkoop/mail-import/settings", { method: "POST", body: JSON.stringify({ settings: draft }) });
+      setDraft(payload.settings);
+      setMessage("Saved.");
+      await load();
+    } catch (saveError) {
+      setError(saveError.message);
+    } finally {
+      setBusy(false);
+    }
+  }
+  async function runNow() {
+    setBusy(true);
+    setError("");
+    setMessage(`Importing the invoice emails of ${fustOverviewDate(runDate)}...`);
+    try {
+      const payload = await apiJson("/api/inkoop/mail-import/run", { method: "POST", body: JSON.stringify({ date: runDate }) });
+      setMessage(payload.skipped ? payload.reason : `${payload.emails_new} new email(s) of ${payload.emails_found}: ${payload.invoices} invoice(s), ${payload.invoice_lines} lines, ${payload.pdfs} PDF(s).`);
+      await load();
+    } catch (runError) {
+      setError(runError.message);
+      setMessage("");
+    } finally {
+      setBusy(false);
+    }
+  }
+  const last = data.runs[0];
+  const tone = (run) => (run.status === "done" ? "success" : run.status === "failed" ? "danger" : "info");
+  return (
+    <div className="data-table-card">
+      <div className="section-header"><h2>Inkoop Controle -- invoice emails (Gmail)</h2></div>
+      <div className="notice">
+        The invoice emails forwarded to the UKdocs mailbox ({data.gmail_connected ? data.gmail_email || "connected" : "Gmail not connected -- connect it in UKdocs"}) are imported to Inkoop Controle every day at {draft.time}: all of that day's FloraHolland and AI2 invoice emails not imported before. The UKdocs papers in the same mailbox stay with UKdocs. Uploading by hand still works as always.
+      </div>
+      <div className="row-actions">
+        <span className={`ukdocs-status-badge ${data.settings.enabled ? "success" : "muted"}`}>{data.settings.enabled ? `on, daily at ${data.settings.time}` : "off"}</span>
+        {last ? <span className={`ukdocs-status-badge ${tone(last)}`}>last run {fustOverviewDate(last.run_date)}: {last.status}</span> : <span className="muted">no run yet</span>}
+        {data.busy && <span className="ukdocs-status-badge info">importing now...</span>}
+        <label><span>Date</span><input type="date" value={runDate} onChange={(event) => setRunDate(event.target.value)} /></label>
+        <button type="button" onClick={runNow} disabled={busy || data.busy || !data.gmail_connected}>{busy ? "Importing..." : "Run now"}</button>
+      </div>
+      {editable && (
+        <details style={{ margin: "6px 0" }}>
+          <summary>Settings</summary>
+          <div className="form-grid" style={{ marginTop: 6 }}>
+            <label className="checkbox-label"><input type="checkbox" checked={draft.enabled} onChange={(event) => setDraft((current) => ({ ...current, enabled: event.target.checked }))} /><span>Import every day</span></label>
+            <label><span>Time (Dutch time)</span><input type="time" value={draft.time} onChange={(event) => setDraft((current) => ({ ...current, time: event.target.value }))} /></label>
+            <label className="wide"><span>Which emails (Gmail search)</span><input value={draft.query} onChange={(event) => setDraft((current) => ({ ...current, query: event.target.value }))} /></label>
+          </div>
+          <div className="row-actions"><button type="button" className="primary" onClick={save} disabled={busy}>Save</button></div>
+        </details>
+      )}
+      {message && <div className="notice info">{message}</div>}
+      {error && <div className="notice danger">{error}</div>}
+      {!!data.runs.length && (
+        <div className="table-wrap">
+          <table className="data-table">
+            <thead><tr><th>Day</th><th>Started</th><th>How</th><th>Status</th><th>Emails (new / found)</th><th>Invoices</th><th>Lines</th><th>PDFs</th><th>Skipped</th></tr></thead>
+            <tbody>
+              {data.runs.map((run) => (
+                <Fragment key={run.id}>
+                  <tr>
+                    <td>{fustOverviewDate(run.run_date)}</td>
+                    <td>{formatTimestamp(run.started_at)}</td>
+                    <td>{run.trigger === "auto" ? "daily" : `by hand (${run.created_by})`}</td>
+                    <td><span className={`ukdocs-status-badge ${tone(run)}`}>{run.status}</span>{run.error_text ? <div className="muted">{run.error_text}</div> : null}</td>
+                    <td>{run.emails_new} / {run.emails_found}</td>
+                    <td>{run.invoices}</td>
+                    <td>{run.invoice_lines}</td>
+                    <td>{run.pdfs}</td>
+                    <td>{(run.skipped || []).length ? <button type="button" className="link-button" onClick={() => setOpenRun((current) => (current === run.id ? null : run.id))}>{(run.skipped || []).length} -- {openRun === run.id ? "hide" : "show"}</button> : "-"}</td>
+                  </tr>
+                  {openRun === run.id && (
+                    <tr><td colSpan={9}>{(run.skipped || []).map((item, index) => <div key={index} className="muted">{item.subject || item.file_name}: {item.reason}</div>)}</td></tr>
+                  )}
+                </Fragment>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function InkoopMatchMonitorCard() {
   const [status, setStatus] = useInkoopMatchStatus();
   const [retrying, setRetrying] = useState(false);
@@ -8107,6 +8218,7 @@ function UkdocsPipelineMonitorPage({ onNavigate }) {
       <ShelfCountMonitorCard date={date} />
 
       <InkoopMatchMonitorCard />
+      <InkoopMailImportCard editable={false} />
 
       {data && (
         <div className="notice">
@@ -16538,6 +16650,31 @@ function InkoopKingPollerCard({ settings, onUsePdfDir }) {
   );
 }
 
+// Import naar King: every date with uploaded invoices not (yet) in King,
+// newest first -- a click opens that date.
+function InkoopKingPendingDays({ date, onPick, refreshKey }) {
+  const [days, setDays] = useState(null);
+  useEffect(() => {
+    apiJson("/api/inkoop/king/pending").then((payload) => setDays(payload.days || [])).catch(() => setDays([]));
+  }, [refreshKey]);
+  if (!days) return null;
+  if (!days.length) return <div className="notice">✓ Everything uploaded in the last 60 days is in King.</div>;
+  const total = days.reduce((sum, day) => sum + day.invoices, 0);
+  return (
+    <div className="ik-filterbar" style={{ position: "static" }}>
+      <div className="ik-filter-group">
+        <strong>Not yet in King: {total} invoice(s) on {days.length} day(s)</strong>
+        {days.map((day) => (
+          <button key={day.date} type="button" className={`ik-chip${day.date === date ? " on" : ""}`} onClick={() => onPick(day.date)}
+            title={`${day.invoices} invoice(s), ${formatInkoopEuro(day.total)}${day.failed ? ` -- ${day.failed} failed before` : ""}`}>
+            {fustOverviewDate(day.date)} · {day.invoices}{day.failed ? " ⚠" : ""}
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 function InkoopKingTab() {
   const [date, setDate] = useState(() => todayIso());
   const [data, setData] = useState(null);
@@ -16634,6 +16771,7 @@ function InkoopKingTab() {
         <div className="notice">
           Every uploaded FloraHolland invoice of the chosen day (Klok, Connect, Handel aankoop/verkoop, Dienst) as a King journal post, booked by the ledger mapping below, plus its PDF for King's digital archive. The date is the factuurdatum (the invoice's own date, as on the PDF). Invoices uploaded before this menu existed don't show: upload their veiling zip once more -- nothing needs to be cleared.
         </div>
+        <InkoopKingPendingDays date={date} onPick={setDate} refreshKey={`${date}|${exportsHistory.length}|${loading}`} />
         <div className="row-actions spread-actions">
           <label><span>Date</span><input type="date" value={date} onChange={(event) => setDate(event.target.value)} /></label>
           <button type="button" onClick={loadDay} disabled={loading}>{loading ? "Loading..." : "Refresh"}</button>
@@ -18645,6 +18783,7 @@ function InkoopControlePage({ currentUser }) {
       {activeTab === "settings" && (
       <>
       {pageDataNote}
+      <InkoopMailImportCard />
       {canClearUploads && (
         <div className="data-table-card">
           <div className="section-header"><h2>Start fresh</h2></div>

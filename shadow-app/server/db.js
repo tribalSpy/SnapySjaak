@@ -3443,6 +3443,75 @@ export async function completeLlmJobById(jobId, resultJson) {
 }
 
 // The King export rows of one batch.
+// ---- Daily invoice-email import (Gmail) ----
+export async function startInkoopMailRun({ runDate, trigger = "auto", createdBy = "" }) {
+  if (!pool) return null;
+  const result = await pool.query(
+    "INSERT INTO inkoop_mail_runs (run_date, trigger, created_by) VALUES ($1::date, $2, $3) RETURNING id",
+    [runDate, trigger, createdBy],
+  );
+  return result.rows[0]?.id || null;
+}
+
+export async function finishInkoopMailRun(id, fields) {
+  if (!pool || !id) return;
+  await pool.query(
+    `UPDATE inkoop_mail_runs SET status = $2, emails_found = $3, emails_new = $4, invoices = $5, invoice_lines = $6, pdfs = $7,
+       skipped = $8::jsonb, error_text = $9, finished_at = now() WHERE id = $1`,
+    [id, fields.status || "done", fields.emails_found || 0, fields.emails_new || 0, fields.invoices || 0, fields.invoice_lines || 0, fields.pdfs || 0,
+      JSON.stringify(fields.skipped || []), String(fields.error_text || "").slice(0, 2000)],
+  );
+}
+
+export async function hasInkoopMailAutoRun(runDate) {
+  if (!pool) return true;
+  const result = await pool.query("SELECT 1 FROM inkoop_mail_runs WHERE run_date = $1::date AND trigger = 'auto' LIMIT 1", [runDate]);
+  return result.rows.length > 0;
+}
+
+export async function getInkoopMailRuns(limit = 30) {
+  if (!pool) return [];
+  const result = await pool.query(
+    `SELECT id, to_char(run_date, 'YYYY-MM-DD') AS run_date, trigger, created_by, status, emails_found, emails_new, invoices, invoice_lines, pdfs,
+            skipped, error_text, started_at, finished_at FROM inkoop_mail_runs ORDER BY started_at DESC LIMIT $1`,
+    [limit],
+  );
+  return result.rows;
+}
+
+export async function getInkoopMailImportedIds(messageIds) {
+  if (!pool || !messageIds.length) return new Set();
+  const result = await pool.query("SELECT message_id FROM inkoop_mail_messages WHERE message_id = ANY($1::text[])", [messageIds]);
+  return new Set(result.rows.map((row) => row.message_id));
+}
+
+export async function saveInkoopMailMessages(rows) {
+  if (!pool || !rows.length) return;
+  for (const row of rows) {
+    await pool.query(
+      `INSERT INTO inkoop_mail_messages (message_id, mail_date, subject, status, run_id) VALUES ($1, $2::date, $3, $4, $5)
+       ON CONFLICT (message_id) DO UPDATE SET status = EXCLUDED.status, run_id = EXCLUDED.run_id, imported_at = now()`,
+      [row.message_id, row.mail_date || null, String(row.subject || "").slice(0, 500), row.status || "", row.run_id || null],
+    );
+  }
+}
+
+// Import naar King: per invoice date, the uploaded invoices not (yet) in
+// King -- never sent, or the send failed -- since a date.
+export async function getKingPendingDays(fromDate) {
+  if (!pool) return [];
+  const result = await pool.query(
+    `SELECT to_char(h.invoice_date, 'YYYY-MM-DD') AS date, COUNT(*)::int AS invoices, COALESCE(SUM(h.grand_total), 0)::float8 AS total,
+            COUNT(*) FILTER (WHERE e.status = 'failed')::int AS failed
+       FROM inkoop_invoice_headers h
+       LEFT JOIN king_exports e ON e.invoice_number = h.invoice_number
+      WHERE h.invoice_date >= $1::date AND (e.invoice_number IS NULL OR e.status = 'failed')
+      GROUP BY 1 ORDER BY 1 DESC`,
+    [fromDate],
+  );
+  return result.rows;
+}
+
 export async function getKingExportBatch(batchId) {
   if (!pool || !batchId) return [];
   const result = await pool.query(
@@ -4042,6 +4111,39 @@ const databaseMigrations = [
       exported_at timestamptz NOT NULL DEFAULT now(),
       delivered_at timestamptz,
       journal_json jsonb
+    )
+  `,
+  // The daily invoice-email import (Gmail): every run, and every email it
+  // imported (never imported twice).
+  `
+    CREATE TABLE IF NOT EXISTS inkoop_mail_runs (
+      id bigserial PRIMARY KEY,
+      run_date date NOT NULL,
+      trigger text NOT NULL DEFAULT 'auto',
+      created_by text NOT NULL DEFAULT '',
+      status text NOT NULL DEFAULT 'running',
+      emails_found integer NOT NULL DEFAULT 0,
+      emails_new integer NOT NULL DEFAULT 0,
+      invoices integer NOT NULL DEFAULT 0,
+      invoice_lines integer NOT NULL DEFAULT 0,
+      pdfs integer NOT NULL DEFAULT 0,
+      skipped jsonb NOT NULL DEFAULT '[]'::jsonb,
+      error_text text NOT NULL DEFAULT '',
+      started_at timestamptz NOT NULL DEFAULT now(),
+      finished_at timestamptz
+    )
+  `,
+  `
+    CREATE INDEX IF NOT EXISTS inkoop_mail_runs_date_idx ON inkoop_mail_runs (run_date, trigger)
+  `,
+  `
+    CREATE TABLE IF NOT EXISTS inkoop_mail_messages (
+      message_id text PRIMARY KEY,
+      mail_date date,
+      subject text NOT NULL DEFAULT '',
+      status text NOT NULL DEFAULT '',
+      run_id bigint,
+      imported_at timestamptz NOT NULL DEFAULT now()
     )
   `,
   `

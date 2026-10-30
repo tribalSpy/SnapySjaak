@@ -1,3 +1,4 @@
+import JSZip from "jszip";
 import { createReadStream, existsSync, readdirSync, promises as fs } from "node:fs";
 import http from "node:http";
 import os from "node:os";
@@ -32,6 +33,13 @@ import {
   getLlmJobById,
   completeLlmJobById,
   getKingExportBatch,
+  startInkoopMailRun,
+  finishInkoopMailRun,
+  hasInkoopMailAutoRun,
+  getInkoopMailRuns,
+  getInkoopMailImportedIds,
+  saveInkoopMailMessages,
+  getKingPendingDays,
   dbQuery,
   deleteUkdocsCsiParsedDocumentFromDatabase,
   getUkdocsCsiParsedDocumentFromDatabase,
@@ -8753,7 +8761,7 @@ function matchInkoopVeilingLines(erpRows, invoices, supplierMap = {}, supplierNa
   };
 }
 
-const defaultInkoopState = { imports: [], supplier_map: {}, supplier_name_map: {}, supplier_fh_map: {}, supplier_bw_map: {}, customer_map: {}, manual_supplier_links: [], facturation_groups: [], king_ledger_map: null, king_settings: {}, grower_skip_codes: [], excluded_erp_codes: [], supplier_bedrijf_map: {}, transaction_costs: null, manual_bw_map: {}, manual_line_pairs: [] };
+const defaultInkoopState = { imports: [], supplier_map: {}, supplier_name_map: {}, supplier_fh_map: {}, supplier_bw_map: {}, customer_map: {}, manual_supplier_links: [], facturation_groups: [], king_ledger_map: null, king_settings: {}, mail_import: {}, grower_skip_codes: [], excluded_erp_codes: [], supplier_bedrijf_map: {}, transaction_costs: null, manual_bw_map: {}, manual_line_pairs: [] };
 
 // Connect codes whose invoices carry a % transaction cost on the price.
 const INKOOP_DEFAULT_TRANSACTION_COSTS = { VDEIJK: 1 };
@@ -8974,6 +8982,7 @@ function normalizeInkoopState(state) {
     // finance's PDF until first edited) and the King settings.
     king_ledger_map: normalizeKingLedgerMap(state?.king_ledger_map),
     king_settings: normalizeKingSettings(state?.king_settings),
+    mail_import: normalizeInkoopMailImport(state?.mail_import),
     // Connect codes that are never a grower (a transaction method like
     // KVV PL "klok voor verkoop planten", or WW12): chosen in the Growers
     // tab; the grower is then looked for in the lot's other code positions.
@@ -9720,6 +9729,241 @@ async function selectKingPosts(state, body) {
     throw new Error("Select at least one invoice");
   }
   return posts;
+}
+
+// ---- Daily invoice-email import (Gmail) ----
+// The invoice emails forwarded to the mailbox UKdocs already reads
+// (FloraHolland's PDF and XML invoices, AI2's Dagnota): every day at a set
+// time all of that day's are imported to Inkoop Controle, the same way as
+// an upload by hand (which still works as always).
+const INKOOP_MAIL_DEFAULT_QUERY = '(royalfloraholland.com OR floraholland.nl OR incasso-online.net OR Klokfactuur OR "Connect factuur" OR "Factuur handel" OR XCrossIndustryInvoice OR Dagnota) has:attachment';
+const INKOOP_INVOICE_EMAIL_RE = /(royalfloraholland\.com|floraholland\.nl|incasso-online\.net|klokfactuur|connect factuur|factuur handel|xcrossindustryinvoice|dagnota|productnota)/i;
+
+function normalizeInkoopMailImport(source) {
+  const value = source && typeof source === "object" ? source : {};
+  const time = /^([01]\d|2[0-3]):[0-5]\d$/.test(String(value.time || "")) ? String(value.time) : "20:00";
+  return {
+    enabled: value.enabled !== false,
+    time,
+    query: normalizeUkdocsText(value.query) || INKOOP_MAIL_DEFAULT_QUERY,
+  };
+}
+
+// An invoice's own attachment: its XML (also zipped), AI2's Productnota /
+// Dagnota, FloraHolland's invoice PDF ("049876_CON_FK_20260918_...") or one
+// named by its invoice number.
+const INKOOP_INVOICE_ATTACHMENT_RE = /(\.xml(\.zip)?$|productnota|dagnota|_CON_(FK|FC|HA|FD|HV)_|\d{6}[._](FK|FC|HA|FD|HV)[._]\d{4})/i;
+
+// An invoice email (subject, sender or forwarded text) -- the UKdocs sync
+// leaves these to the invoice import (with an invoice attachment, see
+// INKOOP_INVOICE_ATTACHMENT_RE).
+function isInkoopInvoiceEmailText(text) {
+  return INKOOP_INVOICE_EMAIL_RE.test(String(text || ""));
+}
+
+function amsterdamClock() {
+  return new Intl.DateTimeFormat("en-GB", { timeZone: "Europe/Amsterdam", hour: "2-digit", minute: "2-digit", hourCycle: "h23" }).format(new Date());
+}
+
+let inkoopMailImportBusy = false;
+
+// All invoice emails of a day not imported before: fetched whole (.eml),
+// imported in parts of about 15 MB, the comparison queued after the last.
+async function runInkoopMailImport({ date, trigger = "auto", createdBy = "mail-import" } = {}) {
+  if (inkoopMailImportBusy) return { ok: false, skipped: true, reason: "An invoice-email import is already running" };
+  inkoopMailImportBusy = true;
+  const runDate = String(date || localDateIso()).slice(0, 10);
+  let runId = null;
+  const counts = { emails_found: 0, emails_new: 0, invoices: 0, invoice_lines: 0, pdfs: 0, skipped: [] };
+  try {
+    const settings = await readFustSettings();
+    if (!settings.gmail_refresh_token) {
+      return { ok: false, skipped: true, reason: "Gmail is not connected (UKdocs settings)" };
+    }
+    const mailSettings = normalizeInkoopMailImport((await readInkoopState()).mail_import);
+    runId = await startInkoopMailRun({ runDate, trigger, createdBy });
+    const accessToken = await refreshGoogleAccessToken(settings, settings.gmail_refresh_token);
+    const query = buildUkdocsGmailSyncQuery(mailSettings.query, runDate);
+    const listed = [];
+    let pageToken = "";
+    do {
+      const page = await gmailApiJson(accessToken, `messages?q=${encodeURIComponent(query)}&maxResults=100${pageToken ? `&pageToken=${encodeURIComponent(pageToken)}` : ""}`);
+      if (Array.isArray(page.messages)) listed.push(...page.messages);
+      pageToken = page.nextPageToken || "";
+    } while (pageToken && listed.length < 1000);
+    counts.emails_found = listed.length;
+    const already = await getInkoopMailImportedIds(listed.map((message) => message.id));
+    const fresh = listed.filter((message) => !already.has(message.id));
+    counts.emails_new = fresh.length;
+    // Whole emails, grouped in parts (the import reads a zip of emails).
+    const parts = [];
+    let current = [];
+    let currentBytes = 0;
+    const subjects = new Map();
+    for (const message of fresh) {
+      const raw = await gmailApiJson(accessToken, `messages/${encodeURIComponent(message.id)}?format=raw`);
+      const bytes = Buffer.from(String(raw.raw || "").replace(/-/g, "+").replace(/_/g, "/"), "base64");
+      if (!bytes.length) continue;
+      subjects.set(message.id, (/^subject:\s*(.*)$/im.exec(bytes.subarray(0, 20000).toString("utf8")) || [])[1] || "");
+      if (current.length && currentBytes + bytes.length > 15 * 1024 * 1024) {
+        parts.push(current);
+        current = [];
+        currentBytes = 0;
+      }
+      current.push({ id: message.id, bytes });
+      currentBytes += bytes.length;
+    }
+    if (current.length) parts.push(current);
+    for (let index = 0; index < parts.length; index += 1) {
+      const zip = new JSZip();
+      for (const email of parts[index]) zip.file(`${email.id}.eml`, email.bytes);
+      const imported = await runInkoopImport({
+        run_date: runDate,
+        veiling_zip: { name: `invoice emails ${runDate}${parts.length > 1 ? ` (part ${index + 1} of ${parts.length})` : ""}.zip`, content_base64: (await zip.generateAsync({ type: "nodebuffer", compression: "STORE" })).toString("base64") },
+        skip_match: index < parts.length - 1,
+      }, createdBy);
+      counts.invoice_lines += imported.invoiceLines.length;
+      counts.invoices += new Set(imported.invoiceLines.map((line) => line?.invoice_number)).size;
+      counts.pdfs += imported.pdfCount;
+      const skippedByFile = new Map((imported.skipped || []).map((item) => [String(item.file_name || ""), item.reason]));
+      counts.skipped.push(...(imported.skipped || []).map((item) => ({ ...item, subject: subjects.get(String(item.file_name || "").replace(/\.eml$/i, "")) || "" })));
+      // Done: these emails are never imported again (a skipped one --
+      // not an invoice email -- neither).
+      await saveInkoopMailMessages(parts[index].map((email) => ({
+        message_id: email.id, mail_date: runDate, subject: subjects.get(email.id) || "",
+        status: skippedByFile.has(`${email.id}.eml`) ? "skipped" : "imported", run_id: runId,
+      })));
+    }
+    await finishInkoopMailRun(runId, { ...counts, status: "done" });
+    return { ok: true, run_id: runId, ...counts };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    if (runId) await finishInkoopMailRun(runId, { ...counts, status: "failed", error_text: message }).catch(() => {});
+    return { ok: false, error: message, ...counts };
+  } finally {
+    inkoopMailImportBusy = false;
+  }
+}
+
+// Every 5 minutes: once the set time has passed, today's run (once a day).
+async function runInkoopMailScheduledCheck() {
+  const mailSettings = normalizeInkoopMailImport((await readInkoopState()).mail_import);
+  if (!mailSettings.enabled) return { ok: true, skipped: true, reason: "Invoice-email import is off" };
+  if (amsterdamClock() < mailSettings.time) return null;
+  const today = localDateIso();
+  if (await hasInkoopMailAutoRun(today)) return null;
+  return runInkoopMailImport({ date: today, trigger: "auto", createdBy: "mail-import" });
+}
+
+// One import of invoice emails and / or a Connect export -- the upload on
+// Upload & compare and the daily invoice-email import (Gmail) alike.
+// body: { run_date, erp_file, veiling_zip, skip_match }.
+async function runInkoopImport(body, createdBy) {
+  const state = await readInkoopState();
+  const runDate = body?.run_date || localDateIso();
+  // Either file on its own is fine: invoices only (FD/HV invoices, a
+  // day only needed for King, the ERP comes later) or the ERP export
+  // only (invoices already uploaded). The match always runs over
+  // everything accumulated, so the other half can follow any time.
+  const hasErpFile = Boolean(body?.erp_file?.content_base64);
+  const hasVeilingZip = Boolean(body?.veiling_zip?.content_base64);
+  if (!hasErpFile && !hasVeilingZip) {
+    throw new Error("Choose the veiling emails zip, the Connect export, or both.");
+  }
+  const erpRows = hasErpFile ? await parseInkoopErpUpload(body?.erp_file) : [];
+  const veiling = hasVeilingZip ? await parseInkoopVeilingUpload(body?.veiling_zip) : { invoices: [], skipped: [], pdfs: {} };
+  const flatInvoiceLines = flattenInkoopInvoiceLines(veiling.invoices, body?.veiling_zip?.name, runDate);
+  // The PDFs first: they need nothing else, and a later step failing
+  // must not leave the invoice link "not found" while its lines are in.
+  await saveInkoopInvoicePdfs(veiling.pdfs);
+
+  // Accumulate into the permanent ledger first, then re-match against
+  // everything accumulated so far (not just this upload's pair) -- this
+  // is what lets an invoice find a purchase recorded on a different day.
+  await saveInkoopErpLines(erpRows);
+  // The new Connect rows have their own (often empty) PAV again: fill the
+  // empty ones from the Levering BB bridge.
+  if (erpRows.length) {
+    await applyInkoopLeveringBbBridge().catch((bridgeError) => console.error("Levering BB bridge failed:", bridgeError instanceof Error ? bridgeError.message : bridgeError));
+  }
+  // The exact same ERP export now also carries "Dispatched to : <code>"
+  // rows after each purchase lot (confirmed real: byte-for-byte the same
+  // column format as the ERP file itself, just with these extra rows
+  // interleaved) -- extracted from this one upload too, so there's
+  // nothing separate to keep in sync. Best-effort: an older export with
+  // no such rows just yields lots with no dispatches yet, and any
+  // parsing hiccup here must never block the invoice reconciliation.
+  let dispatchLotCount = 0;
+  try {
+    if (hasErpFile) {
+      const dispatchLots = await parseInkoopDispatchDump(body?.erp_file);
+      await saveInkoopDispatchLots(dispatchLots);
+      dispatchLotCount = dispatchLots.length;
+    }
+  } catch {
+    dispatchLotCount = 0;
+  }
+  // Old " (2)" copies of this upload's invoices / files go (see
+  // deleteInkoopInvoiceCopies); their days are compared again below.
+  const removedCopies = await deleteInkoopInvoiceCopies({
+    invoiceNumbers: flatInvoiceLines.map((line) => line?.invoice_number),
+    sourceFileNames: flatInvoiceLines.map((line) => line?.source_file_name),
+  }).catch((cleanupError) => {
+    console.error("Removing invoice copies failed:", cleanupError instanceof Error ? cleanupError.message : cleanupError);
+    return [];
+  });
+  await saveInkoopInvoiceLines(flatInvoiceLines);
+  await cleanDuplicateInkoopInvoiceCopies().catch((cleanupError) => console.error("Removing duplicate invoice copies failed:", cleanupError instanceof Error ? cleanupError.message : cleanupError));
+  // New Connect lots or invoice lines: an EPP may now find its brief number.
+  if (erpRows.length || flatInvoiceLines.length) {
+    await applyInkoopEppBridge().catch((bridgeError) => console.error("EPP bridge failed:", bridgeError instanceof Error ? bridgeError.message : bridgeError));
+    await applyInkoopOrderBridge().catch((bridgeError) => console.error("Order number bridge failed:", bridgeError instanceof Error ? bridgeError.message : bridgeError));
+    await applyInkoopRefBridge().catch((bridgeError) => console.error("Popup reference bridge failed:", bridgeError instanceof Error ? bridgeError.message : bridgeError));
+    await applyInkoopLotInfo().catch((bridgeError) => console.error("Lot info failed:", bridgeError instanceof Error ? bridgeError.message : bridgeError));
+  }
+  // The per-invoice totals (Overview) of the invoices in this upload.
+  await refreshInkoopInvoiceTotals(flatInvoiceLines.map((line) => line?.invoice_number))
+    .catch((totalsError) => console.error("Refreshing invoice totals failed:", totalsError instanceof Error ? totalsError.message : totalsError));
+  bumpInkoopMatchVersion();
+  await saveInkoopInvoiceHeaders(buildInkoopInvoiceHeaders(veiling.invoices, body?.veiling_zip?.name));
+  inkoopSummaryCache.clear(); // the Overview dates invoices by these headers
+  // Everything saved: the days this upload touched (plus the match
+  // tolerance either side) are compared again in the background --
+  // nothing is compared while the upload waits.
+  await refreshInkoopDaySummariesForDates([
+    ...flatInvoiceLines.map((line) => line?.invoice_date),
+    ...removedCopies.map((row) => row?.invoice_date),
+    ...erpRows.map((row) => row?.date),
+  ]).catch((queueError) => console.error("Queueing the Inkoop comparison failed:", queueError instanceof Error ? queueError.message : queueError));
+  // A big upload arrives in parts (the page splits it); only the last
+  // part runs the -- heavy -- match over everything accumulated.
+  const skipMatch = body?.skip_match === true;
+  // The day most of this upload's lines are on (the page then shows
+  // that day; any other day is one date pick away).
+  const dateCounts = new Map();
+  for (const date of [...flatInvoiceLines.map((line) => line?.invoice_date), ...erpRows.map((row) => row?.date)]) {
+    const day = inkoopIsoDate(date);
+    if (day) dateCounts.set(day, (dateCounts.get(day) || 0) + 1);
+  }
+  const resultDate = [...dateCounts.entries()].sort((left, right) => right[1] - left[1])[0]?.[0] || inkoopIsoDate(runDate) || localDateIso();
+  if (!skipMatch) {
+    await prioritizeInkoopMatchDays([resultDate]);
+    kickInkoopMatchWorker();
+  }
+  const result = null;
+
+  const importRecord = normalizeInkoopImportRecord({
+    run_date: runDate,
+    created_by: createdBy,
+    erp_file_name: body?.erp_file?.name || "",
+    veiling_file_name: body?.veiling_zip?.name || "",
+    erp_row_count: erpRows.length,
+    invoice_line_count: flatInvoiceLines.length,
+    skipped_files: veiling.skipped,
+  });
+  state.imports = [importRecord, ...state.imports].slice(0, 200);
+  await writeInkoopState(state);
+  return { importRecord, imports: state.imports, result, resultDate, dispatchLotCount, invoiceLines: flatInvoiceLines, pdfCount: Object.keys(veiling.pdfs || {}).length, skipped: veiling.skipped || [] };
 }
 
 async function sendKingExport(body, requestUser) {
@@ -17773,6 +18017,12 @@ async function syncUkdocsPrintFromGmail(settings, requestUser, query, date) {
     // the match haystack only added false-positive risk.
     const textBlob = [subject, fromHeader, detail.snippet].join(" ");
     const attachments = collectGmailAttachments(detail.payload?.parts || []);
+    // A FloraHolland / AI2 invoice email in the same mailbox: for the
+    // invoice import (Inkoop Controle), never a zending's document.
+    if (isInkoopInvoiceEmailText(textBlob) && attachments.some((attachment) => INKOOP_INVOICE_ATTACHMENT_RE.test(attachment.filename))) {
+      results.push({ status: "skipped", file_name: subject || "(email)", reason: "Invoice email -- imported by Inkoop Controle, not a UKdocs paper" });
+      continue;
+    }
     for (const attachment of attachments) {
       const attachmentName = attachment.filename || "attachment";
       if (!/\.(pdf|xls|xlsx)$/i.test(attachmentName)) {
@@ -24447,6 +24697,58 @@ async function handleApi(req, res, url) {
   // ---- Import naar King (king.js) --------------------------------------
   // One day's invoices with the journal each would get, its blocking
   // problems/warnings, PDF presence and King export status.
+  // The daily invoice-email import: its settings and runs; run it now for
+  // a date; its settings saved.
+  if (url.pathname === "/api/inkoop/mail-import" && req.method === "GET") {
+    if (!requirePermission(res, requestUser, PERMISSIONS.INKOOP_VIEW)) {
+      return;
+    }
+    const [state, settings, runs] = await Promise.all([readInkoopState(), readFustSettings(), getInkoopMailRuns(30).catch(() => [])]);
+    sendJson(res, 200, {
+      settings: normalizeInkoopMailImport(state.mail_import),
+      gmail_connected: Boolean(settings.gmail_refresh_token),
+      gmail_email: settings.gmail_connected_email || "",
+      busy: inkoopMailImportBusy,
+      runs,
+    });
+    return;
+  }
+  if (url.pathname === "/api/inkoop/mail-import/settings" && req.method === "POST") {
+    if (!requirePermission(res, requestUser, PERMISSIONS.INKOOP_VIEW)) {
+      return;
+    }
+    const body = await readRequestJson(req);
+    const state = await readInkoopState();
+    state.mail_import = normalizeInkoopMailImport({ ...state.mail_import, ...(body?.settings || {}) });
+    await writeInkoopState(state);
+    sendJson(res, 200, { settings: state.mail_import });
+    return;
+  }
+  if (url.pathname === "/api/inkoop/mail-import/run" && req.method === "POST") {
+    if (!requirePermission(res, requestUser, PERMISSIONS.INKOOP_VIEW)) {
+      return;
+    }
+    if (!isDatabaseEnabled()) {
+      sendJson(res, 503, { error: "Database is not enabled" });
+      return;
+    }
+    const body = await readRequestJson(req);
+    const date = inkoopIsoDate(body?.date) || localDateIso();
+    const result = await runInkoopMailImport({ date, trigger: "manual", createdBy: requestUser.username });
+    sendJson(res, result.ok || result.skipped ? 200 : 400, result.ok ? result : { ...result, error: result.error || result.reason });
+    return;
+  }
+
+  // Import naar King: the dates with invoices not (yet) in King.
+  if (url.pathname === "/api/inkoop/king/pending" && req.method === "GET") {
+    if (!requirePermission(res, requestUser, PERMISSIONS.INKOOP_VIEW)) {
+      return;
+    }
+    const from = inkoopIsoDate(url.searchParams.get("from")) || addDaysToIsoDate(localDateIso(), -60);
+    sendJson(res, 200, { from, days: await getKingPendingDays(from).catch(() => []) });
+    return;
+  }
+
   if (url.pathname === "/api/inkoop/king/day" && req.method === "GET") {
     if (!requirePermission(res, requestUser, PERMISSIONS.INKOOP_VIEW)) {
       return;
@@ -25052,111 +25354,8 @@ async function handleApi(req, res, url) {
     // is nowhere near enough.
     const body = await readRequestJson(req, 60 * 1024 * 1024);
     try {
-      const state = await readInkoopState();
-      const runDate = body?.run_date || localDateIso();
-      // Either file on its own is fine: invoices only (FD/HV invoices, a
-      // day only needed for King, the ERP comes later) or the ERP export
-      // only (invoices already uploaded). The match always runs over
-      // everything accumulated, so the other half can follow any time.
-      const hasErpFile = Boolean(body?.erp_file?.content_base64);
-      const hasVeilingZip = Boolean(body?.veiling_zip?.content_base64);
-      if (!hasErpFile && !hasVeilingZip) {
-        throw new Error("Choose the veiling emails zip, the Connect export, or both.");
-      }
-      const erpRows = hasErpFile ? await parseInkoopErpUpload(body?.erp_file) : [];
-      const veiling = hasVeilingZip ? await parseInkoopVeilingUpload(body?.veiling_zip) : { invoices: [], skipped: [], pdfs: {} };
-      const flatInvoiceLines = flattenInkoopInvoiceLines(veiling.invoices, body?.veiling_zip?.name, runDate);
-      // The PDFs first: they need nothing else, and a later step failing
-      // must not leave the invoice link "not found" while its lines are in.
-      await saveInkoopInvoicePdfs(veiling.pdfs);
-
-      // Accumulate into the permanent ledger first, then re-match against
-      // everything accumulated so far (not just this upload's pair) -- this
-      // is what lets an invoice find a purchase recorded on a different day.
-      await saveInkoopErpLines(erpRows);
-      // The new Connect rows have their own (often empty) PAV again: fill the
-      // empty ones from the Levering BB bridge.
-      if (erpRows.length) {
-        await applyInkoopLeveringBbBridge().catch((bridgeError) => console.error("Levering BB bridge failed:", bridgeError instanceof Error ? bridgeError.message : bridgeError));
-      }
-      // The exact same ERP export now also carries "Dispatched to : <code>"
-      // rows after each purchase lot (confirmed real: byte-for-byte the same
-      // column format as the ERP file itself, just with these extra rows
-      // interleaved) -- extracted from this one upload too, so there's
-      // nothing separate to keep in sync. Best-effort: an older export with
-      // no such rows just yields lots with no dispatches yet, and any
-      // parsing hiccup here must never block the invoice reconciliation.
-      let dispatchLotCount = 0;
-      try {
-        if (hasErpFile) {
-          const dispatchLots = await parseInkoopDispatchDump(body?.erp_file);
-          await saveInkoopDispatchLots(dispatchLots);
-          dispatchLotCount = dispatchLots.length;
-        }
-      } catch {
-        dispatchLotCount = 0;
-      }
-      // Old " (2)" copies of this upload's invoices / files go (see
-      // deleteInkoopInvoiceCopies); their days are compared again below.
-      const removedCopies = await deleteInkoopInvoiceCopies({
-        invoiceNumbers: flatInvoiceLines.map((line) => line?.invoice_number),
-        sourceFileNames: flatInvoiceLines.map((line) => line?.source_file_name),
-      }).catch((cleanupError) => {
-        console.error("Removing invoice copies failed:", cleanupError instanceof Error ? cleanupError.message : cleanupError);
-        return [];
-      });
-      await saveInkoopInvoiceLines(flatInvoiceLines);
-      await cleanDuplicateInkoopInvoiceCopies().catch((cleanupError) => console.error("Removing duplicate invoice copies failed:", cleanupError instanceof Error ? cleanupError.message : cleanupError));
-      // New Connect lots or invoice lines: an EPP may now find its brief number.
-      if (erpRows.length || flatInvoiceLines.length) {
-        await applyInkoopEppBridge().catch((bridgeError) => console.error("EPP bridge failed:", bridgeError instanceof Error ? bridgeError.message : bridgeError));
-        await applyInkoopOrderBridge().catch((bridgeError) => console.error("Order number bridge failed:", bridgeError instanceof Error ? bridgeError.message : bridgeError));
-        await applyInkoopRefBridge().catch((bridgeError) => console.error("Popup reference bridge failed:", bridgeError instanceof Error ? bridgeError.message : bridgeError));
-        await applyInkoopLotInfo().catch((bridgeError) => console.error("Lot info failed:", bridgeError instanceof Error ? bridgeError.message : bridgeError));
-      }
-      // The per-invoice totals (Overview) of the invoices in this upload.
-      await refreshInkoopInvoiceTotals(flatInvoiceLines.map((line) => line?.invoice_number))
-        .catch((totalsError) => console.error("Refreshing invoice totals failed:", totalsError instanceof Error ? totalsError.message : totalsError));
-      bumpInkoopMatchVersion();
-      await saveInkoopInvoiceHeaders(buildInkoopInvoiceHeaders(veiling.invoices, body?.veiling_zip?.name));
-      inkoopSummaryCache.clear(); // the Overview dates invoices by these headers
-      // Everything saved: the days this upload touched (plus the match
-      // tolerance either side) are compared again in the background --
-      // nothing is compared while the upload waits.
-      await refreshInkoopDaySummariesForDates([
-        ...flatInvoiceLines.map((line) => line?.invoice_date),
-        ...removedCopies.map((row) => row?.invoice_date),
-        ...erpRows.map((row) => row?.date),
-      ]).catch((queueError) => console.error("Queueing the Inkoop comparison failed:", queueError instanceof Error ? queueError.message : queueError));
-      // A big upload arrives in parts (the page splits it); only the last
-      // part runs the -- heavy -- match over everything accumulated.
-      const skipMatch = body?.skip_match === true;
-      // The day most of this upload's lines are on (the page then shows
-      // that day; any other day is one date pick away).
-      const dateCounts = new Map();
-      for (const date of [...flatInvoiceLines.map((line) => line?.invoice_date), ...erpRows.map((row) => row?.date)]) {
-        const day = inkoopIsoDate(date);
-        if (day) dateCounts.set(day, (dateCounts.get(day) || 0) + 1);
-      }
-      const resultDate = [...dateCounts.entries()].sort((left, right) => right[1] - left[1])[0]?.[0] || inkoopIsoDate(runDate) || localDateIso();
-      if (!skipMatch) {
-        await prioritizeInkoopMatchDays([resultDate]);
-        kickInkoopMatchWorker();
-      }
-      const result = null;
-
-      const importRecord = normalizeInkoopImportRecord({
-        run_date: runDate,
-        created_by: requestUser.username,
-        erp_file_name: body?.erp_file?.name || "",
-        veiling_file_name: body?.veiling_zip?.name || "",
-        erp_row_count: erpRows.length,
-        invoice_line_count: flatInvoiceLines.length,
-        skipped_files: veiling.skipped,
-      });
-      state.imports = [importRecord, ...state.imports].slice(0, 200);
-      await writeInkoopState(state);
-      sendJson(res, 200, { import: importRecord, imports: state.imports, result: limitInkoopResultForPage(result), result_date: resultDate, dispatch_lot_count: dispatchLotCount });
+      const imported = await runInkoopImport(body, requestUser.username);
+      sendJson(res, 200, { import: imported.importRecord, imports: imported.imports, result: limitInkoopResultForPage(imported.result), result_date: imported.resultDate, dispatch_lot_count: imported.dispatchLotCount });
     } catch (error) {
       sendJson(res, 400, { error: error instanceof Error ? error.message : String(error) });
     }
@@ -28007,6 +28206,12 @@ async function startServer() {
   setInterval(() => {
     runIfOnline("Shelf count nightly trigger", runShelfCountNightlyScheduledCheck).catch(() => {});
   }, SHELF_COUNT_NIGHTLY_CHECK_INTERVAL_MS);
+
+  // The daily invoice-email import (Gmail -> Inkoop Controle): checked every
+  // 5 minutes, runs once a day after its time (Pipeline Monitor shows it).
+  setInterval(() => {
+    runIfOnline("Inkoop invoice emails", runInkoopMailScheduledCheck).catch(() => {});
+  }, 5 * 60 * 1000);
 
   async function runIfBackup(jobName, jobFn) {
     const systemMode = await readSystemMode();

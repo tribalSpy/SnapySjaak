@@ -11,6 +11,9 @@ import zipfile
 import xml.etree.ElementTree as ET
 from pathlib import Path
 
+import email
+import email.policy
+
 import extract_msg
 import pdfplumber
 from openpyxl import load_workbook
@@ -1071,6 +1074,63 @@ def parse_dispatch_dump(input_path: Path):
 # upload also has a second, PDF-only .msg per Klok/Connect/Handel invoice
 # (for opening the original document later) -- that's not an error, so it's
 # captured into `pdfs` rather than reported as a skip.
+class _EmlAttachment:
+    def __init__(self, name, data):
+        self.longFilename = name
+        self.shortFilename = name
+        self.data = data
+
+
+class EmlMessage:
+    """A Gmail email (.eml, RFC 822 -- the automatic import from the
+    connected mailbox) with what the .msg path uses: subject, attachments
+    (longFilename / shortFilename / data), close(). A forwarded email that
+    carries the original as an attached message: the original's subject and
+    attachments when the forward itself has none."""
+
+    def __init__(self, path):
+        message = email.message_from_bytes(Path(path).read_bytes(), policy=email.policy.default)
+        self.subject, self.attachments = self._read(message)
+
+    @classmethod
+    def _read(cls, message):
+        subject = str(message.get("subject") or "")
+        attachments = []
+        inner = []
+
+        def visit(part):
+            if part.get_content_type() == "message/rfc822":
+                # The original email attached to a forward: read on its own.
+                payload = part.get_payload()
+                original = payload[0] if isinstance(payload, list) and payload else payload
+                if original is not None and hasattr(original, "get_content_type"):
+                    inner.append(cls._read(original))
+                return
+            if part.is_multipart():
+                for child in part.iter_parts():
+                    visit(child)
+                return
+            name = part.get_filename()
+            data = part.get_payload(decode=True) if name else None
+            if name and data:
+                attachments.append(_EmlAttachment(name, data))
+
+        visit(message)
+        if inner and (not attachments or classify_subject(subject) == "other"):
+            # A forward: the original's subject (the invoice's own), its
+            # attachments together with any next to it.
+            inner_subject, inner_attachments = inner[0]
+            return (inner_subject if classify_subject(subject) == "other" else subject), [*inner_attachments, *attachments]
+        return subject, attachments
+
+    def close(self):
+        pass
+
+
+def open_invoice_email(path: Path):
+    return EmlMessage(path) if path.suffix.lower() == ".eml" else extract_msg.Message(str(path))
+
+
 def parse_veiling(input_path: Path):
     # Unpacked into its own temp folder, removed again when done (it used
     # to stay behind for every upload and filled the server's /tmp).
@@ -1088,8 +1148,25 @@ def _parse_veiling_from(input_path: Path, extract_dir: Path):
     invoices = []
     skipped = []
     pdfs = {}
-    for msg_path in sorted(extract_dir.rglob("*.msg")):
-        msg = extract_msg.Message(str(msg_path))
+    # Outlook emails (.msg, uploaded by hand) and Gmail emails (.eml, the
+    # automatic import) alike. An email forwarded "as attachment" (Outlook
+    # attaches the original .msg): the original is unpacked and read as an
+    # email of its own; the forward around it, holding nothing else, isn't.
+    containers = set()
+    for eml_path in sorted(extract_dir.rglob("*.eml")):
+        try:
+            outer = EmlMessage(eml_path)
+        except Exception:  # noqa: BLE001 -- read (and reported) in the loop below
+            continue
+        embedded = [item for item in outer.attachments if (item.longFilename or "").lower().endswith((".msg", ".eml"))]
+        for position, item in enumerate(embedded):
+            suffix = Path(item.longFilename).suffix.lower()
+            (eml_path.parent / f"{eml_path.stem}-attached-{position}{suffix}").write_bytes(item.data)
+        if embedded and len(embedded) == len(outer.attachments):
+            containers.add(eml_path)
+    email_paths = sorted(path for path in [*extract_dir.rglob("*.msg"), *extract_dir.rglob("*.eml")] if path not in containers)
+    for msg_path in email_paths:
+        msg = open_invoice_email(msg_path)
         try:
             subject = msg.subject or ""
             kind = classify_subject(subject)
