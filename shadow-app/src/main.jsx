@@ -18127,6 +18127,14 @@ function InkoopSetupMenu({ onOpen }) {
 function InkoopControlePage({ currentUser }) {
   const [loading, setLoading] = useState(true);
   const [comparing, setComparing] = useState(false);
+  // An upload runs from this browser tab part by part: closing or reloading
+  // the tab stops it -- the browser asks first.
+  useEffect(() => {
+    if (!comparing) return undefined;
+    const warn = (event) => { event.preventDefault(); event.returnValue = ""; };
+    window.addEventListener("beforeunload", warn);
+    return () => window.removeEventListener("beforeunload", warn);
+  }, [comparing]);
   // "" = the Inkoop menu (tiles, as the Fust menu).
   const [activeTab, setActiveTab] = useState("");
   // The workspaces' filter bar: period, betaalwijze, flows, grower, the
@@ -18443,6 +18451,8 @@ function InkoopControlePage({ currentUser }) {
         });
         erpRows += Number(payload?.import?.erp_row_count || 0);
         invoiceLines += Number(payload?.import?.invoice_line_count || 0);
+        // The import history after every part, so the upload can be followed.
+        if (payload?.imports) setImports(payload.imports);
       }
       setImports(payload.imports || []);
       setLiveResult(payload.result || null);
