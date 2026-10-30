@@ -3544,3 +3544,21 @@ button.ik-kpi:hover {
 .ik-side-head .ik-side-search + select {
   margin-left: 0;
 }
+
+/* The calendar never wider than its column (Track & Trace's rail, the
+   Dashboard's right card): its months scroll sideways inside it. */
+.ik-tt-rail,
+.ik-tt-rail > *,
+.ik-top > * {
+  min-width: 0;
+}
+
+.ik-tt-rail .data-table-card,
+.ik-top .data-table-card {
+  overflow: hidden;
+}
+
+.ik-cal-box,
+.ik-cal {
+  max-width: 100%;
+}
