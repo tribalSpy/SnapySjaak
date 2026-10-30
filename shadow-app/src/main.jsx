@@ -17133,93 +17133,192 @@ function IkPairLines({ from, to, company, grower, bar, flow = "", date = "", sta
   );
 }
 
-// The money trace, drilled the Fust way: a click on a row shows what's in
-// it (growers → flows → days → the pairs); the path above goes back.
+// One grower's day, opened in place: its invoice lines and its Connect lots
+// side by side -- matched, not matched and the lots without an invoice all
+// on one screen.
+function IkDayPanel({ date, company, grower, bar }) {
+  const [data, setData] = useState(null);
+  const [error, setError] = useState("");
+  useEffect(() => {
+    let cancelled = false;
+    setData(null);
+    setError("");
+    const params = new URLSearchParams({ from: date, to: date, grower });
+    if (company) params.set("company", company);
+    apiJson(`/api/inkoop/overview-lines?${params.toString()}`)
+      .then((payload) => { if (!cancelled) setData(payload); })
+      .catch((loadError) => { if (!cancelled) setError(loadError.message); });
+    return () => { cancelled = true; };
+  }, [date, company, grower]);
+  if (error) return <div className="notice danger">{error}</div>;
+  if (!data) return <div className="muted">Loading lines…</div>;
+  const lines = (data.lines || []).filter((line) => (!bar.bw?.length || bar.bw.includes(line.bw || "?")) && (!bar.flows?.length || bar.flows.includes(line.flow)));
+  const order = { mismatch: 0, not_matched: 1, connect_only: 1, matched: 2, packaging: 3 };
+  const invoiceLines = lines.filter((line) => line.status !== "connect_only").sort((left, right) => order[left.status] - order[right.status]);
+  const lotLines = lines.filter((line) => line.status === "matched" || line.status === "mismatch" || line.status === "connect_only").sort((left, right) => order[left.status] - order[right.status]);
+  const money = (value) => (value === null || value === undefined ? "" : formatInkoopEuro(value));
+  const lotLabel = (lot) => (String(lot).split("+").length > 3 ? `${String(lot).split("+").length} lots (pool)` : String(lot || "-"));
+  const sum = (list, field) => list.reduce((total, line) => total + (Number(line[field]) || 0), 0);
+  return (
+    <div className="ik-day-panel">
+      <div className="ik-day-side inv">
+        <div className="ik-day-title">Invoice lines ({invoiceLines.length}) · {formatInkoopEuro(sum(invoiceLines, "invoice_total"))}</div>
+        <table className="data-table balance-table ik-table ik-day-table">
+          <thead><tr><th /><th>Invoice</th><th>Brief</th><th>Product</th><th>Boxes</th><th>Pieces</th><th>Price</th><th>Total</th><th>Connect lot</th></tr></thead>
+          <tbody>
+            {invoiceLines.map((line, index) => (
+              <tr key={`i${index}`} className={`ik-status-${line.status}`}>
+                <td className="ik-status-icon" title={IK_STATUS_LABEL[line.status]}>{IK_STATUS_ICON[line.status]}</td>
+                <td>{line.invoice_number ? <InkoopInvoiceLink invoiceNumber={line.invoice_number} /> : "-"}</td>
+                <td>{line.pav || "-"}</td>
+                <td title={line.flow}><i className="ik-dot" style={{ background: INKOOP_FLOW_COLORS[line.flow] }} />{line.description}</td>
+                <td>{inkoopBoxesText(line.invoice_quantity, line.packages, line.per_package)}</td>
+                <td>{line.invoice_quantity ?? ""}</td>
+                <td>{line.invoice_price ?? ""}</td>
+                <td>{money(line.invoice_total)}</td>
+                <td>{line.status === "matched" ? lotLabel(line.lot) : line.status === "mismatch" ? <span className="money-loss" title={line.note}>{lotLabel(line.lot)} · <InkoopMoneyDiff value={line.difference_total} /></span> : <span className="money-loss">—</span>}</td>
+              </tr>
+            ))}
+            {!invoiceLines.length && <tr><td colSpan={9} className="muted">None.</td></tr>}
+          </tbody>
+        </table>
+      </div>
+      <div className="ik-day-side con">
+        <div className="ik-day-title">Connect lots ({lotLines.length}) · {formatInkoopEuro(sum(lotLines, "erp_total"))}</div>
+        <table className="data-table balance-table ik-table ik-day-table">
+          <thead><tr><th /><th>Lot</th><th>PAV</th><th>Product</th><th>Boxes</th><th>Pieces</th><th>Price</th><th>Total</th><th>Invoice</th></tr></thead>
+          <tbody>
+            {lotLines.map((line, index) => (
+              <tr key={`c${index}`} className={`ik-status-${line.status}`}>
+                <td className="ik-status-icon" title={IK_STATUS_LABEL[line.status]}>{IK_STATUS_ICON[line.status]}</td>
+                <td>{lotLabel(line.lot)}</td>
+                <td>{line.pav || "-"}</td>
+                <td title={line.flow}><i className="ik-dot" style={{ background: INKOOP_FLOW_COLORS[line.flow] }} />{line.description}</td>
+                <td>{inkoopBoxesText(line.erp_quantity, line.lot_items, line.lot_cont)}</td>
+                <td>{line.erp_quantity ?? ""}</td>
+                <td>{line.erp_price ?? ""}</td>
+                <td>{money(line.erp_total)}</td>
+                <td>{line.status === "connect_only" ? <span className="money-loss">no invoice</span> : line.invoice_number || "-"}</td>
+              </tr>
+            ))}
+            {!lotLines.length && <tr><td colSpan={9} className="muted">None.</td></tr>}
+          </tbody>
+        </table>
+      </div>
+      {data.capped && <div className="muted">The first 3000 lines.</div>}
+    </div>
+  );
+}
+
+// Monday of a date's week.
+function inkoopWeekStart(iso) {
+  const date = new Date(`${iso}T00:00:00`);
+  return addDaysToIso(iso, -((date.getDay() + 6) % 7));
+}
+
+// The money trace, opened in place (as the classic grower totals): grower
+// ▸ week ▸ day ▸ its invoice lines and Connect lots side by side. Weeks only
+// when the period is longer than two weeks.
 function IkTraceTable({ rows, from, to, company, bar, setBar }) {
   const [columns, toggleColumn] = useInkoopOverviewColumns();
-  const [path, setPath] = useState({ grower: "", flow: "", date: "" });
+  const [open, setOpen] = useState(() => new Set());
   const [sortKey, setSortKey] = useState("open");
   const [sortDir, setSortDir] = useState(-1);
-  // A grower typed in the bar: opened at once.
+  const withWeeks = inkoopDaysBetween(from, to) > 13;
+  // A grower typed in the bar or clicked in a tile: opened at once.
   useEffect(() => {
     const match = bar.grower ? [...new Set(rows.map((row) => row.grower))].find((name) => inkoopSameGrower(name, bar.grower)) : "";
-    setPath(match ? { grower: match, flow: "", date: "" } : { grower: "", flow: "", date: "" });
+    if (match) setOpen((current) => new Set([...current, `g|${match}`]));
   }, [bar.grower]); // eslint-disable-line react-hooks/exhaustive-deps
-  useEffect(() => { setPath((current) => ({ ...current, date: "" })); }, [from, to]);
-  const level = !path.grower ? 0 : !path.flow ? 1 : !path.date ? 2 : 3;
-  const scoped = rows.filter((row) => (!path.grower || row.grower === path.grower) && (!path.flow || row.flow === path.flow));
-  const groupKey = level === 0 ? "grower" : level === 1 ? "flow" : "date";
-  const groups = new Map();
-  if (level < 3) for (const row of scoped) groups.set(row[groupKey], [...(groups.get(row[groupKey]) || []), row]);
-  const openOf = (sum) => sum.not_matched_value + sum.connect_only_value + Math.abs(sum.difference);
-  const items = [...groups.entries()].map(([key, groupRows]) => ({ key, rows: groupRows, sum: inkoopOverviewSum(groupRows) }))
-    .sort((left, right) => {
-      if (groupKey === "date" && sortKey === "open") return left.key.localeCompare(right.key);
-      if (groupKey === "flow" && sortKey === "open") return INKOOP_FLOWS.indexOf(left.key) - INKOOP_FLOWS.indexOf(right.key);
-      const value = (item) => (sortKey === "open" ? openOf(item.sum) : sortKey === "name" ? String(item.key) : Number(item.sum[sortKey]) || 0);
-      const a = value(left);
-      const b = value(right);
-      return (typeof a === "string" ? a.localeCompare(b) : a - b) * sortDir;
-    });
-  const sortBy = (key) => { if (sortKey === key) setSortDir((dir) => -dir); else { setSortKey(key); setSortDir(key === "name" ? 1 : -1); } };
-  const open = (key) => setPath((current) => (level === 0 ? { grower: key, flow: "", date: "" } : level === 1 ? { ...current, flow: key } : { ...current, date: key }));
-  const shownColumns = INKOOP_OVERVIEW_COLUMNS.filter(([key]) => columns.includes(key));
-  const labelOf = (key) => (groupKey === "date" ? fustOverviewDate(key) : key);
-  const exportCsv = () => {
-    const head = [groupKey === "grower" ? "Grower" : groupKey === "flow" ? "Flow" : "Date", "Invoice lines", "Invoice value", "Matched lines", "Matched value", "Not matched lines", "Not matched value", "Only in Connect lots", "Only in Connect value", "Connect total", "Difference", "Matched %"];
-    const body = items.map((item) => [labelOf(item.key), item.sum.invoice_lines, item.sum.invoice_value.toFixed(2), item.sum.matched_lines, item.sum.matched_value.toFixed(2), item.sum.not_matched_lines, item.sum.not_matched_value.toFixed(2), item.sum.connect_only_lines, item.sum.connect_only_value.toFixed(2), item.sum.connect_value.toFixed(2), item.sum.difference.toFixed(2), item.sum.matched_pct === null ? "" : item.sum.matched_pct.toFixed(1)]);
-    inkoopDownloadCsv(`money-trace-${from}-${to}${path.grower ? `-${inkoopGrowerKey(path.grower)}` : ""}${path.flow ? `-${path.flow}` : ""}.csv`, [head, ...body]);
+  const toggle = (key) => setOpen((current) => { const next = new Set(current); if (next.has(key)) next.delete(key); else next.add(key); return next; });
+  const group = (list, keyOf) => {
+    const map = new Map();
+    for (const row of list) { const key = keyOf(row); map.set(key, [...(map.get(key) || []), row]); }
+    return [...map.entries()].map(([key, groupRows]) => ({ key, rows: groupRows, sum: inkoopOverviewSum(groupRows) }));
   };
-  const crumbs = [
-    ["All growers", () => { setPath({ grower: "", flow: "", date: "" }); if (bar.grower) setBar((current) => ({ ...current, grower: "" })); }],
-    ...(path.grower ? [[path.grower, () => setPath((current) => ({ ...current, flow: "", date: "" }))]] : []),
-    ...(path.flow ? [[path.flow, () => setPath((current) => ({ ...current, date: "" }))]] : []),
-    ...(path.date ? [[fustOverviewDate(path.date), () => {}]] : []),
-  ];
+  const openOf = (sum) => sum.not_matched_value + sum.connect_only_value + Math.abs(sum.difference);
+  const growers = group(rows, (row) => row.grower).sort((left, right) => {
+    const value = (item) => (sortKey === "open" ? openOf(item.sum) : sortKey === "name" ? String(item.key) : Number(item.sum[sortKey]) || 0);
+    const a = value(left);
+    const b = value(right);
+    return (typeof a === "string" ? a.localeCompare(b) : a - b) * sortDir;
+  });
+  const sortBy = (key) => { if (sortKey === key) setSortDir((dir) => -dir); else { setSortKey(key); setSortDir(key === "name" ? 1 : -1); } };
+  const shownColumns = INKOOP_OVERVIEW_COLUMNS.filter(([key]) => columns.includes(key));
+  const span = shownColumns.length + 2;
+  const exportCsv = () => {
+    const head = ["Grower", "Invoice lines", "Invoice value", "Matched lines", "Matched value", "Not matched lines", "Not matched value", "Only in Connect lots", "Only in Connect value", "Connect total", "Difference", "Matched %"];
+    const body = growers.map((item) => [item.key, item.sum.invoice_lines, item.sum.invoice_value.toFixed(2), item.sum.matched_lines, item.sum.matched_value.toFixed(2), item.sum.not_matched_lines, item.sum.not_matched_value.toFixed(2), item.sum.connect_only_lines, item.sum.connect_only_value.toFixed(2), item.sum.connect_value.toFixed(2), item.sum.difference.toFixed(2), item.sum.matched_pct === null ? "" : item.sum.matched_pct.toFixed(1)]);
+    inkoopDownloadCsv(`money-trace-${from}-${to}.csv`, [head, ...body]);
+  };
+  const dayRows = (growerKey, list, level) => group(list, (row) => row.date).sort((left, right) => left.key.localeCompare(right.key)).map((day) => {
+    const key = `d|${growerKey}|${day.key}`;
+    return (
+      <Fragment key={key}>
+        <tr className={`clickable-row ik-tree-row l${level}`} onClick={() => toggle(key)}>
+          <td><span className="ik-tree-label">{open.has(key) ? "▾" : "▸"} {fustOverviewDate(day.key)}</span></td>
+          <td><IkSplitBar parts={inkoopFlowParts(day.rows)} /></td>
+          <InkoopOverviewCells sum={day.sum} columns={columns} />
+        </tr>
+        {open.has(key) && (
+          <tr className="ik-tree-panel"><td colSpan={span}><IkDayPanel date={day.key} company={company} grower={growerKey} bar={bar} /></td></tr>
+        )}
+      </Fragment>
+    );
+  });
   return (
     <div className="data-table-card ik-card">
       <div className="ik-card-head">
-        <div className="ik-crumbs">
-          {crumbs.map(([label, go], index) => (
-            <span key={`${label}-${index}`}>{index > 0 && <span className="muted"> › </span>}
-              {index < crumbs.length - 1 ? <button type="button" className="link-button" onClick={go}>{label}</button> : <strong>{label}</strong>}
-            </span>
-          ))}
-        </div>
+        <strong>Money trace -- {fustOverviewDate(from)}{from !== to ? ` – ${fustOverviewDate(to)}` : ""} · {growers.length} grower(s)</strong>
         <div className="row-actions">
-          {level === 0 && <IkFlowLegend flows={INKOOP_FLOWS.filter((flow) => rows.some((row) => row.flow === flow))} />}
-          {level < 3 && <IkColumnPicker columns={columns} toggle={toggleColumn} />}
-          {level < 3 && <button type="button" className="ik-chip" onClick={exportCsv}>CSV</button>}
+          <IkFlowLegend flows={INKOOP_FLOWS.filter((flow) => rows.some((row) => row.flow === flow))} />
+          {!!open.size && <button type="button" className="ik-chip" onClick={() => setOpen(new Set())}>Fold all</button>}
+          <IkColumnPicker columns={columns} toggle={toggleColumn} />
+          <button type="button" className="ik-chip" onClick={exportCsv}>CSV</button>
         </div>
       </div>
-      {level === 3 ? (
-        <IkPairLines from={path.date} to={path.date} company={company} grower={path.grower} bar={bar} flow={path.flow} date={path.date} />
-      ) : (
-        <div className="table-wrap">
-          <table className="data-table balance-table ik-table">
-            <thead>
-              <tr>
-                <th className="ik-sortable" onClick={() => sortBy("name")}>{groupKey === "grower" ? "Grower" : groupKey === "flow" ? "Flow" : "Date"}{sortKey === "name" ? (sortDir > 0 ? " ▲" : " ▼") : ""}</th>
-                {level === 0 && <th>Flows</th>}
-                {shownColumns.map(([key, label]) => <th key={key} className="ik-sortable" onClick={() => sortBy(key)}>{label}{sortKey === key ? (sortDir > 0 ? " ▲" : " ▼") : ""}</th>)}
-              </tr>
-            </thead>
-            <tbody>
-              {items.map((item) => (
-                <tr key={item.key} className="clickable-row" onClick={() => open(item.key)} title="Click: what's in it">
-                  <td>
-                    {groupKey === "flow" && <i className="ik-dot" style={{ background: INKOOP_FLOW_COLORS[item.key] }} />}
-                    <strong>{labelOf(item.key)}</strong>
-                  </td>
-                  {level === 0 && <td><IkSplitBar parts={inkoopFlowParts(item.rows)} /></td>}
-                  <InkoopOverviewCells sum={item.sum} columns={columns} />
-                </tr>
-              ))}
-              {!items.length && <tr><td colSpan={shownColumns.length + 2}>Nothing compared for this choice.</td></tr>}
-            </tbody>
-          </table>
-        </div>
-      )}
+      <div className="table-wrap">
+        <table className="data-table balance-table ik-table">
+          <thead>
+            <tr>
+              <th className="ik-sortable" onClick={() => sortBy("name")}>Grower ▸ {withWeeks ? "week ▸ " : ""}day{sortKey === "name" ? (sortDir > 0 ? " ▲" : " ▼") : ""}</th>
+              <th>Flows</th>
+              {shownColumns.map(([key, label]) => <th key={key} className="ik-sortable" onClick={() => sortBy(key)}>{label}{sortKey === key ? (sortDir > 0 ? " ▲" : " ▼") : ""}</th>)}
+            </tr>
+          </thead>
+          <tbody>
+            {growers.map((grower) => {
+              const growerKey = `g|${grower.key}`;
+              return (
+                <Fragment key={growerKey}>
+                  <tr className="clickable-row ik-tree-row l0" onClick={() => toggle(growerKey)}>
+                    <td><span className="ik-tree-label"><strong>{open.has(growerKey) ? "▾" : "▸"} {grower.key}</strong></span></td>
+                    <td><IkSplitBar parts={inkoopFlowParts(grower.rows)} /></td>
+                    <InkoopOverviewCells sum={grower.sum} columns={columns} />
+                  </tr>
+                  {open.has(growerKey) && (withWeeks
+                    ? group(grower.rows, (row) => inkoopWeekStart(row.date)).sort((left, right) => left.key.localeCompare(right.key)).map((week) => {
+                      const weekKey = `w|${grower.key}|${week.key}`;
+                      const days = new Set(week.rows.map((row) => row.date)).size;
+                      return (
+                        <Fragment key={weekKey}>
+                          <tr className="clickable-row ik-tree-row l1" onClick={() => toggle(weekKey)}>
+                            <td><span className="ik-tree-label">{open.has(weekKey) ? "▾" : "▸"} week of {fustOverviewDate(week.key)} <span className="muted">({days} day{days === 1 ? "" : "s"})</span></span></td>
+                            <td><IkSplitBar parts={inkoopFlowParts(week.rows)} /></td>
+                            <InkoopOverviewCells sum={week.sum} columns={columns} />
+                          </tr>
+                          {open.has(weekKey) && dayRows(grower.key, week.rows, 2)}
+                        </Fragment>
+                      );
+                    })
+                    : dayRows(grower.key, grower.rows, 1))}
+                </Fragment>
+              );
+            })}
+            {!growers.length && <tr><td colSpan={span}>Nothing compared for this choice.</td></tr>}
+          </tbody>
+        </table>
+      </div>
     </div>
   );
 }

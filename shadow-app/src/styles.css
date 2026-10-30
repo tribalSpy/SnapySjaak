@@ -3325,3 +3325,65 @@ button.ik-kpi:hover {
 .ik-kpi-detail .table-wrap {
   max-height: 45vh;
 }
+
+/* The money trace opened in place: indented levels, a day's two sides. */
+.ik-tree-row.l1 td:first-child { padding-left: 26px; }
+.ik-tree-row.l2 td:first-child { padding-left: 46px; }
+.ik-tree-row.l1 td { background: #f8fafc; }
+.ik-tree-row.l2 td { background: #f1f5f9; }
+
+.ik-tree-panel > td {
+  padding: 8px 10px 12px 46px !important;
+  background: #fbfcfd;
+  white-space: normal !important;
+  text-align: left !important;
+}
+
+.ik-day-panel {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 14px;
+  align-items: start;
+}
+
+.ik-day-side {
+  min-width: 0;
+  overflow-x: auto;
+  padding-left: 8px;
+}
+
+.ik-day-side.inv {
+  border-left: 3px solid var(--ik-invoice);
+}
+
+.ik-day-side.con {
+  border-left: 3px solid var(--ik-connect);
+}
+
+.ik-day-title {
+  font-weight: 700;
+  margin-bottom: 4px;
+}
+
+.ik-day-table th,
+.ik-day-table td {
+  text-align: left !important;
+  font-size: 0.8rem;
+  padding: 3px 6px;
+}
+
+.ik-day-table td:nth-child(n+5):nth-child(-n+8),
+.ik-day-table th:nth-child(n+5):nth-child(-n+8) {
+  text-align: right !important;
+}
+
+.ik-day-table td:nth-child(4) {
+  white-space: normal;
+  min-width: 160px;
+}
+
+@media (max-width: 1300px) {
+  .ik-day-panel {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
