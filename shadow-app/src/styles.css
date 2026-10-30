@@ -3407,3 +3407,38 @@ button.ik-kpi:hover {
   white-space: normal;
   min-width: 220px;
 }
+
+/* Tile lines: one row high, long text cut (full text on hover). */
+.ik-lines-table th,
+.ik-lines-table td {
+  white-space: nowrap;
+  padding: 2px 6px;
+  line-height: 1.25;
+}
+
+.ik-lines-table td:last-child {
+  white-space: nowrap;
+  min-width: 0;
+}
+
+.ik-lines-table .ik-num {
+  text-align: right !important;
+}
+
+.ik-ellipsis {
+  max-width: 280px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.ik-kpi-detail .ik-table td,
+.ik-kpi-detail .ik-table th {
+  padding-top: 3px;
+  padding-bottom: 3px;
+}
+
+.ik-open-grower {
+  margin-left: 10px;
+  font-size: 0.75rem;
+  font-weight: 400;
+}

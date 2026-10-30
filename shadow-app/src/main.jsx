@@ -16877,88 +16877,105 @@ function IkFilterBar({ bar, setBar, companies, company, setCompany, growers = []
   );
 }
 
+// One grower's lines of a tile (its own statuses), loaded when the grower
+// is opened -- every line of that grower, not a cut of the biggest.
+function IkTileGrowerLines({ from, to, company, grower, statuses, sides, bar }) {
+  const [state, setState] = useState({ data: null, error: "" });
+  useEffect(() => {
+    let cancelled = false;
+    const params = new URLSearchParams({ from, to, grower });
+    if (company) params.set("company", company);
+    apiJson(`/api/inkoop/overview-lines?${params.toString()}`)
+      .then((payload) => { if (!cancelled) setState({ data: payload, error: "" }); })
+      .catch((loadError) => { if (!cancelled) setState({ data: null, error: loadError.message }); });
+    return () => { cancelled = true; };
+  }, [from, to, company, grower]);
+  if (state.error) return <div className="notice danger">{state.error}</div>;
+  if (!state.data) return <div className="muted">Loading lines…</div>;
+  const order = (line) => -Math.abs(Number(line.difference_total ?? line.invoice_total ?? line.erp_total) || 0);
+  const lines = (state.data.lines || []).filter((line) => statuses.includes(line.status)
+    && (!bar?.bw?.length || bar.bw.includes(line.bw || "?")) && (!bar?.flows?.length || bar.flows.includes(line.flow)))
+    .sort((left, right) => order(left) - order(right));
+  return (
+    <>
+      <IkTileLinesTable lines={lines} sides={sides} />
+      {state.data.capped && <div className="muted">The first 3000 lines of this grower.</div>}
+    </>
+  );
+}
+
+// The lines of a tile, one row high: only the side(s) the tile is about --
+// "invoice" (not matched: no lot), "connect" (only in Connect: no invoice)
+// or "both" (figures differ: the difference and what differs).
+function IkTileLinesTable({ lines, sides }) {
+  const money = (value) => (value === null || value === undefined ? "" : formatInkoopEuro(value));
+  const lotLabel = (lot) => (String(lot).split("+").length > 3 ? `${String(lot).split("+").length} lots (pool)` : String(lot || ""));
+  const invoice = sides !== "connect";
+  const connect = sides !== "invoice";
+  return (
+    <table className="data-table balance-table ik-table ik-lines-table">
+      <thead>
+        <tr>
+          <th /><th>Date</th>
+          {invoice && <><th className="ik-inv-head">Invoice</th><th>Brief</th></>}
+          <th>Product</th>
+          {invoice && <><th className="ik-num">Boxes</th><th className="ik-num">Pieces</th><th className="ik-num">Price</th><th className="ik-num">Total</th></>}
+          {connect && <><th className="ik-con-head">Lot</th>{!invoice && <th>PAV</th>}<th className="ik-num">Boxes</th><th className="ik-num">Pieces</th><th className="ik-num">Price</th><th className="ik-num">Total</th></>}
+          {invoice && connect && <><th className="ik-num">Difference</th><th>What differs</th></>}
+        </tr>
+      </thead>
+      <tbody>
+        {lines.map((line, index) => (
+          <tr key={`${line.invoice_number}-${line.lot}-${index}`} className={`ik-status-${line.status}`}>
+            <td className="ik-status-icon" title={IK_STATUS_LABEL[line.status]}>{IK_STATUS_ICON[line.status]}</td>
+            <td>{fustOverviewDate(line.date)}</td>
+            {invoice && <><td className="ik-inv">{line.invoice_number ? <InkoopInvoiceLink invoiceNumber={line.invoice_number} /> : "-"}</td><td>{line.pav || "-"}</td></>}
+            <td className="ik-ellipsis" title={`${line.description} (${line.flow})`}><i className="ik-dot" style={{ background: INKOOP_FLOW_COLORS[line.flow] }} />{line.description}</td>
+            {invoice && <>
+              <td className="ik-num">{inkoopBoxesText(line.invoice_quantity, line.packages, line.per_package)}</td>
+              <td className="ik-num">{line.invoice_quantity ?? ""}</td>
+              <td className="ik-num">{line.invoice_price ?? ""}</td>
+              <td className="ik-num">{money(line.invoice_total)}</td>
+            </>}
+            {connect && <>
+              <td className="ik-con">{lotLabel(line.lot)}</td>
+              {!invoice && <td>{line.pav || "-"}</td>}
+              <td className="ik-num">{inkoopBoxesText(line.erp_quantity, line.lot_items, line.lot_cont)}</td>
+              <td className="ik-num">{line.erp_quantity ?? ""}</td>
+              <td className="ik-num">{line.erp_price ?? ""}</td>
+              <td className="ik-num">{money(line.erp_total)}</td>
+            </>}
+            {invoice && connect && <>
+              <td className="ik-num">{line.difference_total ? <InkoopMoneyDiff value={line.difference_total} /> : ""}</td>
+              <td className="ik-ellipsis muted" title={line.note}>{line.note}</td>
+            </>}
+          </tr>
+        ))}
+        {!lines.length && <tr><td colSpan={18} className="muted">No lines.</td></tr>}
+      </tbody>
+    </table>
+  );
+}
+
 // What each KPI tile is made of: the statuses it counts and which value.
 const IK_KPI_KINDS = {
   invoiced: { title: "Invoiced", statuses: ["matched", "mismatch", "not_matched"], value: "invoice" },
   matched: { title: "✓ Matched", statuses: ["matched", "mismatch"], value: "invoice" },
-  // lists: the tile's own lines can be shown (all growers, biggest first).
-  not_matched: { title: "✗ Invoice not matched", statuses: ["not_matched"], value: "invoice", lists: ["only_in_invoice", "supplier_not_linked", "ambiguous_matches"] },
-  connect_only: { title: "✗ Only in Connect", statuses: ["connect_only"], value: "connect", lists: ["only_in_erp"] },
+  // lists / sides: a grower opens in place on its own lines of the tile.
+  not_matched: { title: "✗ Invoice not matched", statuses: ["not_matched"], value: "invoice", lists: ["only_in_invoice", "supplier_not_linked", "ambiguous_matches"], sides: "invoice" },
+  connect_only: { title: "✗ Only in Connect", statuses: ["connect_only"], value: "connect", lists: ["only_in_erp"], sides: "connect" },
   connect: { title: "Connect total", statuses: ["matched", "mismatch", "connect_only"], value: "connect" },
   difference: { title: "Difference (invoice − Connect)", statuses: ["matched", "mismatch", "not_matched", "connect_only"], value: "difference" },
-  mismatch: { title: "⚠ Figures differ", statuses: ["mismatch"], value: "difference", lists: ["matched_mismatch"] },
+  mismatch: { title: "⚠ Figures differ", statuses: ["mismatch"], value: "difference", lists: ["matched_mismatch"], sides: "both" },
 };
 
-// A tile's own lines, every grower, biggest difference / value first: the
-// invoice side and the Connect side next to each other.
-function IkKpiLines({ from, to, company, bar, lists, onGrower }) {
-  const [data, setData] = useState(null);
-  const [error, setError] = useState("");
-  useEffect(() => {
-    let cancelled = false;
-    setData(null);
-    setError("");
-    const params = new URLSearchParams({ from, to, lists: lists.join(",") });
-    if (company) params.set("company", company);
-    apiJson(`/api/inkoop/overview-lines?${params.toString()}`)
-      .then((payload) => { if (!cancelled) setData(payload); })
-      .catch((loadError) => { if (!cancelled) setError(loadError.message); });
-    return () => { cancelled = true; };
-  }, [from, to, company, lists.join(",")]); // eslint-disable-line react-hooks/exhaustive-deps
-  if (error) return <div className="notice danger">{error}</div>;
-  if (!data) return <div className="muted">Loading lines…</div>;
-  const lines = (data.lines || []).filter((line) => (!bar.bw?.length || bar.bw.includes(line.bw || "?"))
-    && (!bar.flows?.length || bar.flows.includes(line.flow))
-    && (!bar.grower || inkoopSameGrower(line.grower, bar.grower)));
-  const money = (value) => (value === null || value === undefined ? "" : formatInkoopEuro(value));
-  const lotLabel = (lot) => (String(lot).split("+").length > 3 ? `${String(lot).split("+").length} lots (pool)` : String(lot || ""));
-  return (
-    <div className="table-wrap">
-      <table className="data-table balance-table ik-table ik-lines-table">
-        <thead>
-          <tr>
-            <th /><th>Date</th><th>Grower</th><th>Invoice</th><th>Brief</th><th>Product</th>
-            <th className="ik-inv-head">Boxes</th><th>Pieces</th><th>Price</th><th>Total</th>
-            <th className="ik-con-head">Lot</th><th>Boxes</th><th>Pieces</th><th>Price</th><th>Total</th>
-            <th>Difference</th><th>What differs</th>
-          </tr>
-        </thead>
-        <tbody>
-          {lines.map((line, index) => (
-            <tr key={`${line.invoice_number}-${line.lot}-${index}`} className={`ik-status-${line.status}`}>
-              <td className="ik-status-icon" title={IK_STATUS_LABEL[line.status]}>{IK_STATUS_ICON[line.status]}</td>
-              <td>{fustOverviewDate(line.date)}</td>
-              <td><button type="button" className="link-button" onClick={() => onGrower?.(line.grower)} title="Open this grower">{line.grower}</button></td>
-              <td>{line.invoice_number ? <InkoopInvoiceLink invoiceNumber={line.invoice_number} /> : "-"}</td>
-              <td>{line.pav || "-"}</td>
-              <td><i className="ik-dot" style={{ background: INKOOP_FLOW_COLORS[line.flow] }} title={line.flow} />{line.description}</td>
-              <td className="ik-inv">{inkoopBoxesText(line.invoice_quantity, line.packages, line.per_package)}</td>
-              <td>{line.invoice_quantity ?? ""}</td>
-              <td>{line.invoice_price ?? ""}</td>
-              <td>{money(line.invoice_total)}</td>
-              <td className="ik-con">{lotLabel(line.lot)}</td>
-              <td>{inkoopBoxesText(line.erp_quantity, line.lot_items, line.lot_cont)}</td>
-              <td>{line.erp_quantity ?? ""}</td>
-              <td>{line.erp_price ?? ""}</td>
-              <td>{money(line.erp_total)}</td>
-              <td>{line.difference_total ? <InkoopMoneyDiff value={line.difference_total} /> : ""}</td>
-              <td className="muted">{line.note}</td>
-            </tr>
-          ))}
-          {!lines.length && <tr><td colSpan={17}>Nothing here.</td></tr>}
-        </tbody>
-      </table>
-      {data.capped && <div className="muted">The 3000 biggest lines -- narrow the period or pick a grower for the rest.</div>}
-    </div>
-  );
-}
-
-// A tile's growers: lines and value per grower (difference tiles: invoice,
-// Connect and the difference), the biggest first; a click opens the grower.
+// A tile's growers, folded: lines and value per grower (difference tiles:
+// invoice, Connect and the difference), the biggest first. A tile with
+// lines of its own opens a grower in place on them; otherwise the grower's
+// name opens the grower.
 function IkKpiDetail({ rows, kind, onGrower, onClose, from, to, company, bar }) {
   const config = IK_KPI_KINDS[kind];
-  // A tile with lines of its own opens on them; "By grower" adds them up.
-  const [view, setView] = useState(config.lists && bar ? "lines" : "growers");
+  const [openGrowers, setOpenGrowers] = useState(() => new Set());
   const byGrower = new Map();
   for (const row of rows) {
     if (!config.statuses.includes(row.status)) continue;
@@ -16972,19 +16989,18 @@ function IkKpiDetail({ rows, kind, onGrower, onClose, from, to, company, bar }) 
   const items = [...byGrower.values()].filter((entry) => Math.abs(valueOf(entry)) >= 0.005 || config.value !== "difference")
     .sort((left, right) => Math.abs(valueOf(right)) - Math.abs(valueOf(left)));
   const total = items.reduce((sum, entry) => sum + valueOf(entry), 0);
+  const absTotal = items.reduce((sum, item) => sum + Math.abs(valueOf(item)), 0);
+  const toggle = (grower) => setOpenGrowers((current) => { const next = new Set(current); if (next.has(grower)) next.delete(grower); else next.add(grower); return next; });
+  const span = config.value === "difference" ? 6 : 4;
   return (
     <div className="ik-kpi-detail">
       <div className="ik-card-head">
         <strong>{config.title} -- {items.length} grower(s) · {formatInkoopEuro(total)}</strong>
         <span className="row-actions">
-          {config.lists && bar && <>
-            <button type="button" className={`ik-chip${view === "lines" ? " on" : ""}`} onClick={() => setView("lines")}>Lines</button>
-            <button type="button" className={`ik-chip${view === "growers" ? " on" : ""}`} onClick={() => setView("growers")}>By grower</button>
-          </>}
+          {!!openGrowers.size && <button type="button" className="ik-chip" onClick={() => setOpenGrowers(new Set())}>Fold all</button>}
           <button type="button" className="ik-chip" onClick={onClose}>Close ✕</button>
         </span>
       </div>
-      {view === "lines" ? <IkKpiLines from={from} to={to} company={company} bar={bar} lists={config.lists} onGrower={onGrower} /> : (
       <div className="table-wrap">
         <table className="data-table balance-table ik-table">
           <thead>
@@ -16995,21 +17011,35 @@ function IkKpiDetail({ rows, kind, onGrower, onClose, from, to, company, bar }) 
             </tr>
           </thead>
           <tbody>
-            {items.map((entry) => (
-              <tr key={entry.grower} className="clickable-row" onClick={() => onGrower(entry.grower)} title="Click: open this grower">
-                <td><strong>{entry.grower}</strong></td>
-                <td>{entry.lines}</td>
-                {config.value === "difference"
-                  ? <><td>{formatInkoopEuro(entry.invoice)}</td><td>{formatInkoopEuro(entry.connect)}</td><td><InkoopMoneyDiff value={Math.round((entry.invoice - entry.connect) * 100) / 100} /></td></>
-                  : <td>{formatInkoopEuro(valueOf(entry))}</td>}
-                <td>{total ? <IkBar pct={(Math.abs(valueOf(entry)) / items.reduce((sum, item) => sum + Math.abs(valueOf(item)), 0)) * 100} title="share of this tile" /> : ""}</td>
-              </tr>
-            ))}
-            {!items.length && <tr><td colSpan={6}>Nothing here.</td></tr>}
+            {items.map((entry) => {
+              const isOpen = openGrowers.has(entry.grower);
+              return (
+                <Fragment key={entry.grower}>
+                  <tr className="clickable-row" onClick={() => (config.lists ? toggle(entry.grower) : onGrower(entry.grower))} title={config.lists ? "Click: its lines" : "Click: open this grower"}>
+                    <td>
+                      <strong>{config.lists ? (isOpen ? "▾ " : "▸ ") : ""}{entry.grower}</strong>
+                      {config.lists && <button type="button" className="link-button ik-open-grower" onClick={(event) => { event.stopPropagation(); onGrower(entry.grower); }}>open grower ›</button>}
+                    </td>
+                    <td>{entry.lines}</td>
+                    {config.value === "difference"
+                      ? <><td>{formatInkoopEuro(entry.invoice)}</td><td>{formatInkoopEuro(entry.connect)}</td><td><InkoopMoneyDiff value={Math.round((entry.invoice - entry.connect) * 100) / 100} /></td></>
+                      : <td>{formatInkoopEuro(valueOf(entry))}</td>}
+                    <td>{absTotal ? <IkBar pct={(Math.abs(valueOf(entry)) / absTotal) * 100} title="share of this tile" /> : ""}</td>
+                  </tr>
+                  {isOpen && (
+                    <tr className="ik-tree-panel">
+                      <td colSpan={span}>
+                        <IkTileGrowerLines from={from} to={to} company={company} grower={entry.grower} statuses={config.statuses} sides={config.sides} bar={bar} />
+                      </td>
+                    </tr>
+                  )}
+                </Fragment>
+              );
+            })}
+            {!items.length && <tr><td colSpan={span}>Nothing here.</td></tr>}
           </tbody>
         </table>
       </div>
-      )}
     </div>
   );
 }
