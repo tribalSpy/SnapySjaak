@@ -17532,6 +17532,13 @@ function IkTraceTable({ rows, from, to, company, bar, setBar }) {
           <IkFlowLegend flows={INKOOP_FLOWS.filter((flow) => rows.some((row) => row.flow === flow))} />
           {!!open.size && <button type="button" className="ik-chip" onClick={() => setOpen(new Set())}>Fold all</button>}
           <IkColumnPicker columns={columns} toggle={toggleColumn} />
+          <button type="button" className={`ik-chip${inkoopMatchBasis.withConnect ? " on" : ""}`}
+            title={inkoopMatchBasis.withConnect ? "Matched %: of the invoiced value plus the lots only in Connect -- click: of the invoice lines only" : "Matched %: of the invoice lines -- click: count the lots only in Connect too"}
+            onClick={() => {
+              inkoopMatchBasis.withConnect = !inkoopMatchBasis.withConnect;
+              try { window.localStorage.setItem("inkoop-match-basis", inkoopMatchBasis.withConnect ? "connect" : "invoice"); } catch { /* per-browser only */ }
+              setBar((current) => ({ ...current, matchBasis: inkoopMatchBasis.withConnect ? "connect" : "invoice" }));
+            }}>% + Connect</button>
           <button type="button" className={`ik-chip${full ? " on" : ""}`} onClick={() => setFull((current) => !current)} title="Esc closes">{full ? "✕ Close full screen" : "⛶ Full screen"}</button>
           <button type="button" className="ik-chip" onClick={exportPeriods} title="Per grower: the total, every month, week and day">CSV per month / week / day</button>
           {!!chosenGrowers.length && <button type="button" className="ik-chip" onClick={exportExcel} disabled={Boolean(exporting)} title={`${chosenGrowers.join(", ")} in one Excel file: a tab per month / week / day, a tab invoice data, a tab Connect data`}>{exporting ? "Exporting…" : `Excel: ${chosenGrowers.length === 1 ? chosenGrowers[0] : `${chosenGrowers.length} growers "${bar.grower}"`} (3 tabs)`}</button>}
@@ -20334,6 +20341,11 @@ function InkoopDashboardTab({ company }) {
   );
 }
 
+// How the matched % is taken in the overview / workspaces (remembered in
+// this browser): of the invoice lines (default), or with the lots only in
+// Connect too.
+const inkoopMatchBasis = { withConnect: (() => { try { return window.localStorage.getItem("inkoop-match-basis") === "connect"; } catch { return false; } })() };
+
 // The overview table's figures of some rows (/api/inkoop/overview-table):
 // invoice lines and value (matched incl. mismatch + not matched), the
 // matched and not matched part, the lots only in Connect, Connect's total
@@ -20357,7 +20369,12 @@ function inkoopOverviewSum(rows) {
     }
   }
   sum.difference = Math.round((sum.invoice_value - sum.connect_value) * 100) / 100;
-  sum.matched_pct = inkoopMatchedShare(sum.invoice_value, sum.not_matched_value, sum.connect_only_value);
+  // Matched %: of the invoiced value (300 invoice lines all matched: 100%);
+  // with "% + Connect" on, of the invoiced value plus the lots only in
+  // Connect (the two-sided share).
+  sum.matched_pct = inkoopMatchBasis.withConnect
+    ? inkoopMatchedShare(sum.invoice_value, sum.not_matched_value, sum.connect_only_value)
+    : sum.invoice_value > 0 ? Math.max(0, Math.min(100, (sum.matched_value / sum.invoice_value) * 100)) : null;
   return sum;
 }
 
