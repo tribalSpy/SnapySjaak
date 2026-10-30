@@ -18052,7 +18052,6 @@ function InkoopTrackTraceWorkspace({ bar, setBar, overview, company, matchRound 
   const [pairNote, setPairNote] = useState("");
   const [busy, setBusy] = useState(false);
   const [drawer, setDrawer] = useState(null);
-  const [draft, setDraft] = useState(null);
   const [pairsKey, setPairsKey] = useState(0);
   const [pairsOpen, setPairsOpen] = useState(false);
   const [showMatched, setShowMatched] = useState(false);
@@ -18154,20 +18153,8 @@ function InkoopTrackTraceWorkspace({ bar, setBar, overview, company, matchRound 
       setBusy(false);
     }
   }
-  async function saveDraft() {
-    if (!drawer || !draft) return;
-    setBusy(true);
-    try {
-      await apiJson(`/api/inkoop/issues/${encodeURIComponent(drawer.id)}`, { method: "POST", body: JSON.stringify(draft) });
-      setDrawer(null);
-      setIssueRound((value) => value + 1);
-    } catch (saveError) {
-      setIssueError(saveError.message);
-    } finally {
-      setBusy(false);
-    }
-  }
-  const openDrawer = (issue) => { setDrawer(issue); setDraft({ status: issue.status, assigned_to: issue.assigned_to, note: issue.note }); };
+  const openDrawer = (issue) => setDrawer(issue);
+  const [fuSettings] = useInkoopFollowupSettings();
 
   const searchBox = (sideKey) => (
     <input className="ik-side-search" value={searches[sideKey]} placeholder="Search…" title="Product, brief / ref., lot, invoice, pieces or price -- every word"
@@ -18292,30 +18279,455 @@ function InkoopTrackTraceWorkspace({ bar, setBar, overview, company, matchRound 
           <InkoopManualPairsCard from={from} to={to} refreshKey={pairsKey} onChanged={() => { setIssueRound((value) => value + 1); overview.reload(); }} />
         </div>
       )}
-      {drawer && draft && (
-        <div className="ik-drawer" role="dialog">
-          <div className="ik-drawer-head">
-            <strong>{inkoopIssueTypeLabel(drawer.issue_type)}</strong>
-            <button type="button" onClick={() => setDrawer(null)}>Close</button>
-          </div>
-          <div><strong>{drawer.description}</strong></div>
-          {drawer.invoice_number && <div>Invoice <InkoopInvoiceLink invoiceNumber={drawer.invoice_number} /></div>}
-          {drawer.issue_type !== "gap_erp" && <div className="ik-inv-text">{inkoopInvoiceTranscript(drawer.detail)}</div>}
-          {drawer.erp_row && <div className="ik-con-text">{inkoopErpTranscript(drawer.erp_row)}</div>}
-          <div>Value {formatInkoopEuro(drawer.value)} · difference <InkoopMoneyDiff value={drawer.money_diff} /></div>
-          <label>Status
-            <select value={draft.status} onChange={(event) => setDraft((current) => ({ ...current, status: event.target.value }))}>
-              <option value="open">Open</option>
-              <option value="investigating">Investigating</option>
-              <option value="resolved">Resolved</option>
-            </select>
-          </label>
-          <label>Who's checking<input value={draft.assigned_to || ""} onChange={(event) => setDraft((current) => ({ ...current, assigned_to: event.target.value }))} /></label>
-          <label>Note<textarea rows={3} value={draft.note || ""} onChange={(event) => setDraft((current) => ({ ...current, note: event.target.value }))} /></label>
-          <div className="row-actions">
-            <button type="button" className="primary" onClick={saveDraft} disabled={busy}>Save</button>
-          </div>
+      {drawer && (
+        <IkFollowupDrawer
+          item={{
+            id: drawer.id, type: drawer.issue_type, day: inkoopIssueInvoiceDay(drawer), date: drawer.date, grower: drawer.grower, description: drawer.description,
+            invoice_number: drawer.invoice_number, money_diff: drawer.money_diff, value: drawer.value, status: drawer.status, department: drawer.department,
+            category: drawer.category, due_date: drawer.due_date, note: drawer.note, earlier_assigned: drawer.assigned_to,
+          }}
+          invoiceText={drawer.issue_type !== "gap_erp" ? inkoopInvoiceTranscript(drawer.detail) : ""}
+          lotText={drawer.erp_row ? inkoopErpTranscript(drawer.erp_row) : ""}
+          settings={fuSettings}
+          onClose={() => setDrawer(null)}
+          onSaved={() => setIssueRound((value) => value + 1)}
+        />
+      )}
+    </div>
+  );
+}
+
+// ---- Follow-up menu ---------------------------------------------------------
+// Every line of a day whose data is complete starts at Control. Control
+// links / resolves it or moves it to Inkoop or Finance (with a reason); a
+// category ("High control") keeps slow cases on their own page.
+const INKOOP_FU_STATUS_LABEL = { open: "Open", investigating: "Investigating", claimed: "Claimed", resolved: "Resolved" };
+const INKOOP_FU_ACTION_LABEL = { status: "status", department: "moved", category: "category", due_date: "due date", note: "note", assigned_to: "who's checking", comment: "comment", claim_id: "claim" };
+
+function useInkoopFollowupSettings() {
+  const [settings, setSettings] = useState(null);
+  const [round, setRound] = useState(0);
+  useEffect(() => {
+    apiJson("/api/inkoop/followup/settings").then(setSettings).catch(() => setSettings({ departments: [["control", "Control"], ["inkoop", "Inkoop"], ["finance", "Finance"]], statuses: ["open", "investigating", "claimed", "resolved"], categories: [], colors: [] }));
+  }, [round]);
+  return [settings, () => setRound((value) => value + 1)];
+}
+
+function ikFollowupInvoiceText(item) {
+  if (!item?.invoice) return "";
+  return inkoopInvoiceTranscript({
+    invoice_date: item.date, reference_bt: item.invoice.reference, packages: item.invoice.packages, per_package: item.invoice.per_package,
+    quantity: item.invoice.quantity, unit_price: item.invoice.unit_price, total: item.invoice.total, supplier_name: item.invoice.supplier_name,
+  });
+}
+
+function ikFollowupLotText(item) {
+  if (!item?.lot) return "";
+  return inkoopErpTranscript({
+    date: item.lot.date, suppl: item.lot.suppl, lot: item.lot.lot, pieces: item.lot.pieces, items: item.lot.items, cont: item.lot.cont,
+    price: item.lot.price, t_price: item.lot.total, pav: item.lot.pav, description: item.lot.description,
+  });
+}
+
+function ikFollowupAgeDays(item) {
+  const since = String(item.opened_at || item.day || item.date || "").slice(0, 10);
+  if (!since) return 0;
+  return Math.max(0, inkoopDaysBetween(since, localDateIso()) - 1);
+}
+
+function IkCategoryChip({ name, categories }) {
+  if (!name) return null;
+  const color = (categories || []).find((category) => category.name === name)?.color || "grey";
+  return <span className={`ik-cat-chip ik-cat-${color}`}>⚑ {name}</span>;
+}
+
+function ikFollowupLastText(event) {
+  if (!event) return "";
+  const what = INKOOP_FU_ACTION_LABEL[event.action] || event.action;
+  const to = event.action === "department" ? `→ ${event.to_value}` : event.action === "note" || event.action === "comment" ? "" : event.to_value ? `→ ${event.to_value}` : "";
+  return `${formatTimestamp(event.at)} · ${event.by_user} · ${what} ${to}${event.note ? ` -- ${event.note}` : ""}`.trim();
+}
+
+async function inkoopFollowupUpdate(items, changes, note) {
+  return apiJson("/api/inkoop/followup/update", { method: "POST", body: JSON.stringify({ items: items.map((item) => ({ id: item.id, day: item.day })), changes, note }) });
+}
+
+// The drawer of one line: status, department, category, due date and note,
+// with its history. A move or "resolved" asks for a reason. Shared by the
+// Follow-up menu and Track & Trace.
+function IkFollowupDrawer({ item, invoiceText, lotText, settings, onClose, onSaved }) {
+  const [draft, setDraft] = useState(() => ({ status: item.status || "open", department: item.department || "control", category: item.category || "", due_date: item.due_date || "", note: item.note || "" }));
+  const [reason, setReason] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const [events, setEvents] = useState(null);
+  useEffect(() => {
+    setDraft({ status: item.status || "open", department: item.department || "control", category: item.category || "", due_date: item.due_date || "", note: item.note || "" });
+    setReason("");
+    setError("");
+    apiJson(`/api/inkoop/followup/history?id=${encodeURIComponent(item.id)}`).then((payload) => setEvents(payload.events || [])).catch(() => setEvents([]));
+  }, [item.id]); // eslint-disable-line react-hooks/exhaustive-deps
+  const departments = settings?.departments || [];
+  const changes = {};
+  if (draft.status !== (item.status || "open")) changes.status = draft.status;
+  if (draft.department !== (item.department || "control")) changes.department = draft.department;
+  if (draft.category !== (item.category || "")) changes.category = draft.category;
+  if (draft.due_date !== (item.due_date || "")) changes.due_date = draft.due_date;
+  if (draft.note !== (item.note || "")) changes.note = draft.note;
+  const needsReason = changes.department !== undefined || changes.status === "resolved";
+  async function save() {
+    if (needsReason && !reason.trim()) {
+      setError(changes.department !== undefined ? "Give the reason for the move." : "Say how it was solved.");
+      return;
+    }
+    setBusy(true);
+    setError("");
+    try {
+      await inkoopFollowupUpdate([item], changes, reason.trim());
+      onSaved?.();
+      onClose();
+    } catch (saveError) {
+      setError(saveError.message);
+    } finally {
+      setBusy(false);
+    }
+  }
+  return (
+    <div className="ik-drawer" role="dialog">
+      <div className="ik-drawer-head">
+        <strong>{inkoopIssueTypeLabel(item.type)}</strong>
+        <button type="button" onClick={onClose}>Close</button>
+      </div>
+      <div><strong>{item.description}</strong>{item.grower ? <span className="muted"> · {item.grower}</span> : null}</div>
+      {item.invoice_number && <div>Invoice <InkoopInvoiceLink invoiceNumber={item.invoice_number} /></div>}
+      {invoiceText && <div className="ik-inv-text">{invoiceText}</div>}
+      {lotText && <div className="ik-con-text">{lotText}</div>}
+      <div>Difference <InkoopMoneyDiff value={item.money_diff} /> · day {fustOverviewDate(item.day || item.date)}{item.gone ? " · no longer open (matched since)" : ""}</div>
+      <div className="ik-fu-dept-pick" role="group" aria-label="Department">
+        {departments.map(([key, label]) => (
+          <button key={key} type="button" className={`ik-chip${draft.department === key ? " on" : ""}`} onClick={() => setDraft((current) => ({ ...current, department: key }))}>{label}</button>
+        ))}
+      </div>
+      <label>Status
+        <select value={draft.status} onChange={(event) => setDraft((current) => ({ ...current, status: event.target.value }))}>
+          {(settings?.statuses || ["open", "investigating", "resolved"]).filter((status) => status !== "claimed" || item.status === "claimed").map((status) => <option key={status} value={status}>{INKOOP_FU_STATUS_LABEL[status] || status}</option>)}
+        </select>
+      </label>
+      <label>Category
+        <select value={draft.category} onChange={(event) => setDraft((current) => ({ ...current, category: event.target.value }))}>
+          <option value="">-</option>
+          {(settings?.categories || []).map((category) => <option key={category.name} value={category.name}>{category.name}</option>)}
+        </select>
+      </label>
+      <label>Due date<input type="date" value={draft.due_date} onChange={(event) => setDraft((current) => ({ ...current, due_date: event.target.value }))} /></label>
+      <label>Note<textarea rows={3} value={draft.note} onChange={(event) => setDraft((current) => ({ ...current, note: event.target.value }))} /></label>
+      {needsReason && (
+        <label className="ik-fu-reason">{changes.department !== undefined ? `Reason for the move to ${(departments.find(([key]) => key === draft.department) || [])[1] || draft.department}` : "How was it solved?"}
+          <input value={reason} onChange={(event) => setReason(event.target.value)} autoFocus />
+        </label>
+      )}
+      {item.earlier_assigned && <div className="muted">earlier: {item.earlier_assigned}</div>}
+      {error && <div className="notice danger">{error}</div>}
+      <div className="row-actions">
+        <button type="button" className="primary" onClick={save} disabled={busy || !Object.keys(changes).length}>Save</button>
+      </div>
+      <div className="ik-fu-history">
+        <strong>History</strong>
+        {!events ? <div className="muted">Loading...</div> : !events.length ? <div className="muted">Nothing yet -- it is at Control since its day's data came in.</div> : (
+          <ul>
+            {events.map((event) => (
+              <li key={event.id}>
+                <span className="muted">{formatTimestamp(event.at)} · {event.by_user}</span>{" "}
+                {INKOOP_FU_ACTION_LABEL[event.action] || event.action}
+                {event.action === "note" || event.action === "comment" ? `: ${event.to_value}` : `: ${event.from_value || "-"} → ${event.to_value || "-"}`}
+                {event.note ? <em> -- {event.note}</em> : null}
+              </li>
+            ))}
+          </ul>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function useInkoopFollowup(query, round) {
+  const [data, setData] = useState(null);
+  const [error, setError] = useState("");
+  const [loading, setLoading] = useState(false);
+  const key = new URLSearchParams(query).toString();
+  useEffect(() => {
+    let cancelled = false;
+    setLoading(true);
+    setError("");
+    apiJson(`/api/inkoop/followup?${key}`)
+      .then((payload) => { if (!cancelled) setData(payload); })
+      .catch((loadError) => { if (!cancelled) { setError(loadError.message); setData(null); } })
+      .finally(() => { if (!cancelled) setLoading(false); });
+    return () => { cancelled = true; };
+  }, [key, round]);
+  return { data, error, loading };
+}
+
+// One list of follow-up lines: tick for bulk, click for the drawer, quick
+// actions per row.
+function IkFollowupTable({ items, settings, picked, setPicked, onOpen, quick, showAge = false }) {
+  const allPicked = items.length > 0 && items.every((item) => picked[item.id]);
+  const today = localDateIso();
+  return (
+    <div className="table-wrap">
+      <table className="data-table balance-table ik-fu-table">
+        <thead>
+          <tr>
+            <th><input type="checkbox" checked={allPicked} onChange={(event) => setPicked(event.target.checked ? Object.fromEntries(items.map((item) => [item.id, item])) : {})} aria-label="All" /></th>
+            {showAge && <th>Age</th>}
+            <th>Day</th><th>Grower</th><th>Flow</th><th>Product</th><th>Invoice line</th><th>Connect lot</th><th>Difference</th><th>Category</th><th>Due</th><th>Last action</th><th />
+          </tr>
+        </thead>
+        <tbody>
+          {items.map((item) => {
+            const overdue = item.due_date && item.due_date < today && item.status !== "resolved";
+            const quiet = item.status !== "resolved" && (item.last_event ? inkoopDaysBetween(String(item.last_event.at).slice(0, 10), today) > 15 : ikFollowupAgeDays(item) > 14);
+            return (
+              <tr key={item.id} className={`clickable-row${item.gone ? " ik-fu-gone" : ""}`} onClick={() => onOpen(item)}>
+                <td onClick={(event) => event.stopPropagation()}>
+                  <input type="checkbox" checked={!!picked[item.id]} onChange={(event) => setPicked((current) => { const next = { ...current }; if (event.target.checked) next[item.id] = item; else delete next[item.id]; return next; })} aria-label="Pick" />
+                </td>
+                {showAge && <td className={quiet ? "ik-fu-warn" : ""}>{quiet ? "⚠ " : ""}{ikFollowupAgeDays(item)} d</td>}
+                <td>{fustOverviewDate(item.day || item.date)}</td>
+                <td className="ik-fu-ellipsis" title={item.grower}>{item.grower}</td>
+                <td>{item.flow}</td>
+                <td className="ik-fu-ellipsis" title={item.description}><strong>{item.description}</strong>{item.status !== "open" ? <span className="muted"> · {INKOOP_FU_STATUS_LABEL[item.status] || item.status}</span> : null}</td>
+                <td className="ik-fu-ellipsis ik-inv-text" title={ikFollowupInvoiceText(item)}>{ikFollowupInvoiceText(item) || "-"}</td>
+                <td className="ik-fu-ellipsis ik-con-text" title={ikFollowupLotText(item)}>{ikFollowupLotText(item) || "-"}</td>
+                <td><InkoopMoneyDiff value={item.money_diff} /></td>
+                <td><IkCategoryChip name={item.category} categories={settings?.categories} /></td>
+                <td className={overdue ? "ik-fu-warn" : ""}>{item.due_date ? `${overdue ? "⚠ " : ""}${fustOverviewDate(item.due_date)}` : ""}</td>
+                <td className="ik-fu-ellipsis muted" title={ikFollowupLastText(item.last_event)}>{item.last_event ? ikFollowupLastText(item.last_event) : quiet ? "⚠ untouched" : ""}</td>
+                <td className="ik-fu-quick" onClick={(event) => event.stopPropagation()}>{quick?.(item)}</td>
+              </tr>
+            );
+          })}
+          {!items.length && <tr><td colSpan={showAge ? 13 : 12} className="muted">No lines.</td></tr>}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+// Bulk: the ticked lines to a department, a status, a category or a due date.
+function IkFollowupBulkBar({ picked, setPicked, settings, onDone }) {
+  const list = Object.values(picked);
+  const [changes, setChanges] = useState({});
+  const [reason, setReason] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  if (!list.length) return null;
+  const needsReason = changes.department !== undefined || changes.status === "resolved";
+  async function apply() {
+    if (!Object.keys(changes).length) return;
+    if (needsReason && !reason.trim()) {
+      setError("A move or resolve needs a reason.");
+      return;
+    }
+    setBusy(true);
+    setError("");
+    try {
+      await inkoopFollowupUpdate(list, changes, reason.trim());
+      setPicked({});
+      setChanges({});
+      setReason("");
+      onDone();
+    } catch (applyError) {
+      setError(applyError.message);
+    } finally {
+      setBusy(false);
+    }
+  }
+  const set = (key, value) => setChanges((current) => {
+    const next = { ...current };
+    if (value === null) delete next[key];
+    else next[key] = value;
+    return next;
+  });
+  return (
+    <div className="ik-linkbar ik-fu-bulk">
+      <strong>{list.length} ticked · {formatInkoopEuro(list.reduce((sum, item) => sum + (Number(item.money_diff) || 0), 0))}</strong>
+      <select value={changes.department ?? ""} onChange={(event) => set("department", event.target.value || null)} aria-label="Department">
+        <option value="">Department…</option>
+        {(settings?.departments || []).map(([key, label]) => <option key={key} value={key}>→ {label}</option>)}
+      </select>
+      <select value={changes.status ?? ""} onChange={(event) => set("status", event.target.value || null)} aria-label="Status">
+        <option value="">Status…</option>
+        {["open", "investigating", "resolved"].map((status) => <option key={status} value={status}>{INKOOP_FU_STATUS_LABEL[status]}</option>)}
+      </select>
+      <select value={changes.category ?? "__"} onChange={(event) => set("category", event.target.value === "__" ? null : event.target.value)} aria-label="Category">
+        <option value="__">Category…</option>
+        <option value="">(none)</option>
+        {(settings?.categories || []).map((category) => <option key={category.name} value={category.name}>{category.name}</option>)}
+      </select>
+      <input type="date" value={changes.due_date ?? ""} onChange={(event) => set("due_date", event.target.value || null)} aria-label="Due date" />
+      <input value={reason} onChange={(event) => setReason(event.target.value)} placeholder={needsReason ? "Reason (needed)" : "Reason / comment"} />
+      <button type="button" className="primary" onClick={apply} disabled={busy || !Object.keys(changes).length}>Apply</button>
+      <button type="button" onClick={() => setPicked({})}>Clear</button>
+      {error && <span className="ik-fu-warn">{error}</span>}
+    </div>
+  );
+}
+
+// The categories (name and colour), kept in the Inkoop settings.
+function IkFollowupCategoryEditor({ settings, onSaved }) {
+  const [rows, setRows] = useState(() => settings?.categories || []);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  async function save() {
+    setBusy(true);
+    setError("");
+    try {
+      await apiJson("/api/inkoop/followup/settings", { method: "POST", body: JSON.stringify({ categories: rows }) });
+      onSaved();
+    } catch (saveError) {
+      setError(saveError.message);
+    } finally {
+      setBusy(false);
+    }
+  }
+  return (
+    <div className="data-table-card ik-fu-cat-editor">
+      <div className="notice">Categories mark lines that need extra attention; each has its own page with all its lines, whatever the period. Removing a category here leaves the lines' history as it is.</div>
+      {rows.map((row, index) => (
+        <div key={index} className="row-actions">
+          <input value={row.name} onChange={(event) => setRows((current) => current.map((item, at) => (at === index ? { ...item, name: event.target.value } : item)))} placeholder="Name" />
+          <select value={row.color} onChange={(event) => setRows((current) => current.map((item, at) => (at === index ? { ...item, color: event.target.value } : item)))}>
+            {(settings?.colors || ["grey"]).map((color) => <option key={color} value={color}>{color}</option>)}
+          </select>
+          <IkCategoryChip name={row.name} categories={[row]} />
+          <button type="button" className="link-button" onClick={() => setRows((current) => current.filter((_, at) => at !== index))}>Remove</button>
         </div>
+      ))}
+      <div className="row-actions">
+        <button type="button" onClick={() => setRows((current) => [...current, { name: "", color: "blue" }])}>Add a category</button>
+        <button type="button" className="primary" onClick={save} disabled={busy}>Save</button>
+      </div>
+      {error && <div className="notice danger">{error}</div>}
+    </div>
+  );
+}
+
+function InkoopFollowupWorkspace({ bar, onOpenTrackTrace, onOpenConnectData, matchRound = 0 }) {
+  const [settings, reloadSettings] = useInkoopFollowupSettings();
+  const [tab, setTab] = useState("todo");
+  const [department, setDepartment] = useState(() => {
+    try {
+      return window.localStorage.getItem("inkoop-fu-department") || "control";
+    } catch {
+      return "control";
+    }
+  });
+  const [round, setRound] = useState(0);
+  const [picked, setPicked] = useState({});
+  const [drawer, setDrawer] = useState(null);
+  const [withResolved, setWithResolved] = useState(false);
+  const [editCategories, setEditCategories] = useState(false);
+  const [quickError, setQuickError] = useState("");
+  const category = tab.startsWith("cat:") ? tab.slice(4) : "";
+  const query = category
+    ? { category, all_dates: "1", status: withResolved ? "all" : "open" }
+    : { from: bar.from, to: bar.to, ...(bar.grower ? { grower: bar.grower } : {}) };
+  const { data, error, loading } = useInkoopFollowup(query, `${round}|${matchRound}`);
+  useEffect(() => { setPicked({}); }, [tab, department, bar.from, bar.to, bar.grower]);
+  const chooseDepartment = (key) => {
+    setDepartment(key);
+    try {
+      window.localStorage.setItem("inkoop-fu-department", key);
+    } catch {
+      // Not remembered: the default (Control) is used next time.
+    }
+  };
+  const reload = () => setRound((value) => value + 1);
+  const items = data?.items || [];
+  const departments = settings?.departments || data?.departments || [];
+  const countBy = (key) => items.filter((item) => item.department === key).length;
+  const valueBy = (key) => items.filter((item) => item.department === key).reduce((sum, item) => sum + Math.abs(Number(item.money_diff) || 0), 0);
+  let shown = category ? [...items].sort((left, right) => ikFollowupAgeDays(right) - ikFollowupAgeDays(left)) : items.filter((item) => item.department === department);
+  if (!category && bar.flows?.length) shown = shown.filter((item) => bar.flows.includes(item.flow));
+  async function quickMove(item, to) {
+    const label = (departments.find(([key]) => key === to) || [])[1] || to;
+    const reason = window.prompt(`Move to ${label} -- reason:`, "");
+    if (!reason || !reason.trim()) return;
+    setQuickError("");
+    try {
+      await inkoopFollowupUpdate([item], { department: to }, reason.trim());
+      reload();
+    } catch (moveError) {
+      setQuickError(moveError.message);
+    }
+  }
+  async function quickResolve(item) {
+    const reason = window.prompt("Resolved -- how?", "");
+    if (!reason || !reason.trim()) return;
+    setQuickError("");
+    try {
+      await inkoopFollowupUpdate([item], { status: "resolved" }, reason.trim());
+      reload();
+    } catch (resolveError) {
+      setQuickError(resolveError.message);
+    }
+  }
+  const quick = (item) => (
+    <>
+      {item.department === "control" && <button type="button" className="link-button" onClick={() => onOpenTrackTrace(item)} title="Open Track & Trace for this grower and day">Link</button>}
+      {item.status !== "resolved" && !item.gone && <button type="button" className="link-button" onClick={() => quickResolve(item)}>Resolve</button>}
+      {departments.filter(([key]) => key !== item.department).map(([key, label]) => (
+        <button key={key} type="button" className="link-button" onClick={() => quickMove(item, key)}>→ {label}</button>
+      ))}
+    </>
+  );
+  const waiting = data?.waiting_days || [];
+  const fileLabel = { invoices: "Invoices", connect: "Connect export", communications: "Communications", levering_bb: "Levering BB" };
+  return (
+    <div className="overview-stack ik-fu">
+      <div className="tab-strip ik-fu-tabs" role="tablist">
+        <button type="button" className={tab === "todo" ? "active" : ""} onClick={() => setTab("todo")}>To-do per department</button>
+        {(settings?.categories || []).map((cat) => (
+          <button key={cat.name} type="button" className={tab === `cat:${cat.name}` ? "active" : ""} onClick={() => setTab(`cat:${cat.name}`)}>⚑ {cat.name}</button>
+        ))}
+        <button type="button" className="link-button" onClick={() => setEditCategories((value) => !value)}>{editCategories ? "Close categories" : "Categories…"}</button>
+      </div>
+      {editCategories && settings && <IkFollowupCategoryEditor settings={settings} onSaved={() => { reloadSettings(); setEditCategories(false); reload(); }} />}
+      {!category && waiting.length > 0 && (
+        <div className="notice info ik-fu-waiting">
+          ⏳ {waiting.length} day(s) not in the follow-up yet -- their data is not complete:{" "}
+          {waiting.slice(0, 8).map((day) => `${fustOverviewDate(day.date)} (${day.state === "hold" ? "on hold" : day.missing.map((key) => fileLabel[key] || key).join(", ")}${day.lines ? `, ${day.lines} lines` : ""})`).join(" · ")}
+          {waiting.length > 8 ? " · …" : ""}{" "}
+          <button type="button" className="link-button" onClick={onOpenConnectData}>Connect data</button>
+        </div>
+      )}
+      {!!data?.pending_days?.length && <div className="notice">Some days are being compared again; their lines are from the last comparison.</div>}
+      {error && <div className="notice danger">{error}</div>}
+      {quickError && <div className="notice danger">{quickError}</div>}
+      {!category ? (
+        <div className="ik-fu-depts" role="group" aria-label="Department">
+          {departments.map(([key, label]) => (
+            <button key={key} type="button" className={`ik-fu-dept${department === key ? " on" : ""}`} onClick={() => chooseDepartment(key)}>
+              <strong>{label}</strong>
+              <span>{countBy(key)} lines</span>
+              <small className="muted">{formatInkoopEuro(valueBy(key))}</small>
+            </button>
+          ))}
+          {loading && <span className="muted">Loading…</span>}
+        </div>
+      ) : (
+        <div className="row-actions">
+          <span className="muted">Every line with ⚑ {category}, whatever the period -- oldest first. ⚠ = past its due date or untouched for over 2 weeks.</span>
+          <label className="checkbox-label"><input type="checkbox" checked={withResolved} onChange={(event) => setWithResolved(event.target.checked)} /><span>Also resolved</span></label>
+          {loading && <span className="muted">Loading…</span>}
+        </div>
+      )}
+      <IkFollowupBulkBar picked={picked} setPicked={setPicked} settings={settings} onDone={reload} />
+      {data && <IkFollowupTable items={shown} settings={settings} picked={picked} setPicked={setPicked} onOpen={setDrawer} quick={quick} showAge={!!category} />}
+      {drawer && (
+        <IkFollowupDrawer item={drawer} invoiceText={ikFollowupInvoiceText(drawer)} lotText={ikFollowupLotText(drawer)} settings={settings}
+          onClose={() => setDrawer(null)} onSaved={reload} />
       )}
     </div>
   );
@@ -18326,6 +18738,7 @@ function InkoopTrackTraceWorkspace({ bar, setBar, overview, company, matchRound 
 const INKOOP_WORKSPACES = [
   ["trace", "Dashboard", "The money trace: totals, days, growers, flows, pairs"],
   ["tracktrace", "Track & Trace", "A grower's invoice lines and Connect lots side by side; check and link"],
+  ["fu", "Follow-up", "Open lines per department (Control → Inkoop / Finance), categories like High control"],
   ["search", "Search", "Invoice lines and Connect lots, side by side"],
   ["destinations", "Corrections", "The corrections check; sold per country"],
   ["setup", "Setup", "Upload & compare, invoices, growers, King, settings"],
@@ -18350,8 +18763,21 @@ const INKOOP_SETUP_KEYS = new Set([...INKOOP_SETUP_TILES, ...INKOOP_CLASSIC_TILE
 
 function InkoopMenu({ onOpen, monthRows }) {
   const sum = monthRows ? inkoopOverviewSum(monthRows) : null;
+  const [followup, setFollowup] = useState(null);
+  useEffect(() => {
+    const today = localDateIso();
+    apiJson(`/api/inkoop/followup?from=${addDaysToIso(today, -30)}&to=${today}`).then(setFollowup).catch(() => setFollowup(null));
+  }, []);
+  const fuCount = (key) => (followup?.items || []).filter((item) => item.department === key).length;
   const figure = {
     trace: sum ? <span className="ik-tile-ring"><IkRing pct={sum.matched_pct} size={64} label="matched" /><span className="muted">this month</span></span> : null,
+    fu: followup ? (
+      <span className="ik-tile-fu">
+        {(followup.departments || []).map(([key, label]) => <span key={key}>{label} <strong>{fuCount(key)}</strong></span>)}
+        {(followup.categories || []).slice(0, 1).map((cat) => <span key={cat.name}>⚑ {cat.name} <strong>{(followup.items || []).filter((item) => item.category === cat.name).length}</strong></span>)}
+        <span className="muted">last 30 days</span>
+      </span>
+    ) : null,
   };
   return (
     <div className="fust-tile-grid ik-menu" aria-label="Inkoop menu">
@@ -18819,7 +19245,7 @@ function InkoopControlePage({ currentUser }) {
   // import history / master-data counts below wait for this (was: nothing
   // shown until it arrived).
   const pageDataNote = loading ? <div className="notice info">Loading import history and master data...</div> : null;
-  const inWorkspace = activeTab === "trace" || activeTab === "tracktrace";
+  const inWorkspace = activeTab === "trace" || activeTab === "tracktrace" || activeTab === "fu";
   const withBar = inWorkspace || activeTab === "search";
   // All growers: 3 months at most; one grower (the bar's) up to a year --
   // then only that grower's rows are read.
@@ -18850,7 +19276,7 @@ function InkoopControlePage({ currentUser }) {
       {activeTab === "setup" && <InkoopSetupMenu onOpen={setActiveTab} />}
       {withBar && (
         <IkFilterBar bar={bar} setBar={setBar} companies={companies} company={selectedCompany} setCompany={setSelectedCompany} growers={barGrowers}
-          parts={activeTab === "search" ? ["period", "company", "grower"] : undefined} />
+          parts={activeTab === "search" ? ["period", "company", "grower"] : activeTab === "fu" ? ["period", "flow", "grower"] : undefined} />
       )}
       {withBar && barTooLong && <div className="notice danger">{bar.grower ? "One grower: a year at most." : "All growers: 3 months at most -- type one grower in the bar to search up to a year."}</div>}
       {/* Only on the tabs that filter by it (Overview, Corrections, King,
@@ -18896,6 +19322,10 @@ function InkoopControlePage({ currentUser }) {
       {activeTab === "followup" && <InkoopFollowUpTab matchRound={matchRound} company={selectedCompany} />}
 
       {activeTab === "trace" && !barTooLong && <InkoopTraceWorkspace bar={bar} setBar={setBar} overview={overview} company={selectedCompany} />}
+      {activeTab === "fu" && !barTooLong && (
+        <InkoopFollowupWorkspace bar={bar} matchRound={matchRound} onOpenConnectData={() => setActiveTab("connectdata")}
+          onOpenTrackTrace={(item) => { setBar((current) => ({ ...current, grower: item.grower, from: item.day || item.date, to: item.day || item.date, day: null })); setActiveTab("tracktrace"); }} />
+      )}
       {activeTab === "tracktrace" && !barTooLong && <InkoopTrackTraceWorkspace bar={bar} setBar={setBar} overview={overview} company={selectedCompany} matchRound={matchRound} />}
 
       {activeTab === "dashboard" && <InkoopDashboardTab key={`dashboard-${matchRound}`} company={selectedCompany} />}

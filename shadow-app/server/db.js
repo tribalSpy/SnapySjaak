@@ -2506,6 +2506,12 @@ export async function saveInkoopIssueStatus(issue) {
   if (!pool || !issue?.id) {
     return;
   }
+  const before = (await pool.query("SELECT status, assigned_to, note FROM inkoop_issue_status WHERE id = $1", [issue.id])).rows[0] || { status: "open", assigned_to: "", note: "" };
+  const changes = [["status", before.status || "open", issue.status || "open"], ["assigned_to", before.assigned_to || "", issue.assigned_to || ""], ["note", before.note || "", issue.note || ""]]
+    .filter(([, from, to]) => from !== to);
+  if (changes.length) {
+    await insertInkoopFollowupEvents(changes.map(([action, from, to]) => ({ item_id: issue.id, by: issue.updated_by, action, from, to })));
+  }
   await pool.query(
     `
       INSERT INTO inkoop_issue_status (id, issue_type, status, assigned_to, note, updated_by, updated_at)
@@ -2533,7 +2539,112 @@ export async function getInkoopIssueStatuses() {
   if (!pool) {
     return [];
   }
-  const result = await pool.query("SELECT * FROM inkoop_issue_status");
+  const result = await pool.query("SELECT *, to_char(due_date, 'YYYY-MM-DD') AS due_day, to_char(item_date, 'YYYY-MM-DD') AS item_day FROM inkoop_issue_status");
+  return result.rows;
+}
+
+// History rows of the follow-up (see inkoop_followup_events).
+export async function insertInkoopFollowupEvents(events, client = pool) {
+  const rows = (events || []).filter((event) => event?.action);
+  if (!client || !rows.length) return;
+  const values = [];
+  const placeholders = rows.map((event) => {
+    values.push(event.item_id || "", event.claim_id || "", event.by || "", event.action, String(event.from ?? "").slice(0, 2000), String(event.to ?? "").slice(0, 2000), String(event.note ?? "").slice(0, 2000));
+    const base = values.length - 7;
+    return `($${base + 1}, $${base + 2}, $${base + 3}, $${base + 4}, $${base + 5}, $${base + 6}, $${base + 7})`;
+  });
+  await client.query(`INSERT INTO inkoop_followup_events (item_id, claim_id, by_user, action, from_value, to_value, note) VALUES ${placeholders.join(", ")}`, values);
+}
+
+const INKOOP_FOLLOWUP_FIELDS = ["status", "department", "category", "due_date", "note", "claim_id"];
+
+// Change follow-up lines (one or many): only the fields given change; each
+// change is a history row with the note (a move to another department
+// carries its reason). items: [{ id, date, snapshot }]. Returns the rows.
+export async function updateInkoopFollowupItems(items, changes, { by = "", note = "" } = {}) {
+  const list = (items || []).filter((item) => item?.id);
+  if (!pool || !list.length) return [];
+  const fields = INKOOP_FOLLOWUP_FIELDS.filter((field) => Object.prototype.hasOwnProperty.call(changes || {}, field));
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    const existing = new Map((await client.query("SELECT *, to_char(due_date, 'YYYY-MM-DD') AS due_day FROM inkoop_issue_status WHERE id = ANY($1::text[]) FOR UPDATE", [list.map((item) => item.id)])).rows.map((row) => [row.id, row]));
+    const events = [];
+    const saved = [];
+    for (const item of list) {
+      const before = existing.get(item.id) || {};
+      const current = {
+        status: before.status || "open",
+        department: before.department || "control",
+        category: before.category || "",
+        due_date: before.due_day || "",
+        note: before.note || "",
+        claim_id: before.claim_id || "",
+      };
+      const next = { ...current };
+      for (const field of fields) next[field] = String(changes[field] ?? "");
+      for (const field of fields) {
+        if (next[field] === current[field]) continue;
+        // The note itself is its own row; on another change it is the reason.
+        events.push({ item_id: item.id, claim_id: next.claim_id || current.claim_id, by, action: field, from: current[field], to: next[field], note: field === "note" ? "" : note });
+      }
+      if (!fields.includes("note") && note && !events.some((event) => event.item_id === item.id)) {
+        events.push({ item_id: item.id, by, action: "comment", to: note });
+      }
+      const row = (await client.query(
+        `INSERT INTO inkoop_issue_status (id, issue_type, status, assigned_to, note, updated_by, updated_at, department, category, due_date, claim_id, opened_at, item_date, snapshot)
+         VALUES ($1, $2, $3, $4, $5, $6, now(), $7, $8, $9::date, $10, now(), $11::date, $12::jsonb)
+         ON CONFLICT (id) DO UPDATE SET status = EXCLUDED.status, note = EXCLUDED.note, updated_by = EXCLUDED.updated_by, updated_at = now(),
+           department = EXCLUDED.department, category = EXCLUDED.category, due_date = EXCLUDED.due_date, claim_id = EXCLUDED.claim_id,
+           opened_at = COALESCE(inkoop_issue_status.opened_at, EXCLUDED.opened_at),
+           item_date = COALESCE(EXCLUDED.item_date, inkoop_issue_status.item_date),
+           snapshot = COALESCE(EXCLUDED.snapshot, inkoop_issue_status.snapshot)
+         RETURNING *, to_char(due_date, 'YYYY-MM-DD') AS due_day, to_char(item_date, 'YYYY-MM-DD') AS item_day`,
+        [item.id, String(item.id).split(":")[0] || "", next.status, before.assigned_to || "", next.note, by, next.department === "control" && !before.department ? null : next.department,
+          next.category || null, next.due_date || null, next.claim_id || null, item.date || null, item.snapshot ? JSON.stringify(item.snapshot) : null],
+      )).rows[0];
+      saved.push(row);
+    }
+    await insertInkoopFollowupEvents(events, client);
+    await client.query("COMMIT");
+    return saved;
+  } catch (error) {
+    await client.query("ROLLBACK").catch(() => {});
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
+// A follow-up line's (or a claim's) history, newest first.
+export async function getInkoopFollowupEvents({ itemId = "", claimId = "" } = {}) {
+  if (!pool || (!itemId && !claimId)) return [];
+  const result = await pool.query(
+    `SELECT id, item_id, claim_id, at, by_user, action, from_value, to_value, note FROM inkoop_followup_events
+      WHERE ${itemId ? "item_id = $1" : "claim_id = $1"} ORDER BY at DESC, id DESC LIMIT 500`,
+    [itemId || claimId],
+  );
+  return result.rows;
+}
+
+// The last history row of some lines (the lists' "last action").
+export async function getInkoopFollowupLastEvents(itemIds) {
+  if (!pool || !itemIds?.length) return [];
+  const result = await pool.query(
+    `SELECT DISTINCT ON (item_id) item_id, at, by_user, action, from_value, to_value, note FROM inkoop_followup_events
+      WHERE item_id = ANY($1::text[]) ORDER BY item_id, at DESC, id DESC`,
+    [itemIds],
+  );
+  return result.rows;
+}
+
+// The lines with a category (a category's page reads them whatever the period).
+export async function getInkoopCategorisedStatuses(category = "") {
+  if (!pool) return [];
+  const result = await pool.query(
+    `SELECT *, to_char(due_date, 'YYYY-MM-DD') AS due_day, to_char(item_date, 'YYYY-MM-DD') AS item_day FROM inkoop_issue_status WHERE COALESCE(category, '') <> ''${category ? " AND category = $1" : ""}`,
+    category ? [category] : [],
+  );
   return result.rows;
 }
 
@@ -4081,6 +4192,34 @@ const databaseMigrations = [
       updated_at timestamptz NOT NULL DEFAULT now()
     )
   `,
+  // The follow-up menu: who has it (department: control / inkoop / finance;
+  // none = control), a category ("High control"), a due date, the claim it
+  // is in, when it was first handled, its day and what it looked like (a
+  // line matched later still shows in a category's list).
+  `ALTER TABLE IF EXISTS inkoop_issue_status ADD COLUMN IF NOT EXISTS department text`,
+  `ALTER TABLE IF EXISTS inkoop_issue_status ADD COLUMN IF NOT EXISTS category text`,
+  `ALTER TABLE IF EXISTS inkoop_issue_status ADD COLUMN IF NOT EXISTS due_date date`,
+  `ALTER TABLE IF EXISTS inkoop_issue_status ADD COLUMN IF NOT EXISTS claim_id text`,
+  `ALTER TABLE IF EXISTS inkoop_issue_status ADD COLUMN IF NOT EXISTS opened_at timestamptz`,
+  `ALTER TABLE IF EXISTS inkoop_issue_status ADD COLUMN IF NOT EXISTS item_date date`,
+  `ALTER TABLE IF EXISTS inkoop_issue_status ADD COLUMN IF NOT EXISTS snapshot jsonb`,
+  // Every change of a follow-up line or claim: who, when, what (from -> to)
+  // and why -- for the bank. Never cleared by "start fresh".
+  `
+    CREATE TABLE IF NOT EXISTS inkoop_followup_events (
+      id bigserial PRIMARY KEY,
+      item_id text NOT NULL DEFAULT '',
+      claim_id text NOT NULL DEFAULT '',
+      at timestamptz NOT NULL DEFAULT now(),
+      by_user text NOT NULL DEFAULT '',
+      action text NOT NULL,
+      from_value text NOT NULL DEFAULT '',
+      to_value text NOT NULL DEFAULT '',
+      note text NOT NULL DEFAULT ''
+    )
+  `,
+  `CREATE INDEX IF NOT EXISTS inkoop_followup_events_item_idx ON inkoop_followup_events (item_id, at)`,
+  `CREATE INDEX IF NOT EXISTS inkoop_followup_events_claim_idx ON inkoop_followup_events (claim_id, at)`,
   // A day marked by hand for the follow-up: 'ready' (all its data is in,
   // e.g. no Levering BB that day) or 'hold' (not yet).
   `
