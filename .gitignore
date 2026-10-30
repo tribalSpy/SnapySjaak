@@ -27,3 +27,5 @@ node_modules/
 
 # LLM poller: its own config (API key)
 llm-poller-app/config.json
+king-poller-app/delivered_batches.json
+king-poller-app/config.json

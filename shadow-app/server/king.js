@@ -228,6 +228,10 @@ export function normalizeKingLedgerMap(source) {
 // finance/King-side settings left to fill in.
 export const DEFAULT_KING_SETTINGS = {
   dagboek: "Veilin",
+  // AI2 notas have their own dagboek in King (finance: "ProdXML"), with
+  // their own stuknummers (0 = King numbers them).
+  dagboek_ai2: "ProdXML",
+  next_stuknummer_ai2: 0,
   btw_laag_account: "150200",
   btw_hoog_account: "150250",
   creditor_accounts: { "049876": "250051", "057390": "250050", "060708": "250055", "063155": "250052" },
@@ -268,6 +272,8 @@ export function normalizeKingSettings(source) {
   }
   return {
     dagboek: text(merged.dagboek).slice(0, 10) || DEFAULT_KING_SETTINGS.dagboek,
+    dagboek_ai2: text(merged.dagboek_ai2).slice(0, 10) || DEFAULT_KING_SETTINGS.dagboek_ai2,
+    next_stuknummer_ai2: Math.max(0, Math.floor(Number(merged.next_stuknummer_ai2) || 0)),
     btw_laag_account: text(merged.btw_laag_account) || DEFAULT_KING_SETTINGS.btw_laag_account,
     btw_hoog_account: text(merged.btw_hoog_account) || DEFAULT_KING_SETTINGS.btw_hoog_account,
     creditor_accounts: cleanMap(merged.creditor_accounts, DEFAULT_KING_SETTINGS.creditor_accounts),
@@ -292,6 +298,25 @@ function kingFileName(value, fallback) {
 // "049876.FC.2025.0085" -> "049876FC20250085" (the sample's own format).
 export function kingExternId(invoiceNumber) {
   return text(invoiceNumber).replace(/[^A-Za-z0-9]/g, "").slice(0, 20);
+}
+
+// An AI2 nota: our key "AI2-90985-90985-4855" (AI2-klant-nota).
+export function isKingAi2(header) {
+  return /^ai2/i.test(text(header?.invoice_type)) || /^AI2-/i.test(text(header?.invoice_number));
+}
+
+// The invoice number King gets: FloraHolland's own; for an AI2 nota the
+// nota number as printed ("90985-4855"), not our key.
+export function kingInvoiceNumber(header) {
+  const number = text(header?.invoice_number);
+  if (!isKingAi2(header)) return number;
+  const match = /^AI2-[^-]+-(.+)$/i.exec(number);
+  return match ? match[1] : number;
+}
+
+// The dagboek a post goes to: AI2 its own, the rest FloraHolland's.
+export function kingDagboek(post, settings) {
+  return post?.is_ai2 ? settings.dagboek_ai2 : settings.dagboek;
 }
 
 function round2(value) {
@@ -338,7 +363,11 @@ export function buildKingJournalPost(header, lines, ledgerMap, settings) {
   const company = text(header?.company_number) || invoiceNumber.slice(0, 6);
   const invoiceDate = text(header?.invoice_date).slice(0, 10);
   const grandTotal = round2(header?.grand_total);
-  const externId = kingExternId(invoiceNumber);
+  // What King sees: an AI2 nota's printed number ("90985-4855"); the link
+  // to its PDF in King's archive ("AI2909854855").
+  const isAi2 = isKingAi2(header);
+  const kingNumber = kingInvoiceNumber(header);
+  const externId = kingExternId(isAi2 ? `AI2${kingNumber}` : invoiceNumber);
   const byKey = new Map((ledgerMap || []).map((row) => [kingLedgerKey(row.prd_id, row.btw), row]));
   const creditor = settings.creditor_accounts[company] || "";
   if (!creditor) {
@@ -360,13 +389,13 @@ export function buildKingJournalPost(header, lines, ledgerMap, settings) {
       valutacode: text(header?.currency) || "EUR",
       bedrag: round2(amount),
       omschrijving: text(omschrijving).slice(0, 40),
-      factuurnummer: invoiceNumber,
+      factuurnummer: kingNumber,
       factuurdatum: invoiceDate,
       archiefstuk_extern_id: externId,
     });
   };
 
-  pushLine(1, creditor, "CRED", grandTotal, invoiceNumber);
+  pushLine(1, creditor, "CRED", grandTotal, kingNumber);
   const vatBy = (category) => round2((header?.vat_subtotals || []).filter((entry) => text(entry.category).toUpperCase() === category).reduce((sum, entry) => sum + (Number(entry.amount) || 0), 0));
   const vatLaag = vatBy("S");
   const vatHoog = vatBy("H");
@@ -431,6 +460,8 @@ export function buildKingJournalPost(header, lines, ledgerMap, settings) {
   }
   return {
     invoice_number: invoiceNumber,
+    king_invoice_number: kingNumber,
+    is_ai2: isAi2,
     invoice_type: text(header?.invoice_type),
     company_number: company,
     invoice_date: invoiceDate,
@@ -456,18 +487,19 @@ function amount(value) {
 }
 
 // Same element names, order and formats as finance's accepted sample.
+// dagboek: FloraHolland's; a post with its own (an AI2 nota) keeps that.
 export function buildKingJournaalXml(posts, { boekdatum, dagboek, definitief }) {
   const parts = ["<?xml version='1.0' encoding='UTF-8'?>", "<KING_JOURNAAL><BOEKINGSGANGEN><BOEKINGSGANG>"];
   parts.push(`<BG_OMSCHRIJVING>${xmlEscape(`VeilingNr nota loaded on - ${String(boekdatum).replace(/-/g, ".")}`)}</BG_OMSCHRIJVING>`);
   parts.push(`<BG_DEFINITIEF>${definitief ? "true" : "false"}</BG_DEFINITIEF><JOURNAALPOSTEN>`);
   for (const post of posts) {
     parts.push("<JOURNAALPOST>");
-    parts.push(`<JP_DAGBOEKCODE>${xmlEscape(dagboek)}</JP_DAGBOEKCODE>`);
+    parts.push(`<JP_DAGBOEKCODE>${xmlEscape(post.dagboek || dagboek)}</JP_DAGBOEKCODE>`);
     parts.push(`<JP_BOEKDATUM>${xmlEscape(post.invoice_date || boekdatum)}</JP_BOEKDATUM>`);
     if (post.stuknummer) {
       parts.push(`<JP_STUKNUMMER>${post.stuknummer}</JP_STUKNUMMER>`);
     }
-    parts.push(`<JP_OMSCHRIJVING>${xmlEscape(post.invoice_number)}</JP_OMSCHRIJVING><JOURNAALREGELS>`);
+    parts.push(`<JP_OMSCHRIJVING>${xmlEscape(post.king_invoice_number || post.invoice_number)}</JP_OMSCHRIJVING><JOURNAALREGELS>`);
     for (const line of post.lines) {
       parts.push("<JOURNAALREGEL>");
       parts.push(`<JR_VOLGNUMMER>${line.volgnummer}</JR_VOLGNUMMER>`);
@@ -499,8 +531,8 @@ export function buildKingArchiefXml(posts, { archiefsoort, pdfDir }) {
     parts.push(`<DAR_ARCHIEFSOORT>${xmlEscape(archiefsoort)}</DAR_ARCHIEFSOORT>`);
     parts.push(`<DAR_BESTANDSNAAM>${xmlEscape(`${dir}\\${post.extern_id}.pdf`)}</DAR_BESTANDSNAAM>`);
     parts.push(`<DAR_DATUM>${xmlEscape(post.invoice_date)}</DAR_DATUM>`);
-    parts.push(`<DAR_EXTERNE_CODE>${xmlEscape(post.invoice_number)}</DAR_EXTERNE_CODE>`);
-    parts.push(`<DAR_OPMERKING>${xmlEscape(`FloraHolland ${post.invoice_number}`)}</DAR_OPMERKING>`);
+    parts.push(`<DAR_EXTERNE_CODE>${xmlEscape(post.king_invoice_number || post.invoice_number)}</DAR_EXTERNE_CODE>`);
+    parts.push(`<DAR_OPMERKING>${xmlEscape(`${post.is_ai2 ? "AI2" : "FloraHolland"} ${post.king_invoice_number || post.invoice_number}`)}</DAR_OPMERKING>`);
     parts.push("<DAR_VERWERKSOORT>GEEN</DAR_VERWERKSOORT>");
     parts.push("<DAR_NAW_SOORT>NOG_TOEWIJZEN</DAR_NAW_SOORT>");
     parts.push(`<DAR_EXTERN_ID>${xmlEscape(post.extern_id)}</DAR_EXTERN_ID>`);

@@ -13,6 +13,7 @@ import {
   buildKingArchiefXml,
   buildKingJournaalXml,
   buildKingJournalPost,
+  kingDagboek,
   kingLedgerKey,
   normalizeKingLedgerMap,
   normalizeKingLedgerRow,
@@ -29,6 +30,8 @@ import {
   importDatabaseSnapshot,
   createLlmJob,
   getLlmJobById,
+  completeLlmJobById,
+  getKingExportBatch,
   dbQuery,
   deleteUkdocsCsiParsedDocumentFromDatabase,
   getUkdocsCsiParsedDocumentFromDatabase,
@@ -9672,7 +9675,14 @@ async function buildKingPostsForDate(state, date) {
     }
     linesByInvoice.get(key).push(line);
   }
-  const exportByInvoice = new Map(exports.map((row) => [row.invoice_number, row]));
+  // A send not delivered yet: where its job is (waiting for the King
+  // poller, picked up and waiting for King, failed ...).
+  const jobById = new Map();
+  for (const jobId of [...new Set(exports.filter((row) => row.status !== "delivered" && row.job_id).map((row) => row.job_id))]) {
+    const job = await getLlmJobById(jobId).catch(() => null);
+    if (job) jobById.set(jobId, { status: job.status, agent_name: job.agent_name, claimed_at: job.claimed_at, attempt_count: job.attempt_count, max_attempts: job.max_attempts, error_text: job.error_text, updated_at: job.updated_at });
+  }
+  const exportByInvoice = new Map(exports.map((row) => [row.invoice_number, { ...row, job: jobById.get(row.job_id) || null }]));
   return headers.map((header) => {
     // AI2 notas book from their own summary (Dagnota XML, see the worker's
     // ai2_king_summary) -- their stored lines are the PDF's product lines.
@@ -9728,13 +9738,20 @@ async function sendKingExport(body, requestUser) {
     throw new Error(`Already sent to King: ${already.map((post) => post.invoice_number).join(", ")} -- sending again books them twice in King. Confirm "send again" to do it anyway.`);
   }
 
+  // Stuknummers per dagboek: FloraHolland's counter and AI2's own (0: King
+  // numbers them).
   let nextStuknummer = settings.next_stuknummer;
+  let nextStuknummerAi2 = settings.next_stuknummer_ai2;
   const numbered = posts.map((post) => {
-    const stuknummer = nextStuknummer > 0 ? nextStuknummer : 0;
-    if (nextStuknummer > 0) {
-      nextStuknummer += 1;
+    let stuknummer = 0;
+    if (post.is_ai2) {
+      stuknummer = nextStuknummerAi2 > 0 ? nextStuknummerAi2 : 0;
+      if (nextStuknummerAi2 > 0) nextStuknummerAi2 += 1;
+    } else {
+      stuknummer = nextStuknummer > 0 ? nextStuknummer : 0;
+      if (nextStuknummer > 0) nextStuknummer += 1;
     }
-    return { ...post, stuknummer };
+    return { ...post, dagboek: kingDagboek(post, settings), stuknummer };
   });
   const batchId = `king-${String(body?.date).slice(0, 10)}-${crypto.randomUUID().slice(0, 8)}`;
   const journaalXml = buildKingJournaalXml(numbered, { boekdatum: body.date, dagboek: settings.dagboek, definitief: settings.bg_definitief });
@@ -9772,9 +9789,9 @@ async function sendKingExport(body, requestUser) {
     exported_by: requestUser.username,
     journal_json: { lines: post.lines, totals: post.totals },
   })));
-  if (nextStuknummer !== settings.next_stuknummer) {
+  if (nextStuknummer !== settings.next_stuknummer || nextStuknummerAi2 !== settings.next_stuknummer_ai2) {
     const latest = await readInkoopState();
-    latest.king_settings = normalizeKingSettings({ ...latest.king_settings, next_stuknummer: nextStuknummer });
+    latest.king_settings = normalizeKingSettings({ ...latest.king_settings, next_stuknummer: nextStuknummer, next_stuknummer_ai2: nextStuknummerAi2 });
     await writeInkoopState(latest);
   }
   return { batch_id: batchId, job_id: job.id, count: numbered.length };
@@ -20565,7 +20582,16 @@ async function handleApi(req, res, url) {
       sendJson(res, 400, { error: "job id and agent_name are required" });
       return;
     }
-    const job = await completeLlmJob(jobId, agentName, body.result_json && typeof body.result_json === "object" ? body.result_json : {});
+    let job = await completeLlmJob(jobId, agentName, body.result_json && typeof body.result_json === "object" ? body.result_json : {});
+    if (!job) {
+      // A King delivery reported after its claim moved on (a retry handed
+      // the job back): the files are in King's folder -- delivered.
+      const known = await getLlmJobById(jobId);
+      if (known?.job_type === "king_export" && body.result_json?.delivered === true && known.payload_json?.batch_id
+        && String(body.result_json.batch_id || "") === String(known.payload_json.batch_id)) {
+        job = await completeLlmJobById(jobId, { ...body.result_json, reported_by: agentName });
+      }
+    }
     if (!job) {
       sendJson(res, 404, { error: "LLM job not found for this agent" });
       return;
@@ -20675,6 +20701,17 @@ async function handleApi(req, res, url) {
     if (!jobId || !agentName) {
       sendJson(res, 400, { error: "job id and agent_name are required" });
       return;
+    }
+    // A King batch already delivered is never handed out again (it would be
+    // written -- and booked -- twice).
+    const failing = await getLlmJobById(jobId);
+    if (failing?.job_type === "king_export" && failing.payload_json?.batch_id) {
+      const batchRows = await getKingExportBatch(failing.payload_json.batch_id);
+      if (batchRows.length && batchRows.every((row) => row.status === "delivered")) {
+        const done = await completeLlmJobById(jobId, { delivered: true, batch_id: failing.payload_json.batch_id, note: `fail ignored: already delivered (${String(body.error_text || "").slice(0, 200)})` });
+        sendJson(res, 200, { job: done, ignored: true });
+        return;
+      }
     }
     const job = await failLlmJob(jobId, agentName, body.error_text || "Job failed", body.allow_retry === true);
     if (!job) {
@@ -24439,7 +24476,7 @@ async function handleApi(req, res, url) {
     try {
       const state = await readInkoopState();
       const selected = await selectKingPosts(state, body);
-      const numbered = selected.map((post) => ({ ...post, stuknummer: post.export?.stuknummer || 0 }));
+      const numbered = selected.map((post) => ({ ...post, dagboek: kingDagboek(post, state.king_settings), stuknummer: post.export?.stuknummer || 0 }));
       sendJson(res, 200, {
         journaal_xml: buildKingJournaalXml(numbered, { boekdatum: body?.date, dagboek: state.king_settings.dagboek, definitief: state.king_settings.bg_definitief }),
         archief_xml: buildKingArchiefXml(numbered, { archiefsoort: state.king_settings.archiefsoort, pdfDir: state.king_settings.king_pdf_dir }),
@@ -24467,6 +24504,31 @@ async function handleApi(req, res, url) {
     try {
       const result = await sendKingExport(body, requestUser);
       sendJson(res, 200, result);
+    } catch (error) {
+      sendJson(res, 400, { error: error instanceof Error ? error.message : String(error) });
+    }
+    return;
+  }
+
+  // Finance sees the booking in King: the batch is delivered (the poller's
+  // own report got lost) -- its job stops, nothing is sent again.
+  if (url.pathname === "/api/inkoop/king/mark-delivered" && req.method === "POST") {
+    if (!requirePermission(res, requestUser, PERMISSIONS.INKOOP_VIEW)) {
+      return;
+    }
+    if (!isDatabaseEnabled()) {
+      sendJson(res, 503, { error: "Database is not enabled" });
+      return;
+    }
+    try {
+      const body = await readRequestJson(req);
+      const batchId = String(body?.batch_id || "").trim();
+      const rows = await getKingExportBatch(batchId);
+      if (!rows.length) throw new Error("Unknown King batch");
+      const jobId = rows.find((row) => row.job_id)?.job_id;
+      if (jobId) await completeLlmJobById(jobId, { delivered: true, batch_id: batchId, marked_by: requestUser.username, marked_at: new Date().toISOString() });
+      await updateKingExportBatchStatus(batchId, "delivered", `marked delivered by ${requestUser.username} (seen in King)`);
+      sendJson(res, 200, { batch_id: batchId, count: rows.length });
     } catch (error) {
       sendJson(res, 400, { error: error instanceof Error ? error.message : String(error) });
     }

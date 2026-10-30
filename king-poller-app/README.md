@@ -19,6 +19,24 @@ Files are written as `*.part` and renamed when complete, so King never reads a
 half-written file. The app shows each export as queued → delivered (or failed
 with the reason).
 
+An AI2 nota goes to its own dagboek (King settings: "Dagboek AI2", default
+`ProdXML`) under its printed nota number (`90985-4855`); its PDF is
+`AI2<nota digits>.pdf`.
+
+## Never twice (version 1.1)
+Every batch written into King's folder is kept in `delivered_batches.json`
+next to `poller.py`. A batch in that list is **never written again**: if the
+app hands the same job out once more (its "delivered" report got lost), the
+poller only reports it. A report that doesn't reach the app is sent again
+every round until it does -- the job is not marked failed, so it can't be
+retried into a second booking. Keep the file; deleting it removes that
+protection for old batches. When finance sees a booking in King while the
+app still says "waiting", **Seen in King -- mark delivered** in the app
+closes it.
+
+Updating from 1.0: stop the poller, replace `poller.py` (or download it again
+from the app), start it again. `config.json` stays as it is.
+
 ## Easiest setup: download from the app
 In the app, **Inkoop Controle > Import naar King > King poller > Download King
 poller**. Unzip it on the PC that reaches King and double-click

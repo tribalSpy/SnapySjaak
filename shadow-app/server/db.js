@@ -3428,6 +3428,31 @@ export async function getLlmJobById(jobId) {
   return result.rows?.[0] ? mapLlmJobRow(result.rows[0]) : null;
 }
 
+// A job finished whoever holds it now -- a King delivery reported after its
+// claim moved on, or confirmed by finance in the app.
+export async function completeLlmJobById(jobId, resultJson) {
+  if (!pool) {
+    throw new Error("Database is not initialized");
+  }
+  const result = await pool.query(
+    `UPDATE llm_jobs SET status = 'done', result_json = $2::jsonb, finished_at = COALESCE(finished_at, now()), updated_at = now(), error_text = ''
+      WHERE id = $1 RETURNING *`,
+    [String(jobId || "").trim(), JSON.stringify(resultJson && typeof resultJson === "object" ? resultJson : {})],
+  );
+  return result.rows?.[0] ? mapLlmJobRow(result.rows[0]) : null;
+}
+
+// The King export rows of one batch.
+export async function getKingExportBatch(batchId) {
+  if (!pool || !batchId) return [];
+  const result = await pool.query(
+    `SELECT invoice_number, batch_id, stuknummer, extern_id, status, job_id, error_text, exported_by, exported_at, delivered_at
+       FROM king_exports WHERE batch_id = $1`,
+    [String(batchId)],
+  );
+  return result.rows;
+}
+
 export async function getActiveLlmJobsByType(jobType) {
   if (!pool) {
     return [];

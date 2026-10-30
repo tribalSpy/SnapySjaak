@@ -35,6 +35,50 @@ DEFAULTS_CONFIG_PATH = APP_DIR / "config.defaults.json"
 
 JOB_TYPES = ["king_export"]
 
+# Every batch this PC wrote into King's folder, with the result to report.
+# A batch in here is never written again (King would book it twice): a
+# repeat of its job only reports the result, and a report that didn't reach
+# the app is sent again on every round until it does.
+DELIVERED_PATH = APP_DIR / "delivered_batches.json"
+
+
+def load_delivered() -> dict:
+    try:
+        return load_json(DELIVERED_PATH) or {}
+    except Exception:
+        return {}
+
+
+def save_delivered(delivered: dict):
+    partial = DELIVERED_PATH.with_name(DELIVERED_PATH.name + ".part")
+    partial.write_text(json.dumps(delivered, indent=1), encoding="utf-8")
+    os.replace(partial, DELIVERED_PATH)
+
+
+def report_result(config: dict, base: dict, job_id: str, result_json: dict) -> bool:
+    for attempt in range(3):
+        try:
+            api_request(config, "POST", f"/api/llm/jobs/{job_id}/result", {**base, "result_json": result_json})
+            return True
+        except Exception as error:
+            print(f"  report of job {job_id} failed ({error}) -- {'retrying' if attempt < 2 else 'will retry next round'}")
+            time.sleep(10)
+    return False
+
+
+def report_pending(config: dict, base: dict):
+    delivered = load_delivered()
+    changed = False
+    for batch_id, entry in delivered.items():
+        if entry.get("reported"):
+            continue
+        if report_result(config, base, entry.get("job_id", ""), entry.get("result") or {}):
+            entry["reported"] = True
+            changed = True
+            print(f"Reported batch {batch_id} (job {entry.get('job_id')}) as delivered")
+    if changed:
+        save_delivered(delivered)
+
 
 def load_json(path: Path):
     if not path.exists():
@@ -59,7 +103,7 @@ def load_config():
         "api_key": str(env_or_config("KING_POLLER_API_KEY", config, "api_key", "")).strip(),
         "agent_name": str(env_or_config("KING_POLLER_AGENT_NAME", config, "agent_name", "")).strip(),
         "pc_name": str(env_or_config("KING_POLLER_PC_NAME", config, "pc_name", socket.gethostname())).strip(),
-        "version": str(env_or_config("KING_POLLER_VERSION", config, "version", "1.0.0")).strip(),
+        "version": str(env_or_config("KING_POLLER_VERSION", config, "version", "1.1.0")).strip(),
         "poll_interval_seconds": int(env_or_config("KING_POLLER_INTERVAL_SECONDS", config, "poll_interval_seconds", 30) or 30),
         "import_dir": str(env_or_config("KING_IMPORT_DIR", config, "import_dir", "")).strip(),
         "pdf_dir": str(env_or_config("KING_PDF_DIR", config, "pdf_dir", "")).strip(),
@@ -234,8 +278,17 @@ def main():
     validate_config(config)
     print(f'King poller starting for agent {config["agent_name"]} -> {config["server_url"]}')
     print(f'  import folder: {config["import_dir"]}  pdf folder: {config["pdf_dir"]}')
+    base = {
+        "agent_name": config["agent_name"],
+        "pc_name": config["pc_name"],
+        "model_name": "",
+        "version": config["version"],
+        "status": "idle",
+        "capabilities": JOB_TYPES,
+    }
     while True:
         try:
+            report_pending(config, base)
             poll_response = api_request(
                 config,
                 "POST",
@@ -248,24 +301,36 @@ def main():
                 continue
 
             job_id = str(job.get("id") or "").strip()
-            print(f"Claimed job {job_id} ({job.get('job_type')})")
-            base = {
-                "agent_name": config["agent_name"],
-                "pc_name": config["pc_name"],
-                "model_name": "",
-                "version": config["version"],
-                "status": "idle",
-                "capabilities": JOB_TYPES,
-            }
+            batch_id = str((job.get("payload_json") or {}).get("batch_id") or "").strip()
+            print(f"Claimed job {job_id} ({job.get('job_type')}, batch {batch_id})")
+            delivered = load_delivered()
+            if batch_id and batch_id in delivered:
+                # Written before: never again -- only tell the app.
+                print(f"  batch {batch_id} was already written into King's folder -- reporting it, not writing again")
+                entry = delivered[batch_id]
+                entry["job_id"] = job_id
+                entry["reported"] = report_result(config, base, job_id, entry.get("result") or {})
+                save_delivered(delivered)
+                continue
             try:
                 result_json = run_job(config, job)
-                api_request(config, "POST", f"/api/llm/jobs/{job_id}/result", {**base, "result_json": result_json})
-                print(f"Delivered job {job_id}")
             except Exception as error:
                 # Retry allowed: a share that's briefly unreachable shouldn't
                 # lose the export (the server stops after max_attempts).
                 api_request(config, "POST", f"/api/llm/jobs/{job_id}/fail", {**base, "error_text": str(error), "allow_retry": True})
                 print(f"Failed job {job_id}: {error}")
+                continue
+            # Written: remember it before telling the app, so a lost report
+            # can never lead to writing (and booking) it a second time.
+            delivered = load_delivered()
+            delivered[batch_id or f"job-{job_id}"] = {"job_id": job_id, "at": time.strftime("%Y-%m-%d %H:%M:%S"), "result": result_json, "reported": False}
+            save_delivered(delivered)
+            if report_result(config, base, job_id, result_json):
+                delivered[batch_id or f"job-{job_id}"]["reported"] = True
+                save_delivered(delivered)
+                print(f"Delivered job {job_id}")
+            else:
+                print(f"Delivered job {job_id} -- the app didn't get the report yet; it is sent again next round")
         except KeyboardInterrupt:
             print("Poller stopped by user")
             return

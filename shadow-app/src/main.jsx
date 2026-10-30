@@ -16193,6 +16193,17 @@ const KING_EXPORT_STATUS_LABELS = { queued: "Sent, waiting for delivery", delive
 
 function kingPostStatus(post) {
   if (post.export) {
+    // Not delivered yet: where its job really is.
+    const job = post.export.status === "queued" ? post.export.job : null;
+    if (job?.status === "pending") {
+      return { tone: "info", label: `Sent -- waiting for the King poller${job.attempt_count ? ` (try ${job.attempt_count + 1} of ${job.max_attempts})` : ""}` };
+    }
+    if (job?.status === "claimed") {
+      return { tone: "info", label: `Picked up by ${job.agent_name || "the King poller"}${job.claimed_at ? ` at ${new Date(job.claimed_at).toLocaleTimeString("nl-NL", { hour: "2-digit", minute: "2-digit" })}` : ""} -- waiting for King to read it (up to 30 min)` };
+    }
+    if (job?.status === "done") {
+      return { tone: "success", label: "Written to King's folder" };
+    }
     return { tone: post.export.status === "failed" ? "danger" : post.export.status === "delivered" ? "success" : "info", label: KING_EXPORT_STATUS_LABELS[post.export.status] || post.export.status };
   }
   if (post.problems.length) {
@@ -16214,16 +16225,34 @@ function downloadTextFile(fileName, content) {
 }
 
 // One invoice: status, problems/warnings, and its journal lines on demand.
-function InkoopKingPostRow({ post, selected, onToggle }) {
+function InkoopKingPostRow({ post, selected, onToggle, onChanged = null }) {
   const [open, setOpen] = useState(false);
+  const [marking, setMarking] = useState(false);
+  // Finance sees it in King, the app still waits: mark the batch delivered.
+  async function markDelivered() {
+    if (!post.export?.batch_id) return;
+    if (!window.confirm(`Is ${post.king_invoice_number || post.invoice_number} booked in King? Then it is marked delivered (with your name) and nothing is sent again.`)) return;
+    setMarking(true);
+    try {
+      await apiJson("/api/inkoop/king/mark-delivered", { method: "POST", body: JSON.stringify({ batch_id: post.export.batch_id }) });
+      onChanged?.();
+    } catch (markError) {
+      window.alert(markError.message);
+    } finally {
+      setMarking(false);
+    }
+  }
   const status = kingPostStatus(post);
   const selectable = !post.problems.length;
   return (
     <>
       <tr>
         <td><input type="checkbox" checked={selected} disabled={!selectable} onChange={() => onToggle(post.invoice_number)} /></td>
-        <td><InkoopInvoiceLink invoiceNumber={post.invoice_number} /></td>
-        <td>{INKOOP_INVOICE_TYPE_LABELS[post.invoice_type] || post.invoice_type || "-"}</td>
+        <td>
+          <InkoopInvoiceLink invoiceNumber={post.invoice_number} />
+          {post.king_invoice_number && post.king_invoice_number !== post.invoice_number && <div className="muted">in King: {post.king_invoice_number}</div>}
+        </td>
+        <td>{INKOOP_INVOICE_TYPE_LABELS[post.invoice_type] || post.invoice_type || "-"}{post.is_ai2 ? <div className="muted">dagboek AI2</div> : null}</td>
         <td>{fustOverviewDate(post.invoice_date)}</td>
         <td><strong>{formatInkoopEuro(post.totals.grand_total)}</strong></td>
         <td>{post.lines.length}</td>
@@ -16231,6 +16260,10 @@ function InkoopKingPostRow({ post, selected, onToggle }) {
           <span className={`ukdocs-status-badge ${status.tone}`}>{status.label}</span>
           {post.export?.stuknummer ? ` #${post.export.stuknummer}` : ""}
           {post.export?.error_text ? <div className="muted">{post.export.error_text}</div> : null}
+          {post.export?.job?.error_text ? <div className="muted">Last try: {post.export.job.error_text}</div> : null}
+          {post.export && post.export.status !== "delivered" && (
+            <div><button type="button" className="link-button" onClick={markDelivered} disabled={marking}>{marking ? "Saving…" : "Seen in King -- mark delivered"}</button></div>
+          )}
         </td>
         <td>
           {post.problems.map((problem) => <div key={problem} style={{ color: "#b91c1c" }}>{problem}</div>)}
@@ -16300,14 +16333,16 @@ function InkoopKingSettingsCard({ settings, onSaved }) {
         Prefilled from finance's sample journal. <strong>Archiefsoort</strong> and the <strong>King PDF folder</strong> (the folder as King's server sees it -- the archive XML tells King to read each PDF from there) must be filled in before anything can be sent.
       </div>
       <div className="form-grid">
-        <label><span>Dagboek</span><input value={draft.dagboek} onChange={(event) => set("dagboek", event.target.value)} /></label>
+        <label><span>Dagboek FloraHolland</span><input value={draft.dagboek} onChange={(event) => set("dagboek", event.target.value)} /></label>
+        <label><span>Dagboek AI2</span><input value={draft.dagboek_ai2 || ""} onChange={(event) => set("dagboek_ai2", event.target.value)} placeholder="ProdXML" /></label>
         <label><span>BTW laag (S) account</span><input value={draft.btw_laag_account} onChange={(event) => set("btw_laag_account", event.target.value)} /></label>
         <label><span>BTW hoog (H) account</span><input value={draft.btw_hoog_account} onChange={(event) => set("btw_hoog_account", event.target.value)} /></label>
         <label><span>Archiefsoort</span><input value={draft.archiefsoort} onChange={(event) => set("archiefsoort", event.target.value)} placeholder="ask finance / King" /></label>
         <label><span>King PDF folder (as King sees it)</span><input value={draft.king_pdf_dir} onChange={(event) => set("king_pdf_dir", event.target.value)} placeholder="e.g. D:\King\Import\pdf" /></label>
         <label><span>Journal file name in King's folder</span><input value={draft.journaal_file_name || ""} onChange={(event) => set("journaal_file_name", event.target.value)} placeholder="king_journaal.xml" /></label>
         <label><span>Archive file name in King's folder</span><input value={draft.archief_file_name || ""} onChange={(event) => set("archief_file_name", event.target.value)} placeholder="king_archief.xml" /></label>
-        <label><span>Next stuknummer (0 = let King number)</span><input type="number" value={draft.next_stuknummer} onChange={(event) => set("next_stuknummer", Number(event.target.value) || 0)} /></label>
+        <label><span>Next stuknummer FloraHolland (0 = let King number)</span><input type="number" value={draft.next_stuknummer} onChange={(event) => set("next_stuknummer", Number(event.target.value) || 0)} /></label>
+        <label><span>Next stuknummer AI2 (0 = let King number)</span><input type="number" value={draft.next_stuknummer_ai2 || 0} onChange={(event) => set("next_stuknummer_ai2", Number(event.target.value) || 0)} /></label>
         <label>
           <span>Flowers / plants split</span>
           <select value={draft.fl_pl_mode} onChange={(event) => set("fl_pl_mode", event.target.value)}>
@@ -16615,7 +16650,7 @@ function InkoopKingTab() {
               <thead><tr><th /><th>Invoice</th><th>Type</th><th>Date</th><th>Total incl. BTW</th><th>Lines</th><th>Status</th><th>Checks</th><th /></tr></thead>
               <tbody>
                 {companyPosts.map((post) => (
-                  <InkoopKingPostRow key={post.invoice_number} post={post} selected={selected.has(post.invoice_number)} onToggle={toggle} />
+                  <InkoopKingPostRow key={post.invoice_number} post={post} selected={selected.has(post.invoice_number)} onToggle={toggle} onChanged={() => loadDay()} />
                 ))}
               </tbody>
             </table>
