@@ -16943,10 +16943,10 @@ function IkTileLinesTable({ lines, sides }) {
           <tr key={`${line.invoice_number}-${line.lot}-${index}`} className={`ik-status-${line.status}`}>
             <td className="ik-status-icon" title={IK_STATUS_LABEL[line.status]}>{IK_STATUS_ICON[line.status]}</td>
             <td>{fustOverviewDate(line.date)}</td>
-            {invoice && <><td className="ik-inv">{line.invoice_number ? <InkoopInvoiceLink invoiceNumber={line.invoice_number} /> : "-"}</td><td>{line.pav || "-"}</td></>}
+            {invoice && <><td className="ik-inv">{line.invoice_number ? <InkoopInvoiceLink invoiceNumber={line.invoice_number} /> : "-"}</td><td title={line.your_reference ? `Uw ref. ${line.your_reference}` : ""}>{line.pav || (line.your_reference ? `ref ${line.your_reference}` : "-")}</td></>}
             <td className="ik-ellipsis" title={`${line.description} (${line.flow})`}><i className="ik-dot" style={{ background: INKOOP_FLOW_COLORS[line.flow] }} />{line.description}</td>
             {invoice && <>
-              <td className="ik-num">{inkoopBoxesText(line.invoice_quantity, line.packages, line.per_package)}</td>
+              <td className="ik-num">{inkoopBoxesText(line.invoice_quantity, line.packages, line.per_package, line.status === "matched" || line.status === "mismatch" ? { items: line.lot_items, cont: line.lot_cont } : null)}</td>
               <td className="ik-num">{line.invoice_quantity ?? ""}</td>
               <td className="ik-num">{line.invoice_price ?? ""}</td>
               <td className="ik-num">{money(line.invoice_total)}</td>
@@ -17460,12 +17460,23 @@ function IkTraceTable({ rows, from, to, company, bar, setBar }) {
       const rawKeys = (rows, field, skip) => [...new Set(rows.flatMap((row) => Object.keys(row[field] || {})))].filter((key) => !skip.includes(key)).sort();
       const invoiceRows = (payload.invoice_lines || []).filter((line) => !bar.flows?.length || bar.flows.includes(line.flow))
         .sort((left, right) => String(left.invoice_date).localeCompare(String(right.invoice_date)) || String(left.id).localeCompare(String(right.id)));
-      const invoiceExtra = rawKeys(invoiceRows, "raw", ["packages", "per_package"]);
+      const invoiceExtra = rawKeys(invoiceRows, "raw", ["packages", "per_package", "your_reference", "vbn_code"]);
+      // The boxes as on the PDF (Aantal × Stuks = Totaal); an invoice
+      // uploaded before they were kept: its matched lot's, when its pieces
+      // are the same ("from lot").
+      const lotBoxes = new Map((payload.lots || []).map((lot) => [String(lot.lot), lot.raw || {}]));
+      const boxesOf = (line) => {
+        const own = inkoopBoxesText(line.quantity, line.raw?.packages, line.raw?.per_package);
+        if (own) return { boxes: Number(line.raw.packages), perBox: Number(line.raw.per_package), text: `${own} = ${line.quantity}` };
+        const lot = line.matched_lot && !String(line.matched_lot).includes("+") ? lotBoxes.get(String(line.matched_lot)) : null;
+        const fromLot = lot ? inkoopBoxesText(line.quantity, lot.items, lot.cont) : "";
+        return fromLot ? { boxes: Number(lot.items), perBox: Number(lot.cont), text: `${fromLot} = ${line.quantity} (from lot)` } : { boxes: "", perBox: "", text: "" };
+      };
       sheet("Invoice data",
-        ["Our grower", "Invoice date", "Invoice", "Type", "Company", "Brief", "Product", "Grower (invoice)", "FH number", "GLN", "Boxes", "Per box", "Pieces", "Price", "Total", ...invoiceExtra, "Source file", "Match", "Flow", "Matched Connect lot", "Difference", "Note"],
-        invoiceRows.map((line) => [line.our_grower, line.invoice_date, line.invoice_number, line.invoice_type, line.company_name ? `${line.company_number} ${line.company_name}` : line.company_number,
-          line.reference_bt, line.description, line.supplier_name, line.supplier_fh_number, line.supplier_gln,
-          num(line.raw?.packages), num(line.raw?.per_package), num(line.quantity), num(line.unit_price), num(line.total),
+        ["Our grower", "Invoice date", "Invoice", "Uw ref.", "Type", "Company", "Brief", "VBN", "Product", "Grower (invoice)", "FH number", "GLN", "Aantal (boxes)", "Stuks (per box)", "Totaal (pieces)", "Boxes × per box", "Prijs", "Total", ...invoiceExtra, "Source file", "Match", "Flow", "Matched Connect lot", "Difference", "Note"],
+        invoiceRows.map((line) => [line.our_grower, line.invoice_date, line.invoice_number, line.raw?.your_reference || "", line.invoice_type, line.company_name ? `${line.company_number} ${line.company_name}` : line.company_number,
+          line.reference_bt, line.raw?.vbn_code || "", line.description, line.supplier_name, line.supplier_fh_number, line.supplier_gln,
+          boxesOf(line).boxes, boxesOf(line).perBox, num(line.quantity), boxesOf(line).text, num(line.unit_price), num(line.total),
           ...invoiceExtra.map((key) => cell(line.raw?.[key])), line.source_file_name, IK_STATUS_LABEL[line.status] || line.status, line.flow,
           line.status === "matched" || line.status === "mismatch" ? line.matched_lot : "", num(line.difference), line.note]),
         ["Total", "Difference"]);
@@ -17473,9 +17484,9 @@ function IkTraceTable({ rows, from, to, company, bar, setBar }) {
       const lotExtra = rawKeys(lots, "raw", ["items", "cont"]);
       const eppKeys = rawKeys(lots, "epp", ["source_file_name"]);
       sheet("Connect data",
-        ["Our grower", "Date", "Lot", "PAV", "Supplier", "Transport", "Avc", "Product", "Boxes", "Per box", "Pieces", "Price", "Total", "Deb no", "Inv no", ...lotExtra, ...eppKeys.map((key) => `Night action: ${key}`), "Dispatched to"],
+        ["Our grower", "Date", "Lot", "PAV", "Supplier", "Transport", "Avc", "Product", "Boxes", "Per box", "Pieces", "Boxes × per box", "Price", "Total", "Deb no", "Inv no", ...lotExtra, ...eppKeys.map((key) => `Night action: ${key}`), "Dispatched to"],
         lots.map((lot) => [lot.our_grower, lot.erp_date, lot.lot, lot.pav, lot.suppl, lot.transp, lot.avc, lot.description,
-          num(lot.raw?.items), num(lot.raw?.cont), num(lot.pieces), num(lot.price), num(lot.t_price), lot.deb_no, lot.inv_no,
+          num(lot.raw?.items), num(lot.raw?.cont), num(lot.pieces), inkoopBoxesText(lot.pieces, lot.raw?.items, lot.raw?.cont) ? `${inkoopBoxesText(lot.pieces, lot.raw?.items, lot.raw?.cont)} = ${lot.pieces}` : "", num(lot.price), num(lot.t_price), lot.deb_no, lot.inv_no,
           ...lotExtra.map((key) => cell(lot.raw?.[key])), ...eppKeys.map((key) => cell(lot.epp?.[key])),
           (Array.isArray(lot.dispatches) ? lot.dispatches : []).map(inkoopDispatchText).join(", ")]),
         ["Total"]);

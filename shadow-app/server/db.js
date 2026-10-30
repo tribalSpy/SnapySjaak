@@ -1633,7 +1633,8 @@ export async function getInkoopOverviewLines({ company = "", from = "", to = "",
   const result = await pool.query(
     `SELECT to_char(m.match_date, 'YYYY-MM-DD') AS date, m.list, m.invoice_number, m.invoice_type, m.pav, m.lot, m.supplier_code, m.supplier_name, m.description,
             m.invoice_quantity::float8, m.invoice_price::float8, m.invoice_total::float8, m.erp_quantity::float8, m.erp_price::float8, m.erp_total::float8, m.difference_total::float8, m.note,
-            il.raw->>'packages' AS packages, il.raw->>'per_package' AS per_package, el.raw->>'items' AS lot_items, el.raw->>'cont' AS lot_cont
+            il.raw->>'packages' AS packages, il.raw->>'per_package' AS per_package, il.raw->>'your_reference' AS your_reference,
+            el.raw->>'items' AS lot_items, el.raw->>'cont' AS lot_cont
        FROM inkoop_match_rows m
        LEFT JOIN LATERAL (
          SELECT i.raw FROM inkoop_invoice_lines i
