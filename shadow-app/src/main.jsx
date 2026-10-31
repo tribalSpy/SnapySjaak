@@ -18103,6 +18103,17 @@ function InkoopTrackTraceWorkspace({ bar, setBar, overview, company, matchRound 
   const [otherGrower, setOtherGrower] = useState("");
   const [otherSearch, setOtherSearch] = useState("");
   const [showOtherLines, setShowOtherLines] = useState(false);
+  // Links made but not saved yet (each its own link), and the lines / lots
+  // they took: those leave the lists at once, also while the comparison is
+  // redone after saving.
+  const [pendingLinks, setPendingLinks] = useState([]);
+  const [hiddenKeys, setHiddenKeys] = useState({});
+  useEffect(() => {
+    if (!pendingLinks.length) return undefined;
+    const warn = (event) => { event.preventDefault(); event.returnValue = ""; };
+    window.addEventListener("beforeunload", warn);
+    return () => window.removeEventListener("beforeunload", warn);
+  }, [pendingLinks.length]);
   const [otherLineGrower, setOtherLineGrower] = useState("");
   const [otherLineSearch, setOtherLineSearch] = useState("");
   useEffect(() => {
@@ -18156,18 +18167,19 @@ function InkoopTrackTraceWorkspace({ bar, setBar, overview, company, matchRound 
       issue.detail?.your_reference, issue.erp_row?.lot, issue.erp_row?.pav].map((value) => String(value ?? "")).join(" ").toLowerCase();
     return words.every((word) => haystack.includes(word));
   };
-  const leftIssues = growerIssues.filter((issue) => (issue.issue_type === "gap_invoice" || piecesShort(issue)) && searchHit(issue, searches.left)).sort(sorter(sorts.left));
-  const rightIssues = growerIssues.filter((issue) => issue.issue_type === "gap_erp" && searchHit(issue, searches.right)).sort(sorter(sorts.right));
+  const notLinked = (issue) => !hiddenKeys[issue.issue_type === "gap_erp" ? `lot:${issue.erp_row?.lot}` : `line:${issue.detail?.id}`];
+  const leftIssues = growerIssues.filter((issue) => (issue.issue_type === "gap_invoice" || piecesShort(issue)) && notLinked(issue) && searchHit(issue, searches.left)).sort(sorter(sorts.left));
+  const rightIssues = growerIssues.filter((issue) => issue.issue_type === "gap_erp" && notLinked(issue) && searchHit(issue, searches.right)).sort(sorter(sorts.right));
 
   // Lots filed under another grower -- a FloraHolland pool code (Westland
   // Naaldwijk, Aalsmeer, Connect with the...) or a wrong grower -- to link to
   // this grower's invoice line. With a line ticked, the most alike first
   // (same pieces, same € / piece, same product words, same day).
   const inPeriod = (issue) => { const day = inkoopIssueInvoiceDay(issue); return day >= from && day <= to; };
-  const otherLots = chosen ? (issues || []).filter((issue) => issue.issue_type === "gap_erp" && !inkoopSameGrower(issue.grower, chosen) && inPeriod(issue)) : [];
+  const otherLots = chosen ? (issues || []).filter((issue) => issue.issue_type === "gap_erp" && !inkoopSameGrower(issue.grower, chosen) && inPeriod(issue) && notLinked(issue)) : [];
   // The same on the invoice side: invoice lines of other growers / the
   // FloraHolland codes without their lot (or short in pieces).
-  const otherLines = chosen ? (issues || []).filter((issue) => (issue.issue_type === "gap_invoice" || piecesShort(issue)) && !inkoopSameGrower(issue.grower, chosen) && inPeriod(issue)) : [];
+  const otherLines = chosen ? (issues || []).filter((issue) => (issue.issue_type === "gap_invoice" || piecesShort(issue)) && !inkoopSameGrower(issue.grower, chosen) && inPeriod(issue) && notLinked(issue)) : [];
   const growersOf = (list) => [...list.reduce((map, issue) => map.set(issue.grower || "-", (map.get(issue.grower || "-") || 0) + 1), new Map()).entries()]
     .sort((left, right) => Number(/floraholland/i.test(right[0])) - Number(/floraholland/i.test(left[0])) || right[1] - left[1]);
   const otherGrowers = growersOf(otherLots);
@@ -18214,26 +18226,59 @@ function InkoopTrackTraceWorkspace({ bar, setBar, overview, company, matchRound 
     if (next[key]) delete next[key]; else next[key] = issue;
     return next;
   });
-  async function linkPicked() {
-    setBusy(true);
-    setIssueError("");
-    try {
-      await inkoopSaveManualPair({
+  // Add link: the ticked lines and lots become one link, waiting to be
+  // saved; they leave the lists at once and the next link can be made.
+  function addLink() {
+    if (!pickedLines.length || !linkLots.length) return;
+    const keys = Object.keys(picked);
+    const link = {
+      key: `${Date.now()}-${keys.join("|")}`,
+      keys,
+      pair: {
         lineIds: pickedLines.map((issue) => issue.detail.id),
         lots: linkLots,
         dates: [...pickedLines.map((issue) => issue.detail?.invoice_date || issue.date), ...pickedLots.map((issue) => issue.erp_row?.date || issue.date), ...ownLots.map((own) => own.date)].filter(Boolean),
         note: pairNote,
         source: "hand",
-      });
-      setPicked({});
-      setPairNote("");
+      },
+      text: `${pickedLines.map((issue) => issue.description).join(", ")} (${pickedLines.length} line(s), ${invoicePieces} pcs, ${formatInkoopEuro(invoiceValue)}) ↔ lot ${linkLots.join(", ")} (${connectPieces} pcs, ${formatInkoopEuro(connectValue)})`,
+      difference: Math.round((invoiceValue - connectValue) * 100) / 100,
+    };
+    setPendingLinks((current) => [...current, link]);
+    setHiddenKeys((current) => ({ ...current, ...Object.fromEntries(keys.map((key) => [key, true])) }));
+    setPicked({});
+    setPairNote("");
+  }
+  function dropLink(link) {
+    setPendingLinks((current) => current.filter((item) => item.key !== link.key));
+    setHiddenKeys((current) => {
+      const next = { ...current };
+      for (const key of link.keys) delete next[key];
+      return next;
+    });
+  }
+  // Save links: each link on its own, one after the other; one that fails
+  // stays in the list (with its lines kept off the lists) to try again.
+  async function saveLinks() {
+    setBusy(true);
+    setIssueError("");
+    const left = [];
+    let saved = 0;
+    for (const link of pendingLinks) {
+      try {
+        await inkoopSaveManualPair(link.pair);
+        saved += 1;
+      } catch (linkError) {
+        left.push(link);
+        setIssueError(`${linkError.message} -- ${link.text}`);
+      }
+    }
+    setPendingLinks(left);
+    setBusy(false);
+    if (saved) {
       setPairsKey((value) => value + 1);
       setIssueRound((value) => value + 1);
       overview.reload();
-    } catch (linkError) {
-      setIssueError(linkError.message);
-    } finally {
-      setBusy(false);
     }
   }
   const openDrawer = (issue) => setDrawer(issue);
@@ -18336,8 +18381,22 @@ function InkoopTrackTraceWorkspace({ bar, setBar, overview, company, matchRound 
                 <span>Connect {linkLots.length} lot(s) {connectPieces} pcs {formatInkoopEuro(connectValue)}</span>
                 <span>difference <InkoopMoneyDiff value={Math.round((invoiceValue - connectValue) * 100) / 100} /></span>
                 <input value={pairNote} onChange={(event) => setPairNote(event.target.value)} placeholder="Note (why they belong together)" size={30} />
-                <button type="button" className="primary" onClick={linkPicked} disabled={busy || !pickedLines.length || !linkLots.length}>Link</button>
+                <button type="button" className="primary" onClick={addLink} disabled={busy || !pickedLines.length || !linkLots.length}>Add link</button>
                 <button type="button" onClick={() => setPicked({})}>Clear</button>
+              </div>
+            )}
+            {!!pendingLinks.length && (
+              <div className="ik-linkbar ik-pending-links">
+                <strong>{pendingLinks.length} link(s) not saved yet</strong>
+                <ol>
+                  {pendingLinks.map((link) => (
+                    <li key={link.key}>
+                      {link.text} · difference <InkoopMoneyDiff value={link.difference} />{link.pair.note ? <em> -- {link.pair.note}</em> : null}
+                      <button type="button" className="link-button" onClick={() => dropLink(link)} disabled={busy} title="Take this link out (its lines come back)">✕</button>
+                    </li>
+                  ))}
+                </ol>
+                <button type="button" className="primary" onClick={saveLinks} disabled={busy}>{busy ? "Saving…" : `Save ${pendingLinks.length} link(s)`}</button>
               </div>
             )}
             <div className="ik-split-view">
