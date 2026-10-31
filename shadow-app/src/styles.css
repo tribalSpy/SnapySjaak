@@ -3960,3 +3960,7 @@ button.ik-kpi:hover {
 .ik-pending-links li .link-button {
   margin-left: 8px;
 }
+
+.ik-item-reason {
+  color: #8a5a00;
+}

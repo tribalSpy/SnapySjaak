@@ -12270,7 +12270,9 @@ async function getInkoopDataDayStatuses(from, to) {
 // Follow-up menu): its mismatches, its gaps not explained by the grower-day
 // totals and those totals when they are off -- pushed onto issues, with the
 // grower totals through addTotal. The ids are inkoopIssueId's.
-function buildInkoopDayIssues(state, day, company, issues, addTotal = () => {}) {
+// withExplained: also the gaps the grower-day totals explain (marked
+// explained) -- Track & Trace shows every open line the grower list counts.
+function buildInkoopDayIssues(state, day, company, issues, addTotal = () => {}, { withExplained = false } = {}) {
       const result = filterInkoopResultsByCompany(day.result, company);
       const { aggregateResult: dayAggregate, codeToName, validSupplierCodes, supplierMap, supplierNameMap, manualLinks, supplierFhMap } = day.aggregateContext;
       // The aggregate covers the day's window (D-1..D+1); only D's own
@@ -12323,31 +12325,45 @@ function buildInkoopDayIssues(state, day, company, issues, addTotal = () => {}) 
         openByProduct.set(key, entry);
       };
       for (const row of result.only_in_erp || []) {
-        if (inkoopGapIsExplainedByAggregate(row, inkoopGrowerNameForErpRow(row, codeToName, validSupplierCodes), aggregateResult)
-          && !shortPiecesDays.has(inkoopAggregateKey(inkoopGrowerNameForErpRow(row, codeToName, validSupplierCodes), String(row?.date || "").slice(0, 10)))) {
-          continue;
-        }
-        addOpen(inkoopGrowerNameForErpRow(row, codeToName, validSupplierCodes), row?.date, row?.description, "erp", inkoopErpRowTotal(row));
+        const explained = inkoopGapIsExplainedByAggregate(row, inkoopGrowerNameForErpRow(row, codeToName, validSupplierCodes), aggregateResult)
+          && !shortPiecesDays.has(inkoopAggregateKey(inkoopGrowerNameForErpRow(row, codeToName, validSupplierCodes), String(row?.date || "").slice(0, 10)));
+        if (explained && !withExplained) continue;
+        if (!explained) addOpen(inkoopGrowerNameForErpRow(row, codeToName, validSupplierCodes), row?.date, row?.description, "erp", inkoopErpRowTotal(row));
         // No invoice side exists for a "missing from invoice" gap -- no
         // invoice_number to link a PDF from, same asymmetry as AVC/company.
         issues.push({
           id: inkoopIssueId("gap_erp", row), issue_type: "gap_erp", date: inkoopDateKeyFromErpAnchor(row), description: row.description, value: inkoopErpRowTotal(row), invoice_number: "", erp_row: row, detail: row,
           grower: inkoopGrowerNameForErpRow(row, codeToName, validSupplierCodes) || normalizeUkdocsText(row?.suppl),
           bw: bwOfErp(row), invoice_value: 0, connect_value: inkoopErpRowTotal(row), money_diff: -Math.round(inkoopErpRowTotal(row) * 100) / 100,
+          ...(explained ? { explained: true } : {}),
         });
       }
       for (const row of result.only_in_invoice || []) {
         const invoiceGrowerName = inkoopGrowerNameForInvoiceLine(row, codeToName, supplierMap, supplierNameMap, manualLinks, supplierFhMap);
-        if (inkoopGapIsExplainedByAggregate(row, invoiceGrowerName, aggregateResult)
-          && !shortPiecesDays.has(inkoopAggregateKey(invoiceGrowerName, String(row?.invoice_date || "").slice(0, 10)))) {
-          continue;
-        }
-        addOpen(invoiceGrowerName, row?.invoice_date, row?.description, "invoice", inkoopInvoiceLineTotal(row));
+        const explained = inkoopGapIsExplainedByAggregate(row, invoiceGrowerName, aggregateResult)
+          && !shortPiecesDays.has(inkoopAggregateKey(invoiceGrowerName, String(row?.invoice_date || "").slice(0, 10)));
+        if (explained && !withExplained) continue;
+        if (!explained) addOpen(invoiceGrowerName, row?.invoice_date, row?.description, "invoice", inkoopInvoiceLineTotal(row));
         issues.push({
           id: inkoopIssueId("gap_invoice", row), issue_type: "gap_invoice", date: inkoopDateKeyFromInvoiceAnchor(row), description: row.description, value: inkoopInvoiceLineTotal(row), invoice_number: row.invoice_number || "", erp_row: null, detail: row,
           // An invoice line is FloraHolland: via veiling.
           grower: invoiceGrowerName || normalizeUkdocsText(row?.supplier_name), bw: bwOfInvoice(row), invoice_value: inkoopInvoiceLineTotal(row), connect_value: 0, money_diff: Math.round(inkoopInvoiceLineTotal(row) * 100) / 100,
+          ...(explained ? { explained: true } : {}),
         });
+      }
+      // Invoice lines whose grower has no Connect code yet, or with more than
+      // one lot that fits: open too (the grower list counts them) -- with the
+      // reason, so they can be linked by hand or the grower linked.
+      for (const [key, reason] of [["supplier_not_linked", "grower not linked to a Connect code"], ["ambiguous_matches", "more than one lot fits"]]) {
+        for (const row of result[key] || []) {
+          if (!row?.id) continue;
+          const invoiceGrowerName = inkoopGrowerNameForInvoiceLine(row, codeToName, supplierMap, supplierNameMap, manualLinks, supplierFhMap);
+          issues.push({
+            id: inkoopIssueId("gap_invoice", row), issue_type: "gap_invoice", date: inkoopDateKeyFromInvoiceAnchor(row), description: row.description, value: inkoopInvoiceLineTotal(row), invoice_number: row.invoice_number || "", erp_row: null, detail: row,
+            grower: invoiceGrowerName || normalizeUkdocsText(row?.supplier_name), bw: bwOfInvoice(row), invoice_value: inkoopInvoiceLineTotal(row), connect_value: 0, money_diff: Math.round(inkoopInvoiceLineTotal(row) * 100) / 100,
+            reason,
+          });
+        }
       }
       // A grower-day total: the betaalwijze of that grower's lines.
       for (const key of ["matched_ok", "matched_mismatch", "only_in_invoice"]) {
@@ -12432,6 +12448,7 @@ function inkoopFollowupItem(issue, day) {
       pieces: number(erp.pieces), price: number(erp.price), total: number(erp.t_price), items: number(erp.items), cont: number(erp.cont),
     } : null,
     diffs: Array.isArray(detail.diffs) ? detail.diffs.map((diff) => ({ field: diff.field, erp: diff.erp, invoice: diff.invoice })) : [],
+    reason: issue.reason || "",
   };
 }
 
@@ -26651,7 +26668,8 @@ async function handleApi(req, res, url) {
         entry[side] = Math.round((entry[side] + (Number(value) || 0)) * 100) / 100;
         growerTotals.set(key, entry);
       };
-      for (const day of dayBundles) buildInkoopDayIssues(state, day, company, issues, addTotal);
+      const withExplained = url.searchParams.get("with_explained") === "1";
+      for (const day of dayBundles) buildInkoopDayIssues(state, day, company, issues, addTotal, { withExplained });
 
       const merged = issues.map((issue) => {
         const stored = statusById.get(issue.id);

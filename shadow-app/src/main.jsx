@@ -18119,7 +18119,9 @@ function InkoopTrackTraceWorkspace({ bar, setBar, overview, company, matchRound 
   useEffect(() => {
     let cancelled = false;
     setIssueError("");
-    const params = new URLSearchParams({ from: issueFrom, to });
+    // Every open line the grower list counts: also the ones the grower-day
+    // totals explain, and the lines of a grower not linked yet.
+    const params = new URLSearchParams({ from: issueFrom, to, with_explained: "1" });
     if (company) params.set("company", company);
     apiJson(`/api/inkoop/issues?${params.toString()}`)
       .then((payload) => { if (!cancelled) setIssues(payload.issues || []); })
@@ -18311,6 +18313,11 @@ function InkoopTrackTraceWorkspace({ bar, setBar, overview, company, matchRound 
             <span className="ik-item-money">{priceOf(issue) ? `${formatInkoopEuro(priceOf(issue))}/pc · ` : ""}{formatInkoopEuro(issue.value)}</span>
           </span>
           {like && <span className="ik-item-sub"><span className="ik-other-grower">{issue.grower}</span>{like.why.length ? <span className="ik-like"> · {like.why.join(" · ")}</span> : null}</span>}
+          {(issue.reason || issue.explained) && (
+            <span className="ik-item-sub ik-item-reason" title={issue.explained ? "The grower's total of this day (pieces and money) agrees, so it is not in the follow-up -- still open line by line" : "Why this line has no lot"}>
+              {issue.reason ? `⚠ ${issue.reason}` : "≈ balanced by the grower's day total"}
+            </span>
+          )}
           <span className="muted ik-item-sub">
             {issue.issue_type === "gap_erp" ? inkoopErpTranscript(issue.erp_row) : inkoopInvoiceTranscript(issue.detail)}
           </span>
@@ -18679,7 +18686,7 @@ function IkFollowupTable({ items, settings, picked, setPicked, onOpen, quick, sh
                 <td>{fustOverviewDate(item.day || item.date)}</td>
                 <td className="ik-fu-ellipsis" title={item.grower}>{item.grower}</td>
                 <td>{item.flow}</td>
-                <td className="ik-fu-ellipsis" title={item.description}><strong>{item.description}</strong>{item.status !== "open" ? <span className="muted"> · {INKOOP_FU_STATUS_LABEL[item.status] || item.status}</span> : null}</td>
+                <td className="ik-fu-ellipsis" title={`${item.description}${item.reason ? ` -- ${item.reason}` : ""}`}><strong>{item.description}</strong>{item.reason ? <span className="ik-fu-warn"> · ⚠ {item.reason}</span> : null}{item.status !== "open" ? <span className="muted"> · {INKOOP_FU_STATUS_LABEL[item.status] || item.status}</span> : null}</td>
                 <td className="ik-fu-ellipsis ik-inv-text" title={ikFollowupInvoiceText(item)}>{ikFollowupInvoiceText(item) || "-"}</td>
                 <td className="ik-fu-ellipsis ik-con-text" title={ikFollowupLotText(item)}>{ikFollowupLotText(item) || "-"}</td>
                 <td><InkoopMoneyDiff value={item.money_diff} /></td>
