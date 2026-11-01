@@ -18170,8 +18170,20 @@ function InkoopTrackTraceWorkspace({ bar, setBar, overview, company, matchRound 
     return words.every((word) => haystack.includes(word));
   };
   const notLinked = (issue) => !hiddenKeys[issue.issue_type === "gap_erp" ? `lot:${issue.erp_row?.lot}` : `line:${issue.detail?.id}`];
-  const leftIssues = growerIssues.filter((issue) => (issue.issue_type === "gap_invoice" || piecesShort(issue)) && notLinked(issue) && searchHit(issue, searches.left)).sort(sorter(sorts.left));
-  const rightIssues = growerIssues.filter((issue) => issue.issue_type === "gap_erp" && notLinked(issue) && searchHit(issue, searches.right)).sort(sorter(sorts.right));
+  const leftAll = growerIssues.filter((issue) => (issue.issue_type === "gap_invoice" || piecesShort(issue)) && notLinked(issue));
+  const rightAll = growerIssues.filter((issue) => issue.issue_type === "gap_erp" && notLinked(issue));
+  const leftIssues = leftAll.filter((issue) => searchHit(issue, searches.left)).sort(sorter(sorts.left));
+  const rightIssues = rightAll.filter((issue) => searchHit(issue, searches.right)).sort(sorter(sorts.right));
+  // A search that hides lines says so (count "0 of 3", and a way back).
+  const sideCount = (shown, all) => (shown.length === all.length ? shown.length : `${shown.length} of ${all.length}`);
+  const sideEmpty = (sideKey, all, nothing) => (all.length
+    ? (
+      <div className="notice info">
+        The search “{searches[sideKey]}” hides {all.length} open line(s) ({formatInkoopEuro(all.reduce((sum, issue) => sum + (Number(issue.value) || 0), 0))}).{" "}
+        <button type="button" className="link-button" onClick={() => setSearches((current) => ({ ...current, [sideKey]: "" }))}>Clear the search</button>
+      </div>
+    )
+    : <div className="muted">{nothing}</div>);
 
   // Lots filed under another grower -- a FloraHolland pool code (Westland
   // Naaldwijk, Aalsmeer, Connect with the...) or a wrong grower -- to link to
@@ -18408,8 +18420,8 @@ function InkoopTrackTraceWorkspace({ bar, setBar, overview, company, matchRound 
             )}
             <div className="ik-split-view">
               <div className="data-table-card ik-card ik-side inv">
-                <div className="ik-side-head"><strong>Invoice lines without their lot</strong><span className="muted">{leftIssues.length}</span>{searchBox("left")}{sortSelect("left")}</div>
-                {!issues ? <div className="muted">Loading…</div> : leftIssues.length ? leftIssues.map((issue) => issueRow(issue, "inv")) : <div className="muted">✓ Nothing open on the invoice side.</div>}
+                <div className="ik-side-head"><strong>Invoice lines without their lot</strong><span className="muted">{sideCount(leftIssues, leftAll)}</span>{searchBox("left")}{sortSelect("left")}</div>
+                {!issues ? <div className="muted">Loading…</div> : leftIssues.length ? leftIssues.map((issue) => issueRow(issue, "inv")) : sideEmpty("left", leftAll, "✓ Nothing open on the invoice side.")}
                 <div className="ik-others">
                   <button type="button" className="link-button" onClick={() => setShowOtherLines((value) => !value)} aria-expanded={showOtherLines}>
                     {showOtherLines ? "▾" : "▸"} Invoice lines of other growers / FloraHolland pools ({otherLines.length})
@@ -18432,8 +18444,8 @@ function InkoopTrackTraceWorkspace({ bar, setBar, overview, company, matchRound 
                 </div>
               </div>
               <div className="data-table-card ik-card ik-side con">
-                <div className="ik-side-head"><strong>Connect lots without an invoice</strong><span className="muted">{rightIssues.length}</span>{searchBox("right")}{sortSelect("right")}</div>
-                {!issues ? <div className="muted">Loading…</div> : rightIssues.length ? rightIssues.map((issue) => issueRow(issue, "con")) : <div className="muted">✓ Nothing open on the Connect side.</div>}
+                <div className="ik-side-head"><strong>Connect lots without an invoice</strong><span className="muted">{sideCount(rightIssues, rightAll)}</span>{searchBox("right")}{sortSelect("right")}</div>
+                {!issues ? <div className="muted">Loading…</div> : rightIssues.length ? rightIssues.map((issue) => issueRow(issue, "con")) : sideEmpty("right", rightAll, "✓ Nothing open on the Connect side.")}
                 <div className="ik-others">
                   <button type="button" className="link-button" onClick={() => setShowOthers((value) => !value)} aria-expanded={showOthers}>
                     {showOthers ? "▾" : "▸"} Lots of other growers / FloraHolland pools ({otherLots.length})

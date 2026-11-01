@@ -12273,6 +12273,7 @@ async function getInkoopDataDayStatuses(from, to) {
 // withExplained: also the gaps the grower-day totals explain (marked
 // explained) -- Track & Trace shows every open line the grower list counts.
 function buildInkoopDayIssues(state, day, company, issues, addTotal = () => {}, { withExplained = false } = {}) {
+      const firstNew = issues.length;
       const result = filterInkoopResultsByCompany(day.result, company);
       const { aggregateResult: dayAggregate, codeToName, validSupplierCodes, supplierMap, supplierNameMap, manualLinks, supplierFhMap } = day.aggregateContext;
       // The aggregate covers the day's window (D-1..D+1); only D's own
@@ -12404,6 +12405,25 @@ function buildInkoopDayIssues(state, day, company, issues, addTotal = () => {}, 
           detail: { ...mismatch, piece_diff: pieceDiff, value_diff: valueDiff },
           grower: mismatch.grower_name || "", bw: bwOfGrower.get(mismatch.grower_name) || "V", invoice_value: mismatch.invoice_value, connect_value: mismatch.erp_value, money_diff: Math.round(valueDiff * 100) / 100,
         });
+      }
+      // The lines' grower and BW as the overview names them (Dashboard,
+      // Track & Trace's grower list): the same code / name the stored match
+      // row has -- else a line resolved through its GLN under another name
+      // would be counted for one grower and listed under another.
+      const view = inkoopOverviewNaming(state);
+      for (let index = firstNew; index < issues.length; index += 1) {
+        const issue = issues[index];
+        if (issue.issue_type === "aggregate_mismatch") continue;
+        const row = issue.issue_type === "gap_erp" ? issue.detail : issue.detail || {};
+        const erp = issue.issue_type === "gap_erp" ? row : row?.erp_row;
+        const stored = {
+          list: issue.issue_type === "gap_erp" ? "only_in_erp" : "",
+          supplier_code: normalizeUkdocsText(row?.supplier_code || erp?.suppl),
+          supplier_name: normalizeUkdocsText(issue.issue_type === "gap_erp" ? row?.supplier_bw_name : row?.supplier_name || row?.supplier_bw_name),
+          invoice_type: row?.invoice_type, invoice_number: row?.invoice_number,
+        };
+        issue.grower = view.growerOf(stored);
+        issue.bw = view.bwOf(stored);
       }
 }
 
