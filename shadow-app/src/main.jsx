@@ -18099,6 +18099,24 @@ function InkoopTrackTraceWorkspace({ bar, setBar, overview, company, matchRound 
   const [sorts, setSorts] = useState({ left: "date", right: "date" });
   const [searches, setSearches] = useState({ left: "", right: "" });
   const [growerFilter, setGrowerFilter] = useState("");
+  // "Open" money: the invoice lines without their lot only (default), or
+  // also the Connect lots without an invoice. Kept per browser.
+  const [openWithConnect, setOpenWithConnect] = useState(() => {
+    try {
+      return window.localStorage.getItem("inkoop-tt-open-connect") === "1";
+    } catch {
+      return false;
+    }
+  });
+  const chooseOpenWithConnect = (value) => {
+    setOpenWithConnect(value);
+    try {
+      window.localStorage.setItem("inkoop-tt-open-connect", value ? "1" : "0");
+    } catch {
+      // Not kept: this page still follows it.
+    }
+  };
+  const openOf = (sum) => sum.not_matched_value + (openWithConnect ? sum.connect_only_value : 0);
   const [showOthers, setShowOthers] = useState(false);
   const [otherGrower, setOtherGrower] = useState("");
   const [otherSearch, setOtherSearch] = useState("");
@@ -18134,7 +18152,7 @@ function InkoopTrackTraceWorkspace({ bar, setBar, overview, company, matchRound 
   const byGrower = new Map();
   for (const row of growerRows) byGrower.set(row.grower, [...(byGrower.get(row.grower) || []), row]);
   const growers = [...byGrower.entries()].map(([name, rows]) => ({ name, rows, sum: inkoopOverviewSum(rows) }))
-    .map((entry) => ({ ...entry, open: entry.sum.not_matched_value + entry.sum.connect_only_value }))
+    .map((entry) => ({ ...entry, open: openOf(entry.sum) }))
     .filter((entry) => !growerFilter || inkoopGrowerKey(entry.name).includes(inkoopGrowerKey(growerFilter)))
     .sort((left, right) => right.open - left.open || Math.abs(right.sum.difference) - Math.abs(left.sum.difference));
   const chosen = bar.grower ? [...byGrower.keys()].find((name) => inkoopSameGrower(name, bar.grower)) || bar.grower : "";
@@ -18347,6 +18365,13 @@ function InkoopTrackTraceWorkspace({ bar, setBar, overview, company, matchRound 
       <aside className="ik-tt-rail">
         <div className="data-table-card ik-card">
           <IkMiniCalendar rows={calendarRows} from={bar.from} to={bar.to} day={bar.day} onDay={(day) => setBar((current) => ({ ...current, day }))} />
+          <div className="ik-open-basis" role="group" aria-label="Open money counts">
+            <span className="muted">Open €:</span>
+            <button type="button" className={`ik-chip${openWithConnect ? "" : " on"}`} onClick={() => chooseOpenWithConnect(false)} aria-pressed={!openWithConnect}
+              title="Only the invoice lines without their lot">Invoices</button>
+            <button type="button" className={`ik-chip${openWithConnect ? " on" : ""}`} onClick={() => chooseOpenWithConnect(true)} aria-pressed={openWithConnect}
+              title="Also the Connect lots without an invoice">+ Connect</button>
+          </div>
         </div>
         <div className="data-table-card ik-card ik-growers">
           <input value={growerFilter} onChange={(event) => setGrowerFilter(event.target.value)} placeholder="Find a grower…" />
@@ -18382,7 +18407,7 @@ function InkoopTrackTraceWorkspace({ bar, setBar, overview, company, matchRound 
                 <span>Invoiced <strong>{formatInkoopEuro(chosenSum.invoice_value)}</strong></span>
                 <span>Connect <strong>{formatInkoopEuro(chosenSum.connect_value)}</strong></span>
                 <span>Difference <InkoopMoneyDiff value={chosenSum.difference} /></span>
-                <span className="money-loss">✗ open {formatInkoopEuro(chosenSum.not_matched_value + chosenSum.connect_only_value)}</span>
+                <span className="money-loss" title={openWithConnect ? "Invoice lines without their lot + Connect lots without an invoice" : "Invoice lines without their lot"}>✗ open {formatInkoopEuro(openOf(chosenSum))}</span>
                 <button type="button" className="ik-chip" onClick={() => setPairsOpen(true)}>🔗 Linked by hand</button>
               </div>
             </div>

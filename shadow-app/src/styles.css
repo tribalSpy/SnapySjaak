@@ -3964,3 +3964,12 @@ button.ik-kpi:hover {
 .ik-item-reason {
   color: #8a5a00;
 }
+
+/* Track & Trace: what the open money counts (by the calendar). */
+.ik-open-basis {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+  margin-top: 8px;
+}
