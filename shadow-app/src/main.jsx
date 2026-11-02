@@ -354,7 +354,41 @@ function PhotoImage({ image, run, alt, loading = "eager" }) {
   );
 }
 
+// Requests on their way: the loading bar (top of the page) shows while one
+// takes longer than a moment.
+let apiRequestsInFlight = 0;
+const apiLoadingListeners = new Set();
+
+function setApiRequestsInFlight(change) {
+  apiRequestsInFlight = Math.max(0, apiRequestsInFlight + change);
+  for (const listener of apiLoadingListeners) listener(apiRequestsInFlight);
+}
+
+function ApiLoadingBar() {
+  const [busy, setBusy] = useState(false);
+  useEffect(() => {
+    let timer = null;
+    const listener = (count) => {
+      window.clearTimeout(timer);
+      if (count > 0) timer = window.setTimeout(() => setBusy(true), 350);
+      else setBusy(false);
+    };
+    apiLoadingListeners.add(listener);
+    return () => { apiLoadingListeners.delete(listener); window.clearTimeout(timer); };
+  }, []);
+  return busy ? <div className="api-loading-bar" role="progressbar" aria-label="Loading" /> : null;
+}
+
 async function apiJson(path, options = {}) {
+  setApiRequestsInFlight(1);
+  try {
+    return await apiJsonRequest(path, options);
+  } finally {
+    setApiRequestsInFlight(-1);
+  }
+}
+
+async function apiJsonRequest(path, options = {}) {
   let response;
   try {
     response = await fetch(path, {
@@ -10762,6 +10796,7 @@ function App() {
         <span />
       </button>
       <ThemeLamp />
+      <ApiLoadingBar />
       {sidebarOpen && (
         <button
           type="button"
@@ -18205,6 +18240,22 @@ function InkoopTrackTraceWorkspace({ bar, setBar, overview, company, matchRound 
   const chosen = bar.grower ? [...byGrower.keys()].find((name) => inkoopSameGrower(name, bar.grower)) || bar.grower : "";
   const chosenRows = chosen ? growerRows.filter((row) => row.grower === chosen) : [];
   const chosenSum = inkoopOverviewSum(chosenRows);
+  // How many invoices (and invoice lines) the chosen grower has in the period.
+  const [chosenLines, setChosenLines] = useState(null);
+  useEffect(() => {
+    if (!chosen) { setChosenLines(null); return undefined; }
+    let cancelled = false;
+    setChosenLines(null);
+    const params = new URLSearchParams({ from, to, grower: chosen });
+    if (company) params.set("company", company);
+    apiJson(`/api/inkoop/overview-lines?${params.toString()}`)
+      .then((payload) => { if (!cancelled) setChosenLines(payload.lines || []); })
+      .catch(() => { if (!cancelled) setChosenLines([]); });
+    return () => { cancelled = true; };
+  }, [chosen, from, to, company, issueRound]); // eslint-disable-line react-hooks/exhaustive-deps
+  const chosenInvoiceLines = (chosenLines || []).filter((line) => line.invoice_number && line.status !== "connect_only"
+    && (!bar.bw?.length || bar.bw.includes(line.bw || "?")) && (!bar.flows?.length || bar.flows.includes(line.flow)));
+  const chosenInvoices = new Set(chosenInvoiceLines.map((line) => line.invoice_number)).size;
 
   // The chosen grower's open lines, by side.
   const flowOfIssue = (issue) => (issue.issue_type === "gap_erp" ? "No invoice"
@@ -18279,7 +18330,8 @@ function InkoopTrackTraceWorkspace({ bar, setBar, overview, company, matchRound 
     if (inkoopIssueInvoiceDay(issue) === inkoopIssueInvoiceDay(base)) why.push("same day");
     return { score: (why.includes("same pieces") ? 4 : 0) + (why.includes("same € / pc") ? 3 : 0) + shared + (why.includes("same day") ? 1 : 0), why };
   };
-  const otherShown = otherLots.filter((issue) => (!otherGrower || (issue.grower || "-") === otherGrower) && searchHit(issue, otherSearch))
+  // Worked out only while a pool is open (thousands of lots and lines).
+  const otherShown = !showOthers ? [] : otherLots.filter((issue) => (!otherGrower || (issue.grower || "-") === otherGrower) && searchHit(issue, otherSearch))
     .map((issue) => ({ issue, like: likenessTo(likeLine)(issue) }))
     .sort((left, right) => right.like.score - left.like.score || sorter(sorts.right)(left.issue, right.issue));
   // The growers opened in the pools (picked in the list, or what the search
@@ -18288,7 +18340,7 @@ function InkoopTrackTraceWorkspace({ bar, setBar, overview, company, matchRound 
     ...(showOthers ? [otherGrower, ...(otherSearch.trim() ? otherShown.slice(0, 60).map(({ issue }) => issue.grower) : [])] : []),
     ...(showOtherLines ? [otherLineGrower, ...(otherLineSearch.trim() ? otherLines.filter((issue) => (!otherLineGrower || (issue.grower || "-") === otherLineGrower) && searchHit(issue, otherLineSearch)).slice(0, 60).map((issue) => issue.grower) : [])] : []),
   ].filter((name) => name && name !== "-"))].slice(0, 12);
-  const otherLinesShown = otherLines.filter((issue) => (!otherLineGrower || (issue.grower || "-") === otherLineGrower) && searchHit(issue, otherLineSearch))
+  const otherLinesShown = !showOtherLines ? [] : otherLines.filter((issue) => (!otherLineGrower || (issue.grower || "-") === otherLineGrower) && searchHit(issue, otherLineSearch))
     .map((issue) => ({ issue, like: likenessTo(likeLot)(issue) }))
     .sort((left, right) => right.like.score - left.like.score || sorter(sorts.left)(left.issue, right.issue));
 
@@ -18461,7 +18513,9 @@ function InkoopTrackTraceWorkspace({ bar, setBar, overview, company, matchRound 
                 <IkFlowLegend flows={inkoopFlowParts(chosenRows).map((part) => part.label)} />
               </div>
               <div className="ik-tt-nums">
-                <span>Invoiced <strong>{formatInkoopEuro(chosenSum.invoice_value)}</strong></span>
+                <span>Invoiced <strong>{formatInkoopEuro(chosenSum.invoice_value)}</strong>
+                  <span className="muted"> · {chosenLines ? `${chosenInvoices} invoice(s), ${chosenInvoiceLines.length} line(s)` : "counting invoices…"}</span>
+                </span>
                 <span>Connect <strong>{formatInkoopEuro(chosenSum.connect_value)}</strong></span>
                 <span>Difference <InkoopMoneyDiff value={chosenSum.difference} /></span>
                 <span className="money-loss" title={openWithConnect ? "Invoice lines without their lot + Connect lots without an invoice" : "Invoice lines without their lot"}>✗ open {formatInkoopEuro(openOf(chosenSum))}</span>

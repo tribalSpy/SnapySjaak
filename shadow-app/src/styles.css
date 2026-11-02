@@ -4047,3 +4047,40 @@ button.ik-kpi:hover {
   padding-top: 0;
   border-top: 0;
 }
+
+/* The loading bar: top of the page while a request takes a moment. */
+.api-loading-bar {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  z-index: 200;
+  height: 3px;
+  overflow: hidden;
+  background: rgba(31, 122, 90, 0.18);
+}
+
+.api-loading-bar::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: -40%;
+  width: 40%;
+  background: #1f7a5a;
+  animation: api-loading 1.1s ease-in-out infinite;
+}
+
+@keyframes api-loading {
+  from { left: -40%; }
+  to { left: 100%; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .api-loading-bar::after {
+    left: 0;
+    width: 100%;
+    animation: none;
+    opacity: 0.6;
+  }
+}
