@@ -17963,6 +17963,9 @@ function IkSuggestions({ from, to, company, grower, also = [], onLinked }) {
   const [accepted, setAccepted] = useState({});
   const [saved, setSaved] = useState(() => new Set());
   const [saving, setSaving] = useState(false);
+  // An accepted suggestion folds to one line until Save accepted (then it
+  // goes); unfold it to check it again.
+  const [unfolded, setUnfolded] = useState({});
   const [ai, setAi] = useState(null);
   const timer = useRef(null);
   useEffect(() => () => window.clearTimeout(timer.current), []);
@@ -18033,23 +18036,38 @@ function IkSuggestions({ from, to, company, grower, also = [], onLinked }) {
   const rows = (items, lines, lots, notePrefix) => {
     const lineById = new Map(lines.map((line) => [line.id, line]));
     const lotByNumber = new Map(lots.map((lot) => [lot.lot, lot]));
-    return items.map((item) => {
+    return <div className="ik-suggest-grid">{items.map((item) => {
       const key = `${item.line_ids.join(",")}|${item.lots.join(",")}`;
       const isSaved = saved.has(key);
+      // Saved: linked, off the list.
+      if (isSaved) return null;
+      if (accepted[key] && !unfolded[key]) {
+        const firstLine = lineById.get(item.line_ids[0]);
+        return (
+          <div key={key} className="ik-suggest on folded">
+            <div className="ik-suggest-why">
+              <span>✓ Accepted · <strong>{firstLine?.description || item.line_ids[0]}</strong> · {item.line_ids.length} line(s) ↔ {item.lots.length} lot(s) · {item.invoice_pieces} pcs · difference <InkoopMoneyDiff value={item.difference} /></span>
+              <button type="button" className="link-button" onClick={() => setUnfolded((current) => ({ ...current, [key]: true }))}>Show</button>
+              <button type="button" className="link-button" onClick={() => accept(key, item, lines, lots, "")}>Undo</button>
+            </div>
+          </div>
+        );
+      }
       return (
-        <div key={key} className={`ik-suggest${accepted[key] ? " on" : ""}${isSaved ? " saved" : ""}`}>
+        <div key={key} className={`ik-suggest${accepted[key] ? " on" : ""}`}>
           <div className="ik-inv-text">{item.line_ids.map((id) => <div key={id}>{inkoopDetectiveLineText(lineById.get(id))}</div>)}</div>
           <div className="ik-con-text">{item.lots.map((lot) => <div key={lot}>{inkoopDetectiveLotText(lotByNumber.get(lot))}</div>)}</div>
           <div className="ik-suggest-why">
             <span>{item.reason || item.kind}{item.span_days ? ` · ${item.span_days} day(s) apart` : " · same day"}</span>
             <span>invoice {item.invoice_pieces} / Connect {item.connect_pieces} pcs · difference <InkoopMoneyDiff value={item.difference} /></span>
             {isSaved ? <span className="ukdocs-status-badge">linked</span> : (
-              <label className="checkbox-label"><input type="checkbox" checked={Boolean(accepted[key])} onChange={() => accept(key, item, lines, lots, `${notePrefix}${item.reason || item.kind}`.slice(0, 280))} /><span>Accept</span></label>
+              <label className="checkbox-label"><input type="checkbox" checked={Boolean(accepted[key])} onChange={() => { accept(key, item, lines, lots, `${notePrefix}${item.reason || item.kind}`.slice(0, 280)); setUnfolded((current) => ({ ...current, [key]: false })); }} /><span>Accept</span></label>
             )}
+            {accepted[key] && <button type="button" className="link-button" onClick={() => setUnfolded((current) => ({ ...current, [key]: false }))}>Fold</button>}
           </div>
         </div>
       );
-    });
+    })}</div>;
   };
   const busyAi = ai && !["done", "failed"].includes(ai.status);
   return (

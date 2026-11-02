@@ -4026,3 +4026,24 @@ button.ik-kpi:hover {
   padding-top: 4px;
   border-top: 1px dashed var(--ik-border);
 }
+
+/* Suggested pairs as tiles, two per row; an accepted one folds to a line. */
+.ik-suggest-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, 520px), 1fr));
+  gap: 8px;
+  align-items: start;
+}
+
+.ik-suggest-grid .ik-suggest {
+  margin: 0;
+}
+
+.ik-suggest.folded {
+  padding: 5px 10px;
+}
+
+.ik-suggest.folded .ik-suggest-why {
+  padding-top: 0;
+  border-top: 0;
+}
