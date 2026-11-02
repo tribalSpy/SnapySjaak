@@ -10319,7 +10319,7 @@ function inkoopDetectiveCheck(lines, lots) {
 
 // The days around the period too (a line of 14-10, its lot booked on
 // 17-10): only groups with a line or lot of the period itself are shown.
-async function inkoopDetectiveSearch(state, range, company, onlyGrower) {
+async function inkoopDetectiveSearch(state, range, company, onlyGrower, alsoGrowers = []) {
   // One stored day at a time, keeping only its open lines and lots: a month
   // of full results in memory at once took the server down (out of memory).
   const firstDay = addDaysToIsoDate(range.from, -INKOOP_DAY_TOLERANCE_DAYS);
@@ -10328,6 +10328,12 @@ async function inkoopDetectiveSearch(state, range, company, onlyGrower) {
   for (let date = firstDay; date <= lastDay && dayDates.length < 400; date = addDaysToIsoDate(date, 1)) dayDates.push(date);
   const inPeriod = (date) => Boolean(date) && date >= range.from && date <= range.to;
   const wanted = normalizeUkdocsText(onlyGrower).toLowerCase();
+  // The growers as the grower list names them (Track & Trace asks by that name).
+  const view = inkoopOverviewNaming(state);
+  const detectiveGrower = (stored) => {
+    const name = view.growerOf(stored);
+    return name === "(grower unknown)" ? "(no grower)" : name;
+  };
   const growers = new Map();
   const seenLines = new Set();
   const seenLots = new Set();
@@ -10345,32 +10351,55 @@ async function inkoopDetectiveSearch(state, range, company, onlyGrower) {
       for (const row of result[key] || []) {
         if (!row?.id || seenLines.has(row.id) || inkoopInvoiceLineIsNotAPurchase(row)) continue;
         seenLines.add(row.id);
-        groupOf(inkoopGrowerNameForInvoiceLine(row, codeToName, supplierMap, supplierNameMap, manualLinks, supplierFhMap) || row.supplier_name).lines.push(inkoopDetectiveLine(row, day.date));
+        groupOf(detectiveGrower({ supplier_code: row.supplier_code || row.erp_row?.suppl, supplier_name: row.supplier_name || row.supplier_bw_name })).lines.push(inkoopDetectiveLine(row, day.date));
       }
     }
     for (const row of result.only_in_erp || []) {
       const lot = String(row?.lot ?? "").trim();
       if (!lot || seenLots.has(lot)) continue;
       seenLots.add(lot);
-      groupOf(inkoopGrowerNameForErpRow(row, codeToName, validSupplierCodes)).lots.push(inkoopDetectiveLot(row));
+      groupOf(detectiveGrower({ list: "only_in_erp", supplier_code: row.supplier_code || row.suppl, supplier_name: row.supplier_bw_name })).lots.push(inkoopDetectiveLot(row));
     }
   }
+  // The chosen grower with nothing open itself: its alike / pool growers
+  // are still searched.
+  if (wanted && ![...growers.keys()].some((name) => name.toLowerCase() === wanted)) {
+    growers.set(normalizeUkdocsText(onlyGrower), { grower: normalizeUkdocsText(onlyGrower), lines: [], lots: [] });
+  }
   const orphanLots = growers.get("(no grower)")?.lots || [];
+  // Growers that are probably the same one under two names: the invoice's
+  // "kwekerijfleurs" (not linked to a code) and the Connect code FLEURS --
+  // one name holds the other, or holds the other's Connect code.
+  const letters = (text) => String(text || "").toLowerCase().replace(/[^a-z0-9]/g, "");
+  const codesOf = (group) => new Set(group.lots.map((lot) => letters(lot.code)).filter((code) => code.length >= 4));
+  const alike = (left, right) => {
+    const a = letters(left.grower);
+    const b = letters(right.grower);
+    if (!a || !b) return false;
+    if (a.length >= 5 && b.length >= 5 && (a.includes(b) || b.includes(a))) return true;
+    return [...codesOf(right)].some((code) => a.includes(code)) || [...codesOf(left)].some((code) => b.includes(code));
+  };
   const list = [];
   for (const group of growers.values()) {
     if (wanted && group.grower.toLowerCase() !== wanted) continue;
-    if (!group.lines.length) continue;
-    // Its own lots, and the lots of no grower (F2, X99 ...) that share a name word.
-    const words = new Set(group.lines.flatMap((line) => inkoopDetectiveWords(line.description)));
+    if (group.grower === "(no grower)") continue;
+    const alsoNames = new Set((alsoGrowers || []).map((name) => normalizeUkdocsText(name).toLowerCase()));
+    const kin = [...growers.values()].filter((other) => other !== group && other.grower !== "(no grower)" && (alike(group, other) || alsoNames.has(other.grower.toLowerCase())));
+    const ownLines = [...new Map([...group.lines, ...kin.flatMap((other) => other.lines)].map((line) => [line.id, line])).values()];
+    const ownLots = [...new Map([...group.lots, ...kin.flatMap((other) => other.lots)].map((lot) => [lot.lot, lot])).values()];
+    if (!ownLines.length) continue;
+    // Its own lots (and its alike growers'), and the lots of no grower (F2,
+    // X99 ...) that share a name word.
+    const words = new Set(ownLines.flatMap((line) => inkoopDetectiveWords(line.description)));
     const orphans = orphanLots.filter((lot) => [...words].some((word) => `${lot.description} ${lot.uniware}`.toUpperCase().replace(/[^A-Z]/g, "").includes(word)));
-    const lines = [...group.lines].sort((left, right) => right.total - left.total).slice(0, 300);
-    const lots = [...group.lots, ...orphans].sort((left, right) => right.total - left.total).slice(0, 300);
+    const lines = [...ownLines].sort((left, right) => right.total - left.total).slice(0, 300);
+    const lots = [...ownLots, ...orphans].sort((left, right) => right.total - left.total).slice(0, 300);
     if (!lines.some((line) => inPeriod(line.date)) && !lots.some((lot) => inPeriod(lot.date))) continue;
     const lineDate = new Map(lines.map((line) => [line.id, line.date]));
     const lotDate = new Map(lots.map((lot) => [lot.lot, lot.date]));
     const suggestions = inkoopDetectiveSuggestions(lines, lots)
       .filter((item) => item.line_ids.some((id) => inPeriod(lineDate.get(id))) || item.lots.some((lot) => inPeriod(lotDate.get(lot))));
-    list.push({ grower: group.grower, lines, lots, suggestions, period_lines: lines.filter((line) => inPeriod(line.date)).length });
+    list.push({ grower: group.grower, also: kin.map((other) => other.grower), lines, lots, suggestions, period_lines: lines.filter((line) => inPeriod(line.date)).length });
   }
   list.sort((left, right) => right.lines.reduce((sum, line) => sum + line.total, 0) - left.lines.reduce((sum, line) => sum + line.total, 0));
   return { growers: list };
@@ -26608,7 +26637,10 @@ async function handleApi(req, res, url) {
     try {
       const state = await readInkoopState();
       const range = inkoopRangeFromRequest(url);
-      const found = await inkoopDetectiveSearch(state, range, url.searchParams.get("company"), url.searchParams.get("grower"));
+      // also: growers opened in Track & Trace's pools (FloraHolland codes,
+      // another grower) -- their lines and lots are searched along.
+      const also = String(url.searchParams.get("also") || "").split("|").map((name) => name.trim()).filter(Boolean).slice(0, 12);
+      const found = await inkoopDetectiveSearch(state, range, url.searchParams.get("company"), url.searchParams.get("grower"), also);
       sendJson(res, 200, { from: range.from, to: range.to, ...found });
     } catch (error) {
       sendJson(res, 400, { error: error instanceof Error ? error.message : String(error) });

@@ -17956,7 +17956,7 @@ function InkoopTraceWorkspace({ bar, setBar, overview, company }) {
 // The detective's suggested pairs for one grower, inline in Track & Trace:
 // dashed rows, invoice side | why and difference | Connect side; Accept
 // them and Save. "Ask the AI" sends this grower's leftovers to the poller.
-function IkSuggestions({ from, to, company, grower, onLinked }) {
+function IkSuggestions({ from, to, company, grower, also = [], onLinked }) {
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
@@ -17971,7 +17971,10 @@ function IkSuggestions({ from, to, company, grower, onLinked }) {
   function search() {
     setLoading(true);
     setError("");
-    const params = new URLSearchParams({ from, to });
+    // This grower only (all growers at once is heavy), with its alike growers
+    // and the ones opened in the pools.
+    const params = new URLSearchParams({ from, to, grower });
+    if (also.length) params.set("also", also.join("|"));
     if (company) params.set("company", company);
     apiJson(`/api/inkoop/detective?${params.toString()}`)
       .then((payload) => setData(payload))
@@ -18261,6 +18264,12 @@ function InkoopTrackTraceWorkspace({ bar, setBar, overview, company, matchRound 
   const otherShown = otherLots.filter((issue) => (!otherGrower || (issue.grower || "-") === otherGrower) && searchHit(issue, otherSearch))
     .map((issue) => ({ issue, like: likenessTo(likeLine)(issue) }))
     .sort((left, right) => right.like.score - left.like.score || sorter(sorts.right)(left.issue, right.issue));
+  // The growers opened in the pools (picked in the list, or what the search
+  // finds): Find pairs searches their lines and lots along.
+  const poolGrowers = [...new Set([
+    ...(showOthers ? [otherGrower, ...(otherSearch.trim() ? otherShown.slice(0, 60).map(({ issue }) => issue.grower) : [])] : []),
+    ...(showOtherLines ? [otherLineGrower, ...(otherLineSearch.trim() ? otherLines.filter((issue) => (!otherLineGrower || (issue.grower || "-") === otherLineGrower) && searchHit(issue, otherLineSearch)).slice(0, 60).map((issue) => issue.grower) : [])] : []),
+  ].filter((name) => name && name !== "-"))].slice(0, 12);
   const otherLinesShown = otherLines.filter((issue) => (!otherLineGrower || (issue.grower || "-") === otherLineGrower) && searchHit(issue, otherLineSearch))
     .map((issue) => ({ issue, like: likenessTo(likeLot)(issue) }))
     .sort((left, right) => right.like.score - left.like.score || sorter(sorts.left)(left.issue, right.issue));
@@ -18523,7 +18532,7 @@ function InkoopTrackTraceWorkspace({ bar, setBar, overview, company, matchRound 
                 </div>
               </div>
             </div>
-            <IkSuggestions from={from} to={to} company={company} grower={chosen} onLinked={() => { setPairsKey((value) => value + 1); setIssueRound((value) => value + 1); overview.reload(); }} />
+            <IkSuggestions from={from} to={to} company={company} grower={chosen} also={poolGrowers} onLinked={() => { setPairsKey((value) => value + 1); setIssueRound((value) => value + 1); overview.reload(); }} />
           </>
         )}
       </section>
