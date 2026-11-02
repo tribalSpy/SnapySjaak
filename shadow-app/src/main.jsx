@@ -18086,6 +18086,32 @@ function InkoopTrackTraceWorkspace({ bar, setBar, overview, company, matchRound 
   const to = bar.day?.to || bar.to;
   // The issues (with line ids for linking) are read per 31 days at most.
   const issueFrom = inkoopDaysBetween(from, to) > 30 ? addDaysToIso(to, -30) : from;
+  // "± 4 days": the lists and pools also show the 4 days before and after
+  // the period (a purchase booked a few days apart) -- read along when the
+  // whole stays within 31 days.
+  const [wideDays, setWideDays] = useState(() => {
+    try {
+      return window.localStorage.getItem("inkoop-tt-wide-days") === "1";
+    } catch {
+      return false;
+    }
+  });
+  const chooseWideDays = (value) => {
+    setWideDays(value);
+    try {
+      window.localStorage.setItem("inkoop-tt-wide-days", value ? "1" : "0");
+    } catch {
+      // Not kept: this page still follows it.
+    }
+  };
+  const wideFrom = addDaysToIso(from, -4);
+  const wideTo = addDaysToIso(to, 4);
+  const canWiden = inkoopDaysBetween(wideFrom, wideTo) <= 31;
+  const widened = wideDays && canWiden;
+  const fetchFrom = widened ? wideFrom : issueFrom;
+  const fetchTo = widened ? wideTo : to;
+  const dayFrom = widened ? wideFrom : from;
+  const dayTo = widened ? wideTo : to;
   const [issues, setIssues] = useState(null);
   const [issueError, setIssueError] = useState("");
   const [issueRound, setIssueRound] = useState(0);
@@ -18139,13 +18165,13 @@ function InkoopTrackTraceWorkspace({ bar, setBar, overview, company, matchRound 
     setIssueError("");
     // Every open line the grower list counts: also the ones the grower-day
     // totals explain, and the lines of a grower not linked yet.
-    const params = new URLSearchParams({ from: issueFrom, to, with_explained: "1" });
+    const params = new URLSearchParams({ from: fetchFrom, to: fetchTo, with_explained: "1" });
     if (company) params.set("company", company);
     apiJson(`/api/inkoop/issues?${params.toString()}`)
       .then((payload) => { if (!cancelled) setIssues(payload.issues || []); })
       .catch((loadError) => { if (!cancelled) { setIssueError(loadError.message); setIssues([]); } });
     return () => { cancelled = true; };
-  }, [issueFrom, to, company, issueRound, matchRound]);
+  }, [fetchFrom, fetchTo, company, issueRound, matchRound]);
   useEffect(() => { setPicked({}); }, [bar.grower, from, to]);
 
   // The growers of the period, most open money first.
@@ -18166,7 +18192,7 @@ function InkoopTrackTraceWorkspace({ bar, setBar, overview, company, matchRound 
     && ["mismatch", "gap_invoice", "gap_erp"].includes(issue.issue_type)
     && (!bar.bw?.length || bar.bw.includes(issue.bw || "?"))
     && (!bar.flows?.length || bar.flows.includes(flowOfIssue(issue)))
-    && (() => { const day = inkoopIssueInvoiceDay(issue); return day >= from && day <= to; })());
+    && (() => { const day = inkoopIssueInvoiceDay(issue); return day >= dayFrom && day <= dayTo; })());
   const priceOf = (issue) => Number(issue.detail?.unit_price ?? issue.erp_row?.price ?? issue.detail?.price) || 0;
   const sorter = (key) => (left, right) => {
     if (key === "price") return priceOf(left) - priceOf(right) || inkoopIssueInvoiceDay(left).localeCompare(inkoopIssueInvoiceDay(right));
@@ -18207,7 +18233,7 @@ function InkoopTrackTraceWorkspace({ bar, setBar, overview, company, matchRound 
   // Naaldwijk, Aalsmeer, Connect with the...) or a wrong grower -- to link to
   // this grower's invoice line. With a line ticked, the most alike first
   // (same pieces, same € / piece, same product words, same day).
-  const inPeriod = (issue) => { const day = inkoopIssueInvoiceDay(issue); return day >= from && day <= to; };
+  const inPeriod = (issue) => { const day = inkoopIssueInvoiceDay(issue); return day >= dayFrom && day <= dayTo; };
   const otherLots = chosen ? (issues || []).filter((issue) => issue.issue_type === "gap_erp" && !inkoopSameGrower(issue.grower, chosen) && inPeriod(issue) && notLinked(issue)) : [];
   // The same on the invoice side: invoice lines of other growers / the
   // FloraHolland codes without their lot (or short in pieces).
@@ -18372,6 +18398,10 @@ function InkoopTrackTraceWorkspace({ bar, setBar, overview, company, matchRound 
             <button type="button" className={`ik-chip${openWithConnect ? " on" : ""}`} onClick={() => chooseOpenWithConnect(true)} aria-pressed={openWithConnect}
               title="Also the Connect lots without an invoice">+ Connect</button>
           </div>
+          <label className="checkbox-label ik-open-basis" title={canWiden ? "The lists and the pools also show the lines and lots of the 4 days before and after the period" : "Only for a period up to 23 days (31 days with the 4 days either side)"}>
+            <input type="checkbox" checked={wideDays} disabled={!canWiden} onChange={(event) => chooseWideDays(event.target.checked)} />
+            <span>Lines and lots ± 4 days{wideDays && !canWiden ? " (period too long)" : ""}</span>
+          </label>
         </div>
         <div className="data-table-card ik-card ik-growers">
           <input value={growerFilter} onChange={(event) => setGrowerFilter(event.target.value)} placeholder="Find a grower…" />
