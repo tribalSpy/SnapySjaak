@@ -3997,3 +3997,32 @@ button.ik-kpi:hover {
   --x-fffbeb: #fffbeb;
   --x-ffffff: #ffffff;
 }
+
+/* A suggested pair: its lines, its lots and why, in one box. */
+.ik-suggest {
+  display: grid;
+  gap: 3px;
+  margin: 8px 0;
+  padding: 8px 10px;
+  border: 1px solid var(--ik-border);
+  border-radius: 8px;
+  background: var(--ik-surface);
+}
+
+.ik-suggest.on {
+  border-color: var(--ik-accent);
+  box-shadow: inset 3px 0 0 var(--ik-accent);
+}
+
+.ik-suggest.saved {
+  opacity: 0.6;
+}
+
+.ik-suggest-why {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 16px;
+  align-items: center;
+  padding-top: 4px;
+  border-top: 1px dashed var(--ik-border);
+}

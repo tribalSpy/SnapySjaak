@@ -18039,14 +18039,14 @@ function IkSuggestions({ from, to, company, grower, also = [], onLinked }) {
       return (
         <div key={key} className={`ik-suggest${accepted[key] ? " on" : ""}${isSaved ? " saved" : ""}`}>
           <div className="ik-inv-text">{item.line_ids.map((id) => <div key={id}>{inkoopDetectiveLineText(lineById.get(id))}</div>)}</div>
+          <div className="ik-con-text">{item.lots.map((lot) => <div key={lot}>{inkoopDetectiveLotText(lotByNumber.get(lot))}</div>)}</div>
           <div className="ik-suggest-why">
-            <span>{item.reason || item.kind}</span>
-            <span>{item.invoice_pieces} / {item.connect_pieces} pcs · <InkoopMoneyDiff value={item.difference} /></span>
+            <span>{item.reason || item.kind}{item.span_days ? ` · ${item.span_days} day(s) apart` : " · same day"}</span>
+            <span>invoice {item.invoice_pieces} / Connect {item.connect_pieces} pcs · difference <InkoopMoneyDiff value={item.difference} /></span>
             {isSaved ? <span className="ukdocs-status-badge">linked</span> : (
               <label className="checkbox-label"><input type="checkbox" checked={Boolean(accepted[key])} onChange={() => accept(key, item, lines, lots, `${notePrefix}${item.reason || item.kind}`.slice(0, 280))} /><span>Accept</span></label>
             )}
           </div>
-          <div className="ik-con-text">{item.lots.map((lot) => <div key={lot}>{inkoopDetectiveLotText(lotByNumber.get(lot))}</div>)}</div>
         </div>
       );
     });

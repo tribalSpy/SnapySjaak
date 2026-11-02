@@ -10463,8 +10463,12 @@ function inkoopDetectiveSuggestions(lines, lots) {
       if (!allNamed && !(check.same_total && check.same_pieces && check.span_days <= 1)) continue;
       // A one-to-one pair at the same price and pieces the rules already
       // look at: only worth showing when the name fits.
+      // Close days weigh more than a small group: two lines of 14-10 with the
+      // two lots of 15-10 (one day) before one of those lines with a lot of
+      // 17-10 -- the rest of a split purchase is pooled before an older
+      // single lot is taken.
       const score = (allNamed ? 4 : 0) + Math.min(3, check.name_words / lineSet.length - 1) + (check.same_total ? 3 : 0) + (check.same_pieces ? 2 : 0) + (check.span_days === 0 ? 1 : 0) + (check.same_per_box === true ? 1 : check.same_per_box === false ? -1 : 0)
-        - (lineSet.length + lotSet.length - 2) - Math.min(3, Math.abs(check.difference) / Math.max(1, check.invoice_value) * 10);
+        - 0.5 * (lineSet.length + lotSet.length - 2) - 0.75 * check.span_days - Math.min(3, Math.abs(check.difference) / Math.max(1, check.invoice_value) * 10);
       candidates.push({ line_ids: lineSet.map((line) => line.id), lots: lotSet.map((lot) => lot.lot), kind: check.same_pieces && check.same_total ? "same pieces and total" : check.same_pieces ? "same pieces, other price" : "same total, other pieces", score: Math.round(score * 10) / 10, ...check });
     }
   }
