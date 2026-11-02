@@ -10320,7 +10320,12 @@ function inkoopDetectiveCheck(lines, lots) {
 // The days around the period too (a line of 14-10, its lot booked on
 // 17-10): only groups with a line or lot of the period itself are shown.
 async function inkoopDetectiveSearch(state, range, company, onlyGrower) {
-  const days = await computeInkoopDays(state, addDaysToIsoDate(range.from, -INKOOP_DAY_TOLERANCE_DAYS), addDaysToIsoDate(range.to, INKOOP_DAY_TOLERANCE_DAYS));
+  // One stored day at a time, keeping only its open lines and lots: a month
+  // of full results in memory at once took the server down (out of memory).
+  const firstDay = addDaysToIsoDate(range.from, -INKOOP_DAY_TOLERANCE_DAYS);
+  const lastDay = addDaysToIsoDate(range.to, INKOOP_DAY_TOLERANCE_DAYS);
+  const dayDates = [];
+  for (let date = firstDay; date <= lastDay && dayDates.length < 400; date = addDaysToIsoDate(date, 1)) dayDates.push(date);
   const inPeriod = (date) => Boolean(date) && date >= range.from && date <= range.to;
   const wanted = normalizeUkdocsText(onlyGrower).toLowerCase();
   const growers = new Map();
@@ -10331,7 +10336,8 @@ async function inkoopDetectiveSearch(state, range, company, onlyGrower) {
     if (!growers.has(key)) growers.set(key, { grower: key, lines: [], lots: [] });
     return growers.get(key);
   };
-  for (const day of days) {
+  for (const date of dayDates) {
+    const [day] = await loadStoredInkoopDays(state, date, date);
     if (!day?.result) continue;
     const result = filterInkoopResultsByCompany(day.result, company);
     const { codeToName, validSupplierCodes, supplierMap, supplierNameMap, manualLinks, supplierFhMap } = day.aggregateContext;
@@ -10403,12 +10409,21 @@ function inkoopDetectiveSuggestions(lines, lots) {
     if (!byTotal.has(total)) byTotal.set(total, []);
     byTotal.get(total).push(set);
   }
+  // Bounded: common piece counts (500, 1000...) with the pool lots made
+  // millions of candidates and the server ran out of memory. Each lot group
+  // looks at its first 200 line groups (one line first), and the search
+  // stops at 20 000 candidates -- the best 60 are shown anyway.
+  const MAX_GROUPS_PER_LOTS = 200;
+  const MAX_CANDIDATES = 20000;
   const candidates = [];
   const seen = new Set();
   for (const lotSet of subsets(lots, 3)) {
+    if (candidates.length >= MAX_CANDIDATES) break;
     const pieces = String(Math.round(lotSet.reduce((sum, lot) => sum + lot.pieces, 0)));
     const cents = Math.round(lotSet.reduce((sum, lot) => sum + lot.total, 0) * 100);
-    const lineGroups = [...(byPieces.get(pieces) || []), ...[cents - 1, cents, cents + 1].flatMap((value) => byTotal.get(String(value)) || [])];
+    const lineGroups = [...(byPieces.get(pieces) || []), ...[cents - 1, cents, cents + 1].flatMap((value) => byTotal.get(String(value)) || [])]
+      .sort((left, right) => left.length - right.length)
+      .slice(0, MAX_GROUPS_PER_LOTS);
     for (const lineSet of lineGroups) {
       const key = `${lineSet.map((line) => line.id).sort().join(",")}|${lotSet.map((lot) => lot.lot).sort().join(",")}`;
       if (seen.has(key)) continue;
@@ -26663,7 +26678,6 @@ async function handleApi(req, res, url) {
       const state = await readInkoopState();
       const range = inkoopRangeFromRequest(url);
       const company = url.searchParams.get("company");
-      const dayBundles = await computeInkoopDays(state, range.from, range.to);
       const statuses = await getInkoopIssueStatuses();
       const statusById = new Map(statuses.map((row) => [row.id, row]));
       const showResolved = url.searchParams.get("show_resolved") === "1";
@@ -26689,7 +26703,18 @@ async function handleApi(req, res, url) {
         growerTotals.set(key, entry);
       };
       const withExplained = url.searchParams.get("with_explained") === "1";
-      for (const day of dayBundles) buildInkoopDayIssues(state, day, company, issues, addTotal, { withExplained });
+      // One stored day at a time (a month of full results at once is too much
+      // memory); days not compared yet are queued first.
+      const pendingDays = [];
+      for (const date of inkoopDatesInRange(range.from, range.to)) {
+        const [day] = await loadStoredInkoopDays(state, date, date);
+        if (day.stale && day.status !== "empty") pendingDays.push(date);
+        if (day.computed) buildInkoopDayIssues(state, day, company, issues, addTotal, { withExplained });
+      }
+      if (pendingDays.length) {
+        await prioritizeInkoopMatchDays(pendingDays);
+        kickInkoopMatchWorker();
+      }
 
       const merged = issues.map((issue) => {
         const stored = statusById.get(issue.id);
@@ -26708,7 +26733,7 @@ async function handleApi(req, res, url) {
       });
       const filtered = showResolved ? merged : merged.filter((issue) => issue.status !== "resolved");
       filtered.sort((left, right) => right.value - left.value);
-      sendJson(res, 200, { issues: filtered, grower_totals: [...growerTotals.values()], from: range.from, to: range.to, pending_days: dayBundles.pending_days || [] });
+      sendJson(res, 200, { issues: filtered, grower_totals: [...growerTotals.values()], from: range.from, to: range.to, pending_days: pendingDays });
     } catch (error) {
       sendJson(res, 400, { error: error instanceof Error ? error.message : String(error) });
     }
