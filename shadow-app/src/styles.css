@@ -3973,3 +3973,27 @@ button.ik-kpi:hover {
   align-items: center;
   margin-top: 8px;
 }
+
+:root {
+  /* Colours set in the screens' own style={{...}} (main.jsx): named here so
+     night mode (vite-dark-theme.js) has their dark twin too. */
+  --x-15803d: #15803d;
+  --x-2563eb: #2563eb;
+  --x-475569: #475569;
+  --x-6b7280: #6b7280;
+  --x-9ca3af: #9ca3af;
+  --x-b45309: #b45309;
+  --x-b8c2cc: #b8c2cc;
+  --x-b91c1c: #b91c1c;
+  --x-dcfce7: #dcfce7;
+  --x-e0f2fe: #e0f2fe;
+  --x-e2e8f0: #e2e8f0;
+  --x-ecfdf5: #ecfdf5;
+  --x-eff6ff: #eff6ff;
+  --x-f8fafc: #f8fafc;
+  --x-fef3c7: #fef3c7;
+  --x-fefce8: #fefce8;
+  --x-fff7ed: #fff7ed;
+  --x-fffbeb: #fffbeb;
+  --x-ffffff: #ffffff;
+}

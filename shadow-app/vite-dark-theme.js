@@ -8,6 +8,12 @@ import postcss from "postcss";
 const DARK = ':root[data-theme="dark"]';
 const COLOR_RE = /#[0-9a-fA-F]{8}\b|#[0-9a-fA-F]{6}\b|#[0-9a-fA-F]{3,4}\b|rgba?\([^)]*\)|\b(?:white|black)\b/g;
 
+// The colour properties: in a rule that has a night twin, these come along
+// even without a colour ("background: none", "transparent", "inherit") so
+// the twins keep the same order as the rules they copy -- else the night
+// twin of "button" (a dark background) beat ".link-button" (no background).
+const COLOR_PROP_RE = /^(color|background(-color|-image)?|border(-(top|right|bottom|left))?(-color)?|outline(-color)?|box-shadow|text-shadow|fill|stroke|text-decoration(-color)?|caret-color|accent-color)$/i;
+
 function parseColor(text) {
   const value = text.toLowerCase();
   if (value === "white") return [255, 255, 255, 1];
@@ -101,14 +107,20 @@ export function buildNightCss(css) {
   source.walkRules((rule) => {
     if (rule.parent?.type === "atrule" && /keyframes/i.test(rule.parent.name)) return;
     const decls = [];
+    let hasColor = false;
     rule.each((node) => {
       if (node.type !== "decl") return;
       COLOR_RE.lastIndex = 0;
-      if (!COLOR_RE.test(node.value)) return;
+      const colored = COLOR_RE.test(node.value);
+      if (!colored && !COLOR_PROP_RE.test(node.prop)) return;
+      if (colored) hasColor = true;
       const shadow = /shadow/i.test(node.prop);
       decls.push(postcss.decl({ prop: node.prop, value: node.value.replace(COLOR_RE, (match) => nightColor(match, { shadow })), important: node.important }));
     });
-    if (!decls.length) return;
+    // A rule with only colour-less colour properties still gets a twin when
+    // it can override a coloured one (".link-button { background: none }"
+    // over "button { background: #fff }").
+    if (!decls.length || (!hasColor && !decls.some((decl) => /^(background|background-color|color|border|border-color)$/i.test(decl.prop)))) return;
     const twin = postcss.rule({ selector: darkSelector(rule.selector), nodes: decls });
     // Keep the rule inside its @media / @supports.
     let target = twin;

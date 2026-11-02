@@ -8379,7 +8379,7 @@ function shelfDiffCell(counted, expected) {
     return <td>-</td>;
   }
   const diff = Number(counted) - Number(expected);
-  return <td style={{ color: diff ? "#b45309" : "#15803d", fontWeight: 600 }}>{diff > 0 ? `+${diff}` : diff}</td>;
+  return <td style={{ color: diff ? "var(--x-b45309)" : "var(--x-15803d)", fontWeight: 600 }}>{diff > 0 ? `+${diff}` : diff}</td>;
 }
 
 // "4 ext. · 4-6 shelves" from the Halindeling volume (see the server's
@@ -8403,7 +8403,7 @@ function shelfVolumeCell(row) {
     <td title={`Volume ${estimate.volume} over ${estimate.trolleys} trolley(s); last trolley ${Math.round(estimate.last_fill * 100)}% full. Below 45% no extensions, from 80% extensions, in between undecided.`}>
       <div style={{ fontWeight: 600 }}>{range(estimate.extensions_min, estimate.extensions_max)} ext. · {range(estimate.shelves_min, estimate.shelves_max)} shelves</div>
       <div className="muted">vol. {estimate.volume} · last {Math.round(estimate.last_fill * 100)}%</div>
-      {warnings.length ? <div style={{ color: "#b45309", fontWeight: 600 }}>{warnings.join(", ")}</div> : null}
+      {warnings.length ? <div style={{ color: "var(--x-b45309)", fontWeight: 600 }}>{warnings.join(", ")}</div> : null}
     </td>
   );
 }
@@ -8563,9 +8563,9 @@ function ShelfCountPage() {
             <thead>
               <tr>
                 <th />
-                <th colSpan={8} style={{ textAlign: "center", background: "#e0f2fe" }}>Counted from the photos (RFID scan + shelf count)</th>
-                <th colSpan={7} style={{ textAlign: "center", background: "#fef3c7" }}>Fust Planning (expected) and difference (counted - Fust)</th>
-                <th style={{ textAlign: "center", background: "#dcfce7" }}>Halindeling volume</th>
+                <th colSpan={8} style={{ textAlign: "center", background: "var(--x-e0f2fe)" }}>Counted from the photos (RFID scan + shelf count)</th>
+                <th colSpan={7} style={{ textAlign: "center", background: "var(--x-fef3c7)" }}>Fust Planning (expected) and difference (counted - Fust)</th>
+                <th style={{ textAlign: "center", background: "var(--x-dcfce7)" }}>Halindeling volume</th>
                 <th colSpan={2} />
               </tr>
               <tr>
@@ -8599,7 +8599,7 @@ function ShelfCountPage() {
                         ? (
                           <span
                             title={`Model ${row.trained_model.model_version || "?"}, confidence ${row.trained_model.confidence ?? "-"}; per photo: ${(row.trained_model.per_photo || []).map((photo) => `${photo.shelf_level}/${photo.extension}`).join(", ")} (median x ${row.trained_model.trolley_count} trolleys)`}
-                            style={{ color: row.shelf_count !== null && row.shelf_count !== undefined && Number(row.shelf_count) !== Number(row.trained_model.shelf_count) ? "#b45309" : undefined, fontWeight: 600 }}
+                            style={{ color: row.shelf_count !== null && row.shelf_count !== undefined && Number(row.shelf_count) !== Number(row.trained_model.shelf_count) ? "var(--x-b45309)" : undefined, fontWeight: 600 }}
                           >
                             {row.trained_model.shelf_count} / {row.trained_model.extension_count}
                           </span>
@@ -9193,10 +9193,10 @@ function PdStepPlanPage({ onNavigate }) {
                 {day.steps.map((step, index) => {
                   const state = step.done ? "done" : index === day.current_step ? "current" : "locked";
                   return (
-                    <tr key={step.key} style={{ background: state === "done" ? "#ecfdf5" : state === "current" ? "#fffbeb" : undefined }}>
+                    <tr key={step.key} style={{ background: state === "done" ? "var(--x-ecfdf5)" : state === "current" ? "var(--x-fffbeb)" : undefined }}>
                       <td style={{ width: 40, fontWeight: 700 }}>{step.number}.</td>
                       <td>
-                        <div style={{ fontWeight: 600, color: state === "done" ? "#15803d" : state === "current" ? "#b45309" : "#9ca3af" }}>
+                        <div style={{ fontWeight: 600, color: state === "done" ? "var(--x-15803d)" : state === "current" ? "var(--x-b45309)" : "var(--x-9ca3af)" }}>
                           {state === "done" ? "✓ " : state === "current" ? "▶ " : "🔒 "}{step.label}
                         </div>
                         {state === "current" && step.missing.map((item) => <div key={item} className="muted">• {item}</div>)}
@@ -9262,11 +9262,11 @@ function PdStepPlanPage({ onNavigate }) {
                       return (
                         <td
                           key={step.key}
-                          style={{ background: state === "done" ? "#ecfdf5" : state === "current" ? "#fffbeb" : undefined }}
+                          style={{ background: state === "done" ? "var(--x-ecfdf5)" : state === "current" ? "var(--x-fffbeb)" : undefined }}
                           onContextMenu={state === "current" ? (event) => openSkipMenu(event, row, step) : undefined}
                           title={state === "current" && step.skippable?.length ? "Right-click to continue without a missing item" : undefined}
                         >
-                          <div style={{ fontWeight: 600, color: state === "done" ? "#15803d" : state === "current" ? "#b45309" : "#9ca3af" }}>
+                          <div style={{ fontWeight: 600, color: state === "done" ? "var(--x-15803d)" : state === "current" ? "var(--x-b45309)" : "var(--x-9ca3af)" }}>
                             {state === "done" ? "✓ " : state === "current" ? "▶ " : "🔒 "}{step.label}
                           </div>
                           {state === "current" && step.missing.map((item) => <div key={item} className="muted">• {item}</div>)}
@@ -9276,7 +9276,7 @@ function PdStepPlanPage({ onNavigate }) {
                             <button type="button" className="link-button" onClick={() => markStep(step, row, false)} disabled={busy}>undo</button>
                           )}
                           {(step.skipped || []).map((item) => (
-                            <div key={item.code} style={{ color: "#b45309" }}>
+                            <div key={item.code} style={{ color: "var(--x-b45309)" }}>
                               ⚠ Without {item.label} <span className="muted">({item.by})</span>{" "}
                               <button type="button" className="link-button" onClick={() => setSkipped(row, [item], false)} disabled={busy}>undo</button>
                             </div>
@@ -9334,7 +9334,7 @@ function PdStepPlanPage({ onNavigate }) {
           onClick={(event) => event.stopPropagation()}
           style={{
             position: "fixed", left: Math.min(skipMenu.x, window.innerWidth - 280), top: Math.min(skipMenu.y, window.innerHeight - 180),
-            zIndex: 1000, background: "#fff", border: "1px solid #b8c2cc", borderRadius: 8, boxShadow: "0 6px 18px rgba(0,0,0,.15)",
+            zIndex: 1000, background: "var(--x-ffffff)", border: "1px solid var(--x-b8c2cc)", borderRadius: 8, boxShadow: "0 6px 18px rgba(0,0,0,.15)",
             padding: 6, minWidth: 240,
           }}
         >
@@ -10136,7 +10136,7 @@ function DagFoutjesPage() {
             height: "calc(100vh - 10rem)",
             minHeight: "78vh",
             border: "none",
-            background: "#fff",
+            background: "var(--x-ffffff)",
           }}
         />
       </article>
@@ -10157,7 +10157,7 @@ function BunchesPage() {
             height: "calc(100vh - 10rem)",
             minHeight: "78vh",
             border: "none",
-            background: "#fff",
+            background: "var(--x-ffffff)",
           }}
         />
       </article>
@@ -14505,7 +14505,7 @@ function FustReferenceActions({ canManage }) {
                     <td>
                       {carrier.customer_name || "-"}
                       {!!carrier.fallback_codes?.length && (
-                        <div className="fust-fallback-note" style={{ color: "#b45309", fontSize: "0.85em" }}>
+                        <div className="fust-fallback-note" style={{ color: "var(--x-b45309)", fontSize: "0.85em" }}>
                           Carrier 1 fallback: {carrier.fallback_codes.map((item) => `${item.code} (Carrier 2 ${item.carrier2_name} not in table)`).join(", ")}
                         </div>
                       )}
@@ -14604,7 +14604,7 @@ function FustReferenceActions({ canManage }) {
                 <td>
                   {row.matched_customer_name || "-"}
                   {row.carrier2_fallback && (
-                    <div style={{ color: "#b45309", fontSize: "0.85em" }} title={row.fallback_note}>
+                    <div style={{ color: "var(--x-b45309)", fontSize: "0.85em" }} title={row.fallback_note}>
                       Carrier 1 fallback (Carrier 2 {row.carrier2_name} not in table)
                     </div>
                   )}
@@ -14862,7 +14862,7 @@ Changed rows are updated, and rows that no longer exist there are removed here t
                 <td>
                   {row.matched_customer_name || "-"}
                   {row.carrier2_fallback && (
-                    <div style={{ color: "#b45309", fontSize: "0.85em" }} title={row.fallback_note}>
+                    <div style={{ color: "var(--x-b45309)", fontSize: "0.85em" }} title={row.fallback_note}>
                       Carrier 1 fallback (Carrier 2 {row.carrier2_name} not in table)
                     </div>
                   )}
@@ -16423,8 +16423,8 @@ function InkoopKingPostRow({ post, selected, onToggle, onChanged = null }) {
           )}
         </td>
         <td>
-          {post.problems.map((problem) => <div key={problem} style={{ color: "#b91c1c" }}>{problem}</div>)}
-          {post.warnings.map((warning) => <div key={warning} style={{ color: "#b45309" }}>{warning}</div>)}
+          {post.problems.map((problem) => <div key={problem} style={{ color: "var(--x-b91c1c)" }}>{problem}</div>)}
+          {post.warnings.map((warning) => <div key={warning} style={{ color: "var(--x-b45309)" }}>{warning}</div>)}
           {!post.problems.length && !post.warnings.length ? "-" : null}
         </td>
         <td><button type="button" onClick={() => setOpen((current) => !current)}>{open ? "Hide" : "Journal"}</button></td>
@@ -16605,7 +16605,7 @@ function InkoopKingLedgerCard({ ledger, onChanged }) {
         <input placeholder="Search Prd Id, account, description..." value={filter} onChange={(event) => setFilter(event.target.value)} />
         <button type="button" onClick={() => { setEditingKey("new"); setDraft(EMPTY_KING_LEDGER_ROW); }}>Add mapping</button>
         <button type="button" onClick={resetTable}>Reset to finance's original</button>
-        {note && <span style={{ color: "#b91c1c" }}>{note}</span>}
+        {note && <span style={{ color: "var(--x-b91c1c)" }}>{note}</span>}
       </div>
       <div className="table-wrap">
         <table className="data-table">
@@ -22876,7 +22876,7 @@ function InkoopFollowUpTab({ company, matchRound = 0 }) {
                     </tr>
                     {openGrower === group.grower && (
                       <tr>
-                        <td colSpan={INKOOP_ISSUE_TYPES.length + 6} style={{ background: "#f8fafc" }}>
+                        <td colSpan={INKOOP_ISSUE_TYPES.length + 6} style={{ background: "var(--x-f8fafc)" }}>
                           <table className="data-table">
                             <thead>
                               <tr>
@@ -23241,8 +23241,8 @@ function InkoopLinkGrowersTab() {
                     onDragLeave={() => setDropKey((current) => (current === key ? "" : current))}
                     onDrop={(event) => { event.preventDefault(); setDropKey(""); addCode(supplier, event.dataTransfer.getData("text/plain")); }}
                     style={{
-                      border: `2px ${dropKey === key ? "solid #2563eb" : "dashed #e2e8f0"}`, borderRadius: 8, padding: "8px 10px",
-                      background: dropKey === key ? "#eff6ff" : supplier.unsaved ? "#fefce8" : supplier.codes.length ? "#ffffff" : "#fff7ed",
+                      border: `2px ${dropKey === key ? "solid var(--x-2563eb)" : "dashed var(--x-e2e8f0)"}`, borderRadius: 8, padding: "8px 10px",
+                      background: dropKey === key ? "var(--x-eff6ff)" : supplier.unsaved ? "var(--x-fefce8)" : supplier.codes.length ? "var(--x-ffffff)" : "var(--x-fff7ed)",
                     }}
                   >
                     <div className="row-actions spread-actions">
@@ -23274,7 +23274,7 @@ function InkoopLinkGrowersTab() {
                       )}
                     </div>
                     {!!supplier.products?.length && (
-                      <div style={{ fontSize: "0.78rem", color: "#475569", marginTop: 4, display: "grid", gap: 2 }} title="Most bought on its invoices -- the latest invoice with it (look that day up in Connect)">
+                      <div style={{ fontSize: "0.78rem", color: "var(--x-475569)", marginTop: 4, display: "grid", gap: 2 }} title="Most bought on its invoices -- the latest invoice with it (look that day up in Connect)">
                         {supplier.products.map((product) => (
                           <div key={product.description}>
                             {product.description} <span className="muted">({product.lines})</span>
@@ -23358,8 +23358,8 @@ function InkoopLinkGrowersTab() {
                     onDragStart={(event) => { event.dataTransfer.setData("text/plain", entry.code); event.dataTransfer.effectAllowed = "copy"; }}
                     onClick={() => setSelectedCode((current) => (current === entry.code ? "" : entry.code))}
                     style={{
-                      cursor: "grab", border: `1px solid ${selectedCode === entry.code ? "#2563eb" : "#e2e8f0"}`, borderRadius: 6, padding: "6px 9px",
-                      background: selectedCode === entry.code ? "#eff6ff" : "#ffffff",
+                      cursor: "grab", border: `1px solid ${selectedCode === entry.code ? "var(--x-2563eb)" : "var(--x-e2e8f0)"}`, borderRadius: 6, padding: "6px 9px",
+                      background: selectedCode === entry.code ? "var(--x-eff6ff)" : "var(--x-ffffff)",
                     }}
                     title="Slide onto a grower, or click to choose"
                   >
@@ -23368,7 +23368,7 @@ function InkoopLinkGrowersTab() {
                       onClick={(event) => { event.stopPropagation(); setExcluded(entry.code, true); }} title="An internal move, never on an invoice: leave its lines out of the comparison">
                       not a purchase
                     </button>
-                    <div style={{ fontSize: "0.76rem", color: "#6b7280" }}>
+                    <div style={{ fontSize: "0.76rem", color: "var(--x-6b7280)" }}>
                       {entry.lots} lots{entry.lots_without_pav ? ` (${entry.lots_without_pav} without brief number)` : ""}
                       {linkedTo.length ? ` · linked to ${linkedTo.slice(0, 3).join(", ")}${linkedTo.length > 3 ? ` +${linkedTo.length - 3}` : ""}` : " · not linked"}
                     </div>
@@ -23463,7 +23463,7 @@ function InkoopGrowersTab() {
       <div key={item.value} style={{ marginBottom: 3 }}>
         {item.value} <small className="muted">({INKOOP_GROWER_SOURCE_LABELS[item.source] || item.source})</small>
         {(item.supplier_name || item.matches) && (
-          <div style={{ fontSize: "0.76rem", color: "#6b7280" }}>
+          <div style={{ fontSize: "0.76rem", color: "var(--x-6b7280)" }}>
             {item.supplier_name}
             {item.matches ? ` -- ${item.matches} match${item.matches === 1 ? "" : "es"}${item.example_pav ? `, e.g. brief number ${item.example_pav}` : ""}` : ""}
           </div>
@@ -23631,7 +23631,7 @@ function InkoopGrowersTab() {
                       <td>
                         {entry.name || <span className="muted">-</span>}
                         {(entry.supplier_names || []).length > 1 && (
-                          <div style={{ fontSize: "0.78rem", color: "#b45309", marginTop: 4 }} title={entry.supplier_names.join(", ")}>
+                          <div style={{ fontSize: "0.78rem", color: "var(--x-b45309)", marginTop: 4 }} title={entry.supplier_names.join(", ")}>
                             Brings in for {entry.supplier_names.length} suppliers (aanvoerder / collector, or one company's several numbers)
                           </div>
                         )}
@@ -23639,7 +23639,7 @@ function InkoopGrowersTab() {
                       <td>{identityList(entry.glns)}</td>
                       <td>{identityList(entry.fh_numbers)}</td>
                       <td>{entry.lots}</td>
-                      <td>{entry.lots_without_pav}{unreachable && <div style={{ color: "#b45309" }}>No GLN / FH known</div>}</td>
+                      <td>{entry.lots_without_pav}{unreachable && <div style={{ color: "var(--x-b45309)" }}>No GLN / FH known</div>}</td>
                       <td>{inkoopShortDate(entry.last_date)}</td>
                     </tr>
                   );
@@ -23680,7 +23680,7 @@ function InkoopConnectCheck({ check, code, quantity, price }) {
   if (!check) return null;
   const style = { display: "block", fontSize: "0.78rem", color: "#6b7280", marginTop: 2 };
   const afgemeld = check.afgemeld
-    ? <small style={{ ...style, color: "#b45309" }}>Afgemeld TrNum {check.afgemeld.trnum}{check.afgemeld.boxes ? ` (${check.afgemeld.boxes} x ${check.afgemeld.per_box} @ ${check.afgemeld.price})` : ""}{check.afgemeld.brief ? `, brief ${check.afgemeld.brief}` : ""} -- no free Connect lot for it: not entered by hand?</small>
+    ? <small style={{ ...style, color: "var(--x-b45309)" }}>Afgemeld TrNum {check.afgemeld.trnum}{check.afgemeld.boxes ? ` (${check.afgemeld.boxes} x ${check.afgemeld.per_box} @ ${check.afgemeld.price})` : ""}{check.afgemeld.brief ? `, brief ${check.afgemeld.brief}` : ""} -- no free Connect lot for it: not entered by hand?</small>
     : null;
   if (afgemeld) return <>{afgemeld}<InkoopConnectCheck check={{ ...check, afgemeld: null }} code={code} quantity={quantity} price={price} /></>;
   // The product pool (same grower, product, price, box size, day): its
@@ -23697,7 +23697,7 @@ function InkoopConnectCheck({ check, code, quantity, price }) {
     );
   }
   if (!check.supplier_lots) {
-    return <small style={{ ...style, color: "#b45309" }}>No Connect lots of {code} around this date -- is the Connect export of this day uploaded, or is it booked under another code?</small>;
+    return <small style={{ ...style, color: "var(--x-b45309)" }}>No Connect lots of {code} around this date -- is the Connect export of this day uploaded, or is it booked under another code?</small>;
   }
   if (!check.candidates?.length) {
     return <small style={style}>{check.near_lots} Connect lot(s) of {code} around this date, none with {quantity} pieces or price {price}.</small>;
@@ -23709,9 +23709,9 @@ function InkoopConnectCheck({ check, code, quantity, price }) {
         <span key={candidate.lot} style={{ display: "block" }}>
           lot {candidate.lot} ({inkoopShortDate(candidate.date)}) {candidate.pieces} x {candidate.price} {candidate.description ? `"${candidate.description}"` : ""} --{" "}
           {candidate.taken_by
-            ? <span style={{ color: "#b45309" }}>already matched to {candidate.taken_by}</span>
+            ? <span style={{ color: "var(--x-b45309)" }}>already matched to {candidate.taken_by}</span>
             : candidate.pav
-              ? <span style={{ color: "#b45309" }}>has brief number {candidate.pav} (matched by brief number, not by supplier)</span>
+              ? <span style={{ color: "var(--x-b45309)" }}>has brief number {candidate.pav} (matched by brief number, not by supplier)</span>
               : Number(candidate.pieces) !== Number(quantity) ? "different pieces" : Number(candidate.price) !== Number(price) ? "different price" : "free -- should have matched, tell support"}
         </span>
       ))}
