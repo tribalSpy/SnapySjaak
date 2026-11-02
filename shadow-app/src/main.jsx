@@ -18065,7 +18065,12 @@ function IkSuggestions({ from, to, company, grower, also = [], onLinked }) {
       setSaved((current) => new Set([...current, ...done]));
       setAccepted((current) => Object.fromEntries(Object.entries(current).filter(([key]) => !done.includes(key))));
       setSaving(false);
-      if (done.length) onLinked?.();
+      // The saved lines and lots, so the lists drop them at once (the day is
+      // compared again in the background).
+      if (done.length) {
+        const savedItems = done.map((key) => accepted[key]?.item).filter(Boolean);
+        onLinked?.({ lineIds: savedItems.flatMap((item) => item.line_ids), lots: savedItems.flatMap((item) => item.lots) });
+      }
     }
   }
   const rows = (items, lines, lots, notePrefix) => {
@@ -18604,7 +18609,17 @@ function InkoopTrackTraceWorkspace({ bar, setBar, overview, company, matchRound 
                 </div>
               </div>
             </div>
-            <IkSuggestions from={from} to={to} company={company} grower={chosen} also={poolGrowers} onLinked={() => { setPairsKey((value) => value + 1); setIssueRound((value) => value + 1); overview.reload(); }} />
+            <IkSuggestions from={from} to={to} company={company} grower={chosen} also={poolGrowers} onLinked={(linked) => {
+              if (linked) {
+                setHiddenKeys((current) => ({
+                  ...current,
+                  ...Object.fromEntries([...(linked.lineIds || []).map((id) => [`line:${id}`, true]), ...(linked.lots || []).map((lot) => [`lot:${lot}`, true])]),
+                }));
+              }
+              setPairsKey((value) => value + 1);
+              setIssueRound((value) => value + 1);
+              overview.reload();
+            }} />
           </>
         )}
       </section>
