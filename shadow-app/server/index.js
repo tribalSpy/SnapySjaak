@@ -8854,6 +8854,85 @@ function matchInkoopVeilingLines(erpRows, invoices, supplierMap = {}, supplierNa
     resale(supplierNotLinked);
   }
 
+  // Alike lines of one grower without a brief number (Handel / AI2) are
+  // matched one by one in invoice order, so a line can take a later day's
+  // lot and leave the line of that lot's own day open (vdEijk ASTE STARL GEM
+  // 10 @ 1.55: 13-10 took 15-10's lot 44867708, the 15-10 line stayed open).
+  // An open line takes a lot of the same product and pieces from a line of
+  // the same grower when the lot's day is closer to it than to that line;
+  // the other line is open then and may in turn take a closer one (13-10
+  // takes 14-10's lot from 12-10). Only simple pairs (one lot, not by hand,
+  // not a pool / split / night action); each move brings a lot closer, so
+  // it ends.
+  {
+    const dayOf = (text) => Date.parse(String(text || "").slice(0, 10));
+    const daysApart = (row, item) => Math.abs(dayOf(row?.date) - dayOf(item?.invoice_date)) / 86400000;
+    const noBrief = (item) => (item?.invoice_type === "handel" || item?.invoice_type === "ai2") && !normalizeUkdocsText(item?.reference_bt) && Number(item?.quantity) > 0;
+    const simple = (item) => noBrief(item) && item.erp_row && !String(item.erp_row.lot ?? "").includes("+") && !item.split_lots?.length
+      && !item.afgemeld_trnum && !item.pool_surplus && !item.matched_as_split_delivery && !/^linked by hand/i.test(String(item.supplier_match_type || ""));
+    const codesCache = new Map();
+    const keyOf = (item) => {
+      const who = `${item?.supplier_gln}|${item?.supplier_fh_number}|${item?.supplier_name}`;
+      if (!codesCache.has(who)) codesCache.set(who, resolveInkoopSupplierCode(item?.supplier_gln, item?.supplier_fh_number, item?.supplier_name, supplierMap, supplierNameMap, manualLinks, supplierFhMap).codes.join("/"));
+      const codes = codesCache.get(who);
+      return codes ? `${codes}|${normalizeInkoopProductName(item?.description)}|${Number(item?.quantity)}` : "";
+    };
+    const holders = new Map();
+    const addHolder = (item, list) => {
+      const key = keyOf(item);
+      if (!key) return;
+      if (!holders.has(key)) holders.set(key, []);
+      holders.get(key).push({ item, list });
+    };
+    for (const item of matchedOk) if (simple(item)) addHolder(item, matchedOk);
+    for (const item of matchedMismatch) if (simple(item)) addHolder(item, matchedMismatch);
+    if (holders.size) {
+      for (let round = 0; round < 200; round += 1) {
+        let moved = false;
+        for (const line of [...onlyInInvoice]) {
+          if (!noBrief(line)) continue;
+          const group = holders.get(keyOf(line));
+          if (!group) continue;
+          let best = null;
+          for (const entry of group) {
+            const row = entry.item.erp_row;
+            if (inkoopValuesDiffer(row.pieces, line.quantity) || !priceFits(row, line.unit_price)) continue;
+            const mine = daysApart(row, line);
+            const theirs = daysApart(row, entry.item);
+            if (!(mine <= INKOOP_DAY_TOLERANCE_DAYS) || !(mine < theirs)) continue;
+            if (!best || mine < best.mine || (mine === best.mine && theirs > best.theirs)) best = { entry, row, mine, theirs };
+          }
+          if (!best) continue;
+          const { entry, row } = best;
+          const holder = entry.item;
+          entry.list.splice(entry.list.indexOf(holder), 1);
+          onlyInInvoice.splice(onlyInInvoice.indexOf(line), 1);
+          const { erp_row: holderRow, diffs: holderDiffs, matched_as_group: holderGroup, ...holderBase } = holder;
+          onlyInInvoice.push(holderBase);
+          // The lot's pair for this line: as the holder's was (OK within the
+          // transaction cost / group), unless this line's figures differ.
+          const samePrice = !inkoopValuesDiffer(Number(line.unit_price), Number(holder.unit_price)) && !inkoopValuesDiffer(Number(line.total), Number(holder.total));
+          const pair = { ...line, supplier_code: holder.supplier_code || line.supplier_code, erp_row: row, ...(holderGroup ? { matched_as_group: true } : {}) };
+          let list = entry.list;
+          if (samePrice) {
+            if (holderDiffs) pair.diffs = holderDiffs;
+          } else {
+            const diffs = [];
+            if (inkoopValuesDiffer(parseFloat(row.price), line.unit_price)) diffs.push({ field: "unit_price", erp: parseFloat(row.price), invoice: line.unit_price });
+            if (inkoopValuesDiffer(parseFloat(row.t_price), line.total)) diffs.push({ field: "total", erp: parseFloat(row.t_price), invoice: line.total });
+            if (diffs.length) pair.diffs = diffs;
+            list = diffs.length ? matchedMismatch : matchedOk;
+          }
+          list.push(pair);
+          entry.item = pair;
+          entry.list = list;
+          moved = true;
+        }
+        if (!moved) break;
+      }
+    }
+  }
+
   // Unconsumed rows from both pools are genuine "recorded but nothing
   // claimed it" gaps -- a supplier-code-keyed row (Handel/AI2 lines with no
   // real PAV) that no invoice line ever matched is exactly as real a gap as
@@ -10723,7 +10802,10 @@ const INKOOP_EMPTY_DAY_BUCKET = {
 // on their own; lots of the same name are no tie; a line without a name fit
 // never takes a lot naming another plant of its grower (09-10 ASTE STARL
 // GEM / "Beg Bel Gem", 13-10 / "Rhodo Si Vogel Gem", 19-10 RO FAV / DENDR).
-const INKOOP_MATCH_RULES_VERSION = "2026-11-03b";
+// 2026-11-03c: an open line without a brief number takes a lot of the same
+// product from a line of the same grower whose day is further from the lot
+// (15-10 ASTE STARL GEM gets its own 15-10 lot back from the 13-10 line).
+const INKOOP_MATCH_RULES_VERSION = "2026-11-03c";
 
 function inkoopStateFingerprint(state) {
   return crypto.createHash("sha1").update(JSON.stringify([
