@@ -1,4 +1,4 @@
-import React, { Fragment, useEffect, useMemo, useRef, useState } from "react";
+import React, { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import JSZip from "jszip";
 import "./styles.css";
@@ -18685,7 +18685,43 @@ function InkoopTrackTraceWorkspace({ bar, setBar, overview, company, matchRound 
 // links / resolves it or moves it to Inkoop or Finance (with a reason); a
 // category ("High control") keeps slow cases on their own page.
 const INKOOP_FU_STATUS_LABEL = { open: "Open", investigating: "Investigating", claimed: "Claimed", resolved: "Resolved" };
-const INKOOP_FU_ACTION_LABEL = { status: "status", department: "moved", category: "category", due_date: "due date", note: "note", assigned_to: "who's checking", comment: "comment", claim_id: "claim" };
+const INKOOP_FU_ACTION_LABEL = { status: "status", department: "moved", category: "category", due_date: "due date", note: "note", assigned_to: "who's checking", comment: "comment", claim_id: "claim", resolution: "verified as" };
+// How a resolved line was verified (Geverifieerd); the server has the same list.
+const INKOOP_FU_RESOLUTIONS = [["transport", "Transport/levering kosten"], ["invoice_diff", "Afwijking van invoice"], ["other_costs", "Overige kosten"]];
+const ikFuResolutionLabel = (key) => (INKOOP_FU_RESOLUTIONS.find(([value]) => value === key) || [])[1] || key || "";
+
+// The right-click menu of a grower tile or a line: verify (resolve) its open
+// lines as transport costs, an invoice difference or other costs.
+function IkFollowupResolveMenu({ menu, onPick, onClose }) {
+  useEffect(() => {
+    if (!menu) return undefined;
+    const close = () => onClose();
+    const key = (event) => { if (event.key === "Escape") onClose(); };
+    window.addEventListener("click", close);
+    window.addEventListener("scroll", close, true);
+    window.addEventListener("resize", close);
+    window.addEventListener("keydown", key);
+    return () => {
+      window.removeEventListener("click", close);
+      window.removeEventListener("scroll", close, true);
+      window.removeEventListener("resize", close);
+      window.removeEventListener("keydown", key);
+    };
+  }, [menu, onClose]);
+  if (!menu) return null;
+  const open = menu.items.filter((item) => item.status !== "resolved" && !item.gone);
+  const net = Math.round(open.reduce((sum, item) => sum + (Number(item.money_diff) || 0), 0) * 100) / 100;
+  const style = { left: Math.min(menu.x, window.innerWidth - 290), top: Math.min(menu.y, window.innerHeight - 190) };
+  return (
+    <div className="ik-ctx-menu" style={style} role="menu" onClick={(event) => event.stopPropagation()} onContextMenu={(event) => event.preventDefault()}>
+      <div className="ik-ctx-title"><strong>{menu.title}</strong><span className="muted">{open.length} line(s) · net <InkoopMoneyDiff value={net} /></span></div>
+      <div className="ik-ctx-sub muted">Resolve as Geverifieerd:</div>
+      {INKOOP_FU_RESOLUTIONS.map(([key, label]) => (
+        <button key={key} type="button" role="menuitem" disabled={!open.length} onClick={() => { onPick(open, key); onClose(); }}>✓ {label}</button>
+      ))}
+    </div>
+  );
+}
 
 function useInkoopFollowupSettings() {
   const [settings, setSettings] = useState(null);
@@ -18727,7 +18763,7 @@ function IkCategoryChip({ name, categories }) {
 function ikFollowupLastText(event) {
   if (!event) return "";
   const what = INKOOP_FU_ACTION_LABEL[event.action] || event.action;
-  const to = event.action === "department" ? `→ ${event.to_value}` : event.action === "note" || event.action === "comment" ? "" : event.to_value ? `→ ${event.to_value}` : "";
+  const to = event.action === "department" ? `→ ${event.to_value}` : event.action === "note" || event.action === "comment" ? "" : event.action === "resolution" ? (event.to_value ? `→ ${ikFuResolutionLabel(event.to_value)}` : "taken off") : event.to_value ? `→ ${event.to_value}` : "";
   return `${formatTimestamp(event.at)} · ${event.by_user} · ${what} ${to}${event.note ? ` -- ${event.note}` : ""}`.trim();
 }
 
@@ -18739,13 +18775,13 @@ async function inkoopFollowupUpdate(items, changes, note) {
 // with its history. A move or "resolved" asks for a reason. Shared by the
 // Follow-up menu and Track & Trace.
 function IkFollowupDrawer({ item, invoiceText, lotText, settings, onClose, onSaved }) {
-  const [draft, setDraft] = useState(() => ({ status: item.status || "open", department: item.department || "control", category: item.category || "", due_date: item.due_date || "", note: item.note || "" }));
+  const [draft, setDraft] = useState(() => ({ status: item.status || "open", department: item.department || "control", category: item.category || "", due_date: item.due_date || "", note: item.note || "", resolution: item.resolution || "" }));
   const [reason, setReason] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [events, setEvents] = useState(null);
   useEffect(() => {
-    setDraft({ status: item.status || "open", department: item.department || "control", category: item.category || "", due_date: item.due_date || "", note: item.note || "" });
+    setDraft({ status: item.status || "open", department: item.department || "control", category: item.category || "", due_date: item.due_date || "", note: item.note || "", resolution: item.resolution || "" });
     setReason("");
     setError("");
     apiJson(`/api/inkoop/followup/history?id=${encodeURIComponent(item.id)}`).then((payload) => setEvents(payload.events || [])).catch(() => setEvents([]));
@@ -18757,7 +18793,9 @@ function IkFollowupDrawer({ item, invoiceText, lotText, settings, onClose, onSav
   if (draft.category !== (item.category || "")) changes.category = draft.category;
   if (draft.due_date !== (item.due_date || "")) changes.due_date = draft.due_date;
   if (draft.note !== (item.note || "")) changes.note = draft.note;
-  const needsReason = changes.department !== undefined || changes.status === "resolved";
+  if (draft.status === "resolved" && draft.resolution !== (item.resolution || "")) changes.resolution = draft.resolution;
+  // A kind of Geverifieerd is its own reason.
+  const needsReason = changes.department !== undefined || (changes.status === "resolved" && !draft.resolution);
   async function save() {
     if (needsReason && !reason.trim()) {
       setError(changes.department !== undefined ? "Give the reason for the move." : "Say how it was solved.");
@@ -18796,6 +18834,14 @@ function IkFollowupDrawer({ item, invoiceText, lotText, settings, onClose, onSav
           {(settings?.statuses || ["open", "investigating", "resolved"]).filter((status) => status !== "claimed" || item.status === "claimed").map((status) => <option key={status} value={status}>{INKOOP_FU_STATUS_LABEL[status] || status}</option>)}
         </select>
       </label>
+      {draft.status === "resolved" && (
+        <label>Geverifieerd as
+          <select value={draft.resolution} onChange={(event) => setDraft((current) => ({ ...current, resolution: event.target.value }))}>
+            <option value="">-</option>
+            {INKOOP_FU_RESOLUTIONS.map(([key, label]) => <option key={key} value={key}>{label}</option>)}
+          </select>
+        </label>
+      )}
       <label>Category
         <select value={draft.category} onChange={(event) => setDraft((current) => ({ ...current, category: event.target.value }))}>
           <option value="">-</option>
@@ -18822,7 +18868,7 @@ function IkFollowupDrawer({ item, invoiceText, lotText, settings, onClose, onSav
               <li key={event.id}>
                 <span className="muted">{formatTimestamp(event.at)} · {event.by_user}</span>{" "}
                 {INKOOP_FU_ACTION_LABEL[event.action] || event.action}
-                {event.action === "note" || event.action === "comment" ? `: ${event.to_value}` : `: ${event.from_value || "-"} → ${event.to_value || "-"}`}
+                {event.action === "note" || event.action === "comment" ? `: ${event.to_value}` : event.action === "resolution" ? `: ${ikFuResolutionLabel(event.from_value) || "-"} → ${ikFuResolutionLabel(event.to_value) || "-"}` : `: ${event.from_value || "-"} → ${event.to_value || "-"}`}
                 {event.note ? <em> -- {event.note}</em> : null}
               </li>
             ))}
@@ -18853,7 +18899,7 @@ function useInkoopFollowup(query, round) {
 
 // One list of follow-up lines: tick for bulk, click for the drawer, quick
 // actions per row.
-function IkFollowupTable({ items, settings, picked, setPicked, onOpen, quick, showAge = false }) {
+function IkFollowupTable({ items, settings, picked, setPicked, onOpen, quick, showAge = false, onMenu }) {
   const allPicked = items.length > 0 && items.every((item) => picked[item.id]);
   const today = localDateIso();
   return (
@@ -18871,7 +18917,8 @@ function IkFollowupTable({ items, settings, picked, setPicked, onOpen, quick, sh
             const overdue = item.due_date && item.due_date < today && item.status !== "resolved";
             const quiet = item.status !== "resolved" && (item.last_event ? inkoopDaysBetween(String(item.last_event.at).slice(0, 10), today) > 15 : ikFollowupAgeDays(item) > 14);
             return (
-              <tr key={item.id} className={`clickable-row${item.gone ? " ik-fu-gone" : ""}`} onClick={() => onOpen(item)}>
+              <tr key={item.id} className={`clickable-row${item.gone ? " ik-fu-gone" : ""}`} onClick={() => onOpen(item)}
+                onContextMenu={onMenu ? (event) => { event.preventDefault(); onMenu(event, [item], item.description); } : undefined}>
                 <td onClick={(event) => event.stopPropagation()}>
                   <input type="checkbox" checked={!!picked[item.id]} onChange={(event) => setPicked((current) => { const next = { ...current }; if (event.target.checked) next[item.id] = item; else delete next[item.id]; return next; })} aria-label="Pick" />
                 </td>
@@ -18905,7 +18952,7 @@ function IkFollowupBulkBar({ picked, setPicked, settings, onDone }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   if (!list.length) return null;
-  const needsReason = changes.department !== undefined || changes.status === "resolved";
+  const needsReason = changes.department !== undefined || (changes.status === "resolved" && !changes.resolution);
   async function apply() {
     if (!Object.keys(changes).length) return;
     if (needsReason && !reason.trim()) {
@@ -18942,6 +18989,10 @@ function IkFollowupBulkBar({ picked, setPicked, settings, onDone }) {
       <select value={changes.status ?? ""} onChange={(event) => set("status", event.target.value || null)} aria-label="Status">
         <option value="">Status…</option>
         {["open", "investigating", "resolved"].map((status) => <option key={status} value={status}>{INKOOP_FU_STATUS_LABEL[status]}</option>)}
+      </select>
+      <select value={changes.resolution ?? ""} onChange={(event) => set("resolution", event.target.value || null)} aria-label="Geverifieerd as">
+        <option value="">Geverifieerd…</option>
+        {INKOOP_FU_RESOLUTIONS.map(([key, label]) => <option key={key} value={key}>✓ {label}</option>)}
       </select>
       <select value={changes.category ?? "__"} onChange={(event) => set("category", event.target.value === "__" ? null : event.target.value)} aria-label="Category">
         <option value="__">Category…</option>
@@ -19342,7 +19393,7 @@ function ikFollowupGroupSum(items) {
 
 // The department's lines folded: day (closed at the start) -> its growers as
 // tiles with the figures Control needs -> a tile opens its lines below.
-function IkFollowupDayTree({ items, settings, picked, setPicked, onOpen, quick }) {
+function IkFollowupDayTree({ items, settings, picked, setPicked, onOpen, quick, onMenu }) {
   const [openDays, setOpenDays] = useState({});
   const [openTile, setOpenTile] = useState("");
   const byDay = new Map();
@@ -19384,7 +19435,9 @@ function IkFollowupDayTree({ items, settings, picked, setPicked, onOpen, quick }
                   {tiles.map((tile) => {
                     const on = tileKey(tile.grower) === openTile;
                     return (
-                      <button key={tile.grower} type="button" className={`ik-fu-tile${on ? " on" : ""}`} onClick={() => setOpenTile(on ? "" : tileKey(tile.grower))} aria-expanded={on}>
+                      <button key={tile.grower} type="button" className={`ik-fu-tile${on ? " on" : ""}`} onClick={() => setOpenTile(on ? "" : tileKey(tile.grower))} aria-expanded={on}
+                        title={onMenu ? "Right-click: resolve as Geverifieerd" : undefined}
+                        onContextMenu={onMenu ? (event) => { event.preventDefault(); onMenu(event, tile.list, `${tile.grower} · ${fustOverviewDate(day)}`); } : undefined}>
                         <span className="ik-fu-tile-head"><strong>{tile.grower}</strong><span className="muted">{tile.sum.lines} line(s)</span></span>
                         <span className="ik-fu-tile-net">net <InkoopMoneyDiff value={tile.sum.net} /></span>
                         {tile.sum.not_matched_lines > 0 && <span>✗ not matched {tile.sum.not_matched_lines} · {formatInkoopEuro(tile.sum.not_matched)}</span>}
@@ -19421,7 +19474,7 @@ function IkFollowupDayTree({ items, settings, picked, setPicked, onOpen, quick }
                               {flowSum.mismatch_lines > 0 && <span>⚠ figures differ {formatInkoopEuro(flowSum.mismatch)}</span>}
                               <span>net <InkoopMoneyDiff value={flowSum.net} /></span>
                             </div>
-                            <IkFollowupTable items={list} settings={settings} picked={picked} setPicked={setPicked} onOpen={onOpen} quick={quick} />
+                            <IkFollowupTable items={list} settings={settings} picked={picked} setPicked={setPicked} onOpen={onOpen} quick={quick} onMenu={onMenu} />
                           </div>
                         );
                       })}
@@ -19432,6 +19485,48 @@ function IkFollowupDayTree({ items, settings, picked, setPicked, onOpen, quick }
           </div>
         );
       })}
+    </div>
+  );
+}
+
+// The lines resolved as Geverifieerd in the period: per kind the lines and
+// the money (invoice, Connect, difference), then the lines of each kind.
+function IkFollowupVerified({ items, settings, picked, setPicked, onOpen, quick }) {
+  const kinds = INKOOP_FU_RESOLUTIONS.map(([key, label]) => ({ key, label, list: items.filter((item) => item.resolution === key) }));
+  const total = (list, field) => Math.round(list.reduce((sum, item) => sum + (Number(item[field]) || 0), 0) * 100) / 100;
+  const [openKind, setOpenKind] = useState("");
+  return (
+    <div className="ik-fu-verified">
+      <div className="table-wrap">
+        <table className="data-table balance-table ik-fu-verified-sum">
+          <thead><tr><th>Geverifieerd</th><th>Lines</th><th>Invoice €</th><th>Connect €</th><th>Difference</th></tr></thead>
+          <tbody>
+            {kinds.map((kind) => (
+              <tr key={kind.key} className="clickable-row" onClick={() => setOpenKind(openKind === kind.key ? "" : kind.key)}>
+                <td><strong>{openKind === kind.key ? "▾" : "▸"} {kind.label}</strong></td>
+                <td>{kind.list.length}</td>
+                <td>{formatInkoopEuro(total(kind.list, "invoice_value"))}</td>
+                <td>{formatInkoopEuro(total(kind.list, "connect_value"))}</td>
+                <td><InkoopMoneyDiff value={total(kind.list, "money_diff")} /></td>
+              </tr>
+            ))}
+          </tbody>
+          <tfoot>
+            <tr><th>Total</th><th>{items.length}</th><th>{formatInkoopEuro(total(items, "invoice_value"))}</th><th>{formatInkoopEuro(total(items, "connect_value"))}</th><th><InkoopMoneyDiff value={total(items, "money_diff")} /></th></tr>
+          </tfoot>
+        </table>
+      </div>
+      {kinds.filter((kind) => kind.list.length && (!openKind || openKind === kind.key)).map((kind) => (
+        <div key={kind.key} className="ik-fu-flow">
+          <div className="ik-fu-flow-head">
+            <strong>✓ {kind.label}</strong>
+            <span>{kind.list.length} line(s)</span>
+            <span>difference <InkoopMoneyDiff value={total(kind.list, "money_diff")} /></span>
+          </div>
+          <IkFollowupTable items={kind.list} settings={settings} picked={picked} setPicked={setPicked} onOpen={onOpen} quick={quick} />
+        </div>
+      ))}
+      {!items.length && <div className="muted">No lines resolved as Geverifieerd in this period. Right-click a grower tile or a line in the to-do to verify it.</div>}
     </div>
   );
 }
@@ -19453,9 +19548,10 @@ function InkoopFollowupWorkspace({ bar, onOpenTrackTrace, onOpenConnectData, mat
   const [editCategories, setEditCategories] = useState(false);
   const [quickError, setQuickError] = useState("");
   const category = tab.startsWith("cat:") ? tab.slice(4) : "";
+  const verified = tab === "verified";
   const query = category
     ? { category, all_dates: "1", status: withResolved ? "all" : "open" }
-    : { from: bar.from, to: bar.to, ...(bar.grower ? { grower: bar.grower } : {}) };
+    : { from: bar.from, to: bar.to, ...(bar.grower ? { grower: bar.grower } : {}), ...(verified ? { status: "resolved", verified: "1" } : {}) };
   const { data, error, loading } = useInkoopFollowup(query, `${round}|${matchRound}`);
   const [claims, setClaims] = useState([]);
   useEffect(() => {
@@ -19501,7 +19597,32 @@ function InkoopFollowupWorkspace({ bar, onOpenTrackTrace, onOpenConnectData, mat
       setQuickError(resolveError.message);
     }
   }
-  const quick = (item) => (
+  const [menu, setMenu] = useState(null);
+  const openMenu = (event, list, title) => setMenu({ x: event.clientX, y: event.clientY, items: list, title });
+  const closeMenu = useCallback(() => setMenu(null), []);
+  async function verifyAs(list, resolution) {
+    if (!list.length) return;
+    setQuickError("");
+    try {
+      await inkoopFollowupUpdate(list, { resolution }, "");
+      setPicked({});
+      reload();
+    } catch (verifyError) {
+      setQuickError(verifyError.message);
+    }
+  }
+  async function reopen(item) {
+    setQuickError("");
+    try {
+      await inkoopFollowupUpdate([item], { status: "open", resolution: "" }, "Back to the to-do");
+      reload();
+    } catch (reopenError) {
+      setQuickError(reopenError.message);
+    }
+  }
+  const quick = (item) => verified ? (
+    <button type="button" className="link-button" onClick={() => reopen(item)} title="Take the Geverifieerd off: back to the to-do">Reopen</button>
+  ) : (
     <>
       {item.department === "control" && <button type="button" className="link-button" onClick={() => onOpenTrackTrace(item)} title="Open Track & Trace for this grower and day">Link</button>}
       {item.status !== "resolved" && !item.gone && <button type="button" className="link-button" onClick={() => quickResolve(item)}>Resolve</button>}
@@ -19517,6 +19638,7 @@ function InkoopFollowupWorkspace({ bar, onOpenTrackTrace, onOpenConnectData, mat
       <div className="tab-strip ik-fu-tabs" role="tablist">
         <button type="button" className={tab === "todo" ? "active" : ""} onClick={() => setTab("todo")}>To-do per department</button>
         <button type="button" className={tab === "growers" ? "active" : ""} onClick={() => setTab("growers")}>Per grower &amp; claims</button>
+        <button type="button" className={tab === "verified" ? "active" : ""} onClick={() => setTab("verified")}>✓ Geverifieerd</button>
         <button type="button" className={tab === "weeks" ? "active" : ""} onClick={() => setTab("weeks")}>Week overview</button>
         {(settings?.categories || []).map((cat) => (
           <button key={cat.name} type="button" className={tab === `cat:${cat.name}` ? "active" : ""} onClick={() => setTab(`cat:${cat.name}`)}>⚑ {cat.name}</button>
@@ -19535,7 +19657,12 @@ function InkoopFollowupWorkspace({ bar, onOpenTrackTrace, onOpenConnectData, mat
       {!!data?.pending_days?.length && <div className="notice">Some days are being compared again; their lines are from the last comparison.</div>}
       {error && <div className="notice danger">{error}</div>}
       {quickError && <div className="notice danger">{quickError}</div>}
-      {tab === "growers" || tab === "weeks" ? null : !category ? (
+      {tab === "growers" || tab === "weeks" ? null : verified ? (
+        <div className="row-actions">
+          <span className="muted">The lines resolved as Geverifieerd, of the period in the bar (and the grower / flow / BW filters).</span>
+          {loading && <span className="muted">Loading…</span>}
+        </div>
+      ) : !category ? (
         <div className="ik-fu-depts" role="group" aria-label="Department">
           {departments.map(([key, label]) => (
             <button key={key} type="button" className={`ik-fu-dept${department === key ? " on" : ""}`} onClick={() => chooseDepartment(key)}>
@@ -19560,13 +19687,15 @@ function InkoopFollowupWorkspace({ bar, onOpenTrackTrace, onOpenConnectData, mat
           <IkFollowupBulkBar picked={picked} setPicked={setPicked} settings={settings} onDone={reload} />
           {data && (category
             ? <IkFollowupTable items={shown} settings={settings} picked={picked} setPicked={setPicked} onOpen={setDrawer} quick={quick} showAge />
-            : <IkFollowupDayTree key={department} items={shown} settings={settings} picked={picked} setPicked={setPicked} onOpen={setDrawer} quick={quick} />)}
+            : verified ? <IkFollowupVerified items={items} settings={settings} picked={picked} setPicked={setPicked} onOpen={setDrawer} quick={quick} />
+            : <IkFollowupDayTree key={department} items={shown} settings={settings} picked={picked} setPicked={setPicked} onOpen={setDrawer} quick={quick} onMenu={openMenu} />)}
         </>
       )}
       {drawer && (
         <IkFollowupDrawer item={drawer} invoiceText={ikFollowupInvoiceText(drawer)} lotText={ikFollowupLotText(drawer)} settings={settings}
           onClose={() => setDrawer(null)} onSaved={reload} />
       )}
+      <IkFollowupResolveMenu menu={menu} onPick={verifyAs} onClose={closeMenu} />
     </div>
   );
 }

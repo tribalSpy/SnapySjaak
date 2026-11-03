@@ -12488,6 +12488,13 @@ const INKOOP_FOLLOWUP_DEPARTMENTS = [
   ["finance", "Finance"],
 ];
 const INKOOP_FOLLOWUP_STATUSES = ["open", "investigating", "claimed", "resolved"];
+// How a line was verified when it is resolved (Geverifieerd): the Verified
+// tab sums the differences per kind.
+const INKOOP_FOLLOWUP_RESOLUTIONS = [
+  ["transport", "Transport/levering kosten"],
+  ["invoice_diff", "Afwijking van invoice"],
+  ["other_costs", "Overige kosten"],
+];
 const INKOOP_FOLLOWUP_COLORS = ["red", "amber", "blue", "purple", "teal", "grey"];
 const INKOOP_FOLLOWUP_TYPES = new Set(["mismatch", "gap_invoice", "gap_erp"]);
 
@@ -12688,6 +12695,7 @@ function inkoopFollowupWithStatus(item, stored, last) {
     due_date: stored?.due_day || "",
     note: stored?.note || "",
     claim_id: stored?.claim_id || "",
+    resolution: stored?.status === "resolved" ? stored?.resolution || "" : "",
     earlier_assigned: stored?.assigned_to || "",
     opened_at: stored?.opened_at || "",
     updated_by: stored?.updated_by || "",
@@ -26829,18 +26837,26 @@ async function handleApi(req, res, url) {
           return;
         }
         ({ items, waiting, pending } = period);
+        if (url.searchParams.get("verified") === "1") {
+          const have = new Set(items.map((item) => item.id));
+          for (const row of statuses) {
+            if (row.status !== "resolved" || !row.resolution || have.has(row.id) || !row.item_day || row.item_day < from || row.item_day > to) continue;
+            items.push(row.snapshot ? { ...row.snapshot, id: row.id, gone: true } : { id: row.id, type: row.issue_type, day: row.item_day, date: row.item_day, grower: "", description: row.id, gone: true });
+          }
+        }
       }
       if (grower) items = items.filter((item) => String(item.grower || "").toLowerCase().includes(grower));
       let merged = items.map((item) => inkoopFollowupWithStatus(item, statusById.get(item.id)));
       if (category) merged = merged.filter((item) => item.category === category);
       if (statusFilter === "open") merged = merged.filter((item) => item.status !== "resolved" && !item.gone);
       if (statusFilter === "resolved") merged = merged.filter((item) => item.status === "resolved" || item.gone);
+      if (url.searchParams.get("verified") === "1") merged = merged.filter((item) => item.status === "resolved" && item.resolution);
       const lastById = new Map((await getInkoopFollowupLastEvents(merged.filter((item) => statusById.has(item.id)).map((item) => item.id))).map((row) => [row.item_id, row]));
       merged = merged.map((item) => (lastById.has(item.id) ? { ...item, last_event: lastById.get(item.id) } : item));
       merged.sort((left, right) => (left.due_date || "9999").localeCompare(right.due_date || "9999") || Math.abs(right.money_diff) - Math.abs(left.money_diff));
       sendJson(res, 200, {
         from, to, items: merged, waiting_days: waiting, pending_days: pending,
-        departments: INKOOP_FOLLOWUP_DEPARTMENTS, statuses: INKOOP_FOLLOWUP_STATUSES, categories: settings.categories, colors: INKOOP_FOLLOWUP_COLORS,
+        departments: INKOOP_FOLLOWUP_DEPARTMENTS, statuses: INKOOP_FOLLOWUP_STATUSES, categories: settings.categories, colors: INKOOP_FOLLOWUP_COLORS, resolutions: INKOOP_FOLLOWUP_RESOLUTIONS,
       });
     } catch (error) {
       sendJson(res, 400, { error: error instanceof Error ? error.message : String(error) });
@@ -26880,7 +26896,20 @@ async function handleApi(req, res, url) {
         changes.due_date = input.due_date ? inkoopIsoDate(input.due_date) : "";
       }
       if (input.note !== undefined) changes.note = String(input.note || "").trim().slice(0, 2000);
-      const note = String(body?.note || "").trim().slice(0, 2000);
+      // Verified as transport / invoice difference / other costs: resolved,
+      // with that kind as the reason when none is typed. Back to open (or
+      // investigating) takes the kind off.
+      let resolutionLabel = "";
+      if (input.resolution !== undefined && input.resolution !== "") {
+        const kind = INKOOP_FOLLOWUP_RESOLUTIONS.find(([key]) => key === input.resolution);
+        if (!kind) throw new Error("Unknown resolution");
+        changes.resolution = kind[0];
+        changes.status = "resolved";
+        resolutionLabel = `Geverifieerd: ${kind[1]}`;
+      } else if (input.resolution === "" || (changes.status && changes.status !== "resolved")) {
+        changes.resolution = "";
+      }
+      const note = String(body?.note || "").trim().slice(0, 2000) || resolutionLabel;
       if (!list.length) throw new Error("No lines chosen");
       if ((changes.department !== undefined || changes.status === "resolved") && !note) {
         throw new Error(changes.department !== undefined ? "Moving a line to another department needs a reason." : "Resolving a line needs a short note (how it was solved).");
@@ -27059,7 +27088,7 @@ async function handleApi(req, res, url) {
       return;
     }
     const settings = normalizeInkoopFollowupSettings((await readInkoopState()).followup);
-    sendJson(res, 200, { departments: INKOOP_FOLLOWUP_DEPARTMENTS, statuses: INKOOP_FOLLOWUP_STATUSES, categories: settings.categories, colors: INKOOP_FOLLOWUP_COLORS });
+    sendJson(res, 200, { departments: INKOOP_FOLLOWUP_DEPARTMENTS, statuses: INKOOP_FOLLOWUP_STATUSES, categories: settings.categories, colors: INKOOP_FOLLOWUP_COLORS, resolutions: INKOOP_FOLLOWUP_RESOLUTIONS });
     return;
   }
 

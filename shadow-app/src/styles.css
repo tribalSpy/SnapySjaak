@@ -4094,3 +4094,51 @@ button.ik-kpi:hover {
   margin-left: 10px;
   font-weight: 400;
 }
+
+/* Follow-up: the right-click menu (resolve as Geverifieerd) and the Verified tab. */
+.ik-ctx-menu {
+  position: fixed;
+  z-index: 60;
+  display: grid;
+  gap: 2px;
+  min-width: 250px;
+  padding: 6px;
+  border: 1px solid var(--ik-border);
+  border-radius: 8px;
+  background: var(--ik-surface);
+  box-shadow: 0 6px 18px rgba(15, 23, 42, 0.18);
+}
+
+.ik-ctx-title {
+  display: grid;
+  gap: 1px;
+  padding: 4px 8px 6px;
+  border-bottom: 1px solid var(--ik-border);
+}
+
+.ik-ctx-sub {
+  padding: 4px 8px 0;
+  font-size: 0.85em;
+}
+
+.ik-ctx-menu button {
+  padding: 7px 10px;
+  text-align: left;
+  border: 0;
+  border-radius: 6px;
+  background: none;
+  color: var(--ik-text);
+}
+
+.ik-ctx-menu button:hover:not(:disabled) {
+  background: var(--ik-surface-2);
+}
+
+.ik-fu-verified {
+  display: grid;
+  gap: 12px;
+}
+
+.ik-fu-verified-sum {
+  max-width: 760px;
+}
