@@ -2768,6 +2768,20 @@ export async function getInkoopCategorisedStatuses(category = "") {
   return result.rows;
 }
 
+// One file of a day marked "none that day" (or the mark taken off).
+export async function setInkoopDayFileNone(date, file, none, setBy) {
+  if (!pool || !date || !file) return;
+  await pool.query(
+    `INSERT INTO inkoop_day_ready (ready_date, state, note, set_by, set_at, files_none)
+     VALUES ($1::date, '', '', $3, now(), CASE WHEN $4 THEN ARRAY[$2]::text[] ELSE '{}'::text[] END)
+     ON CONFLICT (ready_date) DO UPDATE SET set_by = EXCLUDED.set_by, set_at = now(),
+       files_none = CASE WHEN $4 THEN (SELECT ARRAY(SELECT DISTINCT unnest(inkoop_day_ready.files_none || ARRAY[$2]::text[])))
+                         ELSE array_remove(inkoop_day_ready.files_none, $2) END`,
+    [date, file, setBy || "", Boolean(none)],
+  );
+  await pool.query("DELETE FROM inkoop_day_ready WHERE ready_date = $1::date AND state = '' AND cardinality(files_none) = 0", [date]);
+}
+
 // Per day, which of its data is in: the invoices, the Connect export (lots),
 // the Communications / night action (lots with a row, Afgemeld rows) and
 // Levering BB (lots with a row) -- counts, last upload and file name. Read
@@ -2812,7 +2826,8 @@ export async function getInkoopDataDays(from, to) {
             COALESCE(erp.lots, 0) AS lots, COALESCE(erp.lots_no_pav, 0) AS lots_no_pav, erp.at AS lots_at,
             COALESCE(erp.night_lots, 0) AS night_lots, erp.night_at, erp.night_file, COALESCE(af.rows, 0) AS afgemeld_rows, af.at AS afgemeld_at,
             COALESCE(erp.bb_lots, 0) AS bb_lots, COALESCE(erp.bb_linked_lots, 0) AS bb_linked_lots, COALESCE(inv.bb_lines, 0) AS bb_invoice_lines, erp.bb_at, erp.bb_file,
-            r.state AS override, r.note AS override_note, r.set_by AS override_by, r.set_at AS override_at
+            NULLIF(r.state, '') AS override, r.note AS override_note, r.set_by AS override_by, r.set_at AS override_at,
+            COALESCE(r.files_none, '{}') AS files_none
        FROM days LEFT JOIN inv ON inv.d = days.d LEFT JOIN erp ON erp.d = days.d LEFT JOIN af ON af.d = days.d
        LEFT JOIN inkoop_day_ready r ON r.ready_date = days.d
       ORDER BY days.d DESC`,
@@ -2826,7 +2841,9 @@ export async function getInkoopDataDays(from, to) {
 export async function setInkoopDayReady(date, state, note, setBy) {
   if (!pool || !date) return;
   if (!state) {
-    await pool.query("DELETE FROM inkoop_day_ready WHERE ready_date = $1::date", [date]);
+    // The day's mark off; files marked "none that day" stay.
+    await pool.query("UPDATE inkoop_day_ready SET state = '', note = '', set_by = $2, set_at = now() WHERE ready_date = $1::date", [date, setBy || ""]);
+    await pool.query("DELETE FROM inkoop_day_ready WHERE ready_date = $1::date AND state = '' AND cardinality(files_none) = 0", [date]);
     return;
   }
   await pool.query(
@@ -4373,6 +4390,9 @@ const databaseMigrations = [
     )
   `,
   `CREATE INDEX IF NOT EXISTS inkoop_claims_grower_idx ON inkoop_claims (grower, status)`,
+  // Files with no data that day by nature (no Communications or Levering BB
+  // on a Sunday): marked by hand, they count as in for that day.
+  `ALTER TABLE IF EXISTS inkoop_day_ready ADD COLUMN IF NOT EXISTS files_none text[] NOT NULL DEFAULT '{}'`,
   // Levering BB rows "gekoppeld" (no lot number, Connect linked them
   // itself): their brief numbers, so the day of their lots counts as having
   // its Levering BB (Connect data per day).

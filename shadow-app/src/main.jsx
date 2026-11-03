@@ -16780,6 +16780,19 @@ function InkoopDataDaysCard() {
       setBusy("");
     }
   }
+  // One file "none that day" (no Communications / Levering BB on a Sunday).
+  async function markFileNone(day, file, none) {
+    setBusy(day.date);
+    setError("");
+    try {
+      await apiJson(`/api/inkoop/data-days/${day.date}`, { method: "POST", body: JSON.stringify({ file, none }) });
+      reload();
+    } catch (markError) {
+      setError(markError.message);
+    } finally {
+      setBusy("");
+    }
+  }
   const files = data?.files || [];
   const days = (data?.days || []).filter((day) => day.state !== "empty" && (!onlyOpen || day.state !== "ready"));
   const waiting = (data?.days || []).filter((day) => day.state === "waiting");
@@ -16806,7 +16819,24 @@ function InkoopDataDaysCard() {
                   <td>{fustOverviewDate(day.date)}</td>
                   {files.map(([key]) => {
                     const cell = inkoopDataFileCell(day, key);
-                    return <td key={key} title={cell.title} className={cell.ok ? "" : "ik-data-missing"}>{cell.ok ? "✓" : "✗"} {cell.text}</td>;
+                    const none = (day.files_none || []).includes(key);
+                    if (!cell.ok && none) {
+                      return (
+                        <td key={key} className="ik-data-none" title={`Marked: no data in this file that day${day.override_by ? ` (${day.override_by})` : ""}`}>
+                          — none that day{" "}
+                          <button type="button" className="link-button" disabled={busy === day.date} onClick={() => markFileNone(day, key, false)}>Undo</button>
+                        </td>
+                      );
+                    }
+                    return (
+                      <td key={key} title={cell.title} className={cell.ok ? "" : "ik-data-missing"}>
+                        {cell.ok ? "✓" : "✗"} {cell.text}
+                        {!cell.ok && (
+                          <button type="button" className="link-button ik-data-none-btn" disabled={busy === day.date} onClick={() => markFileNone(day, key, true)}
+                            title="This file has no data on this day (e.g. a Sunday): count it as in">none that day</button>
+                        )}
+                      </td>
+                    );
                   })}
                   <td title={day.by_hand ? `${day.override === "ready" ? "marked ready" : "held"} by ${day.override_by} ${formatTimestamp(day.override_at)}${day.override_note ? ` -- ${day.override_note}` : ""}` : ""}>
                     <span className={`ukdocs-status-badge ${day.state === "ready" ? "success" : day.state === "hold" ? "muted" : "info"}`}>{INKOOP_DATA_STATE_LABEL[day.state]}{day.by_hand ? " (by hand)" : ""}</span>

@@ -4084,3 +4084,13 @@ button.ik-kpi:hover {
     opacity: 0.6;
   }
 }
+
+.ik-data-days td.ik-data-none {
+  color: var(--ik-muted);
+  font-style: italic;
+}
+
+.ik-data-days .ik-data-none-btn {
+  margin-left: 10px;
+  font-weight: 400;
+}

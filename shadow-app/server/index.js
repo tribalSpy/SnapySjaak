@@ -96,6 +96,7 @@ import {
   getInkoopClaimItemStatuses,
   getInkoopFollowupEventsForItems,
   setInkoopDayReady,
+  setInkoopDayFileNone,
   getLlmQueueSnapshot,
   getActiveLlmJobsByType,
   compactFinishedLlmJobs,
@@ -12303,11 +12304,14 @@ function inkoopDataDayStatus(row) {
   if (!(row?.lots > 0)) missing.push("connect");
   if (!(row?.night_lots > 0) && !(row?.afgemeld_rows > 0)) missing.push("communications");
   if (!(row?.bb_lots > 0) && !(row?.bb_invoice_lines > 0)) missing.push("levering_bb");
+  // A file marked "none that day" counts as in.
+  const none = new Set(Array.isArray(row?.files_none) ? row.files_none : []);
+  for (let index = missing.length - 1; index >= 0; index -= 1) if (none.has(missing[index])) missing.splice(index, 1);
   const empty = !(row?.invoice_lines > 0) && !(row?.lots > 0);
   let state = empty ? "empty" : missing.length ? "waiting" : "ready";
   if (row?.override === "ready" && !empty) state = "ready";
   if (row?.override === "hold") state = "hold";
-  return { ...row, state, missing, by_hand: Boolean(row?.override) };
+  return { ...row, state, missing, files_none: [...none], by_hand: Boolean(row?.override) };
 }
 
 async function getInkoopDataDayStatuses(from, to) {
@@ -25345,6 +25349,13 @@ async function handleApi(req, res, url) {
       return;
     }
     try {
+      // body { file, none }: one file of the day "none that day" (or not).
+      if (body?.file !== undefined) {
+        if (!INKOOP_DATA_FILES.some(([key]) => key === body.file)) throw new Error("Unknown file");
+        await setInkoopDayFileNone(date, body.file, body.none !== false, requestUser.username);
+        sendJson(res, 200, { ok: true, day: (await getInkoopDataDayStatuses(date, date))[0] || null });
+        return;
+      }
       await setInkoopDayReady(date, state, String(body?.note || "").trim().slice(0, 500), requestUser.username);
       sendJson(res, 200, { ok: true, day: (await getInkoopDataDayStatuses(date, date))[0] || null });
     } catch (error) {
