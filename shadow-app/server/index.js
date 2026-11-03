@@ -10589,7 +10589,42 @@ function inkoopDetectiveSuggestions(lines, lots) {
     walk(0, []);
     return out;
   };
-  const lineSets = subsets(lines, 3);
+  // Also the parts of one purchase, wherever they are in the list: items of
+  // the same price per piece within 4 days, by twos and threes (deco4nature
+  // 29-10 20 pcs @ 4.95 = two 28-10 lots of 10 @ 4.95 -- small lots far past
+  // the biggest 120 were never combined).
+  const sameDeal = (items, priceOf, base) => {
+    const seenSets = new Set(base.map((set) => set.map((item) => item.id ?? item.lot).sort().join(",")));
+    const byPrice = new Map();
+    for (const item of items) {
+      const key = Math.round((Number(priceOf(item)) || 0) * 10000);
+      if (!key) continue;
+      if (!byPrice.has(key)) byPrice.set(key, []);
+      byPrice.get(key).push(item);
+    }
+    const out = [];
+    const day = (item) => Date.parse(String(item.date || "").slice(0, 10)) / 86400000;
+    for (const group of byPrice.values()) {
+      if (group.length < 2) continue;
+      const sorted = [...group].sort((left, right) => day(left) - day(right)).slice(0, 60);
+      const close = (left, right) => Math.abs(day(left) - day(right)) <= 4;
+      const add = (set) => {
+        const key = set.map((item) => item.id ?? item.lot).sort().join(",");
+        if (seenSets.has(key)) return;
+        seenSets.add(key);
+        out.push(set);
+      };
+      for (let first = 0; first < sorted.length; first += 1) {
+        for (let second = first + 1; second < sorted.length && close(sorted[first], sorted[second]); second += 1) {
+          add([sorted[first], sorted[second]]);
+          for (let third = second + 1; third < sorted.length && close(sorted[first], sorted[third]); third += 1) add([sorted[first], sorted[second], sorted[third]]);
+        }
+      }
+    }
+    return out;
+  };
+  const baseLineSets = subsets(lines, 3);
+  const lineSets = [...baseLineSets, ...sameDeal(lines, (line) => line.price, baseLineSets)];
   const byPieces = new Map();
   const byTotal = new Map();
   for (const set of lineSets) {
@@ -10608,7 +10643,8 @@ function inkoopDetectiveSuggestions(lines, lots) {
   const MAX_CANDIDATES = 20000;
   const candidates = [];
   const seen = new Set();
-  for (const lotSet of subsets(lots, 3)) {
+  const baseLotSets = subsets(lots, 3);
+  for (const lotSet of [...sameDeal(lots, (lot) => lot.price, baseLotSets), ...baseLotSets]) {
     if (candidates.length >= MAX_CANDIDATES) break;
     const pieces = String(Math.round(lotSet.reduce((sum, lot) => sum + lot.pieces, 0)));
     const cents = Math.round(lotSet.reduce((sum, lot) => sum + lot.total, 0) * 100);
