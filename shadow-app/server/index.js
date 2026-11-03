@@ -7180,7 +7180,13 @@ function inkoopFineNamedRow(rows, line) {
 // Lines and lots all alike in pieces and price: each line first the lot
 // with clearly its own name (the biggest lead first), the rest in order --
 // SCHEF AR CHARLOTTE / ANTHU AN MADURAL used to swap their lots.
-function inkoopPairByName(entries, candidates) {
+// strictName: a line the name pairs with no lot only takes a free lot of
+// exactly its price -- within the price tolerance (a plant grower's
+// transaction cost: 2.03 on the invoice, 2.01 in Connect) any lot of those
+// pieces fits, so the leftovers took another product (ADIAN RAD FRAGRANS ->
+// a Peperomioides lot) and that product's own line never found its lot. Such
+// a line stays open instead.
+function inkoopPairByName(entries, candidates, { strictName = false } = {}) {
   const free = [...candidates];
   const pairs = new Map();
   for (;;) {
@@ -7196,7 +7202,14 @@ function inkoopPairByName(entries, candidates) {
     pairs.set(best.entry, best.row);
     free.splice(free.indexOf(best.row), 1);
   }
-  for (const entry of entries) if (!pairs.has(entry) && free.length) pairs.set(entry, free.shift());
+  for (const entry of entries) {
+    if (pairs.has(entry) || !free.length) continue;
+    const named = free.find((row) => inkoopFineNameScore(entry, row) > 0);
+    const row = named || (strictName ? free.find((candidate) => !inkoopValuesDiffer(parseFloat(candidate.price), entry.unit_price)) : free[0]);
+    if (!row) continue;
+    pairs.set(entry, row);
+    free.splice(free.indexOf(row), 1);
+  }
   return pairs;
 }
 
@@ -8170,14 +8183,19 @@ function matchInkoopVeilingLines(erpRows, invoices, supplierMap = {}, supplierNa
   const stillAmbiguous = [];
   for (const group of ambiguousGroups.values()) {
     if (group.entries.length === group.candidates.length) {
-      for (const candidate of group.candidates) {
-        consumedErpRows.add(candidate);
-      }
       // One lot per line (all the same pieces and price): the Connect value
-      // counts too (without a lot it was in no total). By name first.
-      const pairs = inkoopPairByName(group.entries, group.candidates);
+      // counts too (without a lot it was in no total). By name first; a
+      // line no lot's name fits, at a price that isn't exact, stays open
+      // (its lot may be another day's) and its lot stays free.
+      const pairs = inkoopPairByName(group.entries, group.candidates, { strictName: true });
       group.entries.forEach((entry) => {
-        matchedOk.push({ ...entry, erp_row: pairs.get(entry), matched_as_group: true });
+        const row = pairs.get(entry);
+        if (row) {
+          consumedErpRows.add(row);
+          matchedOk.push({ ...entry, erp_row: row, matched_as_group: true });
+        } else {
+          onlyInInvoice.push(entry);
+        }
       });
     } else {
       // The same party bought more than once (same brief number, pieces
@@ -8185,7 +8203,7 @@ function matchInkoopVeilingLines(erpRows, invoices, supplierMap = {}, supplierNa
       // with one as far as they go; only the rest stays unmatched (lines
       // left -> only in invoice, lots left -> only in Connect).
       const free = group.candidates.filter((candidate) => !consumedErpRows.has(candidate));
-      const pairs = inkoopPairByName(group.entries, free);
+      const pairs = inkoopPairByName(group.entries, free, { strictName: true });
       group.entries.forEach((entry) => {
         const row = pairs.get(entry);
         if (row) {
@@ -10634,7 +10652,10 @@ const INKOOP_EMPTY_DAY_BUCKET = {
 // 2026-10-30a: a pool short by exactly one line's pieces leaves that line
 // out (never a 0-piece pair); a pool's Connect surplus is another day's line
 // of exactly those pieces (split delivery 20-10 / 22-10 Zentoo Altaj).
-const INKOOP_MATCH_RULES_VERSION = "2026-10-30a";
+// 2026-11-03a: a group of alike lines pairs by name; a line no lot's name
+// fits takes no lot unless the price is exact (15-10 vdEijk ADIAN RAD
+// FRAGRANS took a Peperomioides lot within the price tolerance).
+const INKOOP_MATCH_RULES_VERSION = "2026-11-03a";
 
 function inkoopStateFingerprint(state) {
   return crypto.createHash("sha1").update(JSON.stringify([
