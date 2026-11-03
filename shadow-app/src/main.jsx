@@ -18289,7 +18289,7 @@ function IkSuggestions({ from, to, company, grower, also = [], onLinked }) {
         return (
           <div key={key} className="ik-suggest on folded">
             <div className="ik-suggest-why">
-              <span>✓ Accepted · <strong>{firstLine?.description || item.line_ids[0]}</strong> · {item.line_ids.length} line(s) ↔ {item.lots.length} lot(s) · {item.invoice_pieces} pcs · difference <InkoopMoneyDiff value={item.difference} /></span>
+              <span>✓ Accepted · <strong>{firstLine?.description || item.line_ids[0]}</strong> · {item.line_ids.length} line(s) ↔ {item.lots.length} lot(s) · {item.invoice_pieces} pcs · invoice − Connect <InkoopMoneyDiff value={item.difference} /></span>
               <button type="button" className="link-button" onClick={() => setUnfolded((current) => ({ ...current, [key]: true }))}>Show</button>
               <button type="button" className="link-button" onClick={() => accept(key, item, lines, lots, "")}>Undo</button>
             </div>
@@ -18302,7 +18302,7 @@ function IkSuggestions({ from, to, company, grower, also = [], onLinked }) {
           <div className="ik-con-text">{item.lots.map((lot) => <div key={lot}>{inkoopDetectiveLotText(lotByNumber.get(lot))}</div>)}</div>
           <div className="ik-suggest-why">
             <span>{item.reason || item.kind}{item.span_days ? ` · ${item.span_days} day(s) apart` : " · same day"}</span>
-            <span>invoice {item.invoice_pieces} / Connect {item.connect_pieces} pcs · difference <InkoopMoneyDiff value={item.difference} /></span>
+            <IkSuggestionMoney item={item} />
             {isSaved ? <span className="ukdocs-status-badge">linked</span> : (
               <label className="checkbox-label"><input type="checkbox" checked={Boolean(accepted[key])} onChange={() => { accept(key, item, lines, lots, `${notePrefix}${item.reason || item.kind}`.slice(0, 280)); setUnfolded((current) => ({ ...current, [key]: false })); }} /><span>Accept</span></label>
             )}
@@ -18336,6 +18336,23 @@ function IkSuggestions({ from, to, company, grower, also = [], onLinked }) {
         </>
       )}
     </div>
+  );
+}
+
+// A suggestion's money from the invoice's side: invoice − Connect (+ red:
+// the invoice is higher, we pay more; − green: lower), and per piece.
+function IkSuggestionMoney({ item }) {
+  const invoice = Number(item.invoice_value) || 0;
+  const connect = Number(item.connect_value) || 0;
+  const perPiece = (value, pieces) => (Number(pieces) > 0 ? value / Number(pieces) : null);
+  const invoicePrice = perPiece(invoice, item.invoice_pieces);
+  const connectPrice = perPiece(connect, item.connect_pieces);
+  const priceDiff = invoicePrice !== null && connectPrice !== null ? Math.round((invoicePrice - connectPrice) * 10000) / 10000 : null;
+  return (
+    <span className="ik-suggest-money" title="Invoice minus Connect: + (red) the invoice is higher -- we pay more than Connect counts; − (green) the invoice is lower">
+      invoice {item.invoice_pieces} pcs {formatInkoopEuro(invoice)} − Connect {item.connect_pieces} pcs {formatInkoopEuro(connect)} = <InkoopMoneyDiff value={item.difference} />
+      {priceDiff !== null && Math.abs(priceDiff) >= 0.0005 ? <span className="muted"> · per piece {formatInkoopEuro(invoicePrice)} − {formatInkoopEuro(connectPrice)} = {priceDiff > 0 ? "+" : "−"}{formatInkoopEuro(Math.abs(priceDiff))}</span> : null}
+    </span>
   );
 }
 
