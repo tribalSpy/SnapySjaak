@@ -7160,14 +7160,49 @@ function inkoopBestNamedRow(rows, line) {
 // words too (2+ letters) -- "HED HE GEM 3 SRT" shares HED HE GEM SRT with
 // "Hed He Gem 3 Srt" and only GEM SRT with "Ro Pathit Gem 5 Srt", where the
 // 4-letter words found nothing (both 0).
+// Words that say nothing about which product it is: GEM (gemengd, mixed),
+// OV (overig), sizes and colours of every pot. Shared with a lot whose name
+// has a word of its own ("Beg Bel Gem", "Dendr N Gem") they are no name
+// fit -- ASTE STARL GEM / RO FAV RO GEM took those lots by "GEM" alone.
+// With a lot called only "OV" / "GEM 7 KL" (Phal growers) they still count.
+const INKOOP_GENERAL_NAME_WORDS = new Set(["GEM", "GEMENGD", "OV", "MIX", "KL", "KLB", "SRT", "WIT", "PT", "ST", "GR", "BL", "SUP", "CM", "BRANCHE", "BRANCHES", "STEM", "STEMS"]);
+
 function inkoopFineNameScore(line, row) {
   const words = (text) => new Set(String(text || "").toUpperCase().split(/[^A-Z]+/).filter((word) => word.length >= 2));
   // Looked for inside the lot's name: CALLU NOVA in "Callunova Twins".
-  const lotName = inkoopLotNameText(row).toUpperCase().replace(/[^A-Z]/g, "");
+  const lotText = inkoopLotNameText(row);
+  const lotName = lotText.toUpperCase().replace(/[^A-Z]/g, "");
   let shared = 0;
-  for (const word of words(line?.description)) if (lotName.includes(word)) shared += 1;
+  let sharedOwn = 0;
+  for (const word of words(line?.description)) {
+    if (!lotName.includes(word)) continue;
+    shared += 1;
+    if (!INKOOP_GENERAL_NAME_WORDS.has(word)) sharedOwn += 1;
+  }
+  // A lot with a product word of its own: the product words weigh double
+  // and the general ones only break a tie (ANTHU AN GEM 4 KL: "Anthu An Gem
+  // 4 Kl" over "Anthu An Sweet Dream"); without a product word in common
+  // there is no fit ("Beg Bel Gem" for ASTE STARL GEM).
+  if ([...words(lotText)].some((word) => !INKOOP_GENERAL_NAME_WORDS.has(word))) shared = sharedOwn ? sharedOwn * 2 + (shared - sharedOwn) : 0;
+  else shared *= 2;
   const vbn = String(line?.vbn_code || "").replace(/^0+/, "").trim();
-  return shared + (vbn && inkoopLotVbnCodes(row).has(vbn) ? 3 : 0);
+  return shared + (vbn && inkoopLotVbnCodes(row).has(vbn) ? 6 : 0);
+}
+
+// The plant a name starts with (ASTE, BEG, RHODO, RO; "P.Pink" has none),
+// past the general and decoration words ("Deco. Berk", "Arr9 Deco").
+function inkoopNameGenus(text) {
+  const skip = (word) => INKOOP_GENERAL_NAME_WORDS.has(word) || word === "DECO" || word === "ARR";
+  const first = String(text || "").trim().toUpperCase().split(/[^A-Z]+/).find((word) => word && !skip(word)) || "";
+  return first.length >= 2 ? first : "";
+}
+
+// BEG / BEGONIA alike; a 2-letter name only the same (RO = RO, DI is not
+// "Diamond").
+function inkoopGenusAlike(left, right) {
+  if (!left || !right) return false;
+  if (left.length < 3 || right.length < 3) return left === right;
+  return left.startsWith(right) || right.startsWith(left);
 }
 
 function inkoopFineNamedRow(rows, line) {
@@ -7186,15 +7221,21 @@ function inkoopFineNamedRow(rows, line) {
 // pieces fits, so the leftovers took another product (ADIAN RAD FRAGRANS ->
 // a Peperomioides lot) and that product's own line never found its lot. Such
 // a line stays open instead.
-function inkoopPairByName(entries, candidates, { strictName = false } = {}) {
+// Lots of the same name are no tie (4 x "Ro Fav Ro Gem 4 Srt": any is
+// right -- the tie left all of them to the leftovers, crossed with "Dendr N
+// Gem"). namesAnother(entry, row): the lot names another plant of the
+// grower -- a leftover without a name fit never takes it.
+function inkoopPairByName(entries, candidates, { strictName = false, namesAnother = () => false } = {}) {
   const free = [...candidates];
   const pairs = new Map();
+  const sameName = (left, right) => normalizeUkdocsText(inkoopLotNameText(left)).toUpperCase() === normalizeUkdocsText(inkoopLotNameText(right)).toUpperCase();
   for (;;) {
     let best = null;
     for (const entry of entries) {
       if (pairs.has(entry)) continue;
       const scored = free.map((row) => ({ row, score: inkoopFineNameScore(entry, row) })).sort((left, right) => right.score - left.score);
-      if (!scored.length || !(scored[0].score > 0) || (scored.length > 1 && scored[1].score === scored[0].score)) continue;
+      if (!scored.length || !(scored[0].score > 0)) continue;
+      if (scored.length > 1 && scored[1].score === scored[0].score && !scored.filter((item) => item.score === scored[0].score).every((item) => sameName(item.row, scored[0].row))) continue;
       const lead = scored[0].score - (scored[1]?.score || 0);
       if (!best || lead > best.lead) best = { entry, row: scored[0].row, lead };
     }
@@ -7204,8 +7245,9 @@ function inkoopPairByName(entries, candidates, { strictName = false } = {}) {
   }
   for (const entry of entries) {
     if (pairs.has(entry) || !free.length) continue;
-    const named = free.find((row) => inkoopFineNameScore(entry, row) > 0);
-    const row = named || (strictName ? free.find((candidate) => !inkoopValuesDiffer(parseFloat(candidate.price), entry.unit_price)) : free[0]);
+    const named = free.map((row) => ({ row, score: inkoopFineNameScore(entry, row) })).filter((item) => item.score > 0).sort((left, right) => right.score - left.score)[0]?.row;
+    const unnamed = free.filter((candidate) => !namesAnother(entry, candidate));
+    const row = named || (strictName ? unnamed.find((candidate) => !inkoopValuesDiffer(parseFloat(candidate.price), entry.unit_price)) : unnamed[0]);
     if (!row) continue;
     pairs.set(entry, row);
     free.splice(free.indexOf(row), 1);
@@ -7791,6 +7833,27 @@ function matchInkoopVeilingLines(erpRows, invoices, supplierMap = {}, supplierNa
     && !inkoopValuesDiffer(row.pieces, other.quantity) && priceFits(row, other.unit_price) && inkoopLotNameScore(other, row) > 0
     && resolveInkoopSupplierCode(other?.supplier_gln, other?.supplier_fh_number, other?.supplier_name, supplierMap, supplierNameMap, manualLinks, supplierFhMap).codes.includes(resolveErpRowSupplierCode(row, validSupplierCodes))
   ));
+  // The plants each grower invoices (first word: BEG, RHODO, DENDR). A lot
+  // whose name starts with one of them -- not the line's own -- is another
+  // product of that grower: a line without a name fit doesn't take it
+  // (09-10 ASTE STARL GEM took "Beg Bel Gem" at the same 1.65; 13-10 one
+  // took "Rhodo Si Vogel Gem" of 06-10, the only lot of 10 at about 1.55).
+  const growerGenus = new Map();
+  for (const invoice of Array.isArray(invoices) ? invoices : []) {
+    for (const invoiceLine of Array.isArray(invoice?.lines) ? invoice.lines : []) {
+      const genus = inkoopNameGenus(invoiceLine?.description);
+      if (!genus) continue;
+      const key = normalizeUkdocsText(invoiceLine?.supplier_name).toUpperCase();
+      if (!growerGenus.has(key)) growerGenus.set(key, new Set());
+      growerGenus.get(key).add(genus);
+    }
+  }
+  const namesAnotherProduct = (line, row) => {
+    const lotGenus = inkoopNameGenus(row?.description);
+    if (!lotGenus || inkoopGenusAlike(inkoopNameGenus(line?.description), lotGenus)) return false;
+    if (inkoopLotNameScore(line, row) > 0 || inkoopFineNameScore(line, row) > 0) return false;
+    return [...(growerGenus.get(normalizeUkdocsText(line?.supplier_name).toUpperCase()) || [])].some((genus) => inkoopGenusAlike(genus, lotGenus));
+  };
   function matchInkoopLineBySupplierCode(context, line) {
     // The night action's order number (Connect line's ON + up to 3 digits):
     // an exact pair, before anything by supplier.
@@ -7840,6 +7903,7 @@ function matchInkoopVeilingLines(erpRows, invoices, supplierMap = {}, supplierNa
       && !(inkoopLotNameScore(line, picked.row) > 0) && lotNamedBySameDayLine(picked.row, line)) {
       picked = { row: null, ambiguous: false };
     }
+    if (picked.row && namesAnotherProduct(line, picked.row)) picked = { row: null, ambiguous: false };
     // No brief number to go on: the product name helps ("CHR S AAA
     // AURINKO" on the invoice, "Aurinko" in Connect). Among several lots
     // with the same pieces and price, the one with the name; with none
@@ -8187,7 +8251,7 @@ function matchInkoopVeilingLines(erpRows, invoices, supplierMap = {}, supplierNa
       // counts too (without a lot it was in no total). By name first; a
       // line no lot's name fits, at a price that isn't exact, stays open
       // (its lot may be another day's) and its lot stays free.
-      const pairs = inkoopPairByName(group.entries, group.candidates, { strictName: true });
+      const pairs = inkoopPairByName(group.entries, group.candidates, { strictName: true, namesAnother: namesAnotherProduct });
       group.entries.forEach((entry) => {
         const row = pairs.get(entry);
         if (row) {
@@ -8203,7 +8267,7 @@ function matchInkoopVeilingLines(erpRows, invoices, supplierMap = {}, supplierNa
       // with one as far as they go; only the rest stays unmatched (lines
       // left -> only in invoice, lots left -> only in Connect).
       const free = group.candidates.filter((candidate) => !consumedErpRows.has(candidate));
-      const pairs = inkoopPairByName(group.entries, free, { strictName: true });
+      const pairs = inkoopPairByName(group.entries, free, { strictName: true, namesAnother: namesAnotherProduct });
       group.entries.forEach((entry) => {
         const row = pairs.get(entry);
         if (row) {
@@ -10655,7 +10719,11 @@ const INKOOP_EMPTY_DAY_BUCKET = {
 // 2026-11-03a: a group of alike lines pairs by name; a line no lot's name
 // fits takes no lot unless the price is exact (15-10 vdEijk ADIAN RAD
 // FRAGRANS took a Peperomioides lot within the price tolerance).
-const INKOOP_MATCH_RULES_VERSION = "2026-11-03a";
+// 2026-11-03b: general words (GEM = gemengd, OV, KL, sizes) are no name fit
+// on their own; lots of the same name are no tie; a line without a name fit
+// never takes a lot naming another plant of its grower (09-10 ASTE STARL
+// GEM / "Beg Bel Gem", 13-10 / "Rhodo Si Vogel Gem", 19-10 RO FAV / DENDR).
+const INKOOP_MATCH_RULES_VERSION = "2026-11-03b";
 
 function inkoopStateFingerprint(state) {
   return crypto.createHash("sha1").update(JSON.stringify([
