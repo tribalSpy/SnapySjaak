@@ -25828,17 +25828,27 @@ async function handleApi(req, res, url) {
     }
     const text = (name) => normalizeUkdocsText(url.searchParams.get(name)).slice(0, 80);
     const utilities = url.searchParams.get("utilities") === "1";
+    // grower=: the filter bar's grower (overview name, "vdeijkpotplanten") --
+    // the invoice supplier names that are that grower in the overview.
+    let supplierNames = null;
+    const grower = normalizeUkdocsText(url.searchParams.get("grower"));
+    if (grower) {
+      const view = inkoopOverviewNaming(await readInkoopState());
+      const totals = await getInkoopOverviewTotals({ company: text("company"), from, to });
+      supplierNames = [...new Set(totals.filter((row) => view.growerOf(row) === grower).map((row) => row.supplier_name).filter(Boolean))];
+    }
     const { rows, truncated, kinds } = await searchInkoopInvoiceLines({
       from,
       to,
       product: text("product"),
       supplier: text("supplier"),
+      supplierNames,
       invoice: text("invoice"),
       company: text("company"),
       utilities,
       limit: utilities ? 1500 : 500,
     });
-    sendJson(res, 200, { from, to, limited_from: limitedFrom, lines: rows, truncated, kinds, utilities });
+    sendJson(res, 200, { from, to, limited_from: limitedFrom, lines: rows, truncated, kinds, utilities, grower, supplier_names: supplierNames });
     return;
   }
 

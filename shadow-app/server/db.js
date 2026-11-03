@@ -1676,10 +1676,11 @@ export async function getInkoopOverviewLines({ company = "", from = "", to = "",
     `SELECT to_char(m.match_date, 'YYYY-MM-DD') AS date, m.list, m.invoice_number, m.invoice_type, m.pav, m.lot, m.supplier_code, m.supplier_name, m.description,
             m.invoice_quantity::float8, m.invoice_price::float8, m.invoice_total::float8, m.erp_quantity::float8, m.erp_price::float8, m.erp_total::float8, m.difference_total::float8, m.note,
             il.raw->>'packages' AS packages, il.raw->>'per_package' AS per_package, il.raw->>'your_reference' AS your_reference,
-            el.raw->>'items' AS lot_items, el.raw->>'cont' AS lot_cont, el.description AS lot_description
+            el.raw->>'items' AS lot_items, el.raw->>'cont' AS lot_cont, el.description AS lot_description,
+            to_char(el.erp_date, 'YYYY-MM-DD') AS lot_date, il.invoice_day AS invoice_date
        FROM inkoop_match_rows m
        LEFT JOIN LATERAL (
-         SELECT i.raw FROM inkoop_invoice_lines i
+         SELECT i.raw, to_char(i.invoice_date, 'YYYY-MM-DD') AS invoice_day FROM inkoop_invoice_lines i
           WHERE m.invoice_number <> '' AND i.invoice_number = m.invoice_number AND i.quantity = m.invoice_quantity
             AND i.total = m.invoice_total AND regexp_replace(btrim(COALESCE(i.description, '')), '\\s+', ' ', 'g') = m.description
           LIMIT 1
@@ -1895,7 +1896,7 @@ const INKOOP_LINE_KIND_SQL = `
 // -- those are only in the ERP). Product and grower match every word, in any
 // order. Only products unless `utilities` (fust, fees, emballage, ...);
 // `kinds` counts every kind either way. Capped at `limit` rows.
-export async function searchInkoopInvoiceLines({ from, to, product, supplier, invoice, company, utilities = false, limit = 500 } = {}) {
+export async function searchInkoopInvoiceLines({ from, to, product, supplier, supplierNames = null, invoice, company, utilities = false, limit = 500 } = {}) {
   if (!pool || !from || !to) {
     return { rows: [], truncated: false, kinds: {} };
   }
@@ -1910,6 +1911,12 @@ export async function searchInkoopInvoiceLines({ from, to, product, supplier, in
   for (const word of words(supplier)) {
     values.push(like(word));
     conditions.push(`(l.supplier_name ILIKE $${values.length} OR l.supplier_fh_number ILIKE $${values.length} OR l.supplier_gln ILIKE $${values.length})`);
+  }
+  // The grower of the filter bar (its name as the overview shows it): the
+  // invoice names it goes by.
+  if (Array.isArray(supplierNames)) {
+    values.push(supplierNames);
+    conditions.push(`l.supplier_name = ANY($${values.length}::text[])`);
   }
   if (invoice) {
     values.push(like(invoice));

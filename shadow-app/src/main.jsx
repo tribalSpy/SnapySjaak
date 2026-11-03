@@ -15981,6 +15981,132 @@ function inkoopDispatchText(dispatch) {
   return `${dispatch.code}${dispatch.name ? ` - ${dispatch.name}` : ""}${dispatch.land ? ` (${dispatch.land})` : ""}: ${dispatch.pieces}`;
 }
 
+// "Dispatched to" folded to one line (customers and pieces); every customer
+// in the tooltip, a click opens the list.
+function IkDispatchCell({ dispatches }) {
+  const [open, setOpen] = useState(false);
+  if (!dispatches?.length) return <span className="muted">-</span>;
+  const pieces = dispatches.reduce((sum, dispatch) => sum + (Number(dispatch.pieces) || 0), 0);
+  return (
+    <span className="ik-dispatch-cell">
+      <button type="button" className="link-button" title={dispatches.map(inkoopDispatchText).join("\n")} onClick={() => setOpen((value) => !value)} aria-expanded={open}>
+        {open ? "▾" : "▸"} {dispatches.length} customer{dispatches.length === 1 ? "" : "s"} · {pieces} pcs
+      </button>
+      {open && dispatches.map((dispatch) => <div key={dispatch.code} className="muted">{inkoopDispatchText(dispatch)}</div>)}
+    </span>
+  );
+}
+
+// Product check (Search): one grower's invoice lines and Connect lots of a
+// product side by side, from the stored comparison -- each pair on one row
+// with its days apart, open lines and lots on their own row, and the totals
+// of both sides: missing (the pieces don't add up) or paired across days
+// (they do, a pair days apart).
+const ikWordsOf = (text) => String(text || "").toUpperCase().split(/[^A-Z0-9%]+/).filter(Boolean);
+function ikProductHit(line, query) {
+  const wanted = ikWordsOf(query);
+  if (!wanted.length) return true;
+  const words = ikWordsOf(`${line.description || ""} ${line.lot_description || ""}`);
+  return wanted.every((term) => words.some((word) => word.startsWith(term)));
+}
+
+function IkProductCheck({ bar, company }) {
+  const [product, setProduct] = useState("");
+  const [result, setResult] = useState(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState("");
+  const from = bar?.day?.from || bar?.from;
+  const to = bar?.day?.to || bar?.to;
+  const grower = bar?.grower || "";
+  async function run(event) {
+    event?.preventDefault();
+    if (!grower) return;
+    setLoading(true);
+    setError("");
+    try {
+      const params = new URLSearchParams({ from, to, grower, limit: "50000" });
+      if (company) params.set("company", company);
+      const payload = await apiJson(`/api/inkoop/overview-lines?${params}`);
+      setResult({ ...payload, product, grower });
+    } catch (loadError) {
+      setError(loadError.message);
+    } finally {
+      setLoading(false);
+    }
+  }
+  const lines = (result?.lines || []).filter((line) => ["matched", "mismatch", "not_matched", "connect_only"].includes(line.status) && ikProductHit(line, result.product));
+  const dayOf = (line) => (line.status === "connect_only" ? line.lot_date || line.date : String(line.invoice_date || line.date || "").slice(0, 10));
+  const lotDay = (line) => (line.status === "not_matched" ? "" : line.lot_date || (line.status === "connect_only" ? line.date : ""));
+  const apart = (line) => (line.status === "matched" || line.status === "mismatch") && lotDay(line) && dayOf(line) ? Math.round(Math.abs(Date.parse(lotDay(line)) - Date.parse(dayOf(line))) / 86400000) : null;
+  const invoiceSide = lines.filter((line) => line.status !== "connect_only");
+  const connectSide = lines.filter((line) => line.status !== "not_matched");
+  const lotCount = connectSide.reduce((sum, line) => sum + String(line.lot || "").split("+").filter(Boolean).length, 0);
+  const sum = (list, field) => Math.round(list.reduce((total, line) => total + (Number(line[field]) || 0), 0) * 100) / 100;
+  const invoicePieces = sum(invoiceSide, "invoice_quantity");
+  const connectPieces = sum(connectSide, "erp_quantity");
+  const crossDay = lines.filter((line) => (apart(line) || 0) > 0);
+  const openInvoice = lines.filter((line) => line.status === "not_matched");
+  const openLots = lines.filter((line) => line.status === "connect_only");
+  const rows = [...lines].sort((left, right) => dayOf(left).localeCompare(dayOf(right)) || String(left.lot || "").localeCompare(String(right.lot || "")));
+  const piecesText = (quantity, price, total) => (total === null || total === undefined ? "" : `${quantity ?? "?"} pcs @ ${price !== null && price !== undefined ? formatInkoopEuro(price) : "?"} = ${formatInkoopEuro(total)}`);
+  return (
+    <div className="data-table-card ik-product-check">
+      <form className="ik-product-check-bar" onSubmit={run}>
+        <strong>Product check</strong>
+        <span className="muted">{grower ? `${grower} · ${fustOverviewDate(from)} – ${fustOverviewDate(to)}` : "Choose a grower in the bar first"}</span>
+        <input value={product} onChange={(event) => setProduct(event.target.value)} placeholder="Product, e.g. aste starl" title="Every word you type, each the start of a word of the invoice line or the lot (aste finds Aste Starl Gem, not Master)" />
+        <button type="submit" className="primary" disabled={!grower || loading}>{loading ? "Checking…" : "Check both sides"}</button>
+        {result && <button type="button" onClick={() => setResult(null)}>Close</button>}
+      </form>
+      {error && <div className="notice danger">{error}</div>}
+      {result && (
+        <>
+          <div className="ik-product-check-sum">
+            <span className="ik-inv-text"><strong>Invoices</strong> {invoiceSide.length} line(s) · {invoicePieces} pcs · {formatInkoopEuro(sum(invoiceSide, "invoice_total"))}</span>
+            <span className="ik-con-text"><strong>Connect</strong> {lotCount} lot(s) · {connectPieces} pcs · {formatInkoopEuro(sum(connectSide, "erp_total"))}</span>
+            <span>{lines.filter((line) => line.status === "matched" || line.status === "mismatch").length} pair(s){crossDay.length ? <span className="ik-fu-warn"> · ⚠ {crossDay.length} paired across days</span> : null}</span>
+            <span>{openInvoice.length ? <span className="ik-fu-warn">✗ {openInvoice.length} invoice line(s) open</span> : "✓ no invoice line open"} · {openLots.length ? <span className="ik-fu-warn">✗ {openLots.length} lot(s) open</span> : "✓ no lot open"}</span>
+          </div>
+          <div className={`notice ${invoicePieces === connectPieces ? "info" : "danger"}`}>
+            {invoicePieces === connectPieces
+              ? `Pieces agree (${invoicePieces} = ${connectPieces}): nothing is missing${crossDay.length || openInvoice.length || openLots.length ? " -- what is open or ⚠ is paired over time, not lost." : "."}`
+              : invoicePieces > connectPieces
+                ? `The invoices have ${Math.round((invoicePieces - connectPieces) * 100) / 100} pcs more than Connect: a lot is missing (or under another name / grower).`
+                : `Connect has ${Math.round((connectPieces - invoicePieces) * 100) / 100} pcs more than the invoices: an invoice line is missing (or under another name / grower).`}
+            {result.capped ? " Only the first lines of the period were read -- choose a shorter period." : ""}
+          </div>
+          <div className="table-wrap">
+            <table className="data-table balance-table ik-table ik-pairs">
+              <thead><tr><th /><th>Invoice day</th><th className="ik-inv-head">Invoice line</th><th>Lot day</th><th className="ik-con-head">Connect lot</th><th>Days apart</th><th>Difference</th></tr></thead>
+              <tbody>
+                {rows.map((line, index) => {
+                  const days = apart(line);
+                  return (
+                    <tr key={`${line.invoice_number}-${line.lot}-${index}`} className={`ik-status-${line.status}`}>
+                      <td title={IK_STATUS_LABEL[line.status] || line.status} className="ik-status-icon">{IK_STATUS_ICON[line.status] || "·"}</td>
+                      <td>{line.status === "connect_only" ? "" : fustOverviewDate(dayOf(line))}</td>
+                      <td className="ik-inv">{line.status === "connect_only" ? <span className="muted">— no invoice line</span> : (
+                        <span className="ik-oneline">{line.invoice_number ? <InkoopInvoiceLink invoiceNumber={line.invoice_number} /> : null}<strong>{line.description}</strong><span>{piecesText(line.invoice_quantity, line.invoice_price, line.invoice_total)}</span></span>
+                      )}</td>
+                      <td>{lotDay(line) ? fustOverviewDate(lotDay(line)) : ""}</td>
+                      <td className="ik-con">{line.status === "not_matched" ? <span className="muted">— no lot</span> : (
+                        <span className="ik-oneline"><span className="muted">Lot {line.lot}</span><strong>{line.lot_description || line.description}</strong><span>{piecesText(line.erp_quantity, line.erp_price, line.erp_total)}</span></span>
+                      )}</td>
+                      <td className={days ? "ik-fu-warn" : ""}>{days === null ? "" : days ? `⚠ ${days} day(s)` : "same day"}</td>
+                      <td>{line.difference_total ? <InkoopMoneyDiff value={line.difference_total} /> : line.status === "matched" ? "✓" : ""}</td>
+                    </tr>
+                  );
+                })}
+                {!rows.length && <tr><td colSpan={7} className="muted">Nothing of "{result.product}" for {result.grower} in this period.</td></tr>}
+              </tbody>
+            </table>
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
 // Invoice lines that aren't a product (server: INKOOP_LINE_KIND_SQL), each
 // shown in its own section when "Also show utilities" is ticked.
 const INKOOP_LINE_KINDS = [
@@ -16059,7 +16185,7 @@ const INKOOP_SEARCH_KINDS = {
       line.pieces,
       line.price === null ? "-" : formatInkoopEuro(line.price),
       line.t_price === null ? "-" : formatInkoopEuro(line.t_price),
-      line.dispatches.length ? line.dispatches.map((dispatch) => <div key={dispatch.code}>{inkoopDispatchText(dispatch)}</div>) : <span className="muted">-</span>,
+      <IkDispatchCell dispatches={line.dispatches} />,
     ],
   },
 };
@@ -16071,6 +16197,7 @@ function InkoopSearchPanel({ kind, company, request, onFindOther, otherTitle, de
   const [result, setResult] = useState(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
+  const [folded, setFolded] = useState(false);
   const setFilter = (key, value) => setFilters((current) => ({ ...current, [key]: value }));
 
   async function search(nextFilters = filters) {
@@ -16090,7 +16217,12 @@ function InkoopSearchPanel({ kind, company, request, onFindOther, otherTitle, de
       if (company && kind === "invoices") {
         params.set("company", company);
       }
+      if (kind === "invoices" && defaults?.grower && nextFilters.useGrower !== false) {
+        params.set("grower", defaults.grower);
+      }
+      params.delete("useGrower");
       setResult(await apiJson(`${config.endpoint}?${params}`));
+      setFolded(true);
     } catch (searchError) {
       setError(searchError.message);
     } finally {
@@ -16113,14 +16245,32 @@ function InkoopSearchPanel({ kind, company, request, onFindOther, otherTitle, de
   // fields; searching stays a click.
   useEffect(() => {
     if (!defaults?.from || !defaults?.to) return;
-    setFilters((current) => ({ ...current, from: defaults.from, to: defaults.to, ...(kind === "invoices" ? { supplier: defaults.grower || "" } : {}) }));
+    setFilters((current) => ({ ...current, from: defaults.from, to: defaults.to }));
   }, [defaults?.from, defaults?.to, defaults?.grower]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const lines = result?.lines || [];
   return (
     <div className="data-table-card">
       <div className="section-header"><h2>{config.title}</h2></div>
+      {folded && result ? (
+        <div className="ik-search-folded">
+          <span>{fustOverviewDate(filters.from)} – {fustOverviewDate(filters.to)}</span>
+          {kind === "invoices" && defaults?.grower && filters.useGrower !== false && <span className="ik-chip on">{defaults.grower}</span>}
+          {config.fields.filter((field) => String(filters[field.key] || "").trim()).map((field) => <span key={field.key}><span className="muted">{field.label}:</span> {filters[field.key]}</span>)}
+          <button type="button" onClick={() => setFolded(false)}>Edit search</button>
+          {!!lines.length && (
+            <button type="button" onClick={() => downloadTextFile(`${config.csvName}_${result.from}_${result.to}.csv`, `\ufeff${config.csv(lines)}`)}>Download CSV</button>
+          )}
+        </div>
+      ) : (
+      <>
       <form className="form-grid" onSubmit={(event) => { event.preventDefault(); search(); }}>
+        {kind === "invoices" && defaults?.grower && (
+          <label className="checkbox-label">
+            <input type="checkbox" checked={filters.useGrower !== false} onChange={(event) => setFilter("useGrower", event.target.checked)} />
+            <span>Grower of the bar: <strong>{defaults.grower}</strong> (its invoice names)</span>
+          </label>
+        )}
         <label><span>{config.dateLabel}</span><input type="date" value={filters.from} onChange={(event) => setFilter("from", event.target.value)} /></label>
         <label><span>To</span><input type="date" value={filters.to} onChange={(event) => setFilter("to", event.target.value)} /></label>
         {config.fields.map((field) => (
@@ -16146,6 +16296,8 @@ function InkoopSearchPanel({ kind, company, request, onFindOther, otherTitle, de
       <div className="notice">
         {config.notice} Every field is optional; product and supplier find every word you type, in any order. At most 3 months per search.{company && kind === "invoices" ? ` Only company ${company} (the company choice above).` : ""}
       </div>
+      </>
+      )}
       {error && <div className="notice danger">{error}</div>}
       {result?.limited_from && <div className="notice info">Searched {fustOverviewDate(result.from)} - {fustOverviewDate(result.to)} only (3 months at most).</div>}
       {result && (
@@ -16194,10 +16346,13 @@ function InkoopSearchTab({ company, bar = null }) {
   const defaults = bar ? { from: bar.day?.from || bar.from, to: bar.day?.to || bar.to, grower: bar.grower } : null;
   // Side by side on a wide screen: invoices left, Connect right.
   return (
+    <>
+    <IkProductCheck bar={bar} company={company} />
     <div className="ik-search-split">
       <InkoopSearchPanel kind="invoices" company={company} request={invoiceRequest} otherTitle="Connect" defaults={defaults} onFindOther={(request) => setErpRequest({ ...request, at: Date.now() })} />
       <InkoopSearchPanel kind="erp" company={company} request={erpRequest} otherTitle="invoices" defaults={defaults} onFindOther={(request) => setInvoiceRequest({ ...request, at: Date.now() })} />
     </div>
+    </>
   );
 }
 

@@ -4147,3 +4147,36 @@ button.ik-kpi:hover {
   margin-top: 2px;
   color: var(--ik-text);
 }
+
+/* Search: the product check (both sides of one grower's product), the
+   folded search forms and the folded "Dispatched to". */
+.ik-product-check {
+  display: grid;
+  gap: 10px;
+  margin-bottom: 14px;
+}
+
+.ik-product-check-bar,
+.ik-search-folded {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+}
+
+.ik-product-check-bar input {
+  flex: 1 1 240px;
+  min-width: 200px;
+  max-width: 420px;
+}
+
+.ik-product-check-sum {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 22px;
+}
+
+.ik-dispatch-cell {
+  display: grid;
+  gap: 2px;
+}
