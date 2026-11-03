@@ -17662,7 +17662,7 @@ function IkPairLines({ from, to, company, grower, bar, flow = "", date = "", sta
                   {connectSide ? (
                     <span className="ik-oneline">
                       {line.lot ? <span className="muted">Lot {String(line.lot).split("+").length > 3 ? `${String(line.lot).split("+").length} lots (pool)` : line.lot}</span> : null}
-                      {line.status === "connect_only" && <strong>{line.description}</strong>}
+                      {line.status === "connect_only" ? <strong>{line.description}</strong> : line.lot_description ? <strong title="The lot's own product in Connect">{line.lot_description}</strong> : null}
                       <span>{side(line.erp_quantity, line.erp_price, line.erp_total, line.lot_items, line.lot_cont)}</span>
                     </span>
                   ) : <span className="muted">—</span>}
