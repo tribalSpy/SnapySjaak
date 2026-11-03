@@ -17585,6 +17585,21 @@ function IkColumnPicker({ columns, toggle }) {
 const IK_STATUS_ICON = { matched: "✓", mismatch: "⚠", not_matched: "✗", connect_only: "✗", packaging: "▢" };
 const IK_STATUS_LABEL = { matched: "Matched", mismatch: "Matched, figures differ", not_matched: "Invoice, no Connect lot", connect_only: "Connect lot, no invoice", packaging: "Packaging" };
 
+// What the dispatch dump sent out of a differing line's lot(s): pieces, to
+// whom, and which side it agrees with.
+function IkDispatchNote({ dispatch, invoicePieces, connectPieces }) {
+  if (dispatch.pieces === null) return <div className="ik-dispatch-note">Dispatch: no data for this lot yet</div>;
+  const pieces = Number(dispatch.pieces) || 0;
+  const agrees = pieces === Number(invoicePieces) ? "= invoice" : pieces === Number(connectPieces) ? "= Connect" : "neither side";
+  const to = dispatch.to.slice(0, 4).map((entry) => `${entry.name || entry.code} ${entry.pieces}`).join(", ");
+  return (
+    <div className="ik-dispatch-note" title={dispatch.to.map((entry) => `${entry.code}${entry.name ? ` ${entry.name}` : ""}: ${entry.pieces} pcs`).join(" · ")}>
+      Dispatch: <strong>{pieces} pcs</strong> ({agrees}){to ? ` → ${to}${dispatch.to.length > 4 ? ", …" : ""}` : ""}
+      {dispatch.of_lots > dispatch.lots ? ` · ${dispatch.of_lots - dispatch.lots} lot(s) without dispatch data` : ""}
+    </div>
+  );
+}
+
 // A grower's stored lines (one request per grower and period), each as a
 // pair: the invoice side | the difference | the Connect side.
 function IkPairLines({ from, to, company, grower, bar, flow = "", date = "", statuses = null }) {
@@ -17653,7 +17668,10 @@ function IkPairLines({ from, to, company, grower, bar, flow = "", date = "", sta
                   ) : <span className="muted">—</span>}
                 </td>
                 <td><i className="ik-dot" style={{ background: INKOOP_FLOW_COLORS[line.flow] }} />{line.flow}</td>
-                <td className="muted">{line.note}</td>
+                <td className="muted">
+                  {line.note}
+                  {line.dispatch && <IkDispatchNote dispatch={line.dispatch} invoicePieces={line.invoice_quantity} connectPieces={line.erp_quantity} />}
+                </td>
               </tr>
             );
           })}

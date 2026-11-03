@@ -26510,9 +26510,33 @@ async function handleApi(req, res, url) {
       // limit=: one grower's export (a year) may hold more than the 3000 shown.
       const limit = grower ? Math.min(50000, Math.max(3000, Number(url.searchParams.get("limit")) || 3000)) : 3000;
       const lines = await getInkoopOverviewLines({ company, from, to, pairs, lists: grower ? [] : lists, limit });
+      // A line whose figures differ: what the dispatch dump sent out of its
+      // lot(s) -- pieces and to whom -- to see which side is right.
+      const lotsOf = (row) => String(row.lot || "").split("+").map((lot) => lot.trim()).filter((lot) => /^[0-9]{1,18}$/.test(lot));
+      const differing = lines.filter((row) => row.list === "matched_mismatch");
+      const dispatchByLot = new Map((await getInkoopDispatchLotsByLots([...new Set(differing.flatMap(lotsOf))])).map((lot) => [String(lot.lot), lot]));
+      const customerMap = state.customer_map || {};
+      const dispatchOf = (row) => {
+        const found = lotsOf(row).map((lot) => dispatchByLot.get(lot)).filter(Boolean);
+        if (!found.length) return lotsOf(row).length ? { pieces: null, to: [] } : null;
+        const to = new Map();
+        for (const lot of found) {
+          for (const dispatch of Array.isArray(lot.dispatches) ? lot.dispatches : []) {
+            const code = normalizeUkdocsText(dispatch?.code).toUpperCase();
+            const entry = to.get(code) || { code, name: resolveInkoopCustomer(code, customerMap)?.name || "", pieces: 0 };
+            entry.pieces += Number(dispatch?.pieces) || 0;
+            to.set(code, entry);
+          }
+        }
+        const list = [...to.values()].sort((left, right) => right.pieces - left.pieces);
+        return { pieces: list.reduce((sum, entry) => sum + entry.pieces, 0), to: list, lots: found.length, of_lots: lotsOf(row).length };
+      };
       sendJson(res, 200, {
         from, to, grower,
-        lines: lines.map((row) => ({ ...row, grower: view.growerOf(row), bw: view.bwOf(row), flow: inkoopOverviewFlow(row), status: INKOOP_OVERVIEW_STATUS[row.list] || row.list })),
+        lines: lines.map((row) => ({
+          ...row, grower: view.growerOf(row), bw: view.bwOf(row), flow: inkoopOverviewFlow(row), status: INKOOP_OVERVIEW_STATUS[row.list] || row.list,
+          ...(row.list === "matched_mismatch" ? { dispatch: dispatchOf(row) } : {}),
+        })),
         capped: lines.length >= limit,
       });
     } catch (error) {
