@@ -26764,7 +26764,10 @@ async function handleApi(req, res, url) {
       for (const date of inkoopDatesInRange(range.from, range.to)) {
         const [day] = await loadStoredInkoopDays(state, date, date);
         if (day.stale && day.status !== "empty") pendingDays.push(date);
+        const first = issues.length;
         if (day.computed) buildInkoopDayIssues(state, day, company, issues, addTotal, { withExplained });
+        // The comparison day it belongs to (the follow-up keeps a line by it).
+        for (let index = first; index < issues.length; index += 1) issues[index].day = date;
       }
       if (pendingDays.length) {
         await prioritizeInkoopMatchDays(pendingDays);
@@ -26784,6 +26787,7 @@ async function handleApi(req, res, url) {
           category: stored?.category || "",
           due_date: stored?.due_day || "",
           claim_id: stored?.claim_id || "",
+          resolution: stored?.status === "resolved" ? stored?.resolution || "" : "",
         };
       });
       const filtered = showResolved ? merged : merged.filter((issue) => issue.status !== "resolved");

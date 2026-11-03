@@ -18243,6 +18243,11 @@ function InkoopTrackTraceWorkspace({ bar, setBar, overview, company, matchRound 
   // redone after saving.
   const [pendingLinks, setPendingLinks] = useState([]);
   const [hiddenKeys, setHiddenKeys] = useState({});
+  // Right-click on a line (or on one of the ticked lines: all ticked ones):
+  // resolve as Geverifieerd -- an invoice for document / delivery costs that
+  // never gets a Connect lot. They leave the lists at once.
+  const [menu, setMenu] = useState(null);
+  const closeMenu = useCallback(() => setMenu(null), []);
   useEffect(() => {
     if (!pendingLinks.length) return undefined;
     const warn = (event) => { event.preventDefault(); event.returnValue = ""; };
@@ -18454,6 +18459,37 @@ function InkoopTrackTraceWorkspace({ bar, setBar, overview, company, matchRound 
     }
   }
   const openDrawer = (issue) => setDrawer(issue);
+  const issueDay = (issue) => issue.day || inkoopIssueInvoiceDay(issue);
+  function openVerifyMenu(event, issue) {
+    event.preventDefault();
+    const key = pickKey(issue);
+    const ticked = key && picked[key] ? Object.values(picked) : [issue];
+    // A line the grower's day total already balances is not in the follow-up.
+    const list = ticked.filter((item) => !item.explained);
+    setMenu({
+      x: event.clientX, y: event.clientY,
+      title: list.length > 1 ? `${list.length} ticked line(s)` : issue.description,
+      items: list.map((item) => ({ id: item.id, day: issueDay(item), status: item.status, money_diff: item.money_diff, key: pickKey(item) })),
+      note: ticked.length > list.length ? "A line balanced by the grower's day total is left out (it is not open in the follow-up)." : "",
+    });
+  }
+  async function verifyFromTrace(list, resolution) {
+    if (!list.length) return;
+    setIssueError("");
+    try {
+      await inkoopFollowupUpdate(list, { resolution }, "");
+      setHiddenKeys((current) => ({ ...current, ...Object.fromEntries(list.filter((item) => item.key).map((item) => [item.key, true])) }));
+      setPicked((current) => {
+        const next = { ...current };
+        for (const item of list) delete next[item.key];
+        return next;
+      });
+      setIssueRound((value) => value + 1);
+      overview.reload();
+    } catch (verifyError) {
+      setIssueError(verifyError.message);
+    }
+  }
   const [fuSettings] = useInkoopFollowupSettings();
 
   const searchBox = (sideKey) => (
@@ -18472,7 +18508,8 @@ function InkoopTrackTraceWorkspace({ bar, setBar, overview, company, matchRound 
     const key = pickKey(issue);
     const isPicked = Boolean(picked[key]);
     return (
-      <div key={issue.id} className={`ik-item ${sideKey}${isPicked ? " picked" : ""}${issue.status !== "open" ? " handled" : ""}`}>
+      <div key={issue.id} className={`ik-item ${sideKey}${isPicked ? " picked" : ""}${issue.status !== "open" ? " handled" : ""}`}
+        onContextMenu={issue.explained ? undefined : (event) => openVerifyMenu(event, issue)} title={issue.explained ? undefined : "Right-click: resolve as Geverifieerd"}>
         <span className="ik-item-tick">
           {issue.detail?.manual_pair_id ? <span title="Linked by hand">🔗</span> : key ? <input type="checkbox" checked={isPicked} onChange={() => togglePick(issue)} /> : null}
         </span>
@@ -18665,7 +18702,7 @@ function InkoopTrackTraceWorkspace({ bar, setBar, overview, company, matchRound 
       {drawer && (
         <IkFollowupDrawer
           item={{
-            id: drawer.id, type: drawer.issue_type, day: inkoopIssueInvoiceDay(drawer), date: drawer.date, grower: drawer.grower, description: drawer.description,
+            id: drawer.id, type: drawer.issue_type, day: issueDay(drawer), date: drawer.date, grower: drawer.grower, description: drawer.description, resolution: drawer.resolution,
             invoice_number: drawer.invoice_number, money_diff: drawer.money_diff, value: drawer.value, status: drawer.status, department: drawer.department,
             category: drawer.category, due_date: drawer.due_date, note: drawer.note, earlier_assigned: drawer.assigned_to,
           }}
@@ -18676,6 +18713,7 @@ function InkoopTrackTraceWorkspace({ bar, setBar, overview, company, matchRound 
           onSaved={() => setIssueRound((value) => value + 1)}
         />
       )}
+      <IkFollowupResolveMenu menu={menu} onPick={verifyFromTrace} onClose={closeMenu} />
     </div>
   );
 }
@@ -18715,6 +18753,7 @@ function IkFollowupResolveMenu({ menu, onPick, onClose }) {
   return (
     <div className="ik-ctx-menu" style={style} role="menu" onClick={(event) => event.stopPropagation()} onContextMenu={(event) => event.preventDefault()}>
       <div className="ik-ctx-title"><strong>{menu.title}</strong><span className="muted">{open.length} line(s) · net <InkoopMoneyDiff value={net} /></span></div>
+      {menu.note && <div className="ik-ctx-sub muted">{menu.note}</div>}
       <div className="ik-ctx-sub muted">Resolve as Geverifieerd:</div>
       {INKOOP_FU_RESOLUTIONS.map(([key, label]) => (
         <button key={key} type="button" role="menuitem" disabled={!open.length} onClick={() => { onPick(open, key); onClose(); }}>✓ {label}</button>
