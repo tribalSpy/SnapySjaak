@@ -10706,17 +10706,49 @@ function inkoopDetectiveAnswer(job) {
   const usedLots = new Set();
   const pairs = [];
   const rejected = [];
+  // A pool ends where it reaches the other side: the AI put five 32-piece
+  // lots of four weeks to one 56-piece line (deco4nature). The closest days
+  // first, an exact combination when there is one; what is left over is not
+  // in the suggestion and stays free for another.
+  const dayOf = (text) => Date.parse(String(text || "").slice(0, 10));
+  const trimTo = (items, piecesOf, wanted, others) => {
+    if (!(wanted > 0) || items.length < 2 || items.reduce((sum, item) => sum + piecesOf(item), 0) <= wanted) return items;
+    const exact = items.length <= 14 ? findInkoopPiecesCombination(items.map((item) => ({ item, pieces: piecesOf(item) })), wanted) : null;
+    if (exact?.length) return exact.map((entry) => entry.item);
+    const near = (item) => Math.min(...others.map((other) => Math.abs(dayOf(item.date) - dayOf(other.date))));
+    const kept = [];
+    let sum = 0;
+    for (const item of [...items].sort((left, right) => near(left) - near(right))) {
+      if (sum >= wanted) break;
+      kept.push(item);
+      sum += piecesOf(item);
+    }
+    return kept;
+  };
   for (const pair of Array.isArray(parsed.pairs) ? parsed.pairs : []) {
-    const lineIds = [...new Set((Array.isArray(pair?.line_ids) ? pair.line_ids : []).map(String))];
-    const lots = [...new Set((Array.isArray(pair?.lots) ? pair.lots : []).map(String))];
+    let lineIds = [...new Set((Array.isArray(pair?.line_ids) ? pair.line_ids : []).map(String))];
+    let lots = [...new Set((Array.isArray(pair?.lots) ? pair.lots : []).map(String))];
     const known = lineIds.length && lots.length && lineIds.every((id) => lineById.has(id)) && lots.every((lot) => lotByNumber.has(lot));
-    if (!known || lineIds.some((id) => usedLines.has(id)) || lots.some((lot) => usedLots.has(lot))) {
+    let trimmed = 0;
+    if (known) {
+      // Only what is still free, then cut to the other side's pieces.
+      const freeLines = lineIds.filter((id) => !usedLines.has(id)).map((id) => lineById.get(id));
+      const freeLots = lots.filter((lot) => !usedLots.has(lot)).map((lot) => lotByNumber.get(lot));
+      const linePieces = freeLines.reduce((sum, line) => sum + (Number(line.quantity) || 0), 0);
+      const keptLots = trimTo(freeLots, (lot) => Number(lot.pieces) || 0, linePieces, freeLines);
+      const lotPieces = keptLots.reduce((sum, lot) => sum + (Number(lot.pieces) || 0), 0);
+      const keptLines = trimTo(freeLines, (line) => Number(line.quantity) || 0, lotPieces, keptLots);
+      trimmed = lineIds.length + lots.length - keptLines.length - keptLots.length;
+      lineIds = keptLines.map((line) => String(line.id));
+      lots = keptLots.map((lot) => String(lot.lot));
+    }
+    if (!known || !lineIds.length || !lots.length) {
       rejected.push({ ...pair, why: known ? "a line or lot twice" : "unknown line or lot" });
       continue;
     }
     lineIds.forEach((id) => usedLines.add(id));
     lots.forEach((lot) => usedLots.add(lot));
-    pairs.push({ line_ids: lineIds, lots, reason: normalizeUkdocsText(pair?.reason), confidence: normalizeUkdocsText(pair?.confidence), ...inkoopDetectiveCheck(lineIds.map((id) => lineById.get(id)), lots.map((lot) => lotByNumber.get(lot))) });
+    pairs.push({ line_ids: lineIds, lots, reason: normalizeUkdocsText(pair?.reason), confidence: normalizeUkdocsText(pair?.confidence), ...(trimmed ? { trimmed } : {}), ...inkoopDetectiveCheck(lineIds.map((id) => lineById.get(id)), lots.map((lot) => lotByNumber.get(lot))) });
   }
   return {
     grower: given.grower || "", from: given.from || "", to: given.to || "",

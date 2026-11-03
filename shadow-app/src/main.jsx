@@ -18302,6 +18302,7 @@ function IkSuggestions({ from, to, company, grower, also = [], onLinked }) {
           <div className="ik-con-text">{item.lots.map((lot) => <div key={lot}>{inkoopDetectiveLotText(lotByNumber.get(lot))}</div>)}</div>
           <div className="ik-suggest-why">
             <span>{item.reason || item.kind}{item.span_days ? ` · ${item.span_days} day(s) apart` : " · same day"}</span>
+            {item.trimmed ? <span className="muted" title="The AI put more in this pool than the other side holds; the closest days were kept up to the other side's pieces -- the rest stays free">✂ {item.trimmed} left out: the pool reached the other side's pieces</span> : null}
             <IkSuggestionMoney item={item} />
             {isSaved ? <span className="ukdocs-status-badge">linked</span> : (
               <label className="checkbox-label"><input type="checkbox" checked={Boolean(accepted[key])} onChange={() => { accept(key, item, lines, lots, `${notePrefix}${item.reason || item.kind}`.slice(0, 280)); setUnfolded((current) => ({ ...current, [key]: false })); }} /><span>Accept</span></label>
