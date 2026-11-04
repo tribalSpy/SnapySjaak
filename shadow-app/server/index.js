@@ -20702,6 +20702,23 @@ async function sendUkdocsPrintReadyEmail(collection, customers, settings, allCol
 // after that button is pressed while invoices aren't ready yet). Runs on the
 // same cadence as the other runIfOnline jobs, so it only ever runs on
 // whichever instance is currently live.
+// A failure on the way to Google (the connection dropped, a timeout, Google
+// busy) -- not the account: the next run (15 minutes later) usually just
+// works, and reconnecting Gmail would not help.
+function isTransientNetworkError(error) {
+  const code = String(error?.cause?.code || error?.code || "");
+  const text = `${error instanceof Error ? error.message : String(error)} ${code} ${error?.cause?.message || ""}`;
+  return /fetch failed|socket hang up|ECONNRESET|ECONNREFUSED|ETIMEDOUT|ENOTFOUND|EAI_AGAIN|EPIPE|UND_ERR|network|timed? ?out|(429|500|502|503|504)|backend error|rate limit/i.test(text);
+}
+
+// The Zendingen Gmail auto-sync's failures in a row: ICT gets one email when
+// the network to Google keeps failing for an hour (not one per 15-minute
+// run), and for anything else (the account / login) one email -- again only
+// after 6 hours if it is still failing, or when the error changes.
+const ukdocsGmailAutoSyncFailures = { since: 0, count: 0, mailedAt: 0, mailedError: "" };
+const UKDOCS_GMAIL_NETWORK_ALERT_MS = 60 * 60 * 1000;
+const UKDOCS_GMAIL_ALERT_REPEAT_MS = 6 * 60 * 60 * 1000;
+
 async function runUkdocsPrintGmailAutoSync() {
   const settings = await readFustSettings();
   if (!settings.gmail_refresh_token) {
@@ -20709,19 +20726,40 @@ async function runUkdocsPrintGmailAutoSync() {
   }
   try {
     const payload = await syncUkdocsPrintFromGmail(settings, { username: "gmail-auto-sync" }, "", localDateIso());
+    Object.assign(ukdocsGmailAutoSyncFailures, { since: 0, count: 0, mailedAt: 0, mailedError: "" });
     return { ok: true, ...payload };
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    const serviceLabel = "UKdocs Gmail";
-    const reconnectTarget = settings.gmail_connected_email || "the Gmail account used for UKdocs Print";
-    await sendSupportAttentionEmail(settings, {
-      service: serviceLabel,
-      action: "Auto-sync Gmail attachments (Zendingen)",
-      reconnect_target: reconnectTarget,
-      workaround: buildReconnectGuidance(serviceLabel, settings.gmail_connected_email, reconnectTarget),
-      error: message,
-    }).catch(() => {});
-    return { ok: false, error: message };
+    const now = Date.now();
+    const failures = ukdocsGmailAutoSyncFailures;
+    if (!failures.since) failures.since = now;
+    failures.count += 1;
+    const network = isTransientNetworkError(error);
+    const failingFor = now - failures.since;
+    const mailedRecently = failures.mailedAt && now - failures.mailedAt < UKDOCS_GMAIL_ALERT_REPEAT_MS;
+    const sameError = failures.mailedError === (network ? "network" : message);
+    const shouldMail = network ? failingFor >= UKDOCS_GMAIL_NETWORK_ALERT_MS && !mailedRecently : !(mailedRecently && sameError);
+    if (network) console.error(`UKdocs Gmail auto-sync: network to Google failed (${failures.count} in a row): ${message}`);
+    if (shouldMail) {
+      const serviceLabel = "UKdocs Gmail";
+      const reconnectTarget = settings.gmail_connected_email || "the Gmail account used for UKdocs Print";
+      failures.mailedAt = now;
+      failures.mailedError = network ? "network" : message;
+      await sendSupportAttentionEmail(settings, network ? {
+        service: serviceLabel,
+        action: "Auto-sync Gmail attachments (Zendingen)",
+        reconnect_target: "nothing -- the account is fine",
+        workaround: `The server could not reach Google for ${Math.round(failingFor / 60000)} minutes (${failures.count} runs in a row). It tries again every 15 minutes by itself; check the server's internet connection if this keeps coming. Reconnecting Gmail does not help for this error.`,
+        error: message,
+      } : {
+        service: serviceLabel,
+        action: "Auto-sync Gmail attachments (Zendingen)",
+        reconnect_target: reconnectTarget,
+        workaround: buildReconnectGuidance(serviceLabel, settings.gmail_connected_email, reconnectTarget),
+        error: message,
+      }).catch(() => {});
+    }
+    return { ok: false, error: message, network, failures_in_a_row: failures.count };
   }
 }
 
