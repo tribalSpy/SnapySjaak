@@ -12736,6 +12736,7 @@ const INKOOP_FOLLOWUP_RESOLUTIONS = [
   ["transport", "Transport/levering kosten"],
   ["invoice_diff", "Afwijking van invoice"],
   ["other_costs", "Overige kosten"],
+  ["vervanger", "Vervanger"],
 ];
 const INKOOP_FOLLOWUP_COLORS = ["red", "amber", "blue", "purple", "teal", "grey"];
 const INKOOP_FOLLOWUP_TYPES = new Set(["mismatch", "gap_invoice", "gap_erp"]);

@@ -18998,7 +18998,7 @@ function InkoopTrackTraceWorkspace({ bar, setBar, overview, company, matchRound 
 const INKOOP_FU_STATUS_LABEL = { open: "Open", investigating: "Investigating", claimed: "Claimed", resolved: "Resolved" };
 const INKOOP_FU_ACTION_LABEL = { status: "status", department: "moved", category: "category", due_date: "due date", note: "note", assigned_to: "who's checking", comment: "comment", claim_id: "claim", resolution: "verified as" };
 // How a resolved line was verified (Geverifieerd); the server has the same list.
-const INKOOP_FU_RESOLUTIONS = [["transport", "Transport/levering kosten"], ["invoice_diff", "Afwijking van invoice"], ["other_costs", "Overige kosten"]];
+const INKOOP_FU_RESOLUTIONS = [["transport", "Transport/levering kosten"], ["invoice_diff", "Afwijking van invoice"], ["other_costs", "Overige kosten"], ["vervanger", "Vervanger"]];
 const ikFuResolutionLabel = (key) => (INKOOP_FU_RESOLUTIONS.find(([value]) => value === key) || [])[1] || key || "";
 
 // The right-click menu of a grower tile or a line: verify (resolve) its open
@@ -19022,7 +19022,7 @@ function IkFollowupResolveMenu({ menu, onPick, onClose }) {
   if (!menu) return null;
   const open = menu.items.filter((item) => item.status !== "resolved" && !item.gone);
   const net = Math.round(open.reduce((sum, item) => sum + (Number(item.money_diff) || 0), 0) * 100) / 100;
-  const style = { left: Math.min(menu.x, window.innerWidth - 290), top: Math.min(menu.y, window.innerHeight - 190) };
+  const style = { left: Math.min(menu.x, window.innerWidth - 290), top: Math.min(menu.y, window.innerHeight - 230) };
   return (
     <div className="ik-ctx-menu" style={style} role="menu" onClick={(event) => event.stopPropagation()} onContextMenu={(event) => event.preventDefault()}>
       <div className="ik-ctx-title"><strong>{menu.title}</strong><span className="muted">{open.length} line(s) · net <InkoopMoneyDiff value={net} /></span></div>
