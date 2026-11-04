@@ -19188,8 +19188,8 @@ async function inkoopFollowupClaim(list, department, label) {
     });
   }
   const note = `Claim -- supplier credits later: ${agreed.trim()}`;
-  if (followed.length) await inkoopFollowupUpdate(followed, { department, status: "investigating" }, note);
-  if (claims.length) await inkoopFollowupUpdate(claims, { department }, note);
+  if (followed.length) await inkoopFollowupUpdate(followed, { department, status: "claimed" }, note);
+  if (claims.length) await inkoopFollowupUpdate(claims, { department, status: "claimed" }, note);
   return true;
 }
 
@@ -20025,7 +20025,10 @@ function InkoopFollowupWorkspace({ bar, onOpenTrackTrace, onOpenConnectData, mat
   const [quickError, setQuickError] = useState("");
   const category = tab.startsWith("cat:") ? tab.slice(4) : "";
   const verified = tab === "verified";
-  const query = category
+  const claimsTab = tab === "claims";
+  const query = claimsTab
+    ? { claims: "1", all_dates: "1", status: withResolved ? "all" : "open" }
+    : category
     ? { category, all_dates: "1", status: withResolved ? "all" : "open" }
     : { from: bar.from, to: bar.to, ...(bar.grower ? { grower: bar.grower } : {}), ...(verified ? { status: "resolved", verified: "1" } : {}) };
   const { data, error, loading } = useInkoopFollowup(query, `${round}|${matchRound}`);
@@ -20050,7 +20053,7 @@ function InkoopFollowupWorkspace({ bar, onOpenTrackTrace, onOpenConnectData, mat
   const departments = settings?.departments || data?.departments || [];
   const countBy = (key) => items.filter((item) => item.department === key).length;
   const valueBy = (key) => items.filter((item) => item.department === key).reduce((sum, item) => sum + Math.abs(Number(item.money_diff) || 0), 0);
-  const shown = category ? [...items].sort((left, right) => ikFollowupAgeDays(right) - ikFollowupAgeDays(left)) : items.filter((item) => item.department === department);
+  const shown = category || claimsTab ? [...items].sort((left, right) => ikFollowupAgeDays(right) - ikFollowupAgeDays(left)) : items.filter((item) => item.department === department);
   async function follow(list, changes, label) {
     setQuickError("");
     try {
@@ -20123,6 +20126,7 @@ function InkoopFollowupWorkspace({ bar, onOpenTrackTrace, onOpenConnectData, mat
       <div className="tab-strip ik-fu-tabs" role="tablist">
         <button type="button" className={tab === "todo" ? "active" : ""} onClick={() => setTab("todo")}>To-do per department</button>
         <button type="button" className={tab === "growers" ? "active" : ""} onClick={() => setTab("growers")}>Per grower &amp; claims</button>
+        <button type="button" className={tab === "claims" ? "active" : ""} onClick={() => setTab("claims")}>📝 Claims</button>
         <button type="button" className={tab === "verified" ? "active" : ""} onClick={() => setTab("verified")}>✓ Geverifieerd</button>
         <button type="button" className={tab === "weeks" ? "active" : ""} onClick={() => setTab("weeks")}>Week overview</button>
         {(settings?.categories || []).map((cat) => (
@@ -20145,6 +20149,16 @@ function InkoopFollowupWorkspace({ bar, onOpenTrackTrace, onOpenConnectData, mat
       {tab === "growers" || tab === "weeks" ? null : verified ? (
         <div className="row-actions">
           <span className="muted">The lines resolved as Geverifieerd, of the period in the bar (and the grower / flow / BW filters).</span>
+          {loading && <span className="muted">Loading…</span>}
+        </div>
+      ) : claimsTab ? (
+        <div className="row-actions">
+          <span className="muted">
+            Every line set to follow as a claim (the supplier credits later), whatever the period -- oldest first.
+            {" "}{shown.length} claim(s) · {formatInkoopEuro(shown.reduce((sum, item) => sum + (Number(item.money_diff) || 0), 0))}
+            {" "}· ✓ credit in {shown.filter((item) => item.credit).length} · ⏳ waiting {shown.filter((item) => !item.credit && item.status !== "resolved").length}
+          </span>
+          <label className="checkbox-label"><input type="checkbox" checked={withResolved} onChange={(event) => setWithResolved(event.target.checked)} /><span>Also resolved</span></label>
           {loading && <span className="muted">Loading…</span>}
         </div>
       ) : !category ? (
@@ -20170,7 +20184,7 @@ function InkoopFollowupWorkspace({ bar, onOpenTrackTrace, onOpenConnectData, mat
       ) : (
         <>
           <IkFollowupBulkBar picked={picked} setPicked={setPicked} settings={settings} onDone={reload} />
-          {data && (category
+          {data && (category || claimsTab
             ? <IkFollowupTable items={shown} settings={settings} picked={picked} setPicked={setPicked} onOpen={setDrawer} quick={quick} showAge onMenu={openMenu} />
             : verified ? <IkFollowupVerified items={items} settings={settings} picked={picked} setPicked={setPicked} onOpen={setDrawer} quick={quick} />
             : <IkFollowupDayTree key={department} items={shown} settings={settings} picked={picked} setPicked={setPicked} onOpen={setDrawer} quick={quick} onMenu={openMenu} />)}

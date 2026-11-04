@@ -27232,8 +27232,12 @@ async function handleApi(req, res, url) {
       let pending = [];
       let from = "";
       let to = "";
-      if (category && url.searchParams.get("all_dates") === "1") {
-        const rows = statuses.filter((row) => row.category === category);
+      // ?claims=1: every line set to follow as a claim (status "claimed" or a
+      // claim line of its own), whatever its date.
+      const claimsOnly = url.searchParams.get("claims") === "1";
+      const isClaim = (row) => row.status === "claimed" || row.issue_type === "claim" || row.type === "claim";
+      if ((category || claimsOnly) && url.searchParams.get("all_dates") === "1") {
+        const rows = statuses.filter((row) => (claimsOnly ? isClaim(row) : row.category === category));
         const { byDate, pending: notReady } = await inkoopFollowupItemsForDates(state, rows.map((row) => row.item_day).filter(Boolean));
         pending = notReady;
         const found = new Map();
@@ -27273,6 +27277,7 @@ async function handleApi(req, res, url) {
       items = await inkoopAttachRetourCredits(items);
       let merged = items.map((item) => inkoopFollowupWithStatus(item, statusById.get(item.id)));
       if (category) merged = merged.filter((item) => item.category === category);
+      if (claimsOnly) merged = merged.filter(isClaim);
       if (statusFilter === "open") merged = merged.filter((item) => item.status !== "resolved" && !item.gone);
       if (statusFilter === "resolved") merged = merged.filter((item) => item.status === "resolved" || item.gone);
       if (url.searchParams.get("verified") === "1") merged = merged.filter((item) => item.status === "resolved" && item.resolution);
