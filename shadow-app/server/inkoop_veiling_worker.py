@@ -1100,10 +1100,16 @@ class EmlMessage:
 
     def __init__(self, path):
         message = email.message_from_bytes(Path(path).read_bytes(), policy=email.policy.default)
-        self.subject, self.attachments = self._read(message)
+        # The emails attached to this one (a forward "as attachment"), as
+        # they are: one forward can carry many (finance forwarding a day's
+        # 16 invoice emails at once) -- each is read as an email of its own.
+        self.originals = []
+        # This email's own files (not those inside the attached emails).
+        self.own_files = []
+        self.subject, self.attachments = self._read(message, self.originals, self.own_files)
 
     @classmethod
-    def _read(cls, message):
+    def _read(cls, message, originals=None, own_files=None):
         subject = str(message.get("subject") or "")
         attachments = []
         inner = []
@@ -1115,6 +1121,8 @@ class EmlMessage:
                 original = payload[0] if isinstance(payload, list) and payload else payload
                 if original is not None and hasattr(original, "get_content_type"):
                     inner.append(cls._read(original))
+                    if originals is not None:
+                        originals.append(original)
                 return
             if part.is_multipart():
                 for child in part.iter_parts():
@@ -1126,6 +1134,8 @@ class EmlMessage:
                 attachments.append(_EmlAttachment(name, data))
 
         visit(message)
+        if own_files is not None:
+            own_files.extend(item.longFilename for item in attachments)
         if inner and (not attachments or classify_subject(subject) == "other"):
             # A forward: the original's subject (the invoice's own), its
             # attachments together with any next to it.
@@ -1173,6 +1183,14 @@ def _parse_veiling_from(input_path: Path, extract_dir: Path):
             suffix = Path(item.longFilename).suffix.lower()
             (eml_path.parent / f"{eml_path.stem}-attached-{position}{suffix}").write_bytes(item.data)
         if embedded and len(embedded) == len(outer.attachments):
+            containers.add(eml_path)
+        # More than one email attached (a forward of several invoice emails):
+        # each its own email; the forward itself only held them. One attached
+        # email is still read through the forward (its subject, as before).
+        own_invoice_files = [name for name in outer.own_files if str(name).lower().endswith((".xml", ".pdf", ".zip"))]
+        if len(outer.originals) > 1 and not own_invoice_files:
+            for position, original in enumerate(outer.originals):
+                (eml_path.parent / f"{eml_path.stem}-forwarded-{position}.eml").write_bytes(original.as_bytes())
             containers.add(eml_path)
     email_paths = sorted(path for path in [*extract_dir.rglob("*.msg"), *extract_dir.rglob("*.eml")] if path not in containers)
     for msg_path in email_paths:
