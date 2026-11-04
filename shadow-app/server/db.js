@@ -1084,6 +1084,40 @@ export async function saveInkoopInvoiceLines(lines) {
   }
 }
 
+// The dispatches already stored of some lots (lot -> list).
+async function getInkoopStoredDispatches(lotNumbers) {
+  const valid = [...new Set((lotNumbers || []).map((lot) => numberOrNull(lot)).filter((lot) => lot !== null))];
+  const stored = new Map();
+  for (const chunk of chunkArray(valid, 5000)) {
+    const result = await pool.query("SELECT lot::text AS lot, pieces::float8 AS pieces, dispatches FROM inkoop_dispatch_lots WHERE lot = ANY($1::bigint[])", [chunk]);
+    for (const row of result.rows) stored.set(String(row.lot), { pieces: row.pieces, dispatches: Array.isArray(row.dispatches) ? row.dispatches : [] });
+  }
+  return stored;
+}
+
+// A Connect export uploaded again (a week later, with the stock sold since)
+// ADDS the dispatches it has; it never takes away the ones stored before --
+// a file with fewer of them (a day's export uploaded again, one without the
+// "Dispatched to" rows) left the lot with only those. The same dispatch
+// (customer, pieces, deb / inv no) counts once. Only when the lot was sent
+// out more than it holds (Connect changed a dispatch since) is the new
+// file's own list kept -- if it is not shorter than the lot.
+function mergeInkoopStoredDispatches(lots, stored) {
+  const keyOf = (dispatch) => [String(dispatch?.code || "").trim().toUpperCase(), Number(dispatch?.pieces) || 0, String(dispatch?.deb_no || "").trim(), String(dispatch?.inv_no || "").trim()].join("|");
+  const sum = (list) => list.reduce((total, dispatch) => total + (Number(dispatch?.pieces) || 0), 0);
+  return lots.map((lot) => {
+    const before = stored.get(String(numberOrNull(lot.lot)))?.dispatches || [];
+    const incoming = Array.isArray(lot.dispatches) ? lot.dispatches : [];
+    if (!before.length) return lot;
+    const seen = new Set(incoming.map(keyOf));
+    const merged = [...incoming, ...before.filter((dispatch) => !seen.has(keyOf(dispatch)))];
+    const pieces = Number(lot.pieces) || 0;
+    if (pieces > 0 && sum(merged) > pieces + 0.01 && sum(incoming) >= sum(before) - 0.01) return lot;
+    if (pieces > 0 && sum(merged) > pieces + 0.01) return { ...lot, dispatches: before };
+    return { ...lot, dispatches: merged };
+  });
+}
+
 export async function saveInkoopDispatchLots(lots) {
   if (!pool || !Array.isArray(lots) || !lots.length) {
     return;
@@ -1091,10 +1125,10 @@ export async function saveInkoopDispatchLots(lots) {
   // parse_dispatch_dump already merges a recurring lot's dispatches into one
   // record -- this is only a backstop, so keeping the last occurrence here
   // (rather than merging again) is fine.
-  const validLots = dedupeByKeyKeepingLast(
+  const validLots = mergeInkoopStoredDispatches(dedupeByKeyKeepingLast(
     lots.filter((lot) => numberOrNull(lot?.lot) !== null),
     (lot) => numberOrNull(lot.lot),
-  );
+  ), await getInkoopStoredDispatches(lots.map((lot) => lot?.lot)));
   for (const chunk of chunkArray(validLots, INKOOP_UPSERT_CHUNK_SIZE)) {
     const values = [];
     const placeholders = chunk.map((lot) => {
