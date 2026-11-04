@@ -19300,6 +19300,15 @@ function ikFollowupLastText(event) {
   return `${formatTimestamp(event.at)} · ${event.by_user} · ${what} ${to}${event.note ? ` -- ${event.note}` : ""}`.trim();
 }
 
+// A claimed line with its amount to be credited and what was agreed: its
+// money and its text wherever it is listed.
+function ikFollowupWithClaim(item) {
+  const isClaim = item.status === "claimed" || item.type === "claim";
+  const amount = item.claim_amount === null || item.claim_amount === undefined || item.claim_amount === "" ? null : Number(item.claim_amount);
+  if (!isClaim || (amount === null && !item.claim_text)) return item;
+  return { ...item, money_diff: amount ?? item.money_diff, reason: item.claim_text ? `Claim: ${item.claim_text}` : item.reason };
+}
+
 // A line from the Corrections tab (a retour lot, a correction) is no
 // comparison line: what it is goes with it and is kept with its status.
 const INKOOP_FU_EXTRA_TYPES = ["retour", "correction", "claim"];
@@ -19396,7 +19405,12 @@ async function inkoopFollowupFollow(list, changes, label) {
 // with its history. A move or "resolved" asks for a reason. Shared by the
 // Follow-up menu and Track & Trace.
 function IkFollowupDrawer({ item, invoiceText, lotText, settings, onClose, onSaved }) {
-  const claimOf = (line) => ({ claim_amount: line.claim_amount === null || line.claim_amount === undefined ? "" : String(line.claim_amount), claim_text: line.claim_text || "" });
+  // What was agreed: as saved; a claim from before it was kept on its own
+  // has it in its text ("Claim: Full Credit").
+  const claimOf = (line) => ({
+    claim_amount: line.claim_amount === null || line.claim_amount === undefined ? "" : String(line.claim_amount),
+    claim_text: line.claim_text || (/^Claim: /.test(String(line.reason || "")) ? String(line.reason).slice(7) : ""),
+  });
   const [draft, setDraft] = useState(() => ({ status: item.status || "open", department: item.department || "control", category: item.category || "", due_date: item.due_date || "", note: item.note || "", resolution: item.resolution || "", ...claimOf(item) }));
   const [reason, setReason] = useState("");
   const [busy, setBusy] = useState(false);
@@ -20216,14 +20230,16 @@ function InkoopFollowupWorkspace({ bar, onOpenTrackTrace, onOpenConnectData, mat
   const reload = () => setRound((value) => value + 1);
   // The bar's flows and betaalwijze (a line without a BW is "?").
   // A line sent from Corrections (Retour / Correction) has no flow of the bar.
-  const items = (data?.items || []).filter((item) => (!bar.flows?.length || bar.flows.includes(item.flow) || !INKOOP_FLOWS.includes(item.flow)) && (!bar.bw?.length || bar.bw.includes(item.bw || "?")));
+  // A claim's amount to be credited and what was agreed (as changed in its
+  // drawer) are its money and its text on every tab -- the to-do, the
+  // grower list and the Claims tab alike.
+  const items = (data?.items || [])
+    .filter((item) => (!bar.flows?.length || bar.flows.includes(item.flow) || !INKOOP_FLOWS.includes(item.flow)) && (!bar.bw?.length || bar.bw.includes(item.bw || "?")))
+    .map(ikFollowupWithClaim);
   const departments = settings?.departments || data?.departments || [];
   const countBy = (key) => items.filter((item) => item.department === key).length;
   const valueBy = (key) => items.filter((item) => item.department === key).reduce((sum, item) => sum + Math.abs(Number(item.money_diff) || 0), 0);
-  const listed = claimsTab
-    ? items.map((item) => ({ ...item, money_diff: item.claim_amount ?? item.money_diff, reason: item.claim_text ? `Claim: ${item.claim_text}` : item.reason }))
-    : items;
-  const shown = category || claimsTab ? [...listed].sort((left, right) => ikFollowupAgeDays(right) - ikFollowupAgeDays(left)) : items.filter((item) => item.department === department);
+  const shown = category || claimsTab ? [...items].sort((left, right) => ikFollowupAgeDays(right) - ikFollowupAgeDays(left)) : items.filter((item) => item.department === department);
   async function follow(list, changes, label) {
     setQuickError("");
     try {
@@ -20295,7 +20311,7 @@ function InkoopFollowupWorkspace({ bar, onOpenTrackTrace, onOpenConnectData, mat
     <div className="overview-stack ik-fu">
       <div className="tab-strip ik-fu-tabs" role="tablist">
         <button type="button" className={tab === "todo" ? "active" : ""} onClick={() => setTab("todo")}>To-do per department</button>
-        <button type="button" className={tab === "growers" ? "active" : ""} onClick={() => setTab("growers")}>Per grower &amp; claims</button>
+        <button type="button" className={tab === "growers" ? "active" : ""} onClick={() => setTab("growers")}>Per grower</button>
         <button type="button" className={tab === "claims" ? "active" : ""} onClick={() => setTab("claims")}>📝 Claims</button>
         <button type="button" className={tab === "verified" ? "active" : ""} onClick={() => setTab("verified")}>✓ Geverifieerd</button>
         <button type="button" className={tab === "weeks" ? "active" : ""} onClick={() => setTab("weeks")}>Week overview</button>
