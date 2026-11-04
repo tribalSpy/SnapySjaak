@@ -20584,18 +20584,19 @@ function InkoopControlePage({ currentUser }) {
         if (/\.zip$/i.test(file.name) && !/\.xml\.zip$/i.test(file.name)) {
           const archive = await JSZip.loadAsync(file);
           for (const entry of Object.values(archive.files)) {
-            // Emails, invoice XMLs (also FloraHolland's ".xml.zip") and PDFs.
-            if (!entry.dir && /\.(msg|xml|pdf|zip)$/i.test(entry.name)) {
+            // Emails (Outlook .msg, Gmail .eml -- "Bericht downloaden"),
+            // invoice XMLs (also FloraHolland's ".xml.zip") and PDFs.
+            if (!entry.dir && /\.(msg|eml|xml|pdf|zip)$/i.test(entry.name)) {
               const data = await entry.async("uint8array");
               messages.push({ name: entry.name.split("/").pop(), data });
             }
           }
-        } else if (/\.(msg|xml|pdf|zip)$/i.test(file.name)) {
+        } else if (/\.(msg|eml|xml|pdf|zip)$/i.test(file.name)) {
           messages.push({ name: file.name, data: new Uint8Array(await file.arrayBuffer()) });
         }
       }
       if (veilingFiles.length && !messages.length) {
-        throw new Error("No emails (.msg), invoice XMLs or PDFs found in the chosen file(s).");
+        throw new Error("No emails (.msg / .eml), invoice XMLs or PDFs found in the chosen file(s).");
       }
       const parts = [];
       let current = [];
@@ -20994,7 +20995,7 @@ function InkoopControlePage({ currentUser }) {
           </label>
           <label>
             <span>Veiling invoices: .zip, .msg emails, invoice .xml and .pdf files (any amount) -- optional</span>
-            <input type="file" accept=".zip,.msg,.xml,.pdf" multiple onChange={(event) => setVeilingFiles([...(event.target.files || [])])} />
+            <input type="file" accept=".zip,.msg,.eml,.xml,.pdf" multiple onChange={(event) => setVeilingFiles([...(event.target.files || [])])} />
             {veilingFiles.length > 1 && <small className="muted">{veilingFiles.length} files chosen</small>}
           </label>
         </div>
