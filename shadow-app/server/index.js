@@ -7639,6 +7639,15 @@ function inkoopInvoiceLineIsNotAPurchase(line) {
 // -- the fewest lots first; null when none, or when sets with different
 // pieces do (then which lots it is can't be told). Sets that look the same
 // (10 + 10 out of three lots of 10): it doesn't matter which, the first.
+// An invoice line's box size as the matcher uses it. AI2 lines have had
+// their boxes read from the Productnota since 2026-11-04 (for the screen);
+// the matcher keeps matching them without a box size, as before -- until a
+// Test info with AI2 boxes shows it holds.
+function inkoopMatchBoxSize(item) {
+  if (String(item?.invoice_type || "").toLowerCase() === "ai2" || /^ai2/i.test(String(item?.invoice_number || ""))) return 0;
+  return Number(item?.per_package) || 0;
+}
+
 function findInkoopPiecesCombination(rows, target) {
   if (!Number.isFinite(target) || target <= 0 || rows.length < 2) return null;
   const signature = (set) => set.map((row) => Number(row.pieces) || 0).sort((left, right) => left - right).join(",");
@@ -8473,7 +8482,7 @@ function matchInkoopVeilingLines(erpRows, invoices, supplierMap = {}, supplierNa
       const quantity = Number(item?.quantity);
       if (!codes.length || !(quantity > 0) || !(Number(item?.unit_price) > 0)) continue;
       const product = normalizeInkoopKey(item?.vbn_code) || normalizeInkoopKey(item?.description);
-      const key = [codes.join("/"), normalizeUkdocsText(item?.invoice_date).slice(0, 10), Number(item.unit_price).toFixed(3), Number(item?.per_package) || "", product].join("|");
+      const key = [codes.join("/"), normalizeUkdocsText(item?.invoice_date).slice(0, 10), Number(item.unit_price).toFixed(3), inkoopMatchBoxSize(item) || "", product].join("|");
       if (!pools.has(key)) pools.set(key, { codes: new Set(codes), lines: [] });
       pools.get(key).lines.push(item);
     }
@@ -8481,7 +8490,7 @@ function matchInkoopVeilingLines(erpRows, invoices, supplierMap = {}, supplierNa
     for (const pool of pools.values()) {
       const sample = pool.lines[0];
       const day = normalizeUkdocsText(sample?.invoice_date).slice(0, 10);
-      const perBox = Number(sample?.per_package) || 0;
+      const perBox = inkoopMatchBoxSize(sample);
       const wanted = pool.lines.reduce((sum, line) => sum + Number(line.quantity), 0);
       const daysOff = (row) => Math.abs((Date.parse(String(row?.date || "").slice(0, 10)) - Date.parse(day)) / 86400000);
       const fitting = (Array.isArray(erpRows) ? erpRows : []).filter((row) => !consumedErpRows.has(row)
@@ -8770,7 +8779,7 @@ function matchInkoopVeilingLines(erpRows, invoices, supplierMap = {}, supplierNa
         const surplus = pair.pool_surplus;
         return surplus && !surplus.used && !inkoopValuesDiffer(surplus.pieces, quantity)
           && surplus.product === product && Math.abs(surplus.price - Number(item?.unit_price)) < 0.0005
-          && (!surplus.per_box || !(Number(item?.per_package) > 0) || surplus.per_box === Number(item.per_package))
+          && (!surplus.per_box || !(inkoopMatchBoxSize(item) > 0) || surplus.per_box === inkoopMatchBoxSize(item))
           && surplus.codes.some((code) => codes.has(code))
           && Math.abs((Date.parse(date) - Date.parse(surplus.day)) / 86400000) <= INKOOP_DAY_TOLERANCE_DAYS;
       }) : null;

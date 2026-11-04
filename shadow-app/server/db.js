@@ -1643,7 +1643,8 @@ export async function getInkoopOnlyInConnectTotals({ unit = "day", from = "", to
 export async function getInkoopOverviewTotals({ company = "", from = "", to = "" } = {}) {
   if (!pool || !from || !to) return [];
   const params = [from, to];
-  const where = ["match_date >= $1::date", "match_date <= $2::date", "list <> 'fee_lines'"];
+  // Emballage (and fee lines) are no purchase: not in the money trace.
+  const where = ["match_date >= $1::date", "match_date <= $2::date", "list NOT IN ('fee_lines', 'embalage_lines')"];
   // A Connect lot has no company: with one chosen, the invoice side only.
   if (company) { params.push(company); where.push(`company_number = $${params.length}`, "list <> 'only_in_erp'"); }
   const result = await pool.query(
@@ -1661,7 +1662,7 @@ export async function getInkoopOverviewTotals({ company = "", from = "", to = ""
 export async function getInkoopOverviewLines({ company = "", from = "", to = "", pairs = [], lists = [], limit = 3000 } = {}) {
   if (!pool || !from || !to || (!pairs.length && !lists.length)) return [];
   const params = [from, to];
-  const where = ["m.match_date >= $1::date", "m.match_date <= $2::date", "m.list <> 'fee_lines'"];
+  const where = ["m.match_date >= $1::date", "m.match_date <= $2::date", "m.list NOT IN ('fee_lines', 'embalage_lines')"];
   if (pairs.length) {
     params.push(pairs.map((pair) => pair[0]), pairs.map((pair) => pair[1]));
     where.push(`(m.supplier_code, m.supplier_name) IN (SELECT * FROM unnest($${params.length - 1}::text[], $${params.length}::text[]))`);

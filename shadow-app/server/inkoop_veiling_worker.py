@@ -554,8 +554,12 @@ def parse_ai2_row(row_words, year, is_credit):
     # this order -- take them by position in that run, not by x.
     numbers = [word["text"] for word in sorted(row_words, key=lambda w: w["x0"])
                if word["x0"] >= AI2_COL_NUMNAME_MAX - 5 and AI2_NUMBER_RE.fullmatch(word["text"])]
+    # Aantal (boxes) and ApE (pieces per box) are the first two: kept as the
+    # line's boxes when they make its pieces (as a Klok line's).
+    boxes_text = per_box_text = None
     if len(numbers) >= 5:
         columns["total_pieces"], columns["prijs"], columns["bedrag"] = [numbers[2]], [numbers[3]], [numbers[4]]
+        boxes_text, per_box_text = numbers[0], numbers[1]
     datum = " ".join(columns["datum"]) or None
     referentie = " ".join(columns["referentie"]) or None
     vbn_desc = " ".join(columns["vbn_desc"]) or None
@@ -588,10 +592,16 @@ def parse_ai2_row(row_words, year, is_credit):
     # than silently including a mis-parsed row as real purchase data.
     if abs(quantity * unit_price - total) > 0.05:
         return None
+    packages = parse_decimal_comma(boxes_text)
+    per_package = parse_decimal_comma(per_box_text)
+    if packages is None or per_package is None or abs(abs(packages) * abs(per_package) - abs(quantity)) > 0.01:
+        packages = per_package = None
 
     return {
         "description": description or (vbn_desc or ""),
         "quantity": quantity,
+        "packages": abs(packages) if packages is not None else None,
+        "per_package": abs(per_package) if per_package is not None else None,
         "unit_price": -unit_price if is_credit else unit_price,
         "total": -total if is_credit else total,
         "reference_bt": "",
