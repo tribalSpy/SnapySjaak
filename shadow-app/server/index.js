@@ -12976,6 +12976,11 @@ function inkoopFollowupItem(issue, day) {
       id: invoice.id || "", quantity: number(invoice.quantity), unit_price: number(invoice.unit_price), total: number(invoice.total),
       packages: number(invoice.packages), per_package: number(invoice.per_package), reference: normalizeUkdocsText(invoice.reference_bt || invoice.pav),
       invoice_type: invoice.invoice_type || "", company: invoice.company_number || "", supplier_name: invoice.supplier_name || "",
+      // A corrected line (credited and invoiced again): its own lines.
+      ...(invoice.matched_as_correction && Array.isArray(invoice.correction_lines) && invoice.correction_lines.length > 1 ? {
+        correction: invoice.correction_lines.map((step) => ({ id: step.id || "", invoice_number: step.invoice_number || "", invoice_date: String(step.invoice_date || "").slice(0, 10),
+          quantity: number(step.quantity), packages: number(step.packages), per_package: number(step.per_package), total: number(step.total) })),
+      } : {}),
     } : null,
     lot: erp ? {
       lot: erp.lot ?? "", date: String(erp.date || "").slice(0, 10), pav: normalizeUkdocsText(erp.pav), suppl: normalizeUkdocsText(erp.suppl), description: normalizeUkdocsText(erp.description),

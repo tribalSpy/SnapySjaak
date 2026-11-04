@@ -4188,3 +4188,9 @@ button.ik-kpi:hover {
 .ik-fu-state {
   white-space: nowrap;
 }
+
+/* Track & Trace link bar: a ticked line that is a correction. */
+.ik-correction-note {
+  color: var(--x-b45309, #b45309);
+  font-size: 0.85rem;
+}

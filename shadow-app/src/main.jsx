@@ -15792,9 +15792,45 @@ function inkoopInvoiceBoxes(quantity, boxes, perBox) {
     || (Number(boxes) > 0 ? `${Number(boxes)} × ${Number(perBox) || "?"} ≠` : "? × ?");
 }
 
+// A corrected line (FloraHolland credited the purchase and invoiced it
+// again under the same brief number): the lines are netted into one, so
+// "2 × 60 ≠ = 60 pcs" said nothing. Its steps instead, in invoice order:
+// "invoiced 2 × 60 = 120 · credited −60 → 60 pcs". The credited pieces are
+// what Connect may still hold (until the dispatch shows them going back).
+function inkoopCorrectionOf(line) {
+  const steps = Array.isArray(line?.correction_lines) ? line.correction_lines : Array.isArray(line?.correction) ? line.correction : [];
+  if (!line?.matched_as_correction && !Array.isArray(line?.correction)) return null;
+  if (steps.length < 2) return null;
+  const sorted = [...steps].sort((left, right) => String(left.invoice_date || "").localeCompare(String(right.invoice_date || "")) || String(left.id || "").localeCompare(String(right.id || "")));
+  let seenPurchase = false;
+  const parts = sorted.map((step) => {
+    const quantity = Number(step.quantity) || 0;
+    const boxes = inkoopBoxesText(Math.abs(quantity), step.packages, step.per_package);
+    const amount = `${boxes ? `${boxes} = ` : ""}${quantity < 0 ? "−" : ""}${Math.abs(quantity)}`;
+    if (quantity < 0) return `credited ${amount}`;
+    const word = seenPurchase ? "again" : "invoiced";
+    seenPurchase = true;
+    return `${word} ${amount}`;
+  });
+  const invoiced = sorted.filter((step) => Number(step.quantity) > 0).reduce((sum, step) => sum + Number(step.quantity), 0);
+  const credited = -sorted.filter((step) => Number(step.quantity) < 0).reduce((sum, step) => sum + Number(step.quantity), 0);
+  return { text: `↩ correction: ${parts.join(" · ")}`, invoiced, credited, invoices: [...new Set(sorted.map((step) => step.invoice_number).filter(Boolean))] };
+}
+
 function inkoopInvoiceTranscript(line) {
   if (!line || line.quantity === undefined || line.quantity === null) {
     return "";
+  }
+  const correction = inkoopCorrectionOf(line);
+  if (correction) {
+    return inkoopLineText({
+      date: line.invoice_date,
+      parts: [line.reference_bt || line.pav, correction.text, "→"],
+      pieces: line.quantity,
+      price: line.unit_price,
+      total: line.total,
+      extras: [line.order_number ? `ON ${line.order_number}` : "", line.supplier_name],
+    }).replace(" · → · ", " → ");
   }
   return inkoopLineText({
     date: line.invoice_date,
@@ -18934,6 +18970,23 @@ function InkoopTrackTraceWorkspace({ bar, setBar, overview, company, matchRound 
                 <span><strong>Link:</strong> invoice {pickedLines.length} line(s) {invoicePieces} pcs {formatInkoopEuro(invoiceValue)}</span>
                 <span>Connect {linkLots.length} lot(s) {connectPieces} pcs {formatInkoopEuro(connectValue)}</span>
                 <span>difference <InkoopMoneyDiff value={Math.round((invoiceValue - connectValue) * 100) / 100} /></span>
+                {(() => {
+                  // A ticked line that is a correction: the pieces credited
+                  // can still be in Connect's lots -- the difference is that
+                  // credit, not an error; the dispatch shows later whether
+                  // they went back (Corrections › Connect dispatch only).
+                  const corrected = pickedLines.map((issue) => ({ issue, correction: inkoopCorrectionOf(issue.detail) })).filter((entry) => entry.correction);
+                  if (!corrected.length) return null;
+                  const credited = corrected.reduce((sum, entry) => sum + entry.correction.credited, 0);
+                  const invoiced = corrected.reduce((sum, entry) => sum + entry.correction.invoiced, 0);
+                  const extra = Math.round((connectPieces - invoicePieces) * 100) / 100;
+                  return (
+                    <span className="ik-correction-note" title="Whether the credited pieces went back to a retour customer shows in Corrections › Connect dispatch only, once the dispatch is uploaded">
+                      ↩ {corrected.length === 1 ? `${corrected[0].issue.detail?.reference_bt || corrected[0].issue.detail?.pav || "this line"} is a correction` : `${corrected.length} lines are corrections`}: invoiced {invoiced}, credited {credited} pcs
+                      {extra > 0 && Math.abs(extra - credited) < 0.01 ? ` -- the ${extra} pcs more in Connect are the credited ones` : ""}
+                    </span>
+                  );
+                })()}
                 <input value={pairNote} onChange={(event) => setPairNote(event.target.value)} placeholder="Note (why they belong together)" size={30} />
                 <button type="button" className="primary" onClick={addLink} disabled={busy || !pickedLines.length || !linkLots.length}>Add link</button>
                 <button type="button" onClick={() => setPicked({})}>Clear</button>
@@ -19147,6 +19200,7 @@ function useInkoopFollowupSettings() {
 function ikFollowupInvoiceText(item) {
   if (!item?.invoice) return "";
   return inkoopInvoiceTranscript({
+    ...(item.invoice.correction ? { correction: item.invoice.correction } : {}),
     invoice_date: item.date, reference_bt: item.invoice.reference, packages: item.invoice.packages, per_package: item.invoice.per_package,
     quantity: item.invoice.quantity, unit_price: item.invoice.unit_price, total: item.invoice.total, supplier_name: item.invoice.supplier_name,
   });
