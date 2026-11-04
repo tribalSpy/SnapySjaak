@@ -18717,12 +18717,15 @@ function InkoopTrackTraceWorkspace({ bar, setBar, overview, company, matchRound 
   const piecesShort = (issue) => issue.issue_type === "mismatch" && (issue.detail?.diffs || []).some((diff) => diff.field === "quantity");
   // A search per side: every word typed must be in the line (product,
   // brief / Uw ref., lot, invoice, pieces, price).
+  // Boxes are searched as "2x6" (or "2 x 6", "2×6"): the very count and
+  // size -- "2x6" is not 12 × 60.
+  const boxesOf = (text) => String(text || "").toLowerCase().replace(/(\d)\s*[x×]\s*(\d)/g, "$1x$2");
   const searchHit = (issue, text) => {
-    const words = String(text || "").toLowerCase().split(/\s+/).filter(Boolean);
+    const words = boxesOf(text).split(/\s+/).filter(Boolean);
     if (!words.length) return true;
-    const haystack = [issue.description, issue.invoice_number, issue.issue_type === "gap_erp" ? inkoopErpTranscript(issue.erp_row) : inkoopInvoiceTranscript(issue.detail),
-      issue.detail?.your_reference, issue.erp_row?.lot, issue.erp_row?.pav].map((value) => String(value ?? "")).join(" ").toLowerCase();
-    return words.every((word) => haystack.includes(word));
+    const haystack = boxesOf([issue.description, issue.invoice_number, issue.issue_type === "gap_erp" ? inkoopErpTranscript(issue.erp_row) : inkoopInvoiceTranscript(issue.detail),
+      issue.detail?.your_reference, issue.erp_row?.lot, issue.erp_row?.pav].map((value) => String(value ?? "")).join(" "));
+    return words.every((word) => (/^\d+x\d+$/.test(word) ? new RegExp(`(^|[^0-9])${word}($|[^0-9])`).test(haystack) : haystack.includes(word)));
   };
   const notLinked = (issue) => !hiddenKeys[issue.issue_type === "gap_erp" ? `lot:${issue.erp_row?.lot}` : `line:${issue.detail?.id}`];
   const leftAll = growerIssues.filter((issue) => (issue.issue_type === "gap_invoice" || piecesShort(issue)) && notLinked(issue));
@@ -18891,8 +18894,23 @@ function InkoopTrackTraceWorkspace({ bar, setBar, overview, company, matchRound 
   }
   const [fuSettings] = useInkoopFollowupSettings();
 
+  // Tick every line / lot the list shows now (after its search), or untick
+  // them when they all are.
+  const tickAll = (list) => {
+    const keyed = list.map((issue) => [pickKey(issue), issue]).filter(([key]) => key);
+    if (keyed.length < 2) return null;
+    const all = keyed.every(([key]) => picked[key]);
+    return (
+      <button type="button" className="ik-chip" title={all ? "Untick these" : "Tick every line shown (after the search)"}
+        onClick={() => setPicked((current) => {
+          const next = { ...current };
+          for (const [key, issue] of keyed) { if (all) delete next[key]; else next[key] = issue; }
+          return next;
+        })}>{all ? `Untick ${keyed.length}` : `Tick all ${keyed.length}`}</button>
+    );
+  };
   const searchBox = (sideKey) => (
-    <input className="ik-side-search" value={searches[sideKey]} placeholder="Search…" title="Product, brief / ref., lot, invoice, pieces or price -- every word"
+    <input className="ik-side-search" value={searches[sideKey]} placeholder="Search…" title="Product, brief / ref., lot, invoice, pieces, price or boxes (2x6) -- every word"
       onChange={(event) => setSearches((current) => ({ ...current, [sideKey]: event.target.value }))} />
   );
   const sortSelect = (sideKey) => (
@@ -19049,7 +19067,7 @@ function InkoopTrackTraceWorkspace({ bar, setBar, overview, company, matchRound 
             )}
             <div className="ik-split-view">
               <div className="data-table-card ik-card ik-side inv">
-                <div className="ik-side-head"><strong>Invoice lines without their lot</strong><span className="muted">{sideCount(leftIssues, leftAll)}</span>{searchBox("left")}{sortSelect("left")}</div>
+                <div className="ik-side-head"><strong>Invoice lines without their lot</strong><span className="muted">{sideCount(leftIssues, leftAll)}</span>{searchBox("left")}{sortSelect("left")}{tickAll(leftIssues)}</div>
                 {!issues ? <div className="muted">Loading…</div> : leftIssues.length ? leftIssues.map((issue) => issueRow(issue, "inv")) : sideEmpty("left", leftAll, "✓ Nothing open on the invoice side.")}
                 <div className="ik-others">
                   <button type="button" className="link-button" onClick={() => setShowOtherLines((value) => !value)} aria-expanded={showOtherLines}>
@@ -19063,7 +19081,8 @@ function InkoopTrackTraceWorkspace({ bar, setBar, overview, company, matchRound 
                           <option value="">All other growers ({otherLines.length})</option>
                           {otherLineGrowers.map(([name, count]) => <option key={name} value={name}>{name} ({count})</option>)}
                         </select>
-                        <input className="ik-side-search" value={otherLineSearch} placeholder="Search…" onChange={(event) => setOtherLineSearch(event.target.value)} title="Product, brief / ref., invoice, pieces, price -- every word" />
+                        <input className="ik-side-search" value={otherLineSearch} placeholder="Search…" onChange={(event) => setOtherLineSearch(event.target.value)} title="Product, brief / ref., invoice, pieces, price, boxes (2x6) -- every word" />
+                        {tickAll(otherLinesShown.slice(0, 150).map(({ issue }) => issue))}
                       </div>
                       {otherLinesShown.slice(0, 150).map(({ issue, like }) => issueRow(issue, "inv other", like))}
                       {otherLinesShown.length > 150 && <div className="muted">… {otherLinesShown.length - 150} more -- narrow it with the grower or the search.</div>}
@@ -19073,7 +19092,7 @@ function InkoopTrackTraceWorkspace({ bar, setBar, overview, company, matchRound 
                 </div>
               </div>
               <div className="data-table-card ik-card ik-side con">
-                <div className="ik-side-head"><strong>Connect lots without an invoice</strong><span className="muted">{sideCount(rightIssues, rightAll)}</span>{searchBox("right")}{sortSelect("right")}</div>
+                <div className="ik-side-head"><strong>Connect lots without an invoice</strong><span className="muted">{sideCount(rightIssues, rightAll)}</span>{searchBox("right")}{sortSelect("right")}{tickAll(rightIssues)}</div>
                 {!issues ? <div className="muted">Loading…</div> : rightIssues.length ? rightIssues.map((issue) => issueRow(issue, "con")) : sideEmpty("right", rightAll, "✓ Nothing open on the Connect side.")}
                 <div className="ik-others">
                   <button type="button" className="link-button" onClick={() => setShowOthers((value) => !value)} aria-expanded={showOthers}>
@@ -19087,7 +19106,8 @@ function InkoopTrackTraceWorkspace({ bar, setBar, overview, company, matchRound 
                           <option value="">All other growers ({otherLots.length})</option>
                           {otherGrowers.map(([name, count]) => <option key={name} value={name}>{name} ({count})</option>)}
                         </select>
-                        <input className="ik-side-search" value={otherSearch} placeholder="Search…" onChange={(event) => setOtherSearch(event.target.value)} title="Product, lot, pieces, price -- every word" />
+                        <input className="ik-side-search" value={otherSearch} placeholder="Search…" onChange={(event) => setOtherSearch(event.target.value)} title="Product, lot, pieces, price, boxes (2x6) -- every word" />
+                        {tickAll(otherShown.slice(0, 150).map(({ issue }) => issue))}
                       </div>
                       {otherShown.slice(0, 150).map(({ issue, like }) => issueRow(issue, "con other", like))}
                       {otherShown.length > 150 && <div className="muted">… {otherShown.length - 150} more -- narrow it with the grower or the search.</div>}
