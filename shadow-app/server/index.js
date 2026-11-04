@@ -58,6 +58,8 @@ import {
   getInkoopCorrectionLines,
   getInkoopCreditLinesByPav,
   getInkoopInvoiceSupplierIdentities,
+  getInkoopAi2LinesWithoutBoxes,
+  setInkoopInvoiceLineBoxes,
   getInkoopMatchDays,
   getInkoopPeriodReport,
   inkoopDataTableDefinitions,
@@ -6882,6 +6884,72 @@ function sanitizeInkoopInvoiceNumberForFilename(invoiceNumber) {
 
 function inkoopInvoicePdfPath(invoiceNumber) {
   return path.join(inkoopInvoicePdfFilesDir, `${sanitizeInkoopInvoiceNumberForFilename(invoiceNumber)}.pdf`);
+}
+
+// The AI2 lines stored before their boxes were read (Aantal x ApE, kept
+// since 2026-11-04): read again from each nota's stored PDF, once. Only the
+// boxes of a line still without them; a line is paired with the PDF's line
+// at its own place on the nota (its id "#n") when pieces, price and total
+// agree, else with an alike line (product, pieces, price, total). The days
+// of the lines that got boxes are compared again (the screens show them
+// from there); the match does not change -- AI2 lines are matched without a
+// box size. Runs in the background; the status is kept for the screen.
+const inkoopAi2BoxesJob = { running: false, started_at: "", finished_at: "", notas: 0, done: 0, lines: 0, updated: 0, without_pdf: 0, failed: [], error: "" };
+
+async function runInkoopAi2BoxesRefresh() {
+  if (inkoopAi2BoxesJob.running) return;
+  Object.assign(inkoopAi2BoxesJob, { running: true, started_at: new Date().toISOString(), finished_at: "", notas: 0, done: 0, lines: 0, updated: 0, without_pdf: 0, failed: [], error: "" });
+  try {
+    const stored = await getInkoopAi2LinesWithoutBoxes();
+    const byNota = new Map();
+    for (const line of stored) byNota.set(line.invoice_number, [...(byNota.get(line.invoice_number) || []), line]);
+    inkoopAi2BoxesJob.notas = byNota.size;
+    inkoopAi2BoxesJob.lines = stored.length;
+    const dates = new Set();
+    const same = (left, right) => !inkoopValuesDiffer(Number(left), Number(right));
+    for (const [invoiceNumber, lines] of byNota) {
+      try {
+        const pdfPath = inkoopInvoicePdfPath(invoiceNumber);
+        if (!existsSync(pdfPath)) {
+          inkoopAi2BoxesJob.without_pdf += 1;
+          continue;
+        }
+        const output = await runInkoopVeilingWorker(["parse-ai2-pdf", "--input", pdfPath]);
+        const parsed = (JSON.parse(output.toString("utf8"))?.lines || []);
+        const used = new Set();
+        const updates = [];
+        for (const line of lines) {
+          const index = Number(String(line.id).match(/#(\d+)$/)?.[1]);
+          const fits = (item) => item && Number(item.packages) > 0 && Number(item.per_package) > 0
+            && same(item.quantity, line.quantity) && same(item.unit_price, line.unit_price) && same(item.total, line.total);
+          let pick = Number.isInteger(index) && !used.has(index) && fits(parsed[index]) ? index : -1;
+          if (pick < 0) {
+            pick = parsed.findIndex((item, position) => !used.has(position) && fits(item)
+              && normalizeUkdocsText(item.description).toLowerCase() === normalizeUkdocsText(line.description).toLowerCase());
+          }
+          if (pick < 0) continue;
+          used.add(pick);
+          updates.push({ id: line.id, packages: Number(parsed[pick].packages), per_package: Number(parsed[pick].per_package) });
+          if (line.invoice_date) dates.add(line.invoice_date);
+        }
+        inkoopAi2BoxesJob.updated += await setInkoopInvoiceLineBoxes(updates);
+      } catch (notaError) {
+        inkoopAi2BoxesJob.failed.push(`${invoiceNumber}: ${notaError instanceof Error ? notaError.message : String(notaError)}`.slice(0, 300));
+      } finally {
+        inkoopAi2BoxesJob.done += 1;
+      }
+    }
+    if (dates.size) {
+      bumpInkoopMatchVersion();
+      await markInkoopMatchDaysPending([...dates].sort());
+      kickInkoopMatchWorker();
+    }
+  } catch (error) {
+    inkoopAi2BoxesJob.error = error instanceof Error ? error.message : String(error);
+  } finally {
+    inkoopAi2BoxesJob.running = false;
+    inkoopAi2BoxesJob.finished_at = new Date().toISOString();
+  }
 }
 
 async function saveInkoopInvoicePdfs(pdfsByInvoiceNumber) {
@@ -26460,6 +26528,19 @@ async function handleApi(req, res, url) {
       return;
     }
     sendJson(res, 200, { total: invoices.length, missing: missing.length, invoices: missing });
+    return;
+  }
+
+  // The AI2 boxes read again from the stored PDFs: POST starts it (in the
+  // background), GET says how far it is.
+  if (url.pathname === "/api/inkoop/ai2-boxes" && (req.method === "GET" || req.method === "POST")) {
+    if (!requirePermission(res, requestUser, PERMISSIONS.INKOOP_VIEW)) {
+      return;
+    }
+    if (req.method === "POST" && !inkoopAi2BoxesJob.running) {
+      runInkoopAi2BoxesRefresh().catch((error) => console.error("AI2 boxes refresh failed:", error instanceof Error ? error.message : error));
+    }
+    sendJson(res, 200, { ...inkoopAi2BoxesJob, failed: inkoopAi2BoxesJob.failed.slice(0, 20) });
     return;
   }
 

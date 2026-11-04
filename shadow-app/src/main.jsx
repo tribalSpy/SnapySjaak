@@ -21003,6 +21003,7 @@ function InkoopControlePage({ currentUser }) {
       <>
       {pageDataNote}
       <InkoopMailImportCard />
+      <InkoopAi2BoxesCard />
       {canClearUploads && (
         <div className="data-table-card">
           <div className="section-header"><h2>Start fresh</h2></div>
@@ -24731,6 +24732,54 @@ function IkFollowupState({ followup, settings }) {
       {followup.status === "resolved" ? `✓ ${followup.resolution ? ikFuResolutionLabel(followup.resolution) : "Resolved"}` : `${department} · ${INKOOP_FU_STATUS_LABEL[followup.status] || followup.status}`}
       {followup.category ? <> <IkCategoryChip name={followup.category} categories={settings?.categories} /></> : null}
     </span>
+  );
+}
+
+// AI2 lines stored before their boxes were read ("? × ?"): read again from
+// the stored Productnota PDFs, once -- only the boxes of those lines.
+function InkoopAi2BoxesCard() {
+  const [job, setJob] = useState(null);
+  const [error, setError] = useState("");
+  const timer = useRef(null);
+  const poll = useCallback(() => {
+    apiJson("/api/inkoop/ai2-boxes").then((payload) => {
+      setJob(payload);
+      if (payload.running) timer.current = window.setTimeout(poll, 2000);
+    }).catch((pollError) => setError(pollError.message));
+  }, []);
+  useEffect(() => { poll(); return () => window.clearTimeout(timer.current); }, [poll]);
+  async function start() {
+    setError("");
+    try {
+      setJob(await apiJson("/api/inkoop/ai2-boxes", { method: "POST", body: "{}" }));
+      window.clearTimeout(timer.current);
+      timer.current = window.setTimeout(poll, 1000);
+    } catch (startError) {
+      setError(startError.message);
+    }
+  }
+  return (
+    <div className="data-table-card">
+      <div className="section-header"><h2>AI2 boxes</h2></div>
+      <div className="notice">
+        AI2 lines read before 04-11-2026 show "? × ?": the Productnota has the boxes (Aantal × ApE), they were not kept then.
+        This reads them again from the PDFs the app stored and fills in only the boxes of those lines -- nothing else changes, the match neither
+        (AI2 lines are matched without a box size). Their days are compared again afterwards, so Track & Trace shows them.
+      </div>
+      <div className="row-actions">
+        <button type="button" className="primary" onClick={start} disabled={job?.running}>{job?.running ? `Reading… ${job.done} of ${job.notas} notas` : "Read the AI2 boxes again from the stored PDFs"}</button>
+        {job?.finished_at && !job.running && (
+          <span className="muted">
+            Last run {formatTimestamp(job.finished_at)}: {job.notas} nota(s) with {job.lines} line(s) without boxes -- {job.updated} line(s) got their boxes
+            {job.without_pdf ? `, ${job.without_pdf} nota(s) without a stored PDF (upload those notas again)` : ""}
+            {job.lines - job.updated > 0 ? `, ${job.lines - job.updated} line(s) not found on their PDF` : ""}.
+          </span>
+        )}
+      </div>
+      {job?.error && <div className="notice danger">{job.error}</div>}
+      {!!job?.failed?.length && <div className="notice danger">{job.failed.length} nota(s) could not be read: {job.failed.join(" · ")}</div>}
+      {error && <div className="notice danger">{error}</div>}
+    </div>
   );
 }
 

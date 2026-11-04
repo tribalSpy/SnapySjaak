@@ -820,6 +820,40 @@ export async function getInkoopInvoiceSupplierIdentities() {
   return result.rows;
 }
 
+// The AI2 product lines stored without their boxes (read before the
+// Productnota's Aantal / ApE were kept), per nota.
+export async function getInkoopAi2LinesWithoutBoxes() {
+  if (!pool) return [];
+  const result = await pool.query(
+    `SELECT id, invoice_number, to_char(invoice_date, 'YYYY-MM-DD') AS invoice_date, description,
+            quantity::float8 AS quantity, unit_price::float8 AS unit_price, total::float8 AS total
+       FROM inkoop_invoice_lines
+      WHERE (invoice_type = 'ai2' OR invoice_number LIKE 'AI2-%')
+        AND quantity IS NOT NULL AND unit_price IS NOT NULL
+        AND COALESCE(raw->>'packages', '') = ''
+      ORDER BY invoice_number, id`,
+  );
+  return result.rows;
+}
+
+// Only the boxes of some invoice lines (raw.packages / raw.per_package);
+// nothing else of the line changes.
+export async function setInkoopInvoiceLineBoxes(rows) {
+  if (!pool || !rows?.length) return 0;
+  let updated = 0;
+  for (const chunk of chunkArray(rows, 500)) {
+    const result = await pool.query(
+      `UPDATE inkoop_invoice_lines l
+          SET raw = COALESCE(l.raw, '{}'::jsonb) || jsonb_build_object('packages', v.packages, 'per_package', v.per_package)
+         FROM unnest($1::text[], $2::float8[], $3::float8[]) AS v(id, packages, per_package)
+        WHERE l.id = v.id AND COALESCE(l.raw->>'packages', '') = ''`,
+      [chunk.map((row) => row.id), chunk.map((row) => row.packages), chunk.map((row) => row.per_package)],
+    );
+    updated += result.rowCount || 0;
+  }
+  return updated;
+}
+
 export async function getInkoopLeveringBbDays(lots, pavs) {
   if (!pool || (!lots?.length && !pavs?.length)) return [];
   const result = await pool.query(

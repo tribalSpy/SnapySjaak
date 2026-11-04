@@ -1435,6 +1435,10 @@ def main():
     lot_table_parser = subparsers.add_parser("parse-lot-table")
     lot_table_parser.add_argument("--input", required=True)
 
+    # One stored AI2 Productnota PDF read again (its lines with their boxes).
+    ai2_pdf_parser = subparsers.add_parser("parse-ai2-pdf")
+    ai2_pdf_parser.add_argument("--input", required=True)
+
     betaalwijze_parser = subparsers.add_parser("parse-betaalwijze")
     betaalwijze_parser.add_argument("--kwekers", required=False, default="")
     betaalwijze_parser.add_argument("--leveranciers", required=False, default="")
@@ -1455,6 +1459,9 @@ def main():
         print(json.dumps(parse_dispatch_dump(Path(args.input))))
     elif args.command == "parse-lot-table":
         print(json.dumps(parse_lot_table(Path(args.input))))
+    elif args.command == "parse-ai2-pdf":
+        parsed = parse_ai2_productnota(Path(args.input).read_bytes())
+        print(json.dumps({"lines": parsed.get("lines", [])}))
     elif args.command == "parse-betaalwijze":
         # Kwekers first so the leveranciers entry wins on a shared code, same
         # precedence as parse_suppliers.
