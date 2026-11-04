@@ -4180,3 +4180,11 @@ button.ik-kpi:hover {
   display: grid;
   gap: 2px;
 }
+
+/* Corrections -> follow-up: a credit found, the follow-up state of a line. */
+.ik-credit-in {
+  color: #15803d;
+}
+.ik-fu-state {
+  white-space: nowrap;
+}
