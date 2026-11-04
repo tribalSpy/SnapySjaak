@@ -15872,40 +15872,343 @@ function inkoopErpExtras(erpRow) {
 
 const INKOOP_INVOICE_TYPE_LABELS = { klokfactuur: "Klokfactuur", connect: "Connect", handel: "Handel", ai2: "AI2", dienst: "Dienst (FD)", handel_verkoop: "Handel verkoop (HV)" };
 
-// One company's invoice list, folded by default -- every invoice with its
-// own PDF link, same as the rest of Inkoop Controle.
-function InkoopCompanyInvoiceList({ company }) {
+// Invoices overview: what each buying company was invoiced in a period
+// (by factuurdatum) and what became of it -- per company a ring with the
+// matched %, the flows and the money matched / differing / open; opened,
+// its invoices, an invoice opened its lines; right-click an invoice or a
+// line for its trace (invoice -> match -> Connect lot -> dispatch ->
+// follow-up -> King).
+const INKOOP_INVOICE_TYPE_FLOW = { klokfactuur: "Klok", connect: "Connect", handel: "Handel", ai2: "AI2" };
+const INKOOP_INVOICE_TYPE_ICON = { klokfactuur: "⏱", connect: "🔗", handel: "🤝", ai2: "🌿", dienst: "🛠", handel_verkoop: "↗" };
+const IK_TRACE_STATUS = {
+  matched: { icon: "✓", label: "Matched", tone: "good" },
+  differs: { icon: "⚠", label: "Matched, figures differ", tone: "mid" },
+  open: { icon: "✗", label: "No Connect lot", tone: "bad" },
+  not_linked: { icon: "✗", label: "Grower not linked", tone: "bad" },
+  ambiguous: { icon: "?", label: "More than one lot fits", tone: "bad" },
+  not_compared: { icon: "…", label: "Not compared yet", tone: "" },
+  emballage: { icon: "▢", label: "Emballage", tone: "" },
+  fee: { icon: "·", label: "Fee / other", tone: "" },
+  fust: { icon: "▢", label: "Fust", tone: "" },
+  summary: { icon: "Σ", label: "Invoice total line", tone: "" },
+};
+
+// A stacked bar of one invoice's (or company's) product money: matched,
+// differing, open -- the % in its tooltip.
+function IkMatchStack({ match, width = 120 }) {
+  if (!match) return <span className="muted" title="Not compared yet">–</span>;
+  const parts = [["matched", match.matched, "good"], ["differs", match.differs, "mid"], ["open", match.open, "bad"]].filter(([, value]) => value > 0);
+  const total = parts.reduce((sum, [, value]) => sum + value, 0);
+  if (!total) return <span className="muted">–</span>;
+  const title = `${match.matched_pct === null ? "" : `${match.matched_pct}% matched\n`}✓ matched ${formatInkoopEuro(match.matched)} (${match.matched_lines} lines)\n⚠ figures differ ${formatInkoopEuro(match.differs)} (${match.differs_lines} lines${match.difference ? `, ${formatInkoopEuro(match.difference)} difference` : ""})\n✗ open ${formatInkoopEuro(match.open)} (${match.open_lines} lines)`;
   return (
-    <InkoopCollapsibleCard title={`${company.company_number || "?"}${company.company_name ? ` - ${company.company_name}` : ""} -- invoices${company.invoices.some((invoice) => invoice.has_pdf === false) ? ` (✗ ${company.invoices.filter((invoice) => invoice.has_pdf === false).length} without PDF)` : ""}`} count={company.invoices.length} defaultOpen={false}>
-      <div className="table-wrap">
-        <table className="data-table">
-          <thead><tr><th>Factuurdatum</th><th>Invoice</th><th>Type</th><th>Products</th><th>Emballage</th><th>Fees</th><th>Total</th><th>Lines</th></tr></thead>
-          <tbody>
-            {company.invoices.map((invoice) => (
-              <tr key={`${invoice.invoice_number}-${invoice.invoice_type}`}>
+    <span className="ik-inv-stack" style={{ width }} title={title}>
+      {parts.map(([key, value, tone]) => <span key={key} className={`ik-inv-stack-part ${tone}`} style={{ width: `${(value / total) * 100}%` }} />)}
+    </span>
+  );
+}
+
+function ikKingText(king) {
+  if (!king) return { icon: "–", title: "Not sent to King yet" };
+  const delivered = king.delivered_at || king.status === "delivered";
+  return {
+    icon: delivered ? "✓" : king.status === "failed" ? "✗" : "⏳",
+    title: `King: ${delivered ? `delivered ${formatTimestamp(king.delivered_at || king.exported_at)}` : king.status || "queued"}${king.stuknummer ? ` · stuknummer ${king.stuknummer}` : ""}`,
+  };
+}
+
+// Traces are read once per invoice while the page is open.
+const ikInvoiceTraceCache = new Map();
+function useInkoopInvoiceTrace(invoiceNumber) {
+  const [data, setData] = useState(() => ikInvoiceTraceCache.get(invoiceNumber) || null);
+  const [error, setError] = useState("");
+  useEffect(() => {
+    if (!invoiceNumber) return undefined;
+    if (ikInvoiceTraceCache.has(invoiceNumber)) { setData(ikInvoiceTraceCache.get(invoiceNumber)); return undefined; }
+    let cancelled = false;
+    setData(null);
+    setError("");
+    apiJson(`/api/inkoop/invoice-trace?invoice=${encodeURIComponent(invoiceNumber)}`)
+      .then((payload) => { ikInvoiceTraceCache.set(invoiceNumber, payload); if (!cancelled) setData(payload); })
+      .catch((loadError) => { if (!cancelled) setError(loadError.message); });
+    return () => { cancelled = true; };
+  }, [invoiceNumber]);
+  return { data, error };
+}
+
+function ikTraceLotText(lot) {
+  return inkoopLineText({
+    date: lot.date, parts: [lot.code, `Lot ${lot.lot}`, lot.description],
+    boxes: inkoopBoxesText(lot.pieces, lot.items, lot.cont), pieces: lot.pieces, price: lot.price, total: lot.total,
+  });
+}
+
+// An invoice's lines: the products first (status, the line, its lot), the
+// other lines (emballage, fees) folded. Right-click a line: its trace.
+function IkInvoiceLines({ invoiceNumber, onTrace }) {
+  const { data, error } = useInkoopInvoiceTrace(invoiceNumber);
+  const [others, setOthers] = useState(false);
+  if (error) return <div className="notice danger">{error}</div>;
+  if (!data) return <div className="muted">Loading lines…</div>;
+  const products = data.lines.filter((line) => line.kind === "product");
+  const rest = data.lines.filter((line) => line.kind !== "product");
+  const row = (line) => {
+    const status = IK_TRACE_STATUS[line.status] || { icon: "·", label: line.status, tone: "" };
+    const diff = line.diffs?.find((item) => item.field === "total");
+    return (
+      <tr key={line.id} className={`clickable-row ik-inv-line ${status.tone}`} onClick={() => onTrace(invoiceNumber, line.id)}
+        onContextMenu={(event) => { event.preventDefault(); onTrace(invoiceNumber, line.id); }} title="Click or right-click: its trace">
+        <td className={`ik-inv-status ${status.tone}`} title={`${status.label}${line.reason ? ` -- ${line.reason}` : ""}`}>{status.icon}</td>
+        <td className="ik-fu-ellipsis ik-inv-text" title={inkoopInvoiceTranscript(line)}><strong>{line.description}</strong> <span>{inkoopInvoiceTranscript(line)}</span></td>
+        <td className="ik-fu-ellipsis ik-con-text" title={line.lots.map(ikTraceLotText).join("\n")}>
+          {line.lots.length ? (line.lots.length > 1 ? `${line.lots.length} lots · ${line.lots.map((lot) => lot.lot).join(" + ")}` : ikTraceLotText(line.lots[0])) : <span className="muted">{line.reason || "-"}</span>}
+        </td>
+        <td>{diff ? <InkoopMoneyDiff value={Math.round((Number(diff.invoice) - Number(diff.erp)) * 100) / 100} /> : line.status === "matched" ? "✓" : ""}</td>
+        <td>
+          {line.lots.some((lot) => lot.destinations.length) ? <span title={line.lots.flatMap((lot) => lot.destinations).map((dest) => `${dest.pieces} → ${dest.name || dest.code}${dest.is_retour ? " (retour)" : ""}`).join("\n")}>🚚 {line.lots.reduce((sum, lot) => sum + lot.destinations.length, 0)}</span> : null}
+          {line.lots.some((lot) => lot.retour_pieces > 0) ? <span className="ik-fu-warn" title="Pieces to a retour customer"> ↩</span> : null}
+          {line.followup.length ? <span title={line.followup.map((item) => `${item.department} · ${item.status}${item.category ? ` · ${item.category}` : ""}`).join("\n")}> 📋</span> : null}
+          {line.credit ? <span className="ik-credit-in" title={ikRetourCreditText(line.credit)}> ✓ credit</span> : null}
+        </td>
+      </tr>
+    );
+  };
+  return (
+    <div className="ik-inv-lines">
+      <table className="data-table balance-table ik-table">
+        <tbody>
+          {products.map(row)}
+          {!products.length && <tr><td colSpan={5} className="muted">No product lines.</td></tr>}
+          {!!rest.length && (
+            <tr className="clickable-row" onClick={() => setOthers((value) => !value)}>
+              <td colSpan={5} className="muted">{others ? "▾" : "▸"} {rest.length} other line(s): emballage, fees, totals</td>
+            </tr>
+          )}
+          {others && rest.map(row)}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+// The days of a line's path on one axis: factuurdatum, the line's day, the
+// Connect lot(s), the credit -- dots with their date, days apart.
+function IkTraceDayAxis({ points }) {
+  const dated = points.filter((point) => point.date);
+  if (dated.length < 2) return null;
+  const days = dated.map((point) => Date.parse(`${point.date}T00:00:00Z`) / 86400000);
+  const min = Math.min(...days);
+  const max = Math.max(...days);
+  const span = Math.max(1, max - min);
+  const width = 560;
+  const x = (day) => 24 + ((day - min) / span) * (width - 48);
+  return (
+    <svg className="ik-trace-axis" viewBox={`0 0 ${width} 58`} width="100%" height="58" role="img" aria-label="The days of this line's path">
+      <line x1="24" y1="22" x2={width - 24} y2="22" className="ik-trace-axis-line" />
+      {dated.map((point, index) => {
+        const day = days[index];
+        const sameBefore = dated.slice(0, index).filter((other, otherIndex) => days[otherIndex] === day).length;
+        return (
+          <g key={`${point.label}-${index}`}>
+            <title>{`${point.label}: ${fustOverviewDate(point.date)}`}</title>
+            <circle cx={x(day)} cy={22 - sameBefore * 9} r="5.5" className={`ik-trace-dot ${point.kind}`} />
+            <text x={x(day)} y={44} textAnchor="middle" className="ik-trace-axis-text">{point.short} {fustOverviewDate(point.date).slice(0, 5)}</text>
+          </g>
+        );
+      })}
+      <text x={width - 24} y={10} textAnchor="end" className="ik-trace-axis-text">{max - min ? `${max - min} day(s) from first to last` : "all on one day"}</text>
+    </svg>
+  );
+}
+
+function IkTraceStep({ icon, title, summary, tone = "", tip = "", children }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <li className={`ik-trace-step ${tone}`}>
+      <span className="ik-trace-icon" aria-hidden="true">{icon}</span>
+      <div className="ik-trace-body">
+        <button type="button" className="ik-trace-head" onClick={() => setOpen((value) => !value)} aria-expanded={open} disabled={!children} title={tip}>
+          <strong>{title}</strong> <span>{summary}</span>{tip ? <span className="muted"> ⓘ</span> : null}{children ? <span className="muted"> {open ? "▾" : "▸"}</span> : null}
+        </button>
+        {open && children ? <div className="ik-trace-detail">{children}</div> : null}
+      </div>
+    </li>
+  );
+}
+
+// The trace of an invoice: its money matched / differing / open, its lines
+// to pick, and the chosen line's path.
+function IkInvoiceTrace({ invoiceNumber, lineId, onClose, onOpenTrackTrace }) {
+  const { data, error } = useInkoopInvoiceTrace(invoiceNumber);
+  const [chosen, setChosen] = useState(lineId || "");
+  useEffect(() => { setChosen(lineId || ""); }, [invoiceNumber, lineId]);
+  useEffect(() => {
+    const key = (event) => { if (event.key === "Escape") onClose(); };
+    window.addEventListener("keydown", key);
+    return () => window.removeEventListener("keydown", key);
+  }, [onClose]);
+  const products = (data?.lines || []).filter((line) => line.kind === "product");
+  // No line chosen: the first that needs a look.
+  const line = data ? (data.lines.find((item) => item.id === chosen) || products.find((item) => item.status !== "matched") || products[0] || data.lines[0]) : null;
+  const sum = (status) => products.filter((item) => item.status === status).reduce((total, item) => total + (Number(item.total) || 0), 0);
+  const match = data ? {
+    matched: sum("matched"), matched_lines: products.filter((item) => item.status === "matched").length,
+    differs: sum("differs"), differs_lines: products.filter((item) => item.status === "differs").length, difference: 0,
+    open: products.filter((item) => ["open", "not_linked", "ambiguous"].includes(item.status)).reduce((total, item) => total + (Number(item.total) || 0), 0),
+    open_lines: products.filter((item) => ["open", "not_linked", "ambiguous"].includes(item.status)).length, matched_pct: null,
+  } : null;
+  const king = ikKingText(data?.king);
+  const status = line ? IK_TRACE_STATUS[line.status] || { icon: "·", label: line.status, tone: "" } : null;
+  const destinations = line ? line.lots.flatMap((lot) => lot.destinations) : [];
+  const retour = line ? line.lots.reduce((total, lot) => total + lot.retour_pieces, 0) : 0;
+  const dispatched = line ? line.lots.reduce((total, lot) => total + lot.dispatched_pieces, 0) : 0;
+  return (
+    <div className="ik-drawer wide ik-trace" role="dialog" aria-label={`Trace of ${invoiceNumber}`}>
+      <div className="ik-drawer-head">
+        <strong>🧭 Trace -- <InkoopInvoiceLink invoiceNumber={invoiceNumber} /></strong>
+        <button type="button" onClick={onClose}>Close</button>
+      </div>
+      {error && <div className="notice danger">{error}</div>}
+      {!data && !error && <div className="muted">Loading the trace…</div>}
+      {data && (
+        <>
+          <div className="ik-trace-top">
+            <span title={INKOOP_INVOICE_TYPE_LABELS[data.invoice_type] || data.invoice_type}>{INKOOP_INVOICE_TYPE_ICON[data.invoice_type] || "🧾"} {INKOOP_INVOICE_TYPE_LABELS[data.invoice_type] || data.invoice_type}</span>
+            <span title="The date on the invoice itself">📅 factuurdatum <strong>{data.factuur_date ? fustOverviewDate(data.factuur_date) : "-"}</strong></span>
+            {data.header?.company_number && <span>🏢 {data.header.company_number}{data.header.company_name ? ` ${data.header.company_name}` : ""}</span>}
+            <span title={data.has_pdf ? "The invoice PDF is on the server" : "No PDF on the server -- upload its email again"}>{data.has_pdf ? "📄 PDF" : "✗ no PDF"}</span>
+            <span title={king.title}>💶 King {king.icon}</span>
+            <span className="muted" title={`Uploaded ${data.imported_at ? formatTimestamp(data.imported_at) : ""}`}>⤓ {data.source_file_name || "-"}</span>
+          </div>
+          <div className="ik-trace-money">
+            <IkMatchStack match={match} width={260} />
+            <span>✓ {formatInkoopEuro(match.matched)} ({match.matched_lines})</span>
+            <span>⚠ {formatInkoopEuro(match.differs)} ({match.differs_lines})</span>
+            <span>✗ {formatInkoopEuro(match.open)} ({match.open_lines})</span>
+            <select value={line?.id || ""} onChange={(event) => setChosen(event.target.value)} aria-label="Line">
+              {data.lines.map((item) => (
+                <option key={item.id} value={item.id}>{(IK_TRACE_STATUS[item.status] || {}).icon || "·"} {item.description} · {item.quantity ?? ""} {item.total !== null ? formatInkoopEuro(item.total) : ""}</option>
+              ))}
+            </select>
+          </div>
+          {line && (
+            <>
+              <IkTraceDayAxis points={[
+                { label: "Factuurdatum", short: "🧾", date: data.factuur_date, kind: "invoice" },
+                { label: "The line's day (auction / delivery)", short: "📅", date: line.invoice_date, kind: "line" },
+                ...line.lots.map((lot) => ({ label: `Connect lot ${lot.lot}`, short: "📦", date: lot.date, kind: "lot" })),
+                ...(line.credit ? [{ label: `Credit ${line.credit.invoice_numbers.join(", ")}`, short: "↩", date: line.credit.invoice_date, kind: "credit" }] : []),
+              ]} />
+              <ol className="ik-trace-steps">
+                <IkTraceStep icon="🧾" title="Invoice line" summary={`${line.description} · ${inkoopInvoiceTranscript(line) || formatInkoopEuro(line.total)}`}
+                  tip="What the invoice says: the line's day, brief number, boxes, pieces, price">
+                  <div>Flow <strong>{line.flow}</strong> · grower <strong>{line.grower}</strong>{line.supplier_name ? ` (invoice: ${line.supplier_name})` : ""}</div>
+                  <div className="muted">{[line.supplier_gln && `GLN ${line.supplier_gln}`, line.supplier_fh_number && `FH ${line.supplier_fh_number}`, line.reference_bt && `brief ${line.reference_bt}`, line.your_reference && `Uw ref. ${line.your_reference}`, line.order_number && `ON ${line.order_number}`, line.vbn_code && `VBN ${line.vbn_code}`].filter(Boolean).join(" · ")}</div>
+                  <div className="muted">Line {line.id} · uploaded {line.updated_at ? formatTimestamp(line.updated_at) : "-"} from {line.source_file_name || "-"}</div>
+                </IkTraceStep>
+                <IkTraceStep icon={status.icon} tone={status.tone} title={status.label} summary={line.match_type || line.reason || (line.compared_day ? `compared on ${fustOverviewDate(line.compared_day)}` : "")}
+                  tip="How the comparison paired this line with Connect">
+                  {line.diffs.length ? <div>What differs: {line.diffs.map((diff) => `${diff.field} Connect ${diff.erp} / invoice ${diff.invoice}`).join(" · ")}</div> : null}
+                  {line.reason ? <div className="ik-fu-warn">⚠ {line.reason}</div> : null}
+                  <div className="muted">Compared {line.compared_day ? `as part of ${fustOverviewDate(line.compared_day)}` : "not yet"}</div>
+                </IkTraceStep>
+                {line.lots.length > 0 ? (
+                  <IkTraceStep icon="📦" title={line.lots.length > 1 ? `${line.lots.length} Connect lots` : "Connect lot"} summary={line.lots.length > 1 ? line.lots.map((lot) => lot.lot).join(" + ") : ikTraceLotText(line.lots[0])}
+                    tip="The purchase as Connect booked it, with where its brief number came from">
+                    {line.lots.map((lot) => (
+                      <div key={lot.lot} className="ik-trace-lot">
+                        <div className="ik-con-text">{ikTraceLotText(lot)}</div>
+                        <div className="muted">
+                          {[lot.pav && `brief ${lot.pav}${lot.pav_from === "levering bb" ? " (from Levering BB)" : lot.pav_from && lot.pav_from !== "connect" ? ` (from ${lot.pav_from})` : ""}`, lot.levering_pav && `Levering BB brief ${lot.levering_pav}`,
+                            lot.aanv && `Aanv. ${lot.aanv}`, lot.trnum && `TrNum ${lot.trnum}`, lot.epp && `EPP ${lot.epp}`, lot.order_number && `ON ${lot.order_number}`,
+                            lot.uniware && `Uniware: ${lot.uniware}`, lot.levering?.description && `Levering BB: ${lot.levering.description}`, lot.avc && `Avc ${lot.avc}`].filter(Boolean).join(" · ") || "no extra data"}
+                        </div>
+                      </div>
+                    ))}
+                  </IkTraceStep>
+                ) : line.kind === "product" ? (
+                  <IkTraceStep icon="📦" tone="bad" title="Connect lot" summary="none yet" tip="No Connect lot is paired with this line" />
+                ) : null}
+                {line.lots.length > 0 && (
+                  <IkTraceStep icon="🚚" tone={retour ? "mid" : ""} title="Dispatch" summary={destinations.length ? `${destinations.length} customer(s) · ${dispatched} pcs${retour ? ` · ↩ ${retour} pcs to retour` : ""}` : "no dispatch data for this lot yet"}
+                    tip="Where the stock went (the Connect export's Dispatched to rows)">
+                    {destinations.length ? <IkDestinations destinations={destinations} /> : null}
+                  </IkTraceStep>
+                )}
+                {(line.correction || line.credit) && (
+                  <IkTraceStep icon="↩" title={line.correction ? "Correction" : "Credit"} summary={line.correction ? inkoopCorrectionOf({ ...line, correction: line.correction })?.text.replace("↩ correction: ", "") : ikRetourCreditText(line.credit)}
+                    tip="Credited and invoiced again, or a later credit on the same brief number">
+                    {line.credit ? <div className="ik-credit-in">✓ {ikRetourCreditText(line.credit)}</div> : null}
+                  </IkTraceStep>
+                )}
+                <IkTraceStep icon="📋" title="Follow-up" summary={line.followup.length ? line.followup.map((item) => `${item.department} · ${INKOOP_FU_STATUS_LABEL[item.status] || item.status}${item.resolution ? ` (${ikFuResolutionLabel(item.resolution)})` : ""}${item.category ? ` · ⚑ ${item.category}` : ""}`).join(" | ") : "not in the follow-up"}
+                  tip="Department, status, category and claim of this line">
+                  {line.followup.map((item) => (
+                    <div key={item.id}>
+                      <span className="muted">{item.id}</span>{item.claim_amount !== null && item.claim_amount !== undefined ? ` · claim ${formatInkoopEuro(item.claim_amount)}` : ""}{item.claim_text ? ` -- ${item.claim_text}` : ""}{item.note ? ` · note: ${item.note}` : ""}
+                      {item.updated_at ? <span className="muted"> · {formatTimestamp(item.updated_at)} {item.updated_by}</span> : null}
+                    </div>
+                  ))}
+                </IkTraceStep>
+                <IkTraceStep icon="💶" title="King" summary={king.title.replace("King: ", "")} tip="The journal post of this invoice to King" />
+              </ol>
+              <div className="row-actions">
+                {onOpenTrackTrace && line.grower && line.invoice_date && (
+                  <button type="button" className="primary" onClick={() => onOpenTrackTrace({ grower: line.grower, from: line.invoice_date, to: line.invoice_date })}>↗ Open in Track &amp; Trace</button>
+                )}
+                {data.has_pdf && <a className="button" href={inkoopPdfHref(invoiceNumber)} target="_blank" rel="noreferrer">📄 Open PDF</a>}
+              </div>
+            </>
+          )}
+        </>
+      )}
+    </div>
+  );
+}
+
+// A company's invoices: one row each, a click opens its lines.
+function IkInvoiceList({ company, onTrace }) {
+  const [open, setOpen] = useState("");
+  const invoices = [...company.invoices].sort((left, right) => (Number(right.match?.open) || 0) - (Number(left.match?.open) || 0) || String(right.invoice_date).localeCompare(String(left.invoice_date)));
+  return (
+    <table className="data-table balance-table ik-table ik-inv-invoices">
+      <thead>
+        <tr><th /><th>Factuurdatum</th><th>Invoice</th><th>Lines</th><th>Matched</th><th>Open</th><th>Products</th><th>Emballage</th><th>Fees</th><th>Total</th><th title="King">💶</th></tr>
+      </thead>
+      <tbody>
+        {invoices.map((invoice) => {
+          const key = `${invoice.invoice_number}-${invoice.invoice_type}`;
+          const isOpen = open === key;
+          const king = ikKingText(invoice.king);
+          return (
+            <Fragment key={key}>
+              <tr className="clickable-row" onClick={() => setOpen(isOpen ? "" : key)} onContextMenu={(event) => { event.preventDefault(); onTrace(invoice.invoice_number, ""); }}
+                title="Click: its lines · right-click: its trace">
+                <td>{isOpen ? "▾" : "▸"} <span title={INKOOP_INVOICE_TYPE_LABELS[invoice.invoice_type] || invoice.invoice_type}>{INKOOP_INVOICE_TYPE_ICON[invoice.invoice_type] || "🧾"}</span></td>
                 <td>{fustOverviewDate(invoice.invoice_date)}</td>
-                <td>
+                <td onClick={(event) => event.stopPropagation()}>
                   <InkoopInvoiceLink invoiceNumber={invoice.invoice_number} />
-                  {invoice.has_pdf === false && <span className="money-loss" title="No PDF of this invoice on the server -- upload its email again"> ✗ no PDF</span>}
+                  {invoice.has_pdf === false && <span className="money-loss" title="No PDF of this invoice on the server -- upload its email again"> ✗ PDF</span>}
                 </td>
-                <td>{INKOOP_INVOICE_TYPE_LABELS[invoice.invoice_type] || invoice.invoice_type || "-"}</td>
+                <td>{invoice.line_count}</td>
+                <td><IkMatchStack match={invoice.match} width={90} /> <span className="muted">{invoice.match?.matched_pct === null || invoice.match?.matched_pct === undefined ? "" : `${invoice.match.matched_pct}%`}</span></td>
+                <td>{invoice.match?.open ? <span className="money-loss">{formatInkoopEuro(invoice.match.open)}</span> : invoice.match ? "✓" : ""}</td>
                 <td>{formatInkoopEuro(invoice.products)}</td>
                 <td>{formatInkoopEuro(invoice.emballage)}</td>
                 <td>{formatInkoopEuro(invoice.fees)}</td>
                 <td><strong>{formatInkoopEuro(invoice.total)}</strong></td>
-                <td>{invoice.line_count}</td>
+                <td title={king.title}>{king.icon}</td>
               </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
-    </InkoopCollapsibleCard>
+              {isOpen && <tr className="ik-tree-panel"><td colSpan={11}><IkInvoiceLines invoiceNumber={invoice.invoice_number} onTrace={onTrace} /></td></tr>}
+            </Fragment>
+          );
+        })}
+      </tbody>
+    </table>
   );
 }
 
-// Inkoop Controle's first page: what each buying company was invoiced in a
-// date range -- totals split by invoice type, plus each company's invoices.
-function InkoopOverviewTab() {
+function InkoopOverviewTab({ onOpenTrackTrace = null }) {
   // By factuurdatum; this month by default, so it lines up with the month's
   // invoices as finance receives them.
   const [toDate, setToDate] = useState(() => todayIso());
@@ -15917,9 +16220,17 @@ function InkoopOverviewTab() {
     setFromDate(`${month}-01`);
     setToDate(`${month}-${String(lastDay).padStart(2, "0")}`);
   };
+  const shiftMonth = (step) => {
+    const [year, month] = fromDate.slice(0, 7).split("-").map(Number);
+    const date = new Date(year, month - 1 + step, 1);
+    pickMonth(`${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}`);
+  };
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
+  const [openCompany, setOpenCompany] = useState("");
+  const [trace, setTrace] = useState(null);
+  const closeTrace = useCallback(() => setTrace(null), []);
 
   useEffect(() => {
     let cancelled = false;
@@ -15933,63 +16244,103 @@ function InkoopOverviewTab() {
   }, [fromDate, toDate]);
 
   const companies = data?.companies || [];
-  const types = ["klokfactuur", "connect", "handel", "handel_verkoop", "dienst", "ai2"].filter((type) => companies.some((company) => company.by_type[type]));
   const grand = companies.reduce((sum, company) => ({
     invoice_count: sum.invoice_count + company.invoice_count,
     total: sum.total + company.total,
     products: sum.products + company.products,
     emballage: sum.emballage + company.emballage,
     fees: sum.fees + company.fees,
-  }), { invoice_count: 0, total: 0, products: 0, emballage: 0, fees: 0 });
+    matched: sum.matched + (company.match?.matched || 0) + (company.match?.differs || 0),
+    open: sum.open + (company.match?.open || 0),
+  }), { invoice_count: 0, total: 0, products: 0, emballage: 0, fees: 0, matched: 0, open: 0 });
+  const grandPct = grand.matched + grand.open > 0 ? (grand.matched / (grand.matched + grand.open)) * 100 : null;
+  const thisMonth = todayIso().slice(0, 7);
+  const lastMonthDate = new Date(Number(thisMonth.slice(0, 4)), Number(thisMonth.slice(5, 7)) - 2, 1);
+  const lastMonth = `${lastMonthDate.getFullYear()}-${String(lastMonthDate.getMonth() + 1).padStart(2, "0")}`;
+  const onTrace = (invoiceNumber, lineId) => setTrace({ invoiceNumber, lineId });
 
   return (
     <>
-      <div className="data-table-card">
-        <div className="section-header"><h2>Invoices per company</h2></div>
-        <div className="form-grid">
-          <label><span>Month (factuurdatum)</span><input type="month" value={fromDate.slice(0, 7)} onChange={(event) => pickMonth(event.target.value)} /></label>
-          <label><span>From factuurdatum</span><input type="date" value={fromDate} onChange={(event) => setFromDate(event.target.value)} /></label>
-          <label><span>To factuurdatum</span><input type="date" value={toDate} onChange={(event) => setToDate(event.target.value)} /></label>
-        </div>
-        <div className="notice">
-          Invoices are listed by their <strong>factuurdatum</strong> (the date on the invoice itself), not by the dates of the products or services on it. Each invoice's total is taken from its own summary lines (Product aankopen, Emballage, fees), so the detail lines behind them are not counted twice. For AI2 Productnota's the products and emballage come from the nota's own "Financieel overzicht".
+      <div className="data-table-card ik-card">
+        <div className="ik-filterbar ik-inv-bar">
+          <div className="ik-filter-group">
+            <button type="button" className={`ik-chip${fromDate === `${thisMonth}-01` ? " on" : ""}`} onClick={() => { setFromDate(`${thisMonth}-01`); setToDate(todayIso()); }}>This month</button>
+            <button type="button" className={`ik-chip${fromDate === `${lastMonth}-01` ? " on" : ""}`} onClick={() => pickMonth(lastMonth)}>Last month</button>
+            <button type="button" className="ik-chip" onClick={() => shiftMonth(-1)} title="The month before">‹</button>
+            <strong className="ik-inv-month">{new Date(`${fromDate.slice(0, 7)}-01T00:00:00`).toLocaleDateString("en-GB", { month: "long", year: "numeric" })}</strong>
+            <button type="button" className="ik-chip" onClick={() => shiftMonth(1)} title="The month after">›</button>
+          </div>
+          <div className="ik-filter-group">
+            <input type="date" className="ik-date-sm" value={fromDate} onChange={(event) => setFromDate(event.target.value)} aria-label="From factuurdatum" />
+            <span className="muted">–</span>
+            <input type="date" className="ik-date-sm" value={toDate} onChange={(event) => setToDate(event.target.value)} aria-label="To factuurdatum" />
+            <span className="ik-info" title={"Invoices are listed by their factuurdatum (the date on the invoice itself), not by the dates of the products or services on it. Each invoice's total is taken from its own summary lines (Product aankopen, Emballage, fees), so the detail lines behind them are not counted twice. For AI2 Productnota's the products and emballage come from the nota's own Financieel overzicht.\n\nMatched: the product lines the comparison paired with a Connect lot (figures that differ included); open: the ones without."}>ⓘ</span>
+          </div>
+          <div className="ik-filter-group" style={{ marginLeft: "auto" }}>
+            <IkRing pct={grandPct} size={44} label="" />
+            <span><strong>{grand.invoice_count}</strong> invoices · <strong>{formatInkoopEuro(grand.total)}</strong>{grand.open ? <span className="money-loss"> · ✗ {formatInkoopEuro(grand.open)} open</span> : null}</span>
+          </div>
         </div>
         {error && <div className="notice danger">{error}</div>}
-        {/* Another period was picked: say so right away and fade the old
-            figures, so nobody reads them as the new period's. */}
         {loading && data && <div className="notice info">Loading {fustOverviewDate(fromDate)} - {fustOverviewDate(toDate)}... the figures below are still those of {fustOverviewDate(data.from)} - {fustOverviewDate(data.to)}.</div>}
         {loading && !data ? <div className="notice">Loading invoices...</div> : (
           <div className="table-wrap" style={loading ? { opacity: 0.35, pointerEvents: "none" } : undefined} aria-busy={loading}>
-            <table className="data-table">
+            <table className="data-table balance-table ik-table ik-inv-companies">
               <thead>
                 <tr>
-                  <th>Company</th><th>Invoices</th>
-                  {types.map((type) => <th key={type}>{INKOOP_INVOICE_TYPE_LABELS[type]}</th>)}
-                  <th>Products</th><th>Emballage</th><th>Fees</th><th>Total</th><th>Days</th>
+                  <th>Company</th><th>Flows</th><th>Matched / open</th><th>Products</th><th>Emballage</th><th>Fees</th><th>Total</th><th>Days</th>
                 </tr>
               </thead>
               <tbody>
-                {companies.map((company) => (
-                  <tr key={company.company_number || "unknown"}>
-                    <td>{company.company_number || "?"}{company.company_name ? ` - ${company.company_name}` : ""}</td>
-                    <td>{company.invoice_count}</td>
-                    {types.map((type) => (
-                      <td key={type}>
-                        {company.by_type[type] ? `${formatInkoopEuro(company.by_type[type].total)} (${company.by_type[type].invoice_count})` : "-"}
-                      </td>
-                    ))}
-                    <td>{formatInkoopEuro(company.products)}</td>
-                    <td>{formatInkoopEuro(company.emballage)}</td>
-                    <td>{formatInkoopEuro(company.fees)}</td>
-                    <td><strong>{formatInkoopEuro(company.total)}</strong></td>
-                    <td>{company.first_date ? `${fustOverviewDate(company.first_date)} - ${fustOverviewDate(company.last_date)}` : "-"}</td>
-                  </tr>
-                ))}
+                {companies.map((company) => {
+                  const key = company.company_number || "unknown";
+                  const isOpen = openCompany === key;
+                  const flowParts = Object.entries(company.by_type || {}).map(([type, entry]) => ({
+                    label: `${INKOOP_INVOICE_TYPE_LABELS[type] || type} (${entry.invoice_count})`, value: Number(entry.total) || 0,
+                    color: INKOOP_FLOW_COLORS[INKOOP_INVOICE_TYPE_FLOW[type] || "Other"],
+                  }));
+                  return (
+                    <Fragment key={key}>
+                      <tr className="clickable-row ik-inv-company" onClick={() => setOpenCompany(isOpen ? "" : key)} title="Click: its invoices">
+                        <td>
+                          <span className="ik-inv-company-name">
+                            <IkRing pct={company.match?.matched_pct ?? null} size={46} label="" />
+                            <span>
+                              <strong>{isOpen ? "▾" : "▸"} {company.company_number || "?"}{company.company_name ? ` - ${company.company_name}` : ""}</strong>
+                              <small className="muted">
+                                {company.invoice_count} invoice(s)
+                                {company.without_pdf ? <span className="money-loss" title="Invoices without a PDF on the server"> · ✗ {company.without_pdf} without PDF</span> : null}
+                                <span title="Sent to King / delivered"> · 💶 {company.king?.delivered || 0}/{company.invoice_count}</span>
+                              </small>
+                            </span>
+                          </span>
+                        </td>
+                        <td>
+                          <IkSplitBar parts={flowParts} />
+                          <small className="muted">{flowParts.map((part) => part.label).join(" · ")}</small>
+                        </td>
+                        <td>
+                          <IkMatchStack match={company.match} width={130} />
+                          <small className="ik-inv-chips">
+                            <span title="Matched">✓ {formatInkoopEuro(company.match?.matched || 0)}</span>
+                            {company.match?.differs ? <span title="Matched, figures differ"> ⚠ {formatInkoopEuro(company.match.differs)}</span> : null}
+                            {company.match?.open ? <span className="money-loss" title="No Connect lot"> ✗ {formatInkoopEuro(company.match.open)}</span> : null}
+                          </small>
+                        </td>
+                        <td>{formatInkoopEuro(company.products)}</td>
+                        <td>{formatInkoopEuro(company.emballage)}</td>
+                        <td>{formatInkoopEuro(company.fees)}</td>
+                        <td><strong>{formatInkoopEuro(company.total)}</strong></td>
+                        <td className="muted">{company.first_date ? `${fustOverviewDate(company.first_date)} – ${fustOverviewDate(company.last_date)}` : "-"}</td>
+                      </tr>
+                      {isOpen && <tr className="ik-tree-panel"><td colSpan={8}><IkInvoiceList company={company} onTrace={onTrace} /></td></tr>}
+                    </Fragment>
+                  );
+                })}
                 {!!companies.length && (
-                  <tr>
-                    <td><strong>All companies</strong></td>
-                    <td><strong>{grand.invoice_count}</strong></td>
-                    {types.map((type) => <td key={type} />)}
+                  <tr className="ik-inv-total">
+                    <td><strong>All companies · {grand.invoice_count} invoices</strong></td>
+                    <td /><td />
                     <td><strong>{formatInkoopEuro(grand.products)}</strong></td>
                     <td><strong>{formatInkoopEuro(grand.emballage)}</strong></td>
                     <td><strong>{formatInkoopEuro(grand.fees)}</strong></td>
@@ -15997,13 +16348,13 @@ function InkoopOverviewTab() {
                     <td />
                   </tr>
                 )}
-                {!companies.length && <tr><td colSpan={7 + types.length}>No invoices uploaded for this period yet.</td></tr>}
+                {!companies.length && <tr><td colSpan={8}>No invoices uploaded for this period yet.</td></tr>}
               </tbody>
             </table>
           </div>
         )}
       </div>
-      {!loading && companies.map((company) => <InkoopCompanyInvoiceList key={company.company_number || "unknown"} company={company} />)}
+      {trace && <IkInvoiceTrace invoiceNumber={trace.invoiceNumber} lineId={trace.lineId} onClose={closeTrace} onOpenTrackTrace={onOpenTrackTrace ? (target) => { setTrace(null); onOpenTrackTrace(target); } : null} />}
     </>
   );
 }
@@ -20949,7 +21300,7 @@ function InkoopControlePage({ currentUser }) {
         <div className="section-header fust-section-nav">
           <h2>{INKOOP_SETUP_KEYS.has(activeTab) ? <span className="muted">Setup › </span> : null}{INKOOP_TAB_TITLES[activeTab] || activeTab}</h2>
           <div className="row-actions">
-            {activeTab === "tracktrace" && ttReturn && <button type="button" className="primary" onClick={backToFollowup}>← Back to {ttReturn.tab === "trace" ? "Dashboard" : "Follow-up"}</button>}
+            {activeTab === "tracktrace" && ttReturn && <button type="button" className="primary" onClick={backToFollowup}>← Back to {ttReturn.tab === "trace" ? "Dashboard" : ttReturn.tab === "overview" ? "Invoices overview" : "Follow-up"}</button>}
             {INKOOP_SETUP_KEYS.has(activeTab) && <button type="button" onClick={() => setActiveTab("setup")}>Setup</button>}
             <button type="button" onClick={() => setActiveTab("")}>Inkoop menu</button>
           </div>
@@ -21126,7 +21477,7 @@ function InkoopControlePage({ currentUser }) {
       </>
       )}
 
-      {activeTab === "overview" && <InkoopOverviewTab />}
+      {activeTab === "overview" && <InkoopOverviewTab onOpenTrackTrace={(target) => openTrackTrace("overview", target)} />}
 
       {activeTab === "king" && <InkoopKingTab />}
       {activeTab === "connectdata" && <InkoopDataDaysCard />}

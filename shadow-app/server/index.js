@@ -59,6 +59,11 @@ import {
   getInkoopCreditLinesByPav,
   getInkoopInvoiceSupplierIdentities,
   getInkoopAi2LinesWithoutBoxes,
+  getInkoopInvoiceMatchFigures,
+  getKingExportsByInvoice,
+  getInkoopInvoiceTraceLines,
+  getInkoopTraceLots,
+  getInkoopInvoiceMatchDays,
   setInkoopInvoiceLineBoxes,
   getInkoopMatchDays,
   getInkoopPeriodReport,
@@ -13214,6 +13219,133 @@ function inkoopFollowupWeeks({ from, to, items, statusById, events, claims, depa
   return { weeks: rows, top_growers: [...growers.values()].sort((left, right) => right.value - left.value).slice(0, 10) };
 }
 
+// The status of a stored result list, as the overview names it.
+const INKOOP_TRACE_STATUS = {
+  matched_ok: "matched", matched_mismatch: "differs", only_in_invoice: "open", supplier_not_linked: "not_linked",
+  ambiguous_matches: "ambiguous", embalage_lines: "emballage", fee_lines: "fee",
+};
+
+async function buildInkoopInvoiceTrace(invoiceNumber) {
+  const state = await readInkoopState();
+  const { lines, header } = await getInkoopInvoiceTraceLines(invoiceNumber);
+  if (!lines.length && !header) throw new Error(`Invoice ${invoiceNumber} is not in the uploaded invoices.`);
+  // Each line's row in its day's stored comparison (by its id; a corrected
+  // line by the id of one of its own lines).
+  const dates = [...new Set(lines.map((line) => line.invoice_date).filter(Boolean))].sort();
+  // The days the comparison kept this invoice's lines under (a matched line
+  // is under its lot's day), and the lines' own days.
+  const storedDays = [...new Set([...(await getInkoopInvoiceMatchDays(invoiceNumber).catch(() => [])), ...dates])].sort();
+  const rowByLine = new Map();
+  for (const date of storedDays) {
+    const [day] = await loadStoredInkoopDays(state, date, date);
+    if (!day?.result) continue;
+    for (const [list, status] of Object.entries(INKOOP_TRACE_STATUS)) {
+      for (const row of day.result[list] || []) {
+        const ids = [row?.id, ...(Array.isArray(row?.correction_lines) ? row.correction_lines.map((step) => step?.id) : [])].filter(Boolean);
+        for (const id of ids) if (!rowByLine.has(id)) rowByLine.set(id, { row, status, day: date });
+      }
+    }
+  }
+  // A line not found by its id (stored under another id): the row of this
+  // invoice with its product, pieces and total, not taken by another line.
+  const usedRows = new Set([...rowByLine.values()].map((entry) => entry.row));
+  const missing = lines.filter((line) => !rowByLine.has(line.id) && line.quantity !== null && line.quantity !== undefined);
+  if (missing.length) {
+    const candidates = [];
+    for (const date of storedDays) {
+      const [day] = await loadStoredInkoopDays(state, date, date);
+      for (const [list, status] of Object.entries(INKOOP_TRACE_STATUS)) {
+        for (const row of day?.result?.[list] || []) {
+          if (usedRows.has(row) || !String(row?.invoice_number || "").split(" + ").includes(invoiceNumber)) continue;
+          candidates.push({ row, status, day: date });
+        }
+      }
+    }
+    for (const line of missing) {
+      const hit = candidates.find((entry) => !usedRows.has(entry.row)
+        && normalizeUkdocsText(entry.row.description) === normalizeUkdocsText(line.description)
+        && !inkoopValuesDiffer(Number(entry.row.quantity), Number(line.quantity)) && !inkoopValuesDiffer(Number(entry.row.total), Number(line.total)));
+      if (!hit) continue;
+      usedRows.add(hit.row);
+      rowByLine.set(line.id, hit);
+    }
+  }
+  const lotNumbers = new Set();
+  for (const { row } of rowByLine.values()) {
+    for (const lot of [...(row.split_lots || []), ...String(row.erp_row?.lot ?? "").split("+")]) if (String(lot).trim()) lotNumbers.add(String(lot).trim());
+  }
+  const [lotRows, dispatchLots, statuses] = await Promise.all([
+    getInkoopTraceLots([...lotNumbers]),
+    getInkoopDispatchLotsByLots([...lotNumbers]),
+    getInkoopIssueStatuses(),
+  ]);
+  const lotByNumber = new Map(lotRows.map((lot) => [String(lot.lot), lot]));
+  const dispatchByLot = new Map(dispatchLots.map((lot) => [String(lot.lot), lot]));
+  const statusById = new Map(statuses.map((row) => [row.id, row]));
+  const manualPairs = state.manual_line_pairs || [];
+  const view = inkoopOverviewNaming(state);
+  const pavs = lines.map((line) => line.reference_bt).filter(Boolean);
+  const credits = await getInkoopCreditLinesByPav(pavs, dates[0] || null).catch(() => []);
+  const traced = lines.map((rawLine) => {
+    // The invoice's own totals ("Product aankopen", no pieces) are no product line.
+    const line = rawLine.kind === "product" && (rawLine.quantity === null || rawLine.quantity === undefined) ? { ...rawLine, kind: "summary" } : rawLine;
+    const found = rowByLine.get(line.id);
+    const row = found?.row || null;
+    const lots = row ? [...new Set([...(row.split_lots || []), ...String(row.erp_row?.lot ?? "").split("+")].map((lot) => String(lot).trim()).filter(Boolean))] : [];
+    const lotDetails = lots.map((lot) => {
+      const stored = lotByNumber.get(lot) || {};
+      const { destinations } = inkoopCorrectionRetourStatusForLot(dispatchByLot.get(lot), state.customer_map);
+      return {
+        lot, date: String(stored.date || "").slice(0, 10), code: normalizeUkdocsText(stored.suppl), avc: normalizeUkdocsText(stored.avc), transp: normalizeUkdocsText(stored.transp),
+        description: normalizeUkdocsText(stored.description), pieces: Number(stored.pieces) || null, items: Number(stored.items) || null, cont: Number(stored.cont) || null,
+        price: Number(stored.price) || null, total: Number(stored.t_price) || null, pav: normalizeUkdocsText(stored.pav),
+        pav_from: normalizeUkdocsText(stored.pav_from) || (normalizeUkdocsText(stored.pav) ? "connect" : ""), levering_pav: normalizeUkdocsText(stored.levering_pav),
+        aanv: normalizeUkdocsText(stored.uniware_aanv || stored.epp?.aanv), trnum: normalizeUkdocsText(stored.uniware_trnum || stored.epp?.trnum),
+        epp: normalizeUkdocsText(stored.uniware_epp || stored.epp?.epp), order_number: normalizeUkdocsText(stored.uniware_order || stored.epp?.order_number),
+        uniware: normalizeUkdocsText(stored.uniware_description || stored.epp?.description), levering: stored.levering ? { pav: stored.levering.pav, description: stored.levering.description, file: stored.levering.source_file_name } : null,
+        destinations, retour_pieces: destinations.filter((dest) => dest.is_retour).reduce((sum, dest) => sum + dest.pieces, 0),
+        dispatched_pieces: destinations.reduce((sum, dest) => sum + dest.pieces, 0),
+      };
+    });
+    const ids = [`gap_invoice:${line.id}`, ...lots.map((lot) => `mismatch:${lot}`), `claim:inv:${line.id}`, ...lots.map((lot) => `claim:lot:${lot}`)];
+    const followup = ids.map((id) => statusById.get(id)).filter(Boolean).map((stored) => ({ id: stored.id, ...inkoopFollowupWithStatus({}, stored) }));
+    const manual = manualPairs.find((pair) => pair.invoice_line_ids.includes(line.id));
+    const pav = normalizeUkdocsText(line.reference_bt);
+    const credit = pav ? inkoopRetourCreditOf(credits.filter((item) => inkoopPavBase(item.pav) === inkoopPavBase(pav) && item.invoice_number !== line.invoice_number), line.invoice_date) : null;
+    return {
+      ...line,
+      packages: line.packages === null ? null : Number(line.packages), per_package: line.per_package === null ? null : Number(line.per_package),
+      status: line.kind === "summary" ? "summary" : row ? found.status : line.kind === "product" ? "not_compared" : line.kind,
+      compared_day: found?.day || "",
+      match_type: row ? (manual ? `linked by hand${manual.by ? ` by ${manual.by}` : ""}${manual.note ? ` -- ${manual.note}` : ""}` : row.supplier_match_type || (row.matched_as_split_delivery ? "split delivery" : row.matched_as_group ? "matched as a group" : pav ? "brief number" : "")) : "",
+      diffs: Array.isArray(row?.diffs) ? row.diffs.map((diff) => ({ field: diff.field, erp: diff.erp, invoice: diff.invoice })) : [],
+      reason: row && ["open", "not_linked", "ambiguous"].includes(found.status) ? (found.status === "not_linked" ? "grower not linked to a Connect code" : found.status === "ambiguous" ? "more than one lot fits" : pav ? "no free Connect lot with this brief number" : "no Connect lot with these pieces and price") : "",
+      correction: row?.matched_as_correction && Array.isArray(row.correction_lines) && row.correction_lines.length > 1
+        ? row.correction_lines.map((step) => ({ id: step.id, invoice_number: step.invoice_number, invoice_date: String(step.invoice_date || "").slice(0, 10), quantity: step.quantity, packages: step.packages, per_package: step.per_package, total: step.total }))
+        : null,
+      grower: view.growerOf(row ? { supplier_code: normalizeUkdocsText(row.supplier_code || row.erp_row?.suppl), supplier_name: normalizeUkdocsText(line.supplier_name) } : { supplier_name: normalizeUkdocsText(line.supplier_name) }),
+      flow: inkoopOverviewFlow({ invoice_type: line.invoice_type, invoice_number: line.invoice_number }),
+      lots: lotDetails,
+      followup,
+      credit,
+    };
+  });
+  const king = (await getKingExportsByInvoice([invoiceNumber]).catch(() => []))[0] || null;
+  const hasPdf = existsSync(inkoopInvoicePdfPath(invoiceNumber)) || existsSync(inkoopInvoicePdfPath(invoiceNumber.replace(/\s*\(\d+\)\s*$/, "")));
+  return {
+    invoice_number: invoiceNumber,
+    header: header ? { ...header } : null,
+    invoice_type: header?.invoice_type || lines[0]?.invoice_type || "",
+    factuur_date: header?.invoice_date || dates[0] || "",
+    line_dates: dates,
+    source_file_name: header?.source_file_name || lines[0]?.source_file_name || "",
+    imported_at: header?.imported_at || lines[0]?.imported_at || "",
+    has_pdf: hasPdf,
+    king,
+    lines: traced,
+  };
+}
+
 // A correction's follow-up id: its brief number, else its invoice(s).
 function inkoopCorrectionFollowupId(check) {
   return `correction:${normalizeUkdocsText(check?.pav) || normalizeUkdocsText(check?.invoice_number)}`;
@@ -26226,11 +26358,70 @@ async function handleApi(req, res, url) {
     // Whether each invoice's PDF is on the server now (not cached: a
     // re-upload adds it).
     const hasPdf = (number) => existsSync(inkoopInvoicePdfPath(number)) || existsSync(inkoopInvoicePdfPath(String(number || "").replace(/\s*\(\d+\)\s*$/, "")));
-    const companies = (inkoopSummaryCache.get(cacheKey) || []).map((company) => ({
-      ...company,
-      invoices: (company.invoices || []).map((invoice) => ({ ...invoice, has_pdf: hasPdf(invoice.invoice_number) })),
-    }));
+    // How each invoice's lines matched, and King -- read each time (not
+    // cached): a new comparison or a send shows at once.
+    const cached = inkoopSummaryCache.get(cacheKey) || [];
+    const numbers = cached.flatMap((company) => (company.invoices || []).map((invoice) => invoice.invoice_number));
+    const [figures, kingRows] = await Promise.all([
+      getInkoopInvoiceMatchFigures(numbers).catch(() => []),
+      getKingExportsByInvoice(numbers).catch(() => []),
+    ]);
+    const round = (value) => Math.round((Number(value) || 0) * 100) / 100;
+    const matchOf = new Map();
+    for (const row of figures) {
+      const entry = matchOf.get(row.invoice_number) || { matched: 0, matched_lines: 0, differs: 0, differs_lines: 0, difference: 0, open: 0, open_lines: 0 };
+      if (row.list === "matched_ok") { entry.matched += row.invoice_value; entry.matched_lines += row.lines; }
+      else if (row.list === "matched_mismatch") { entry.differs += row.invoice_value; entry.differs_lines += row.lines; entry.difference += row.difference; }
+      else if (["only_in_invoice", "supplier_not_linked", "ambiguous_matches"].includes(row.list)) { entry.open += row.invoice_value; entry.open_lines += row.lines; }
+      matchOf.set(row.invoice_number, entry);
+    }
+    const kingOf = new Map(kingRows.map((row) => [row.invoice_number, row]));
+    const withMatch = (match) => {
+      const base = match.matched + match.differs + match.open;
+      return { ...Object.fromEntries(Object.entries(match).map(([key, value]) => [key, round(value)])), matched_pct: base > 0 ? Math.round(((match.matched + match.differs) / base) * 1000) / 10 : null };
+    };
+    const companies = cached.map((company) => {
+      const invoices = (company.invoices || []).map((invoice) => {
+        const king = kingOf.get(invoice.invoice_number);
+        return {
+          ...invoice,
+          has_pdf: hasPdf(invoice.invoice_number),
+          match: matchOf.has(invoice.invoice_number) ? withMatch(matchOf.get(invoice.invoice_number)) : null,
+          king: king ? { status: king.status, stuknummer: king.stuknummer, delivered_at: king.delivered_at, exported_at: king.exported_at } : null,
+        };
+      });
+      const total = invoices.reduce((sum, invoice) => {
+        if (!invoice.match) return sum;
+        for (const key of Object.keys(sum)) sum[key] += Number(invoice.match[key]) || 0;
+        return sum;
+      }, { matched: 0, matched_lines: 0, differs: 0, differs_lines: 0, difference: 0, open: 0, open_lines: 0 });
+      return {
+        ...company,
+        invoices,
+        match: withMatch(total),
+        king: { delivered: invoices.filter((invoice) => invoice.king?.delivered_at || invoice.king?.status === "delivered").length, sent: invoices.filter((invoice) => invoice.king).length },
+        without_pdf: invoices.filter((invoice) => !invoice.has_pdf).length,
+      };
+    });
     sendJson(res, 200, { from, to, companies });
+    return;
+  }
+
+  // One invoice traced: its lines, and per product line what the comparison
+  // made of it (from its day's stored result), the Connect lot(s) with the
+  // night action / Levering BB, where the stock was dispatched, the
+  // follow-up, a later credit and King. Read only.
+  if (url.pathname === "/api/inkoop/invoice-trace" && req.method === "GET") {
+    if (!requirePermission(res, requestUser, PERMISSIONS.INKOOP_VIEW)) {
+      return;
+    }
+    try {
+      const invoiceNumber = normalizeUkdocsText(url.searchParams.get("invoice")).slice(0, 80);
+      if (!invoiceNumber) throw new Error("Which invoice?");
+      sendJson(res, 200, await buildInkoopInvoiceTrace(invoiceNumber));
+    } catch (error) {
+      sendJson(res, 400, { error: error instanceof Error ? error.message : String(error) });
+    }
     return;
   }
 

@@ -854,6 +854,89 @@ export async function setInkoopInvoiceLineBoxes(rows) {
   return updated;
 }
 
+// Invoices overview: per invoice how its lines matched (the stored match
+// lines; a correction's "A + B" counts for each of its invoices).
+export async function getInkoopInvoiceMatchFigures(invoiceNumbers) {
+  const numbers = [...new Set((invoiceNumbers || []).map((number) => String(number || "").trim()).filter(Boolean))];
+  if (!pool || !numbers.length) return [];
+  const result = await pool.query(
+    `SELECT number AS invoice_number, m.list, COUNT(*)::int AS lines,
+            COALESCE(SUM(m.invoice_total), 0)::float8 AS invoice_value,
+            COALESCE(SUM(m.difference_total), 0)::float8 AS difference
+       FROM inkoop_match_rows m
+       CROSS JOIN LATERAL unnest(string_to_array(m.invoice_number, ' + ')) AS number
+      WHERE m.invoice_number <> '' AND number = ANY($1::text[])
+      GROUP BY 1, 2`,
+    [numbers],
+  );
+  return result.rows;
+}
+
+// King per invoice (what was sent, delivered, its stuknummer).
+export async function getKingExportsByInvoice(invoiceNumbers) {
+  const numbers = [...new Set((invoiceNumbers || []).map((number) => String(number || "").trim()).filter(Boolean))];
+  if (!pool || !numbers.length) return [];
+  const result = await pool.query(
+    `SELECT invoice_number, batch_id, stuknummer, status, exported_by, exported_at, delivered_at, error_text
+       FROM king_exports WHERE invoice_number = ANY($1::text[])`,
+    [numbers],
+  );
+  return result.rows;
+}
+
+// One invoice's own lines (every kind), its header and where it came from.
+export async function getInkoopInvoiceTraceLines(invoiceNumber) {
+  if (!pool || !invoiceNumber) return { lines: [], header: null };
+  const [lines, header] = await Promise.all([
+    pool.query(
+      `SELECT l.id, l.invoice_number, l.invoice_type, to_char(l.invoice_date, 'YYYY-MM-DD') AS invoice_date, l.reference_bt, l.description,
+              l.supplier_name, l.supplier_gln, l.supplier_fh_number, l.quantity::float8 AS quantity, l.unit_price::float8 AS unit_price, l.total::float8 AS total,
+              l.raw->>'packages' AS packages, l.raw->>'per_package' AS per_package, l.raw->>'your_reference' AS your_reference, l.raw->>'order_number' AS order_number,
+              l.raw->>'vbn_code' AS vbn_code, l.source_file_name, l.imported_at, l.updated_at, ${INKOOP_LINE_KIND_SQL} AS kind
+         FROM inkoop_invoice_lines l WHERE l.invoice_number = $1
+        ORDER BY COALESCE(NULLIF(substring(l.id from '#([0-9]+)$'), '')::int, 0), l.id`,
+      [invoiceNumber],
+    ),
+    pool.query(
+      `SELECT invoice_number, invoice_type, company_number, company_name, to_char(invoice_date, 'YYYY-MM-DD') AS invoice_date,
+              grand_total::float8 AS grand_total, klok_location, source_file_name, imported_at
+         FROM inkoop_invoice_headers WHERE invoice_number = $1`,
+      [invoiceNumber],
+    ),
+  ]);
+  return { lines: lines.rows, header: header.rows[0] || null };
+}
+
+// The days whose stored comparison holds lines of this invoice (a matched
+// line is kept under its lot's day, which can be a few days off the line's).
+export async function getInkoopInvoiceMatchDays(invoiceNumber) {
+  if (!pool || !invoiceNumber) return [];
+  const result = await pool.query(
+    `SELECT DISTINCT to_char(m.match_date, 'YYYY-MM-DD') AS date
+       FROM inkoop_match_rows m
+      WHERE m.invoice_number <> '' AND $1 = ANY(string_to_array(m.invoice_number, ' + '))
+      ORDER BY 1`,
+    [invoiceNumber],
+  );
+  return result.rows.map((row) => row.date);
+}
+
+// Some Connect lots as the matcher reads them, with the night action and
+// Levering BB of each.
+export async function getInkoopTraceLots(lotNumbers) {
+  const lots = [...new Set((lotNumbers || []).map((lot) => numberOrNull(lot)).filter((lot) => lot !== null))];
+  if (!pool || !lots.length) return [];
+  const result = await pool.query(
+    `SELECT e.row || jsonb_build_object('lot', e.lot::text) AS row,
+            to_jsonb(epp) - 'lot' AS epp, to_jsonb(bb) - 'lot' AS levering
+       FROM (SELECT lot, ${ERP_LINE_RAW_SQL} AS row FROM inkoop_erp_lines WHERE lot = ANY($1::bigint[])) e
+       LEFT JOIN inkoop_lot_epp epp ON epp.lot = e.lot
+       LEFT JOIN inkoop_levering_bb bb ON bb.lot = e.lot`,
+    [lots],
+  );
+  return result.rows.map((row) => ({ ...row.row, epp: row.epp || null, levering: row.levering || null }));
+}
+
 export async function getInkoopLeveringBbDays(lots, pavs) {
   if (!pool || (!lots?.length && !pavs?.length)) return [];
   const result = await pool.query(

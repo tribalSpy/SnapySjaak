@@ -4194,3 +4194,62 @@ button.ik-kpi:hover {
   color: var(--x-b45309, #b45309);
   font-size: 0.85rem;
 }
+
+/* ---- Invoices overview: company rows, invoices, lines, the trace ---- */
+.ik-inv-bar { flex-wrap: wrap; gap: 10px 16px; align-items: center; }
+.ik-inv-month { min-width: 9.5em; text-align: center; }
+.ik-date-sm { width: 9.6em; padding: 3px 6px; font-size: 0.85rem; }
+.ik-info { cursor: help; color: var(--ik-muted); border: 1px solid var(--ik-border); border-radius: 999px; width: 1.4em; height: 1.4em; display: inline-flex; align-items: center; justify-content: center; font-size: 0.8rem; }
+.ik-inv-company-name { display: inline-flex; align-items: center; gap: 10px; }
+.ik-inv-company-name > span { display: grid; gap: 2px; }
+.ik-inv-company .ik-ring { flex: none; }
+.ik-inv-company .ik-ring-label small { display: none; }
+.ik-inv-company .ik-ring-label strong { font-size: 0.72rem; }
+.ik-inv-chips { display: flex; gap: 8px; margin-top: 3px; white-space: nowrap; }
+.ik-inv-stack { display: inline-flex; gap: 2px; height: 9px; border-radius: 4px; overflow: hidden; background: var(--ik-track); vertical-align: middle; }
+.ik-inv-stack-part { display: block; height: 100%; }
+.ik-inv-stack-part.good { background: var(--ik-good); }
+.ik-inv-stack-part.mid { background: var(--ik-warn); }
+.ik-inv-stack-part.bad { background: var(--ik-bad); }
+.ik-inv-invoices { margin: 4px 0 4px 18px; width: calc(100% - 18px); }
+.ik-inv-lines { margin-left: 18px; }
+.ik-inv-line td { padding-top: 3px; padding-bottom: 3px; }
+.ik-inv-status { width: 1.6em; text-align: center; font-weight: 700; }
+.ik-inv-status.good { color: var(--ik-good); }
+.ik-inv-status.mid { color: var(--ik-warn); }
+.ik-inv-status.bad { color: var(--ik-bad); }
+.ik-inv-total td { border-top: 2px solid var(--ik-border); }
+
+.ik-trace { width: min(760px, 96vw); }
+.ik-trace-top { display: flex; flex-wrap: wrap; gap: 6px 14px; align-items: center; margin-bottom: 8px; }
+.ik-trace-money { display: flex; flex-wrap: wrap; gap: 6px 14px; align-items: center; padding: 8px 0; border-top: 1px solid var(--ik-border); border-bottom: 1px solid var(--ik-border); }
+.ik-trace-money select { margin-left: auto; max-width: 100%; }
+.ik-trace-axis { display: block; margin: 8px 0 2px; }
+.ik-trace-axis-line { stroke: var(--ik-track); stroke-width: 2; }
+.ik-trace-axis-text { fill: var(--ik-muted); font-size: 10px; }
+.ik-trace-dot { stroke: var(--ik-surface); stroke-width: 2; }
+.ik-trace-dot.invoice { fill: var(--ik-invoice); }
+.ik-trace-dot.line { fill: var(--ik-accent); }
+.ik-trace-dot.lot { fill: var(--ik-connect); }
+.ik-trace-dot.credit { fill: var(--ik-good); }
+.ik-trace-steps { list-style: none; margin: 6px 0 10px; padding: 0; position: relative; }
+.ik-trace-steps::before { content: ""; position: absolute; left: 13px; top: 8px; bottom: 8px; width: 2px; background: var(--ik-track); }
+.ik-trace-step { display: flex; gap: 10px; align-items: flex-start; padding: 4px 0; position: relative; }
+.ik-trace-icon { flex: none; width: 28px; height: 28px; border-radius: 999px; background: var(--ik-surface-2); border: 1px solid var(--ik-border); display: inline-flex; align-items: center; justify-content: center; font-size: 0.9rem; z-index: 1; }
+.ik-trace-step.good .ik-trace-icon { border-color: var(--ik-good); color: var(--ik-good); }
+.ik-trace-step.mid .ik-trace-icon { border-color: var(--ik-warn); color: var(--ik-warn); }
+.ik-trace-step.bad .ik-trace-icon { border-color: var(--ik-bad); color: var(--ik-bad); }
+.ik-trace-body { min-width: 0; flex: 1; }
+.ik-trace-head { background: none; border: none; padding: 4px 0; text-align: left; color: inherit; cursor: pointer; width: 100%; font: inherit; }
+.ik-trace-head:disabled { cursor: default; }
+.ik-trace-head span { color: var(--ik-text-2); }
+.ik-trace-detail { padding: 4px 0 6px; display: grid; gap: 4px; font-size: 0.88rem; }
+.ik-trace-lot { padding: 4px 0; border-bottom: 1px dashed var(--ik-border); }
+table.data-table.balance-table.ik-table.ik-inv-companies td, table.data-table.balance-table.ik-table.ik-inv-companies th,
+table.data-table.balance-table.ik-table.ik-inv-invoices td, table.data-table.balance-table.ik-table.ik-inv-invoices th,
+.ik-inv-lines table.data-table.balance-table.ik-table td { text-align: left; }
+table.data-table.balance-table.ik-table.ik-inv-companies td:nth-child(n+4), table.data-table.balance-table.ik-table.ik-inv-companies th:nth-child(n+4),
+table.data-table.balance-table.ik-table.ik-inv-invoices td:nth-child(n+7), table.data-table.balance-table.ik-table.ik-inv-invoices th:nth-child(n+7) { text-align: right; }
+.ik-inv-companies td small, .ik-inv-companies .ik-split { display: block; }
+.ik-inv-companies .ik-split { width: 150px; margin-bottom: 3px; }
+.ik-inv-line .ik-inv-text, .ik-inv-line .ik-con-text { max-width: 560px; }
