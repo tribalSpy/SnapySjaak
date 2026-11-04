@@ -57,6 +57,7 @@ import {
   searchInkoopErpLines,
   getInkoopCorrectionLines,
   getInkoopCreditLinesByPav,
+  getInkoopInvoiceSupplierIdentities,
   getInkoopMatchDays,
   getInkoopPeriodReport,
   inkoopDataTableDefinitions,
@@ -10250,6 +10251,7 @@ async function runInkoopImport(body, createdBy) {
   // The per-invoice totals (Overview) of the invoices in this upload.
   await refreshInkoopInvoiceTotals(flatInvoiceLines.map((line) => line?.invoice_number))
     .catch((totalsError) => console.error("Refreshing invoice totals failed:", totalsError instanceof Error ? totalsError.message : totalsError));
+  if (flatInvoiceLines.length) refreshInkoopInvoiceNameCodesLater();
   bumpInkoopMatchVersion();
   await saveInkoopInvoiceHeaders(buildInkoopInvoiceHeaders(veiling.invoices, body?.veiling_zip?.name));
   inkoopSummaryCache.clear(); // the Overview dates invoices by these headers
@@ -11033,6 +11035,40 @@ function inkoopOverviewFlow(row) {
 // A stored match line's grower (the name of its code, else the invoice's
 // own name) and betaalwijze (its code's; an invoice line without one: A for
 // AI2, else V) -- the overview table's grouping.
+// An invoice grower's Connect code(s) by its name, through the GLN / FH
+// numbers its invoices carry (Berglisianthus GLN 8713782567556 -> BERGLI in
+// the stamgegevens): an open invoice line with a brief number is stored
+// without a code, and its name alone only finds links made by hand -- it
+// showed as a grower of its own, apart from its Connect lots. Only a name
+// whose GLN / FH numbers all give the same code(s). Kept in memory, made
+// again at start, after an invoice upload and after a change of the links
+// or the stamgegevens.
+let inkoopInvoiceNameCodes = new Map();
+
+async function refreshInkoopInvoiceNameCodes() {
+  const state = await readInkoopState();
+  const byName = new Map();
+  for (const row of await getInkoopInvoiceSupplierIdentities()) {
+    const key = normalizeInkoopSupplierName(row.supplier_name);
+    if (!key) continue;
+    const resolved = resolveInkoopSupplierCode(row.supplier_gln, row.supplier_fh_number, row.supplier_name, state.supplier_map, state.supplier_name_map, state.manual_supplier_links, state.supplier_fh_map);
+    const codes = [...new Set((resolved.codes || []).map((code) => normalizeInkoopKey(code)).filter(Boolean))].sort().join("/");
+    if (!byName.has(key)) byName.set(key, new Set());
+    byName.get(key).add(codes);
+  }
+  const next = new Map();
+  for (const [key, sets] of byName) {
+    const found = [...sets].filter(Boolean);
+    if (found.length === 1) next.set(key, found[0].split("/"));
+  }
+  inkoopInvoiceNameCodes = next;
+  return next.size;
+}
+
+function refreshInkoopInvoiceNameCodesLater() {
+  refreshInkoopInvoiceNameCodes().catch((error) => console.error("Inkoop grower names by GLN failed:", error instanceof Error ? error.message : error));
+}
+
 function inkoopOverviewNaming(state) {
   const codeToName = buildInkoopCodeNameMap(state.supplier_map, state.supplier_name_map, state.supplier_fh_map, state.facturation_groups);
   // An invoice line without a lot is stored without a code: its grower by
@@ -11043,6 +11079,11 @@ function inkoopOverviewNaming(state) {
   for (const link of state.manual_supplier_links || []) {
     const key = normalizeInkoopSupplierName(link?.name);
     if (key && link?.codes?.length && !codesByName.has(key)) codesByName.set(key, link.codes.map((code) => normalizeInkoopKey(code)));
+  }
+  // Then the GLN / FH numbers on the invoices of that name (stamgegevens,
+  // links by GLN), then the stamgegevens' names.
+  for (const [key, codes] of inkoopInvoiceNameCodes) {
+    if (!codesByName.has(key)) codesByName.set(key, codes);
   }
   for (const [name, entry] of Object.entries(state.supplier_name_map || {})) {
     const key = normalizeInkoopSupplierName(name);
@@ -13192,6 +13233,7 @@ async function writeInkoopState(state) {
   inkoopStateCache = null;
   await writeJsonFile(inkoopStatePath, normalizeInkoopState(state));
   bumpInkoopMatchVersion();
+  refreshInkoopInvoiceNameCodesLater();
   // Changed master data: the stored comparison of every day is redone in
   // the background (nothing happens when only the import history changed).
   markInkoopMatchDaysStaleForCurrentState().catch((error) => console.error("Marking Inkoop days to redo failed:", error instanceof Error ? error.message : error));
@@ -29342,6 +29384,7 @@ async function connectDatabaseAtStart() {
   try {
     await initializeDatabase();
     console.log("Postgres is connected and ready.");
+    refreshInkoopInvoiceNameCodesLater();
     return true;
   } catch (error) {
     console.error("Postgres initialization failed:", error instanceof Error ? error.message : String(error));

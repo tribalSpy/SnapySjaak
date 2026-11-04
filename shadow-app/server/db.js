@@ -806,6 +806,20 @@ export async function saveInkoopLeveringBbLinked(rows, sourceFileName = "") {
 
 // Which Connect days a Levering BB file belongs to: its lots (by number)
 // and its "gekoppeld" rows (by the lots' own brief number), per day.
+// Every invoice grower as the invoices write it: its name with the GLN / FH
+// numbers its lines carry (the grower naming resolves the name's Connect
+// code through them).
+export async function getInkoopInvoiceSupplierIdentities() {
+  if (!pool) return [];
+  const result = await pool.query(
+    `SELECT supplier_name, COALESCE(supplier_gln, '') AS supplier_gln, COALESCE(supplier_fh_number, '') AS supplier_fh_number
+       FROM inkoop_invoice_lines
+      WHERE COALESCE(btrim(supplier_name), '') <> ''
+      GROUP BY 1, 2, 3`,
+  );
+  return result.rows;
+}
+
 export async function getInkoopLeveringBbDays(lots, pavs) {
   if (!pool || (!lots?.length && !pavs?.length)) return [];
   const result = await pool.query(
