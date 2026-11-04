@@ -19016,6 +19016,15 @@ function InkoopTrackTraceWorkspace({ bar, setBar, overview, company, matchRound 
         />
       )}
       <IkFollowupResolveMenu menu={menu} onPick={menu?.claimOnly ? null : verifyFromTrace} onClose={closeMenu} departments={fuSettings?.departments || []}
+        categories={fuSettings?.categories || []}
+        onFollow={menu?.claimOnly ? null : async (list, changes, label) => {
+          setIssueError("");
+          try {
+            if (await inkoopFollowupFollow(list, changes, label)) setIssueRound((value) => value + 1);
+          } catch (followError) {
+            setIssueError(followError.message);
+          }
+        }}
         onClaim={async (list, to, label) => {
           setIssueError("");
           try {
@@ -19033,7 +19042,7 @@ function InkoopTrackTraceWorkspace({ bar, setBar, overview, company, matchRound 
 // links / resolves it or moves it to Inkoop or Finance (with a reason); a
 // category ("High control") keeps slow cases on their own page.
 const INKOOP_FU_STATUS_LABEL = { open: "Open", investigating: "Investigating", claimed: "Claimed", resolved: "Resolved" };
-const INKOOP_FU_ACTION_LABEL = { status: "status", department: "moved", category: "category", due_date: "due date", note: "note", assigned_to: "who's checking", comment: "comment", claim_id: "claim", resolution: "verified as" };
+const INKOOP_FU_ACTION_LABEL = { status: "status", department: "moved", category: "category", due_date: "due date", note: "note", assigned_to: "who's checking", comment: "comment", claim_id: "claim", resolution: "verified as", claim_amount: "claim amount", claim_text: "claim agreed" };
 // How a resolved line was verified (Geverifieerd); the server has the same list.
 const INKOOP_FU_RESOLUTIONS = [["transport", "Transport/levering kosten"], ["invoice_diff", "Afwijking van invoice"], ["other_costs", "Overige kosten"], ["vervanger", "Vervanger"]];
 const ikFuResolutionLabel = (key) => (INKOOP_FU_RESOLUTIONS.find(([value]) => value === key) || [])[1] || key || "";
@@ -19188,8 +19197,8 @@ async function inkoopFollowupClaim(list, department, label) {
     });
   }
   const note = `Claim -- supplier credits later: ${agreed.trim()}`;
-  if (followed.length) await inkoopFollowupUpdate(followed, { department, status: "claimed" }, note);
-  if (claims.length) await inkoopFollowupUpdate(claims, { department, status: "claimed" }, note);
+  if (followed.length) await inkoopFollowupUpdate(followed, { department, status: "claimed", claim_text: agreed.trim() }, note);
+  for (const item of claims) await inkoopFollowupUpdate([item], { department, status: "claimed", claim_text: agreed.trim(), claim_amount: item.money_diff }, note);
   return true;
 }
 
@@ -19245,13 +19254,14 @@ async function inkoopFollowupFollow(list, changes, label) {
 // with its history. A move or "resolved" asks for a reason. Shared by the
 // Follow-up menu and Track & Trace.
 function IkFollowupDrawer({ item, invoiceText, lotText, settings, onClose, onSaved }) {
-  const [draft, setDraft] = useState(() => ({ status: item.status || "open", department: item.department || "control", category: item.category || "", due_date: item.due_date || "", note: item.note || "", resolution: item.resolution || "" }));
+  const claimOf = (line) => ({ claim_amount: line.claim_amount === null || line.claim_amount === undefined ? "" : String(line.claim_amount), claim_text: line.claim_text || "" });
+  const [draft, setDraft] = useState(() => ({ status: item.status || "open", department: item.department || "control", category: item.category || "", due_date: item.due_date || "", note: item.note || "", resolution: item.resolution || "", ...claimOf(item) }));
   const [reason, setReason] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [events, setEvents] = useState(null);
   useEffect(() => {
-    setDraft({ status: item.status || "open", department: item.department || "control", category: item.category || "", due_date: item.due_date || "", note: item.note || "", resolution: item.resolution || "" });
+    setDraft({ status: item.status || "open", department: item.department || "control", category: item.category || "", due_date: item.due_date || "", note: item.note || "", resolution: item.resolution || "", ...claimOf(item) });
     setReason("");
     setError("");
     apiJson(`/api/inkoop/followup/history?id=${encodeURIComponent(item.id)}`).then((payload) => setEvents(payload.events || [])).catch(() => setEvents([]));
@@ -19264,6 +19274,9 @@ function IkFollowupDrawer({ item, invoiceText, lotText, settings, onClose, onSav
   if (draft.due_date !== (item.due_date || "")) changes.due_date = draft.due_date;
   if (draft.note !== (item.note || "")) changes.note = draft.note;
   if (draft.status === "resolved" && draft.resolution !== (item.resolution || "")) changes.resolution = draft.resolution;
+  const isClaim = item.status === "claimed" || item.type === "claim" || draft.status === "claimed";
+  if (isClaim && draft.claim_amount !== claimOf(item).claim_amount) changes.claim_amount = draft.claim_amount;
+  if (isClaim && draft.claim_text !== claimOf(item).claim_text) changes.claim_text = draft.claim_text;
   // A kind of Geverifieerd is its own reason.
   const needsReason = changes.department !== undefined || (changes.status === "resolved" && !draft.resolution);
   async function save() {
@@ -19320,6 +19333,18 @@ function IkFollowupDrawer({ item, invoiceText, lotText, settings, onClose, onSav
           {(settings?.categories || []).map((category) => <option key={category.name} value={category.name}>{category.name}</option>)}
         </select>
       </label>
+      {isClaim && (
+        <div className="ik-fu-claim-edit">
+          <strong>📝 Claim -- the supplier credits later</strong>
+          <label>Amount to be credited (€)
+            <input inputMode="decimal" value={draft.claim_amount} placeholder={String(Math.abs(Number(item.money_diff) || 0))} onChange={(event) => setDraft((current) => ({ ...current, claim_amount: event.target.value }))} />
+          </label>
+          <label>What was agreed
+            <textarea rows={3} value={draft.claim_text} onChange={(event) => setDraft((current) => ({ ...current, claim_text: event.target.value }))} />
+          </label>
+          {item.credit && <div className="ik-credit-in">✓ {ikRetourCreditText(item.credit)}</div>}
+        </div>
+      )}
       <label>Due date<input type="date" value={draft.due_date} onChange={(event) => setDraft((current) => ({ ...current, due_date: event.target.value }))} /></label>
       <label>Note<textarea rows={3} value={draft.note} onChange={(event) => setDraft((current) => ({ ...current, note: event.target.value }))} /></label>
       {needsReason && (
@@ -20053,7 +20078,10 @@ function InkoopFollowupWorkspace({ bar, onOpenTrackTrace, onOpenConnectData, mat
   const departments = settings?.departments || data?.departments || [];
   const countBy = (key) => items.filter((item) => item.department === key).length;
   const valueBy = (key) => items.filter((item) => item.department === key).reduce((sum, item) => sum + Math.abs(Number(item.money_diff) || 0), 0);
-  const shown = category || claimsTab ? [...items].sort((left, right) => ikFollowupAgeDays(right) - ikFollowupAgeDays(left)) : items.filter((item) => item.department === department);
+  const listed = claimsTab
+    ? items.map((item) => ({ ...item, money_diff: item.claim_amount ?? item.money_diff, reason: item.claim_text ? `Claim: ${item.claim_text}` : item.reason }))
+    : items;
+  const shown = category || claimsTab ? [...listed].sort((left, right) => ikFollowupAgeDays(right) - ikFollowupAgeDays(left)) : items.filter((item) => item.department === department);
   async function follow(list, changes, label) {
     setQuickError("");
     try {
@@ -20135,7 +20163,7 @@ function InkoopFollowupWorkspace({ bar, onOpenTrackTrace, onOpenConnectData, mat
         <button type="button" className="link-button" onClick={() => setEditCategories((value) => !value)}>{editCategories ? "Close categories" : "Categories…"}</button>
       </div>
       {editCategories && settings && <IkFollowupCategoryEditor settings={settings} onSaved={() => { reloadSettings(); setEditCategories(false); reload(); }} />}
-      {!category && waiting.length > 0 && (
+      {!category && !claimsTab && waiting.length > 0 && (
         <div className="notice info ik-fu-waiting">
           ⏳ {waiting.length} day(s) not in the follow-up yet -- their data is not complete:{" "}
           {waiting.slice(0, 8).map((day) => `${fustOverviewDate(day.date)} (${day.state === "hold" ? "on hold" : day.missing.map((key) => fileLabel[key] || key).join(", ")}${day.lines ? `, ${day.lines} lines` : ""})`).join(" · ")}

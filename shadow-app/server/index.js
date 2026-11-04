@@ -13051,6 +13051,8 @@ function inkoopFollowupWithStatus(item, stored, last) {
     note: stored?.note || "",
     claim_id: stored?.claim_id || "",
     resolution: stored?.status === "resolved" ? stored?.resolution || "" : "",
+    claim_amount: stored?.claim_amount === null || stored?.claim_amount === undefined ? null : Number(stored.claim_amount),
+    claim_text: stored?.claim_text || "",
     earlier_assigned: stored?.assigned_to || "",
     opened_at: stored?.opened_at || "",
     updated_by: stored?.updated_by || "",
@@ -27200,6 +27202,8 @@ async function handleApi(req, res, url) {
           due_date: stored?.due_day || "",
           claim_id: stored?.claim_id || "",
           resolution: stored?.status === "resolved" ? stored?.resolution || "" : "",
+          claim_amount: stored?.claim_amount === null || stored?.claim_amount === undefined ? null : Number(stored.claim_amount),
+          claim_text: stored?.claim_text || "",
         };
       });
       const filtered = showResolved ? merged : merged.filter((issue) => issue.status !== "resolved");
@@ -27240,6 +27244,7 @@ async function handleApi(req, res, url) {
         const rows = statuses.filter((row) => (claimsOnly ? isClaim(row) : row.category === category));
         const { byDate, pending: notReady } = await inkoopFollowupItemsForDates(state, rows.map((row) => row.item_day).filter(Boolean));
         pending = notReady;
+        const notComputed = new Set(notReady);
         const found = new Map();
         for (const list of byDate.values()) for (const item of list) found.set(item.id, item);
         items = rows.map((row) => {
@@ -27248,6 +27253,9 @@ async function handleApi(req, res, url) {
           // Not open any more in its day's comparison (matched / linked since);
           // a line from the Corrections tab lives on its snapshot.
           if (row.snapshot && INKOOP_FOLLOWUP_EXTRA_TYPES.has(row.issue_type)) return { ...row.snapshot, id: row.id };
+          // A category / claim is not held back by its day's data: a day
+          // being compared (again) shows the line as it was saved.
+          if (row.snapshot && notComputed.has(row.item_day)) return { ...row.snapshot, id: row.id };
           return row.snapshot ? { ...row.snapshot, id: row.id, gone: true } : { id: row.id, type: row.issue_type, day: row.item_day || "", date: row.item_day || "", grower: "", description: row.id, gone: true };
         });
       } else {
@@ -27326,6 +27334,12 @@ async function handleApi(req, res, url) {
         changes.due_date = input.due_date ? inkoopIsoDate(input.due_date) : "";
       }
       if (input.note !== undefined) changes.note = String(input.note || "").trim().slice(0, 2000);
+      if (input.claim_amount !== undefined) {
+        const amount = input.claim_amount === "" || input.claim_amount === null ? "" : Number(String(input.claim_amount).replace(",", "."));
+        if (amount !== "" && !Number.isFinite(amount)) throw new Error("Claim amount: a number");
+        changes.claim_amount = amount === "" ? "" : String(Math.round(amount * 100) / 100);
+      }
+      if (input.claim_text !== undefined) changes.claim_text = String(input.claim_text || "").trim().slice(0, 2000);
       // Verified as transport / invoice difference / other costs: resolved,
       // with that kind as the reason when none is typed. Back to open (or
       // investigating) takes the kind off.

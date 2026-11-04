@@ -2628,7 +2628,7 @@ export async function insertInkoopFollowupEvents(events, client = pool) {
   await client.query(`INSERT INTO inkoop_followup_events (item_id, claim_id, by_user, action, from_value, to_value, note) VALUES ${placeholders.join(", ")}`, values);
 }
 
-const INKOOP_FOLLOWUP_FIELDS = ["status", "department", "category", "due_date", "note", "claim_id", "resolution"];
+const INKOOP_FOLLOWUP_FIELDS = ["status", "department", "category", "due_date", "note", "claim_id", "resolution", "claim_amount", "claim_text"];
 
 // Change follow-up lines (one or many): only the fields given change; each
 // change is a history row with the note (a move to another department
@@ -2653,6 +2653,8 @@ export async function updateInkoopFollowupItems(items, changes, { by = "", note 
         note: before.note || "",
         claim_id: before.claim_id || "",
         resolution: before.resolution || "",
+        claim_amount: before.claim_amount === null || before.claim_amount === undefined ? "" : String(Number(before.claim_amount)),
+        claim_text: before.claim_text || "",
       };
       const next = { ...current };
       for (const field of fields) next[field] = String(changes[field] ?? "");
@@ -2665,17 +2667,19 @@ export async function updateInkoopFollowupItems(items, changes, { by = "", note 
         events.push({ item_id: item.id, by, action: "comment", to: note });
       }
       const row = (await client.query(
-        `INSERT INTO inkoop_issue_status (id, issue_type, status, assigned_to, note, updated_by, updated_at, department, category, due_date, claim_id, opened_at, item_date, snapshot, resolution)
-         VALUES ($1, $2, $3, $4, $5, $6, now(), $7, $8, $9::date, $10, now(), $11::date, $12::jsonb, $13)
+        `INSERT INTO inkoop_issue_status (id, issue_type, status, assigned_to, note, updated_by, updated_at, department, category, due_date, claim_id, opened_at, item_date, snapshot, resolution, claim_amount, claim_text)
+         VALUES ($1, $2, $3, $4, $5, $6, now(), $7, $8, $9::date, $10, now(), $11::date, $12::jsonb, $13, $14::numeric, $15)
          ON CONFLICT (id) DO UPDATE SET status = EXCLUDED.status, note = EXCLUDED.note, updated_by = EXCLUDED.updated_by, updated_at = now(),
            department = EXCLUDED.department, category = EXCLUDED.category, due_date = EXCLUDED.due_date, claim_id = EXCLUDED.claim_id,
            opened_at = COALESCE(inkoop_issue_status.opened_at, EXCLUDED.opened_at),
            item_date = COALESCE(EXCLUDED.item_date, inkoop_issue_status.item_date),
            snapshot = COALESCE(EXCLUDED.snapshot, inkoop_issue_status.snapshot),
-           resolution = EXCLUDED.resolution
+           resolution = EXCLUDED.resolution,
+           claim_amount = EXCLUDED.claim_amount, claim_text = EXCLUDED.claim_text
          RETURNING *, to_char(due_date, 'YYYY-MM-DD') AS due_day, to_char(item_date, 'YYYY-MM-DD') AS item_day`,
         [item.id, String(item.id).split(":")[0] || "", next.status, before.assigned_to || "", next.note, by, next.department === "control" && !before.department ? null : next.department,
-          next.category || null, next.due_date || null, next.claim_id || null, item.date || null, item.snapshot ? JSON.stringify(item.snapshot) : null, next.resolution || null],
+          next.category || null, next.due_date || null, next.claim_id || null, item.date || null, item.snapshot ? JSON.stringify(item.snapshot) : null, next.resolution || null,
+          next.claim_amount === "" ? null : Number(next.claim_amount), next.claim_text || null],
       )).rows[0];
       saved.push(row);
     }
@@ -4419,6 +4423,10 @@ const databaseMigrations = [
   // How a resolved line was verified (Geverifieerd): transport / invoice_diff
   // / other_costs -- the Verified tab sums them per kind.
   `ALTER TABLE IF EXISTS inkoop_issue_status ADD COLUMN IF NOT EXISTS resolution text`,
+  // A claim (the supplier credits later): the amount to be credited and what
+  // was agreed, changeable afterwards.
+  `ALTER TABLE IF EXISTS inkoop_issue_status ADD COLUMN IF NOT EXISTS claim_amount numeric`,
+  `ALTER TABLE IF EXISTS inkoop_issue_status ADD COLUMN IF NOT EXISTS claim_text text`,
   // Every change of a follow-up line or claim: who, when, what (from -> to)
   // and why -- for the bank. Never cleared by "start fresh".
   `
