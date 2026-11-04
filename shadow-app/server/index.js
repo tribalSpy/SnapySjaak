@@ -56,6 +56,7 @@ import {
   searchInkoopInvoiceLines,
   searchInkoopErpLines,
   getInkoopCorrectionLines,
+  getInkoopCreditLinesByPav,
   getInkoopMatchDays,
   getInkoopPeriodReport,
   inkoopDataTableDefinitions,
@@ -12740,6 +12741,112 @@ const INKOOP_FOLLOWUP_RESOLUTIONS = [
 ];
 const INKOOP_FOLLOWUP_COLORS = ["red", "amber", "blue", "purple", "teal", "grey"];
 const INKOOP_FOLLOWUP_TYPES = new Set(["mismatch", "gap_invoice", "gap_erp"]);
+// Lines sent to the follow-up from the Corrections tab: a Connect lot booked
+// to a retour customer (waiting for its credit, "retour:<lot>") or a
+// correction of the check ("correction:<brief number>"); and a claim on any
+// line, also a matched one, from Search / Track & Trace -- a customer's
+// claim the supplier will credit later ("claim:lot:<lot>",
+// "claim:inv:<invoice line>"). They are no comparison line, so they live on
+// their saved snapshot.
+const INKOOP_FOLLOWUP_EXTRA_TYPES = new Set(["retour", "correction", "claim"]);
+const INKOOP_FOLLOWUP_EXTRA_FLOWS = { retour: "Retour", correction: "Correction", claim: "Claim" };
+
+// The snapshot of such a line as the Corrections tab sends it, only the
+// known fields.
+function inkoopFollowupExtraSnapshot(id, input, view = null) {
+  const type = String(id).split(":")[0];
+  if (!INKOOP_FOLLOWUP_EXTRA_TYPES.has(type) || !input || typeof input !== "object") return null;
+  const text = (value, max = 200) => normalizeUkdocsText(value).slice(0, max);
+  const number = (value) => (value === null || value === undefined || value === "" || !Number.isFinite(Number(value)) ? null : Math.round(Number(value) * 100) / 100);
+  const day = inkoopIsoDate(input.day) || "";
+  const lot = input.lot && typeof input.lot === "object" ? {
+    lot: text(input.lot.lot, 40), date: inkoopIsoDate(input.lot.date) || "", pav: text(input.lot.pav, 40), suppl: text(input.lot.suppl, 40), description: text(input.lot.description),
+    pieces: number(input.lot.pieces), price: number(input.lot.price), total: number(input.lot.total), items: null, cont: null,
+  } : null;
+  const invoice = input.invoice && typeof input.invoice === "object" ? {
+    id: text(input.invoice.id, 120), quantity: number(input.invoice.quantity), unit_price: number(input.invoice.unit_price), total: number(input.invoice.total),
+    packages: number(input.invoice.packages), per_package: number(input.invoice.per_package), reference: text(input.invoice.reference, 60),
+    invoice_type: text(input.invoice.invoice_type, 20), company: text(input.invoice.company, 20), supplier_name: text(input.invoice.supplier_name),
+  } : null;
+  // A line from Search has its grower's code / name only: named as the
+  // overview names it.
+  const named = view && (lot?.suppl || invoice?.supplier_name)
+    ? view.growerOf(lot?.suppl ? { list: "only_in_erp", supplier_code: lot.suppl } : { supplier_name: invoice.supplier_name })
+    : "";
+  return {
+    id, type, day, date: day, grower: text(input.grower) || named, bw: text(input.bw, 4), description: text(input.description), invoice_number: text(input.invoice_number, 80),
+    flow: INKOOP_FOLLOWUP_EXTRA_FLOWS[type],
+    value: number(input.value) || 0, invoice_value: number(input.invoice_value) || 0, connect_value: number(input.connect_value) || 0, money_diff: number(input.money_diff) || 0,
+    invoice, lot, retour_pieces: number(input.retour_pieces), reason: text(input.reason, 300),
+  };
+}
+
+// A retour lot's (or a claim's) credit, once an invoice has one on its
+// brief number.
+const inkoopCreditPavOf = (item) => (item.type === "retour" || item.type === "claim" ? item.lot?.pav || item.invoice?.reference || "" : "");
+
+async function inkoopAttachRetourCredits(items) {
+  const retour = items.filter((item) => inkoopCreditPavOf(item));
+  if (!retour.length) return items;
+  const from = retour.map((item) => item.day).filter(Boolean).sort()[0] || null;
+  const lines = await getInkoopCreditLinesByPav(retour.map(inkoopCreditPavOf), from);
+  const byBase = new Map();
+  for (const line of lines) {
+    const base = inkoopPavBase(line.pav);
+    byBase.set(base, [...(byBase.get(base) || []), line]);
+  }
+  return items.map((item) => {
+    const pav = inkoopCreditPavOf(item);
+    if (!pav) return item;
+    // A claim on a line that was credited and invoiced again the same day
+    // (a correction) would find that credit: only the credits after its day.
+    const credit = inkoopRetourCreditOf((byBase.get(inkoopPavBase(pav)) || []).filter((line) => item.type !== "claim" || String(line.invoice_date || "") > String(item.day || "")), item.lot?.date || item.day);
+    return credit ? { ...item, credit } : item;
+  });
+}
+
+// The credit lines of one lot from its day on (a few days earlier counts):
+// the invoices, pieces and money credited.
+function inkoopRetourCreditOf(lines, day) {
+  const after = lines.filter((line) => !day || String(line.invoice_date || "") >= addDaysToIsoDate(day, -INKOOP_DAY_TOLERANCE_DAYS));
+  if (!after.length) return null;
+  return {
+    invoice_numbers: [...new Set(after.map((line) => line.invoice_number).filter(Boolean))],
+    invoice_date: after[after.length - 1].invoice_date,
+    pieces: Math.round(after.reduce((sum, line) => sum + Math.min(0, Number(line.quantity) || 0), 0) * 100) / 100,
+    total: Math.round(after.reduce((sum, line) => sum + Math.min(0, Number(line.total) || 0), 0) * 100) / 100,
+  };
+}
+
+// The Connect lots of a period that went (partly) to a retour (119)
+// customer: booked to retour, so a credit is expected -- with the credit
+// once an invoice has it.
+async function inkoopRetourDispatchRows(state, range) {
+  const excludedCodes = new Set(inkoopExcludedErpCodes(state));
+  const view = inkoopOverviewNaming(state);
+  const rows = [];
+  for (const lot of await getInkoopDispatchLots(range)) {
+    if (!lot?.erp_day || excludedCodes.has(normalizeInkoopKey(lot?.suppl))) continue;
+    const { destinations } = inkoopCorrectionRetourStatusForLot(lot, state.customer_map);
+    const retourPieces = destinations.filter((dest) => dest.is_retour).reduce((sum, dest) => sum + dest.pieces, 0);
+    if (!(retourPieces > 0)) continue;
+    const date = lot.erp_day;
+    const stored = { list: "only_in_erp", supplier_code: normalizeUkdocsText(lot.suppl), supplier_name: "" };
+    const value = Math.round(inkoopDispatchValueShare(lot, retourPieces) * 100) / 100;
+    const pieces = Math.round(retourPieces * 100) / 100;
+    rows.push({
+      id: `retour:${lot.lot}`, type: "retour", day: date, date, grower: view.growerOf(stored), bw: view.bwOf(stored),
+      description: normalizeUkdocsText(lot.description), invoice_number: "", flow: "Retour",
+      value, invoice_value: 0, connect_value: value, money_diff: value,
+      lot: { lot: String(lot.lot), date, pav: normalizeUkdocsText(lot.pav), suppl: normalizeUkdocsText(lot.suppl), description: normalizeUkdocsText(lot.description),
+        pieces: Number(lot.pieces) || 0, price: Number(lot.price) || 0, total: Number(lot.t_price) || 0, items: null, cont: null },
+      retour_pieces: pieces,
+      destinations,
+      reason: `${pieces} pcs to retour (${destinations.filter((dest) => dest.is_retour).map((dest) => dest.code).join(", ")}) -- waiting for the credit`,
+    });
+  }
+  return (await inkoopAttachRetourCredits(rows)).sort((left, right) => right.day.localeCompare(left.day) || left.grower.localeCompare(right.grower));
+}
 
 function normalizeInkoopFollowupSettings(value) {
   const seen = new Set();
@@ -12927,6 +13034,11 @@ function inkoopFollowupWeeks({ from, to, items, statusById, events, claims, depa
     growers.set(item.grower, entry);
   }
   return { weeks: rows, top_growers: [...growers.values()].sort((left, right) => right.value - left.value).slice(0, 10) };
+}
+
+// A correction's follow-up id: its brief number, else its invoice(s).
+function inkoopCorrectionFollowupId(check) {
+  return `correction:${normalizeUkdocsText(check?.pav) || normalizeUkdocsText(check?.invoice_number)}`;
 }
 
 function inkoopFollowupWithStatus(item, stored, last) {
@@ -27129,7 +27241,9 @@ async function handleApi(req, res, url) {
         items = rows.map((row) => {
           const item = found.get(row.id);
           if (item) return item;
-          // Not open any more in its day's comparison (matched / linked since).
+          // Not open any more in its day's comparison (matched / linked since);
+          // a line from the Corrections tab lives on its snapshot.
+          if (row.snapshot && INKOOP_FOLLOWUP_EXTRA_TYPES.has(row.issue_type)) return { ...row.snapshot, id: row.id };
           return row.snapshot ? { ...row.snapshot, id: row.id, gone: true } : { id: row.id, type: row.issue_type, day: row.item_day || "", date: row.item_day || "", grower: "", description: row.id, gone: true };
         });
       } else {
@@ -27141,6 +27255,12 @@ async function handleApi(req, res, url) {
           return;
         }
         ({ items, waiting, pending } = period);
+        // The lines sent from the Corrections tab (retour lots, corrections)
+        // of the period.
+        for (const row of statuses) {
+          if (!INKOOP_FOLLOWUP_EXTRA_TYPES.has(row.issue_type) || !row.snapshot || !row.item_day || row.item_day < from || row.item_day > to) continue;
+          items.push({ ...row.snapshot, id: row.id });
+        }
         if (url.searchParams.get("verified") === "1") {
           const have = new Set(items.map((item) => item.id));
           for (const row of statuses) {
@@ -27150,6 +27270,7 @@ async function handleApi(req, res, url) {
         }
       }
       if (grower) items = items.filter((item) => String(item.grower || "").toLowerCase().includes(grower));
+      items = await inkoopAttachRetourCredits(items);
       let merged = items.map((item) => inkoopFollowupWithStatus(item, statusById.get(item.id)));
       if (category) merged = merged.filter((item) => item.category === category);
       if (statusFilter === "open") merged = merged.filter((item) => item.status !== "resolved" && !item.gone);
@@ -27219,11 +27340,15 @@ async function handleApi(req, res, url) {
         throw new Error(changes.department !== undefined ? "Moving a line to another department needs a reason." : "Resolving a line needs a short note (how it was solved).");
       }
       // What each line looked like, kept with it.
+      const view = inkoopOverviewNaming(state);
       const { byDate } = await inkoopFollowupItemsForDates(state, list.map((item) => inkoopIsoDate(item.day)).filter(Boolean));
       const found = new Map();
       for (const items of byDate.values()) for (const item of items) found.set(item.id, item);
       const saved = await updateInkoopFollowupItems(
-        list.map((item) => ({ id: String(item.id), date: found.get(item.id)?.day || inkoopIsoDate(item.day) || null, snapshot: inkoopFollowupSnapshot(found.get(item.id)) })),
+        list.map((item) => {
+          const extra = inkoopFollowupExtraSnapshot(String(item.id), item.snapshot, view);
+          return { id: String(item.id), date: found.get(item.id)?.day || extra?.day || inkoopIsoDate(item.day) || null, snapshot: extra || inkoopFollowupSnapshot(found.get(item.id)) };
+        }),
         changes,
         { by: requestUser.username, note },
       );
@@ -27710,6 +27835,25 @@ async function handleApi(req, res, url) {
   // dump: did that lot actually get dispatched to one of FloraHolland's own
   // "retour" accounts, confirming it was a genuine return -- or did it go
   // somewhere else, which needs a human look.
+  // The Connect lots booked to a retour customer in a period (the Corrections
+  // tab's "Connect dispatch only"): waiting for a credit until an invoice
+  // has one, with the lot's follow-up status when it was sent there.
+  if (url.pathname === "/api/inkoop/destinations/retour-dispatch" && req.method === "GET") {
+    if (!requirePermission(res, requestUser, PERMISSIONS.INKOOP_VIEW)) {
+      return;
+    }
+    try {
+      const state = await readInkoopState();
+      const range = inkoopRangeFromRequest(url);
+      const rows = await inkoopRetourDispatchRows(state, range);
+      const statusById = new Map((await getInkoopIssueStatuses()).filter((row) => row.issue_type === "retour").map((row) => [row.id, row]));
+      sendJson(res, 200, { from: range.from, to: range.to, rows: rows.map((row) => (statusById.has(row.id) ? { ...row, followup: inkoopFollowupWithStatus({}, statusById.get(row.id)) } : row)) });
+    } catch (error) {
+      sendJson(res, 400, { error: error instanceof Error ? error.message : String(error) });
+    }
+    return;
+  }
+
   if (url.pathname === "/api/inkoop/destinations/corrections" && req.method === "GET") {
     if (!requirePermission(res, requestUser, PERMISSIONS.INKOOP_VIEW)) {
       return;
@@ -27717,7 +27861,14 @@ async function handleApi(req, res, url) {
     const state = await readInkoopState();
     const range = inkoopRangeFromRequest(url);
     const checks = await computeInkoopCorrectionRetourChecks(state, range);
-    sendJson(res, 200, { checks, from: range.from, to: range.to });
+    const statusById = new Map((await getInkoopIssueStatuses()).filter((row) => row.issue_type === "correction").map((row) => [row.id, row]));
+    sendJson(res, 200, {
+      checks: checks.map((check) => {
+        const id = inkoopCorrectionFollowupId(check);
+        return statusById.has(id) ? { ...check, followup_id: id, followup: inkoopFollowupWithStatus({}, statusById.get(id)) } : { ...check, followup_id: id };
+      }),
+      from: range.from, to: range.to,
+    });
     return;
   }
 

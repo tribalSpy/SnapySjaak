@@ -1140,7 +1140,7 @@ export async function getInkoopDispatchLots({ from, to } = {}) {
   }
   const result = await pool.query(
     `
-      SELECT lot, erp_date, pav, suppl, description, pieces, price, t_price, dispatches
+      SELECT lot, erp_date, to_char(erp_date, 'YYYY-MM-DD') AS erp_day, pav, suppl, description, pieces, price, t_price, dispatches
       FROM inkoop_dispatch_lots
       WHERE erp_date IS NULL OR (erp_date >= $1 AND erp_date <= $2)
       ORDER BY lot
@@ -2474,6 +2474,29 @@ export async function getInkoopCorrectionLines({ from, to, marginDays = 4 } = {}
     [pavVariants],
   );
   return { credits: credits.rows, pavLines: pavLines.rows, erpLots: erpLots.rows };
+}
+
+// The credit lines (a negative quantity or total) on the brief numbers of
+// some lots, from a day on -- a lot booked to a retour customer waits for
+// one. A brief number's split letters (F9H9CDa / b) count as the same.
+export async function getInkoopCreditLinesByPav(pavs, from) {
+  if (!pool) return [];
+  const bases = [...new Set((pavs || []).map((pav) => String(pav || "").trim().replace(/[a-z]$/, "")).filter(Boolean))];
+  if (!bases.length) return [];
+  const letters = "abcdefghijklmnopqrstuvwxyz".split("");
+  const variants = bases.flatMap((base) => [base, ...letters.map((letter) => base + letter)]);
+  const result = await pool.query(
+    `SELECT l.invoice_number, to_char(l.invoice_date, 'YYYY-MM-DD') AS invoice_date, l.reference_bt AS pav,
+       l.quantity::float8 AS quantity, l.total::float8 AS total
+     FROM inkoop_invoice_lines l
+     WHERE l.reference_bt = ANY($1::text[])
+       AND l.quantity IS NOT NULL AND (l.quantity < 0 OR l.total < 0)
+       AND ($2::date IS NULL OR l.invoice_date >= $2::date - 4)
+       AND ${INKOOP_LINE_KIND_SQL} = 'product'
+     ORDER BY l.invoice_date, l.invoice_number`,
+    [variants, from || null],
+  );
+  return result.rows;
 }
 
 // Inkoop Controle "Search" -- ERP side: the ERP's purchase lots by ERP date
