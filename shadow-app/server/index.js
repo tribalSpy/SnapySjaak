@@ -40,6 +40,9 @@ import {
   getInkoopMailImportedIds,
   saveInkoopMailMessages,
   getKingPendingDays,
+  markKingDay,
+  unmarkKingDay,
+  getKingMarkedDays,
   dbQuery,
   deleteUkdocsCsiParsedDocumentFromDatabase,
   getUkdocsCsiParsedDocumentFromDatabase,
@@ -25616,7 +25619,30 @@ async function handleApi(req, res, url) {
       return;
     }
     const from = inkoopIsoDate(url.searchParams.get("from")) || addDaysToIsoDate(localDateIso(), -60);
-    sendJson(res, 200, { from, days: await getKingPendingDays(from).catch(() => []) });
+    const [days, marked] = await Promise.all([getKingPendingDays(from).catch(() => []), getKingMarkedDays(from).catch(() => [])]);
+    sendJson(res, 200, { from, days, marked });
+    return;
+  }
+
+  // A day done for King by hand: body { date, kind: "done" | "skipped", note }
+  // or { date, undo: true }. Nothing is sent to King.
+  if (url.pathname === "/api/inkoop/king/mark-day" && req.method === "POST") {
+    if (!requirePermission(res, requestUser, PERMISSIONS.INKOOP_VIEW)) {
+      return;
+    }
+    try {
+      const body = await readRequestJson(req);
+      const date = inkoopIsoDate(body?.date);
+      if (!date) throw new Error("date: YYYY-MM-DD");
+      if (body?.undo) {
+        sendJson(res, 200, { ok: true, removed: await unmarkKingDay(date) });
+        return;
+      }
+      const kind = body?.kind === "skipped" ? "skipped" : "done";
+      sendJson(res, 200, { ok: true, marked: await markKingDay(date, { kind, note: String(body?.note || "").trim().slice(0, 300), by: requestUser.username }) });
+    } catch (error) {
+      sendJson(res, 400, { error: error instanceof Error ? error.message : String(error) });
+    }
     return;
   }
 

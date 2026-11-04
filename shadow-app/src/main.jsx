@@ -17034,25 +17034,107 @@ function InkoopDataDaysMonitorLine() {
   );
 }
 
+// The days with invoices not in King yet. Right-click a day: mark it done
+// (imported before this menu existed) or skip it -- nothing is sent, the
+// day's invoices leave the list; "Marked by hand" lists them to undo.
 function InkoopKingPendingDays({ date, onPick, refreshKey }) {
-  const [days, setDays] = useState(null);
+  const [data, setData] = useState(null);
+  const [round, setRound] = useState(0);
+  const [menu, setMenu] = useState(null);
+  const [showMarked, setShowMarked] = useState(false);
+  const [error, setError] = useState("");
   useEffect(() => {
-    apiJson("/api/inkoop/king/pending").then((payload) => setDays(payload.days || [])).catch(() => setDays([]));
-  }, [refreshKey]);
-  if (!days) return null;
-  if (!days.length) return <div className="notice">✓ Everything uploaded in the last 60 days is in King.</div>;
+    apiJson("/api/inkoop/king/pending").then((payload) => setData(payload)).catch(() => setData({ days: [], marked: [] }));
+  }, [refreshKey, round]);
+  useEffect(() => {
+    if (!menu) return undefined;
+    const close = () => setMenu(null);
+    const key = (event) => { if (event.key === "Escape") setMenu(null); };
+    window.addEventListener("click", close);
+    window.addEventListener("scroll", close, true);
+    window.addEventListener("keydown", key);
+    return () => {
+      window.removeEventListener("click", close);
+      window.removeEventListener("scroll", close, true);
+      window.removeEventListener("keydown", key);
+    };
+  }, [menu]);
+  if (!data) return null;
+  const days = data.days || [];
+  const marked = data.marked || [];
+  async function mark(day, body) {
+    setMenu(null);
+    setError("");
+    try {
+      await apiJson("/api/inkoop/king/mark-day", { method: "POST", body: JSON.stringify({ date: day, ...body }) });
+      setRound((value) => value + 1);
+    } catch (markError) {
+      setError(markError.message);
+    }
+  }
+  // This day and every older day of the list, one after the other.
+  async function markThrough(day) {
+    const older = days.filter((item) => item.date <= day.date);
+    if (!window.confirm(`Mark ${older.length} day(s) up to ${fustOverviewDate(day.date)} as done (already in King)? Nothing is sent; each can be undone.`)) return;
+    setMenu(null);
+    setError("");
+    try {
+      for (const item of older) await apiJson("/api/inkoop/king/mark-day", { method: "POST", body: JSON.stringify({ date: item.date, kind: "done", note: "imported before this menu" }) });
+    } catch (markError) {
+      setError(markError.message);
+    }
+    setRound((value) => value + 1);
+  }
   const total = days.reduce((sum, day) => sum + day.invoices, 0);
   return (
     <div className="ik-filterbar" style={{ position: "static" }}>
-      <div className="ik-filter-group">
-        <strong>Not yet in King: {total} invoice(s) on {days.length} day(s)</strong>
-        {days.map((day) => (
-          <button key={day.date} type="button" className={`ik-chip${day.date === date ? " on" : ""}`} onClick={() => onPick(day.date)}
-            title={`${day.invoices} invoice(s), ${formatInkoopEuro(day.total)}${day.failed ? ` -- ${day.failed} failed before` : ""}`}>
-            {fustOverviewDate(day.date)} · {day.invoices}{day.failed ? " ⚠" : ""}
+      {days.length ? (
+        <div className="ik-filter-group">
+          <strong>Not yet in King: {total} invoice(s) on {days.length} day(s)</strong>
+          {days.map((day) => (
+            <button key={day.date} type="button" className={`ik-chip${day.date === date ? " on" : ""}`} onClick={() => onPick(day.date)}
+              onContextMenu={(event) => { event.preventDefault(); setMenu({ x: event.clientX, y: event.clientY, day }); }}
+              title={`${day.invoices} invoice(s), ${formatInkoopEuro(day.total)}${day.failed ? ` -- ${day.failed} failed before` : ""} -- right-click: mark as done / skip`}>
+              {fustOverviewDate(day.date)} · {day.invoices}{day.failed ? " ⚠" : ""}
+            </button>
+          ))}
+        </div>
+      ) : <div className="notice">✓ Everything uploaded in the last 60 days is in King (or marked by hand).</div>}
+      {!!marked.length && (
+        <div className="ik-filter-group">
+          <button type="button" className="link-button" onClick={() => setShowMarked((value) => !value)} aria-expanded={showMarked}>
+            {showMarked ? "▾" : "▸"} Marked by hand: {marked.length} day(s)
           </button>
-        ))}
-      </div>
+          {showMarked && marked.map((day) => (
+            <button key={day.day} type="button" className="ik-chip" onClick={() => onPick(day.day)}
+              onContextMenu={(event) => { event.preventDefault(); setMenu({ x: event.clientX, y: event.clientY, marked: day }); }}
+              title={`${day.kind === "skipped" ? "Skipped" : "Done (imported before)"} by ${day.set_by} on ${formatTimestamp(day.set_at)}${day.note ? ` -- ${day.note}` : ""} · ${day.invoices} invoice(s) -- right-click: back to not yet in King`}>
+              {day.kind === "skipped" ? "⤼" : "✓"} {fustOverviewDate(day.day)} · {day.invoices}
+            </button>
+          ))}
+        </div>
+      )}
+      {error && <div className="notice danger">{error}</div>}
+      {menu && (
+        <div className="ik-ctx-menu" style={{ left: Math.min(menu.x, window.innerWidth - 300), top: Math.min(menu.y, window.innerHeight - 170) }} role="menu"
+          onClick={(event) => event.stopPropagation()} onContextMenu={(event) => event.preventDefault()}>
+          {menu.day ? (
+            <>
+              <div className="ik-ctx-title"><strong>{fustOverviewDate(menu.day.date)}</strong><span className="muted">{menu.day.invoices} invoice(s) · {formatInkoopEuro(menu.day.total)} -- nothing is sent to King</span></div>
+              <button type="button" role="menuitem" onClick={() => mark(menu.day.date, { kind: "done", note: "imported before this menu" })}>✓ Mark as done (already in King)</button>
+              {days.filter((item) => item.date < menu.day.date).length > 0 && (
+                <button type="button" role="menuitem" onClick={() => markThrough(menu.day)}>✓ Mark this day and all {days.filter((item) => item.date < menu.day.date).length} days before as done</button>
+              )}
+              <button type="button" role="menuitem" onClick={() => { const note = window.prompt("Skip this day for King -- why?", ""); if (note !== null) mark(menu.day.date, { kind: "skipped", note }); }}>⤼ Skip this day…</button>
+            </>
+          ) : (
+            <>
+              <div className="ik-ctx-title"><strong>{fustOverviewDate(menu.marked.day)}</strong><span className="muted">{menu.marked.kind === "skipped" ? "skipped" : "marked done"} by {menu.marked.set_by}</span></div>
+              <button type="button" role="menuitem" onClick={() => mark(menu.marked.day, { undo: true })}>↩ Back to "not yet in King"</button>
+            </>
+          )}
+        </div>
+      )}
     </div>
   );
 }

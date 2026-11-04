@@ -3831,7 +3831,41 @@ export async function getKingPendingDays(fromDate) {
        FROM inkoop_invoice_headers h
        LEFT JOIN king_exports e ON e.invoice_number = h.invoice_number
       WHERE h.invoice_date >= $1::date AND (e.invoice_number IS NULL OR e.status = 'failed')
+        AND NOT EXISTS (SELECT 1 FROM king_days_marked m WHERE m.day = h.invoice_date AND h.invoice_number = ANY(m.invoice_numbers))
       GROUP BY 1 ORDER BY 1 DESC`,
+    [fromDate],
+  );
+  return result.rows;
+}
+
+// Mark a day done / skipped for King: its invoices not in King yet (now).
+export async function markKingDay(day, { kind = "done", note = "", by = "" } = {}) {
+  if (!pool) return null;
+  const numbers = (await pool.query(
+    `SELECT h.invoice_number FROM inkoop_invoice_headers h LEFT JOIN king_exports e ON e.invoice_number = h.invoice_number
+      WHERE h.invoice_date = $1::date AND (e.invoice_number IS NULL OR e.status = 'failed')`,
+    [day],
+  )).rows.map((row) => row.invoice_number);
+  const result = await pool.query(
+    `INSERT INTO king_days_marked (day, kind, invoice_numbers, note, set_by, set_at) VALUES ($1::date, $2, $3::text[], $4, $5, now())
+     ON CONFLICT (day) DO UPDATE SET kind = EXCLUDED.kind, note = EXCLUDED.note, set_by = EXCLUDED.set_by, set_at = now(),
+       invoice_numbers = ARRAY(SELECT DISTINCT unnest(king_days_marked.invoice_numbers || EXCLUDED.invoice_numbers))
+     RETURNING to_char(day, 'YYYY-MM-DD') AS day, kind, cardinality(invoice_numbers) AS invoices`,
+    [day, kind, numbers, note, by],
+  );
+  return result.rows[0];
+}
+
+export async function unmarkKingDay(day) {
+  if (!pool) return 0;
+  return (await pool.query("DELETE FROM king_days_marked WHERE day = $1::date", [day])).rowCount;
+}
+
+export async function getKingMarkedDays(fromDate) {
+  if (!pool) return [];
+  const result = await pool.query(
+    `SELECT to_char(day, 'YYYY-MM-DD') AS day, kind, cardinality(invoice_numbers)::int AS invoices, note, set_by, set_at
+       FROM king_days_marked WHERE day >= $1::date ORDER BY day DESC`,
     [fromDate],
   );
   return result.rows;
@@ -4520,6 +4554,20 @@ const databaseMigrations = [
       exported_at timestamptz NOT NULL DEFAULT now(),
       delivered_at timestamptz,
       journal_json jsonb
+    )
+  `,
+  // Days marked "done" for King by hand (imported before this menu, or
+  // skipped): the invoices of that day at that moment leave the "Not yet in
+  // King" list -- nothing is sent, king_exports and the stuknummer stay as
+  // they are; an invoice of that day uploaded later shows again.
+  `
+    CREATE TABLE IF NOT EXISTS king_days_marked (
+      day date PRIMARY KEY,
+      kind text NOT NULL DEFAULT 'done',
+      invoice_numbers text[] NOT NULL DEFAULT '{}',
+      note text NOT NULL DEFAULT '',
+      set_by text NOT NULL DEFAULT '',
+      set_at timestamptz NOT NULL DEFAULT now()
     )
   `,
   // The daily invoice-email import (Gmail): every run, and every email it
