@@ -8858,6 +8858,57 @@ function matchInkoopVeilingLines(erpRows, invoices, supplierMap = {}, supplierNa
     resale(supplierNotLinked);
   }
 
+  // A line found by its brief number but short in pieces: the rest of the
+  // purchase can be in lots of the same grower WITHOUT a brief number
+  // (arcadia 02-11 FAH2JQA CHR G KALIMBA 62 x 60 = 3720: lot 44967449 has
+  // the brief number, 32 x 60 = 1920; lot 44983867 none, 30 x 60 = 1800).
+  // Only lots of the brief lot's day, the same product name, price and box
+  // size, that are free and together exactly the missing pieces -- several
+  // alike lots (all the same) are as good as each other. Then it is one
+  // split delivery, as one with the brief number's letters (FAH2JQa / b).
+  for (const item of [...matchedMismatch]) {
+    const lot = item.erp_row;
+    if (!lot || String(lot.lot ?? "").includes("+") || item.split_lots?.length || item.matched_as_split_delivery || item.matched_as_group
+      || item.afgemeld_trnum || item.pool_surplus || /^linked by hand/i.test(String(item.supplier_match_type || ""))) continue;
+    if (!isRealInkoopPav(normalizeInkoopKey(item.reference_bt)) || !isRealInkoopPav(normalizeInkoopKey(lot.pav))) continue;
+    const shortfall = Number(item.quantity) - Number(lot.pieces);
+    if (!(shortfall > INKOOP_MATCH_TOLERANCE) || !priceFits(lot, item.unit_price)) continue;
+    const code = resolveErpRowSupplierCode(lot, validSupplierCodes);
+    const day = String(lot.date || "").slice(0, 10);
+    const name = normalizeInkoopProductName(lot.description);
+    const perBox = Number(lot.cont) || 0;
+    const parts = (Array.isArray(erpRows) ? erpRows : []).filter((row) => row !== lot && !consumedErpRows.has(row)
+      && !isRealInkoopPav(normalizeInkoopKey(row.pav))
+      && String(row.date || "").slice(0, 10) === day
+      && resolveErpRowSupplierCode(row, validSupplierCodes) === code
+      && normalizeInkoopProductName(row.description) === name
+      && priceFits(row, item.unit_price)
+      && (!perBox || !Number(row.cont) || Number(row.cont) === perBox)
+      && Number(row.pieces) > 0 && Number(row.pieces) <= shortfall + INKOOP_MATCH_TOLERANCE)
+      .sort((left, right) => Number(left.lot) - Number(right.lot));
+    if (!parts.length) continue;
+    const single = parts.filter((row) => !inkoopValuesDiffer(Number(row.pieces), shortfall));
+    const rest = single.length ? [single[0]] : parts.length <= 14 ? findInkoopPiecesCombination(parts, shortfall) : null;
+    if (!rest?.length) continue;
+    const lots = [lot, ...rest].sort((left, right) => Number(left.lot) - Number(right.lot));
+    for (const row of rest) consumedErpRows.add(row);
+    const value = Math.round(lots.reduce((sum, row) => sum + (parseFloat(row.t_price) || 0), 0) * 100) / 100;
+    const { diffs: oldDiffs, ...base } = item;
+    const pair = {
+      ...base,
+      supplier_match_type: `brief number ${normalizeInkoopKey(item.reference_bt)} (${lot.lot}) + ${rest.length} lot(s) without a brief number the same day (same product, price, box)`,
+      erp_row: { ...lot, lot: lots.map((row) => row.lot).join("+"), pieces: lots.reduce((sum, row) => sum + Number(row.pieces), 0), t_price: value },
+      matched_as_split_delivery: true,
+      split_lots: lots.map((row) => row.lot),
+    };
+    const diffs = [];
+    if (inkoopValuesDiffer(parseFloat(lot.price), item.unit_price)) diffs.push({ field: "unit_price", erp: parseFloat(lot.price), invoice: item.unit_price });
+    if (inkoopValuesDiffer(value, item.total)) diffs.push({ field: "total", erp: value, invoice: item.total });
+    matchedMismatch.splice(matchedMismatch.indexOf(item), 1);
+    if (diffs.length) matchedMismatch.push({ ...pair, diffs });
+    else matchedOk.push(pair);
+  }
+
   // Alike lines of one grower without a brief number (Handel / AI2) are
   // matched one by one in invoice order, so a line can take a later day's
   // lot and leave the line of that lot's own day open (vdEijk ASTE STARL GEM
@@ -10877,7 +10928,11 @@ const INKOOP_EMPTY_DAY_BUCKET = {
 // 2026-11-03c: an open line without a brief number takes a lot of the same
 // product from a line of the same grower whose day is further from the lot
 // (15-10 ASTE STARL GEM gets its own 15-10 lot back from the 13-10 line).
-const INKOOP_MATCH_RULES_VERSION = "2026-11-03c";
+// 2026-11-04a: a line found by its brief number but short in pieces takes the
+// rest from free lots of the grower without a brief number, the same day,
+// product, price and box size, exactly the missing pieces (arcadia 02-11
+// FAH2JQA KALIMBA 3720 = 1920 + 1800).
+const INKOOP_MATCH_RULES_VERSION = "2026-11-04a";
 
 function inkoopStateFingerprint(state) {
   return crypto.createHash("sha1").update(JSON.stringify([
