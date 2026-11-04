@@ -20488,7 +20488,7 @@ function InkoopControlePage({ currentUser }) {
     setMessage("");
     // One file after another (each is small); a file with nothing in it
     // (all gekoppeld, or not a Levering BB export) is named, the rest goes on.
-    const total = { lines: 0, bridges: 0, already_linked: 0, linked_found: 0, linked_with_brief: 0, cancelled: 0, filled_now: 0, own_pav: 0, not_in_connect: 0 };
+    const total = { lines: 0, bridges: 0, already_linked: 0, linked_found: 0, linked_with_brief: 0, cancelled: 0, other: 0, filled_now: 0, filled_pav: 0, kept_next_to: 0, names_added: 0, own_pav: 0, not_in_connect: 0 };
     const skipped = [];
     const fileDays = [];
     let done = 0;
@@ -20504,17 +20504,33 @@ function InkoopControlePage({ currentUser }) {
           done += 1;
           for (const key of Object.keys(total)) total[key] += Number(payload?.[key] || 0);
           lastBridged = Number(payload?.bridged || lastBridged);
-          // Which Connect days the file belongs to (by its lots and brief numbers).
-          fileDays.push(`${file.name}: ${(payload?.connect_days || []).length ? payload.connect_days.map((day) => `${fustOverviewDate(day.date)} (${[day.lots ? `${day.lots} lots` : "", day.invoice_lines ? `${day.invoice_lines} invoice lines` : ""].filter(Boolean).join(", ")})`).join("; ") : "no Connect day found yet"}`);
+          // Which Connect days the file belongs to: the days of its lots
+          // (most lots first). An old invoice line with one of its brief
+          // numbers (FloraHolland uses them again during the year) is no
+          // day of the file -- left out.
+          const lotDays = (payload?.connect_days || []).filter((day) => day.lots > 0).sort((left, right) => right.lots - left.lots || right.date.localeCompare(left.date));
+          fileDays.push(`${file.name}: ${lotDays.length ? lotDays.map((day) => `${fustOverviewDate(day.date)} (${day.lots} lot${day.lots === 1 ? "" : "s"}${day.invoice_lines ? `, ${day.invoice_lines} invoice line${day.invoice_lines === 1 ? "" : "s"}` : ""})`).join(" · ") : "its lots are not in the Connect data yet"}`);
         } catch (fileError) {
           skipped.push(`${file.name}: ${fileError.message}`);
         }
       }
+      const read = [
+        `${total.bridges} with a Connect lot`,
+        total.already_linked ? `${total.already_linked} "gekoppeld" (no lot number${total.linked_with_brief ? `; ${total.linked_found} of the ${total.linked_with_brief} with a brief number found in Connect by pieces, price and name` : ""})` : "",
+        total.cancelled ? `${total.cancelled} cancelled` : "",
+        total.other ? `${total.other} without a brief number or lot (nothing to bridge)` : "",
+      ].filter(Boolean).join(", ");
+      const changed = [
+        `Brief numbers filled in: ${total.filled_pav} (lots without one in Connect${lastBridged ? `; ${lastBridged} of this file's lots have theirs from Levering BB` : ""})`,
+        total.kept_next_to ? `Levering's brief number kept next to Connect's other one: ${total.kept_next_to}` : "",
+        total.names_added ? `Levering's VBN / name added to the lot (to match by name): ${total.names_added}` : "",
+        `${total.own_pav} lot(s) already had their brief number from Connect`,
+        total.not_in_connect ? `${total.not_in_connect} lot(s) not in the Connect data yet (filled in when that is uploaded)` : "",
+      ].filter(Boolean).join(" · ");
       const summary = done
-        ? `Levering BB: ${done} file(s), ${total.lines} lines -- ${total.bridges} with a Connect lot (bridge), ${total.already_linked} "gekoppeld" (no lot number: for ${total.linked_found} of the ${total.linked_with_brief} with a brief number the Connect lot was found by pieces, price and name)${total.cancelled ? `, ${total.cancelled} cancelled` : ""}. `
-          + `Connect lots filled in now: ${total.filled_now} (in all ${lastBridged}); ${total.own_pav} had their own brief number; ${total.not_in_connect} not in the uploaded Connect data yet (filled in when that is uploaded). The days affected are compared again.`
+        ? `Levering BB: ${done} file(s), ${total.lines} lines -- ${read}. ${changed}.${total.filled_now ? " The days of the lots that changed are compared again." : " Nothing changed."}`
         : "Levering BB: nothing read.";
-      setMessage(`${summary}${fileDays.length ? ` Connect days of the file(s) -- ${fileDays.join(" | ")}.` : ""}`);
+      setMessage(`${summary}${fileDays.length ? ` Day(s) of the file -- ${fileDays.join(" | ")}.` : ""}`);
       if (skipped.length) setError(`Skipped ${skipped.length} file(s): ${skipped.join(" | ")}`);
     } finally {
       setLeveringBusy(false);

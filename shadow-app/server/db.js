@@ -428,7 +428,7 @@ export async function applyInkoopLeveringBbBridge() {
            updated_at = now()
       FROM inkoop_levering_bb b
      WHERE e.lot = b.lot AND (COALESCE(btrim(e.pav), '') = '' OR btrim(e.pav) ~ '^0+[A-Za-z]?$')
-    RETURNING e.lot::text AS lot, to_char(e.erp_date, 'YYYY-MM-DD') AS erp_date
+    RETURNING e.lot::text AS lot, to_char(e.erp_date, 'YYYY-MM-DD') AS erp_date, 'pav' AS kind
   `);
   // A lot with another number in Connect's PAV (e.g. "587757" where Levering
   // BB has "FA8845e"): Connect's stays, Levering BB's is kept next to it
@@ -441,7 +441,7 @@ export async function applyInkoopLeveringBbBridge() {
      WHERE e.lot = b.lot AND COALESCE(btrim(e.pav), '') <> '' AND btrim(e.pav) !~ '^0+[A-Za-z]?$'
        AND upper(btrim(e.pav)) <> upper(btrim(b.pav))
        AND COALESCE(e.raw->>'levering_pav', '') IS DISTINCT FROM b.pav
-    RETURNING e.lot::text AS lot, to_char(e.erp_date, 'YYYY-MM-DD') AS erp_date
+    RETURNING e.lot::text AS lot, to_char(e.erp_date, 'YYYY-MM-DD') AS erp_date, 'levering_pav' AS kind
   `);
   // Every lot in Levering BB: its VBN code and Omschrijving next to
   // Connect's own name (more words to match the invoice line by).
@@ -453,7 +453,7 @@ export async function applyInkoopLeveringBbBridge() {
      WHERE e.lot = b.lot AND (COALESCE(b.vbn, '') <> '' OR COALESCE(b.description, '') <> '')
        AND (COALESCE(e.raw->>'levering_vbn', '') IS DISTINCT FROM COALESCE(b.vbn, '')
          OR COALESCE(e.raw->>'levering_description', '') IS DISTINCT FROM COALESCE(b.description, ''))
-    RETURNING e.lot::text AS lot, to_char(e.erp_date, 'YYYY-MM-DD') AS erp_date
+    RETURNING e.lot::text AS lot, to_char(e.erp_date, 'YYYY-MM-DD') AS erp_date, 'names' AS kind
   `);
   return [...result.rows, ...extra.rows, ...names.rows];
 }

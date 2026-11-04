@@ -26342,7 +26342,11 @@ async function handleApi(req, res, url) {
       kickInkoopMatchWorker();
     }
     sendJson(res, 200, { ok: true, lines: counts.lines, bridges: saved, already_linked: counts.linked, linked_found: linkedBridges.length, linked_with_brief: linkedRows.length, linked_kept: linkedKept,
-      connect_days: await getInkoopLeveringBbDays(rows.map((row) => row.lot), [...rows, ...linkedRows].map((row) => row.pav)).catch(() => []), cancelled: counts.cancelled, other: counts.other, filled_now: filled.length, ...status });
+      connect_days: await getInkoopLeveringBbDays(rows.map((row) => row.lot), [...rows, ...linkedRows].map((row) => row.pav)).catch(() => []), cancelled: counts.cancelled, other: counts.other, filled_now: filled.length,
+      // What the file changed, apart: empty brief numbers filled, Levering's
+      // other brief number kept next to Connect's, names (VBN / Omschrijving) added.
+      filled_pav: filled.filter((row) => row.kind === "pav").length, kept_next_to: filled.filter((row) => row.kind === "levering_pav").length,
+      names_added: filled.filter((row) => row.kind === "names").length, ...status });
     return;
   }
 
