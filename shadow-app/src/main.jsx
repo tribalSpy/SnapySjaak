@@ -18063,7 +18063,44 @@ function inkoopWeekStart(iso) {
 // The money trace, opened in place (as the classic grower totals): grower
 // ▸ week ▸ day ▸ its invoice lines and Connect lots side by side. Weeks only
 // when the period is longer than two weeks.
-function IkTraceTable({ rows, from, to, company, bar, setBar }) {
+// The Dashboard's right-click: open Track & Trace for a grower and days.
+function IkTraceGoMenu({ menu, onGo, onClose }) {
+  useEffect(() => {
+    if (!menu) return undefined;
+    const close = () => onClose();
+    const key = (event) => { if (event.key === "Escape") onClose(); };
+    window.addEventListener("click", close);
+    window.addEventListener("scroll", close, true);
+    window.addEventListener("resize", close);
+    window.addEventListener("keydown", key);
+    return () => {
+      window.removeEventListener("click", close);
+      window.removeEventListener("scroll", close, true);
+      window.removeEventListener("resize", close);
+      window.removeEventListener("keydown", key);
+    };
+  }, [menu, onClose]);
+  if (!menu) return null;
+  const days = `${fustOverviewDate(menu.from)}${menu.from !== menu.to ? ` – ${fustOverviewDate(menu.to)}` : ""}`;
+  const style = { left: Math.min(menu.x, window.innerWidth - 290), top: Math.min(menu.y, window.innerHeight - 110) };
+  return (
+    <div className="ik-ctx-menu" style={style} role="menu" onClick={(event) => event.stopPropagation()} onContextMenu={(event) => event.preventDefault()}>
+      <div className="ik-ctx-title"><strong>{menu.grower}</strong><span className="muted">{days}</span></div>
+      <button type="button" role="menuitem" onClick={() => { onGo({ grower: menu.grower, from: menu.from, to: menu.to }); onClose(); }}>↗ Open in Track & Trace</button>
+    </div>
+  );
+}
+
+function IkTraceTable({ rows, from, to, company, bar, setBar, onOpenTrackTrace }) {
+  const [goMenu, setGoMenu] = useState(null);
+  const closeGoMenu = useCallback(() => setGoMenu(null), []);
+  // Right-click: Track & Trace for this grower and these days (a day panel's
+  // lines: that day).
+  const goTo = (grower, dayFrom, dayTo) => (onOpenTrackTrace ? (event) => {
+    event.preventDefault();
+    event.stopPropagation();
+    setGoMenu({ x: event.clientX, y: event.clientY, grower, from: dayFrom, to: dayTo });
+  } : undefined);
   const [columns, toggleColumn] = useInkoopOverviewColumns();
   const [open, setOpen] = useState(() => new Set());
   const [sortKey, setSortKey] = useState("open");
@@ -18231,13 +18268,15 @@ function IkTraceTable({ rows, from, to, company, bar, setBar }) {
       const days = level === "day" ? 0 : new Set(item.rows.map((row) => row.date)).size;
       return (
         <Fragment key={key}>
-          <tr className={`clickable-row ik-tree-row l${Math.min(depth, 3)}`} onClick={() => toggle(key)}>
+          <tr className={`clickable-row ik-tree-row l${Math.min(depth, 3)}`} onClick={() => toggle(key)}
+            onContextMenu={goTo(growerName, item.rows.reduce((min, row) => (row.date < min ? row.date : min), item.rows[0].date), item.rows.reduce((max, row) => (row.date > max ? row.date : max), item.rows[0].date))}
+            title={onOpenTrackTrace ? "Right-click: open in Track & Trace" : undefined}>
             <td><span className="ik-tree-label">{open.has(key) ? "▾" : "▸"} {labelOfLevel[level](item.key)}{days ? <span className="muted"> ({days} day{days === 1 ? "" : "s"})</span> : null}</span></td>
             <td><IkSplitBar parts={inkoopFlowParts(item.rows)} /></td>
             <InkoopOverviewCells sum={item.sum} columns={columns} />
           </tr>
           {open.has(key) && (level === "day"
-            ? <tr className="ik-tree-panel"><td colSpan={span}><IkDayPanel date={item.key} company={company} grower={growerName} bar={bar} /></td></tr>
+            ? <tr className="ik-tree-panel" onContextMenu={goTo(growerName, item.key, item.key)}><td colSpan={span}><IkDayPanel date={item.key} company={company} grower={growerName} bar={bar} /></td></tr>
             : levelRows(growerName, item.rows, depth + 1, key))}
         </Fragment>
       );
@@ -18277,7 +18316,8 @@ function IkTraceTable({ rows, from, to, company, bar, setBar }) {
               const growerKey = `g|${grower.key}`;
               return (
                 <Fragment key={growerKey}>
-                  <tr className="clickable-row ik-tree-row l0" onClick={() => toggle(growerKey)}>
+                  <tr className="clickable-row ik-tree-row l0" onClick={() => toggle(growerKey)} onContextMenu={goTo(grower.key, from, to)}
+                    title={onOpenTrackTrace ? "Right-click: open in Track & Trace" : undefined}>
                     <td><span className="ik-tree-label"><strong>{open.has(growerKey) ? "▾" : "▸"} {grower.key}</strong></span></td>
                     <td><IkSplitBar parts={inkoopFlowParts(grower.rows)} /></td>
                     <InkoopOverviewCells sum={grower.sum} columns={columns} />
@@ -18290,13 +18330,14 @@ function IkTraceTable({ rows, from, to, company, bar, setBar }) {
           </tbody>
         </table>
       </div>
+      <IkTraceGoMenu menu={goMenu} onGo={(target) => onOpenTrackTrace?.(target)} onClose={closeGoMenu} />
     </div>
   );
 }
 
 // Dashboard: the money trace for the bank -- the numbers, the days, the
 // chart, then grower → flow → day → pairs.
-function InkoopTraceWorkspace({ bar, setBar, overview, company }) {
+function InkoopTraceWorkspace({ bar, setBar, overview, company, onOpenTrackTrace }) {
   const [showChart, setShowChart] = useState(false);
   const allRows = overview.rows || [];
   const rows = inkoopBarRows(allRows, bar);
@@ -18328,7 +18369,7 @@ function InkoopTraceWorkspace({ bar, setBar, overview, company }) {
           <IkMiniCalendar rows={calendarRows} from={bar.from} to={bar.to} day={bar.day} onDay={(day) => setBar((current) => ({ ...current, day }))} />
         </div>
       </div>
-      <IkTraceTable rows={rows} from={from} to={to} company={company} bar={bar} setBar={setBar} />
+      <IkTraceTable rows={rows} from={from} to={to} company={company} bar={bar} setBar={setBar} onOpenTrackTrace={onOpenTrackTrace} />
     </>
   );
 }
@@ -20841,11 +20882,16 @@ function InkoopControlePage({ currentUser }) {
   // shown until it arrived).
   const pageDataNote = loading ? <div className="notice info">Loading import history and master data...</div> : null;
   const inWorkspace = activeTab === "trace" || activeTab === "tracktrace" || activeTab === "fu";
-  // Track & Trace opened from a Follow-up line ("Link"): the way back, with
-  // the Follow-up's own period and grower.
+  // Track & Trace opened from a Follow-up line ("Link") or the Dashboard's
+  // right-click: the way back, with that tab's own period and grower.
   const [ttReturn, setTtReturn] = useState(null);
-  useEffect(() => { if (activeTab !== "tracktrace" && activeTab !== "fu") setTtReturn(null); }, [activeTab]);
-  const backToFollowup = () => { if (ttReturn?.bar) setBar(ttReturn.bar); setTtReturn(null); setActiveTab("fu"); };
+  useEffect(() => { if (activeTab !== "tracktrace" && activeTab !== ttReturn?.tab) setTtReturn(null); }, [activeTab]); // eslint-disable-line react-hooks/exhaustive-deps
+  const backToFollowup = () => { if (ttReturn?.bar) setBar(ttReturn.bar); const tab = ttReturn?.tab || "fu"; setTtReturn(null); setActiveTab(tab); };
+  const openTrackTrace = (fromTab, { grower, from, to }) => {
+    setTtReturn({ bar, tab: fromTab });
+    setBar((current) => ({ ...current, grower, from, to, day: null }));
+    setActiveTab("tracktrace");
+  };
   const withBar = inWorkspace || activeTab === "search";
   // All growers: 3 months at most; one grower (the bar's) up to a year --
   // then only that grower's rows are read.
@@ -20867,7 +20913,7 @@ function InkoopControlePage({ currentUser }) {
         <div className="section-header fust-section-nav">
           <h2>{INKOOP_SETUP_KEYS.has(activeTab) ? <span className="muted">Setup › </span> : null}{INKOOP_TAB_TITLES[activeTab] || activeTab}</h2>
           <div className="row-actions">
-            {activeTab === "tracktrace" && ttReturn && <button type="button" className="primary" onClick={backToFollowup}>← Back to Follow-up</button>}
+            {activeTab === "tracktrace" && ttReturn && <button type="button" className="primary" onClick={backToFollowup}>← Back to {ttReturn.tab === "trace" ? "Dashboard" : "Follow-up"}</button>}
             {INKOOP_SETUP_KEYS.has(activeTab) && <button type="button" onClick={() => setActiveTab("setup")}>Setup</button>}
             <button type="button" onClick={() => setActiveTab("")}>Inkoop menu</button>
           </div>
@@ -20922,10 +20968,10 @@ function InkoopControlePage({ currentUser }) {
 
       {activeTab === "followup" && <InkoopFollowUpTab matchRound={matchRound} company={selectedCompany} />}
 
-      {activeTab === "trace" && !barTooLong && <InkoopTraceWorkspace bar={bar} setBar={setBar} overview={overview} company={selectedCompany} />}
+      {activeTab === "trace" && !barTooLong && <InkoopTraceWorkspace bar={bar} setBar={setBar} overview={overview} company={selectedCompany} onOpenTrackTrace={(target) => openTrackTrace("trace", target)} />}
       {activeTab === "fu" && !barTooLong && (
         <InkoopFollowupWorkspace bar={bar} matchRound={matchRound} onOpenConnectData={() => setActiveTab("connectdata")}
-          onOpenTrackTrace={(item) => { setTtReturn({ bar }); setBar((current) => ({ ...current, grower: item.grower, from: item.day || item.date, to: item.day || item.date, day: null })); setActiveTab("tracktrace"); }} />
+          onOpenTrackTrace={(item) => openTrackTrace("fu", { grower: item.grower, from: item.day || item.date, to: item.day || item.date })} />
       )}
       {activeTab === "tracktrace" && !barTooLong && <InkoopTrackTraceWorkspace bar={bar} setBar={setBar} overview={overview} company={selectedCompany} matchRound={matchRound} />}
 
