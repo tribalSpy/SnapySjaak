@@ -18356,6 +18356,24 @@ function IkSuggestions({ from, to, company, grower, also = [], onLinked }) {
     next[key] = { item, lines, lots, note };
     return next;
   });
+  // Accept all: every suggestion of the list (they never share a line or a
+  // lot), each folded; one accepted before that shares one is taken off.
+  const acceptAll = (items, lines, lots, notePrefix) => setAccepted((current) => {
+    const next = { ...current };
+    for (const item of items) {
+      const key = `${item.line_ids.join(",")}|${item.lots.join(",")}`;
+      if (saved.has(key) || next[key]) continue;
+      for (const [otherKey, other] of Object.entries(next)) {
+        if (other.item.line_ids.some((id) => item.line_ids.includes(id)) || other.item.lots.some((lot) => item.lots.includes(lot))) delete next[otherKey];
+      }
+      next[key] = { item, lines, lots, note: `${notePrefix}${item.reason || item.kind}`.slice(0, 280) };
+    }
+    return next;
+  });
+  const openOf = (items) => items.filter((item) => {
+    const key = `${item.line_ids.join(",")}|${item.lots.join(",")}`;
+    return !saved.has(key) && !accepted[key];
+  });
   async function saveAccepted() {
     setSaving(true);
     setError("");
@@ -18427,6 +18445,9 @@ function IkSuggestions({ from, to, company, grower, also = [], onLinked }) {
         <span className="muted">same pieces at another price, or the same total in other pieces -- within 4 days, with the name</span>
         <span className="row-actions" style={{ marginLeft: "auto" }}>
           <button type="button" onClick={search} disabled={loading}>{loading ? "Searching…" : data ? "Search again" : "Find pairs"}</button>
+          {group && openOf(group.suggestions).length > 1 && (
+            <button type="button" onClick={() => acceptAll(group.suggestions, group.lines, group.lots, "detective: ")} title="Accept every suggestion below at once -- then Save accepted">Accept all {openOf(group.suggestions).length}</button>
+          )}
           {group && <button type="button" onClick={ask} disabled={busyAi}>{busyAi ? `AI working${ai.waited ? ` (${ai.waited}s)` : ""}…` : ai?.status === "done" ? "Ask the AI again" : "Ask the AI"}</button>}
           <button type="button" className="primary" onClick={saveAccepted} disabled={saving || !Object.keys(accepted).length}>{saving ? "Saving…" : `Save ${Object.keys(accepted).length || ""} accepted`.replace("  ", " ")}</button>
         </span>
@@ -18438,7 +18459,11 @@ function IkSuggestions({ from, to, company, grower, also = [], onLinked }) {
       {ai?.status === "failed" && <div className="notice danger">AI{ai.agent_name ? ` (poller ${ai.agent_name})` : ""}: {ai.error || "failed"}</div>}
       {ai?.status === "done" && (
         <>
-          <div className="notice info"><strong>AI summary:</strong> {ai.summary || "(no summary)"}{ai.unexplained ? <div style={{ marginTop: 4 }}><strong>Still open:</strong> {ai.unexplained}</div> : null}</div>
+          <div className="notice info"><strong>AI summary:</strong> {ai.summary || "(no summary)"}{ai.unexplained ? <div style={{ marginTop: 4 }}><strong>Still open:</strong> {ai.unexplained}</div> : null}
+            {openOf(ai.pairs || []).length > 1 && (
+              <div style={{ marginTop: 4 }}><button type="button" onClick={() => acceptAll(ai.pairs || [], ai.lines || group?.lines || [], ai.lots || group?.lots || [], "AI: ")}>Accept all {openOf(ai.pairs || []).length} AI pairs</button></div>
+            )}
+          </div>
           {rows(ai.pairs || [], ai.lines || group?.lines || [], ai.lots || group?.lots || [], "AI: ")}
         </>
       )}
@@ -18978,7 +19003,9 @@ function InkoopTrackTraceWorkspace({ bar, setBar, overview, company, matchRound 
                 </div>
               </div>
             </div>
-            <IkSuggestions from={from} to={to} company={company} grower={chosen} also={poolGrowers} onLinked={(linked) => {
+            {/* The days the lists show (± 4 days when that is on): a pair of
+                lines and lots only in those extra days is suggested too. */}
+            <IkSuggestions from={dayFrom} to={dayTo} company={company} grower={chosen} also={poolGrowers} onLinked={(linked) => {
               if (linked) {
                 setHiddenKeys((current) => ({
                   ...current,
