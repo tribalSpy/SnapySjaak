@@ -928,13 +928,20 @@ export async function getInkoopTraceLots(lotNumbers) {
   if (!pool || !lots.length) return [];
   const result = await pool.query(
     `SELECT e.row || jsonb_build_object('lot', e.lot::text) AS row,
-            to_jsonb(epp) - 'lot' AS epp, to_jsonb(bb) - 'lot' AS levering
+            epp.lot AS epp_lot, epp.epp AS epp_epp, epp.aanv AS epp_aanv, epp.trnum AS epp_trnum, epp.order_number AS epp_order, epp.description AS epp_description,
+            bb.lot AS bb_lot, bb.pav AS bb_pav, bb.description AS bb_description, bb.source_file_name AS bb_file
        FROM (SELECT lot, ${ERP_LINE_RAW_SQL} AS row FROM inkoop_erp_lines WHERE lot = ANY($1::bigint[])) e
        LEFT JOIN inkoop_lot_epp epp ON epp.lot = e.lot
        LEFT JOIN inkoop_levering_bb bb ON bb.lot = e.lot`,
     [lots],
   );
-  return result.rows.map((row) => ({ ...row.row, epp: row.epp || null, levering: row.levering || null }));
+  // A lot without a night action / Levering BB row: null (an empty joined
+  // row can't be read as JSON -- "cannot delete from scalar").
+  return result.rows.map((row) => ({
+    ...row.row,
+    epp: row.epp_lot ? { epp: row.epp_epp, aanv: row.epp_aanv, trnum: row.epp_trnum, order_number: row.epp_order, description: row.epp_description } : null,
+    levering: row.bb_lot ? { pav: row.bb_pav, description: row.bb_description, source_file_name: row.bb_file } : null,
+  }));
 }
 
 export async function getInkoopLeveringBbDays(lots, pavs) {
