@@ -8830,7 +8830,7 @@ function matchInkoopVeilingLines(erpRows, invoices, supplierMap = {}, supplierNa
   // side): grower by code (3) or Aanv. (3), the same VBN code (3), each
   // shared name word (1), the brief number without its letter (2), the same
   // day (1). Only a lot scoring 3+ and clearly above every other is taken.
-  const combinedEvidence = (unmatched) => {
+  const combinedEvidence = (unmatched, { identicalTies = false } = {}) => {
     const rest = [];
     for (const item of unmatched) {
       const date = normalizeUkdocsText(item?.invoice_date).slice(0, 10);
@@ -8863,8 +8863,21 @@ function matchInkoopVeilingLines(erpRows, invoices, supplierMap = {}, supplierNa
           return { row, score, reasons };
         })
         .sort((left, right) => right.score - left.score);
-      const best = scored[0];
-      if (!best || best.score < 3 || (scored[1] && scored[1].score >= best.score)) {
+      // identicalTies (the very last pass): a tie of lots that are the same
+      // purchase in every figure (day, pieces, price, total, box) -- Sjaak
+      // van Schie 02-11: three HYDR lines of 24 @ 3.95 and three SCHIE+
+      // Mophead lots of 4 x 6 @ 3.95 -- isn't a doubt: any of them is the
+      // same money, so the first (lowest lot) is taken.
+      const tied = scored.filter((entry) => entry.score === scored[0].score);
+      // ... and each exactly the line's own price, total and box (a lot of
+      // another product that only fits within a tolerance is no such tie).
+      const linePerBox = Number(item?.per_package) || 0;
+      const sameFigures = identicalTies && tied.length > 1 && tied.every(({ row }) => !inkoopValuesDiffer(parseFloat(row.price), Number(item.unit_price))
+        && !inkoopValuesDiffer(parseFloat(row.t_price), Number(item.total)) && (!linePerBox || !(Number(row?.cont) > 0) || Number(row.cont) === linePerBox)) && tied.every(({ row }) => String(row?.date || "").slice(0, 10) === String(tied[0].row?.date || "").slice(0, 10)
+        && !inkoopValuesDiffer(row.pieces, tied[0].row.pieces) && !inkoopValuesDiffer(parseFloat(row.price), parseFloat(tied[0].row.price))
+        && !inkoopValuesDiffer(parseFloat(row.t_price), parseFloat(tied[0].row.t_price)) && Number(row?.cont || 0) === Number(tied[0].row?.cont || 0));
+      const best = sameFigures ? [...tied].sort((left, right) => Number(left.row.lot) - Number(right.row.lot))[0] : scored[0];
+      if (!best || best.score < 3 || (!sameFigures && scored[1] && scored[1].score >= best.score) || (identicalTies && !sameFigures)) {
         rest.push(item);
         continue;
       }
@@ -9198,6 +9211,11 @@ function matchInkoopVeilingLines(erpRows, invoices, supplierMap = {}, supplierNa
       }
     }
   }
+
+  // The very last: the lines still without a lot whose best lots tie but are
+  // the same purchase in every figure (after every pool and split above).
+  combinedEvidence(onlyInInvoice, { identicalTies: true });
+  combinedEvidence(supplierNotLinked, { identicalTies: true });
 
   // Unconsumed rows from both pools are genuine "recorded but nothing
   // claimed it" gaps -- a supplier-code-keyed row (Handel/AI2 lines with no
@@ -11187,7 +11205,10 @@ const INKOOP_EMPTY_DAY_BUCKET = {
 // product and price; the same invoice first, else the nearest earlier day;
 // an AI2 credit by its "*factnr" Referentie) -- Danae 29-10 100 - 90 = 10;
 // an AI2 credit of another day's purchase is a correction, not an open line.
-const INKOOP_MATCH_RULES_VERSION = "2026-11-05a";
+// 2026-11-05b: the last rule (every kind of evidence together) takes the
+// first of tied lots that are the same purchase in every figure -- day,
+// pieces, price, total, box -- instead of none (Sjaak van Schie 02-11).
+const INKOOP_MATCH_RULES_VERSION = "2026-11-05b";
 
 function inkoopStateFingerprint(state) {
   return crypto.createHash("sha1").update(JSON.stringify([
