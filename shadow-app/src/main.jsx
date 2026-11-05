@@ -18884,7 +18884,7 @@ function IkSuggestions({ from, to, company, grower, also = [], onLinked }) {
     <div className="data-table-card ik-card">
       <div className="ik-side-head">
         <strong>🔎 Suggested pairs</strong>
-        <span className="muted">same pieces at another price, or the same total in other pieces -- within 4 days, with the name</span>
+        <span className="muted">same pieces at another price, or the same total in other pieces -- within 4 days, with the name; one line and one lot with the same pieces, total and box also without the name</span>
         <span className="row-actions" style={{ marginLeft: "auto" }}>
           <button type="button" onClick={search} disabled={loading}>{loading ? "Searching…" : data ? "Search again" : "Find pairs"}</button>
           {group && openOf(group.suggestions).length > 1 && (

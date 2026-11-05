@@ -10791,7 +10791,7 @@ async function inkoopDetectiveSearch(state, range, company, onlyGrower, alsoGrow
       const lot = String(row?.lot ?? "").trim();
       if (!lot || seenLots.has(lot)) continue;
       seenLots.add(lot);
-      groupOf(detectiveGrower({ list: "only_in_erp", supplier_code: row.supplier_code || row.suppl, supplier_name: row.supplier_bw_name })).lots.push(inkoopDetectiveLot(row));
+      groupOf(detectiveGrower({ list: "only_in_erp", supplier_code: row.supplier_code || inkoopErpLotGrowerCode(row, codeToName), supplier_name: row.supplier_bw_name })).lots.push(inkoopDetectiveLot(row));
     }
   }
   // The chosen grower with nothing open itself: its alike / pool growers
@@ -10929,7 +10929,12 @@ function inkoopDetectiveSuggestions(lines, lots) {
       const check = inkoopDetectiveCheck(lineSet, lotSet);
       if (check.span_days > 4) continue;
       const allNamed = check.named_lines === lineSet.length && check.named_lots === lotSet.length;
-      if (!allNamed && !(check.same_total && check.same_pieces && check.span_days <= 1)) continue;
+      // Without the name: the same pieces and total on (about) the same day,
+      // or one line and one lot with the same pieces, total and box within
+      // the 4 days (jacoudijk 09-10 GE MI GEM 48 x 80 @ 0.17 = 652.80, its
+      // lot "Mix 4-colors" of 12-10 booked under WEST / Avc OUDENJ).
+      const oneToOne = lineSet.length === 1 && lotSet.length === 1 && check.same_per_box !== false;
+      if (!allNamed && !(check.same_total && check.same_pieces && (check.span_days <= 1 || oneToOne))) continue;
       // A one-to-one pair at the same price and pieces the rules already
       // look at: only worth showing when the name fits.
       // Close days weigh more than a small group: two lines of 14-10 with the
@@ -10962,7 +10967,7 @@ function inkoopDetectivePrompt(group) {
   return [
     {
       role: "system",
-      content: "You check a flower wholesaler's purchases: FloraHolland invoice lines against the Connect (stock) lots of the same grower. Every listed line and lot is still unpaired. Find what probably belongs together and why: a price typed wrong, a brief number typed wrong, one purchase split differently over lines and lots, resold per 5/10 (a lot 'x5 ...' is the invoice line with pieces / 5 and price x 5, the same total), booked a day or two later, or booked under another name. Only pair what you can explain. Never invent ids. Answer in JSON only: {\"summary\": \"3-6 sentences in English: what happened with this grower's leftovers\", \"pairs\": [{\"line_ids\": [\"...\"], \"lots\": [\"...\"], \"reason\": \"one sentence\", \"confidence\": \"high|medium|low\"}], \"unexplained\": \"one or two sentences, no list of ids: what stays open and what to check\"}. Each id at most once in all pairs.",
+      content: "You check a flower wholesaler's purchases: FloraHolland invoice lines against the Connect (stock) lots of the same grower. Every listed line and lot is still unpaired. Find what probably belongs together and why: a price typed wrong, a brief number typed wrong, one purchase split differently over lines and lots, resold per 5/10 (a lot 'x5 ...' is the invoice line with pieces / 5 and price x 5, the same total), booked a day or two later, or booked under another name. Only pair what you can explain. Pair one line with one lot whenever a line and a lot have the same pieces and total; group several lines or lots only when one purchase is really split over them. Never invent ids. Answer in JSON only: {\"summary\": \"3-6 sentences in English: what happened with this grower's leftovers\", \"pairs\": [{\"line_ids\": [\"...\"], \"lots\": [\"...\"], \"reason\": \"one sentence\", \"confidence\": \"high|medium|low\"}], \"unexplained\": \"one or two sentences, no list of ids: what stays open and what to check\"}. Each id at most once in all pairs.",
     },
     {
       role: "user",
@@ -11052,6 +11057,36 @@ function inkoopDetectiveAnswer(job) {
     if (!known || !lineIds.length || !lots.length) {
       rejected.push({ ...pair, why: known ? "a line or lot twice" : "unknown line or lot" });
       continue;
+    }
+    // One on one where it can be: the AI put four lines and four lots of the
+    // same pieces and totals in one group -- each line with its own lot of
+    // the same pieces and total (the closest day, the same box first); what
+    // doesn't pair that way stays one group (only when both sides are left).
+    if (lineIds.length > 1 || lots.length > 1) {
+      const freeLots = lots.map((lot) => lotByNumber.get(lot));
+      const singles = [];
+      const leftLines = [];
+      for (const id of lineIds) {
+        const line = lineById.get(id);
+        const fits = freeLots.filter((lot) => Math.abs((Number(lot.pieces) || 0) - (Number(line.quantity) || 0)) < 0.5
+          && Math.abs((Number(lot.total) || 0) - (Number(line.total) || 0)) <= 0.02
+          && !(Number(line.per_box) > 0 && Number(lot.per_box) > 0 && Number(line.per_box) !== Number(lot.per_box)))
+          .sort((left, right) => Math.abs(dayOf(left.date) - dayOf(line.date)) - Math.abs(dayOf(right.date) - dayOf(line.date)) || Number(left.lot) - Number(right.lot));
+        if (!fits.length) { leftLines.push(id); continue; }
+        freeLots.splice(freeLots.indexOf(fits[0]), 1);
+        singles.push({ line_ids: [id], lots: [String(fits[0].lot)] });
+      }
+      const leftLots = freeLots.map((lot) => String(lot.lot));
+      if (singles.length && (leftLines.length ? leftLots.length : !leftLots.length)) {
+        const groups = [...singles, ...(leftLines.length ? [{ line_ids: leftLines, lots: leftLots }] : [])];
+        for (const group of groups) {
+          group.line_ids.forEach((id) => usedLines.add(id));
+          group.lots.forEach((lot) => usedLots.add(lot));
+          pairs.push({ ...group, reason: normalizeUkdocsText(pair?.reason), confidence: normalizeUkdocsText(pair?.confidence), ...(groups.length > 1 ? { split_from: lineIds.length + lots.length } : {}),
+            ...inkoopDetectiveCheck(group.line_ids.map((id) => lineById.get(id)), group.lots.map((lot) => lotByNumber.get(lot))) });
+        }
+        continue;
+      }
     }
     lineIds.forEach((id) => usedLines.add(id));
     lots.forEach((lot) => usedLots.add(lot));
