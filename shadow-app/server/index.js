@@ -63,6 +63,7 @@ import {
   fixInkoopAi2CreditSigns,
   setInkoopAi2LineReferentie,
   getInkoopSupplierCreditsForLines,
+  getInkoopInvoiceLinesForKeys,
   getInkoopInvoiceMatchFigures,
   getKingExportsByInvoice,
   getInkoopInvoiceTraceLines,
@@ -13150,6 +13151,37 @@ async function inkoopAttachRetourCredits(items) {
     // (a correction) would find that credit: only the credits after its day.
     const credit = inkoopRetourCreditOf((byBase.get(inkoopPavBase(pav)) || []).filter((line) => item.type !== "claim" || String(line.invoice_date || "") > String(item.day || "")), item.lot?.date || item.day);
     return credit ? { ...item, credit } : item;
+  });
+}
+
+// A line from Search / Corrections (claim, retour, correction) lives on the
+// snapshot made when it was sent: its invoice line read fresh, as it is
+// stored now (boxes filled in since, the AI2 Referentie as its reference).
+async function inkoopRefreshSnapshotInvoices(items) {
+  const wanted = items.filter((item) => INKOOP_FOLLOWUP_EXTRA_TYPES.has(item.type) && item.invoice && (item.invoice.id || item.invoice_number));
+  if (!wanted.length) return items;
+  const rows = await getInkoopInvoiceLinesForKeys(wanted.map((item) => ({
+    key: item.id, id: normalizeUkdocsText(item.invoice.id),
+    invoice_number: String(item.invoice_number || "").split(" + ")[0], description: normalizeUkdocsText(item.description), quantity: item.invoice.quantity,
+  }))).catch(() => []);
+  const byKey = new Map(rows.map((row) => [row.key, row]));
+  const number = (value) => (value === null || value === undefined || value === "" || !Number.isFinite(Number(value)) ? null : Number(value));
+  return items.map((item) => {
+    const row = byKey.get(item.id);
+    if (!row) return item;
+    return {
+      ...item,
+      invoice: {
+        ...item.invoice,
+        id: row.id,
+        packages: number(row.packages),
+        per_package: number(row.per_package),
+        // The brief number as it is (an AI2 line has none -- "000000" was a
+        // placeholder); the AI2 Referentie on its own (not a brief number).
+        reference: normalizeUkdocsText(row.reference_bt),
+        referentie: normalizeUkdocsText(row.referentie),
+      },
+    };
   });
 }
 
@@ -27899,7 +27931,7 @@ async function handleApi(req, res, url) {
         }
       }
       if (grower) items = items.filter((item) => String(item.grower || "").toLowerCase().includes(grower));
-      items = await inkoopAttachRetourCredits(items);
+      items = await inkoopAttachRetourCredits(await inkoopRefreshSnapshotInvoices(items));
       let merged = await inkoopAttachSupplierCredits(items.map((item) => inkoopFollowupWithStatus(item, statusById.get(item.id))));
       if (category) merged = merged.filter((item) => item.category === category);
       if (claimsOnly) merged = merged.filter(isClaim);

@@ -19621,7 +19621,7 @@ function ikFollowupInvoiceText(item) {
   if (!item?.invoice) return "";
   return inkoopInvoiceTranscript({
     ...(item.invoice.correction ? { correction: item.invoice.correction } : {}),
-    invoice_date: item.date, reference_bt: item.invoice.reference, packages: item.invoice.packages, per_package: item.invoice.per_package,
+    invoice_date: item.date, reference_bt: item.invoice.reference || (item.invoice.referentie ? `ref ${item.invoice.referentie}` : ""), packages: item.invoice.packages, per_package: item.invoice.per_package,
     quantity: item.invoice.quantity, unit_price: item.invoice.unit_price, total: item.invoice.total, supplier_name: item.invoice.supplier_name,
   });
 }

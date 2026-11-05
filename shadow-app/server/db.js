@@ -899,6 +899,27 @@ export async function setInkoopAi2LineReferentie(rows) {
   return updated;
 }
 
+// Some invoice lines as they are stored now (a follow-up line saved with a
+// snapshot shows them fresh: boxes filled in later, the AI2 Referentie).
+// keys: [{ key, id, invoice_number, description, quantity }] -- an id, or the
+// line by its invoice, product and pieces.
+export async function getInkoopInvoiceLinesForKeys(keys) {
+  if (!pool || !keys?.length) return [];
+  const result = await pool.query(
+    `WITH k AS (
+       SELECT * FROM unnest($1::text[], $2::text[], $3::text[], $4::text[], $5::float8[]) AS k(key, id, invoice_number, description, quantity)
+     )
+     SELECT DISTINCT ON (k.key) k.key, l.id, l.reference_bt, l.quantity::float8 AS quantity, l.unit_price::float8 AS unit_price, l.total::float8 AS total,
+            l.raw->>'packages' AS packages, l.raw->>'per_package' AS per_package, COALESCE(l.raw->>'referentie', '') AS referentie
+       FROM k JOIN inkoop_invoice_lines l
+         ON (k.id <> '' AND l.id = k.id)
+         OR (k.id = '' AND l.invoice_number = k.invoice_number AND l.description = k.description AND l.quantity = k.quantity)
+      ORDER BY k.key, l.id`,
+    [keys.map((key) => key.key), keys.map((key) => key.id || ""), keys.map((key) => key.invoice_number || ""), keys.map((key) => key.description || ""), keys.map((key) => Number(key.quantity) || 0)],
+  );
+  return result.rows;
+}
+
 // The credits of some Handel / AI2 purchase lines (no brief number): a
 // later credit line of the same grower, product and price -- for AI2 one
 // that names the purchase's Referentie ("factnr") when both are known.
