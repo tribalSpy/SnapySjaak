@@ -4252,4 +4252,7 @@ table.data-table.balance-table.ik-table.ik-inv-companies td:nth-child(n+4), tabl
 table.data-table.balance-table.ik-table.ik-inv-invoices td:nth-child(n+7), table.data-table.balance-table.ik-table.ik-inv-invoices th:nth-child(n+7) { text-align: right; }
 .ik-inv-companies td small, .ik-inv-companies .ik-split { display: block; }
 .ik-inv-companies .ik-split { width: 150px; margin-bottom: 3px; }
-.ik-inv-line .ik-inv-text, .ik-inv-line .ik-con-text { max-width: 560px; }
+/* The lines table keeps its columns: a long line is cut with … (all of it
+   in the tooltip), never over the next column. */
+.ik-inv-lines-table { table-layout: fixed; width: 100%; }
+.ik-inv-lines-table td.ik-inv-cell { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

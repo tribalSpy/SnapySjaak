@@ -15955,12 +15955,19 @@ function IkInvoiceLines({ invoiceNumber, onTrace }) {
   const row = (line) => {
     const status = IK_TRACE_STATUS[line.status] || { icon: "·", label: line.status, tone: "" };
     const diff = line.diffs?.find((item) => item.field === "total");
+    // A line of a correction: its own figures; the correction (all its
+    // steps, the net) in a note and in its trace.
+    const own = inkoopInvoiceTranscript({ ...line, correction: null });
+    const correction = line.correction ? inkoopCorrectionOf({ ...line, correction: line.correction }) : null;
     return (
       <tr key={line.id} className={`clickable-row ik-inv-line ${status.tone}`} onClick={() => onTrace(invoiceNumber, line.id)}
         onContextMenu={(event) => { event.preventDefault(); onTrace(invoiceNumber, line.id); }} title="Click or right-click: its trace">
         <td className={`ik-inv-status ${status.tone}`} title={`${status.label}${line.reason ? ` -- ${line.reason}` : ""}`}>{status.icon}</td>
-        <td className="ik-fu-ellipsis ik-inv-text" title={inkoopInvoiceTranscript(line)}><strong>{line.description}</strong> <span>{inkoopInvoiceTranscript(line)}</span></td>
-        <td className="ik-fu-ellipsis ik-con-text" title={line.lots.map(ikTraceLotText).join("\n")}>
+        <td className="ik-inv-cell ik-inv-text" title={`${own}${correction ? `\n${correction.text}` : ""}`}>
+          <strong>{line.description}</strong> <span>{own}</span>
+          {correction ? <span className="ik-correction-note"> · ↩ part of a correction ({correction.invoiced} invoiced, {correction.credited} credited)</span> : null}
+        </td>
+        <td className="ik-inv-cell ik-con-text" title={line.lots.map(ikTraceLotText).join("\n") || line.reason}>
           {line.lots.length ? (line.lots.length > 1 ? `${line.lots.length} lots · ${line.lots.map((lot) => lot.lot).join(" + ")}` : ikTraceLotText(line.lots[0])) : <span className="muted">{line.reason || "-"}</span>}
         </td>
         <td>{diff ? <InkoopMoneyDiff value={Math.round((Number(diff.invoice) - Number(diff.erp)) * 100) / 100} /> : line.status === "matched" ? "✓" : ""}</td>
@@ -15975,7 +15982,8 @@ function IkInvoiceLines({ invoiceNumber, onTrace }) {
   };
   return (
     <div className="ik-inv-lines">
-      <table className="data-table balance-table ik-table">
+      <table className="data-table balance-table ik-table ik-inv-lines-table">
+        <colgroup><col style={{ width: "2.2em" }} /><col style={{ width: "52%" }} /><col /><col style={{ width: "7.5em" }} /><col style={{ width: "6.5em" }} /></colgroup>
         <tbody>
           {products.map(row)}
           {!products.length && <tr><td colSpan={5} className="muted">No product lines.</td></tr>}
@@ -16251,7 +16259,7 @@ function InkoopOverviewTab({ onOpenTrackTrace = null }) {
     emballage: sum.emballage + company.emballage,
     fees: sum.fees + company.fees,
     matched: sum.matched + (company.match?.matched || 0) + (company.match?.differs || 0),
-    open: sum.open + (company.match?.open || 0),
+    open: sum.open + Math.abs(company.match?.open || 0),
   }), { invoice_count: 0, total: 0, products: 0, emballage: 0, fees: 0, matched: 0, open: 0 });
   const grandPct = grand.matched + grand.open > 0 ? (grand.matched / (grand.matched + grand.open)) * 100 : null;
   const thisMonth = todayIso().slice(0, 7);

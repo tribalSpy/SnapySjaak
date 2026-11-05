@@ -26376,9 +26376,11 @@ async function handleApi(req, res, url) {
       matchOf.set(row.invoice_number, entry);
     }
     const kingOf = new Map(kingRows.map((row) => [row.invoice_number, row]));
+    // Of the money either way: a credit can make an invoice's open money
+    // negative (it gave the % over 100).
     const withMatch = (match) => {
-      const base = match.matched + match.differs + match.open;
-      return { ...Object.fromEntries(Object.entries(match).map(([key, value]) => [key, round(value)])), matched_pct: base > 0 ? Math.round(((match.matched + match.differs) / base) * 1000) / 10 : null };
+      const base = Math.abs(match.matched) + Math.abs(match.differs) + Math.abs(match.open);
+      return { ...Object.fromEntries(Object.entries(match).map(([key, value]) => [key, round(value)])), matched_pct: base > 0 ? Math.round(((Math.abs(match.matched) + Math.abs(match.differs)) / base) * 1000) / 10 : null };
     };
     const companies = cached.map((company) => {
       const invoices = (company.invoices || []).map((invoice) => {
