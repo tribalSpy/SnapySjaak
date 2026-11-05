@@ -19640,6 +19640,16 @@ function ikRetourCreditText(credit) {
   return `credit in: ${credit.invoice_numbers.join(", ")} (${fustOverviewDate(credit.invoice_date)}) · ${credit.pieces} pcs · ${formatInkoopEuro(credit.total)}`;
 }
 
+// A claim's credit against what was claimed: "of €756.00 claimed ✓" or
+// "€… short".
+function ikClaimCreditCompare(item) {
+  const claimed = item.claim_amount === null || item.claim_amount === undefined || item.claim_amount === "" ? null : Math.abs(Number(item.claim_amount));
+  if (claimed === null || !item.credit) return "";
+  const credited = Math.abs(Number(item.credit.total) || 0);
+  const short = Math.round((claimed - credited) * 100) / 100;
+  return ` · of ${formatInkoopEuro(claimed)} claimed ${Math.abs(short) < 0.01 ? "✓" : short > 0 ? `-- ${formatInkoopEuro(short)} short` : `-- ${formatInkoopEuro(-short)} more`}`;
+}
+
 function ikFollowupAgeDays(item) {
   const since = String(item.opened_at || item.day || item.date || "").slice(0, 10);
   if (!since) return 0;
@@ -19938,7 +19948,7 @@ function IkFollowupTable({ items, settings, picked, setPicked, onOpen, quick, sh
                 <td>{fustOverviewDate(item.day || item.date)}</td>
                 <td className="ik-fu-ellipsis" title={item.grower}>{item.grower}</td>
                 <td>{item.flow}</td>
-                <td className="ik-fu-ellipsis" title={`${item.description}${item.reason ? ` -- ${item.reason}` : ""}`}><strong>{item.description}</strong>{item.credit ? <span className="ik-credit-in"> · ✓ {ikRetourCreditText(item.credit)}</span> : item.reason ? <span className="ik-fu-warn"> · ⚠ {item.reason}</span> : null}{item.status !== "open" ? <span className="muted"> · {INKOOP_FU_STATUS_LABEL[item.status] || item.status}</span> : null}</td>
+                <td className="ik-fu-ellipsis" title={`${item.description}${item.reason ? ` -- ${item.reason}` : ""}`}><strong>{item.description}</strong>{item.credit ? <span className="ik-credit-in"> · ✓ {ikRetourCreditText(item.credit)}{ikClaimCreditCompare(item)}</span> : item.reason ? <span className="ik-fu-warn"> · ⚠ {item.reason}</span> : null}{item.status !== "open" ? <span className="muted"> · {INKOOP_FU_STATUS_LABEL[item.status] || item.status}</span> : null}</td>
                 <td className="ik-fu-ellipsis ik-inv-text" title={ikFollowupInvoiceText(item)}>{ikFollowupInvoiceText(item) || "-"}</td>
                 <td className="ik-fu-ellipsis ik-con-text" title={ikFollowupLotText(item)}>{ikFollowupLotText(item) || "-"}</td>
                 <td><InkoopMoneyDiff value={item.money_diff} /></td>
@@ -20661,6 +20671,18 @@ function InkoopFollowupWorkspace({ bar, onOpenTrackTrace, onOpenConnectData, mat
     <>
       {item.department === "control" && <button type="button" className="link-button" onClick={() => onOpenTrackTrace(item)} title="Open Track & Trace for this grower and day">Link</button>}
       {item.status !== "resolved" && !item.gone && <button type="button" className="link-button" onClick={() => quickResolve(item)}>Resolve</button>}
+      {item.credit && item.status !== "resolved" && (
+        <button type="button" className="link-button" title={`Resolve: ${ikRetourCreditText(item.credit)}`}
+          onClick={async () => {
+            setQuickError("");
+            try {
+              await inkoopFollowupUpdate([item], { status: "resolved" }, `Credit in: ${ikRetourCreditText(item.credit)}${ikClaimCreditCompare(item)}`);
+              reload();
+            } catch (resolveError) {
+              setQuickError(resolveError.message);
+            }
+          }}>✓ Credit in -- resolve</button>
+      )}
       <button type="button" className="link-button" onClick={(event) => openMenu(event, [item], item.description)} title="To a department or a category, or resolve as Geverifieerd">Follow ▾</button>
     </>
   );
@@ -25140,13 +25162,13 @@ function InkoopAi2BoxesCard() {
         AI2 lines read before 04-11-2026 show "? × ?": the Productnota has the boxes (Aantal × ApE), they were not kept then.
         This reads them again from the PDFs the app stored and fills in only the boxes of those lines -- nothing else changes, the match neither
         (AI2 lines are matched without a box size). Their days are compared again afterwards, so Track & Trace shows them.
-        It also turns the lines of a nota's Credit table read before 05-11-2026 (+315 pcs @ €−2.40) into the credits they are (−315 @ €2.40), with the purchase they credit ("factnr") -- so they are added to their purchase.
+        It fills in each line's Referentie too (what a credit's "factnr" names). It also turns the lines of a nota's Credit table read before 05-11-2026 (+315 pcs @ €−2.40) into the credits they are (−315 @ €2.40), with the purchase they credit ("factnr") -- so they are added to their purchase.
       </div>
       <div className="row-actions">
         <button type="button" className="primary" onClick={start} disabled={job?.running}>{job?.running ? `Reading… ${job.done} of ${job.notas} notas` : "Read the AI2 boxes and credits again"}</button>
         {job?.finished_at && !job.running && (
           <span className="muted">
-            Last run {formatTimestamp(job.finished_at)}: {job.credits_fixed ? `${job.credits_fixed} credit line(s) set right · ` : ""}{job.notas} nota(s) with {job.lines} line(s) without boxes -- {job.updated} line(s) got their boxes
+            Last run {formatTimestamp(job.finished_at)}: {job.credits_fixed ? `${job.credits_fixed} credit line(s) set right · ` : ""}{job.notas} nota(s) with {job.lines} line(s) without boxes or Referentie -- {job.updated} line(s) got their boxes, {job.referentie || 0} their Referentie
             {job.without_pdf ? `, ${job.without_pdf} nota(s) without a stored PDF (upload those notas again)` : ""}
             {job.lines - job.updated > 0 ? `, ${job.lines - job.updated} line(s) not found on their PDF` : ""}.
           </span>

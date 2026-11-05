@@ -61,6 +61,8 @@ import {
   getInkoopInvoiceSupplierIdentities,
   getInkoopAi2LinesWithoutBoxes,
   fixInkoopAi2CreditSigns,
+  setInkoopAi2LineReferentie,
+  getInkoopSupplierCreditsForLines,
   getInkoopInvoiceMatchFigures,
   getKingExportsByInvoice,
   getInkoopInvoiceTraceLines,
@@ -6901,11 +6903,11 @@ function inkoopInvoicePdfPath(invoiceNumber) {
 // of the lines that got boxes are compared again (the screens show them
 // from there); the match does not change -- AI2 lines are matched without a
 // box size. Runs in the background; the status is kept for the screen.
-const inkoopAi2BoxesJob = { running: false, started_at: "", finished_at: "", notas: 0, done: 0, lines: 0, updated: 0, without_pdf: 0, credits_fixed: 0, failed: [], error: "" };
+const inkoopAi2BoxesJob = { running: false, started_at: "", finished_at: "", notas: 0, done: 0, lines: 0, updated: 0, referentie: 0, without_pdf: 0, credits_fixed: 0, failed: [], error: "" };
 
 async function runInkoopAi2BoxesRefresh() {
   if (inkoopAi2BoxesJob.running) return;
-  Object.assign(inkoopAi2BoxesJob, { running: true, started_at: new Date().toISOString(), finished_at: "", notas: 0, done: 0, lines: 0, updated: 0, without_pdf: 0, credits_fixed: 0, failed: [], error: "" });
+  Object.assign(inkoopAi2BoxesJob, { running: true, started_at: new Date().toISOString(), finished_at: "", notas: 0, done: 0, lines: 0, updated: 0, referentie: 0, without_pdf: 0, credits_fixed: 0, failed: [], error: "" });
   try {
     // First the credit-table lines read with positive pieces (+315 @ -2.40):
     // the credits they are; their days are compared again with the rest.
@@ -6930,9 +6932,12 @@ async function runInkoopAi2BoxesRefresh() {
         const parsed = (JSON.parse(output.toString("utf8"))?.lines || []);
         const used = new Set();
         const updates = [];
+        const references = [];
         for (const line of lines) {
           const index = Number(String(line.id).match(/#(\d+)$/)?.[1]);
-          const fits = (item) => item && Number(item.packages) > 0 && Number(item.per_package) > 0
+          // The PDF's line: the same pieces, price and total (for the boxes
+          // it must have them; for the Referentie only that).
+          const fits = (item) => item && (line.has_boxes || (Number(item.packages) > 0 && Number(item.per_package) > 0))
             && same(item.quantity, line.quantity) && same(item.unit_price, line.unit_price) && same(item.total, line.total);
           let pick = Number.isInteger(index) && !used.has(index) && fits(parsed[index]) ? index : -1;
           if (pick < 0) {
@@ -6941,10 +6946,14 @@ async function runInkoopAi2BoxesRefresh() {
           }
           if (pick < 0) continue;
           used.add(pick);
-          updates.push({ id: line.id, packages: Number(parsed[pick].packages), per_package: Number(parsed[pick].per_package) });
-          if (line.invoice_date) dates.add(line.invoice_date);
+          if (!line.has_boxes && Number(parsed[pick].packages) > 0) {
+            updates.push({ id: line.id, packages: Number(parsed[pick].packages), per_package: Number(parsed[pick].per_package) });
+            if (line.invoice_date) dates.add(line.invoice_date);
+          }
+          if (!line.has_referentie && normalizeUkdocsText(parsed[pick].referentie)) references.push({ id: line.id, referentie: normalizeUkdocsText(parsed[pick].referentie) });
         }
         inkoopAi2BoxesJob.updated += await setInkoopInvoiceLineBoxes(updates);
+        inkoopAi2BoxesJob.referentie += await setInkoopAi2LineReferentie(references);
       } catch (notaError) {
         inkoopAi2BoxesJob.failed.push(`${invoiceNumber}: ${notaError instanceof Error ? notaError.message : String(notaError)}`.slice(0, 300));
       } finally {
@@ -13141,6 +13150,26 @@ async function inkoopAttachRetourCredits(items) {
     // (a correction) would find that credit: only the credits after its day.
     const credit = inkoopRetourCreditOf((byBase.get(inkoopPavBase(pav)) || []).filter((line) => item.type !== "claim" || String(line.invoice_date || "") > String(item.day || "")), item.lot?.date || item.day);
     return credit ? { ...item, credit } : item;
+  });
+}
+
+// A claim on a Handel / AI2 line (no brief number): its credit, a later
+// credit line of the same grower, product and price (AI2: naming the
+// purchase's Referentie) -- "credit in" as for a claim with a brief number.
+async function inkoopAttachSupplierCredits(items) {
+  const wanted = items.filter((item) => !item.credit && (item.status === "claimed" || item.type === "claim") && item.invoice
+    && !isRealInkoopPav(normalizeInkoopKey(item.invoice.reference)) && (item.invoice.id || item.invoice_number));
+  if (!wanted.length) return items;
+  const keys = wanted.map((item) => ({
+    key: item.id, id: normalizeUkdocsText(item.invoice.id),
+    invoice_number: String(item.invoice_number || "").split(" + ")[0], description: normalizeUkdocsText(item.description), quantity: item.invoice.quantity,
+  }));
+  const rows = await getInkoopSupplierCreditsForLines(keys).catch(() => []);
+  const byKey = new Map();
+  for (const row of rows) byKey.set(row.key, [...(byKey.get(row.key) || []), row]);
+  return items.map((item) => {
+    const lines = byKey.get(item.id);
+    return lines?.length ? { ...item, credit: inkoopRetourCreditOf(lines, "") } : item;
   });
 }
 
@@ -27871,7 +27900,7 @@ async function handleApi(req, res, url) {
       }
       if (grower) items = items.filter((item) => String(item.grower || "").toLowerCase().includes(grower));
       items = await inkoopAttachRetourCredits(items);
-      let merged = items.map((item) => inkoopFollowupWithStatus(item, statusById.get(item.id)));
+      let merged = await inkoopAttachSupplierCredits(items.map((item) => inkoopFollowupWithStatus(item, statusById.get(item.id))));
       if (category) merged = merged.filter((item) => item.category === category);
       if (claimsOnly) merged = merged.filter(isClaim);
       if (statusFilter === "open") merged = merged.filter((item) => item.status !== "resolved" && !item.gone);

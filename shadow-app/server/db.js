@@ -826,11 +826,12 @@ export async function getInkoopAi2LinesWithoutBoxes() {
   if (!pool) return [];
   const result = await pool.query(
     `SELECT id, invoice_number, to_char(invoice_date, 'YYYY-MM-DD') AS invoice_date, description,
-            quantity::float8 AS quantity, unit_price::float8 AS unit_price, total::float8 AS total
+            quantity::float8 AS quantity, unit_price::float8 AS unit_price, total::float8 AS total,
+            COALESCE(raw->>'packages', '') <> '' AS has_boxes, COALESCE(raw->>'referentie', '') <> '' AS has_referentie
        FROM inkoop_invoice_lines
       WHERE (invoice_type = 'ai2' OR invoice_number LIKE 'AI2-%')
         AND quantity IS NOT NULL AND unit_price IS NOT NULL
-        AND COALESCE(raw->>'packages', '') = ''
+        AND (COALESCE(raw->>'packages', '') = '' OR COALESCE(raw->>'referentie', '') = '')
       ORDER BY invoice_number, id`,
   );
   return result.rows;
@@ -878,6 +879,54 @@ export async function setInkoopInvoiceLineBoxes(rows) {
     updated += result.rowCount || 0;
   }
   return updated;
+}
+
+// The Referentie of some AI2 lines (read again from their nota), only where
+// a line has none.
+export async function setInkoopAi2LineReferentie(rows) {
+  if (!pool || !rows?.length) return 0;
+  let updated = 0;
+  for (const chunk of chunkArray(rows, 500)) {
+    const result = await pool.query(
+      `UPDATE inkoop_invoice_lines l
+          SET raw = COALESCE(l.raw, '{}'::jsonb) || jsonb_build_object('referentie', v.referentie)
+         FROM unnest($1::text[], $2::text[]) AS v(id, referentie)
+        WHERE l.id = v.id AND COALESCE(l.raw->>'referentie', '') = '' AND v.referentie <> ''`,
+      [chunk.map((row) => row.id), chunk.map((row) => row.referentie)],
+    );
+    updated += result.rowCount || 0;
+  }
+  return updated;
+}
+
+// The credits of some Handel / AI2 purchase lines (no brief number): a
+// later credit line of the same grower, product and price -- for AI2 one
+// that names the purchase's Referentie ("factnr") when both are known.
+// keys: [{ id, invoice_number, description, quantity }] (an id, or the line
+// by its invoice, product and pieces).
+export async function getInkoopSupplierCreditsForLines(keys) {
+  if (!pool || !keys?.length) return [];
+  const result = await pool.query(
+    `WITH k AS (
+       SELECT * FROM unnest($1::text[], $2::text[], $3::text[], $4::text[], $5::float8[]) AS k(key, id, invoice_number, description, quantity)
+     ), p AS (
+       SELECT k.key, l.id, l.invoice_type, l.supplier_name, l.description, l.unit_price, l.invoice_date, COALESCE(l.raw->>'referentie', '') AS referentie
+         FROM k JOIN inkoop_invoice_lines l
+           ON (k.id <> '' AND l.id = k.id)
+           OR (k.id = '' AND l.invoice_number = k.invoice_number AND l.description = k.description AND l.quantity = k.quantity)
+        WHERE l.quantity > 0 AND COALESCE(btrim(l.reference_bt), '') = ''
+     )
+     SELECT p.key, c.invoice_number, to_char(c.invoice_date, 'YYYY-MM-DD') AS invoice_date, c.quantity::float8 AS quantity, c.total::float8 AS total
+       FROM p JOIN inkoop_invoice_lines c
+         ON c.invoice_type = p.invoice_type AND c.supplier_name = p.supplier_name AND c.id <> p.id
+        AND c.quantity < 0 AND abs(c.unit_price - p.unit_price) < 0.0005
+        AND lower(btrim(c.description)) = lower(btrim(p.description))
+        AND c.invoice_date >= p.invoice_date AND c.invoice_date <= p.invoice_date + 90
+        AND (p.referentie = '' OR COALESCE(c.raw->>'credit_of', '') = '' OR c.raw->>'credit_of' = p.referentie)
+      ORDER BY c.invoice_date`,
+    [keys.map((key) => key.key), keys.map((key) => key.id || ""), keys.map((key) => key.invoice_number || ""), keys.map((key) => key.description || ""), keys.map((key) => Number(key.quantity) || 0)],
+  );
+  return result.rows;
 }
 
 // Invoices overview: per invoice how its lines matched (the stored match
