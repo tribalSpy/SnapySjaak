@@ -18999,6 +18999,29 @@ function InkoopTrackTraceWorkspace({ bar, setBar, overview, company, matchRound 
   };
   const openOf = (sum) => sum.not_matched_value + (openWithConnect ? sum.connect_only_value : 0);
   const [showOthers, setShowOthers] = useState(false);
+  const [linkDock, setLinkDock] = useState(() => { try { return ["float", "side", "top"].includes(window.localStorage.getItem("ik-tt-link-dock")) ? window.localStorage.getItem("ik-tt-link-dock") : "float"; } catch { return "float"; } });
+  const [linkPos, setLinkPos] = useState(() => { try { const pos = JSON.parse(window.localStorage.getItem("ik-tt-link-pos") || "null"); return pos && Number.isFinite(pos.x) && Number.isFinite(pos.y) ? pos : null; } catch { return null; } });
+  const chooseLinkDock = (value) => { setLinkDock(value); try { window.localStorage.setItem("ik-tt-link-dock", value); } catch { /* per browser only */ } };
+  // Dragged by its head; kept inside the window.
+  const startLinkDrag = (event) => {
+    if (event.button !== 0 || event.target.closest("button, input, a")) return;
+    const box = event.currentTarget.parentElement.getBoundingClientRect();
+    const dx = event.clientX - box.left;
+    const dy = event.clientY - box.top;
+    let last = null;
+    const move = (moveEvent) => {
+      last = { x: Math.max(0, Math.min(window.innerWidth - 160, moveEvent.clientX - dx)), y: Math.max(0, Math.min(window.innerHeight - 48, moveEvent.clientY - dy)) };
+      setLinkPos(last);
+    };
+    const up = () => {
+      window.removeEventListener("pointermove", move);
+      window.removeEventListener("pointerup", up);
+      if (last) { try { window.localStorage.setItem("ik-tt-link-pos", JSON.stringify(last)); } catch { /* per browser only */ } }
+    };
+    window.addEventListener("pointermove", move);
+    window.addEventListener("pointerup", up);
+    event.preventDefault();
+  };
   // "+ pool growers": the lots of the FloraHolland codes (WEST, Aalsmeer,
   // Connect with the grower ...), Euro Pa Shop -- or the growers picked with
   // ⚙ -- in this grower's own Connect list. Per browser (a convenience).
@@ -19340,6 +19363,67 @@ function InkoopTrackTraceWorkspace({ bar, setBar, overview, company, matchRound 
     );
   };
 
+  // The link info (what is ticked, the links not saved yet): a small window
+  // to drag anywhere (default), in the side bar under the growers, or the bar
+  // over the lists -- chosen in its head, kept per browser.
+  const linkHead = (
+    <div className="ik-link-head" onPointerDown={linkDock === "float" ? startLinkDrag : undefined} title={linkDock === "float" ? "Drag me where it suits you" : undefined}>
+      <strong>{linkDock === "float" ? "⠿ " : ""}🔗 Link</strong>
+      <span className="muted">{pickedLines.length} line(s) ↔ {linkLots.length} lot(s){pendingLinks.length ? ` · ${pendingLinks.length} to save` : ""}</span>
+      <span className="ik-link-docks">
+        {[["float", "⧉", "A small window to drag around"], ["side", "◧", "In the side bar, under the growers"], ["top", "▭", "A bar over the lists"]].map(([key, icon, title]) => (
+          <button key={key} type="button" className={`ik-chip${linkDock === key ? " on" : ""}`} onClick={() => chooseLinkDock(key)} title={title} aria-pressed={linkDock === key}>{icon}</button>
+        ))}
+      </span>
+    </div>
+  );
+  const linkPanel = pickedList.length || pendingLinks.length ? (
+    <div className={`ik-link-panel ${linkDock}`} style={linkDock === "float" && linkPos ? { left: linkPos.x, top: linkPos.y, right: "auto", bottom: "auto" } : undefined}>
+      {linkHead}
+    {!!pickedList.length && (
+      <div className="ik-linkbar">
+        <span><strong>Link:</strong> invoice {pickedLines.length} line(s) {invoicePieces} pcs {formatInkoopEuro(invoiceValue)}</span>
+        <span>Connect {linkLots.length} lot(s) {connectPieces} pcs {formatInkoopEuro(connectValue)}</span>
+        <span>difference <InkoopMoneyDiff value={Math.round((invoiceValue - connectValue) * 100) / 100} /></span>
+        {(() => {
+          // A ticked line that is a correction: the pieces credited
+          // can still be in Connect's lots -- the difference is that
+          // credit, not an error; the dispatch shows later whether
+          // they went back (Corrections › Connect dispatch only).
+          const corrected = pickedLines.map((issue) => ({ issue, correction: inkoopCorrectionOf(issue.detail) })).filter((entry) => entry.correction);
+          if (!corrected.length) return null;
+          const credited = corrected.reduce((sum, entry) => sum + entry.correction.credited, 0);
+          const invoiced = corrected.reduce((sum, entry) => sum + entry.correction.invoiced, 0);
+          const extra = Math.round((connectPieces - invoicePieces) * 100) / 100;
+          return (
+            <span className="ik-correction-note" title="Whether the credited pieces went back to a retour customer shows in Corrections › Connect dispatch only, once the dispatch is uploaded">
+              ↩ {corrected.length === 1 ? `${corrected[0].issue.detail?.reference_bt || corrected[0].issue.detail?.pav || "this line"} is a correction` : `${corrected.length} lines are corrections`}: invoiced {invoiced}, credited {credited} pcs
+              {extra > 0 && Math.abs(extra - credited) < 0.01 ? ` -- the ${extra} pcs more in Connect are the credited ones` : ""}
+            </span>
+          );
+        })()}
+        <input value={pairNote} onChange={(event) => setPairNote(event.target.value)} placeholder="Note (why they belong together)" size={30} />
+        <button type="button" className="primary" onClick={addLink} disabled={busy || !pickedLines.length || !linkLots.length}>Add link</button>
+        <button type="button" onClick={() => setPicked({})}>Clear</button>
+      </div>
+    )}
+    {!!pendingLinks.length && (
+      <div className="ik-linkbar ik-pending-links">
+        <strong>{pendingLinks.length} link(s) not saved yet</strong>
+        <ol>
+          {pendingLinks.map((link) => (
+            <li key={link.key}>
+              {link.text} · difference <InkoopMoneyDiff value={link.difference} />{link.pair.note ? <em> -- {link.pair.note}</em> : null}
+              <button type="button" className="link-button" onClick={() => dropLink(link)} disabled={busy} title="Take this link out (its lines come back)">✕</button>
+            </li>
+          ))}
+        </ol>
+        <button type="button" className="primary" onClick={saveLinks} disabled={busy}>{busy ? "Saving…" : `Save ${pendingLinks.length} link(s)`}</button>
+      </div>
+    )}
+    </div>
+  ) : null;
+
   if (overview.error) return <div className="notice danger">{overview.error}</div>;
   if (!overview.rows) return <div className="notice">Loading…</div>;
   return (
@@ -19372,6 +19456,7 @@ function InkoopTrackTraceWorkspace({ bar, setBar, overview, company, matchRound 
             {!growers.length && <div className="muted">No growers for this choice.</div>}
           </div>
         </div>
+        {linkDock === "side" && linkPanel}
       </aside>
       <section className="ik-tt-main">
         {!chosen ? (
@@ -19412,47 +19497,7 @@ function InkoopTrackTraceWorkspace({ bar, setBar, overview, company, matchRound 
             </div>
             {issueError && <div className="notice danger">{issueError}</div>}
             {inkoopDaysBetween(from, to) > 30 && <div className="notice">Open lines to link: the last 31 days of the period ({fustOverviewDate(issueFrom)} – {fustOverviewDate(to)}).</div>}
-            {!!pickedList.length && (
-              <div className="ik-linkbar">
-                <span><strong>Link:</strong> invoice {pickedLines.length} line(s) {invoicePieces} pcs {formatInkoopEuro(invoiceValue)}</span>
-                <span>Connect {linkLots.length} lot(s) {connectPieces} pcs {formatInkoopEuro(connectValue)}</span>
-                <span>difference <InkoopMoneyDiff value={Math.round((invoiceValue - connectValue) * 100) / 100} /></span>
-                {(() => {
-                  // A ticked line that is a correction: the pieces credited
-                  // can still be in Connect's lots -- the difference is that
-                  // credit, not an error; the dispatch shows later whether
-                  // they went back (Corrections › Connect dispatch only).
-                  const corrected = pickedLines.map((issue) => ({ issue, correction: inkoopCorrectionOf(issue.detail) })).filter((entry) => entry.correction);
-                  if (!corrected.length) return null;
-                  const credited = corrected.reduce((sum, entry) => sum + entry.correction.credited, 0);
-                  const invoiced = corrected.reduce((sum, entry) => sum + entry.correction.invoiced, 0);
-                  const extra = Math.round((connectPieces - invoicePieces) * 100) / 100;
-                  return (
-                    <span className="ik-correction-note" title="Whether the credited pieces went back to a retour customer shows in Corrections › Connect dispatch only, once the dispatch is uploaded">
-                      ↩ {corrected.length === 1 ? `${corrected[0].issue.detail?.reference_bt || corrected[0].issue.detail?.pav || "this line"} is a correction` : `${corrected.length} lines are corrections`}: invoiced {invoiced}, credited {credited} pcs
-                      {extra > 0 && Math.abs(extra - credited) < 0.01 ? ` -- the ${extra} pcs more in Connect are the credited ones` : ""}
-                    </span>
-                  );
-                })()}
-                <input value={pairNote} onChange={(event) => setPairNote(event.target.value)} placeholder="Note (why they belong together)" size={30} />
-                <button type="button" className="primary" onClick={addLink} disabled={busy || !pickedLines.length || !linkLots.length}>Add link</button>
-                <button type="button" onClick={() => setPicked({})}>Clear</button>
-              </div>
-            )}
-            {!!pendingLinks.length && (
-              <div className="ik-linkbar ik-pending-links">
-                <strong>{pendingLinks.length} link(s) not saved yet</strong>
-                <ol>
-                  {pendingLinks.map((link) => (
-                    <li key={link.key}>
-                      {link.text} · difference <InkoopMoneyDiff value={link.difference} />{link.pair.note ? <em> -- {link.pair.note}</em> : null}
-                      <button type="button" className="link-button" onClick={() => dropLink(link)} disabled={busy} title="Take this link out (its lines come back)">✕</button>
-                    </li>
-                  ))}
-                </ol>
-                <button type="button" className="primary" onClick={saveLinks} disabled={busy}>{busy ? "Saving…" : `Save ${pendingLinks.length} link(s)`}</button>
-              </div>
-            )}
+            {linkDock !== "side" && linkPanel}
             <div className="ik-split-view">
               <div className="data-table-card ik-card ik-side inv">
                 <div className="ik-side-head"><strong>Invoice lines without their lot</strong><span className="muted">{sideCount(leftIssues, leftAll)}</span>{searchBox("left")}{sortSelect("left")}{tickAll(leftIssues)}</div>
