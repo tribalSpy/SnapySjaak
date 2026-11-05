@@ -4204,7 +4204,7 @@ button.ik-kpi:hover {
 .ik-inv-company-name > span { display: grid; gap: 2px; }
 .ik-inv-company .ik-ring { flex: none; }
 .ik-inv-company .ik-ring-label small { display: none; }
-.ik-inv-company .ik-ring-label strong { font-size: 0.72rem; }
+
 .ik-inv-chips { display: flex; gap: 8px; margin-top: 3px; white-space: nowrap; }
 .ik-inv-stack { display: inline-flex; gap: 2px; height: 9px; border-radius: 4px; overflow: hidden; background: var(--ik-track); vertical-align: middle; }
 .ik-inv-stack-part { display: block; height: 100%; }

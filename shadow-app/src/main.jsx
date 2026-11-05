@@ -15872,7 +15872,7 @@ function inkoopErpExtras(erpRow) {
 
 const INKOOP_INVOICE_TYPE_LABELS = { klokfactuur: "Klokfactuur", connect: "Connect", handel: "Handel", ai2: "AI2", dienst: "Dienst (FD)", handel_verkoop: "Handel verkoop (HV)" };
 
-// Invoices overview: what each buying company was invoiced in a period
+// Financieel overzicht (was Setup › Invoices overview): what each buying company was invoiced in a period
 // (by factuurdatum) and what became of it -- per company a ring with the
 // matched %, the flows and the money matched / differing / open; opened,
 // its invoices, an invoice opened its lines; right-click an invoice or a
@@ -17777,21 +17777,25 @@ function inkoopDownloadCsv(fileName, rows) {
 // Matched % as a ring, the number in the middle (with ✓ / ✗ -- never colour
 // alone).
 function IkRing({ pct, size = 76, label = "matched" }) {
-  const radius = (size - 10) / 2;
+  // A small ring (a table row, a bar): a thinner stroke and a smaller number
+  // without the ✓ / ✗, so the number stays inside the ring.
+  const small = size < 60;
+  const stroke = small ? 5 : 7;
+  const radius = small ? (size - stroke - 2) / 2 : (size - 10) / 2;
   const circumference = 2 * Math.PI * radius;
   const value = pct === null || pct === undefined || !Number.isFinite(pct) ? null : Math.max(0, Math.min(100, pct));
   const tone = value === null ? "" : value >= 99.95 ? "good" : value < 50 ? "bad" : "mid";
   return (
     <div className={`ik-ring ${tone}`} style={{ width: size, height: size }} title={value === null ? "No figures" : `${value.toFixed(1)}% ${label}`}>
       <svg viewBox={`0 0 ${size} ${size}`} width={size} height={size} aria-hidden="true">
-        <circle cx={size / 2} cy={size / 2} r={radius} fill="none" className="ik-ring-track" strokeWidth="7" />
+        <circle cx={size / 2} cy={size / 2} r={radius} fill="none" className="ik-ring-track" strokeWidth={stroke} />
         {value !== null && value > 0 && (
-          <circle cx={size / 2} cy={size / 2} r={radius} fill="none" className="ik-ring-value" strokeWidth="7" strokeLinecap="round"
+          <circle cx={size / 2} cy={size / 2} r={radius} fill="none" className="ik-ring-value" strokeWidth={stroke} strokeLinecap="round"
             strokeDasharray={`${(value / 100) * circumference} ${circumference}`} transform={`rotate(-90 ${size / 2} ${size / 2})`} />
         )}
       </svg>
       <div className="ik-ring-label">
-        <strong>{value === null ? "–" : `${value >= 99.95 ? "✓ " : value < 0.05 ? "✗ " : ""}${value >= 10 || value === 0 ? Math.round(value) : value.toFixed(1)}%`}</strong>
+        <strong style={small ? { fontSize: `${Math.round(size * 0.23)}px` } : undefined}>{value === null ? "–" : `${small ? "" : value >= 99.95 ? "✓ " : value < 0.05 ? "✗ " : ""}${value >= 10 || value === 0 ? Math.round(value) : value.toFixed(1)}%`}</strong>
         <small>{label}</small>
       </div>
     </div>
@@ -20771,6 +20775,7 @@ function InkoopFollowupWorkspace({ bar, onOpenTrackTrace, onOpenConnectData, mat
 // The Inkoop menu: the workspaces as tiles (as the Fust menu), each with one
 // live figure of this month.
 const INKOOP_WORKSPACES = [
+  ["overview", "Financieel overzicht", "The invoices per company: matched %, open, King; trace an invoice"],
   ["trace", "Dashboard", "The money trace: totals, days, growers, flows, pairs"],
   ["tracktrace", "Track & Trace", "A grower's invoice lines and Connect lots side by side; check and link"],
   ["fu", "Follow-up", "Open lines per department (Control → Inkoop / Finance), categories like High control"],
@@ -20781,7 +20786,6 @@ const INKOOP_WORKSPACES = [
 const INKOOP_SETUP_TILES = [
   ["compare", "Upload & compare", "Upload Connect, invoices, night files; compare a day"],
   ["connectdata", "Connect data", "Per day: invoices, Connect export, Communications, Levering BB"],
-  ["overview", "Invoices overview", "The uploaded invoices per company"],
   ["growers", "Growers", "Grower directory and betaalwijze"],
   ["linkgrowers", "Link growers", "Link invoice growers to Connect codes"],
   ["data", "Data", "Every stored table"],
@@ -21332,7 +21336,7 @@ function InkoopControlePage({ currentUser }) {
         <div className="section-header fust-section-nav">
           <h2>{INKOOP_SETUP_KEYS.has(activeTab) ? <span className="muted">Setup › </span> : null}{INKOOP_TAB_TITLES[activeTab] || activeTab}</h2>
           <div className="row-actions">
-            {activeTab === "tracktrace" && ttReturn && <button type="button" className="primary" onClick={backToFollowup}>← Back to {ttReturn.tab === "trace" ? "Dashboard" : ttReturn.tab === "overview" ? "Invoices overview" : "Follow-up"}</button>}
+            {activeTab === "tracktrace" && ttReturn && <button type="button" className="primary" onClick={backToFollowup}>← Back to {ttReturn.tab === "trace" ? "Dashboard" : ttReturn.tab === "overview" ? "Financieel overzicht" : "Follow-up"}</button>}
             {INKOOP_SETUP_KEYS.has(activeTab) && <button type="button" onClick={() => setActiveTab("setup")}>Setup</button>}
             <button type="button" onClick={() => setActiveTab("")}>Inkoop menu</button>
           </div>
