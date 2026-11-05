@@ -7771,6 +7771,19 @@ function findInkoopPiecesCombination(rows, target) {
 // grower's purchase.
 const INKOOP_POOL_CODES = new Set(["F2", "X99", "WEST", "VBA", "FLORA"]);
 
+// The grower a Connect lot without an invoice is named after. A lot booked
+// under an auction / pool code (WEST, VBA, FLORA, a code on the skip list)
+// with a grower's own code in Avc. or Transp (WEST / Avc OUDENJ: Jac Oudijk's
+// lot) is that grower's lot; an auction's Avc. is normally a buyer plate
+// (W0091B) -- no grower of that code, so the lot stays under its Suppl.
+function inkoopErpLotGrowerCode(erp, codeToName) {
+  const suppl = normalizeInkoopKey(erp?.suppl);
+  if (!INKOOP_POOL_CODES.has(suppl) && !inkoopNonGrowerCodes.has(suppl)) return suppl;
+  const own = [erp?.avc, erp?.transp].map((value) => normalizeInkoopKey(value))
+    .find((code) => code && !INKOOP_POOL_CODES.has(code) && !inkoopNonGrowerCodes.has(code) && codeToName?.has(code));
+  return own || suppl;
+}
+
 // A clock / Connect order number's own part: the first 17 digits of the
 // 20-digit number -- the last 3 differ per lot (invoice XML
 // "09999287041565500001", the Connect lot's popup "09999287041565500018",
@@ -11300,7 +11313,7 @@ function inkoopOverviewNaming(state) {
 }
 
 // The result lines as table rows (the Data tab).
-function buildInkoopMatchRows(result) {
+function buildInkoopMatchRows(result, codeToName = null) {
   const rows = [];
   for (const list of INKOOP_RESULT_LISTS) {
     for (const row of Array.isArray(result?.[list]) ? result[list] : []) {
@@ -11323,7 +11336,7 @@ function buildInkoopMatchRows(result) {
         invoice_type: normalizeUkdocsText(invoice?.invoice_type),
         pav: normalizeUkdocsText(row?.pav || row?.reference_bt || erp?.pav),
         lot: erp?.lot !== undefined && erp?.lot !== null ? String(erp.lot) : "",
-        supplier_code: normalizeUkdocsText(row?.supplier_code || erp?.suppl),
+        supplier_code: normalizeUkdocsText(row?.supplier_code || (list === "only_in_erp" ? inkoopErpLotGrowerCode(erp, codeToName) : erp?.suppl)),
         supplier_name: normalizeUkdocsText(invoice?.supplier_name || row?.supplier_bw_name),
         description: normalizeUkdocsText(row?.description || erp?.description),
         invoice_quantity: inkoopNumberOrNull(invoice?.quantity),
@@ -11373,7 +11386,7 @@ async function storeInkoopMatchBundle(bundle, fingerprint, generation, durationM
     result: bundle.result,
     aggregate: serializeInkoopAggregate(bundle.aggregateContext?.aggregateResult, bundle.date),
     counts: inkoopDayCounts(bundle.result),
-    rows: buildInkoopMatchRows(bundle.result),
+    rows: buildInkoopMatchRows(bundle.result, bundle.aggregateContext?.codeToName),
     durationMs,
   });
   await storeInkoopDaySummaryFromBundle(bundle, fingerprint);
@@ -13064,7 +13077,7 @@ function buildInkoopDayIssues(state, day, company, issues, addTotal = () => {}, 
         const erp = issue.issue_type === "gap_erp" ? row : row?.erp_row;
         const stored = {
           list: issue.issue_type === "gap_erp" ? "only_in_erp" : "",
-          supplier_code: normalizeUkdocsText(row?.supplier_code || erp?.suppl),
+          supplier_code: normalizeUkdocsText(row?.supplier_code || (issue.issue_type === "gap_erp" ? inkoopErpLotGrowerCode(erp, codeToName) : erp?.suppl)),
           supplier_name: normalizeUkdocsText(issue.issue_type === "gap_erp" ? row?.supplier_bw_name : row?.supplier_name || row?.supplier_bw_name),
           invoice_type: row?.invoice_type, invoice_number: row?.invoice_number,
         };
