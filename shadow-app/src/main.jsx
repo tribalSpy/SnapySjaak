@@ -18999,6 +18999,14 @@ function InkoopTrackTraceWorkspace({ bar, setBar, overview, company, matchRound 
   };
   const openOf = (sum) => sum.not_matched_value + (openWithConnect ? sum.connect_only_value : 0);
   const [showOthers, setShowOthers] = useState(false);
+  // "+ pool growers": the lots of the FloraHolland codes (WEST, Aalsmeer,
+  // Connect with the grower ...), Euro Pa Shop -- or the growers picked with
+  // ⚙ -- in this grower's own Connect list. Per browser (a convenience).
+  const [poolOn, setPoolOn] = useState(() => { try { return window.localStorage.getItem("ik-tt-pool-on") === "1"; } catch { return false; } });
+  const [poolPick, setPoolPick] = useState(() => { try { const saved = JSON.parse(window.localStorage.getItem("ik-tt-pool-growers") || "null"); return Array.isArray(saved) ? saved : null; } catch { return null; } });
+  const [poolChooser, setPoolChooser] = useState(false);
+  const savePoolOn = (value) => { setPoolOn(value); try { window.localStorage.setItem("ik-tt-pool-on", value ? "1" : "0"); } catch { /* per browser only */ } };
+  const savePoolPick = (list) => { setPoolPick(list); try { if (list === null) window.localStorage.removeItem("ik-tt-pool-growers"); else window.localStorage.setItem("ik-tt-pool-growers", JSON.stringify(list)); } catch { /* per browser only */ } };
   const [otherGrower, setOtherGrower] = useState("");
   const [otherSearch, setOtherSearch] = useState("");
   const [showOtherLines, setShowOtherLines] = useState(false);
@@ -19097,9 +19105,8 @@ function InkoopTrackTraceWorkspace({ bar, setBar, overview, company, matchRound 
   };
   const notLinked = (issue) => !hiddenKeys[issue.issue_type === "gap_erp" ? `lot:${issue.erp_row?.lot}` : `line:${issue.detail?.id}`];
   const leftAll = growerIssues.filter((issue) => (issue.issue_type === "gap_invoice" || piecesShort(issue)) && notLinked(issue));
-  const rightAll = growerIssues.filter((issue) => issue.issue_type === "gap_erp" && notLinked(issue));
+  const rightOwn = growerIssues.filter((issue) => issue.issue_type === "gap_erp" && notLinked(issue));
   const leftIssues = leftAll.filter((issue) => searchHit(issue, searches.left)).sort(sorter(sorts.left));
-  const rightIssues = rightAll.filter((issue) => searchHit(issue, searches.right)).sort(sorter(sorts.right));
   // A search that hides lines says so (count "0 of 3", and a way back).
   const sideCount = (shown, all) => (shown.length === all.length ? shown.length : `${shown.length} of ${all.length}`);
   const sideEmpty = (sideKey, all, nothing) => (all.length
@@ -19124,6 +19131,11 @@ function InkoopTrackTraceWorkspace({ bar, setBar, overview, company, matchRound 
     .sort((left, right) => Number(/floraholland/i.test(right[0])) - Number(/floraholland/i.test(left[0])) || right[1] - left[1]);
   const otherGrowers = growersOf(otherLots);
   const otherLineGrowers = growersOf(otherLines);
+  // The pool growers (⚙): by default every FloraHolland code and Euro Pa Shop.
+  const poolNames = new Set(poolPick ?? otherGrowers.map(([name]) => name).filter((name) => /floraholland|europashop/i.test(name)));
+  const poolLots = poolOn ? otherLots.filter((issue) => poolNames.has(issue.grower || "-")) : [];
+  const poolSet = new Set(poolLots);
+  const rightAll = [...rightOwn, ...poolLots];
   const piecesOfIssue = (issue) => Number(issue.issue_type === "gap_erp" ? issue.erp_row?.pieces : issue.detail?.quantity) || 0;
   const likeLine = Object.values(picked).find((issue) => issue.issue_type !== "gap_erp");
   const likeLot = Object.values(picked).find((issue) => issue.issue_type === "gap_erp");
@@ -19141,12 +19153,20 @@ function InkoopTrackTraceWorkspace({ bar, setBar, overview, company, matchRound 
     return { score: (why.includes("same pieces") ? 4 : 0) + (why.includes("same € / pc") ? 3 : 0) + shared + (why.includes("same day") ? 1 : 0), why };
   };
   // Worked out only while a pool is open (thousands of lots and lines).
+  // Its own lots first, then the pool growers' (the most like a ticked line
+  // first); at most 150 of the pools.
+  const poolShown = poolLots.filter((issue) => searchHit(issue, searches.right))
+    .map((issue) => ({ issue, like: likenessTo(likeLine)(issue) }))
+    .sort((left, right) => right.like.score - left.like.score || sorter(sorts.right)(left.issue, right.issue));
+  const poolLike = new Map(poolShown.map(({ issue, like }) => [issue, like]));
+  const rightIssues = [...rightOwn.filter((issue) => searchHit(issue, searches.right)).sort(sorter(sorts.right)), ...poolShown.slice(0, 150).map(({ issue }) => issue)];
   const otherShown = !showOthers ? [] : otherLots.filter((issue) => (!otherGrower || (issue.grower || "-") === otherGrower) && searchHit(issue, otherSearch))
     .map((issue) => ({ issue, like: likenessTo(likeLine)(issue) }))
     .sort((left, right) => right.like.score - left.like.score || sorter(sorts.right)(left.issue, right.issue));
   // The growers opened in the pools (picked in the list, or what the search
   // finds): Find pairs searches their lines and lots along.
   const poolGrowers = [...new Set([
+    ...(poolOn ? [...poolNames] : []),
     ...(showOthers ? [otherGrower, ...(otherSearch.trim() ? otherShown.slice(0, 60).map(({ issue }) => issue.grower) : [])] : []),
     ...(showOtherLines ? [otherLineGrower, ...(otherLineSearch.trim() ? otherLines.filter((issue) => (!otherLineGrower || (issue.grower || "-") === otherLineGrower) && searchHit(issue, otherLineSearch)).slice(0, 60).map((issue) => issue.grower) : [])] : []),
   ].filter((name) => name && name !== "-"))].slice(0, 12);
@@ -19461,7 +19481,35 @@ function InkoopTrackTraceWorkspace({ bar, setBar, overview, company, matchRound 
               </div>
               <div className="data-table-card ik-card ik-side con">
                 <div className="ik-side-head"><strong>Connect lots without an invoice</strong><span className="muted">{sideCount(rightIssues, rightAll)}</span>{searchBox("right")}{sortSelect("right")}{tickAll(rightIssues)}</div>
-                {!issues ? <div className="muted">Loading…</div> : rightIssues.length ? rightIssues.map((issue) => issueRow(issue, "con")) : sideEmpty("right", rightAll, "✓ Nothing open on the Connect side.")}
+                <div className="ik-side-head ik-pool-head">
+                  <label title="Also the open lots of the pool growers in this list -- the FloraHolland codes (WEST, Aalsmeer, Connect with the grower ...) and Euro Pa Shop, or the growers picked with ⚙ -- to tick with this grower's invoice line and Link">
+                    <input type="checkbox" checked={poolOn} onChange={(event) => savePoolOn(event.target.checked)} /> + pool growers{poolOn ? ` (${poolLots.length} lots)` : ""}
+                  </label>
+                  <button type="button" className="ik-chip" onClick={() => setPoolChooser((value) => !value)} aria-expanded={poolChooser} title="Which growers are the pool growers">⚙ {poolNames.size} grower(s)</button>
+                </div>
+                {poolChooser && (
+                  <div className="ik-pool-chooser">
+                    <div className="ik-side-head">
+                      <span className="muted">The growers whose lots “+ pool growers” adds (open lots in this period):</span>
+                      <button type="button" className="ik-chip" onClick={() => savePoolPick(null)} title="Every FloraHolland code and Euro Pa Shop">FloraHolland &amp; Euro Pa Shop</button>
+                      <button type="button" className="ik-chip" onClick={() => savePoolPick([])}>None</button>
+                    </div>
+                    <div className="ik-pool-list">
+                      {otherGrowers.map(([name, count]) => (
+                        <label key={name}>
+                          <input type="checkbox" checked={poolNames.has(name)} onChange={(event) => {
+                            const next = new Set(poolNames);
+                            if (event.target.checked) next.add(name); else next.delete(name);
+                            savePoolPick([...next]);
+                          }} /> {name} <span className="muted">({count})</span>
+                        </label>
+                      ))}
+                      {!otherGrowers.length && <span className="muted">No open lots of other growers in this period.</span>}
+                    </div>
+                  </div>
+                )}
+                {!issues ? <div className="muted">Loading…</div> : rightIssues.length ? rightIssues.map((issue) => (poolSet.has(issue) ? issueRow(issue, "con other", poolLike.get(issue) || { score: 0, why: [] }) : issueRow(issue, "con"))) : sideEmpty("right", rightAll, "✓ Nothing open on the Connect side.")}
+                {poolShown.length > 150 && <div className="muted">… {poolShown.length - 150} more pool lots -- narrow it with the search.</div>}
                 <div className="ik-others">
                   <button type="button" className="link-button" onClick={() => setShowOthers((value) => !value)} aria-expanded={showOthers}>
                     {showOthers ? "▾" : "▸"} Lots of other growers / FloraHolland pools ({otherLots.length})
