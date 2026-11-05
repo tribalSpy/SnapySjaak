@@ -19085,12 +19085,15 @@ function InkoopTrackTraceWorkspace({ bar, setBar, overview, company, matchRound 
   // Boxes are searched as "2x6" (or "2 x 6", "2×6"): the very count and
   // size -- "2x6" is not 12 × 60.
   const boxesOf = (text) => String(text || "").toLowerCase().replace(/(\d)\s*[x×]\s*(\d)/g, "$1x$2");
+  // The grower's name too ("baltica x25"); "|" for one or the other
+  // ("baltica x25 | 0.17 x80"), every word within each part; a lone "." or
+  // "-" is no word.
   const searchHit = (issue, text) => {
-    const words = boxesOf(text).split(/\s+/).filter(Boolean);
-    if (!words.length) return true;
-    const haystack = boxesOf([issue.description, issue.invoice_number, issue.issue_type === "gap_erp" ? inkoopErpTranscript(issue.erp_row) : inkoopInvoiceTranscript(issue.detail),
-      issue.detail?.your_reference, issue.erp_row?.lot, issue.erp_row?.pav].map((value) => String(value ?? "")).join(" "));
-    return words.every((word) => (/^\d+x\d+$/.test(word) ? new RegExp(`(^|[^0-9])${word}($|[^0-9])`).test(haystack) : haystack.includes(word)));
+    const parts = boxesOf(text).split("|").map((part) => part.split(/\s+/).filter((word) => word && !/^[.,;:\-–]+$/.test(word))).filter((words) => words.length);
+    if (!parts.length) return true;
+    const haystack = boxesOf([issue.grower, issue.description, issue.invoice_number, issue.issue_type === "gap_erp" ? inkoopErpTranscript(issue.erp_row) : inkoopInvoiceTranscript(issue.detail),
+      issue.detail?.your_reference, issue.detail?.supplier_name, issue.erp_row?.lot, issue.erp_row?.pav, issue.erp_row?.supplier_bw_name].map((value) => String(value ?? "")).join(" "));
+    return parts.some((words) => words.every((word) => (/^\d+x\d+$/.test(word) ? new RegExp(`(^|[^0-9])${word}($|[^0-9])`).test(haystack) : haystack.includes(word))));
   };
   const notLinked = (issue) => !hiddenKeys[issue.issue_type === "gap_erp" ? `lot:${issue.erp_row?.lot}` : `line:${issue.detail?.id}`];
   const leftAll = growerIssues.filter((issue) => (issue.issue_type === "gap_invoice" || piecesShort(issue)) && notLinked(issue));
@@ -19275,7 +19278,7 @@ function InkoopTrackTraceWorkspace({ bar, setBar, overview, company, matchRound 
     );
   };
   const searchBox = (sideKey) => (
-    <input className="ik-side-search" value={searches[sideKey]} placeholder="Search…" title="Product, brief / ref., lot, invoice, pieces, price or boxes (2x6) -- every word"
+    <input className="ik-side-search" value={searches[sideKey]} placeholder="Search…" title="Grower, product, brief / ref., lot, invoice, pieces, price or boxes (2x6) -- every word; | for one or the other (baltica x25 | 0.17 x80)"
       onChange={(event) => setSearches((current) => ({ ...current, [sideKey]: event.target.value }))} />
   );
   const sortSelect = (sideKey) => (
@@ -19446,7 +19449,7 @@ function InkoopTrackTraceWorkspace({ bar, setBar, overview, company, matchRound 
                           <option value="">All other growers ({otherLines.length})</option>
                           {otherLineGrowers.map(([name, count]) => <option key={name} value={name}>{name} ({count})</option>)}
                         </select>
-                        <input className="ik-side-search" value={otherLineSearch} placeholder="Search…" onChange={(event) => setOtherLineSearch(event.target.value)} title="Product, brief / ref., invoice, pieces, price, boxes (2x6) -- every word" />
+                        <input className="ik-side-search" value={otherLineSearch} placeholder="Search…" onChange={(event) => setOtherLineSearch(event.target.value)} title="Grower, product, brief / ref., invoice, pieces, price, boxes (2x6) -- every word; | for one or the other (baltica x25 | 0.17 x80)" />
                         {tickAll(otherLinesShown.slice(0, 150).map(({ issue }) => issue))}
                       </div>
                       {otherLinesShown.slice(0, 150).map(({ issue, like }) => issueRow(issue, "inv other", like))}
@@ -19471,7 +19474,7 @@ function InkoopTrackTraceWorkspace({ bar, setBar, overview, company, matchRound 
                           <option value="">All other growers ({otherLots.length})</option>
                           {otherGrowers.map(([name, count]) => <option key={name} value={name}>{name} ({count})</option>)}
                         </select>
-                        <input className="ik-side-search" value={otherSearch} placeholder="Search…" onChange={(event) => setOtherSearch(event.target.value)} title="Product, lot, pieces, price, boxes (2x6) -- every word" />
+                        <input className="ik-side-search" value={otherSearch} placeholder="Search…" onChange={(event) => setOtherSearch(event.target.value)} title="Grower, product, lot, codes, pieces, price, boxes (2x6) -- every word; | for one or the other (baltica x25 | 0.17 x80)" />
                         {tickAll(otherShown.slice(0, 150).map(({ issue }) => issue))}
                       </div>
                       {otherShown.slice(0, 150).map(({ issue, like }) => issueRow(issue, "con other", like))}
