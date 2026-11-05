@@ -836,6 +836,32 @@ export async function getInkoopAi2LinesWithoutBoxes() {
   return result.rows;
 }
 
+// AI2 credit-table lines read before 2026-11-05 (+315 @ -2.40 = -756): as
+// the credit they are -- -315 @ 2.40 = -756 -- with the purchase they
+// credit ("*factnr:3135476") kept apart from the product name. Columns and
+// raw alike (the comparison reads raw). Returns the lines fixed.
+export async function fixInkoopAi2CreditSigns() {
+  if (!pool) return [];
+  const result = await pool.query(
+    `WITH fixed AS (
+       SELECT id, -abs(quantity) AS quantity, abs(unit_price) AS unit_price, -abs(total) AS total,
+              btrim(regexp_replace(COALESCE(description, ''), '\\s*\\*\\s*factnr\\s*:\\s*[0-9]+', '', 'i')) AS description,
+              COALESCE(substring(COALESCE(description, '') from '(?i)factnr\\s*:\\s*([0-9]+)'), '') AS credit_of
+         FROM inkoop_invoice_lines
+        WHERE (invoice_type = 'ai2' OR invoice_number LIKE 'AI2-%') AND quantity > 0 AND unit_price < 0
+     )
+     UPDATE inkoop_invoice_lines l
+        SET quantity = f.quantity, unit_price = f.unit_price, total = f.total, description = f.description,
+            raw = COALESCE(l.raw, '{}'::jsonb) || jsonb_build_object('quantity', f.quantity, 'unit_price', f.unit_price, 'total', f.total,
+              'description', f.description, 'credit_of', f.credit_of, 'is_credit', true),
+            updated_at = now()
+       FROM fixed f
+      WHERE l.id = f.id
+      RETURNING l.id, to_char(l.invoice_date, 'YYYY-MM-DD') AS invoice_date`,
+  );
+  return result.rows;
+}
+
 // Only the boxes of some invoice lines (raw.packages / raw.per_package);
 // nothing else of the line changes.
 export async function setInkoopInvoiceLineBoxes(rows) {
@@ -2611,7 +2637,7 @@ export async function getInkoopCorrectionLines({ from, to, marginDays = 4 } = {}
   const select = `
     SELECT l.id, l.invoice_number, l.invoice_type, l.company_number, to_char(l.invoice_date, 'YYYY-MM-DD') AS invoice_date,
       l.reference_bt AS pav, l.description, l.supplier_name, l.quantity::float8 AS quantity,
-      l.unit_price::float8 AS unit_price, l.total::float8 AS total
+      l.unit_price::float8 AS unit_price, l.total::float8 AS total, l.raw->>'credit_of' AS credit_of
     FROM inkoop_invoice_lines l`;
   const credits = await pool.query(
     `${select}
@@ -2668,6 +2694,29 @@ export async function getInkoopCreditLinesByPav(pavs, from) {
        AND ${INKOOP_LINE_KIND_SQL} = 'product'
      ORDER BY l.invoice_date, l.invoice_number`,
     [variants, from || null],
+  );
+  return result.rows;
+}
+
+// The purchases a Handel / AI2 credit (no brief number) can be of: the same
+// grower's product lines at its price, up to a month before it -- with the
+// Connect lot(s) the comparison paired each with.
+export async function getInkoopCreditPurchaseCandidates(credits) {
+  if (!pool || !credits?.length) return [];
+  const result = await pool.query(
+    `SELECT l.id, l.invoice_number, l.invoice_type, to_char(l.invoice_date, 'YYYY-MM-DD') AS invoice_date, l.description, l.supplier_name,
+            l.quantity::float8 AS quantity, l.unit_price::float8 AS unit_price, l.total::float8 AS total,
+            l.raw->>'referentie' AS referentie, l.raw->>'packages' AS packages, l.raw->>'per_package' AS per_package,
+            (SELECT string_agg(DISTINCT m.lot, '+') FROM inkoop_match_rows m
+              WHERE m.lot <> '' AND m.description = regexp_replace(btrim(COALESCE(l.description, '')), '\\s+', ' ', 'g')
+                AND l.invoice_number = ANY(string_to_array(m.invoice_number, ' + '))) AS lots
+       FROM inkoop_invoice_lines l
+       JOIN unnest($1::text[], $2::text[], $3::float8[], $4::date[]) AS c(invoice_type, supplier_name, price, day)
+         ON l.invoice_type = c.invoice_type AND l.supplier_name = c.supplier_name
+        AND abs(l.unit_price - c.price) < 0.0005 AND l.quantity > 0
+        AND l.invoice_date <= c.day AND l.invoice_date >= c.day - 31`,
+    [credits.map((credit) => credit.invoice_type || ""), credits.map((credit) => credit.supplier_name || ""),
+      credits.map((credit) => Math.abs(Number(credit.unit_price) || 0)), credits.map((credit) => credit.invoice_date)],
   );
   return result.rows;
 }

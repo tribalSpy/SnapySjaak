@@ -57,8 +57,10 @@ import {
   searchInkoopErpLines,
   getInkoopCorrectionLines,
   getInkoopCreditLinesByPav,
+  getInkoopCreditPurchaseCandidates,
   getInkoopInvoiceSupplierIdentities,
   getInkoopAi2LinesWithoutBoxes,
+  fixInkoopAi2CreditSigns,
   getInkoopInvoiceMatchFigures,
   getKingExportsByInvoice,
   getInkoopInvoiceTraceLines,
@@ -6899,18 +6901,23 @@ function inkoopInvoicePdfPath(invoiceNumber) {
 // of the lines that got boxes are compared again (the screens show them
 // from there); the match does not change -- AI2 lines are matched without a
 // box size. Runs in the background; the status is kept for the screen.
-const inkoopAi2BoxesJob = { running: false, started_at: "", finished_at: "", notas: 0, done: 0, lines: 0, updated: 0, without_pdf: 0, failed: [], error: "" };
+const inkoopAi2BoxesJob = { running: false, started_at: "", finished_at: "", notas: 0, done: 0, lines: 0, updated: 0, without_pdf: 0, credits_fixed: 0, failed: [], error: "" };
 
 async function runInkoopAi2BoxesRefresh() {
   if (inkoopAi2BoxesJob.running) return;
-  Object.assign(inkoopAi2BoxesJob, { running: true, started_at: new Date().toISOString(), finished_at: "", notas: 0, done: 0, lines: 0, updated: 0, without_pdf: 0, failed: [], error: "" });
+  Object.assign(inkoopAi2BoxesJob, { running: true, started_at: new Date().toISOString(), finished_at: "", notas: 0, done: 0, lines: 0, updated: 0, without_pdf: 0, credits_fixed: 0, failed: [], error: "" });
   try {
+    // First the credit-table lines read with positive pieces (+315 @ -2.40):
+    // the credits they are; their days are compared again with the rest.
+    const creditsFixed = await fixInkoopAi2CreditSigns();
+    inkoopAi2BoxesJob.credits_fixed = creditsFixed.length;
     const stored = await getInkoopAi2LinesWithoutBoxes();
     const byNota = new Map();
     for (const line of stored) byNota.set(line.invoice_number, [...(byNota.get(line.invoice_number) || []), line]);
     inkoopAi2BoxesJob.notas = byNota.size;
     inkoopAi2BoxesJob.lines = stored.length;
-    const dates = new Set();
+    const dates = new Set(creditsFixed.map((line) => line.invoice_date).filter(Boolean));
+    if (creditsFixed.length) inkoopSummaryCache.clear();
     const same = (left, right) => !inkoopValuesDiffer(Number(left), Number(right));
     for (const [invoiceNumber, lines] of byNota) {
       try {
@@ -8128,11 +8135,108 @@ function matchInkoopVeilingLines(erpRows, invoices, supplierMap = {}, supplierNa
     }
   }
 
+  // A Handel / AI2 credit (no brief number to group it by): with its
+  // purchase -- the same grower, product and price, the purchase's pieces at
+  // least the credit's, on the same invoice first, else the nearest earlier
+  // day; an AI2 credit names its purchase ("*factnr:3135476" = the
+  // purchase's Referentie). The two are netted into one line, as a
+  // brief-number correction (Danae 29-10: 100 invoiced, 90 credited -> 10).
+  // An AI2 credit whose purchase is not in these days (nota 4867 of 26-10
+  // credits 4858 of 20-10) is a correction of its own, not an open line.
+  // An AI2 credit read before the credit table's pieces were negative
+  // (+315 @ -2.40) counts as -315 @ 2.40.
+  const supplierCreditPairs = new Map();
+  const supplierCreditAlone = new Set();
+  {
+    const asCredit = (line) => {
+      const quantity = Number(line?.quantity);
+      const price = Number(line?.unit_price);
+      if (!Number.isFinite(quantity) || !Number.isFinite(price)) return null;
+      if (quantity < 0 && price >= 0) return { quantity, price, total: Number(line.total) || quantity * price };
+      if (quantity > 0 && price < 0) return { quantity: -quantity, price: -price, total: -Math.abs(Number(line.total) || quantity * price) };
+      return null;
+    };
+    const product = (line) => normalizeUkdocsText(line?.description).replace(/\s*\*\s*factnr\s*:\s*\d+/i, "").toLowerCase().replace(/\s+/g, " ");
+    const who = (line) => normalizeInkoopSupplierName(line?.supplier_name) || normalizeInkoopKey(line?.supplier_fh_number);
+    const purchases = [];
+    const credits = [];
+    for (const invoice of Array.isArray(invoices) ? invoices : []) {
+      if (invoice?.type !== "handel" && invoice?.type !== "ai2") continue;
+      for (const line of Array.isArray(invoice?.lines) ? invoice.lines : []) {
+        if (!line?.id || manualLineIds.has(line.id) || line?.quantity === null || line?.quantity === undefined) continue;
+        const credit = asCredit(line);
+        if (credit) credits.push({ invoice, line, ...credit });
+        else if (Number(line.quantity) > 0 && Number(line.unit_price) > 0) purchases.push({ invoice, line });
+      }
+    }
+    const used = new Set();
+    for (const credit of credits) {
+      const day = normalizeUkdocsText(credit.line.invoice_date).slice(0, 10);
+      const creditOf = normalizeUkdocsText(credit.line.credit_of || (String(credit.line.description || "").match(/factnr\s*:\s*(\d+)/i) || [])[1]);
+      const fits = purchases.filter(({ invoice, line }) => !used.has(line.id)
+        && invoice.type === credit.invoice.type && who(line) && who(line) === who(credit.line)
+        && product(line) === product(credit.line)
+        && !inkoopValuesDiffer(Number(line.unit_price), credit.price)
+        && Number(line.quantity) + 0.001 >= -credit.quantity
+        && normalizeUkdocsText(line.invoice_date).slice(0, 10) <= day
+        && (!creditOf || !normalizeUkdocsText(line.referentie) || normalizeUkdocsText(line.referentie) === creditOf));
+      const rank = ({ invoice, line }) => [
+        invoice.invoice_number === credit.invoice.invoice_number ? 0 : 1,
+        creditOf && normalizeUkdocsText(line.referentie) === creditOf ? 0 : 1,
+        -String(line.invoice_date || "").localeCompare(""),
+      ];
+      fits.sort((left, right) => {
+        const a = rank(left);
+        const b = rank(right);
+        return a[0] - b[0] || a[1] - b[1] || String(right.line.invoice_date || "").localeCompare(String(left.line.invoice_date || ""));
+      });
+      const purchase = fits[0];
+      if (purchase) {
+        used.add(purchase.line.id);
+        supplierCreditPairs.set(purchase.line.id, credit);
+        supplierCreditPairs.set(credit.line.id, null);
+      } else if (credit.invoice.type === "ai2" && creditOf) {
+        supplierCreditAlone.add(credit.line.id);
+      }
+    }
+  }
+
   for (const invoice of Array.isArray(invoices) ? invoices : []) {
     for (const line of Array.isArray(invoice?.lines) ? invoice.lines : []) {
       if (manualLineIds.has(line?.id)) continue;
       const context = { invoice_number: invoice?.invoice_number || "", invoice_type: invoice?.type || "", ...line };
       const feeBucket = isEmbalageLine(line) ? embalageLines : feeLines;
+      if (supplierCreditPairs.has(line?.id)) {
+        const credit = supplierCreditPairs.get(line.id);
+        // The credit itself: in its purchase's netted line.
+        if (!credit) continue;
+        const netQuantity = Math.round((Number(line.quantity) + credit.quantity) * 1000) / 1000;
+        const netTotal = Math.round(((Number(line.total) || 0) + credit.total) * 100) / 100;
+        const steps = [{ ...context }, { invoice_number: credit.invoice.invoice_number || "", invoice_type: credit.invoice.type || "", ...credit.line, quantity: credit.quantity, unit_price: credit.price, total: credit.total }];
+        const perBox = Number(line.per_package) || 0;
+        const netBoxes = perBox && Number(credit.line.per_package) === perBox ? Number(line.packages) - Math.abs(Number(credit.line.packages) || 0) : null;
+        const netted = {
+          ...context,
+          invoice_number: [...new Set(steps.map((step) => step.invoice_number).filter(Boolean))].join(" + "),
+          quantity: netQuantity,
+          total: netTotal,
+          packages: netBoxes !== null && netBoxes * perBox === netQuantity ? netBoxes : null,
+          matched_as_correction: true,
+          correction_lines: steps,
+        };
+        if (Math.abs(netQuantity) < INKOOP_MATCH_TOLERANCE) {
+          feeLines.push({ ...netted, quantity: 0 });
+          continue;
+        }
+        matchInkoopLineBySupplierCode(netted, netted);
+        continue;
+      }
+      if (supplierCreditAlone.has(line?.id)) {
+        // An AI2 credit of a purchase of another day: the correction, kept
+        // apart (the Corrections tab follows it), not an open line.
+        feeLines.push({ ...context, matched_as_correction: true, correction_lines: [context] });
+        continue;
+      }
 
       // AI2 broker purchases are structurally identical to Handel Aankopen:
       // no per-line reference number, resolved to an internal code by
@@ -9529,6 +9633,10 @@ function flattenInkoopInvoiceLines(invoices, sourceFileName, fallbackDate) {
         marketplace_id: normalizeUkdocsText(line?.marketplace_id),
         marketplace_name: normalizeUkdocsText(line?.marketplace_name),
         market_form_code: normalizeUkdocsText(line?.market_form_code),
+        // AI2: the line's Referentie, and on a credit the Referentie of the
+        // purchase it credits ("*factnr:3135476").
+        referentie: normalizeUkdocsText(line?.referentie),
+        credit_of: normalizeUkdocsText(line?.credit_of),
       });
     });
   }
@@ -11016,7 +11124,11 @@ const INKOOP_EMPTY_DAY_BUCKET = {
 // rest from free lots of the grower without a brief number, the same day,
 // product, price and box size, exactly the missing pieces (arcadia 02-11
 // FAH2JQA KALIMBA 3720 = 1920 + 1800).
-const INKOOP_MATCH_RULES_VERSION = "2026-11-04a";
+// 2026-11-05a: a Handel / AI2 credit is netted with its purchase (same grower,
+// product and price; the same invoice first, else the nearest earlier day;
+// an AI2 credit by its "*factnr" Referentie) -- Danae 29-10 100 - 90 = 10;
+// an AI2 credit of another day's purchase is a correction, not an open line.
+const INKOOP_MATCH_RULES_VERSION = "2026-11-05a";
 
 function inkoopStateFingerprint(state) {
   return crypto.createHash("sha1").update(JSON.stringify([
@@ -12275,8 +12387,57 @@ async function computeInkoopCorrectionRetourChecks(state, { from, to }) {
         erp_pieces: erpPiecesByPav.get(inkoopPavBase(credit.pav)) || 0,
       });
     } else {
-      // Handel / AI2 credit: no PAV, so no ERP lot to follow.
-      items.push({ ...credit, correction_lines: [credit], lot_source: { lot: "" } });
+      // Handel / AI2 credit: no PAV -- paired with its purchase below.
+      items.push({ ...credit, correction_lines: [credit], lot_source: { lot: "" }, without_pav: true });
+    }
+  }
+  // A credit without a brief number with its purchase, as the comparison
+  // pairs them: the same grower, product and price; the same invoice
+  // first, else the nearest earlier day; an AI2 credit by its "*factnr"
+  // (the purchase's Referentie). Then it shows invoiced / credited /
+  // received and the purchase's lot (whether it went to retour).
+  const lonely = items.filter((item) => item.without_pav);
+  if (lonely.length) {
+    const candidates = await getInkoopCreditPurchaseCandidates(lonely.map((item) => ({ ...item, invoice_date: String(item.invoice_date || "").slice(0, 10) }))).catch(() => []);
+    const product = (text) => normalizeUkdocsText(text).replace(/\s*\*\s*factnr\s*:\s*\d+/i, "").toLowerCase().replace(/\s+/g, " ");
+    const used = new Set();
+    for (const item of lonely) {
+      const creditOf = normalizeUkdocsText(item.credit_of || (String(item.description || "").match(/factnr\s*:\s*(\d+)/i) || [])[1]);
+      const day = String(item.invoice_date || "").slice(0, 10);
+      const fits = candidates.filter((line) => !used.has(line.id) && line.invoice_type === item.invoice_type && line.supplier_name === item.supplier_name
+        && product(line.description) === product(item.description) && !inkoopValuesDiffer(Number(line.unit_price), Math.abs(Number(item.unit_price)))
+        && Number(line.quantity) + 0.001 >= Math.abs(Number(item.quantity)) && line.invoice_date <= day
+        && (!creditOf || !normalizeUkdocsText(line.referentie) || normalizeUkdocsText(line.referentie) === creditOf))
+        .sort((left, right) => (left.invoice_number === item.invoice_number ? 0 : 1) - (right.invoice_number === item.invoice_number ? 0 : 1)
+          || (creditOf && normalizeUkdocsText(left.referentie) === creditOf ? 0 : 1) - (creditOf && normalizeUkdocsText(right.referentie) === creditOf ? 0 : 1)
+          || String(right.invoice_date).localeCompare(String(left.invoice_date)));
+      const purchase = fits[0];
+      if (!purchase) continue;
+      used.add(purchase.id);
+      // An AI2 credit read before (+315 @ -2.40) as the credit it is.
+      const { correction_lines: ownLines, lot_source: ownLot, without_pav: ownFlag, ...own } = item;
+      const creditLine = Number(own.quantity) > 0 && Number(own.unit_price) < 0
+        ? { ...own, quantity: -Number(own.quantity), unit_price: -Number(own.unit_price), total: -Math.abs(Number(own.total)) }
+        : own;
+      const group = [{ ...purchase }, creditLine];
+      Object.assign(item, {
+        invoice_number: [...new Set(group.map((line) => line.invoice_number).filter(Boolean))].join(" + "),
+        description: purchase.description,
+        quantity: Math.round(group.reduce((sum, line) => sum + (Number(line.quantity) || 0), 0) * 100) / 100,
+        total: Math.round(group.reduce((sum, line) => sum + (Number(line.total) || 0), 0) * 100) / 100,
+        correction_lines: group,
+        lot_source: { lot: purchase.lots || "" },
+      });
+    }
+    // The lots' pieces (received) for the paired ones.
+    const lotNumbers = lonely.flatMap((item) => inkoopCorrectionLotNumbers(item.lot_source));
+    if (lotNumbers.length) {
+      const rows = await getInkoopTraceLots(lotNumbers).catch(() => []);
+      const piecesOf = new Map(rows.map((row) => [String(row.lot), Number(row.pieces) || 0]));
+      for (const item of lonely) {
+        const lots = inkoopCorrectionLotNumbers(item.lot_source);
+        if (lots.length) item.erp_pieces = lots.reduce((sum, lot) => sum + (piecesOf.get(String(lot)) || 0), 0);
+      }
     }
   }
   const allLotNumbers = new Set(items.flatMap((item) => inkoopCorrectionLotNumbers(item.lot_source)));

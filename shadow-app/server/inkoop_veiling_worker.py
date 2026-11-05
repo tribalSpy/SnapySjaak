@@ -514,6 +514,10 @@ AI2_COL_BEDRAG_MAX = 615
 AI2_NUMBER_RE = re.compile(r"-?[0-9][0-9.]*(,[0-9]+)?")
 
 
+# "*factnr:3135476" in a credit's product: the Referentie of the purchase.
+AI2_FACTNR_RE = re.compile(r"\s*\*\s*factnr\s*:\s*(\d+)", re.IGNORECASE)
+
+
 def parse_ai2_row(row_words, year, is_credit):
     # Lists, not single values -- the tighter x_tolerance above means a
     # column can now legitimately contain more than one pdfplumber word
@@ -597,13 +601,26 @@ def parse_ai2_row(row_words, year, is_credit):
     if packages is None or per_package is None or abs(abs(packages) * abs(per_package) - abs(quantity)) > 0.01:
         packages = per_package = None
 
+    # A line of the nota's "Credit" table: a credit, written as one --
+    # negative pieces and total at the price (as a Klok / Handel credit),
+    # the boxes as printed. The purchase it credits is named in the product
+    # ("Lederv. large v p*factnr:3135476": the purchase line's Referentie):
+    # kept apart, the product without it.
+    credit_of = ""
+    product = description or (vbn_desc or "")
+    if is_credit:
+        factnr = AI2_FACTNR_RE.search(product)
+        if factnr:
+            credit_of = factnr.group(1)
+            product = AI2_FACTNR_RE.sub("", product).strip()
     return {
-        "description": description or (vbn_desc or ""),
-        "quantity": quantity,
+        "description": product,
+        "quantity": -abs(quantity) if is_credit else quantity,
         "packages": abs(packages) if packages is not None else None,
         "per_package": abs(per_package) if per_package is not None else None,
-        "unit_price": -unit_price if is_credit else unit_price,
-        "total": -total if is_credit else total,
+        "unit_price": abs(unit_price) if is_credit else unit_price,
+        "total": -abs(total) if is_credit else total,
+        "credit_of": credit_of,
         "reference_bt": "",
         "supplier_gln": "",
         "supplier_fh_number": supplier_fh_number,
