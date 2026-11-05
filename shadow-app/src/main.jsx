@@ -18237,8 +18237,8 @@ function IkColumnPicker({ columns, toggle }) {
   );
 }
 
-const IK_STATUS_ICON = { matched: "✓", mismatch: "⚠", not_matched: "✗", connect_only: "✗", packaging: "▢" };
-const IK_STATUS_LABEL = { matched: "Matched", mismatch: "Matched, figures differ", not_matched: "Invoice, no Connect lot", connect_only: "Connect lot, no invoice", packaging: "Packaging" };
+const IK_STATUS_ICON = { matched: "✓", mismatch: "⚠", not_matched: "✗", connect_only: "✗", packaging: "▢", verified: "✓", verified_connect: "✓" };
+const IK_STATUS_LABEL = { matched: "Matched", mismatch: "Matched, figures differ", not_matched: "Invoice, no Connect lot", connect_only: "Connect lot, no invoice", packaging: "Packaging", verified: "Geverifieerd (no Connect lot, accepted)", verified_connect: "Geverifieerd (no invoice, accepted)" };
 
 // What the dispatch dump sent out of a differing line's lot(s): pieces, to
 // whom, and which side it agrees with.
@@ -18342,6 +18342,8 @@ function IkPairLines({ from, to, company, grower, bar, flow = "", date = "", sta
 // only in Connect (lines and €), then per flow, then the lines -- each with
 // only its own side (a lot without an invoice: the Connect columns).
 const IK_DAY_STATUSES = [
+  ["verified", "✓ Geverifieerd (accepted, no Connect lot)", "invoice"],
+  ["verified_connect", "✓ Geverifieerd (accepted, no invoice)", "connect"],
   ["mismatch", "⚠ Matched, figures differ", "both"],
   ["not_matched", "✗ Invoice, no Connect lot", "invoice"],
   ["connect_only", "✗ Connect lot, no invoice", "connect"],
@@ -18368,7 +18370,7 @@ function IkDayPanel({ date, company, grower, bar }) {
   if (!data) return <div className="muted">Loading lines…</div>;
   const lines = (data.lines || []).filter((line) => (!bar.bw?.length || bar.bw.includes(line.bw || "?")) && (!bar.flows?.length || bar.flows.includes(line.flow)));
   const toggle = (key) => setOpen((current) => { const next = new Set(current); if (next.has(key)) next.delete(key); else next.add(key); return next; });
-  const valueOf = (line) => (line.status === "connect_only" ? Number(line.erp_total) || 0 : Number(line.invoice_total) || 0);
+  const valueOf = (line) => (line.status === "connect_only" || line.status === "verified_connect" ? Number(line.erp_total) || 0 : Number(line.invoice_total) || 0);
   const order = (line) => -Math.abs(Number(line.difference_total ?? line.invoice_total ?? line.erp_total) || 0);
   return (
     <table className="data-table balance-table ik-table ik-day-tree">
@@ -23171,9 +23173,20 @@ const inkoopMatchBasis = { withConnect: (() => { try { return window.localStorag
 // matched and not matched part, the lots only in Connect, Connect's total
 // and the difference.
 function inkoopOverviewSum(rows) {
-  const sum = { invoice_lines: 0, invoice_value: 0, matched_lines: 0, matched_value: 0, mismatch_lines: 0, not_matched_lines: 0, not_matched_value: 0, connect_only_lines: 0, connect_only_value: 0, connect_value: 0, packaging_value: 0 };
+  const sum = { invoice_lines: 0, invoice_value: 0, matched_lines: 0, matched_value: 0, mismatch_lines: 0, not_matched_lines: 0, not_matched_value: 0, connect_only_lines: 0, connect_only_value: 0, connect_value: 0, packaging_value: 0, verified_lines: 0, verified_value: 0 };
   for (const row of rows) {
-    if (row.status === "matched" || row.status === "mismatch") {
+    // Geverifieerd (accepted in the follow-up): matched, its money in the
+    // difference -- an invoice line without a lot is that much paid more,
+    // a lot without an invoice that much less.
+    if (row.status === "verified") {
+      sum.invoice_lines += row.lines; sum.invoice_value += row.invoice_value;
+      sum.matched_lines += row.lines; sum.matched_value += row.invoice_value;
+      sum.verified_lines += row.lines; sum.verified_value += row.invoice_value;
+      sum.connect_value += row.erp_value;
+    } else if (row.status === "verified_connect") {
+      sum.verified_lines += row.lines;
+      sum.connect_value += row.erp_value;
+    } else if (row.status === "matched" || row.status === "mismatch") {
       sum.invoice_lines += row.lines; sum.invoice_value += row.invoice_value;
       sum.matched_lines += row.lines; sum.matched_value += row.invoice_value;
       sum.connect_value += row.erp_value;
@@ -23200,6 +23213,7 @@ function inkoopOverviewSum(rows) {
 
 const INKOOP_OVERVIEW_STATUSES = [
   ["matched", "✓ Matched"],
+  ["verified", "✓ Geverifieerd"],
   ["mismatch", "⚠ Matched, figures differ"],
   ["not_matched", "✗ Invoice, not matched"],
   ["connect_only", "✗ Only in Connect"],
@@ -23211,7 +23225,7 @@ const inkoopOverviewEuro = (value) => (value ? formatInkoopEuro(value) : "");
 const INKOOP_OVERVIEW_COLUMNS = [
   ["invoice_lines", "Invoice lines", (sum) => <td>{sum.invoice_lines || ""}</td>],
   ["invoice_value", "Invoice value", (sum) => <td>{inkoopOverviewEuro(sum.invoice_value)}</td>],
-  ["matched_lines", "Matched lines", (sum) => <td>{sum.matched_lines || ""}{sum.mismatch_lines ? <small className="muted"> ⚠{sum.mismatch_lines}</small> : null}</td>],
+  ["matched_lines", "Matched lines", (sum) => <td>{sum.matched_lines || ""}{sum.mismatch_lines ? <small className="muted"> ⚠{sum.mismatch_lines}</small> : null}{sum.verified_lines ? <small className="muted" title="Resolved as Geverifieerd in the follow-up"> ✓G{sum.verified_lines}</small> : null}</td>],
   ["matched_value", "Matched value", (sum) => <td>{inkoopOverviewEuro(sum.matched_value)}</td>],
   ["not_matched_lines", "Not matched lines", (sum) => <td className={sum.not_matched_lines ? "money-loss" : ""}>{sum.not_matched_lines || ""}</td>],
   ["not_matched_value", "Not matched value", (sum) => <td className={sum.not_matched_value ? "money-loss" : ""}>{inkoopOverviewEuro(sum.not_matched_value)}</td>],

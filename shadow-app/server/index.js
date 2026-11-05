@@ -64,6 +64,7 @@ import {
   setInkoopAi2LineReferentie,
   getInkoopSupplierCreditsForLines,
   getInkoopInvoiceLinesForKeys,
+  getInkoopVerifiedMatchRows,
   getInkoopInvoiceMatchFigures,
   getKingExportsByInvoice,
   getInkoopInvoiceTraceLines,
@@ -11209,6 +11210,7 @@ function inkoopNumberOrNull(value) {
 
 // The overview table's statuses per result list.
 const INKOOP_OVERVIEW_STATUS = {
+  verified: "verified", verified_connect: "verified_connect",
   matched_ok: "matched", matched_mismatch: "mismatch",
   only_in_invoice: "not_matched", supplier_not_linked: "not_matched", ambiguous_matches: "not_matched",
   only_in_erp: "connect_only", embalage_lines: "packaging",
@@ -11218,7 +11220,7 @@ const INKOOP_OVERVIEW_STATUS = {
 // AI2 / Other; a lot only in Connect has no invoice: "No invoice" (never a
 // guess -- the bank reads this).
 function inkoopOverviewFlow(row) {
-  if (row?.list === "only_in_erp") return "No invoice";
+  if (row?.list === "only_in_erp" || row?.list === "verified_connect") return "No invoice";
   const type = String(row?.invoice_type || "").toLowerCase();
   if (type === "klokfactuur") return "Klok";
   if (type === "connect") return "Connect";
@@ -27510,7 +27512,40 @@ async function handleApi(req, res, url) {
       if (!/^\d{4}-\d{2}-\d{2}$/.test(from) || !/^\d{4}-\d{2}-\d{2}$/.test(to)) throw new Error("from / to must be YYYY-MM-DD");
       const company = normalizeUkdocsText(url.searchParams.get("company"));
       const view = inkoopOverviewNaming(state);
-      const totals = await getInkoopOverviewTotals({ company, from, to });
+      const rawTotals = await getInkoopOverviewTotals({ company, from, to });
+      // Lines resolved as Geverifieerd (transport costs, an invoice
+      // difference, ...): verified -- counted as matched, their money still
+      // in the difference -- not as open. Their own rows, out of the open ones.
+      const verifiedStatuses = (await getInkoopIssueStatuses().catch(() => [])).filter((row) => row.status === "resolved" && row.resolution
+        && (row.issue_type === "gap_invoice" || row.issue_type === "gap_erp"));
+      const verifiedRows = verifiedStatuses.length ? await getInkoopVerifiedMatchRows({
+        company, from, to,
+        lineIds: verifiedStatuses.filter((row) => row.issue_type === "gap_invoice").map((row) => row.id.slice("gap_invoice:".length)),
+        lots: verifiedStatuses.filter((row) => row.issue_type === "gap_erp").map((row) => row.id.slice("gap_erp:".length)),
+      }).catch(() => []) : [];
+      const verifiedRowIds = new Set(verifiedRows.map((row) => row.row_id));
+      const totals = (() => {
+        if (!verifiedRows.length) return rawTotals;
+        const keyOf = (row) => `${row.date}|${row.list}|${row.supplier_code}|${row.supplier_name}|${row.invoice_type}`;
+        const less = new Map();
+        const added = new Map();
+        for (const row of verifiedRows) {
+          const key = keyOf(row);
+          const entry = less.get(key) || { lines: 0, invoice_value: 0, erp_value: 0 };
+          entry.lines += 1; entry.invoice_value += row.invoice_value; entry.erp_value += row.erp_value;
+          less.set(key, entry);
+          const list = row.list === "only_in_erp" ? "verified_connect" : "verified";
+          const addedKey = `${row.date}|${list}|${row.supplier_code}|${row.supplier_name}|${row.invoice_type}`;
+          const add = added.get(addedKey) || { date: row.date, list, supplier_code: row.supplier_code, supplier_name: row.supplier_name, invoice_type: row.invoice_type, lines: 0, invoice_value: 0, erp_value: 0 };
+          add.lines += 1; add.invoice_value += row.invoice_value; add.erp_value += row.erp_value;
+          added.set(addedKey, add);
+        }
+        const kept = rawTotals.map((row) => {
+          const minus = less.get(keyOf(row));
+          return minus ? { ...row, lines: row.lines - minus.lines, invoice_value: row.invoice_value - minus.invoice_value, erp_value: row.erp_value - minus.erp_value } : row;
+        }).filter((row) => row.lines > 0);
+        return [...kept, ...added.values()];
+      })();
       if (url.pathname === "/api/inkoop/overview-table") {
         // grower=: only that grower's rows (a long search -- a whole year of
         // one supplier); matched by name as the page does.
@@ -27573,7 +27608,8 @@ async function handleApi(req, res, url) {
       sendJson(res, 200, {
         from, to, grower,
         lines: lines.map((row) => ({
-          ...row, grower: view.growerOf(row), bw: view.bwOf(row), flow: inkoopOverviewFlow(row), status: INKOOP_OVERVIEW_STATUS[row.list] || row.list,
+          ...row, grower: view.growerOf(row), bw: view.bwOf(row), flow: inkoopOverviewFlow(row),
+          status: verifiedRowIds.has(row.row_id) ? (row.list === "only_in_erp" ? "verified_connect" : "verified") : INKOOP_OVERVIEW_STATUS[row.list] || row.list,
           ...(row.list === "matched_mismatch" ? { dispatch: dispatchOf(row) } : {}),
         })),
         capped: lines.length >= limit,

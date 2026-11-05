@@ -1924,6 +1924,30 @@ export async function getInkoopOverviewTotals({ company = "", from = "", to = ""
   return result.rows;
 }
 
+// The stored match lines of a period that are resolved as Geverifieerd in
+// the follow-up: an open invoice line (by its line id) or a lot only in
+// Connect (by its lot). The money trace counts them as verified, not open.
+export async function getInkoopVerifiedMatchRows({ company = "", from = "", to = "", lineIds = [], lots = [] } = {}) {
+  if (!pool || !from || !to || (!lineIds.length && !lots.length)) return [];
+  const params = [from, to, lineIds, lots];
+  const where = ["m.match_date >= $1::date", "m.match_date <= $2::date"];
+  if (company) { params.push(company); where.push(`m.company_number = $${params.length}`, "m.list <> 'only_in_erp'"); }
+  const result = await pool.query(
+    `SELECT m.id::text AS row_id, to_char(m.match_date, 'YYYY-MM-DD') AS date, m.list, m.supplier_code, m.supplier_name, m.invoice_type,
+            COALESCE(m.invoice_total, 0)::float8 AS invoice_value, COALESCE(m.erp_total, 0)::float8 AS erp_value
+       FROM inkoop_match_rows m
+      WHERE ${where.join(" AND ")}
+        AND ((m.list IN ('only_in_invoice', 'supplier_not_linked', 'ambiguous_matches') AND EXISTS (
+               SELECT 1 FROM inkoop_invoice_lines l
+                WHERE l.id = ANY($3::text[]) AND l.invoice_number = m.invoice_number
+                  AND regexp_replace(btrim(COALESCE(l.description, '')), '\\s+', ' ', 'g') = m.description
+                  AND l.quantity = m.invoice_quantity AND l.total = m.invoice_total))
+          OR (m.list = 'only_in_erp' AND m.lot = ANY($4::text[])))`,
+    params,
+  );
+  return result.rows;
+}
+
 // The stored match lines of a period for some (grower code, grower name)
 // pairs -- the overview table's deepest level.
 // lists (no pairs): those result lists of every grower.
@@ -1942,7 +1966,7 @@ export async function getInkoopOverviewLines({ company = "", from = "", to = "",
   // The boxes (count × per box) from the invoice line itself (same invoice,
   // pieces, total and product) and from the lot (a single lot only).
   const result = await pool.query(
-    `SELECT to_char(m.match_date, 'YYYY-MM-DD') AS date, m.list, m.invoice_number, m.invoice_type, m.pav, m.lot, m.supplier_code, m.supplier_name, m.description,
+    `SELECT m.id::text AS row_id, to_char(m.match_date, 'YYYY-MM-DD') AS date, m.list, m.invoice_number, m.invoice_type, m.pav, m.lot, m.supplier_code, m.supplier_name, m.description,
             m.invoice_quantity::float8, m.invoice_price::float8, m.invoice_total::float8, m.erp_quantity::float8, m.erp_price::float8, m.erp_total::float8, m.difference_total::float8, m.note,
             il.raw->>'packages' AS packages, il.raw->>'per_package' AS per_package, il.raw->>'your_reference' AS your_reference,
             el.raw->>'items' AS lot_items, el.raw->>'cont' AS lot_cont, el.description AS lot_description,
