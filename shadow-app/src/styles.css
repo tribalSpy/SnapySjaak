@@ -4311,14 +4311,17 @@ table.data-table.balance-table.ik-table.ik-inv-invoices td:nth-child(n+7), table
 .ik-cust-table td.num, .ik-cust-table th.num, .ik-cust-heat td.num, .ik-cust-heat th.num { text-align: right; font-variant-numeric: tabular-nums; }
 .ik-cust-groups-cell { min-width: 160px; }
 .ik-cust-flag { color: var(--ik-bad); }
-.ik-cust-drawer { width: min(980px, 100%); }
+.ik-cust-drawer { width: min(980px, 100%); display: flex; flex-direction: column; }
+/* A column, nothing shrinks: as a grid of fixed height its scroll boxes
+   (the month table) were squeezed to 0 when the content was taller. */
+.ik-cust-drawer > * { flex-shrink: 0; }
 .ik-cust-heat td, .ik-cust-heat th { padding: 4px 6px; font-size: 0.8rem; white-space: nowrap; }
 .ik-cust table.data-table th, .ik-cust table.data-table td, .ik-cust-drawer table.data-table th, .ik-cust-drawer table.data-table td,
 .ik-cust-settings table.data-table th, .ik-cust-settings table.data-table td { text-align: left; }
 .ik-cust table.data-table .num, .ik-cust-drawer table.data-table .num, .ik-cust-settings table.data-table .num { text-align: right; }
 .ik-cust select, .ik-cust-drawer select, .ik-cust-settings select { width: auto; }
 .ik-cust-drawer .ik-card-head { display: flex; align-items: center; gap: 12px; }
-.ik-cust-scroll { overflow-x: auto; min-height: min-content; }
+.ik-cust-scroll { overflow-x: auto; min-height: min-content; flex-shrink: 0; }
 .ik-cust-country-table td.num, .ik-cust-country-table th.num { font-variant-numeric: tabular-nums; white-space: nowrap; }
 .ik-cust-country-table tr.selected td { background: rgba(31, 122, 90, 0.12); }
 .ik-cust-country-table tr.selected td:first-child { box-shadow: inset 3px 0 0 var(--ik-accent); }
@@ -4412,3 +4415,6 @@ table.data-table.balance-table.ik-table.ik-inv-invoices td:nth-child(n+7), table
   font-weight: 900;
   line-height: 1.1;
 }
+.ik-cust-tops { display: flex; flex-wrap: wrap; gap: 2px 12px; font-size: 0.82rem; }
+.ik-cust-tops > span { white-space: nowrap; }
+.ik-cust-hg { color: var(--ik-accent); font-weight: 600; }

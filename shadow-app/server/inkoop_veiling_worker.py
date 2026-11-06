@@ -939,6 +939,46 @@ KLANT_PLACE_COLUMNS = {
 }
 
 
+# Our Hoofdgroep mapping (Product_mapping.xlsx: Zoekterm, Product,
+# Hoofdgroep -- or a sheet with Zoekterm, Soortnamen, Hoofdgroep): every
+# sheet with a Zoekterm and a Hoofdgroep column is read.
+def parse_hoofdgroep_mapping(input_path: Path):
+    workbook = load_workbook(filename=str(input_path), data_only=True, read_only=True)
+    terms = {}
+    sheets = []
+    for worksheet in workbook.worksheets:
+        rows = worksheet.iter_rows(values_only=True)
+        headers = None
+        for _ in range(10):
+            row = next(rows, None)
+            if row is None:
+                break
+            normalized = [normalize_header(value) for value in row]
+            if "zoekterm" in normalized and "hoofdgroep" in normalized:
+                headers = normalized
+                break
+        if headers is None:
+            continue
+        term_col = headers.index("zoekterm")
+        group_col = headers.index("hoofdgroep")
+        product_col = next((headers.index(name) for name in ("product", "soortnamen", "product_mapping") if name in headers), None)
+        count = 0
+        for row in rows:
+            term = clean_text(row[term_col]) if term_col < len(row) else ""
+            group = clean_text(row[group_col]) if group_col < len(row) else ""
+            if not term or not group:
+                continue
+            product = clean_text(row[product_col]) if product_col is not None and product_col < len(row) else ""
+            key = " ".join(term.lower().split())
+            if key not in terms:
+                terms[key] = [term, product, group]
+                count += 1
+        sheets.append({"sheet": worksheet.title, "terms": count})
+    if not terms:
+        return {"terms": [], "error": "No sheet with a Zoekterm and a Hoofdgroep column in this file"}
+    return {"terms": list(terms.values()), "sheets": sheets}
+
+
 # Our sales list ("table_export_data_...": Bedrijf, Klant, Asrt, Artikelgroep,
 # Productgroep, Omschrijving ... Date, Partij): one line per sale, a million
 # a year. Only what groups a lot is kept: per Partij (the Connect lot) the
@@ -1583,6 +1623,9 @@ def main():
     dispatch_parser = subparsers.add_parser("parse-dispatch-dump")
     dispatch_parser.add_argument("--input", required=True)
 
+    hoofd_parser = subparsers.add_parser("parse-hoofdgroep-mapping")
+    hoofd_parser.add_argument("--input", required=True)
+
     sales_parser = subparsers.add_parser("parse-sales-groups")
     sales_parser.add_argument("--input", required=True)
 
@@ -1614,6 +1657,8 @@ def main():
         print(json.dumps(parse_klant_gegevens(Path(args.input))))
     elif args.command == "parse-dispatch-dump":
         print(json.dumps(parse_dispatch_dump(Path(args.input))))
+    elif args.command == "parse-hoofdgroep-mapping":
+        print(json.dumps(parse_hoofdgroep_mapping(Path(args.input))))
     elif args.command == "parse-sales-groups":
         print(json.dumps(parse_sales_groups(Path(args.input))))
     elif args.command == "parse-product-export":

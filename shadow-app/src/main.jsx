@@ -25662,6 +25662,25 @@ function IkGroupBar({ groups, labelOf, height = 10 }) {
   );
 }
 
+// Hoofdgroep view: a row's biggest Hoofdgroepen as text ("Chr t 45% ·
+// Lilium 20% · +4"), each with its main group's colour -- 45 groups are too
+// many for a coloured bar.
+const IK_NO_HOOFDGROEP = "Zonder hoofdgroep";
+function IkTopHoofdgroepen({ groups, colorOf, limit = 3 }) {
+  const parts = Object.entries(groups || {}).map(([name, value]) => ({ name, pieces: Number(value?.pieces ?? value) || 0 })).filter((part) => part.pieces > 0)
+    .sort((left, right) => right.pieces - left.pieces);
+  const total = parts.reduce((sum, part) => sum + part.pieces, 0);
+  if (!total) return <span className="muted">–</span>;
+  return (
+    <span className="ik-cust-tops" title={parts.map((part) => `${part.name || IK_NO_HOOFDGROEP}: ${ikPieces(part.pieces)} pcs (${Math.round((part.pieces / total) * 100)}%)`).join("\n")}>
+      {parts.slice(0, limit).map((part) => (
+        <span key={part.name}><i className="ik-cust-dot" style={{ background: colorOf(part.name) }} />{part.name || IK_NO_HOOFDGROEP} <span className="muted">{Math.round((part.pieces / total) * 100)}%</span></span>
+      ))}
+      {parts.length > limit && <span className="muted">+{parts.length - limit}</span>}
+    </span>
+  );
+}
+
 // The départements (or regions) coloured by pieces, one hue light -> dark;
 // hover shows the figures, a click picks the département / region.
 function IkFranceMap({ byDepartement, mode, selected, onSelect, labelOf }) {
@@ -25730,6 +25749,17 @@ function InkoopCustomersTab() {
   const [country, setCountry] = useState("");
   const [withRetour, setWithRetour] = useState(false);
   const [group, setGroup] = useState("");
+  // "main": the compressed main groups; "hoofd": our Hoofdgroepen (the
+  // selling groups of the mapping). Kept per browser.
+  const [view, setViewState] = useState(() => {
+    try { return window.localStorage.getItem("ik-cust-view") === "hoofd" ? "hoofd" : "main"; } catch { return "main"; }
+  });
+  const setView = (next) => {
+    setViewState(next);
+    setGroup("");
+    try { window.localStorage.setItem("ik-cust-view", next); } catch { /* not kept */ }
+  };
+  const hoofd = view === "hoofd";
   const [search, setSearch] = useState("");
   const [sort, setSort] = useState({ key: "pieces", dir: -1 });
   const [openCode, setOpenCode] = useState("");
@@ -25743,7 +25773,12 @@ function InkoopCustomersTab() {
       .catch((loadError) => { if (requestRef.current === request) setError(loadError.message); })
       .finally(() => { if (requestRef.current === request) setLoading(false); });
   }, [range.from, range.to]);
-  const labelOf = ikGroupLabelOf(data?.group_list);
+  const mainLabelOf = ikGroupLabelOf(data?.group_list);
+  const hoofdMain = new Map((data?.hoofdgroepen || []).map((entry) => [entry.name, entry.main]));
+  // A group key of the view: its label and colour.
+  const labelOf = (key) => (hoofd ? key || IK_NO_HOOFDGROEP : mainLabelOf(key));
+  const colorOf = (key) => IK_CUSTOMER_GROUP_COLORS[hoofd ? hoofdMain.get(key) : key] || IK_CUSTOMER_GROUP_COLORS.none;
+  const groupsOf = (entry) => (hoofd ? entry?.hgroups : entry?.groups) || {};
   const months = ikMonthsBetween(range.from, range.to);
   const countries = [...new Set((data?.customers || []).map((customer) => customer.land).filter(Boolean))].sort();
   // The customers shown: retour, search, country; with a group chosen,
@@ -25753,7 +25788,7 @@ function InkoopCustomersTab() {
   const measuredAll = (data?.customers || [])
     .filter((customer) => withRetour || !customer.is_retour)
     .map((customer) => {
-      const own = group ? customer.groups[group] || { pieces: 0, value: 0 } : { pieces: customer.pieces, value: customer.value };
+      const own = group !== "" ? groupsOf(customer)[group] || { pieces: 0, value: 0 } : { pieces: customer.pieces, value: customer.value };
       return { ...customer, shown_pieces: own.pieces, shown_value: own.value };
     })
     .filter((customer) => customer.shown_pieces > 0)
@@ -25767,8 +25802,8 @@ function InkoopCustomersTab() {
     entry.pieces += customer.shown_pieces;
     entry.value += customer.shown_value;
     entry.customers += 1;
-    for (const [key, value] of Object.entries(customer.groups)) {
-      if (group && key !== group) continue;
+    for (const [key, value] of Object.entries(groupsOf(customer))) {
+      if (group !== "" && key !== group) continue;
       const target = entry.groups[key] || (entry.groups[key] = { pieces: 0, value: 0 });
       target.pieces += value.pieces;
       target.value += value.value;
@@ -25791,7 +25826,7 @@ function InkoopCustomersTab() {
   const totalValue = shownCustomers.reduce((sum, customer) => sum + customer.shown_value, 0);
   // The groups over the customers shown (country / retour / search).
   const groupTotals = {};
-  for (const customer of shownCustomers) for (const [key, value] of Object.entries(customer.groups)) {
+  for (const customer of shownCustomers) for (const [key, value] of Object.entries(groupsOf(customer))) {
     const entry = groupTotals[key] || (groupTotals[key] = { pieces: 0, value: 0 });
     entry.pieces += value.pieces;
     entry.value += value.value;
@@ -25803,8 +25838,8 @@ function InkoopCustomersTab() {
     for (const [month, entry] of Object.entries(customer.months || {})) {
       const target = monthGroups.get(month);
       if (!target) continue;
-      for (const [key, pieces] of Object.entries(entry.groups || {})) {
-        if (group && key !== group) continue;
+      for (const [key, pieces] of Object.entries((hoofd ? entry.hgroups : entry.groups) || {})) {
+        if (group !== "" && key !== group) continue;
         target[key] = { pieces: (target[key]?.pieces || 0) + pieces };
       }
     }
@@ -25812,6 +25847,14 @@ function InkoopCustomersTab() {
   const monthPieces = (month) => Object.values(monthGroups.get(month) || {}).reduce((sum, entry) => sum + entry.pieces, 0);
   const monthMax = Math.max(1, ...months.map(monthPieces));
   const coverage = data?.coverage?.total_pieces ? (data.coverage.named_pieces / data.coverage.total_pieces) * 100 : null;
+  const hoofdCoverage = data?.coverage?.total_pieces ? ((data.coverage.hoofd_pieces || 0) / data.coverage.total_pieces) * 100 : null;
+  // The group buttons of the view: main groups in their order, Hoofdgroepen
+  // by pieces.
+  const chipKeys = hoofd
+    ? Object.keys(groupTotals).filter((key) => groupTotals[key].pieces > 0).sort((left, right) => groupTotals[right].pieces - groupTotals[left].pieces)
+    : IK_CUSTOMER_GROUP_ORDER.filter((key) => groupTotals[key]?.pieces);
+  // Hoofdgroep view's season table: the biggest Hoofdgroepen per month.
+  const seasonKeys = chipKeys.slice(0, 18);
   const head = (key, label, extra = "") => (
     <th className={extra} aria-sort={sort.key === key ? (sort.dir < 0 ? "descending" : "ascending") : "none"}>
       <button type="button" className="link-button" onClick={() => setSort((current) => ({ key, dir: current.key === key ? -current.dir : key === "name" || key === "place" ? 1 : -1 }))}>
@@ -25842,6 +25885,10 @@ function InkoopCustomersTab() {
             <label className="ik-cust-check"><input type="checkbox" checked={withRetour} onChange={(event) => setWithRetour(event.target.checked)} /> with retour customers</label>
             <input className="ik-side-search" value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Customer, city, country…" />
           </div>
+          <div className="ik-filter-group" role="group" aria-label="Groups">
+            <button type="button" className={`ik-chip${hoofd ? "" : " on"}`} aria-pressed={!hoofd} onClick={() => setView("main")} title="The compressed main groups (Chrysanten, Rozen, Overige snijbloemen ...)">Main groups</button>
+            <button type="button" className={`ik-chip${hoofd ? " on" : ""}`} aria-pressed={hoofd} onClick={() => setView("hoofd")} title="Our Hoofdgroepen (Chr t, Chr g, Lilium, Fillers B, Green per Bunch ...) from the mapping in Settings; plants Planten, accessories Deco">Hoofdgroep</button>
+          </div>
           <span className="ik-info" title={"Every dispatch of the Connect export (\"Dispatched to\") counted for its customer, on the lot's date. The group: the lot's product name in our product list (Settings › Klant inzicht data: \"Chr g Topspin\" is the lot \"Topspin\", sales group Chr g), its sales group in one of the main groups (VBN 1 04 chrysanthemums, 1 07 greenery ...); without a sales group, by Connect's T (B flowers, P plants, A accessoires).\n\nValue and € / pc: what we paid for those pieces (the lot's price) -- the sales price is not in the data yet."}>ⓘ</span>
         </div>
         {error && <div className="notice danger">{error}</div>}
@@ -25849,21 +25896,27 @@ function InkoopCustomersTab() {
           <div style={loading ? { opacity: 0.4 } : undefined} aria-busy={loading}>
             <div className="ik-kpis">
               <div className="ik-kpi"><span className="ik-kpi-label">Customers</span><strong>{shownCustomers.length}</strong><small>{country ? `in ${country}` : `${months.length} month(s)`}</small></div>
-              <div className="ik-kpi"><span className="ik-kpi-label">Pieces</span><strong>{ikPieces(totalPieces)}</strong><small>{group ? labelOf(group) : "all groups"}</small></div>
+              <div className="ik-kpi"><span className="ik-kpi-label">Pieces</span><strong>{ikPieces(totalPieces)}</strong><small>{group !== "" ? labelOf(group) : "all groups"}</small></div>
               <div className="ik-kpi"><span className="ik-kpi-label">Purchase value</span><strong>{formatInkoopEuro(totalValue)}</strong><small>what we paid</small></div>
               <div className="ik-kpi"><span className="ik-kpi-label">€ / piece</span><strong>{totalPieces ? formatInkoopEuro(totalValue / totalPieces) : "–"}</strong><small>purchase</small></div>
+              {hoofd ? (
+                <div className="ik-kpi" title="The pieces with a Hoofdgroep: flowers by the zoekterm at the start of the sales line's name (Settings › Klant inzicht data › Hoofdgroep mapping), plants Planten, accessories Deco">
+                  <span className="ik-kpi-label">With a hoofdgroep</span><strong>{hoofdCoverage === null ? "–" : `${hoofdCoverage.toFixed(0)}%`}</strong><small>of all pieces</small>
+                </div>
+              ) : (
               <div className="ik-kpi" title={IK_GROUP_SOURCES.map(([key, label, hint]) => `${label}: ${data?.coverage?.total_pieces ? Math.round(((data.coverage.by_source?.[key] || 0) / data.coverage.total_pieces) * 100) : 0}% -- ${hint}`).join("\n")}>
                 <span className="ik-kpi-label">With a product group</span><strong>{coverage === null ? "–" : `${coverage.toFixed(0)}%`}</strong>
                 <small>{IK_GROUP_SOURCES.slice(0, 3).map(([key, label]) => (data?.coverage?.by_source?.[key] && data.coverage.total_pieces ? `${Math.round((data.coverage.by_source[key] / data.coverage.total_pieces) * 100)}% ${label}` : "")).filter(Boolean).join(" · ") || "of all pieces"}</small>
               </div>
+              )}
             </div>
             {!data?.customers?.length && <div className="notice">No dispatches in this period yet -- they come with the Connect export (Upload &amp; compare), and Settings › Klant inzicht data works them out.</div>}
             <div className="ik-cust-groups" role="group" aria-label="Main groups">
-              <button type="button" className={`ik-chip${group ? "" : " on"}`} onClick={() => setGroup("")}>All groups</button>
-              {IK_CUSTOMER_GROUP_ORDER.filter((key) => groupTotals[key]?.pieces).map((key) => (
-                <button key={key} type="button" className={`ik-chip${group === key ? " on" : ""}`} onClick={() => setGroup(group === key ? "" : key)} aria-pressed={group === key}
+              <button type="button" className={`ik-chip${group === "" ? " on" : ""}`} onClick={() => setGroup("")}>All groups</button>
+              {chipKeys.map((key) => (
+                <button key={key || "-"} type="button" className={`ik-chip${group === key ? " on" : ""}`} onClick={() => setGroup(group === key ? "" : key)} aria-pressed={group === key}
                   title={`${ikPieces(groupTotals[key].pieces)} pcs · ${formatInkoopEuro(groupTotals[key].value)}`}>
-                  <i className="ik-cust-dot" style={{ background: IK_CUSTOMER_GROUP_COLORS[key] }} />{labelOf(key)} <span className="muted">{Math.round((groupTotals[key].pieces / Math.max(1, allGroupPieces)) * 100)}%</span>
+                  <i className="ik-cust-dot" style={{ background: colorOf(key) }} />{labelOf(key)} <span className="muted">{Math.round((groupTotals[key].pieces / Math.max(1, allGroupPieces)) * 100)}%</span>
                 </button>
               ))}
             </div>
@@ -25872,6 +25925,37 @@ function InkoopCustomersTab() {
       </div>
       {data && (
         <div className="ik-cust-grid">
+          {hoofd ? (
+          <div className="data-table-card ik-card">
+            <div className="ik-card-head"><strong>Per month</strong><span className="muted">pieces per Hoofdgroep (the biggest {seasonKeys.length}) -- the season</span></div>
+            <div className="ik-cust-scroll">
+              <table className="data-table ik-table ik-cust-heat">
+                <thead><tr><th>Hoofdgroep</th>{months.map((month) => <th key={month} className="num">{ikMonthLabel(month)}</th>)}</tr></thead>
+                <tbody>
+                  {seasonKeys.map((key) => {
+                    const rowMax = Math.max(1, ...months.map((month) => monthGroups.get(month)?.[key]?.pieces || 0));
+                    return (
+                      <tr key={key || "-"} className="clickable-row" onClick={() => setGroup(group === key ? "" : key)}>
+                        <td><i className="ik-cust-dot" style={{ background: colorOf(key) }} />{labelOf(key)}</td>
+                        {months.map((month) => {
+                          const pieces = monthGroups.get(month)?.[key]?.pieces || 0;
+                          const share = Math.sqrt(pieces / rowMax);
+                          return (
+                            <td key={month} className="num" style={pieces ? { background: `hsl(205 70% ${Math.round(95 - share * 45)}%)`, color: share > 0.7 ? "#fff" : undefined } : undefined}
+                              title={pieces ? `${labelOf(key)} ${ikMonthLabel(month)}: ${ikPieces(pieces)} pcs` : undefined}>
+                              {pieces ? ikPieces(pieces) : ""}
+                            </td>
+                          );
+                        })}
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+            <div className="muted">Each row shaded on its own (its best month darkest) · colour dot: its main group · click a row to show only it.</div>
+          </div>
+          ) : (
           <div className="data-table-card ik-card">
             <div className="ik-card-head"><strong>Per month</strong><span className="muted">pieces of the customers shown, by group</span></div>
             <div className="ik-cust-months">
@@ -25895,6 +25979,7 @@ function InkoopCustomersTab() {
               {IK_CUSTOMER_GROUP_ORDER.filter((key) => groupTotals[key]?.pieces).map((key) => <span key={key}><i style={{ background: IK_CUSTOMER_GROUP_COLORS[key] }} />{labelOf(key)}</span>)}
             </div>
           </div>
+          )}
           <div className="data-table-card ik-card">
             <div className="ik-card-head">
               <strong>Per country</strong>
@@ -25917,7 +26002,7 @@ function InkoopCustomersTab() {
                         {countryTotal ? `${Math.round((entry.pieces / countryTotal) * 100)}%` : "–"}
                       </td>
                       <td className="num">{entry.pieces ? formatInkoopEuro(entry.value / entry.pieces) : "–"}</td>
-                      <td className="ik-cust-groups-cell"><IkGroupBar groups={entry.groups} labelOf={labelOf} /></td>
+                      <td className="ik-cust-groups-cell">{hoofd ? <IkTopHoofdgroepen groups={entry.groups} colorOf={colorOf} /> : <IkGroupBar groups={entry.groups} labelOf={labelOf} />}</td>
                     </tr>
                   ))}
                   {!countryRows.length && <tr><td colSpan={6} className="muted">No customers in this period.</td></tr>}
@@ -25946,7 +26031,7 @@ function InkoopCustomersTab() {
                     <td className="num">{ikPieces(customer.shown_pieces)}</td>
                     <td className="num">{formatInkoopEuro(customer.shown_value)}</td>
                     <td className="num">{customer.shown_pieces ? formatInkoopEuro(customer.shown_value / customer.shown_pieces) : "–"}</td>
-                    <td className="ik-cust-groups-cell"><IkGroupBar groups={customer.groups} labelOf={labelOf} /></td>
+                    <td className="ik-cust-groups-cell">{hoofd ? <IkTopHoofdgroepen groups={customer.hgroups} colorOf={colorOf} /> : <IkGroupBar groups={customer.groups} labelOf={labelOf} />}</td>
                   </tr>
                 ))}
               </tbody>
@@ -25955,14 +26040,14 @@ function InkoopCustomersTab() {
           {sorted.length > 400 && <div className="muted">… {sorted.length - 400} more -- narrow it with the search or the country.</div>}
         </div>
       )}
-      {openCode && <IkCustomerDrawer code={openCode} range={range} onClose={() => setOpenCode("")} />}
+      {openCode && <IkCustomerDrawer code={openCode} range={range} hoofd={hoofd} hoofdMain={hoofdMain} onClose={() => setOpenCode("")} />}
     </div>
   );
 }
 
 // One customer: its groups per month (pieces), their prices, its products
 // and its lots.
-function IkCustomerDrawer({ code, range, onClose }) {
+function IkCustomerDrawer({ code, range, hoofd = false, hoofdMain = new Map(), onClose }) {
   const [data, setData] = useState(null);
   const [error, setError] = useState("");
   const [lotMonth, setLotMonth] = useState("");
@@ -25970,12 +26055,20 @@ function IkCustomerDrawer({ code, range, onClose }) {
     setData(null);
     apiJson(`/api/inkoop/customers/detail?code=${encodeURIComponent(code)}&from=${range.from}&to=${range.to}`).then(setData).catch((loadError) => setError(loadError.message));
   }, [code, range.from, range.to]);
-  const labelOf = ikGroupLabelOf(data?.group_list);
+  const mainLabelOf = ikGroupLabelOf(data?.group_list);
   const months = ikMonthsBetween(range.from, range.to);
-  const cellOf = new Map((data?.cells || []).map((cell) => [`${cell.month}|${cell.group}`, cell]));
-  const groups = IK_CUSTOMER_GROUP_ORDER.filter((key) => (data?.cells || []).some((cell) => cell.group === key && cell.pieces));
-  const max = Math.max(1, ...(data?.cells || []).map((cell) => cell.pieces));
-  const groupSum = (key) => (data?.cells || []).filter((cell) => cell.group === key).reduce((sum, cell) => ({
+  // Main groups or Hoofdgroepen, as the page shows.
+  const allCells = (hoofd ? data?.hcells : data?.cells) || [];
+  const labelOf = (key) => (hoofd ? key || IK_NO_HOOFDGROEP : mainLabelOf(key));
+  const mainOfCell = new Map(allCells.map((cell) => [cell.group, cell.main]));
+  const colorOf = (key) => IK_CUSTOMER_GROUP_COLORS[hoofd ? hoofdMain.get(key) || mainOfCell.get(key) : key] || IK_CUSTOMER_GROUP_COLORS.none;
+  const cellOf = new Map(allCells.map((cell) => [`${cell.month}|${cell.group}`, cell]));
+  const piecesOf = (key) => allCells.filter((cell) => cell.group === key).reduce((sum, cell) => sum + cell.pieces, 0);
+  const groups = hoofd
+    ? [...new Set(allCells.filter((cell) => cell.pieces).map((cell) => cell.group))].sort((left, right) => piecesOf(right) - piecesOf(left))
+    : IK_CUSTOMER_GROUP_ORDER.filter((key) => allCells.some((cell) => cell.group === key && cell.pieces));
+  const max = Math.max(1, ...allCells.map((cell) => cell.pieces));
+  const groupSum = (key) => allCells.filter((cell) => cell.group === key).reduce((sum, cell) => ({
     pieces: sum.pieces + cell.pieces, value: sum.value + cell.value,
     min: cell.min_price === null ? sum.min : sum.min === null ? cell.min_price : Math.min(sum.min, cell.min_price),
     max: cell.max_price === null ? sum.max : sum.max === null ? cell.max_price : Math.max(sum.max, cell.max_price),
@@ -25998,11 +26091,11 @@ function IkCustomerDrawer({ code, range, onClose }) {
           <h4 className="ik-subhead">Pieces per month</h4>
           <div className="ik-cust-scroll">
             <table className="data-table ik-table ik-cust-heat">
-              <thead><tr><th>Group</th>{months.map((month) => <th key={month} className="num">{ikMonthLabel(month)}</th>)}<th className="num">Total</th></tr></thead>
+              <thead><tr><th>{hoofd ? "Hoofdgroep" : "Group"}</th>{months.map((month) => <th key={month} className="num">{ikMonthLabel(month)}</th>)}<th className="num">Total</th></tr></thead>
               <tbody>
                 {groups.map((key) => (
-                  <tr key={key}>
-                    <td><i className="ik-cust-dot" style={{ background: IK_CUSTOMER_GROUP_COLORS[key] }} />{labelOf(key)}</td>
+                  <tr key={key || "-"}>
+                    <td><i className="ik-cust-dot" style={{ background: colorOf(key) }} />{labelOf(key)}</td>
                     {months.map((month) => {
                       const cell = cellOf.get(`${month}|${key}`);
                       const share = cell ? Math.sqrt(cell.pieces / max) : 0;
@@ -26019,15 +26112,15 @@ function IkCustomerDrawer({ code, range, onClose }) {
               </tbody>
             </table>
           </div>
-          <h4 className="ik-subhead">Prices per group (purchase)</h4>
+          <h4 className="ik-subhead">Prices per {hoofd ? "Hoofdgroep" : "group"} (purchase)</h4>
           <table className="data-table ik-table">
-            <thead><tr><th>Group</th><th className="num">Pieces</th><th className="num">Purchase €</th><th className="num">Avg € / pc</th><th className="num">Range € / pc</th></tr></thead>
+            <thead><tr><th>{hoofd ? "Hoofdgroep" : "Group"}</th><th className="num">Pieces</th><th className="num">Purchase €</th><th className="num">Avg € / pc</th><th className="num">Range € / pc</th></tr></thead>
             <tbody>
               {groups.map((key) => {
                 const sum = groupSum(key);
                 return (
-                  <tr key={key}>
-                    <td><i className="ik-cust-dot" style={{ background: IK_CUSTOMER_GROUP_COLORS[key] }} />{labelOf(key)}</td>
+                  <tr key={key || "-"}>
+                    <td><i className="ik-cust-dot" style={{ background: colorOf(key) }} />{labelOf(key)}</td>
                     <td className="num">{ikPieces(sum.pieces)}</td>
                     <td className="num">{formatInkoopEuro(sum.value)}</td>
                     <td className="num">{sum.pieces ? formatInkoopEuro(sum.value / sum.pieces) : "–"}</td>
@@ -26039,12 +26132,12 @@ function IkCustomerDrawer({ code, range, onClose }) {
           </table>
           <h4 className="ik-subhead">Most bought products</h4>
           <table className="data-table ik-table">
-            <thead><tr><th>Product</th><th>Sales group</th><th className="num">Pieces</th><th className="num">€ / pc</th><th>Last</th></tr></thead>
+            <thead><tr><th>Product</th><th>{hoofd ? "Hoofdgroep" : "Sales group"}</th><th className="num">Pieces</th><th className="num">€ / pc</th><th>Last</th></tr></thead>
             <tbody>
               {data.products.slice(0, 25).map((product) => (
                 <tr key={`${product.description}|${product.sales_group}`}>
                   <td><i className="ik-cust-dot" style={{ background: IK_CUSTOMER_GROUP_COLORS[product.group] || IK_CUSTOMER_GROUP_COLORS.none }} />{product.description}</td>
-                  <td>{product.sales_group || <span className="muted">{labelOf(product.group)}</span>}</td>
+                  <td>{hoofd ? (product.hoofdgroep || <span className="muted">{IK_NO_HOOFDGROEP}</span>) : (product.sales_group || <span className="muted">{mainLabelOf(product.group)}</span>)}</td>
                   <td className="num">{ikPieces(product.pieces)}</td>
                   <td className="num">{product.pieces ? formatInkoopEuro(product.value / product.pieces) : "–"}</td>
                   <td>{fustOverviewDate(product.last_date)}</td>
@@ -26066,7 +26159,7 @@ function IkCustomerDrawer({ code, range, onClose }) {
                 <tr key={lot.lot}>
                   <td>{fustOverviewDate(lot.date)}</td>
                   <td>{lot.lot}</td>
-                  <td><i className="ik-cust-dot" style={{ background: IK_CUSTOMER_GROUP_COLORS[lot.group] || IK_CUSTOMER_GROUP_COLORS.none }} />{lot.description}{lot.sales_group && <small className="muted" title={IK_GROUP_SOURCES.find(([key]) => key === (lot.src || "t"))?.[2]}> {lot.sales_group}{lot.src === "vbn" ? " (VBN)" : lot.src === "name" ? " (name)" : ""}</small>}</td>
+                  <td><i className="ik-cust-dot" style={{ background: IK_CUSTOMER_GROUP_COLORS[lot.group] || IK_CUSTOMER_GROUP_COLORS.none }} />{lot.description}{lot.sales_group && <small className="muted" title={IK_GROUP_SOURCES.find(([key]) => key === (lot.src || "t"))?.[2]}> {lot.sales_group}{lot.src === "vbn" ? " (VBN)" : lot.src === "name" ? " (name)" : ""}</small>}{hoofd && <small className="ik-cust-hg"> {lot.hoofdgroep || IK_NO_HOOFDGROEP}</small>}</td>
                   <td>{lot.suppl}</td>
                   <td className="num">{ikPieces(lot.pieces)}</td>
                   <td className="num">{formatInkoopEuro(lot.price)}</td>
@@ -26097,6 +26190,33 @@ function InkoopCustomerDataCard() {
   const fileRef = useRef(null);
   const salesRef = useRef(null);
   const [salesProgress, setSalesProgress] = useState("");
+  const hoofdRef = useRef(null);
+  const [hoofdBusy, setHoofdBusy] = useState(false);
+  const [gaps, setGaps] = useState(null);
+  const [showGaps, setShowGaps] = useState(false);
+  useEffect(() => {
+    if (showGaps && !gaps) apiJson("/api/inkoop/customers/hoofdgroep-gaps").then((payload) => setGaps(payload.gaps || [])).catch((loadError) => setError(loadError.message));
+  }, [showGaps, gaps]);
+  // The Hoofdgroep mapping (Product_mapping.xlsx: Zoekterm, Product,
+  // Hoofdgroep), merged with what is stored.
+  async function uploadHoofdgroep(event) {
+    const file = event.target.files?.[0];
+    event.target.value = "";
+    if (!file) return;
+    setHoofdBusy(true);
+    setError("");
+    setMessage("");
+    try {
+      const payload = await apiJson("/api/inkoop/customers/hoofdgroep-mapping", { method: "POST", body: JSON.stringify({ file: { name: file.name, content_base64: await fileToBase64(file) } }) });
+      setMessage(`${payload.terms} zoekterm(en) read (${(payload.sheets || []).map((sheet) => sheet.sheet).join(", ")}); ${ikPieces(payload.lots.matched)} of ${ikPieces(payload.lots.lots)} sales-list lots have a Hoofdgroep (${ikPieces(payload.lots.updated)} changed). The months are worked out again.`);
+      setGaps(null);
+      load();
+    } catch (uploadError) {
+      setError(uploadError.message);
+    } finally {
+      setHoofdBusy(false);
+    }
+  }
   const load = useCallback(() => {
     apiJson("/api/inkoop/customers/status").then((payload) => {
       setStatus(payload);
@@ -26178,6 +26298,8 @@ function InkoopCustomerDataCard() {
         else <strong>the VBN code of its invoice line</strong> -- each VBN code gets the group its lots have in the sales list, so a new lot finds its group by its invoice;
         else its name in <strong>the product export</strong> ("Chr g Topspin" is the lot "Topspin"); else Connect's T. The invoice's FH account (002 / 003) tells house plants from garden plants.
         Each upload is added to what is stored -- nothing is wiped. The customers' place (plaats, postcode) comes from the klant gegevens export above, when it has those columns.
+        <br />The <strong>Hoofdgroep</strong> (our selling groups -- Chr t, Lilium, Fillers B, Green per Bunch …, the page's "Hoofdgroep" view): the <strong>Hoofdgroep mapping</strong>'s zoekterm
+        the sales line's name (Omschrijving) starts with, else its Productgroep starts with (the longest wins; "Gr Pistache" also as "Pistache"); plants Planten, accessories Deco.
       </div>
       <div className="row-actions">
         <button type="button" className="primary" onClick={() => salesRef.current?.click()} disabled={Boolean(salesProgress) || status?.sales_job?.running}
@@ -26185,6 +26307,11 @@ function InkoopCustomerDataCard() {
           {salesProgress || (status?.sales_job?.running ? `${status.sales_job.phase}…` : "Upload the sales list")}
         </button>
         <input ref={salesRef} type="file" accept=".xlsx,.csv" onChange={uploadSales} hidden />
+        <button type="button" onClick={() => hoofdRef.current?.click()} disabled={hoofdBusy}
+          title="Our Product_mapping.xlsx (Zoekterm, Product, Hoofdgroep): a flower line's Hoofdgroep is the zoekterm its name starts with (longest wins); plants Planten, accessories Deco">
+          {hoofdBusy ? "Reading…" : "Upload the Hoofdgroep mapping"}
+        </button>
+        <input ref={hoofdRef} type="file" accept=".xlsx" onChange={uploadHoofdgroep} hidden />
         <button type="button" onClick={() => fileRef.current?.click()} disabled={busy}>{busy ? "Reading…" : "Upload the product export"}</button>
         <input ref={fileRef} type="file" accept=".xlsx,.csv" onChange={upload} hidden />
         <button type="button" onClick={rebuild} disabled={job?.running}>{job?.running ? `Working out… ${job.done} of ${job.months} month(s)` : "Work out the months again"}</button>
@@ -26196,6 +26323,34 @@ function InkoopCustomerDataCard() {
           {status.sales_job?.finished_at && !status.sales_job.running && !status.sales_job.error ? ` (${status.sales_job.name}: ${ikPieces(status.sales_job.lines)} lines, ${fustOverviewDate(status.sales_job.first_date)} – ${fustOverviewDate(status.sales_job.last_date)})` : ""}
           {" "}· invoice VBN codes: {ikPieces(status.lot_groups.vbn_lots)} matched lot(s), {ikPieces(status.lot_groups.vbn_codes)} VBN code(s) with a group
         </div>
+      )}
+      {status?.lot_groups && (
+        <div className="muted">
+          Hoofdgroep mapping: {ikPieces(status.lot_groups.hoofd_terms || 0)} zoekterm(en){status.lot_groups.hoofd_terms_updated_at ? `, last upload ${formatTimestamp(status.lot_groups.hoofd_terms_updated_at)}` : " -- not uploaded yet"}
+          {" "}· {ikPieces(status.lot_groups.hoofd_lots || 0)} of {ikPieces(status.lot_groups.list_lots)} sales-list lot(s) with a Hoofdgroep ({status.lot_groups.hoofd_groups || 0} Hoofdgroepen)
+          {" "}<button type="button" className="link-button" onClick={() => setShowGaps((value) => !value)} aria-expanded={showGaps}>{showGaps ? "▾" : "▸"} the ones without</button>
+        </div>
+      )}
+      {showGaps && (
+        !gaps ? <div className="muted">Loading…</div> : (
+          <div className="table-wrap">
+            <table className="data-table ik-table">
+              <thead><tr><th>Productgroep</th><th>Asrt</th><th className="num">Lots</th><th className="num">Sales lines</th><th>Names (add a zoekterm for the start of one)</th></tr></thead>
+              <tbody>
+                {gaps.map((gap) => (
+                  <tr key={`${gap.product_group}|${gap.asrt}`}>
+                    <td>{gap.product_group}</td>
+                    <td>{gap.asrt || "–"}</td>
+                    <td className="num">{ikPieces(gap.lots)}</td>
+                    <td className="num">{ikPieces(gap.lines)}</td>
+                    <td className="muted">{(gap.examples || []).join(" · ")}</td>
+                  </tr>
+                ))}
+                {!gaps.length && <tr><td colSpan={5} className="muted">Every sales-list lot has a Hoofdgroep.</td></tr>}
+              </tbody>
+            </table>
+          </div>
+        )
       )}
       {status?.sales_job?.error && <div className="notice danger">Sales list: {status.sales_job.error}</div>}
       {status && (
