@@ -1549,10 +1549,113 @@ export async function getInkoopDispatchMonths() {
   return result.rows.map((row) => row.month);
 }
 
+// A lot's group, first that is known: the sales list (its Partij: the
+// Productgroep and Asrt), the VBN code of its invoice line (the group that
+// VBN code's lots have in the sales list), its product name in the product
+// export, else nothing (Connect's T decides). "src" says which; "level1" is
+// the invoice line's FH account (001 / 002 / 003: VBN level 1 -- cut
+// flowers, house plants, garden plants).
+const INKOOP_LOT_GROUP_JOINS = `
+  LEFT JOIN inkoop_erp_lines e ON e.lot = l.lot
+  LEFT JOIN inkoop_lot_groups lg ON lg.lot = l.lot AND lg.product_group <> ''
+  LEFT JOIN inkoop_lot_vbn lv ON lv.lot = l.lot
+  LEFT JOIN inkoop_vbn_groups vg ON vg.vbn = lv.vbn
+  LEFT JOIN inkoop_product_names n0 ON n0.name_key = lower(regexp_replace(btrim(COALESCE(l.description, '')), '\\s+', ' ', 'g'))
+  LEFT JOIN inkoop_product_names n1 ON n0.name_key IS NULL
+    AND n1.name_key = lower(btrim(regexp_replace(regexp_replace(btrim(COALESCE(l.description, '')), '\\s*\\([^)]*\\)\\s*$', ''), '\\s+', ' ', 'g')))
+`;
+const INKOOP_LOT_GROUP_SELECT = `
+  COALESCE(lg.product_group, vg.product_group, n0.sales_group, n1.sales_group, '') AS sales_group,
+  CASE WHEN lg.lot IS NOT NULL THEN 'list' WHEN vg.vbn IS NOT NULL THEN 'vbn' WHEN COALESCE(n0.sales_group, n1.sales_group) IS NOT NULL THEN 'name' ELSE '' END AS src,
+  COALESCE(NULLIF(upper(btrim(lg.asrt)), ''), NULLIF(upper(btrim(vg.asrt)), ''), NULLIF(upper(btrim(e.raw->>'t')), ''), '') AS t,
+  CASE lv.account WHEN '001' THEN '1' WHEN '002' THEN '2' WHEN '003' THEN '3' ELSE '' END AS level1
+`;
+const INKOOP_DISPATCH_PIECES = "CASE WHEN (d->>'pieces') ~ '^-?[0-9]+(\\.[0-9]+)?$' THEN (d->>'pieces')::numeric ELSE 0 END";
+
+// The sales list's lots (Partij -> Productgroep, Asrt), merged in.
+export async function saveInkoopLotGroups(lots) {
+  if (!pool || !lots?.length) return 0;
+  let saved = 0;
+  for (let index = 0; index < lots.length; index += 5000) {
+    const chunk = lots.slice(index, index + 5000);
+    const result = await pool.query(
+      `
+        INSERT INTO inkoop_lot_groups (lot, product_group, group_id, asrt, description, first_date, lines)
+        SELECT * FROM unnest($1::bigint[], $2::text[], $3::text[], $4::text[], $5::text[], $6::date[], $7::int[])
+        ON CONFLICT (lot) DO UPDATE SET product_group = EXCLUDED.product_group, group_id = EXCLUDED.group_id, asrt = EXCLUDED.asrt,
+          description = EXCLUDED.description, first_date = LEAST(inkoop_lot_groups.first_date, EXCLUDED.first_date),
+          lines = GREATEST(inkoop_lot_groups.lines, EXCLUDED.lines), updated_at = now()
+      `,
+      [chunk.map((row) => row.lot), chunk.map((row) => row.product_group || ""), chunk.map((row) => row.group_id || ""), chunk.map((row) => row.asrt || ""),
+        chunk.map((row) => row.description || ""), chunk.map((row) => (/^[0-9]{4}-[0-9]{2}-[0-9]{2}$/.test(row.date || "") ? row.date : null)), chunk.map((row) => Number(row.lines) || 0)],
+    );
+    saved += result.rowCount;
+  }
+  return saved;
+}
+
+// Each matched lot's invoice VBN code and FH account, from the stored match
+// rows (a pool's "A+B" gives each lot the line's code), and then each VBN
+// code's group: the Productgroep most of its lots have in the sales list.
+export async function refreshInkoopLotVbn() {
+  if (!pool) return { lots: 0, vbn: 0 };
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    await client.query("DELETE FROM inkoop_lot_vbn");
+    const lots = await client.query(`
+      INSERT INTO inkoop_lot_vbn (lot, vbn, account)
+      SELECT DISTINCT ON (x.lot) x.lot, x.vbn, x.account
+        FROM (
+          SELECT btrim(part)::bigint AS lot, NULLIF(btrim(il.raw->>'vbn_code'), '') AS vbn, COALESCE(NULLIF(btrim(il.raw->>'account_id'), ''), '') AS account, m.match_date
+            FROM inkoop_match_rows m
+            CROSS JOIN LATERAL unnest(string_to_array(m.lot, '+')) AS part
+            JOIN inkoop_invoice_lines il ON il.invoice_number = m.invoice_number
+              AND regexp_replace(btrim(COALESCE(il.description, '')), '\\s+', ' ', 'g') = m.description
+              AND il.quantity = m.invoice_quantity AND il.total = m.invoice_total
+           WHERE m.list IN ('matched_ok', 'matched_mismatch') AND btrim(part) ~ '^[0-9]{1,18}$'
+        ) x
+       WHERE x.vbn IS NOT NULL
+       ORDER BY x.lot, x.match_date DESC
+    `);
+    await client.query("DELETE FROM inkoop_vbn_groups");
+    const vbn = await client.query(`
+      INSERT INTO inkoop_vbn_groups (vbn, product_group, asrt, lots, share)
+      SELECT vbn, product_group, asrt, lots, round(lots::numeric / total, 3)
+        FROM (
+          SELECT v.vbn, g.product_group, g.asrt, count(*)::int AS lots,
+                 sum(count(*)) OVER (PARTITION BY v.vbn) AS total,
+                 row_number() OVER (PARTITION BY v.vbn ORDER BY count(*) DESC, g.product_group) AS rank
+            FROM inkoop_lot_vbn v
+            JOIN inkoop_lot_groups g ON g.lot = v.lot AND g.product_group <> ''
+           GROUP BY v.vbn, g.product_group, g.asrt
+        ) ranked
+       WHERE rank = 1
+    `);
+    await client.query("COMMIT");
+    return { lots: lots.rowCount, vbn: vbn.rowCount };
+  } catch (error) {
+    await client.query("ROLLBACK");
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
+export async function getInkoopLotGroupCounts() {
+  if (!pool) return { list_lots: 0, list_groups: 0, vbn_lots: 0, vbn_codes: 0, list_updated_at: null };
+  const result = await pool.query(`
+    SELECT (SELECT count(*)::int FROM inkoop_lot_groups) AS list_lots, (SELECT count(DISTINCT product_group)::int FROM inkoop_lot_groups) AS list_groups,
+           (SELECT max(updated_at) FROM inkoop_lot_groups) AS list_updated_at,
+           (SELECT count(*)::int FROM inkoop_lot_vbn) AS vbn_lots, (SELECT count(*)::int FROM inkoop_vbn_groups) AS vbn_codes
+  `);
+  return result.rows[0];
+}
+
 // One month of inkoop_customer_month worked out again from the dispatches:
-// per customer, the lot's sales group (by its product name) and its Connect
-// T; the value is the lot's total for the pieces dispatched. Lots of the
-// codes in excludedCodes (internal moves) are left out.
+// per customer, the lot's group (see INKOOP_LOT_GROUP_SELECT) and its T; the
+// value is the lot's total for the pieces dispatched. Lots of the codes in
+// excludedCodes (internal moves) are left out.
 export async function rebuildInkoopCustomerMonth(month, excludedCodes = []) {
   if (!pool) return 0;
   const client = await pool.connect();
@@ -1561,26 +1664,21 @@ export async function rebuildInkoopCustomerMonth(month, excludedCodes = []) {
     await client.query("DELETE FROM inkoop_customer_month WHERE month = $1::date", [month]);
     const result = await client.query(
       `
-        INSERT INTO inkoop_customer_month (month, customer_code, sales_group, t, pieces, value, lots, min_price, max_price)
-        SELECT $1::date, x.code, x.sales_group, x.t, sum(x.pieces), round(sum(x.value), 2), count(DISTINCT x.lot), min(x.price) FILTER (WHERE x.price > 0), max(x.price)
+        INSERT INTO inkoop_customer_month (month, customer_code, sales_group, t, src, level1, pieces, value, lots, min_price, max_price)
+        SELECT $1::date, x.code, x.sales_group, x.t, x.src, x.level1, sum(x.pieces), round(sum(x.value), 2), count(DISTINCT x.lot), min(x.price) FILTER (WHERE x.price > 0), max(x.price)
           FROM (
-            SELECT l.lot, upper(btrim(d->>'code')) AS code,
-                   COALESCE(n0.sales_group, n1.sales_group, '') AS sales_group,
-                   COALESCE(NULLIF(upper(btrim(e.raw->>'t')), ''), '') AS t,
-                   CASE WHEN (d->>'pieces') ~ '^-?[0-9]+(\\.[0-9]+)?$' THEN (d->>'pieces')::numeric ELSE 0 END AS pieces,
-                   CASE WHEN l.pieces > 0 AND (d->>'pieces') ~ '^-?[0-9]+(\\.[0-9]+)?$' THEN COALESCE(l.t_price, 0) * (d->>'pieces')::numeric / l.pieces ELSE 0 END AS value,
+            SELECT l.lot, upper(btrim(d->>'code')) AS code, ${INKOOP_LOT_GROUP_SELECT},
+                   ${INKOOP_DISPATCH_PIECES} AS pieces,
+                   CASE WHEN l.pieces > 0 THEN COALESCE(l.t_price, 0) * ${INKOOP_DISPATCH_PIECES} / l.pieces ELSE 0 END AS value,
                    l.price
               FROM inkoop_dispatch_lots l
               CROSS JOIN LATERAL jsonb_array_elements(l.dispatches) d
-              LEFT JOIN inkoop_erp_lines e ON e.lot = l.lot
-              LEFT JOIN inkoop_product_names n0 ON n0.name_key = lower(regexp_replace(btrim(COALESCE(l.description, '')), '\\s+', ' ', 'g'))
-        LEFT JOIN inkoop_product_names n1 ON n0.name_key IS NULL
-          AND n1.name_key = lower(btrim(regexp_replace(regexp_replace(btrim(COALESCE(l.description, '')), '\\s*\\([^)]*\\)\\s*$', ''), '\\s+', ' ', 'g')))
+              ${INKOOP_LOT_GROUP_JOINS}
              WHERE l.erp_date >= $1::date AND l.erp_date < ($1::date + interval '1 month')
                AND NOT (upper(btrim(COALESCE(l.suppl, ''))) = ANY($2::text[]))
                AND btrim(COALESCE(d->>'code', '')) <> ''
           ) x
-         GROUP BY x.code, x.sales_group, x.t
+         GROUP BY x.code, x.sales_group, x.t, x.src, x.level1
       `,
       [month, excludedCodes.map((code) => String(code).toUpperCase())],
     );
@@ -1602,7 +1700,7 @@ export async function getInkoopCustomerMonthRows({ from, to, code = "" } = {}) {
   let where = "month >= $1::date AND month <= $2::date";
   if (code) { params.push(code.toUpperCase()); where += ` AND customer_code = $${params.length}`; }
   const result = await pool.query(
-    `SELECT to_char(month, 'YYYY-MM') AS month, customer_code, sales_group, t, pieces::float8 AS pieces, value::float8 AS value, lots,
+    `SELECT to_char(month, 'YYYY-MM') AS month, customer_code, sales_group, t, src, level1, pieces::float8 AS pieces, value::float8 AS value, lots,
             min_price::float8 AS min_price, max_price::float8 AS max_price
        FROM inkoop_customer_month WHERE ${where}`,
     params,
@@ -1615,19 +1713,18 @@ export async function getInkoopCustomerLots({ code, from, to, limit = 3000 } = {
   if (!pool || !code) return [];
   const result = await pool.query(
     `
-      SELECT l.lot::text AS lot, to_char(l.erp_date, 'YYYY-MM-DD') AS date, btrim(COALESCE(l.description, '')) AS description, btrim(COALESCE(l.suppl, '')) AS suppl,
-             COALESCE(n0.sales_group, n1.sales_group, '') AS sales_group, COALESCE(NULLIF(upper(btrim(e.raw->>'t')), ''), '') AS t,
-             l.price::float8 AS price, l.pieces::float8 AS lot_pieces, l.t_price::float8 AS lot_value,
-             sum(CASE WHEN (d->>'pieces') ~ '^-?[0-9]+(\\.[0-9]+)?$' THEN (d->>'pieces')::numeric ELSE 0 END)::float8 AS pieces
-        FROM inkoop_dispatch_lots l
-        CROSS JOIN LATERAL jsonb_array_elements(l.dispatches) d
-        LEFT JOIN inkoop_erp_lines e ON e.lot = l.lot
-        LEFT JOIN inkoop_product_names n0 ON n0.name_key = lower(regexp_replace(btrim(COALESCE(l.description, '')), '\\s+', ' ', 'g'))
-        LEFT JOIN inkoop_product_names n1 ON n0.name_key IS NULL
-          AND n1.name_key = lower(btrim(regexp_replace(regexp_replace(btrim(COALESCE(l.description, '')), '\\s*\\([^)]*\\)\\s*$', ''), '\\s+', ' ', 'g')))
-       WHERE l.erp_date >= $2::date AND l.erp_date <= $3::date AND upper(btrim(d->>'code')) = $1
-       GROUP BY l.lot, l.erp_date, l.description, l.suppl, n0.sales_group, n1.sales_group, e.raw, l.price, l.pieces, l.t_price
-       ORDER BY l.erp_date DESC, l.lot DESC
+      SELECT x.lot::text AS lot, to_char(x.erp_date, 'YYYY-MM-DD') AS date, x.description, x.suppl, x.sales_group, x.src, x.t, x.level1,
+             x.price::float8 AS price, x.lot_pieces::float8 AS lot_pieces, x.lot_value::float8 AS lot_value, sum(x.pieces)::float8 AS pieces
+        FROM (
+          SELECT l.lot, l.erp_date, btrim(COALESCE(l.description, '')) AS description, btrim(COALESCE(l.suppl, '')) AS suppl, ${INKOOP_LOT_GROUP_SELECT},
+                 l.price, l.pieces AS lot_pieces, l.t_price AS lot_value, ${INKOOP_DISPATCH_PIECES} AS pieces
+            FROM inkoop_dispatch_lots l
+            CROSS JOIN LATERAL jsonb_array_elements(l.dispatches) d
+            ${INKOOP_LOT_GROUP_JOINS}
+           WHERE l.erp_date >= $2::date AND l.erp_date <= $3::date AND upper(btrim(d->>'code')) = $1
+        ) x
+       GROUP BY x.lot, x.erp_date, x.description, x.suppl, x.sales_group, x.src, x.t, x.level1, x.price, x.lot_pieces, x.lot_value
+       ORDER BY x.erp_date DESC, x.lot DESC
        LIMIT $4
     `,
     [code.toUpperCase(), from, to, limit],
@@ -1635,12 +1732,12 @@ export async function getInkoopCustomerLots({ code, from, to, limit = 3000 } = {
   return result.rows;
 }
 
-// The sales groups with the pieces dispatched under each (all months), per
-// Connect T -- Settings' group table.
+// The groups with the pieces dispatched under each (all months), per T and
+// where the group came from -- Settings' group table.
 export async function getInkoopSalesGroupTotals() {
   if (!pool) return [];
   const result = await pool.query(
-    "SELECT sales_group, t, sum(pieces)::float8 AS pieces FROM inkoop_customer_month GROUP BY sales_group, t",
+    "SELECT sales_group, t, src, sum(pieces)::float8 AS pieces FROM inkoop_customer_month GROUP BY sales_group, t, src",
   );
   return result.rows;
 }
@@ -5136,6 +5233,61 @@ const databaseMigrations = [
   `,
   `
     CREATE INDEX IF NOT EXISTS inkoop_customer_month_customer_idx ON inkoop_customer_month (customer_code, month)
+  `,
+  // Where a row's group came from (the sales list, an invoice VBN code, the
+  // product name) and the VBN level 1 (FH account) -- part of the key. The
+  // table is worked out from the dispatches, so an older one is emptied and
+  // rebuilt with the new key.
+  `
+    ALTER TABLE inkoop_customer_month ADD COLUMN IF NOT EXISTS src text NOT NULL DEFAULT ''
+  `,
+  `
+    ALTER TABLE inkoop_customer_month ADD COLUMN IF NOT EXISTS level1 text NOT NULL DEFAULT ''
+  `,
+  `
+    DO $$
+    BEGIN
+      IF NOT EXISTS (
+        SELECT 1 FROM pg_index i JOIN pg_attribute a ON a.attrelid = i.indrelid AND a.attnum = ANY(i.indkey)
+         WHERE i.indrelid = 'inkoop_customer_month'::regclass AND i.indisprimary AND a.attname = 'level1'
+      ) THEN
+        DELETE FROM inkoop_customer_month;
+        ALTER TABLE inkoop_customer_month DROP CONSTRAINT IF EXISTS inkoop_customer_month_pkey;
+        ALTER TABLE inkoop_customer_month ADD PRIMARY KEY (month, customer_code, sales_group, t, src, level1);
+      END IF;
+    END $$
+  `,
+  // The sales list (our sales export): each lot (Partij) with its
+  // Productgroep and Asrt. Merged on each upload.
+  `
+    CREATE TABLE IF NOT EXISTS inkoop_lot_groups (
+      lot bigint PRIMARY KEY,
+      product_group text NOT NULL DEFAULT '',
+      group_id text NOT NULL DEFAULT '',
+      asrt text NOT NULL DEFAULT '',
+      description text NOT NULL DEFAULT '',
+      first_date date,
+      lines integer NOT NULL DEFAULT 0,
+      updated_at timestamptz NOT NULL DEFAULT now()
+    )
+  `,
+  // Each matched lot's invoice VBN code and FH account (worked out from the
+  // match rows), and each VBN code's group (from the sales list's lots).
+  `
+    CREATE TABLE IF NOT EXISTS inkoop_lot_vbn (
+      lot bigint PRIMARY KEY,
+      vbn text NOT NULL,
+      account text NOT NULL DEFAULT ''
+    )
+  `,
+  `
+    CREATE TABLE IF NOT EXISTS inkoop_vbn_groups (
+      vbn text PRIMARY KEY,
+      product_group text NOT NULL,
+      asrt text NOT NULL DEFAULT '',
+      lots integer NOT NULL DEFAULT 0,
+      share numeric
+    )
   `,
   // One row per FloraHolland invoice: the totals King's journal export
   // needs (total incl. BTW, BTW per category, klok location) -- parsed from

@@ -25311,11 +25311,19 @@ const IK_CUSTOMER_GROUP_COLORS = {
   green: "#009e73",
   orchids: "#56b4e9",
   plants: "#d55e00",
+  garden: "#882255",
   bouquets: "#b8a300",
   deco: "#8c6d4f",
   none: "#9aa4ae",
 };
-const IK_CUSTOMER_GROUP_ORDER = ["chrys", "roses", "cut", "green", "orchids", "plants", "bouquets", "deco", "none"];
+const IK_CUSTOMER_GROUP_ORDER = ["chrys", "roses", "cut", "green", "orchids", "plants", "garden", "bouquets", "deco", "none"];
+// Where a lot's group came from.
+const IK_GROUP_SOURCES = [
+  ["list", "sales list", "Its lot (Partij) is in the sales list: its Productgroep"],
+  ["vbn", "invoice VBN", "The VBN code of its invoice line: the group that code's lots have in the sales list"],
+  ["name", "product name", "Its product name in the product export: its sales group"],
+  ["t", "Connect T only", "None of these: by Connect's T (B flowers, P plants, A accessoires)"],
+];
 const IK_DEPARTEMENT_REGION = Object.fromEntries(Object.entries(FRANCE_REGIONS).flatMap(([region, codes]) => codes.map((code) => [code, region])));
 
 function ikMonthShift(month, count) {
@@ -25539,8 +25547,9 @@ function InkoopCustomersTab() {
               <div className="ik-kpi"><span className="ik-kpi-label">Pieces</span><strong>{ikPieces(totalPieces)}</strong><small>{group ? labelOf(group) : "all groups"}</small></div>
               <div className="ik-kpi"><span className="ik-kpi-label">Purchase value</span><strong>{formatInkoopEuro(totalValue)}</strong><small>what we paid</small></div>
               <div className="ik-kpi"><span className="ik-kpi-label">€ / piece</span><strong>{totalPieces ? formatInkoopEuro(totalValue / totalPieces) : "–"}</strong><small>purchase</small></div>
-              <div className="ik-kpi" title="The pieces whose lot was found in the product list (its sales group); the rest is grouped by Connect's T">
-                <span className="ik-kpi-label">With a sales group</span><strong>{coverage === null ? "–" : `${coverage.toFixed(0)}%`}</strong><small>of all pieces</small>
+              <div className="ik-kpi" title={IK_GROUP_SOURCES.map(([key, label, hint]) => `${label}: ${data?.coverage?.total_pieces ? Math.round(((data.coverage.by_source?.[key] || 0) / data.coverage.total_pieces) * 100) : 0}% -- ${hint}`).join("\n")}>
+                <span className="ik-kpi-label">With a product group</span><strong>{coverage === null ? "–" : `${coverage.toFixed(0)}%`}</strong>
+                <small>{IK_GROUP_SOURCES.slice(0, 3).map(([key, label]) => (data?.coverage?.by_source?.[key] && data.coverage.total_pieces ? `${Math.round((data.coverage.by_source[key] / data.coverage.total_pieces) * 100)}% ${label}` : "")).filter(Boolean).join(" · ") || "of all pieces"}</small>
               </div>
             </div>
             {!data?.customers?.length && <div className="notice">No dispatches in this period yet -- they come with the Connect export (Upload &amp; compare), and Settings › Klant inzicht data works them out.</div>}
@@ -25734,7 +25743,7 @@ function IkCustomerDrawer({ code, range, onClose }) {
                 <tr key={lot.lot}>
                   <td>{fustOverviewDate(lot.date)}</td>
                   <td>{lot.lot}</td>
-                  <td><i className="ik-cust-dot" style={{ background: IK_CUSTOMER_GROUP_COLORS[lot.group] || IK_CUSTOMER_GROUP_COLORS.none }} />{lot.description}{lot.sales_group && <small className="muted"> {lot.sales_group}</small>}</td>
+                  <td><i className="ik-cust-dot" style={{ background: IK_CUSTOMER_GROUP_COLORS[lot.group] || IK_CUSTOMER_GROUP_COLORS.none }} />{lot.description}{lot.sales_group && <small className="muted" title={IK_GROUP_SOURCES.find(([key]) => key === (lot.src || "t"))?.[2]}> {lot.sales_group}{lot.src === "vbn" ? " (VBN)" : lot.src === "name" ? " (name)" : ""}</small>}</td>
                   <td>{lot.suppl}</td>
                   <td className="num">{ikPieces(lot.pieces)}</td>
                   <td className="num">{formatInkoopEuro(lot.price)}</td>
@@ -25763,11 +25772,13 @@ function InkoopCustomerDataCard() {
   const [groupSearch, setGroupSearch] = useState("");
   const timer = useRef(null);
   const fileRef = useRef(null);
+  const salesRef = useRef(null);
+  const [salesProgress, setSalesProgress] = useState("");
   const load = useCallback(() => {
     apiJson("/api/inkoop/customers/status").then((payload) => {
       setStatus(payload);
       window.clearTimeout(timer.current);
-      if (payload.job?.running) timer.current = window.setTimeout(load, 2000);
+      if (payload.job?.running || payload.sales_job?.running) timer.current = window.setTimeout(load, 2000);
     }).catch((loadError) => setError(loadError.message));
   }, []);
   useEffect(() => { load(); return () => window.clearTimeout(timer.current); }, [load]);
@@ -25789,6 +25800,30 @@ function InkoopCustomerDataCard() {
       setError(uploadError.message);
     } finally {
       setBusy(false);
+    }
+  }
+  // The sales list in parts of 6 MB (a year is far too big for one request).
+  async function uploadSales(event) {
+    const file = event.target.files?.[0];
+    event.target.value = "";
+    if (!file) return;
+    setError("");
+    setMessage("");
+    const partSize = 6 * 1024 * 1024;
+    const count = Math.max(1, Math.ceil(file.size / partSize));
+    const uploadId = `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 10)}`;
+    try {
+      for (let index = 0; index < count; index += 1) {
+        setSalesProgress(`Sending ${index + 1} of ${count}…`);
+        const content = await fileToBase64(file.slice(index * partSize, (index + 1) * partSize));
+        await apiJson("/api/inkoop/customers/sales-file", { method: "POST", body: JSON.stringify({ upload_id: uploadId, index, count, name: file.name, content_base64: content }) });
+      }
+      setSalesProgress("");
+      setMessage(`${file.name} sent; it is being read (a year of lines takes a few minutes).`);
+      load();
+    } catch (uploadError) {
+      setSalesProgress("");
+      setError(uploadError.message);
     }
   }
   async function rebuild() {
@@ -25816,19 +25851,33 @@ function InkoopCustomerDataCard() {
     <div className="data-table-card ik-cust-settings">
       <div className="section-header"><h2>Klant inzicht data</h2></div>
       <div className="notice">
-        The product export (table_export_data_….xlsx: productId, description, salesGroup …) gives each Connect lot its sales group by its product name
-        ("Chr g Topspin" is the lot "Topspin"). Each upload is added to what is stored -- nothing is wiped. The customers' place (plaats, postcode) comes from the
-        klant gegevens export above, when it has those columns.
+        A lot's group, first that is known: <strong>the sales list</strong> (our sales export: its Partij is the lot, its Productgroep the group);
+        else <strong>the VBN code of its invoice line</strong> -- each VBN code gets the group its lots have in the sales list, so a new lot finds its group by its invoice;
+        else its name in <strong>the product export</strong> ("Chr g Topspin" is the lot "Topspin"); else Connect's T. The invoice's FH account (002 / 003) tells house plants from garden plants.
+        Each upload is added to what is stored -- nothing is wiped. The customers' place (plaats, postcode) comes from the klant gegevens export above, when it has those columns.
       </div>
       <div className="row-actions">
-        <button type="button" className="primary" onClick={() => fileRef.current?.click()} disabled={busy}>{busy ? "Reading…" : "Upload the product export"}</button>
+        <button type="button" className="primary" onClick={() => salesRef.current?.click()} disabled={Boolean(salesProgress) || status?.sales_job?.running}
+          title="Our sales export (Bedrijf, Klant, Asrt, Artikelgroep, Productgroep, Omschrijving … Date, Partij): each lot gets its Productgroep; xlsx or csv">
+          {salesProgress || (status?.sales_job?.running ? `${status.sales_job.phase}…` : "Upload the sales list")}
+        </button>
+        <input ref={salesRef} type="file" accept=".xlsx,.csv" onChange={uploadSales} hidden />
+        <button type="button" onClick={() => fileRef.current?.click()} disabled={busy}>{busy ? "Reading…" : "Upload the product export"}</button>
         <input ref={fileRef} type="file" accept=".xlsx,.csv" onChange={upload} hidden />
         <button type="button" onClick={rebuild} disabled={job?.running}>{job?.running ? `Working out… ${job.done} of ${job.months} month(s)` : "Work out the months again"}</button>
         <button type="button" onClick={() => setShowGroups((value) => !value)} aria-expanded={showGroups}>{showGroups ? "▾" : "▸"} Sales groups → main groups</button>
       </div>
+      {status?.lot_groups && (
+        <div className="muted">
+          Sales list: {ikPieces(status.lot_groups.list_lots)} lot(s) in {status.lot_groups.list_groups} product group(s){status.lot_groups.list_updated_at ? `, last upload ${formatTimestamp(status.lot_groups.list_updated_at)}` : ""}
+          {status.sales_job?.finished_at && !status.sales_job.running && !status.sales_job.error ? ` (${status.sales_job.name}: ${ikPieces(status.sales_job.lines)} lines, ${fustOverviewDate(status.sales_job.first_date)} – ${fustOverviewDate(status.sales_job.last_date)})` : ""}
+          {" "}· invoice VBN codes: {ikPieces(status.lot_groups.vbn_lots)} matched lot(s), {ikPieces(status.lot_groups.vbn_codes)} VBN code(s) with a group
+        </div>
+      )}
+      {status?.sales_job?.error && <div className="notice danger">Sales list: {status.sales_job.error}</div>}
       {status && (
         <div className="muted">
-          {status.products?.products || 0} product(s) in {status.products?.groups || 0} sales group(s){status.products?.updated_at ? `, last upload ${formatTimestamp(status.products.updated_at)}` : ""} ·
+          Product export: {status.products?.products || 0} product(s) in {status.products?.groups || 0} sales group(s){status.products?.updated_at ? `, last upload ${formatTimestamp(status.products.updated_at)}` : ""} ·
           {" "}{status.places} customer place(s) ({status.places_fr} in France) · dispatches in {status.dispatch_months.length} month(s)
           {job?.finished_at && !job.running ? ` · worked out ${formatTimestamp(job.finished_at)}` : ""}
         </div>
@@ -25845,13 +25894,14 @@ function InkoopCustomerDataCard() {
             </div>
             <div className="table-wrap">
               <table className="data-table ik-table">
-                <thead><tr><th>Sales group</th><th className="num">Products</th><th className="num">Pieces dispatched</th><th>T</th><th>Main group</th></tr></thead>
+                <thead><tr><th>Product / sales group</th><th className="num">Products</th><th className="num">Pieces dispatched</th><th>From</th><th>T</th><th>Main group</th></tr></thead>
                 <tbody>
                   {shownGroups.slice(0, 300).map((entry) => (
                     <tr key={entry.sales_group}>
                       <td>{entry.sales_group}</td>
                       <td className="num">{entry.products}</td>
                       <td className="num">{ikPieces(entry.pieces)}</td>
+                      <td className="muted">{IK_GROUP_SOURCES.filter(([key]) => entry.by_src?.[key]).map(([key, label]) => `${label} ${Math.round((entry.by_src[key] / Math.max(1, entry.pieces)) * 100)}%`).join(" · ") || "–"}</td>
                       <td>{entry.t || "–"}</td>
                       <td>
                         <select value={entry.main_group} onChange={(event) => setMain(entry.sales_group, event.target.value)} aria-label={`Main group of ${entry.sales_group}`}>

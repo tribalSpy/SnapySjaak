@@ -149,6 +149,9 @@ import {
   getInkoopCustomerMonthRows,
   getInkoopCustomerLots,
   getInkoopSalesGroupTotals,
+  saveInkoopLotGroups,
+  refreshInkoopLotVbn,
+  getInkoopLotGroupCounts,
   saveInkoopErpLines,
   saveInkoopInvoiceLines,
   deleteInkoopInvoiceCopies,
@@ -12133,35 +12136,45 @@ const INKOOP_CUSTOMER_GROUPS = [
   ["cut", "Overige snijbloemen", "VBN 1 01 / 1 02 / 1 03"],
   ["green", "Groen", "VBN 1 07"],
   ["orchids", "Orchideeën", "VBN 1 05 / 2 09"],
-  ["plants", "Planten", "VBN 2 / 3"],
+  ["plants", "Kamerplanten", "VBN 2"],
+  ["garden", "Tuinplanten", "VBN 3"],
   ["bouquets", "Boeketten", "bunches, bq"],
   ["deco", "Decoratie & accessoires", "VBN 1 10 / 3 16, accessoires"],
 ];
 const INKOOP_CUSTOMER_GROUP_KEYS = new Set(INKOOP_CUSTOMER_GROUPS.map(([key]) => key));
 // Suggested by the sales group's name; a cut-flower group whose lot is a
 // plant (Connect T = P: a pot chrysanthemum, a pot rose) is a plant.
+// The sales list's Productgroep is the genus (Dendranthema, Rosa,
+// Phalaenopsis ...); the product export's sales group our own short names
+// (Chr t, R tr, Phal ...) -- both are matched here.
 const INKOOP_CUSTOMER_GROUP_RULES = [
   ["bouquets", /^(bq|bunch|boeket|bouquet|r\.?\s?p\.?\s?bun)|bunches|boeket/i],
-  ["deco", /deco|keramiek|hoezen|kunststof|accessoir|potten|manden|lint|vaas|vazen|glas|verpakking|karton|hout/i],
+  ["deco", /deco|keramiek|hoezen|kunststof|accessoir|potten|manden|lint|vaas|vazen|glas|verpakking|karton|hout|bijsteker/i],
   ["orchids", /phal|cymb|orchid|vanda|dendrob|oncid|cattley|paphio|zygo|miltonia/i],
-  ["chrys", /^chr|chrysant|santini/i],
+  ["chrys", /^chr|chrysant|dendran|santini/i],
   ["roses", /^r( |\.|$)|^r tr|^rose|^roses|^rosa\b/i],
-  ["green", /^gr( |\.|$)|groen|eucal|ruscus|asparag|pistac|salal|aspidist|fern|varen|blad|leaf/i],
+  ["green", /^gr( |\.|$)|groen|eucal|ruscus|asparag|pistac|salal|gaulther|aspidist|fern|varen|blad|leaf|leucadendron|ilex|pittospor|phoenix|palm/i],
 ];
-function inkoopCustomerMainGroup(salesGroup, t, handMap) {
+// level1: the invoice line's VBN level 1 (FH account 001 / 002 / 003) -- a
+// plant of level 3 is a garden plant.
+function inkoopCustomerMainGroup(salesGroup, t, handMap, level1 = "") {
   const group = String(salesGroup || "").trim();
   const kind = String(t || "").toUpperCase();
-  if (group && handMap?.has(group)) return handMap.get(group);
+  const plant = () => (String(level1) === "3" ? "garden" : "plants");
+  if (group && handMap?.has(group)) {
+    const chosen = handMap.get(group);
+    return chosen === "plants" ? plant() : chosen;
+  }
   if (group) {
     const rule = INKOOP_CUSTOMER_GROUP_RULES.find(([, pattern]) => pattern.test(group));
     if (rule) {
-      if (kind === "P" && ["chrys", "roses", "cut", "green"].includes(rule[0])) return "plants";
+      if (kind === "P" && ["chrys", "roses", "cut", "green"].includes(rule[0])) return plant();
       return rule[0];
     }
   }
-  if (kind === "P") return "plants";
+  if (kind === "P" || String(level1) === "2" || String(level1) === "3") return plant();
   if (kind === "A") return "deco";
-  if (kind === "B") return "cut";
+  if (kind === "B" || String(level1) === "1") return "cut";
   return "none";
 }
 
@@ -12233,6 +12246,9 @@ async function runInkoopCustomerRebuild(months) {
     inkoopCustomerQueued = new Set();
     Object.assign(inkoopCustomerJob, { running: true, started_at: new Date().toISOString(), finished_at: "", months: round.length, done: 0, rows: 0, error: "" });
     try {
+      // Each matched lot's invoice VBN code, and each code's group, first
+      // (new comparisons since the last round).
+      inkoopCustomerJob.vbn = await refreshInkoopLotVbn();
       const excluded = inkoopExcludedErpCodes(await readInkoopState());
       for (const month of round) {
         inkoopCustomerJob.rows += await rebuildInkoopCustomerMonth(month, excluded);
@@ -12252,6 +12268,34 @@ function runInkoopCustomerRebuildLater(months) {
 }
 async function runInkoopCustomerRebuildAll() {
   runInkoopCustomerRebuildLater(await getInkoopDispatchMonths());
+}
+
+// The sales list (a million lines a year, too big for one request) comes in
+// parts of a few MB, appended to a temp file; after the last part it is read
+// in the background: each lot (Partij) with its Productgroep, then the VBN
+// codes and the months worked out again.
+const inkoopSalesFileJob = { running: false, phase: "", name: "", started_at: "", finished_at: "", lines: 0, lots: 0, first_date: "", last_date: "", error: "" };
+const inkoopSalesUploads = new Map();
+async function runInkoopSalesFileImport(filePath, name) {
+  Object.assign(inkoopSalesFileJob, { running: true, phase: "Reading the sales list", name, started_at: new Date().toISOString(), finished_at: "", lines: 0, lots: 0, first_date: "", last_date: "", error: "" });
+  try {
+    const output = await runInkoopVeilingWorker(["parse-sales-groups", "--input", filePath]);
+    const payload = JSON.parse(output.toString("utf8"));
+    if (payload?.error) throw new Error(payload.error);
+    const lots = (payload.lots || []).map(([lot, productGroup, groupId, asrt, description, date, lines]) => ({ lot, product_group: productGroup, group_id: groupId, asrt, description, date, lines }));
+    Object.assign(inkoopSalesFileJob, { phase: "Saving the lots' groups", lines: payload.lines || 0, lots: lots.length, first_date: payload.first_date || "", last_date: payload.last_date || "" });
+    await saveInkoopLotGroups(lots);
+    inkoopSalesFileJob.phase = "Working out the months";
+    await runInkoopCustomerRebuildAll();
+    inkoopSalesFileJob.phase = "Done";
+  } catch (error) {
+    inkoopSalesFileJob.error = error instanceof Error ? error.message : String(error);
+    console.error("Sales list import failed:", inkoopSalesFileJob.error);
+  } finally {
+    inkoopSalesFileJob.running = false;
+    inkoopSalesFileJob.finished_at = new Date().toISOString();
+    await fs.rm(path.dirname(filePath), { recursive: true, force: true }).catch(() => {});
+  }
 }
 
 // A period of months ("YYYY-MM"), the last 12 by default, at most 36.
@@ -12294,17 +12338,19 @@ async function buildInkoopCustomerOverview(range) {
   const groups = new Map();
   let namedPieces = 0;
   let totalPieces = 0;
+  const bySource = {};
   const bump = (target, key, pieces, value) => {
     const entry = target[key] || (target[key] = { pieces: 0, value: 0 });
     entry.pieces += pieces;
     entry.value += value;
   };
   for (const row of rows) {
-    const group = inkoopCustomerMainGroup(row.sales_group, row.t, naming.handMap);
+    const group = inkoopCustomerMainGroup(row.sales_group, row.t, naming.handMap, row.level1);
     const pieces = Number(row.pieces) || 0;
     const value = Number(row.value) || 0;
     totalPieces += pieces;
     if (row.sales_group) namedPieces += pieces;
+    bySource[row.src || "t"] = (bySource[row.src || "t"] || 0) + pieces;
     if (!customers.has(row.customer_code)) customers.set(row.customer_code, { ...naming.customerOf(row.customer_code), pieces: 0, value: 0, lots: 0, groups: {}, months: {} });
     const customer = customers.get(row.customer_code);
     customer.pieces += pieces;
@@ -12334,7 +12380,7 @@ async function buildInkoopCustomerOverview(range) {
     groups: [...groups.values()].map((entry) => ({ key: entry.key, pieces: entry.pieces, value: round(entry.value), customers: entry.customers.size })).sort((left, right) => right.pieces - left.pieces),
     months: [...months.values()].sort((left, right) => left.month.localeCompare(right.month)),
     customers: [...customers.values()].map((entry) => ({ ...entry, value: round(entry.value) })).sort((left, right) => right.pieces - left.pieces),
-    coverage: { named_pieces: namedPieces, total_pieces: totalPieces },
+    coverage: { named_pieces: namedPieces, total_pieces: totalPieces, by_source: bySource },
     job: inkoopCustomerJob,
   };
 }
@@ -12353,7 +12399,7 @@ async function buildInkoopCustomerDetail(code, range) {
   ]);
   const cells = new Map();
   for (const row of rows) {
-    const group = inkoopCustomerMainGroup(row.sales_group, row.t, naming.handMap);
+    const group = inkoopCustomerMainGroup(row.sales_group, row.t, naming.handMap, row.level1);
     const key = `${row.month}|${group}`;
     const cell = cells.get(key) || { month: row.month, group, pieces: 0, value: 0, lots: 0, min_price: null, max_price: null };
     cell.pieces += Number(row.pieces) || 0;
@@ -12365,7 +12411,7 @@ async function buildInkoopCustomerDetail(code, range) {
   }
   const products = new Map();
   const lotRows = lots.map((lot) => {
-    const group = inkoopCustomerMainGroup(lot.sales_group, lot.t, naming.handMap);
+    const group = inkoopCustomerMainGroup(lot.sales_group, lot.t, naming.handMap, lot.level1);
     const value = lot.lot_pieces > 0 ? Math.round((lot.lot_value * lot.pieces / lot.lot_pieces) * 100) / 100 : 0;
     const key = `${lot.description}|${lot.sales_group}`;
     const product = products.get(key) || { description: lot.description, sales_group: lot.sales_group, group, pieces: 0, value: 0, lots: 0, last_date: "" };
@@ -28924,8 +28970,54 @@ async function handleApi(req, res, url) {
     if (!requirePermission(res, requestUser, PERMISSIONS.INKOOP_VIEW)) {
       return;
     }
-    const [products, places, months] = await Promise.all([getInkoopProductCount().catch(() => null), getInkoopCustomerPlaces().catch(() => []), getInkoopDispatchMonths().catch(() => [])]);
-    sendJson(res, 200, { products, places: places.length, places_fr: places.filter((row) => row.departement).length, dispatch_months: months, job: inkoopCustomerJob });
+    const [products, places, months, lotGroups] = await Promise.all([getInkoopProductCount().catch(() => null), getInkoopCustomerPlaces().catch(() => []), getInkoopDispatchMonths().catch(() => []),
+      getInkoopLotGroupCounts().catch(() => null)]);
+    sendJson(res, 200, { products, lot_groups: lotGroups, places: places.length, places_fr: places.filter((row) => row.departement).length, dispatch_months: months, job: inkoopCustomerJob, sales_job: inkoopSalesFileJob });
+    return;
+  }
+
+  // Klant inzicht: one part of the sales list (base64), in order; the last
+  // part starts the import.
+  if (url.pathname === "/api/inkoop/customers/sales-file" && req.method === "POST") {
+    if (!requirePermission(res, requestUser, PERMISSIONS.INKOOP_VIEW)) {
+      return;
+    }
+    const body = await readRequestJson(req, 24 * 1024 * 1024);
+    const uploadId = String(body?.upload_id || "");
+    const index = Number(body?.index);
+    const count = Number(body?.count);
+    const extension = /\.csv$/i.test(String(body?.name || "")) ? ".csv" : ".xlsx";
+    if (!/^[a-z0-9]{10,40}$/.test(uploadId) || !Number.isInteger(index) || !Number.isInteger(count) || index < 0 || count < 1 || index >= count || count > 2000) {
+      sendJson(res, 400, { error: "Not a part of an upload" });
+      return;
+    }
+    if (inkoopSalesFileJob.running) {
+      sendJson(res, 409, { error: "A sales list is being read -- wait until it is done" });
+      return;
+    }
+    try {
+      const dir = path.join(os.tmpdir(), `inkoop-sales-${uploadId}`);
+      const filePath = path.join(dir, `sales${extension}`);
+      if (index === 0) {
+        await fs.rm(dir, { recursive: true, force: true });
+        await fs.mkdir(dir, { recursive: true });
+        inkoopSalesUploads.set(uploadId, 0);
+      } else if (inkoopSalesUploads.get(uploadId) !== index) {
+        sendJson(res, 400, { error: `Part ${index + 1} came out of order -- upload the file again` });
+        return;
+      }
+      await fs.appendFile(filePath, Buffer.from(String(body?.content_base64 || ""), "base64"));
+      inkoopSalesUploads.set(uploadId, index + 1);
+      if (index === count - 1) {
+        inkoopSalesUploads.delete(uploadId);
+        runInkoopSalesFileImport(filePath, normalizeUkdocsText(body?.name)).catch(() => {});
+        sendJson(res, 200, { done: true, job: inkoopSalesFileJob });
+        return;
+      }
+      sendJson(res, 200, { done: false, received: index + 1, count });
+    } catch (error) {
+      sendJson(res, 500, { error: error instanceof Error ? error.message : String(error) });
+    }
     return;
   }
 
@@ -28977,6 +29069,8 @@ async function handleApi(req, res, url) {
       const entry = entryOf(row.sales_group);
       entry.pieces += Number(row.pieces) || 0;
       entry.by_t[row.t || "?"] = (entry.by_t[row.t || "?"] || 0) + (Number(row.pieces) || 0);
+      entry.by_src = entry.by_src || {};
+      entry.by_src[row.src || "?"] = (entry.by_src[row.src || "?"] || 0) + (Number(row.pieces) || 0);
     }
     const list = [...groups.values()].map((entry) => {
       const mainT = Object.entries(entry.by_t).sort((left, right) => right[1] - left[1])[0]?.[0] || "";

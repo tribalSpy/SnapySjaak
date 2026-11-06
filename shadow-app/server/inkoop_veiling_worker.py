@@ -937,6 +937,73 @@ KLANT_PLACE_COLUMNS = {
 }
 
 
+# Our sales list ("table_export_data_...": Bedrijf, Klant, Asrt, Artikelgroep,
+# Productgroep, Omschrijving ... Date, Partij): one line per sale, a million
+# a year. Only what groups a lot is kept: per Partij (the Connect lot) the
+# Productgroep and Asrt most of its lines have. Read as a stream (xlsx or a
+# ";" / "," / tab separated csv).
+def iter_sales_rows(input_path: Path):
+    if str(input_path).lower().endswith(".csv"):
+        with open(input_path, encoding="utf-8-sig", errors="replace", newline="") as handle:
+            sample = handle.read(20000)
+            handle.seek(0)
+            delimiter = max([";", ",", "\t"], key=sample.count)
+            yield from csv.reader(handle, delimiter=delimiter)
+        return
+    workbook = load_workbook(filename=str(input_path), data_only=True, read_only=True)
+    worksheet = workbook[workbook.sheetnames[0]]
+    for row in worksheet.iter_rows(values_only=True):
+        yield list(row)
+
+
+def parse_sales_groups(input_path: Path):
+    rows = iter_sales_rows(input_path)
+    headers = None
+    for row in rows:
+        normalized = [normalize_header(value) for value in row]
+        if "partij" in normalized and "productgroep" in normalized:
+            headers = normalized
+            break
+    if headers is None:
+        return {"lots": [], "error": "Could not find a header row with Partij and Productgroep in this file"}
+    idx = {name: i for i, name in enumerate(headers)}
+
+    def get(row, key):
+        col = idx.get(key)
+        return clean_text(row[col]) if col is not None and col < len(row) else ""
+
+    by_lot = {}
+    lines = 0
+    first_date = ""
+    last_date = ""
+    for row in rows:
+        lot = get(row, "partij")
+        if not lot.isdigit() or lot == "0":
+            continue
+        group = get(row, "productgroep")
+        if not group:
+            continue
+        lines += 1
+        raw_date = row[idx["date"]] if "date" in idx and idx["date"] < len(row) else None
+        date = normalize_erp_date(raw_date)[:10] if raw_date else ""
+        if date and len(date) == 10 and date[:2] == "20":
+            first_date = min(first_date or date, date)
+            last_date = max(last_date, date)
+        entry = by_lot.get(lot)
+        if entry is None:
+            entry = by_lot[lot] = {"groups": {}, "description": get(row, "omschrijving"), "date": date, "lines": 0}
+        key = (group, get(row, "artikelgroep"), get(row, "asrt").upper())
+        entry["groups"][key] = entry["groups"].get(key, 0) + 1
+        entry["lines"] += 1
+        if date and (not entry["date"] or date < entry["date"]):
+            entry["date"] = date
+    lots = []
+    for lot, entry in by_lot.items():
+        (group, group_id, asrt), _ = max(entry["groups"].items(), key=lambda item: item[1])
+        lots.append([int(lot), group, group_id, asrt, entry["description"], entry["date"], entry["lines"]])
+    return {"lots": lots, "lines": lines, "first_date": first_date, "last_date": last_date}
+
+
 # Our own product list ("table_export_data_...xlsx"): each product with its
 # sales group (Rose, Chr t, Phal ...) and its last sale. The description is
 # the sales group and the Connect product name ("Chr g Topspin" -- the lot
@@ -1514,6 +1581,9 @@ def main():
     dispatch_parser = subparsers.add_parser("parse-dispatch-dump")
     dispatch_parser.add_argument("--input", required=True)
 
+    sales_parser = subparsers.add_parser("parse-sales-groups")
+    sales_parser.add_argument("--input", required=True)
+
     product_parser = subparsers.add_parser("parse-product-export")
     product_parser.add_argument("--input", required=True)
 
@@ -1542,6 +1612,8 @@ def main():
         print(json.dumps(parse_klant_gegevens(Path(args.input))))
     elif args.command == "parse-dispatch-dump":
         print(json.dumps(parse_dispatch_dump(Path(args.input))))
+    elif args.command == "parse-sales-groups":
+        print(json.dumps(parse_sales_groups(Path(args.input))))
     elif args.command == "parse-product-export":
         print(json.dumps(parse_product_export(Path(args.input))))
     elif args.command == "parse-lot-table":
