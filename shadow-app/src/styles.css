@@ -4380,7 +4380,7 @@ table.data-table.balance-table.ik-table.ik-inv-invoices td:nth-child(n+7), table
 }
 .mb-table tbody tr { height: calc((100vh - 46px - 44px) / 4); }
 .mb-table tbody td {
-  font-size: clamp(21px, 1.6vw, 32px);
+  font-size: clamp(15px, 1.6vw, 32px);
   font-weight: 600;
   padding: 6px 10px;
   border-bottom: 2px solid #000000;
@@ -4393,13 +4393,16 @@ table.data-table.balance-table.ik-table.ik-inv-invoices td:nth-child(n+7), table
 }
 .mb-table tbody tr.mb-filler td { border-right: none; }
 .mb-table .mb-center, .mb-table td.mb-dc { text-align: center; }
-.mb-table td.mb-xl { font-size: clamp(30px, 2.35vw, 46px); font-weight: 700; line-height: 1; }
-.mb-table td.mb-lg { font-size: clamp(26px, 2.05vw, 40px); font-weight: 700; }
+.mb-table td.mb-xl { font-size: clamp(18px, 2.35vw, 46px); font-weight: 700; line-height: 1; }
+.mb-table td.mb-lg { font-size: clamp(16px, 2.05vw, 40px); font-weight: 700; }
+.mb-table td.mb-setting { white-space: normal; line-height: 1.1; }
 .mb-table td.mb-sm { font-size: clamp(17px, 1.2vw, 25px); font-weight: 500; white-space: normal; line-height: 1.15; }
-.mb-table td.mb-loc { padding-left: 22px; }
-.mb-table td.mb-loc.mb-xl { font-size: clamp(66px, 4.8vw, 98px); }
-.mb-table td.mb-loc.mb-lg { font-size: clamp(58px, 4.1vw, 82px); }
-.mb-table td.mb-loc.mb-md { font-size: clamp(49px, 3.5vw, 70px); font-weight: 700; }
+.mb-table td.mb-loc { padding-left: 20px; padding-right: 6px; }
+/* Sized by the screen width only (a TV's browser is often 1280 or less
+   wide): "A1 1" / "bA1 1" always fit their column, never cut off. */
+.mb-table td.mb-loc.mb-xl { font-size: clamp(24px, 3.9vw, 90px); }
+.mb-table td.mb-loc.mb-lg { font-size: clamp(22px, 3.3vw, 76px); }
+.mb-table td.mb-loc.mb-md { font-size: clamp(20px, 2.8vw, 64px); font-weight: 700; }
 .mb-table td.mb-cust small {
   display: block;
   margin-top: 4px;
@@ -4409,14 +4412,14 @@ table.data-table.balance-table.ik-table.ik-inv-invoices td:nth-child(n+7), table
   overflow: hidden;
   text-overflow: ellipsis;
 }
-.mb-table td.mb-num { font-size: clamp(30px, 2.35vw, 46px); }
-.mb-table td.mb-dc { font-size: clamp(38px, 2.7vw, 54px); font-weight: 700; }
+.mb-table td.mb-num { font-size: clamp(16px, 2vw, 42px); padding-left: 6px; padding-right: 6px; }
+.mb-table td.mb-dc { font-size: clamp(22px, 2.7vw, 54px); font-weight: 700; padding-left: 4px; padding-right: 4px; }
 .mb-pack-code {
   display: inline-block;
   color: #ffffff;
   border-radius: 8px;
   padding: 2px 14px;
-  font-size: clamp(40px, 3vw, 62px);
+  font-size: clamp(24px, 3vw, 62px);
   font-weight: 800;
   line-height: 1.1;
 }

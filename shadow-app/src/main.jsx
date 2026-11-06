@@ -682,8 +682,8 @@ function MethodBScreen() {
       {day && rows.length > 0 && (
         <table className="mb-table">
           <colgroup>
-            <col style={{ width: "14%" }} /><col style={{ width: "15%" }} /><col style={{ width: "8%" }} /><col style={{ width: "6%" }} />
-            <col style={{ width: "12%" }} /><col style={{ width: "15%" }} /><col style={{ width: "12%" }} /><col style={{ width: "18%" }} />
+            <col style={{ width: "15%" }} /><col style={{ width: "15%" }} /><col style={{ width: "9%" }} /><col style={{ width: "6%" }} />
+            <col style={{ width: "12%" }} /><col style={{ width: "14%" }} /><col style={{ width: "12%" }} /><col style={{ width: "17%" }} />
           </colgroup>
           <thead>
             <tr><th>Locatie</th><th>Cust</th><th>Volume</th><th className="mb-center">DC</th><th>Setting</th><th>Packing</th><th>Main code</th><th>Remark</th></tr>
@@ -702,7 +702,7 @@ function MethodBScreen() {
                   </td>
                   <td className="mb-num">{mbNumber(row.volume)}</td>
                   <td className="mb-dc">{row.dc ?? ""}</td>
-                  <td className={`mb-${mbCellSize(row.setting)}`}>{row.setting}</td>
+                  <td className={`mb-setting mb-${mbCellSize(row.setting)}`}>{row.setting}</td>
                   <td className="mb-pack">
                     {row.packingcode && <span className="mb-pack-code" style={{ background: MB_PACKING_COLORS[row.packingcode.toUpperCase()] || "#374151" }}>{row.packingcode}</span>}
                     {water && <span className="mb-water">💧{water}</span>}
