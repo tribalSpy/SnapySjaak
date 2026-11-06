@@ -931,7 +931,9 @@ KLANT_RETOUR_TGRP = "119"
 
 # The place columns a klant gegevens export can carry (any of the names).
 KLANT_PLACE_COLUMNS = {
-    "city": ["plaats", "woonplaats", "stad", "city", "ville"],
+    # Connect's klant gegevens: "Bez.Plaats" (visiting town), "PostPlaats".
+    # Its "Pos" column is a country code, not a postcode -- not read.
+    "city": ["plaats", "bez_plaats", "postplaats", "woonplaats", "stad", "city", "ville"],
     "postcode": ["postcode", "pc", "postc", "post", "zip", "code_postal", "cp"],
     "address": ["adres", "straat", "address", "adresse"],
 }
