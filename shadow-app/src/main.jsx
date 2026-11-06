@@ -17265,11 +17265,31 @@ function InkoopKingSettingsCard({ settings, onSaved }) {
   const [draft, setDraft] = useState(settings);
   const [saving, setSaving] = useState(false);
   const [note, setNote] = useState("");
+  const [newCompany, setNewCompany] = useState({ company: "", creditor: "", column: "FL" });
   useEffect(() => setDraft(settings), [settings]);
   if (!draft) return null;
   const companies = [...new Set([...Object.keys(draft.creditor_accounts || {}), ...Object.keys(draft.company_ledger_column || {})])].sort();
   const set = (key, value) => setDraft((current) => ({ ...current, [key]: value }));
   const setMapValue = (mapKey, company, value) => setDraft((current) => ({ ...current, [mapKey]: { ...(current[mapKey] || {}), [company]: value } }));
+
+  // A company that buys at FloraHolland but isn't listed yet (its
+  // invoices show "No creditor account for company ..."): added to the
+  // draft; Save stores it.
+  function addCompany() {
+    const company = newCompany.company.trim();
+    const creditor = newCompany.creditor.trim();
+    if (!/^[A-Za-z0-9-]{3,20}$/.test(company) || !creditor) {
+      setNote("Fill in the company number (e.g. 422365) and its creditor account.");
+      return;
+    }
+    setDraft((current) => ({
+      ...current,
+      creditor_accounts: { ...(current.creditor_accounts || {}), [company]: creditor },
+      company_ledger_column: { ...(current.company_ledger_column || {}), [company]: newCompany.column },
+    }));
+    setNewCompany({ company: "", creditor: "", column: "FL" });
+    setNote(`${company} added -- press Save King settings to keep it.`);
+  }
 
   async function save() {
     setSaving(true);
@@ -17332,6 +17352,17 @@ function InkoopKingSettingsCard({ settings, onSaved }) {
                 </td>
               </tr>
             ))}
+            <tr>
+              <td><input value={newCompany.company} onChange={(event) => setNewCompany({ ...newCompany, company: event.target.value })} placeholder="New company, e.g. 422365" /></td>
+              <td><input value={newCompany.creditor} onChange={(event) => setNewCompany({ ...newCompany, creditor: event.target.value })} placeholder="Creditor account" /></td>
+              <td>
+                <select value={newCompany.column} onChange={(event) => setNewCompany({ ...newCompany, column: event.target.value })}>
+                  <option value="FL">GB FL (bloemen)</option>
+                  <option value="PL">GB PL (planten)</option>
+                </select>
+                {" "}<button type="button" onClick={addCompany}>+ Add company</button>
+              </td>
+            </tr>
           </tbody>
         </table>
       </div>
@@ -17859,11 +17890,29 @@ function InkoopKingTab() {
         {message && <div className="notice">{message}</div>}
       </div>
 
-      {Object.entries(byCompany).map(([company, companyPosts]) => (
+      {Object.entries(byCompany).map(([company, companyPosts]) => {
+        // The head box: every ready invoice of this company (not sent yet,
+        // no problems) on or off at once; a sent one stays a choice per row.
+        const groupReady = companyPosts.filter((post) => !post.problems.length && !post.export).map((post) => post.invoice_number);
+        const groupChosen = companyPosts.filter((post) => selected.has(post.invoice_number)).length;
+        const allChosen = groupReady.length > 0 && groupReady.every((number) => selected.has(number));
+        const toggleGroup = () => setSelected((current) => {
+          const next = new Set(current);
+          if (allChosen) companyPosts.forEach((post) => next.delete(post.invoice_number));
+          else groupReady.forEach((number) => next.add(number));
+          return next;
+        });
+        return (
         <InkoopCollapsibleCard key={company} title={company} count={companyPosts.length}>
           <div className="table-wrap">
             <table className="data-table">
-              <thead><tr><th /><th>Invoice</th><th>Type</th><th>Date</th><th>Total incl. BTW</th><th>Lines</th><th>Status</th><th>Checks</th><th /></tr></thead>
+              <thead><tr>
+                <th>
+                  <input type="checkbox" checked={allChosen} disabled={!groupReady.length} title={groupReady.length ? `Select all ready invoices of ${company} (${groupReady.length})` : "No ready invoices in this group"}
+                    ref={(element) => { if (element) element.indeterminate = groupChosen > 0 && !allChosen; }} onChange={toggleGroup} />
+                </th>
+                <th>Invoice</th><th>Type</th><th>Date</th><th>Total incl. BTW</th><th>Lines</th><th>Status</th><th>Checks</th><th />
+              </tr></thead>
               <tbody>
                 {companyPosts.map((post) => (
                   <InkoopKingPostRow key={post.invoice_number} post={post} selected={selected.has(post.invoice_number)} onToggle={toggle} onChanged={() => loadDay()} />
@@ -17872,7 +17921,8 @@ function InkoopKingTab() {
             </table>
           </div>
         </InkoopCollapsibleCard>
-      ))}
+        );
+      })}
       {!loading && !posts.length && <div className="notice">No invoices uploaded for {fustOverviewDate(date)}.</div>}
 
       <InkoopCollapsibleCard title="Sent to King" count={exportsHistory.length} defaultOpen={false}>

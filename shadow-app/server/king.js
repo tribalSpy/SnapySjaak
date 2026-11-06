@@ -234,12 +234,13 @@ export const DEFAULT_KING_SETTINGS = {
   next_stuknummer_ai2: 0,
   btw_laag_account: "150200",
   btw_hoog_account: "150250",
-  creditor_accounts: { "049876": "250051", "057390": "250050", "060708": "250055", "063155": "250052" },
+  // 422365 Juniflor Flower export BV: finance 06-11-2026.
+  creditor_accounts: { "049876": "250051", "057390": "250050", "060708": "250055", "063155": "250052", "422365": "250054" },
   // flowers ("FL") or plants ("PL") per company -- used for product lines
   // that can't be split by product group.
   // AI2 (Sjaak van der Vijver B.V.'s Ai2 incasso, klant 90985) has its own
   // creditor in King -- listed here so its field shows in the settings.
-  company_ledger_column: { "049876": "FL", "057390": "FL", "060708": "FL", "063155": "PL", "AI2-90985": "FL" },
+  company_ledger_column: { "049876": "FL", "057390": "FL", "060708": "FL", "063155": "PL", "422365": "FL", "AI2-90985": "FL" },
   // "split": product amounts split over flowers (sales account 001) vs
   // plants (002/003) in proportion to the invoice's own product lines;
   // "company": always the company's column above.
@@ -276,7 +277,9 @@ export function normalizeKingSettings(source) {
     next_stuknummer_ai2: Math.max(0, Math.floor(Number(merged.next_stuknummer_ai2) || 0)),
     btw_laag_account: text(merged.btw_laag_account) || DEFAULT_KING_SETTINGS.btw_laag_account,
     btw_hoog_account: text(merged.btw_hoog_account) || DEFAULT_KING_SETTINGS.btw_hoog_account,
-    creditor_accounts: cleanMap(merged.creditor_accounts, DEFAULT_KING_SETTINGS.creditor_accounts),
+    // Per company too: a saved account wins, a company added to the
+    // defaults later (422365) still gets its account.
+    creditor_accounts: cleanMap({ ...DEFAULT_KING_SETTINGS.creditor_accounts, ...(merged.creditor_accounts || {}) }, DEFAULT_KING_SETTINGS.creditor_accounts),
     company_ledger_column: columns,
     fl_pl_mode: merged.fl_pl_mode === "company" ? "company" : "split",
     archiefsoort: text(merged.archiefsoort).slice(0, 10),
@@ -488,10 +491,33 @@ function amount(value) {
 
 // Same element names, order and formats as finance's accepted sample.
 // dagboek: FloraHolland's; a post with its own (an AI2 nota) keeps that.
+// King allows one dagboek per (voorlopige) boekingsgang (finance 06-11:
+// Veiling + ProdXML in one file was refused), so each dagboek gets its own
+// BOEKINGSGANG in the file -- FloraHolland's first, as before; a file with
+// one dagboek is exactly as it always was.
 export function buildKingJournaalXml(posts, { boekdatum, dagboek, definitief }) {
-  const parts = ["<?xml version='1.0' encoding='UTF-8'?>", "<KING_JOURNAAL><BOEKINGSGANGEN><BOEKINGSGANG>"];
-  parts.push(`<BG_OMSCHRIJVING>${xmlEscape(`VeilingNr nota loaded on - ${String(boekdatum).replace(/-/g, ".")}`)}</BG_OMSCHRIJVING>`);
-  parts.push(`<BG_DEFINITIEF>${definitief ? "true" : "false"}</BG_DEFINITIEF><JOURNAALPOSTEN>`);
+  const parts = ["<?xml version='1.0' encoding='UTF-8'?>", "<KING_JOURNAAL><BOEKINGSGANGEN>"];
+  const byDagboek = new Map();
+  for (const post of posts) {
+    const code = post.dagboek || dagboek;
+    if (!byDagboek.has(code)) byDagboek.set(code, []);
+    byDagboek.get(code).push(post);
+  }
+  const groups = [...byDagboek.entries()].sort(([a], [b]) => (a === dagboek ? -1 : b === dagboek ? 1 : 0));
+  if (!groups.length) groups.push([dagboek, []]);
+  for (const [code, groupPosts] of groups) {
+    const label = code === dagboek ? "VeilingNr" : groupPosts.some((post) => post.is_ai2) ? "AI2" : code;
+    parts.push("<BOEKINGSGANG>");
+    parts.push(`<BG_OMSCHRIJVING>${xmlEscape(`${label} nota loaded on - ${String(boekdatum).replace(/-/g, ".")}`)}</BG_OMSCHRIJVING>`);
+    parts.push(`<BG_DEFINITIEF>${definitief ? "true" : "false"}</BG_DEFINITIEF><JOURNAALPOSTEN>`);
+    pushKingJournalPosts(parts, groupPosts, code);
+    parts.push("</JOURNAALPOSTEN></BOEKINGSGANG>");
+  }
+  parts.push("</BOEKINGSGANGEN></KING_JOURNAAL>");
+  return parts.join("");
+}
+
+function pushKingJournalPosts(parts, posts, dagboek) {
   for (const post of posts) {
     parts.push("<JOURNAALPOST>");
     parts.push(`<JP_DAGBOEKCODE>${xmlEscape(post.dagboek || dagboek)}</JP_DAGBOEKCODE>`);
@@ -516,8 +542,6 @@ export function buildKingJournaalXml(posts, { boekdatum, dagboek, definitief }) 
     }
     parts.push("</JOURNAALREGELS></JOURNAALPOST>");
   }
-  parts.push("</JOURNAALPOSTEN></BOEKINGSGANG></BOEKINGSGANGEN></KING_JOURNAAL>");
-  return parts.join("");
 }
 
 // King docs ("Eisen aan het XML-bestand met digitale archiefstukken"):
