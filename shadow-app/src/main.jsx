@@ -1,6 +1,7 @@
 import React, { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import JSZip from "jszip";
+import { FRANCE_DEPARTEMENTS, FRANCE_REGIONS, FRANCE_VIEWBOX } from "./france-departements.js";
 import "./styles.css";
 
 // Night mode (the lamp, top right): kept per browser, set before the first
@@ -20877,6 +20878,7 @@ const INKOOP_WORKSPACES = [
   ["fu", "Follow-up", "Open lines per department (Control → Inkoop / Finance), categories like High control"],
   ["search", "Search", "Invoice lines and Connect lots, side by side"],
   ["destinations", "Corrections", "The corrections check; sold per country"],
+  ["customers", "Klant inzicht", "What the dispatch customers get: per group, per month, on the map"],
   ["setup", "Setup", "Upload & compare, invoices, growers, King, settings"],
 ];
 const INKOOP_SETUP_TILES = [
@@ -21498,11 +21500,14 @@ function InkoopControlePage({ currentUser }) {
 
       {activeTab === "destinations" && <InkoopDestinationsTab />}
 
+      {activeTab === "customers" && <InkoopCustomersTab />}
+
       {activeTab === "settings" && (
       <>
       {pageDataNote}
       <InkoopMailImportCard />
       <InkoopAi2BoxesCard />
+      <InkoopCustomerDataCard />
       {canClearUploads && (
         <div className="data-table-card">
           <div className="section-header"><h2>Start fresh</h2></div>
@@ -25291,6 +25296,579 @@ function InkoopAi2BoxesCard() {
       {job?.error && <div className="notice danger">{job.error}</div>}
       {!!job?.failed?.length && <div className="notice danger">{job.failed.length} nota(s) could not be read: {job.failed.join(" · ")}</div>}
       {error && <div className="notice danger">{error}</div>}
+    </div>
+  );
+}
+
+// ---- Klant inzicht: what the dispatch customers get ----
+
+// One colour per main group, always next to its name (Okabe-Ito, readable
+// with colour blindness); "Zonder groep" grey.
+const IK_CUSTOMER_GROUP_COLORS = {
+  chrys: "#0072b2",
+  roses: "#cc79a7",
+  cut: "#e69f00",
+  green: "#009e73",
+  orchids: "#56b4e9",
+  plants: "#d55e00",
+  bouquets: "#b8a300",
+  deco: "#8c6d4f",
+  none: "#9aa4ae",
+};
+const IK_CUSTOMER_GROUP_ORDER = ["chrys", "roses", "cut", "green", "orchids", "plants", "bouquets", "deco", "none"];
+const IK_DEPARTEMENT_REGION = Object.fromEntries(Object.entries(FRANCE_REGIONS).flatMap(([region, codes]) => codes.map((code) => [code, region])));
+
+function ikMonthShift(month, count) {
+  const [year, number] = String(month).split("-").map(Number);
+  return new Date(Date.UTC(year, number - 1 + count, 1)).toISOString().slice(0, 7);
+}
+
+function ikMonthLabel(month) {
+  return new Date(`${month}-01T00:00:00`).toLocaleDateString("en-GB", { month: "short", year: "2-digit" });
+}
+
+function ikMonthsBetween(from, to) {
+  const months = [];
+  for (let month = from; month <= to && months.length < 40; month = ikMonthShift(month, 1)) months.push(month);
+  return months;
+}
+
+function ikGroupLabelOf(groupList) {
+  const labels = Object.fromEntries((groupList || []).map((group) => [group.key, group.label]));
+  return (key) => labels[key] || (key === "none" ? "Zonder groep" : key);
+}
+
+function ikPieces(value) {
+  return Math.round(Number(value) || 0).toLocaleString("nl-NL");
+}
+
+// A row's pieces per main group as one stacked bar, the parts in the fixed
+// group order (tooltip: pieces and % per group).
+function IkGroupBar({ groups, labelOf, height = 10 }) {
+  const parts = IK_CUSTOMER_GROUP_ORDER.map((key) => ({ key, pieces: Number(groups?.[key]?.pieces) || 0 })).filter((part) => part.pieces > 0);
+  const total = parts.reduce((sum, part) => sum + part.pieces, 0);
+  if (!total) return <span className="muted">–</span>;
+  return (
+    <span className="ik-cust-bar" style={{ height }} title={parts.map((part) => `${labelOf(part.key)}: ${ikPieces(part.pieces)} pcs (${Math.round((part.pieces / total) * 100)}%)`).join("\n")}>
+      {parts.map((part) => <span key={part.key} style={{ width: `${(part.pieces / total) * 100}%`, background: IK_CUSTOMER_GROUP_COLORS[part.key] || IK_CUSTOMER_GROUP_COLORS.none }} />)}
+    </span>
+  );
+}
+
+// The départements (or regions) coloured by pieces, one hue light -> dark;
+// hover shows the figures, a click picks the département / region.
+function IkFranceMap({ byDepartement, mode, selected, onSelect, labelOf }) {
+  const [hover, setHover] = useState(null);
+  const valueOf = (code) => (mode === "region"
+    ? (FRANCE_REGIONS[IK_DEPARTEMENT_REGION[code]] || []).reduce((sum, dep) => sum + (byDepartement.get(dep)?.pieces || 0), 0)
+    : byDepartement.get(code)?.pieces || 0);
+  const max = Math.max(1, ...FRANCE_DEPARTEMENTS.map((dep) => valueOf(dep.code)));
+  const fillOf = (value) => {
+    if (!value) return "var(--ik-track)";
+    const step = Math.sqrt(value / max);
+    return `hsl(205 70% ${Math.round(88 - step * 58)}%)`;
+  };
+  const keyOf = (code) => (mode === "region" ? IK_DEPARTEMENT_REGION[code] : code);
+  const infoOf = (code) => {
+    const deps = mode === "region" ? FRANCE_REGIONS[IK_DEPARTEMENT_REGION[code]] || [] : [code];
+    const entries = deps.map((dep) => byDepartement.get(dep)).filter(Boolean);
+    const groups = {};
+    for (const entry of entries) for (const [key, value] of Object.entries(entry.groups)) groups[key] = (groups[key] || 0) + value;
+    const top = Object.entries(groups).sort((left, right) => right[1] - left[1])[0];
+    return {
+      title: mode === "region" ? IK_DEPARTEMENT_REGION[code] : `${code} ${FRANCE_DEPARTEMENTS.find((dep) => dep.code === code)?.name || ""}`,
+      pieces: entries.reduce((sum, entry) => sum + entry.pieces, 0),
+      customers: entries.reduce((sum, entry) => sum + entry.customers, 0),
+      top: top ? `${labelOf(top[0])} (${Math.round((top[1] / Math.max(1, entries.reduce((sum, entry) => sum + entry.pieces, 0))) * 100)}%)` : "",
+    };
+  };
+  const shown = hover ? infoOf(hover) : null;
+  return (
+    <div className="ik-cust-map">
+      <svg viewBox={FRANCE_VIEWBOX} role="img" aria-label="Pieces per département of France">
+        {FRANCE_DEPARTEMENTS.map((dep) => {
+          const value = valueOf(dep.code);
+          const isSelected = selected && keyOf(dep.code) === selected;
+          return (
+            <path key={dep.code} d={dep.d} fill={fillOf(value)} className={`ik-cust-dep${isSelected ? " on" : ""}`}
+              onMouseEnter={() => setHover(dep.code)} onMouseLeave={() => setHover(null)}
+              onClick={() => onSelect(isSelected ? "" : keyOf(dep.code))}>
+              <title>{`${infoOf(dep.code).title}: ${ikPieces(value)} pcs`}</title>
+            </path>
+          );
+        })}
+      </svg>
+      <div className="ik-cust-map-info" aria-live="polite">
+        {shown ? (
+          <>
+            <strong>{shown.title}</strong>
+            <span>{ikPieces(shown.pieces)} pcs · {shown.customers} customer(s)</span>
+            {shown.top && <span className="muted">Most: {shown.top}</span>}
+          </>
+        ) : <span className="muted">Point at a {mode === "region" ? "region" : "département"}; click to show only its customers.</span>}
+      </div>
+      <div className="ik-cust-map-scale" aria-hidden="true">
+        <span className="muted">0</span><i style={{ background: "linear-gradient(90deg, hsl(205 70% 88%), hsl(205 70% 30%))" }} /><span className="muted">{ikPieces(max)} pcs</span>
+      </div>
+    </div>
+  );
+}
+
+function InkoopCustomersTab() {
+  const thisMonth = localDateIso().slice(0, 7);
+  const [range, setRange] = useState({ from: ikMonthShift(thisMonth, -11), to: thisMonth });
+  const [data, setData] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState("");
+  const [country, setCountry] = useState("");
+  const [withRetour, setWithRetour] = useState(false);
+  const [group, setGroup] = useState("");
+  const [place, setPlace] = useState("");
+  const [mapMode, setMapMode] = useState("departement");
+  const [search, setSearch] = useState("");
+  const [sort, setSort] = useState({ key: "pieces", dir: -1 });
+  const [openCode, setOpenCode] = useState("");
+  const requestRef = useRef(0);
+  useEffect(() => {
+    const request = requestRef.current + 1;
+    requestRef.current = request;
+    setLoading(true);
+    apiJson(`/api/inkoop/customers/overview?from=${range.from}&to=${range.to}`)
+      .then((payload) => { if (requestRef.current === request) { setData(payload); setError(""); } })
+      .catch((loadError) => { if (requestRef.current === request) setError(loadError.message); })
+      .finally(() => { if (requestRef.current === request) setLoading(false); });
+  }, [range.from, range.to]);
+  const labelOf = ikGroupLabelOf(data?.group_list);
+  const months = ikMonthsBetween(range.from, range.to);
+  const countries = [...new Set((data?.customers || []).map((customer) => customer.land).filter(Boolean))].sort();
+  const placeOf = (customer) => (mapMode === "region" ? IK_DEPARTEMENT_REGION[customer.departement] || "" : customer.departement);
+  // The customers shown: country, retour, place (map), search; with a group
+  // chosen, their figures are that group's.
+  const base = (data?.customers || []).filter((customer) => (withRetour || !customer.is_retour) && (!country || customer.land === country));
+  const words = search.toLowerCase().split(/\s+/).filter(Boolean);
+  const measured = base.map((customer) => {
+    const own = group ? customer.groups[group] || { pieces: 0, value: 0 } : { pieces: customer.pieces, value: customer.value };
+    return { ...customer, shown_pieces: own.pieces, shown_value: own.value };
+  }).filter((customer) => customer.shown_pieces > 0);
+  const shownCustomers = measured
+    .filter((customer) => !place || placeOf(customer) === place)
+    .filter((customer) => words.every((word) => `${customer.code} ${customer.name} ${customer.city} ${customer.postcode} ${customer.gebied}`.toLowerCase().includes(word)));
+  const sortValue = (customer) => ({
+    name: (customer.name || customer.code).toLowerCase(), place: `${customer.departement || "zz"} ${customer.city}`.toLowerCase(),
+    pieces: customer.shown_pieces, value: customer.shown_value, price: customer.shown_pieces ? customer.shown_value / customer.shown_pieces : 0,
+  })[sort.key];
+  const sorted = [...shownCustomers].sort((left, right) => {
+    const a = sortValue(left);
+    const b = sortValue(right);
+    return (a < b ? -1 : a > b ? 1 : 0) * sort.dir;
+  });
+  const totalPieces = shownCustomers.reduce((sum, customer) => sum + customer.shown_pieces, 0);
+  const totalValue = shownCustomers.reduce((sum, customer) => sum + customer.shown_value, 0);
+  // Per département: pieces, customers, groups (of the customers before the
+  // map's own pick).
+  const byDepartement = new Map();
+  for (const customer of measured) {
+    if (!customer.departement) continue;
+    const entry = byDepartement.get(customer.departement) || { pieces: 0, customers: 0, groups: {} };
+    entry.pieces += customer.shown_pieces;
+    entry.customers += 1;
+    for (const [key, value] of Object.entries(customer.groups)) if (!group || key === group) entry.groups[key] = (entry.groups[key] || 0) + value.pieces;
+    byDepartement.set(customer.departement, entry);
+  }
+  const withoutPlace = measured.filter((customer) => !customer.departement).length;
+  // The groups over the customers shown (country / retour / place / search).
+  const groupTotals = {};
+  for (const customer of shownCustomers) for (const [key, value] of Object.entries(customer.groups)) {
+    const entry = groupTotals[key] || (groupTotals[key] = { pieces: 0, value: 0 });
+    entry.pieces += value.pieces;
+    entry.value += value.value;
+  }
+  const allGroupPieces = Object.values(groupTotals).reduce((sum, entry) => sum + entry.pieces, 0);
+  // Per month, the groups of the customers shown (the season).
+  const monthGroups = new Map(months.map((month) => [month, {}]));
+  for (const customer of shownCustomers) {
+    for (const [month, entry] of Object.entries(customer.months || {})) {
+      const target = monthGroups.get(month);
+      if (!target) continue;
+      for (const [key, pieces] of Object.entries(entry.groups || {})) {
+        if (group && key !== group) continue;
+        target[key] = { pieces: (target[key]?.pieces || 0) + pieces };
+      }
+    }
+  }
+  const monthPieces = (month) => Object.values(monthGroups.get(month) || {}).reduce((sum, entry) => sum + entry.pieces, 0);
+  const monthMax = Math.max(1, ...months.map(monthPieces));
+  const coverage = data?.coverage?.total_pieces ? (data.coverage.named_pieces / data.coverage.total_pieces) * 100 : null;
+  const head = (key, label, extra = "") => (
+    <th className={extra} aria-sort={sort.key === key ? (sort.dir < 0 ? "descending" : "ascending") : "none"}>
+      <button type="button" className="link-button" onClick={() => setSort((current) => ({ key, dir: current.key === key ? -current.dir : key === "name" || key === "place" ? 1 : -1 }))}>
+        {label}{sort.key === key ? (sort.dir < 0 ? " ▾" : " ▴") : ""}
+      </button>
+    </th>
+  );
+  const preset = (label, from, to) => (
+    <button type="button" className={`ik-chip${range.from === from && range.to === to ? " on" : ""}`} onClick={() => setRange({ from, to })}>{label}</button>
+  );
+  return (
+    <div className="ik-cust">
+      <div className="data-table-card ik-card">
+        <div className="ik-filterbar ik-cust-bar-row">
+          <div className="ik-filter-group" role="group" aria-label="Period">
+            {preset("This month", thisMonth, thisMonth)}
+            {preset("3 months", ikMonthShift(thisMonth, -2), thisMonth)}
+            {preset("12 months", ikMonthShift(thisMonth, -11), thisMonth)}
+            <input type="month" className="ik-date-sm" value={range.from} max={range.to} onChange={(event) => event.target.value && setRange((current) => ({ ...current, from: event.target.value }))} aria-label="From month" />
+            <span className="muted">–</span>
+            <input type="month" className="ik-date-sm" value={range.to} min={range.from} onChange={(event) => event.target.value && setRange((current) => ({ ...current, to: event.target.value }))} aria-label="To month" />
+          </div>
+          <div className="ik-filter-group">
+            <select value={country} onChange={(event) => setCountry(event.target.value)} aria-label="Country">
+              <option value="">All countries</option>
+              {countries.map((land) => <option key={land} value={land}>{land}</option>)}
+            </select>
+            <label className="ik-cust-check"><input type="checkbox" checked={withRetour} onChange={(event) => setWithRetour(event.target.checked)} /> with retour customers</label>
+            <input className="ik-side-search" value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Customer, city, postcode…" />
+          </div>
+          <span className="ik-info" title={"Every dispatch of the Connect export (\"Dispatched to\") counted for its customer, on the lot's date. The group: the lot's product name in our product list (Settings › Klant inzicht data: \"Chr g Topspin\" is the lot \"Topspin\", sales group Chr g), its sales group in one of the main groups (VBN 1 04 chrysanthemums, 1 07 greenery ...); without a sales group, by Connect's T (B flowers, P plants, A accessoires).\n\nValue and € / pc: what we paid for those pieces (the lot's price) -- the sales price is not in the data yet."}>ⓘ</span>
+        </div>
+        {error && <div className="notice danger">{error}</div>}
+        {loading && !data ? <div className="notice">Loading…</div> : (
+          <div style={loading ? { opacity: 0.4 } : undefined} aria-busy={loading}>
+            <div className="ik-kpis">
+              <div className="ik-kpi"><span className="ik-kpi-label">Customers</span><strong>{shownCustomers.length}</strong><small>{place ? `in ${place}` : `${months.length} month(s)`}</small></div>
+              <div className="ik-kpi"><span className="ik-kpi-label">Pieces</span><strong>{ikPieces(totalPieces)}</strong><small>{group ? labelOf(group) : "all groups"}</small></div>
+              <div className="ik-kpi"><span className="ik-kpi-label">Purchase value</span><strong>{formatInkoopEuro(totalValue)}</strong><small>what we paid</small></div>
+              <div className="ik-kpi"><span className="ik-kpi-label">€ / piece</span><strong>{totalPieces ? formatInkoopEuro(totalValue / totalPieces) : "–"}</strong><small>purchase</small></div>
+              <div className="ik-kpi" title="The pieces whose lot was found in the product list (its sales group); the rest is grouped by Connect's T">
+                <span className="ik-kpi-label">With a sales group</span><strong>{coverage === null ? "–" : `${coverage.toFixed(0)}%`}</strong><small>of all pieces</small>
+              </div>
+            </div>
+            {!data?.customers?.length && <div className="notice">No dispatches in this period yet -- they come with the Connect export (Upload &amp; compare), and Settings › Klant inzicht data works them out.</div>}
+            <div className="ik-cust-groups" role="group" aria-label="Main groups">
+              <button type="button" className={`ik-chip${group ? "" : " on"}`} onClick={() => setGroup("")}>All groups</button>
+              {IK_CUSTOMER_GROUP_ORDER.filter((key) => groupTotals[key]?.pieces).map((key) => (
+                <button key={key} type="button" className={`ik-chip${group === key ? " on" : ""}`} onClick={() => setGroup(group === key ? "" : key)} aria-pressed={group === key}
+                  title={`${ikPieces(groupTotals[key].pieces)} pcs · ${formatInkoopEuro(groupTotals[key].value)}`}>
+                  <i className="ik-cust-dot" style={{ background: IK_CUSTOMER_GROUP_COLORS[key] }} />{labelOf(key)} <span className="muted">{Math.round((groupTotals[key].pieces / Math.max(1, allGroupPieces)) * 100)}%</span>
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
+      </div>
+      {data && (
+        <div className="ik-cust-grid">
+          <div className="data-table-card ik-card">
+            <div className="ik-card-head"><strong>Per month</strong><span className="muted">pieces of the customers shown, by group</span></div>
+            <div className="ik-cust-months">
+              {months.map((month) => {
+                const groups = monthGroups.get(month) || {};
+                const pieces = monthPieces(month);
+                return (
+                  <div key={month} className="ik-cust-month">
+                    <span className="ik-cust-month-label">{ikMonthLabel(month)}</span>
+                    <span className="ik-cust-month-track">
+                      <span style={{ width: `${(pieces / monthMax) * 100}%`, display: "block" }}>
+                        <IkGroupBar groups={groups} labelOf={labelOf} height={14} />
+                      </span>
+                    </span>
+                    <span className="ik-cust-month-value">{pieces ? ikPieces(pieces) : <span className="muted">–</span>}</span>
+                  </div>
+                );
+              })}
+            </div>
+            <div className="ik-legend">
+              {IK_CUSTOMER_GROUP_ORDER.filter((key) => groupTotals[key]?.pieces).map((key) => <span key={key}><i style={{ background: IK_CUSTOMER_GROUP_COLORS[key] }} />{labelOf(key)}</span>)}
+            </div>
+          </div>
+          <div className="data-table-card ik-card">
+            <div className="ik-card-head">
+              <strong>France</strong>
+              <span className="row-actions">
+                <button type="button" className={`ik-chip${mapMode === "departement" ? " on" : ""}`} onClick={() => { setMapMode("departement"); setPlace(""); }}>Départements</button>
+                <button type="button" className={`ik-chip${mapMode === "region" ? " on" : ""}`} onClick={() => { setMapMode("region"); setPlace(""); }}>Regions</button>
+                {place && <button type="button" className="ik-chip" onClick={() => setPlace("")}>{place} ✕</button>}
+              </span>
+            </div>
+            <IkFranceMap byDepartement={byDepartement} mode={mapMode} selected={place} onSelect={setPlace} labelOf={labelOf} />
+            {withoutPlace > 0 && <div className="muted">{withoutPlace} customer(s) without a French postcode are not on the map{byDepartement.size ? "" : " -- the klant gegevens export with plaats and postcode puts them on it (Settings)"}.</div>}
+          </div>
+        </div>
+      )}
+      {data && (
+        <div className="data-table-card ik-card">
+          <div className="ik-card-head"><strong>Customers</strong><span className="muted">{sorted.length} · click one for its months, products and lots</span></div>
+          <div className="table-wrap">
+            <table className="data-table ik-table ik-cust-table">
+              <thead>
+                <tr>
+                  {head("name", "Customer")}{head("place", "Place")}{head("pieces", "Pieces", "num")}{head("value", "Purchase €", "num")}{head("price", "€ / pc", "num")}
+                  <th>Groups</th>
+                </tr>
+              </thead>
+              <tbody>
+                {sorted.slice(0, 400).map((customer) => (
+                  <tr key={customer.code} className="clickable-row" onClick={() => setOpenCode(customer.code)}>
+                    <td><strong>{customer.name || customer.code}</strong>{customer.name && <small className="muted"> {customer.code}</small>}{customer.is_retour && <small className="ik-cust-flag"> retour</small>}</td>
+                    <td>{customer.city || <span className="muted">{customer.land || "–"}</span>}{customer.departement && <small className="muted"> {customer.departement}</small>}</td>
+                    <td className="num">{ikPieces(customer.shown_pieces)}</td>
+                    <td className="num">{formatInkoopEuro(customer.shown_value)}</td>
+                    <td className="num">{customer.shown_pieces ? formatInkoopEuro(customer.shown_value / customer.shown_pieces) : "–"}</td>
+                    <td className="ik-cust-groups-cell"><IkGroupBar groups={customer.groups} labelOf={labelOf} /></td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          {sorted.length > 400 && <div className="muted">… {sorted.length - 400} more -- narrow it with the search, the country or the map.</div>}
+        </div>
+      )}
+      {openCode && <IkCustomerDrawer code={openCode} range={range} onClose={() => setOpenCode("")} />}
+    </div>
+  );
+}
+
+// One customer: its groups per month (pieces), their prices, its products
+// and its lots.
+function IkCustomerDrawer({ code, range, onClose }) {
+  const [data, setData] = useState(null);
+  const [error, setError] = useState("");
+  const [lotMonth, setLotMonth] = useState("");
+  useEffect(() => {
+    setData(null);
+    apiJson(`/api/inkoop/customers/detail?code=${encodeURIComponent(code)}&from=${range.from}&to=${range.to}`).then(setData).catch((loadError) => setError(loadError.message));
+  }, [code, range.from, range.to]);
+  const labelOf = ikGroupLabelOf(data?.group_list);
+  const months = ikMonthsBetween(range.from, range.to);
+  const cellOf = new Map((data?.cells || []).map((cell) => [`${cell.month}|${cell.group}`, cell]));
+  const groups = IK_CUSTOMER_GROUP_ORDER.filter((key) => (data?.cells || []).some((cell) => cell.group === key && cell.pieces));
+  const max = Math.max(1, ...(data?.cells || []).map((cell) => cell.pieces));
+  const groupSum = (key) => (data?.cells || []).filter((cell) => cell.group === key).reduce((sum, cell) => ({
+    pieces: sum.pieces + cell.pieces, value: sum.value + cell.value,
+    min: cell.min_price === null ? sum.min : sum.min === null ? cell.min_price : Math.min(sum.min, cell.min_price),
+    max: cell.max_price === null ? sum.max : sum.max === null ? cell.max_price : Math.max(sum.max, cell.max_price),
+  }), { pieces: 0, value: 0, min: null, max: null });
+  const lots = (data?.lots || []).filter((lot) => !lotMonth || lot.date.startsWith(lotMonth));
+  const customer = data?.customer;
+  return (
+    <div className="ik-drawer ik-cust-drawer" role="dialog" aria-label={`Customer ${code}`}>
+      <div className="ik-drawer-head">
+        <strong>{customer?.name || code}{customer?.name ? <span className="muted"> {code}</span> : null}</strong>
+        <button type="button" onClick={onClose}>Close</button>
+      </div>
+      {error && <div className="notice danger">{error}</div>}
+      {!data ? <div className="muted">Loading…</div> : (
+        <>
+          <div className="muted">
+            {[customer.city, customer.postcode, customer.departement && `département ${customer.departement}`, customer.land, customer.gebied && `gebied ${customer.gebied}`, customer.bw && `BW ${customer.bw}`].filter(Boolean).join(" · ") || "No customer data (klant gegevens) for this code"}
+            {customer.is_retour && <strong className="ik-cust-flag"> · retour</strong>}
+          </div>
+          <h4 className="ik-subhead">Pieces per month</h4>
+          <div className="ik-cust-scroll">
+            <table className="data-table ik-table ik-cust-heat">
+              <thead><tr><th>Group</th>{months.map((month) => <th key={month} className="num">{ikMonthLabel(month)}</th>)}<th className="num">Total</th></tr></thead>
+              <tbody>
+                {groups.map((key) => (
+                  <tr key={key}>
+                    <td><i className="ik-cust-dot" style={{ background: IK_CUSTOMER_GROUP_COLORS[key] }} />{labelOf(key)}</td>
+                    {months.map((month) => {
+                      const cell = cellOf.get(`${month}|${key}`);
+                      const share = cell ? Math.sqrt(cell.pieces / max) : 0;
+                      return (
+                        <td key={month} className="num" style={cell ? { background: `hsl(205 70% ${Math.round(94 - share * 50)}%)`, color: share > 0.6 ? "#fff" : undefined } : undefined}
+                          title={cell ? `${labelOf(key)} ${ikMonthLabel(month)}: ${ikPieces(cell.pieces)} pcs · ${formatInkoopEuro(cell.value)} · ${cell.lots} lot(s)` : undefined}>
+                          {cell ? ikPieces(cell.pieces) : ""}
+                        </td>
+                      );
+                    })}
+                    <td className="num"><strong>{ikPieces(groupSum(key).pieces)}</strong></td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          <h4 className="ik-subhead">Prices per group (purchase)</h4>
+          <table className="data-table ik-table">
+            <thead><tr><th>Group</th><th className="num">Pieces</th><th className="num">Purchase €</th><th className="num">Avg € / pc</th><th className="num">Range € / pc</th></tr></thead>
+            <tbody>
+              {groups.map((key) => {
+                const sum = groupSum(key);
+                return (
+                  <tr key={key}>
+                    <td><i className="ik-cust-dot" style={{ background: IK_CUSTOMER_GROUP_COLORS[key] }} />{labelOf(key)}</td>
+                    <td className="num">{ikPieces(sum.pieces)}</td>
+                    <td className="num">{formatInkoopEuro(sum.value)}</td>
+                    <td className="num">{sum.pieces ? formatInkoopEuro(sum.value / sum.pieces) : "–"}</td>
+                    <td className="num">{sum.min !== null ? `${formatInkoopEuro(sum.min)} – ${formatInkoopEuro(sum.max)}` : "–"}</td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+          <h4 className="ik-subhead">Most bought products</h4>
+          <table className="data-table ik-table">
+            <thead><tr><th>Product</th><th>Sales group</th><th className="num">Pieces</th><th className="num">€ / pc</th><th>Last</th></tr></thead>
+            <tbody>
+              {data.products.slice(0, 25).map((product) => (
+                <tr key={`${product.description}|${product.sales_group}`}>
+                  <td><i className="ik-cust-dot" style={{ background: IK_CUSTOMER_GROUP_COLORS[product.group] || IK_CUSTOMER_GROUP_COLORS.none }} />{product.description}</td>
+                  <td>{product.sales_group || <span className="muted">{labelOf(product.group)}</span>}</td>
+                  <td className="num">{ikPieces(product.pieces)}</td>
+                  <td className="num">{product.pieces ? formatInkoopEuro(product.value / product.pieces) : "–"}</td>
+                  <td>{fustOverviewDate(product.last_date)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+          <div className="ik-card-head">
+            <h4 className="ik-subhead">Lots</h4>
+            <select value={lotMonth} onChange={(event) => setLotMonth(event.target.value)} aria-label="Month of the lots">
+              <option value="">All months ({data.lots_total})</option>
+              {months.filter((month) => data.lots.some((lot) => lot.date.startsWith(month))).map((month) => <option key={month} value={month}>{ikMonthLabel(month)}</option>)}
+            </select>
+          </div>
+          <table className="data-table ik-table">
+            <thead><tr><th>Date</th><th>Lot</th><th>Product</th><th>Grower</th><th className="num">Pieces</th><th className="num">€ / pc</th><th className="num">€</th></tr></thead>
+            <tbody>
+              {lots.slice(0, 300).map((lot) => (
+                <tr key={lot.lot}>
+                  <td>{fustOverviewDate(lot.date)}</td>
+                  <td>{lot.lot}</td>
+                  <td><i className="ik-cust-dot" style={{ background: IK_CUSTOMER_GROUP_COLORS[lot.group] || IK_CUSTOMER_GROUP_COLORS.none }} />{lot.description}{lot.sales_group && <small className="muted"> {lot.sales_group}</small>}</td>
+                  <td>{lot.suppl}</td>
+                  <td className="num">{ikPieces(lot.pieces)}</td>
+                  <td className="num">{formatInkoopEuro(lot.price)}</td>
+                  <td className="num">{formatInkoopEuro(lot.value)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+          {lots.length > 300 && <div className="muted">… {lots.length - 300} more lots -- pick a month.</div>}
+          {data.lots_total > data.lots.length && <div className="muted">The newest {data.lots.length} of {data.lots_total} lots are listed.</div>}
+        </>
+      )}
+    </div>
+  );
+}
+
+// Settings: the product export (the sales groups), the main group of each
+// sales group, and the month figures worked out again.
+function InkoopCustomerDataCard() {
+  const [status, setStatus] = useState(null);
+  const [groupsData, setGroupsData] = useState(null);
+  const [busy, setBusy] = useState(false);
+  const [message, setMessage] = useState("");
+  const [error, setError] = useState("");
+  const [showGroups, setShowGroups] = useState(false);
+  const [groupSearch, setGroupSearch] = useState("");
+  const timer = useRef(null);
+  const fileRef = useRef(null);
+  const load = useCallback(() => {
+    apiJson("/api/inkoop/customers/status").then((payload) => {
+      setStatus(payload);
+      window.clearTimeout(timer.current);
+      if (payload.job?.running) timer.current = window.setTimeout(load, 2000);
+    }).catch((loadError) => setError(loadError.message));
+  }, []);
+  useEffect(() => { load(); return () => window.clearTimeout(timer.current); }, [load]);
+  const loadGroups = () => apiJson("/api/inkoop/customers/groups").then(setGroupsData).catch((loadError) => setError(loadError.message));
+  useEffect(() => { if (showGroups && !groupsData) loadGroups(); }, [showGroups]); // eslint-disable-line react-hooks/exhaustive-deps
+  async function upload(event) {
+    const file = event.target.files?.[0];
+    event.target.value = "";
+    if (!file) return;
+    setBusy(true);
+    setError("");
+    setMessage("");
+    try {
+      const payload = await apiJson("/api/inkoop/customers/products", { method: "POST", body: JSON.stringify({ file: { name: file.name, content_base64: await fileToBase64(file) } }) });
+      setMessage(`${payload.products} product(s) read (${payload.totals.products} stored, ${payload.totals.groups} sales groups); ${payload.names} product names to find a lot's group. The months are worked out again.`);
+      setGroupsData(null);
+      load();
+    } catch (uploadError) {
+      setError(uploadError.message);
+    } finally {
+      setBusy(false);
+    }
+  }
+  async function rebuild() {
+    setError("");
+    try {
+      await apiJson("/api/inkoop/customers/rebuild", { method: "POST", body: "{}" });
+      load();
+    } catch (rebuildError) {
+      setError(rebuildError.message);
+    }
+  }
+  async function setMain(salesGroup, mainGroup) {
+    setError("");
+    try {
+      await apiJson("/api/inkoop/customers/groups", { method: "POST", body: JSON.stringify({ sales_group: salesGroup, main_group: mainGroup }) });
+      setGroupsData((current) => ({ ...current, groups: current.groups.map((entry) => (entry.sales_group === salesGroup ? { ...entry, main_group: mainGroup } : entry)) }));
+    } catch (setError_) {
+      setError(setError_.message);
+    }
+  }
+  const groupLabel = ikGroupLabelOf(groupsData?.group_list);
+  const shownGroups = (groupsData?.groups || []).filter((entry) => !groupSearch.trim() || entry.sales_group.toLowerCase().includes(groupSearch.trim().toLowerCase()));
+  const job = status?.job;
+  return (
+    <div className="data-table-card ik-cust-settings">
+      <div className="section-header"><h2>Klant inzicht data</h2></div>
+      <div className="notice">
+        The product export (table_export_data_….xlsx: productId, description, salesGroup …) gives each Connect lot its sales group by its product name
+        ("Chr g Topspin" is the lot "Topspin"). Each upload is added to what is stored -- nothing is wiped. The customers' place (plaats, postcode) comes from the
+        klant gegevens export above, when it has those columns.
+      </div>
+      <div className="row-actions">
+        <button type="button" className="primary" onClick={() => fileRef.current?.click()} disabled={busy}>{busy ? "Reading…" : "Upload the product export"}</button>
+        <input ref={fileRef} type="file" accept=".xlsx,.csv" onChange={upload} hidden />
+        <button type="button" onClick={rebuild} disabled={job?.running}>{job?.running ? `Working out… ${job.done} of ${job.months} month(s)` : "Work out the months again"}</button>
+        <button type="button" onClick={() => setShowGroups((value) => !value)} aria-expanded={showGroups}>{showGroups ? "▾" : "▸"} Sales groups → main groups</button>
+      </div>
+      {status && (
+        <div className="muted">
+          {status.products?.products || 0} product(s) in {status.products?.groups || 0} sales group(s){status.products?.updated_at ? `, last upload ${formatTimestamp(status.products.updated_at)}` : ""} ·
+          {" "}{status.places} customer place(s) ({status.places_fr} in France) · dispatches in {status.dispatch_months.length} month(s)
+          {job?.finished_at && !job.running ? ` · worked out ${formatTimestamp(job.finished_at)}` : ""}
+        </div>
+      )}
+      {job?.error && <div className="notice danger">{job.error}</div>}
+      {message && <div className="notice info">{message}</div>}
+      {error && <div className="notice danger">{error}</div>}
+      {showGroups && (
+        !groupsData ? <div className="muted">Loading…</div> : (
+          <>
+            <div className="row-actions">
+              <input className="ik-side-search" value={groupSearch} onChange={(event) => setGroupSearch(event.target.value)} placeholder="Sales group…" />
+              <span className="muted">{groupsData.groups.length} sales group(s) · {ikPieces(groupsData.pieces_without_group)} pcs of lots not in the product list (grouped by Connect's T)</span>
+            </div>
+            <div className="table-wrap">
+              <table className="data-table ik-table">
+                <thead><tr><th>Sales group</th><th className="num">Products</th><th className="num">Pieces dispatched</th><th>T</th><th>Main group</th></tr></thead>
+                <tbody>
+                  {shownGroups.slice(0, 300).map((entry) => (
+                    <tr key={entry.sales_group}>
+                      <td>{entry.sales_group}</td>
+                      <td className="num">{entry.products}</td>
+                      <td className="num">{ikPieces(entry.pieces)}</td>
+                      <td>{entry.t || "–"}</td>
+                      <td>
+                        <select value={entry.main_group} onChange={(event) => setMain(entry.sales_group, event.target.value)} aria-label={`Main group of ${entry.sales_group}`}>
+                          <option value="">Suggested: {groupLabel(entry.suggested)}</option>
+                          {groupsData.group_list.map((option) => <option key={option.key} value={option.key}>{option.label} ({option.vbn})</option>)}
+                        </select>
+                        {entry.main_group && <small className="muted"> set{entry.set_by ? ` by ${entry.set_by}` : ""}</small>}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+            {shownGroups.length > 300 && <div className="muted">… {shownGroups.length - 300} more -- search for one.</div>}
+          </>
+        )
+      )}
     </div>
   );
 }

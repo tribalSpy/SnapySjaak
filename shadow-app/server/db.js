@@ -1418,6 +1418,233 @@ export async function getInkoopDispatchLots({ from, to } = {}) {
   return result.rows;
 }
 
+// ---- Klant inzicht ----
+
+// The product export merged in (a product id once is kept; a later upload
+// updates its fields; the last sale only moves forward).
+export async function saveInkoopProducts(products) {
+  if (!pool || !products?.length) return 0;
+  let saved = 0;
+  const num = (value) => (value === null || value === undefined || value === "" || !Number.isFinite(Number(value)) ? null : Number(value));
+  for (let index = 0; index < products.length; index += 2000) {
+    const chunk = products.slice(index, index + 2000);
+    const result = await pool.query(
+      `
+        INSERT INTO inkoop_products (product_id, sales_group_id, sales_group, description, height, pot_size, ready_for_sales, on_list, last_sale_date, last_client, last_price)
+        SELECT * FROM unnest($1::text[], $2::text[], $3::text[], $4::text[], $5::numeric[], $6::numeric[], $7::text[], $8::text[], $9::date[], $10::text[], $11::numeric[])
+        ON CONFLICT (product_id) DO UPDATE SET
+          sales_group_id = EXCLUDED.sales_group_id, sales_group = EXCLUDED.sales_group, description = EXCLUDED.description,
+          height = EXCLUDED.height, pot_size = EXCLUDED.pot_size, ready_for_sales = EXCLUDED.ready_for_sales, on_list = EXCLUDED.on_list,
+          last_client = CASE WHEN inkoop_products.last_sale_date IS NULL OR EXCLUDED.last_sale_date >= inkoop_products.last_sale_date THEN EXCLUDED.last_client ELSE inkoop_products.last_client END,
+          last_price = CASE WHEN inkoop_products.last_sale_date IS NULL OR EXCLUDED.last_sale_date >= inkoop_products.last_sale_date THEN EXCLUDED.last_price ELSE inkoop_products.last_price END,
+          last_sale_date = GREATEST(inkoop_products.last_sale_date, EXCLUDED.last_sale_date),
+          updated_at = now()
+      `,
+      [
+        chunk.map((row) => row.product_id), chunk.map((row) => row.sales_group_id || ""), chunk.map((row) => row.sales_group || ""), chunk.map((row) => row.description || ""),
+        chunk.map((row) => num(row.height)), chunk.map((row) => num(row.pot_size)), chunk.map((row) => row.ready_for_sales || ""), chunk.map((row) => row.on_list || ""),
+        chunk.map((row) => (/^[0-9]{4}-[0-9]{2}-[0-9]{2}$/.test(row.last_sale_date || "") ? row.last_sale_date : null)),
+        chunk.map((row) => row.last_client || ""), chunk.map((row) => (num(row.last_price_cents) === null ? null : num(row.last_price_cents) / 100)),
+      ],
+    );
+    saved += result.rowCount;
+  }
+  return saved;
+}
+
+export async function getInkoopProducts() {
+  if (!pool) return [];
+  const result = await pool.query("SELECT product_id, sales_group, description FROM inkoop_products");
+  return result.rows;
+}
+
+export async function getInkoopProductCount() {
+  if (!pool) return { products: 0, groups: 0, names: 0, updated_at: null };
+  const result = await pool.query(`
+    SELECT (SELECT count(*)::int FROM inkoop_products) AS products, (SELECT count(DISTINCT sales_group)::int FROM inkoop_products) AS groups,
+           (SELECT count(*)::int FROM inkoop_product_names) AS names, (SELECT max(updated_at) FROM inkoop_products) AS updated_at
+  `);
+  return result.rows[0];
+}
+
+// The whole name -> sales group table, as worked out from the products.
+export async function replaceInkoopProductNames(names) {
+  if (!pool) return 0;
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    await client.query("DELETE FROM inkoop_product_names");
+    for (let index = 0; index < names.length; index += 5000) {
+      const chunk = names.slice(index, index + 5000);
+      await client.query(
+        `INSERT INTO inkoop_product_names (name_key, sales_group, products, other_groups)
+         SELECT k, g, p, o::jsonb FROM unnest($1::text[], $2::text[], $3::int[], $4::text[]) AS t(k, g, p, o)`,
+        [chunk.map((row) => row.name_key), chunk.map((row) => row.sales_group), chunk.map((row) => row.products), chunk.map((row) => JSON.stringify(row.other_groups || []))],
+      );
+    }
+    await client.query("COMMIT");
+    return names.length;
+  } catch (error) {
+    await client.query("ROLLBACK");
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
+export async function getInkoopSalesGroupMap() {
+  if (!pool) return [];
+  const result = await pool.query("SELECT sales_group, main_group, updated_by, updated_at FROM inkoop_sales_group_map");
+  return result.rows;
+}
+
+// main_group "" takes the hand-set group away (back to the suggestion).
+export async function setInkoopSalesGroupMain(salesGroup, mainGroup, user = "") {
+  if (!pool) return;
+  if (!mainGroup) {
+    await pool.query("DELETE FROM inkoop_sales_group_map WHERE sales_group = $1", [salesGroup]);
+    return;
+  }
+  await pool.query(
+    `INSERT INTO inkoop_sales_group_map (sales_group, main_group, updated_by) VALUES ($1, $2, $3)
+     ON CONFLICT (sales_group) DO UPDATE SET main_group = EXCLUDED.main_group, updated_by = EXCLUDED.updated_by, updated_at = now()`,
+    [salesGroup, mainGroup, user],
+  );
+}
+
+// Places from the klant gegevens export: a field left empty in a later file
+// keeps what was stored.
+export async function saveInkoopCustomerPlaces(places) {
+  if (!pool || !places?.length) return 0;
+  const result = await pool.query(
+    `
+      INSERT INTO inkoop_customer_places (code, city, postcode, address, country, departement)
+      SELECT * FROM unnest($1::text[], $2::text[], $3::text[], $4::text[], $5::text[], $6::text[])
+      ON CONFLICT (code) DO UPDATE SET
+        city = COALESCE(NULLIF(EXCLUDED.city, ''), inkoop_customer_places.city),
+        postcode = COALESCE(NULLIF(EXCLUDED.postcode, ''), inkoop_customer_places.postcode),
+        address = COALESCE(NULLIF(EXCLUDED.address, ''), inkoop_customer_places.address),
+        country = COALESCE(NULLIF(EXCLUDED.country, ''), inkoop_customer_places.country),
+        departement = COALESCE(NULLIF(EXCLUDED.departement, ''), inkoop_customer_places.departement),
+        updated_at = now()
+    `,
+    [places.map((row) => row.code), places.map((row) => row.city || ""), places.map((row) => row.postcode || ""), places.map((row) => row.address || ""),
+      places.map((row) => row.country || ""), places.map((row) => row.departement || "")],
+  );
+  return result.rowCount;
+}
+
+export async function getInkoopCustomerPlaces() {
+  if (!pool) return [];
+  const result = await pool.query("SELECT code, city, postcode, address, country, departement FROM inkoop_customer_places");
+  return result.rows;
+}
+
+// The months that have dispatches (their first days), oldest first.
+export async function getInkoopDispatchMonths() {
+  if (!pool) return [];
+  const result = await pool.query(
+    `SELECT DISTINCT to_char(date_trunc('month', erp_date), 'YYYY-MM-DD') AS month FROM inkoop_dispatch_lots WHERE erp_date IS NOT NULL ORDER BY 1`,
+  );
+  return result.rows.map((row) => row.month);
+}
+
+// One month of inkoop_customer_month worked out again from the dispatches:
+// per customer, the lot's sales group (by its product name) and its Connect
+// T; the value is the lot's total for the pieces dispatched. Lots of the
+// codes in excludedCodes (internal moves) are left out.
+export async function rebuildInkoopCustomerMonth(month, excludedCodes = []) {
+  if (!pool) return 0;
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    await client.query("DELETE FROM inkoop_customer_month WHERE month = $1::date", [month]);
+    const result = await client.query(
+      `
+        INSERT INTO inkoop_customer_month (month, customer_code, sales_group, t, pieces, value, lots, min_price, max_price)
+        SELECT $1::date, x.code, x.sales_group, x.t, sum(x.pieces), round(sum(x.value), 2), count(DISTINCT x.lot), min(x.price) FILTER (WHERE x.price > 0), max(x.price)
+          FROM (
+            SELECT l.lot, upper(btrim(d->>'code')) AS code,
+                   COALESCE(n0.sales_group, n1.sales_group, '') AS sales_group,
+                   COALESCE(NULLIF(upper(btrim(e.raw->>'t')), ''), '') AS t,
+                   CASE WHEN (d->>'pieces') ~ '^-?[0-9]+(\\.[0-9]+)?$' THEN (d->>'pieces')::numeric ELSE 0 END AS pieces,
+                   CASE WHEN l.pieces > 0 AND (d->>'pieces') ~ '^-?[0-9]+(\\.[0-9]+)?$' THEN COALESCE(l.t_price, 0) * (d->>'pieces')::numeric / l.pieces ELSE 0 END AS value,
+                   l.price
+              FROM inkoop_dispatch_lots l
+              CROSS JOIN LATERAL jsonb_array_elements(l.dispatches) d
+              LEFT JOIN inkoop_erp_lines e ON e.lot = l.lot
+              LEFT JOIN inkoop_product_names n0 ON n0.name_key = lower(regexp_replace(btrim(COALESCE(l.description, '')), '\\s+', ' ', 'g'))
+        LEFT JOIN inkoop_product_names n1 ON n0.name_key IS NULL
+          AND n1.name_key = lower(btrim(regexp_replace(regexp_replace(btrim(COALESCE(l.description, '')), '\\s*\\([^)]*\\)\\s*$', ''), '\\s+', ' ', 'g')))
+             WHERE l.erp_date >= $1::date AND l.erp_date < ($1::date + interval '1 month')
+               AND NOT (upper(btrim(COALESCE(l.suppl, ''))) = ANY($2::text[]))
+               AND btrim(COALESCE(d->>'code', '')) <> ''
+          ) x
+         GROUP BY x.code, x.sales_group, x.t
+      `,
+      [month, excludedCodes.map((code) => String(code).toUpperCase())],
+    );
+    await client.query("COMMIT");
+    return result.rowCount;
+  } catch (error) {
+    await client.query("ROLLBACK");
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
+// The month figures of a period (first days of months), optionally of one
+// customer.
+export async function getInkoopCustomerMonthRows({ from, to, code = "" } = {}) {
+  if (!pool) return [];
+  const params = [from, to];
+  let where = "month >= $1::date AND month <= $2::date";
+  if (code) { params.push(code.toUpperCase()); where += ` AND customer_code = $${params.length}`; }
+  const result = await pool.query(
+    `SELECT to_char(month, 'YYYY-MM') AS month, customer_code, sales_group, t, pieces::float8 AS pieces, value::float8 AS value, lots,
+            min_price::float8 AS min_price, max_price::float8 AS max_price
+       FROM inkoop_customer_month WHERE ${where}`,
+    params,
+  );
+  return result.rows;
+}
+
+// One customer's lots of a period (its products and days), newest first.
+export async function getInkoopCustomerLots({ code, from, to, limit = 3000 } = {}) {
+  if (!pool || !code) return [];
+  const result = await pool.query(
+    `
+      SELECT l.lot::text AS lot, to_char(l.erp_date, 'YYYY-MM-DD') AS date, btrim(COALESCE(l.description, '')) AS description, btrim(COALESCE(l.suppl, '')) AS suppl,
+             COALESCE(n0.sales_group, n1.sales_group, '') AS sales_group, COALESCE(NULLIF(upper(btrim(e.raw->>'t')), ''), '') AS t,
+             l.price::float8 AS price, l.pieces::float8 AS lot_pieces, l.t_price::float8 AS lot_value,
+             sum(CASE WHEN (d->>'pieces') ~ '^-?[0-9]+(\\.[0-9]+)?$' THEN (d->>'pieces')::numeric ELSE 0 END)::float8 AS pieces
+        FROM inkoop_dispatch_lots l
+        CROSS JOIN LATERAL jsonb_array_elements(l.dispatches) d
+        LEFT JOIN inkoop_erp_lines e ON e.lot = l.lot
+        LEFT JOIN inkoop_product_names n0 ON n0.name_key = lower(regexp_replace(btrim(COALESCE(l.description, '')), '\\s+', ' ', 'g'))
+        LEFT JOIN inkoop_product_names n1 ON n0.name_key IS NULL
+          AND n1.name_key = lower(btrim(regexp_replace(regexp_replace(btrim(COALESCE(l.description, '')), '\\s*\\([^)]*\\)\\s*$', ''), '\\s+', ' ', 'g')))
+       WHERE l.erp_date >= $2::date AND l.erp_date <= $3::date AND upper(btrim(d->>'code')) = $1
+       GROUP BY l.lot, l.erp_date, l.description, l.suppl, n0.sales_group, n1.sales_group, e.raw, l.price, l.pieces, l.t_price
+       ORDER BY l.erp_date DESC, l.lot DESC
+       LIMIT $4
+    `,
+    [code.toUpperCase(), from, to, limit],
+  );
+  return result.rows;
+}
+
+// The sales groups with the pieces dispatched under each (all months), per
+// Connect T -- Settings' group table.
+export async function getInkoopSalesGroupTotals() {
+  if (!pool) return [];
+  const result = await pool.query(
+    "SELECT sales_group, t, sum(pieces)::float8 AS pieces FROM inkoop_customer_month GROUP BY sales_group, t",
+  );
+  return result.rows;
+}
+
 export async function getInkoopDispatchLotsByLots(lotNumbers) {
   if (!pool || !Array.isArray(lotNumbers) || !lotNumbers.length) {
     return [];
@@ -4837,6 +5064,78 @@ const databaseMigrations = [
   `,
   `
     CREATE INDEX IF NOT EXISTS inkoop_dispatch_lots_date_idx ON inkoop_dispatch_lots (erp_date)
+  `,
+  // Klant inzicht: our own product list (the product export) -- each
+  // product's sales group, and its last sale. Merged on each upload, never
+  // wiped.
+  `
+    CREATE TABLE IF NOT EXISTS inkoop_products (
+      product_id text PRIMARY KEY,
+      sales_group_id text,
+      sales_group text,
+      description text,
+      height numeric,
+      pot_size numeric,
+      ready_for_sales text,
+      on_list text,
+      last_sale_date date,
+      last_client text,
+      last_price numeric,
+      imported_at timestamptz NOT NULL DEFAULT now(),
+      updated_at timestamptz NOT NULL DEFAULT now()
+    )
+  `,
+  // A Connect lot's product name -> its sales group (worked out from the
+  // product list: "Chr g Topspin" -> "topspin" = Chr g).
+  `
+    CREATE TABLE IF NOT EXISTS inkoop_product_names (
+      name_key text PRIMARY KEY,
+      sales_group text NOT NULL,
+      products integer NOT NULL DEFAULT 0,
+      other_groups jsonb NOT NULL DEFAULT '[]'::jsonb,
+      updated_at timestamptz NOT NULL DEFAULT now()
+    )
+  `,
+  // A sales group's main group, set by hand in Settings (else suggested).
+  `
+    CREATE TABLE IF NOT EXISTS inkoop_sales_group_map (
+      sales_group text PRIMARY KEY,
+      main_group text NOT NULL,
+      updated_by text NOT NULL DEFAULT '',
+      updated_at timestamptz NOT NULL DEFAULT now()
+    )
+  `,
+  // Where a dispatch customer is (the klant gegevens export's place
+  // columns) -- apart from the customer map, so it never re-compares a day.
+  `
+    CREATE TABLE IF NOT EXISTS inkoop_customer_places (
+      code text PRIMARY KEY,
+      city text NOT NULL DEFAULT '',
+      postcode text NOT NULL DEFAULT '',
+      address text NOT NULL DEFAULT '',
+      country text NOT NULL DEFAULT '',
+      departement text NOT NULL DEFAULT '',
+      updated_at timestamptz NOT NULL DEFAULT now()
+    )
+  `,
+  // What each dispatch customer got per month, sales group and Connect T --
+  // worked out from inkoop_dispatch_lots (a month at a time, rebuilt).
+  `
+    CREATE TABLE IF NOT EXISTS inkoop_customer_month (
+      month date NOT NULL,
+      customer_code text NOT NULL,
+      sales_group text NOT NULL DEFAULT '',
+      t text NOT NULL DEFAULT '',
+      pieces numeric NOT NULL DEFAULT 0,
+      value numeric NOT NULL DEFAULT 0,
+      lots integer NOT NULL DEFAULT 0,
+      min_price numeric,
+      max_price numeric,
+      PRIMARY KEY (month, customer_code, sales_group, t)
+    )
+  `,
+  `
+    CREATE INDEX IF NOT EXISTS inkoop_customer_month_customer_idx ON inkoop_customer_month (customer_code, month)
   `,
   // One row per FloraHolland invoice: the totals King's journal export
   // needs (total incl. BTW, BTW per category, klok location) -- parsed from

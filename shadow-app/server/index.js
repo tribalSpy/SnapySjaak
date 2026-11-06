@@ -136,6 +136,19 @@ import {
   saveFustReferenceAction,
   deleteFustReferenceActionsForDateExcept,
   saveInkoopDispatchLots,
+  saveInkoopProducts,
+  getInkoopProducts,
+  getInkoopProductCount,
+  replaceInkoopProductNames,
+  getInkoopSalesGroupMap,
+  setInkoopSalesGroupMain,
+  saveInkoopCustomerPlaces,
+  getInkoopCustomerPlaces,
+  getInkoopDispatchMonths,
+  rebuildInkoopCustomerMonth,
+  getInkoopCustomerMonthRows,
+  getInkoopCustomerLots,
+  getInkoopSalesGroupTotals,
   saveInkoopErpLines,
   saveInkoopInvoiceLines,
   deleteInkoopInvoiceCopies,
@@ -7059,6 +7072,17 @@ async function parseInkoopKlantGegevens(filePayload) {
 // 130k-row sample: summing a lot's dispatched pieces recovers its own
 // Pieces value; a lot with no dispatch rows at all is always Accessoires
 // (T=A) packaging/material, never tracked to an individual customer.
+// Our own product list (Klant inzicht): products with their sales group.
+async function parseInkoopProductExport(filePayload) {
+  const inputPath = await writeInkoopUploadToTempFile(filePayload, "inkoop-products-", ".xlsx");
+  const output = await runInkoopVeilingWorker(["parse-product-export", "--input", inputPath]);
+  const payload = JSON.parse(output.toString("utf8"));
+  if (payload?.error) {
+    throw new Error(payload.error);
+  }
+  return Array.isArray(payload?.products) ? payload.products : [];
+}
+
 async function parseInkoopDispatchDump(filePayload) {
   const inputPath = await writeInkoopUploadToTempFile(filePayload, "inkoop-dispatch-", ".csv");
   const output = await runInkoopVeilingWorker(["parse-dispatch-dump", "--input", inputPath]);
@@ -10449,6 +10473,8 @@ async function runInkoopImport(body, createdBy) {
       const dispatchLots = await parseInkoopDispatchDump(body?.erp_file);
       await saveInkoopDispatchLots(dispatchLots);
       dispatchLotCount = dispatchLots.length;
+      const months = [...new Set(dispatchLots.map((lot) => String(lot?.date || "").slice(0, 7)).filter((month) => /^[0-9]{4}-[0-9]{2}$/.test(month)))];
+      if (months.length) runInkoopCustomerRebuildLater(months.map((month) => `${month}-01`));
     }
   } catch {
     dispatchLotCount = 0;
@@ -12095,6 +12121,273 @@ function resolveInkoopCustomer(code, customerMap) {
 // master-data match is kept separately (unresolved_codes) rather than
 // silently dropped, since that's a real data-quality signal (a customer
 // added on the ERP side but not yet in the latest klant gegevens export).
+// ---- Klant inzicht: what the dispatch customers get, per group ----
+
+// The main groups, on the VBN group levels (1 cut flowers, 2 house plants,
+// 3 garden plants; 1 04 chrysanthemums, 1 05 / 2 09 orchids, 1 07
+// decorative greenery, 1 10 / 3 16 decoration). A sales group of the product
+// list goes to one of them -- set by hand in Settings, else suggested here.
+const INKOOP_CUSTOMER_GROUPS = [
+  ["chrys", "Chrysanten", "VBN 1 04"],
+  ["roses", "Rozen", "VBN 1 01 (rozen)"],
+  ["cut", "Overige snijbloemen", "VBN 1 01 / 1 02 / 1 03"],
+  ["green", "Groen", "VBN 1 07"],
+  ["orchids", "Orchideeën", "VBN 1 05 / 2 09"],
+  ["plants", "Planten", "VBN 2 / 3"],
+  ["bouquets", "Boeketten", "bunches, bq"],
+  ["deco", "Decoratie & accessoires", "VBN 1 10 / 3 16, accessoires"],
+];
+const INKOOP_CUSTOMER_GROUP_KEYS = new Set(INKOOP_CUSTOMER_GROUPS.map(([key]) => key));
+// Suggested by the sales group's name; a cut-flower group whose lot is a
+// plant (Connect T = P: a pot chrysanthemum, a pot rose) is a plant.
+const INKOOP_CUSTOMER_GROUP_RULES = [
+  ["bouquets", /^(bq|bunch|boeket|bouquet|r\.?\s?p\.?\s?bun)|bunches|boeket/i],
+  ["deco", /deco|keramiek|hoezen|kunststof|accessoir|potten|manden|lint|vaas|vazen|glas|verpakking|karton|hout/i],
+  ["orchids", /phal|cymb|orchid|vanda|dendrob|oncid|cattley|paphio|zygo|miltonia/i],
+  ["chrys", /^chr|chrysant|santini/i],
+  ["roses", /^r( |\.|$)|^r tr|^rose|^roses|^rosa\b/i],
+  ["green", /^gr( |\.|$)|groen|eucal|ruscus|asparag|pistac|salal|aspidist|fern|varen|blad|leaf/i],
+];
+function inkoopCustomerMainGroup(salesGroup, t, handMap) {
+  const group = String(salesGroup || "").trim();
+  const kind = String(t || "").toUpperCase();
+  if (group && handMap?.has(group)) return handMap.get(group);
+  if (group) {
+    const rule = INKOOP_CUSTOMER_GROUP_RULES.find(([, pattern]) => pattern.test(group));
+    if (rule) {
+      if (kind === "P" && ["chrys", "roses", "cut", "green"].includes(rule[0])) return "plants";
+      return rule[0];
+    }
+  }
+  if (kind === "P") return "plants";
+  if (kind === "A") return "deco";
+  if (kind === "B") return "cut";
+  return "none";
+}
+
+// A Connect lot's product name -> its sales group, from the product list:
+// the description less its sales group ("Chr g Topspin" -> "topspin") counts
+// most, the description itself too, and its shorter word endings ("Rose
+// Sweet Avalanche" -> "sweet avalanche") a little -- an ending is only kept
+// when most of its products are of one sales group.
+function buildInkoopProductNames(products) {
+  const norm = (text) => String(text || "").toLowerCase().replace(/\s+/g, " ").trim();
+  const keys = new Map();
+  const add = (key, group, weight, strong) => {
+    if (!key || key.length < 2) return;
+    if (!keys.has(key)) keys.set(key, { strong: false, groups: new Map() });
+    const entry = keys.get(key);
+    if (strong) entry.strong = true;
+    const current = entry.groups.get(group) || { score: 0, products: 0 };
+    current.score += weight;
+    current.products += 1;
+    entry.groups.set(group, current);
+  };
+  for (const product of products || []) {
+    const group = String(product?.sales_group || "").trim();
+    const description = norm(product?.description);
+    if (!group || !description) continue;
+    const groupKey = norm(group);
+    const rest = description.startsWith(`${groupKey} `) ? description.slice(groupKey.length + 1) : "";
+    if (rest) add(rest, group, 3, true);
+    add(description, group, 3, true);
+    const words = description.split(" ");
+    for (let index = 1; index < words.length; index += 1) {
+      const ending = words.slice(index).join(" ");
+      if (ending !== rest && ending.length >= 3) add(ending, group, 1, false);
+    }
+  }
+  const names = [];
+  for (const [key, entry] of keys) {
+    const ranked = [...entry.groups.entries()].sort((left, right) => right[1].score - left[1].score || right[1].products - left[1].products || left[0].localeCompare(right[0]));
+    const total = ranked.reduce((sum, [, value]) => sum + value.score, 0);
+    const [bestGroup, best] = ranked[0];
+    if (!entry.strong && best.score / total < 0.6) continue;
+    names.push({ name_key: key, sales_group: bestGroup, products: best.products, other_groups: ranked.slice(1, 4).map(([group]) => group) });
+  }
+  return names;
+}
+
+// A French customer's département by its postcode (Corsica 2A / 2B, the
+// DOM-TOM by three digits).
+function inkoopDepartementOf(postcode, country) {
+  const land = String(country || "").trim().toUpperCase();
+  if (land && !["FR", "F", "FRA", "FRANCE", "FRANKRIJK"].includes(land)) return "";
+  const code = String(postcode || "").replace(/\s+/g, "");
+  if (!/^[0-9]{5}$/.test(code)) return "";
+  if (code.startsWith("20")) return Number(code) < 20200 ? "2A" : "2B";
+  if (code.startsWith("97") || code.startsWith("98")) return code.slice(0, 3);
+  return code.slice(0, 2);
+}
+
+// The month figures worked out again (after an import with dispatches, a new
+// product list, or by hand): one month at a time, in the background; asked
+// again while running, the months wait for the next round.
+const inkoopCustomerJob = { running: false, started_at: "", finished_at: "", months: 0, done: 0, rows: 0, error: "" };
+let inkoopCustomerQueued = new Set();
+async function runInkoopCustomerRebuild(months) {
+  for (const month of months || []) inkoopCustomerQueued.add(month);
+  if (inkoopCustomerJob.running) return;
+  while (inkoopCustomerQueued.size) {
+    const round = [...inkoopCustomerQueued].sort();
+    inkoopCustomerQueued = new Set();
+    Object.assign(inkoopCustomerJob, { running: true, started_at: new Date().toISOString(), finished_at: "", months: round.length, done: 0, rows: 0, error: "" });
+    try {
+      const excluded = inkoopExcludedErpCodes(await readInkoopState());
+      for (const month of round) {
+        inkoopCustomerJob.rows += await rebuildInkoopCustomerMonth(month, excluded);
+        inkoopCustomerJob.done += 1;
+      }
+    } catch (error) {
+      inkoopCustomerJob.error = error instanceof Error ? error.message : String(error);
+      console.error("Klant inzicht rebuild failed:", inkoopCustomerJob.error);
+    } finally {
+      inkoopCustomerJob.running = false;
+      inkoopCustomerJob.finished_at = new Date().toISOString();
+    }
+  }
+}
+function runInkoopCustomerRebuildLater(months) {
+  runInkoopCustomerRebuild(months).catch((error) => console.error("Klant inzicht rebuild failed:", error instanceof Error ? error.message : error));
+}
+async function runInkoopCustomerRebuildAll() {
+  runInkoopCustomerRebuildLater(await getInkoopDispatchMonths());
+}
+
+// A period of months ("YYYY-MM"), the last 12 by default, at most 36.
+function inkoopCustomerMonthRange(url) {
+  const valid = (value) => (/^[0-9]{4}-[0-9]{2}$/.test(value || "") ? value : "");
+  const today = localDateIso().slice(0, 7);
+  const to = valid(url.searchParams.get("to")) || today;
+  const back = (month, count) => {
+    const [year, number] = month.split("-").map(Number);
+    const date = new Date(Date.UTC(year, number - 1 - count, 1));
+    return date.toISOString().slice(0, 7);
+  };
+  let from = valid(url.searchParams.get("from")) || back(to, 11);
+  if (from > to) from = to;
+  if (from < back(to, 35)) from = back(to, 35);
+  return { from, to };
+}
+
+async function inkoopCustomerNaming() {
+  const [state, places, handRows] = await Promise.all([readInkoopState(), getInkoopCustomerPlaces().catch(() => []), getInkoopSalesGroupMap().catch(() => [])]);
+  const placeByCode = new Map(places.map((row) => [String(row.code).toUpperCase(), row]));
+  const handMap = new Map(handRows.map((row) => [row.sales_group, row.main_group]));
+  const customerOf = (code) => {
+    const entry = resolveInkoopCustomer(code, state.customer_map || {}) || {};
+    const place = placeByCode.get(String(code).toUpperCase()) || {};
+    return {
+      code, name: entry.name || "", land: entry.land || place.country || "", gebied: entry.gebied || "", bw: entry.bw || "", is_retour: Boolean(entry.is_retour),
+      known: Boolean(entry.name), city: place.city || "", postcode: place.postcode || "", departement: place.departement || "",
+    };
+  };
+  return { handMap, customerOf };
+}
+
+// The overview of a period: per customer its pieces, value and main-group
+// split; per month the groups (the season); the groups' totals.
+async function buildInkoopCustomerOverview(range) {
+  const [rows, naming] = await Promise.all([getInkoopCustomerMonthRows({ from: `${range.from}-01`, to: `${range.to}-01` }), inkoopCustomerNaming()]);
+  const customers = new Map();
+  const months = new Map();
+  const groups = new Map();
+  let namedPieces = 0;
+  let totalPieces = 0;
+  const bump = (target, key, pieces, value) => {
+    const entry = target[key] || (target[key] = { pieces: 0, value: 0 });
+    entry.pieces += pieces;
+    entry.value += value;
+  };
+  for (const row of rows) {
+    const group = inkoopCustomerMainGroup(row.sales_group, row.t, naming.handMap);
+    const pieces = Number(row.pieces) || 0;
+    const value = Number(row.value) || 0;
+    totalPieces += pieces;
+    if (row.sales_group) namedPieces += pieces;
+    if (!customers.has(row.customer_code)) customers.set(row.customer_code, { ...naming.customerOf(row.customer_code), pieces: 0, value: 0, lots: 0, groups: {}, months: {} });
+    const customer = customers.get(row.customer_code);
+    customer.pieces += pieces;
+    customer.value += value;
+    customer.lots += Number(row.lots) || 0;
+    bump(customer.groups, group, pieces, value);
+    bump(customer.months, row.month, pieces, value);
+    const customerMonth = customer.months[row.month];
+    customerMonth.groups = customerMonth.groups || {};
+    customerMonth.groups[group] = (customerMonth.groups[group] || 0) + pieces;
+    if (!months.has(row.month)) months.set(row.month, { month: row.month, pieces: 0, value: 0, groups: {} });
+    const month = months.get(row.month);
+    month.pieces += pieces;
+    month.value += value;
+    bump(month.groups, group, pieces, value);
+    const total = groups.get(group) || { key: group, pieces: 0, value: 0, customers: new Set() };
+    total.pieces += pieces;
+    total.value += value;
+    total.customers.add(row.customer_code);
+    groups.set(group, total);
+  }
+  const round = (value) => Math.round(value * 100) / 100;
+  return {
+    from: range.from,
+    to: range.to,
+    group_list: INKOOP_CUSTOMER_GROUPS.map(([key, label, vbn]) => ({ key, label, vbn })),
+    groups: [...groups.values()].map((entry) => ({ key: entry.key, pieces: entry.pieces, value: round(entry.value), customers: entry.customers.size })).sort((left, right) => right.pieces - left.pieces),
+    months: [...months.values()].sort((left, right) => left.month.localeCompare(right.month)),
+    customers: [...customers.values()].map((entry) => ({ ...entry, value: round(entry.value) })).sort((left, right) => right.pieces - left.pieces),
+    coverage: { named_pieces: namedPieces, total_pieces: totalPieces },
+    job: inkoopCustomerJob,
+  };
+}
+
+// One customer: per month and main group (pieces, value, price range), its
+// products, and its lots of the period.
+async function buildInkoopCustomerDetail(code, range) {
+  const lastDay = (() => {
+    const [year, month] = range.to.split("-").map(Number);
+    return new Date(Date.UTC(year, month, 0)).toISOString().slice(0, 10);
+  })();
+  const [rows, lots, naming] = await Promise.all([
+    getInkoopCustomerMonthRows({ from: `${range.from}-01`, to: `${range.to}-01`, code }),
+    getInkoopCustomerLots({ code, from: `${range.from}-01`, to: lastDay }),
+    inkoopCustomerNaming(),
+  ]);
+  const cells = new Map();
+  for (const row of rows) {
+    const group = inkoopCustomerMainGroup(row.sales_group, row.t, naming.handMap);
+    const key = `${row.month}|${group}`;
+    const cell = cells.get(key) || { month: row.month, group, pieces: 0, value: 0, lots: 0, min_price: null, max_price: null };
+    cell.pieces += Number(row.pieces) || 0;
+    cell.value += Number(row.value) || 0;
+    cell.lots += Number(row.lots) || 0;
+    if (Number(row.min_price) > 0) cell.min_price = cell.min_price === null ? Number(row.min_price) : Math.min(cell.min_price, Number(row.min_price));
+    if (Number(row.max_price) > 0) cell.max_price = cell.max_price === null ? Number(row.max_price) : Math.max(cell.max_price, Number(row.max_price));
+    cells.set(key, cell);
+  }
+  const products = new Map();
+  const lotRows = lots.map((lot) => {
+    const group = inkoopCustomerMainGroup(lot.sales_group, lot.t, naming.handMap);
+    const value = lot.lot_pieces > 0 ? Math.round((lot.lot_value * lot.pieces / lot.lot_pieces) * 100) / 100 : 0;
+    const key = `${lot.description}|${lot.sales_group}`;
+    const product = products.get(key) || { description: lot.description, sales_group: lot.sales_group, group, pieces: 0, value: 0, lots: 0, last_date: "" };
+    product.pieces += lot.pieces;
+    product.value += value;
+    product.lots += 1;
+    if (lot.date > product.last_date) product.last_date = lot.date;
+    products.set(key, product);
+    return { ...lot, group, value };
+  });
+  return {
+    customer: naming.customerOf(code),
+    from: range.from,
+    to: range.to,
+    group_list: INKOOP_CUSTOMER_GROUPS.map(([key, label, vbn]) => ({ key, label, vbn })),
+    cells: [...cells.values()].map((cell) => ({ ...cell, value: Math.round(cell.value * 100) / 100 })),
+    products: [...products.values()].map((product) => ({ ...product, value: Math.round(product.value * 100) / 100 })).sort((left, right) => right.pieces - left.pieces).slice(0, 60),
+    lots: lotRows.slice(0, 1500),
+    lots_total: lotRows.length,
+  };
+}
+
 function computeInkoopDestinationsSummary(dispatchLots, customerMap) {
   const byCountry = new Map();
   const unresolved = new Map();
@@ -28354,7 +28647,20 @@ async function handleApi(req, res, url) {
       state.supplier_fh_map = { ...state.supplier_fh_map, ...parsed.by_fh };
       state.supplier_bedrijf_map = { ...(state.supplier_bedrijf_map || {}), ...parsed.bedrijf };
       if (body?.klant_file) {
-        const customerEntries = await parseInkoopKlantGegevens(body.klant_file);
+        const parsedCustomers = await parseInkoopKlantGegevens(body.klant_file);
+        // Their place (city, postcode) is kept apart (Klant inzicht's map):
+        // the customer map itself stays as it was, so no day is compared again.
+        const places = [];
+        const customerEntries = {};
+        for (const [code, entry] of Object.entries(parsedCustomers)) {
+          const { place, ...customer } = entry || {};
+          customerEntries[code] = customer;
+          if (place && (place.city || place.postcode || place.address)) {
+            places.push({ code: normalizeInkoopKey(code), city: place.city, postcode: place.postcode, address: place.address, country: customer.land || "",
+              departement: inkoopDepartementOf(place.postcode, customer.land) });
+          }
+        }
+        if (places.length) await saveInkoopCustomerPlaces(places).catch((error) => console.error("Customer places failed:", error instanceof Error ? error.message : error));
         state.customer_map = { ...state.customer_map, ...customerEntries };
       }
       const bwEntries = await parseInkoopSupplierBetaalwijze(body);
@@ -28579,6 +28885,121 @@ async function handleApi(req, res, url) {
     state.facturation_groups = state.facturation_groups.filter((item) => item.group_name.toLowerCase() !== groupName);
     await writeInkoopState(state);
     sendJson(res, 200, { facturation_groups: state.facturation_groups });
+    return;
+  }
+
+  // Klant inzicht: the overview of a period of months.
+  if (url.pathname === "/api/inkoop/customers/overview" && req.method === "GET") {
+    if (!requirePermission(res, requestUser, PERMISSIONS.INKOOP_VIEW)) {
+      return;
+    }
+    try {
+      sendJson(res, 200, await buildInkoopCustomerOverview(inkoopCustomerMonthRange(url)));
+    } catch (error) {
+      sendJson(res, 500, { error: error instanceof Error ? error.message : String(error) });
+    }
+    return;
+  }
+
+  // Klant inzicht: one customer.
+  if (url.pathname === "/api/inkoop/customers/detail" && req.method === "GET") {
+    if (!requirePermission(res, requestUser, PERMISSIONS.INKOOP_VIEW)) {
+      return;
+    }
+    const code = normalizeUkdocsText(url.searchParams.get("code")).toUpperCase();
+    if (!code) {
+      sendJson(res, 400, { error: "Which customer?" });
+      return;
+    }
+    try {
+      sendJson(res, 200, await buildInkoopCustomerDetail(code, inkoopCustomerMonthRange(url)));
+    } catch (error) {
+      sendJson(res, 500, { error: error instanceof Error ? error.message : String(error) });
+    }
+    return;
+  }
+
+  // Klant inzicht: what is loaded (products, names, places) and the rebuild.
+  if (url.pathname === "/api/inkoop/customers/status" && req.method === "GET") {
+    if (!requirePermission(res, requestUser, PERMISSIONS.INKOOP_VIEW)) {
+      return;
+    }
+    const [products, places, months] = await Promise.all([getInkoopProductCount().catch(() => null), getInkoopCustomerPlaces().catch(() => []), getInkoopDispatchMonths().catch(() => [])]);
+    sendJson(res, 200, { products, places: places.length, places_fr: places.filter((row) => row.departement).length, dispatch_months: months, job: inkoopCustomerJob });
+    return;
+  }
+
+  if (url.pathname === "/api/inkoop/customers/rebuild" && req.method === "POST") {
+    if (!requirePermission(res, requestUser, PERMISSIONS.INKOOP_VIEW)) {
+      return;
+    }
+    await runInkoopCustomerRebuildAll();
+    sendJson(res, 200, { job: inkoopCustomerJob });
+    return;
+  }
+
+  // Klant inzicht: the product export uploaded (merged), the lot names worked
+  // out again and every month after it.
+  if (url.pathname === "/api/inkoop/customers/products" && req.method === "POST") {
+    if (!requirePermission(res, requestUser, PERMISSIONS.INKOOP_VIEW)) {
+      return;
+    }
+    const body = await readRequestJson(req, 40 * 1024 * 1024);
+    try {
+      const products = await parseInkoopProductExport(body?.file);
+      if (!products.length) throw new Error("No products found in this file");
+      const saved = await saveInkoopProducts(products);
+      const names = buildInkoopProductNames(await getInkoopProducts());
+      await replaceInkoopProductNames(names);
+      await runInkoopCustomerRebuildAll();
+      sendJson(res, 200, { products: products.length, saved, names: names.length, totals: await getInkoopProductCount(), job: inkoopCustomerJob });
+    } catch (error) {
+      sendJson(res, 400, { error: error instanceof Error ? error.message : String(error) });
+    }
+    return;
+  }
+
+  // Klant inzicht: the sales groups and their main group (suggested or set).
+  if (url.pathname === "/api/inkoop/customers/groups" && req.method === "GET") {
+    if (!requirePermission(res, requestUser, PERMISSIONS.INKOOP_VIEW)) {
+      return;
+    }
+    const [products, totals, handRows] = await Promise.all([getInkoopProducts().catch(() => []), getInkoopSalesGroupTotals().catch(() => []), getInkoopSalesGroupMap().catch(() => [])]);
+    const handMap = new Map(handRows.map((row) => [row.sales_group, row.main_group]));
+    const groups = new Map();
+    const entryOf = (name) => {
+      if (!groups.has(name)) groups.set(name, { sales_group: name, products: 0, pieces: 0, by_t: {} });
+      return groups.get(name);
+    };
+    for (const product of products) if (product.sales_group) entryOf(product.sales_group).products += 1;
+    for (const row of totals) {
+      if (!row.sales_group) continue;
+      const entry = entryOf(row.sales_group);
+      entry.pieces += Number(row.pieces) || 0;
+      entry.by_t[row.t || "?"] = (entry.by_t[row.t || "?"] || 0) + (Number(row.pieces) || 0);
+    }
+    const list = [...groups.values()].map((entry) => {
+      const mainT = Object.entries(entry.by_t).sort((left, right) => right[1] - left[1])[0]?.[0] || "";
+      return { ...entry, t: mainT, suggested: inkoopCustomerMainGroup(entry.sales_group, mainT, null), main_group: handMap.get(entry.sales_group) || "", set_by: handRows.find((row) => row.sales_group === entry.sales_group)?.updated_by || "" };
+    }).sort((left, right) => right.pieces - left.pieces || left.sales_group.localeCompare(right.sales_group));
+    const without = totals.filter((row) => !row.sales_group).reduce((sum, row) => sum + (Number(row.pieces) || 0), 0);
+    sendJson(res, 200, { group_list: INKOOP_CUSTOMER_GROUPS.map(([key, label, vbn]) => ({ key, label, vbn })), groups: list, pieces_without_group: without });
+    return;
+  }
+
+  if (url.pathname === "/api/inkoop/customers/groups" && req.method === "POST") {
+    if (!requirePermission(res, requestUser, PERMISSIONS.INKOOP_VIEW)) {
+      return;
+    }
+    const body = await readRequestJson(req);
+    const salesGroup = normalizeUkdocsText(body?.sales_group);
+    const mainGroup = normalizeUkdocsText(body?.main_group);
+    if (!salesGroup || (mainGroup && !INKOOP_CUSTOMER_GROUP_KEYS.has(mainGroup))) {
+      sendJson(res, 400, { error: "Choose a sales group and one of the main groups" });
+      return;
+    }
+    await setInkoopSalesGroupMain(salesGroup, mainGroup, requestUser.username);
+    sendJson(res, 200, { ok: true });
     return;
   }
 

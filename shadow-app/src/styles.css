@@ -4284,3 +4284,38 @@ table.data-table.balance-table.ik-table.ik-inv-invoices td:nth-child(n+7), table
 /* In the side bar: the grower list makes room, so the link info stays on screen */
 .ik-tt-rail:has(.ik-link-panel.side) .ik-grower-list { max-height: 22vh; }
 .ik-link-panel.side { max-height: 42vh; }
+
+/* ---- Klant inzicht ---- */
+.ik-cust { display: grid; gap: 12px; }
+.ik-cust-bar-row { flex-wrap: wrap; gap: 10px 16px; align-items: center; }
+.ik-cust-check { display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; }
+.ik-cust-check input { width: 16px; height: 16px; margin: 0; }
+.ik-cust-groups { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
+.ik-cust-dot { display: inline-block; width: 10px; height: 10px; border-radius: 3px; margin-right: 6px; vertical-align: -1px; }
+.ik-cust-bar { display: flex; gap: 2px; width: 100%; min-width: 80px; border-radius: 4px; overflow: hidden; background: var(--ik-track); }
+.ik-cust-bar > span { display: block; height: 100%; }
+.ik-cust-grid { display: grid; grid-template-columns: minmax(0, 1.2fr) minmax(0, 1fr); gap: 12px; align-items: start; }
+@media (max-width: 1100px) { .ik-cust-grid { grid-template-columns: minmax(0, 1fr); } }
+.ik-cust-months { display: grid; gap: 4px; margin: 8px 0; }
+.ik-cust-month { display: grid; grid-template-columns: 5em minmax(0, 1fr) 7em; gap: 10px; align-items: center; font-size: 0.85rem; }
+.ik-cust-month-track { display: block; }
+.ik-cust-month-value { text-align: right; font-variant-numeric: tabular-nums; }
+.ik-cust-map { display: grid; gap: 6px; }
+.ik-cust-map svg { width: 100%; max-height: 520px; }
+.ik-cust-dep { stroke: var(--ik-surface); stroke-width: 0.8; cursor: pointer; }
+.ik-cust-dep:hover { stroke: var(--ik-text, #17202a); stroke-width: 1.4; }
+.ik-cust-dep.on { stroke: var(--ik-accent); stroke-width: 2.2; }
+.ik-cust-map-info { display: flex; flex-wrap: wrap; gap: 4px 12px; min-height: 1.5em; font-size: 0.88rem; }
+.ik-cust-map-scale { display: flex; align-items: center; gap: 8px; font-size: 0.78rem; }
+.ik-cust-map-scale i { display: block; width: 140px; height: 8px; border-radius: 4px; }
+.ik-cust-table td.num, .ik-cust-table th.num, .ik-cust-heat td.num, .ik-cust-heat th.num { text-align: right; font-variant-numeric: tabular-nums; }
+.ik-cust-groups-cell { min-width: 160px; }
+.ik-cust-flag { color: var(--ik-bad); }
+.ik-cust-drawer { width: min(980px, 100%); }
+.ik-cust-heat td, .ik-cust-heat th { padding: 4px 6px; font-size: 0.8rem; white-space: nowrap; }
+.ik-cust table.data-table th, .ik-cust table.data-table td, .ik-cust-drawer table.data-table th, .ik-cust-drawer table.data-table td,
+.ik-cust-settings table.data-table th, .ik-cust-settings table.data-table td { text-align: left; }
+.ik-cust table.data-table .num, .ik-cust-drawer table.data-table .num, .ik-cust-settings table.data-table .num { text-align: right; }
+.ik-cust select, .ik-cust-drawer select, .ik-cust-settings select { width: auto; }
+.ik-cust-drawer .ik-card-head { display: flex; align-items: center; gap: 12px; }
+.ik-cust-scroll { overflow-x: auto; min-height: min-content; }

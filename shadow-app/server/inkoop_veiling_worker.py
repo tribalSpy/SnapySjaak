@@ -929,6 +929,64 @@ def find_header_row_by_column(all_rows, column_name):
 # carrying it is literally named "retour bloemen/planten ...".
 KLANT_RETOUR_TGRP = "119"
 
+# The place columns a klant gegevens export can carry (any of the names).
+KLANT_PLACE_COLUMNS = {
+    "city": ["plaats", "woonplaats", "stad", "city", "ville"],
+    "postcode": ["postcode", "pc", "postc", "post", "zip", "code_postal", "cp"],
+    "address": ["adres", "straat", "address", "adresse"],
+}
+
+
+# Our own product list ("table_export_data_...xlsx"): each product with its
+# sales group (Rose, Chr t, Phal ...) and its last sale. The description is
+# the sales group and the Connect product name ("Chr g Topspin" -- the lot
+# "Topspin"), which is how a Connect lot finds its sales group.
+def parse_product_export(input_path: Path):
+    is_csv = str(input_path).lower().endswith(".csv")
+    all_rows = load_erp_csv_rows(input_path) if is_csv else load_erp_xlsx_rows(input_path)
+    headers, data_rows = find_header_row_by_column(all_rows, "productId")
+    if headers is None:
+        return {"products": [], "error": "Could not find a header row containing productId in this file"}
+    idx = {name: i for i, name in enumerate(headers)}
+
+    def raw(row, key):
+        col = idx.get(key)
+        return row[col] if col is not None and col < len(row) else None
+
+    def get(row, key):
+        return clean_text(raw(row, key))
+
+    def number(row, key):
+        value = raw(row, key)
+        if isinstance(value, (int, float)):
+            return value
+        text = get(row, key).replace(",", ".")
+        try:
+            return float(text) if text else None
+        except ValueError:
+            return None
+
+    products = []
+    for row in data_rows:
+        product_id = get(row, "productid")
+        if not product_id:
+            continue
+        last_sale = raw(row, "datelastsale")
+        products.append({
+            "product_id": product_id,
+            "sales_group_id": get(row, "salesgroupid"),
+            "sales_group": get(row, "salesgroup"),
+            "description": get(row, "description"),
+            "height": number(row, "height"),
+            "pot_size": number(row, "potsize"),
+            "ready_for_sales": get(row, "readyforsales"),
+            "on_list": get(row, "onlist"),
+            "last_sale_date": normalize_erp_date(last_sale)[:10] if last_sale else "",
+            "last_client": get(row, "clientlastsale"),
+            "last_price_cents": number(row, "pricelastsale"),
+        })
+    return {"products": products}
+
 
 def parse_klant_gegevens(input_path: Path):
     is_csv = str(input_path).lower().endswith(".csv")
@@ -954,7 +1012,14 @@ def parse_klant_gegevens(input_path: Path):
             continue
         tgrp_b = get(row, "tgrp_b")
         tgrp_p = get(row, "tgrp_p")
+        place = {
+            key: next((get(row, name) for name in names if get(row, name)), "")
+            for key, names in KLANT_PLACE_COLUMNS.items()
+        }
         by_code[code] = {
+            # Where the customer is (Klant inzicht's map), when the export
+            # has those columns -- kept apart from the customer itself.
+            **({"place": place} if any(place.values()) else {}),
             "name": get(row, "naam"),
             "land": get(row, "lan"),
             "gebied": get(row, "gebi"),
@@ -1449,6 +1514,9 @@ def main():
     dispatch_parser = subparsers.add_parser("parse-dispatch-dump")
     dispatch_parser.add_argument("--input", required=True)
 
+    product_parser = subparsers.add_parser("parse-product-export")
+    product_parser.add_argument("--input", required=True)
+
     lot_table_parser = subparsers.add_parser("parse-lot-table")
     lot_table_parser.add_argument("--input", required=True)
 
@@ -1474,6 +1542,8 @@ def main():
         print(json.dumps(parse_klant_gegevens(Path(args.input))))
     elif args.command == "parse-dispatch-dump":
         print(json.dumps(parse_dispatch_dump(Path(args.input))))
+    elif args.command == "parse-product-export":
+        print(json.dumps(parse_product_export(Path(args.input))))
     elif args.command == "parse-lot-table":
         print(json.dumps(parse_lot_table(Path(args.input))))
     elif args.command == "parse-ai2-pdf":
