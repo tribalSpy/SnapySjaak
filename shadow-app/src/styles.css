@@ -4385,53 +4385,30 @@ table.data-table.balance-table.ik-table.ik-inv-invoices td:nth-child(n+7), table
 }
 .mb-table tbody tr { height: calc((100vh - 46px - 44px) / 4); }
 .mb-table tbody td {
-  font-size: clamp(15px, 1.6vw, 32px);
-  font-weight: 600;
-  padding: 6px 10px;
+  font-size: 16px;
+  font-weight: 800;
+  padding: 4px 8px;
   border-bottom: 2px solid #000000;
   border-right: 2px solid #000000;
   vertical-align: middle;
-  white-space: nowrap;
   overflow: hidden;
-  text-overflow: ellipsis;
-  line-height: 1.1;
+  line-height: 1.05;
 }
 .mb-table tbody tr.mb-filler td { border-right: none; }
 .mb-table .mb-center, .mb-table td.mb-dc { text-align: center; }
-.mb-table td.mb-xl { font-size: clamp(18px, 2.35vw, 46px); font-weight: 700; line-height: 1; }
-.mb-table td.mb-lg { font-size: clamp(16px, 2.05vw, 40px); font-weight: 700; }
-.mb-table td.mb-setting { white-space: normal; line-height: 1.1; }
-.mb-table td.mb-sm { font-size: clamp(17px, 1.2vw, 25px); font-weight: 500; white-space: normal; line-height: 1.15; }
-.mb-table td.mb-loc { padding-left: 20px; padding-right: 6px; }
-/* Sized by the screen width only (a TV's browser is often 1280 or less
-   wide): "A1 1" / "bA1 1" always fit their column, never cut off. */
-.mb-table td.mb-loc.mb-xl { font-size: clamp(24px, 3.9vw, 90px); }
-.mb-table td.mb-loc.mb-lg { font-size: clamp(22px, 3.3vw, 76px); }
-.mb-table td.mb-loc.mb-md { font-size: clamp(20px, 2.8vw, 64px); font-weight: 700; }
-.mb-table td.mb-cust small {
-  display: block;
-  margin-top: 4px;
-  font-size: clamp(14px, 1vw, 20px);
-  font-weight: 500;
-  color: #374151;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-.mb-table td.mb-num { font-size: clamp(16px, 2vw, 42px); padding-left: 6px; padding-right: 6px; }
-.mb-table td.mb-dc { font-size: clamp(22px, 2.7vw, 54px); font-weight: 700; padding-left: 4px; padding-right: 4px; }
+/* Each text is sized by mbFitTexts() to fill its cell (any TV). */
+.mb-fit { display: block; width: 100%; overflow: hidden; font-weight: 800; line-height: 1.15; color: #0b0f19; }
+.mb-nowrap { white-space: nowrap; text-overflow: ellipsis; }
+.mb-table td.mb-loc { padding-left: 20px; }
+.mb-table td.mb-loc .mb-fit { font-weight: 900; }
+.mb-cust-name { font-weight: 600; color: #374151; margin-top: 2px; }
+.mb-table td.mb-dc .mb-fit { text-align: center; }
+.mb-water { color: #1f5fbf; margin-top: 4px; }
 .mb-pack-code {
   display: inline-block;
   color: #ffffff;
-  border-radius: 8px;
-  padding: 2px 14px;
-  font-size: clamp(24px, 3vw, 62px);
-  font-weight: 800;
+  border-radius: 0.14em;
+  padding: 0.02em 0.22em;
+  font-weight: 900;
   line-height: 1.1;
-}
-.mb-water {
-  display: block;
-  margin-top: 4px;
-  font-size: clamp(16px, 1.15vw, 24px);
-  color: #1f5fbf;
-  font-weight: 700;
 }

@@ -1,4 +1,4 @@
-import React, { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import React, { Fragment, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import JSZip from "jszip";
 import { FRANCE_DEPARTEMENTS, FRANCE_REGIONS, FRANCE_VIEWBOX } from "./france-departements.js";
@@ -585,12 +585,57 @@ function mbNumber(value, digits = 2) {
   return Number(value).toLocaleString("nl-NL", { minimumFractionDigits: 0, maximumFractionDigits: digits });
 }
 
+// Grows every ".mb-fit" text in `table` until it just fills its cell: the
+// cell's width, and data-h (a share of the row's height) high. Texts marked
+// data-uniform get the smallest size of their column on the page, so codes
+// and numbers in one column look the same. Any screen, any resolution.
+function mbFitTexts(table) {
+  if (!table) return;
+  const items = [...table.querySelectorAll(".mb-fit")];
+  if (!items.length) return;
+  for (const el of items) el.style.fontSize = "10px";
+  const row = table.querySelector("tbody tr");
+  const rowHeight = row ? row.getBoundingClientRect().height : 100;
+  const measures = items.map((el) => {
+    // The cell's inner width, less a small margin: bold glyphs a hair over
+    // the edge would turn "0,85" into "0,...".
+    const td = el.closest("td");
+    const style = window.getComputedStyle(td);
+    const width = (td.clientWidth - parseFloat(style.paddingLeft) - parseFloat(style.paddingRight)) * 0.95;
+    return { el, width, maxHeight: rowHeight * (Number(el.dataset.h) || 0.4), key: el.dataset.fit, uniform: el.dataset.uniform === "1", min: Number(el.dataset.min) || 10 };
+  });
+  const sizes = measures.map((item) => {
+    // While measuring, the text box shrinks to its text (at most the cell's
+    // width): too wide shows as scrollWidth > clientWidth.
+    Object.assign(item.el.style, { display: "inline-block", width: "auto", maxWidth: `${item.width}px` });
+    // data-min: never smaller (a long name is cut with "..." instead).
+    let low = item.min;
+    let high = Math.max(item.min + 2, item.maxHeight * 1.1);
+    for (let step = 0; step < 14; step += 1) {
+      const mid = (low + high) / 2;
+      item.el.style.fontSize = `${mid}px`;
+      if (item.el.scrollWidth <= item.el.clientWidth && item.el.getBoundingClientRect().height <= item.maxHeight) low = mid;
+      else high = mid;
+    }
+    Object.assign(item.el.style, { display: "", width: "", maxWidth: "", fontSize: "10px" });
+    return low;
+  });
+  const columnMin = {};
+  measures.forEach((item, index) => {
+    if (item.uniform) columnMin[item.key] = Math.min(columnMin[item.key] ?? Infinity, sizes[index]);
+  });
+  measures.forEach((item, index) => {
+    item.el.style.fontSize = `${Math.floor(item.uniform ? columnMin[item.key] : sizes[index])}px`;
+  });
+}
+
 function MethodBScreen() {
   const params = new URLSearchParams(window.location.search);
   const [hall, setHall] = useState(() => String(params.get("hal") || "").trim().toUpperCase());
   const [day, setDay] = useState(null);
   const [error, setError] = useState("");
   const [pageIndex, setPageIndex] = useState(0);
+  const tableRef = useRef(null);
 
   useEffect(() => {
     document.title = "Methode B screen";
@@ -655,6 +700,14 @@ function MethodBScreen() {
 
   const pageRows = rows.slice(page * MB_ROWS_PER_PAGE, (page + 1) * MB_ROWS_PER_PAGE);
   const fillers = Array.from({ length: Math.max(0, MB_ROWS_PER_PAGE - pageRows.length) });
+  // Fit the texts after every page / data change and on a resize.
+  const fitKey = `${hall}|${page}|${pageRows.map((row) => `${row.loc}:${row.klant}:${row.volume}:${row.dc}:${row.setting}:${row.packingcode}:${row.maincode}:${row.remark}`).join("|")}`;
+  useLayoutEffect(() => {
+    mbFitTexts(tableRef.current);
+    const onResize = () => mbFitTexts(tableRef.current);
+    window.addEventListener("resize", onResize);
+    return () => window.removeEventListener("resize", onResize);
+  }, [fitKey]);
   const showLoc = (loc) => (hall ? loc.replace(new RegExp(`^${hall}(?=[A-Za-z0-9])`, "i"), "") : loc);
   const dayLabel = day?.date ? fustOverviewDate(day.date) : "";
 
@@ -680,10 +733,10 @@ function MethodBScreen() {
       {!day && error && <div className="mb-empty">{error}</div>}
       {day && !rows.length && <div className="mb-empty">No occupied locations{hall ? ` in hall ${hall}` : ""}.</div>}
       {day && rows.length > 0 && (
-        <table className="mb-table">
+        <table className="mb-table" ref={tableRef}>
           <colgroup>
-            <col style={{ width: "15%" }} /><col style={{ width: "15%" }} /><col style={{ width: "9%" }} /><col style={{ width: "6%" }} />
-            <col style={{ width: "12%" }} /><col style={{ width: "14%" }} /><col style={{ width: "12%" }} /><col style={{ width: "17%" }} />
+            <col style={{ width: "16%" }} /><col style={{ width: "17%" }} /><col style={{ width: "10%" }} /><col style={{ width: "6%" }} />
+            <col style={{ width: "12%" }} /><col style={{ width: "13%" }} /><col style={{ width: "12%" }} /><col style={{ width: "14%" }} />
           </colgroup>
           <thead>
             <tr><th>Locatie</th><th>Cust</th><th>Volume</th><th className="mb-center">DC</th><th>Setting</th><th>Packing</th><th>Main code</th><th>Remark</th></tr>
@@ -695,20 +748,24 @@ function MethodBScreen() {
               const more = row.klanten.filter((code) => code !== row.klant).length;
               return (
                 <tr key={row.loc} style={color ? { background: color[0], boxShadow: `inset 14px 0 0 ${color[1]}` } : undefined}>
-                  <td className={`mb-loc mb-${mbCellSize(showLoc(row.loc))}`}>{showLoc(row.loc)}</td>
-                  <td className={`mb-cust mb-${mbCellSize(row.klant)}`}>
-                    {row.klant}
-                    <small>{[row.naam, row.country ? `(${row.country})` : "", more ? `+${more} code${more === 1 ? "" : "s"}` : ""].filter(Boolean).join(" ")}</small>
+                  <td className="mb-loc"><span className="mb-fit mb-nowrap" data-fit="loc" data-h="0.72" data-uniform="1">{showLoc(row.loc)}</span></td>
+                  <td className="mb-cust">
+                    <span className="mb-fit mb-nowrap" data-fit="cust" data-h="0.5" data-uniform="1">{row.klant}</span>
+                    <span className="mb-fit mb-nowrap mb-cust-name" data-fit="name" data-h="0.18" data-min="16">{[row.naam, row.country ? `(${row.country})` : "", more ? `+${more} code${more === 1 ? "" : "s"}` : ""].filter(Boolean).join(" ")}</span>
                   </td>
-                  <td className="mb-num">{mbNumber(row.volume)}</td>
-                  <td className="mb-dc">{row.dc ?? ""}</td>
-                  <td className={`mb-setting mb-${mbCellSize(row.setting)}`}>{row.setting}</td>
+                  <td className="mb-num"><span className="mb-fit mb-nowrap" data-fit="volume" data-h="0.5" data-uniform="1">{mbNumber(row.volume)}</span></td>
+                  <td className="mb-dc"><span className="mb-fit mb-nowrap" data-fit="dc" data-h="0.68" data-uniform="1">{row.dc ?? ""}</span></td>
+                  <td className="mb-setting"><span className="mb-fit" data-fit="setting" data-h="0.62">{row.setting}</span></td>
                   <td className="mb-pack">
-                    {row.packingcode && <span className="mb-pack-code" style={{ background: MB_PACKING_COLORS[row.packingcode.toUpperCase()] || "#374151" }}>{row.packingcode}</span>}
-                    {water && <span className="mb-water">💧{water}</span>}
+                    {row.packingcode && (
+                      <span className="mb-fit mb-nowrap" data-fit="pack" data-h="0.56" data-uniform="1">
+                        <span className="mb-pack-code" style={{ background: MB_PACKING_COLORS[row.packingcode.toUpperCase()] || "#374151" }}>{row.packingcode}</span>
+                      </span>
+                    )}
+                    {water && <span className="mb-fit mb-nowrap mb-water" data-fit="water" data-h="0.2" data-uniform="1">💧{water}</span>}
                   </td>
-                  <td className={`mb-main mb-${mbCellSize(row.maincode)}`}>{row.maincode}</td>
-                  <td className="mb-sm">{row.remark}</td>
+                  <td className="mb-main"><span className="mb-fit mb-nowrap" data-fit="main" data-h="0.48" data-uniform="1">{row.maincode}</span></td>
+                  <td className="mb-remark"><span className="mb-fit" data-fit="remark" data-h="0.62">{row.remark}</span></td>
                 </tr>
               );
             })}
