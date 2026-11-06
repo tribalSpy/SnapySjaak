@@ -22798,7 +22798,9 @@ async function handleApi(req, res, url) {
   if (url.pathname === "/api/public/methode-b" && req.method === "GET") {
     try {
       const wanted = String(url.searchParams.get("date") || "").slice(0, 10);
-      sendJson(res, 200, await loadMethodBScreenDay(/^\d{4}-\d{2}-\d{2}$/.test(wanted) ? wanted : ""));
+      // version: the deployed commit -- the screen reloads itself when it
+      // changes (a TV is never refreshed by hand).
+      sendJson(res, 200, { ...(await loadMethodBScreenDay(/^\d{4}-\d{2}-\d{2}$/.test(wanted) ? wanted : "")), version: appVersion });
     } catch (error) {
       sendJson(res, 502, { error: error instanceof Error ? error.message : String(error) });
     }
@@ -30662,7 +30664,11 @@ async function serveStatic(req, res, url) {
 
   const fallbackPath = path.join(staticRoot, "index.html");
   const filePath = existsSync(resolvedPath) ? resolvedPath : fallbackPath;
-  res.writeHead(200, { "content-type": guessMimeType(filePath) });
+  // The page itself is always asked for again (after a deploy it names the
+  // new script files); those files have a hash in their name and cache.
+  const headers = { "content-type": guessMimeType(filePath) };
+  if (/\.html?$/i.test(filePath)) headers["cache-control"] = "no-cache";
+  res.writeHead(200, headers);
   createReadStream(filePath).pipe(res);
 }
 

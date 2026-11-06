@@ -641,12 +641,21 @@ function MethodBScreen() {
     document.title = "Methode B screen";
     let stopped = false;
     let timer = null;
+    let loadedVersion = "";
     async function load() {
       try {
         const wantedDate = String(params.get("date") || "").slice(0, 10);
         const response = await fetch(`/api/public/methode-b${wantedDate ? `?date=${encodeURIComponent(wantedDate)}` : ""}`, { headers: { Accept: "application/json" } });
         const payload = await response.json().catch(() => ({}));
         if (!response.ok) throw new Error(payload?.error || `HTTP ${response.status}`);
+        // A new deploy: load the new app (the TV is never refreshed by hand).
+        if (payload.version && payload.version !== "unknown") {
+          if (loadedVersion && payload.version !== loadedVersion) {
+            window.location.reload();
+            return;
+          }
+          loadedVersion = payload.version;
+        }
         if (!stopped) {
           setDay(payload);
           setError(payload.stale ? payload.error || "The Halindeling app can't be reached" : "");
