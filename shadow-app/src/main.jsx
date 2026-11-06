@@ -25673,8 +25673,6 @@ function InkoopCustomersTab() {
   const [country, setCountry] = useState("");
   const [withRetour, setWithRetour] = useState(false);
   const [group, setGroup] = useState("");
-  const [place, setPlace] = useState("");
-  const [mapMode, setMapMode] = useState("departement");
   const [search, setSearch] = useState("");
   const [sort, setSort] = useState({ key: "pieces", dir: -1 });
   const [openCode, setOpenCode] = useState("");
@@ -25691,20 +25689,40 @@ function InkoopCustomersTab() {
   const labelOf = ikGroupLabelOf(data?.group_list);
   const months = ikMonthsBetween(range.from, range.to);
   const countries = [...new Set((data?.customers || []).map((customer) => customer.land).filter(Boolean))].sort();
-  const placeOf = (customer) => (mapMode === "region" ? IK_DEPARTEMENT_REGION[customer.departement] || "" : customer.departement);
-  // The customers shown: country, retour, place (map), search; with a group
-  // chosen, their figures are that group's.
-  const base = (data?.customers || []).filter((customer) => (withRetour || !customer.is_retour) && (!country || customer.land === country));
+  // The customers shown: retour, search, country; with a group chosen,
+  // their figures are that group's. (The France map is off for now -- no
+  // postcodes in the klant gegevens export; IkFranceMap stays for later.)
   const words = search.toLowerCase().split(/\s+/).filter(Boolean);
-  const measured = base.map((customer) => {
-    const own = group ? customer.groups[group] || { pieces: 0, value: 0 } : { pieces: customer.pieces, value: customer.value };
-    return { ...customer, shown_pieces: own.pieces, shown_value: own.value };
-  }).filter((customer) => customer.shown_pieces > 0);
-  const shownCustomers = measured
-    .filter((customer) => !place || placeOf(customer) === place)
-    .filter((customer) => words.every((word) => `${customer.code} ${customer.name} ${customer.city} ${customer.postcode} ${customer.gebied}`.toLowerCase().includes(word)));
+  const measuredAll = (data?.customers || [])
+    .filter((customer) => withRetour || !customer.is_retour)
+    .map((customer) => {
+      const own = group ? customer.groups[group] || { pieces: 0, value: 0 } : { pieces: customer.pieces, value: customer.value };
+      return { ...customer, shown_pieces: own.pieces, shown_value: own.value };
+    })
+    .filter((customer) => customer.shown_pieces > 0)
+    .filter((customer) => words.every((word) => `${customer.code} ${customer.name} ${customer.city} ${customer.land} ${customer.gebied}`.toLowerCase().includes(word)));
+  const shownCustomers = measuredAll.filter((customer) => !country || (customer.land || "?") === country);
+  // Per country (before the country pick, so every country stays listed).
+  const byCountry = new Map();
+  for (const customer of measuredAll) {
+    const land = customer.land || "?";
+    const entry = byCountry.get(land) || { land, pieces: 0, value: 0, customers: 0, groups: {} };
+    entry.pieces += customer.shown_pieces;
+    entry.value += customer.shown_value;
+    entry.customers += 1;
+    for (const [key, value] of Object.entries(customer.groups)) {
+      if (group && key !== group) continue;
+      const target = entry.groups[key] || (entry.groups[key] = { pieces: 0, value: 0 });
+      target.pieces += value.pieces;
+      target.value += value.value;
+    }
+    byCountry.set(land, entry);
+  }
+  const countryRows = [...byCountry.values()].sort((left, right) => right.pieces - left.pieces);
+  const countryTotal = countryRows.reduce((sum, entry) => sum + entry.pieces, 0);
+  const countryMax = Math.max(1, ...countryRows.map((entry) => entry.pieces));
   const sortValue = (customer) => ({
-    name: (customer.name || customer.code).toLowerCase(), place: `${customer.departement || "zz"} ${customer.city}`.toLowerCase(),
+    name: (customer.name || customer.code).toLowerCase(), place: `${customer.land || "zz"} ${customer.city}`.toLowerCase(),
     pieces: customer.shown_pieces, value: customer.shown_value, price: customer.shown_pieces ? customer.shown_value / customer.shown_pieces : 0,
   })[sort.key];
   const sorted = [...shownCustomers].sort((left, right) => {
@@ -25714,19 +25732,7 @@ function InkoopCustomersTab() {
   });
   const totalPieces = shownCustomers.reduce((sum, customer) => sum + customer.shown_pieces, 0);
   const totalValue = shownCustomers.reduce((sum, customer) => sum + customer.shown_value, 0);
-  // Per département: pieces, customers, groups (of the customers before the
-  // map's own pick).
-  const byDepartement = new Map();
-  for (const customer of measured) {
-    if (!customer.departement) continue;
-    const entry = byDepartement.get(customer.departement) || { pieces: 0, customers: 0, groups: {} };
-    entry.pieces += customer.shown_pieces;
-    entry.customers += 1;
-    for (const [key, value] of Object.entries(customer.groups)) if (!group || key === group) entry.groups[key] = (entry.groups[key] || 0) + value.pieces;
-    byDepartement.set(customer.departement, entry);
-  }
-  const withoutPlace = measured.filter((customer) => !customer.departement).length;
-  // The groups over the customers shown (country / retour / place / search).
+  // The groups over the customers shown (country / retour / search).
   const groupTotals = {};
   for (const customer of shownCustomers) for (const [key, value] of Object.entries(customer.groups)) {
     const entry = groupTotals[key] || (groupTotals[key] = { pieces: 0, value: 0 });
@@ -25774,10 +25780,10 @@ function InkoopCustomersTab() {
           <div className="ik-filter-group">
             <select value={country} onChange={(event) => setCountry(event.target.value)} aria-label="Country">
               <option value="">All countries</option>
-              {countries.map((land) => <option key={land} value={land}>{land}</option>)}
+              {[...new Set([...countries, ...(country ? [country] : [])])].map((land) => <option key={land} value={land}>{land === "?" ? "? (unknown)" : land}</option>)}
             </select>
             <label className="ik-cust-check"><input type="checkbox" checked={withRetour} onChange={(event) => setWithRetour(event.target.checked)} /> with retour customers</label>
-            <input className="ik-side-search" value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Customer, city, postcode…" />
+            <input className="ik-side-search" value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Customer, city, country…" />
           </div>
           <span className="ik-info" title={"Every dispatch of the Connect export (\"Dispatched to\") counted for its customer, on the lot's date. The group: the lot's product name in our product list (Settings › Klant inzicht data: \"Chr g Topspin\" is the lot \"Topspin\", sales group Chr g), its sales group in one of the main groups (VBN 1 04 chrysanthemums, 1 07 greenery ...); without a sales group, by Connect's T (B flowers, P plants, A accessoires).\n\nValue and € / pc: what we paid for those pieces (the lot's price) -- the sales price is not in the data yet."}>ⓘ</span>
         </div>
@@ -25785,7 +25791,7 @@ function InkoopCustomersTab() {
         {loading && !data ? <div className="notice">Loading…</div> : (
           <div style={loading ? { opacity: 0.4 } : undefined} aria-busy={loading}>
             <div className="ik-kpis">
-              <div className="ik-kpi"><span className="ik-kpi-label">Customers</span><strong>{shownCustomers.length}</strong><small>{place ? `in ${place}` : `${months.length} month(s)`}</small></div>
+              <div className="ik-kpi"><span className="ik-kpi-label">Customers</span><strong>{shownCustomers.length}</strong><small>{country ? `in ${country}` : `${months.length} month(s)`}</small></div>
               <div className="ik-kpi"><span className="ik-kpi-label">Pieces</span><strong>{ikPieces(totalPieces)}</strong><small>{group ? labelOf(group) : "all groups"}</small></div>
               <div className="ik-kpi"><span className="ik-kpi-label">Purchase value</span><strong>{formatInkoopEuro(totalValue)}</strong><small>what we paid</small></div>
               <div className="ik-kpi"><span className="ik-kpi-label">€ / piece</span><strong>{totalPieces ? formatInkoopEuro(totalValue / totalPieces) : "–"}</strong><small>purchase</small></div>
@@ -25834,15 +25840,33 @@ function InkoopCustomersTab() {
           </div>
           <div className="data-table-card ik-card">
             <div className="ik-card-head">
-              <strong>France</strong>
+              <strong>Per country</strong>
               <span className="row-actions">
-                <button type="button" className={`ik-chip${mapMode === "departement" ? " on" : ""}`} onClick={() => { setMapMode("departement"); setPlace(""); }}>Départements</button>
-                <button type="button" className={`ik-chip${mapMode === "region" ? " on" : ""}`} onClick={() => { setMapMode("region"); setPlace(""); }}>Regions</button>
-                {place && <button type="button" className="ik-chip" onClick={() => setPlace("")}>{place} ✕</button>}
+                <span className="muted">click one to show only that country</span>
+                {country && <button type="button" className="ik-chip" onClick={() => setCountry("")}>{country} ✕</button>}
               </span>
             </div>
-            <IkFranceMap byDepartement={byDepartement} mode={mapMode} selected={place} onSelect={setPlace} labelOf={labelOf} />
-            {withoutPlace > 0 && <div className="muted">{withoutPlace} customer(s) without a French postcode are not on the map{byDepartement.size ? "" : " -- the klant gegevens export with plaats and postcode puts them on it (Settings)"}.</div>}
+            <div className="ik-cust-scroll">
+              <table className="data-table ik-table ik-cust-country-table">
+                <thead><tr><th>Country</th><th className="num">Customers</th><th className="num">Pieces</th><th className="num">Share</th><th className="num">€ / pc</th><th>Groups</th></tr></thead>
+                <tbody>
+                  {countryRows.map((entry) => (
+                    <tr key={entry.land} className={`clickable-row${country === entry.land ? " selected" : ""}`} onClick={() => setCountry(country === entry.land ? "" : entry.land)} aria-selected={country === entry.land}>
+                      <td><strong>{entry.land}</strong>{entry.land === "?" && <small className="muted"> not in klant gegevens</small>}</td>
+                      <td className="num">{entry.customers}</td>
+                      <td className="num">{ikPieces(entry.pieces)}</td>
+                      <td className="num">
+                        <span className="ik-cust-share"><span style={{ width: `${(entry.pieces / countryMax) * 100}%` }} /></span>
+                        {countryTotal ? `${Math.round((entry.pieces / countryTotal) * 100)}%` : "–"}
+                      </td>
+                      <td className="num">{entry.pieces ? formatInkoopEuro(entry.value / entry.pieces) : "–"}</td>
+                      <td className="ik-cust-groups-cell"><IkGroupBar groups={entry.groups} labelOf={labelOf} /></td>
+                    </tr>
+                  ))}
+                  {!countryRows.length && <tr><td colSpan={6} className="muted">No customers in this period.</td></tr>}
+                </tbody>
+              </table>
+            </div>
           </div>
         </div>
       )}
@@ -25853,7 +25877,7 @@ function InkoopCustomersTab() {
             <table className="data-table ik-table ik-cust-table">
               <thead>
                 <tr>
-                  {head("name", "Customer")}{head("place", "Place")}{head("pieces", "Pieces", "num")}{head("value", "Purchase €", "num")}{head("price", "€ / pc", "num")}
+                  {head("name", "Customer")}{head("place", "Country")}{head("pieces", "Pieces", "num")}{head("value", "Purchase €", "num")}{head("price", "€ / pc", "num")}
                   <th>Groups</th>
                 </tr>
               </thead>
@@ -25861,7 +25885,7 @@ function InkoopCustomersTab() {
                 {sorted.slice(0, 400).map((customer) => (
                   <tr key={customer.code} className="clickable-row" onClick={() => setOpenCode(customer.code)}>
                     <td><strong>{customer.name || customer.code}</strong>{customer.name && <small className="muted"> {customer.code}</small>}{customer.is_retour && <small className="ik-cust-flag"> retour</small>}</td>
-                    <td>{customer.city || <span className="muted">{customer.land || "–"}</span>}{customer.departement && <small className="muted"> {customer.departement}</small>}</td>
+                    <td><strong>{customer.land || "?"}</strong>{customer.city && <small className="muted"> {customer.city}</small>}</td>
                     <td className="num">{ikPieces(customer.shown_pieces)}</td>
                     <td className="num">{formatInkoopEuro(customer.shown_value)}</td>
                     <td className="num">{customer.shown_pieces ? formatInkoopEuro(customer.shown_value / customer.shown_pieces) : "–"}</td>
@@ -25871,7 +25895,7 @@ function InkoopCustomersTab() {
               </tbody>
             </table>
           </div>
-          {sorted.length > 400 && <div className="muted">… {sorted.length - 400} more -- narrow it with the search, the country or the map.</div>}
+          {sorted.length > 400 && <div className="muted">… {sorted.length - 400} more -- narrow it with the search or the country.</div>}
         </div>
       )}
       {openCode && <IkCustomerDrawer code={openCode} range={range} onClose={() => setOpenCode("")} />}

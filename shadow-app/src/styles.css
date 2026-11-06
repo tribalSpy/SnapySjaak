@@ -4319,6 +4319,11 @@ table.data-table.balance-table.ik-table.ik-inv-invoices td:nth-child(n+7), table
 .ik-cust select, .ik-cust-drawer select, .ik-cust-settings select { width: auto; }
 .ik-cust-drawer .ik-card-head { display: flex; align-items: center; gap: 12px; }
 .ik-cust-scroll { overflow-x: auto; min-height: min-content; }
+.ik-cust-country-table td.num, .ik-cust-country-table th.num { font-variant-numeric: tabular-nums; white-space: nowrap; }
+.ik-cust-country-table tr.selected td { background: rgba(31, 122, 90, 0.12); }
+.ik-cust-country-table tr.selected td:first-child { box-shadow: inset 3px 0 0 var(--ik-accent); }
+.ik-cust-share { display: inline-block; vertical-align: middle; width: 60px; height: 6px; margin-right: 8px; border-radius: 3px; background: var(--ik-border); overflow: hidden; }
+.ik-cust-share span { display: block; height: 100%; border-radius: 3px; background: var(--ik-accent); }
 
 /* Methode B screen (/methode-b): the hall TV, white with black lines and big
    text like the old Streamlit screen; 4 rows fill the height. */
