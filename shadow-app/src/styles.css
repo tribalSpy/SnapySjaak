@@ -4319,3 +4319,111 @@ table.data-table.balance-table.ik-table.ik-inv-invoices td:nth-child(n+7), table
 .ik-cust select, .ik-cust-drawer select, .ik-cust-settings select { width: auto; }
 .ik-cust-drawer .ik-card-head { display: flex; align-items: center; gap: 12px; }
 .ik-cust-scroll { overflow-x: auto; min-height: min-content; }
+
+/* Methode B screen (/methode-b): the hall TV, white with black lines and big
+   text like the old Streamlit screen; 4 rows fill the height. */
+.mb-screen {
+  position: fixed;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  background: #ffffff;
+  color: #111827;
+  font-family: inherit;
+  overflow: hidden;
+}
+.mb-bar {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  height: 46px;
+  padding: 0 12px;
+  background: #f3f4f6;
+  border-bottom: 2px solid #000000;
+}
+.mb-title { font-size: 22px; }
+.mb-chips { display: flex; gap: 6px; flex-wrap: nowrap; overflow: hidden; }
+.mb-chips button {
+  border: 1px solid #9ca3af;
+  background: #ffffff;
+  color: #111827;
+  border-radius: 6px;
+  padding: 4px 10px;
+  font-size: 16px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.mb-chips button small { color: #6b7280; font-weight: 500; margin-left: 4px; }
+.mb-chips button.active { background: #111827; color: #ffffff; border-color: #111827; }
+.mb-chips button.active small { color: #d1d5db; }
+.mb-meta { margin-left: auto; font-size: 18px; color: #374151; white-space: nowrap; }
+.mb-warn { color: #b91c1c; }
+.mb-empty { flex: 1; display: grid; place-items: center; font-size: 40px; color: #6b7280; }
+.mb-table {
+  flex: 1 1 auto;
+  width: 100%;
+  height: calc(100vh - 46px);
+  border-collapse: collapse;
+  table-layout: fixed;
+}
+.mb-table thead th {
+  height: 44px;
+  background: #dbeee3;
+  color: #111827;
+  font-size: clamp(18px, 1.25vw, 24px);
+  font-weight: 700;
+  text-align: left;
+  padding: 6px 10px;
+  border-bottom: 2px solid #000000;
+  border-right: 2px solid #000000;
+}
+.mb-table tbody tr { height: calc((100vh - 46px - 44px) / 4); }
+.mb-table tbody td {
+  font-size: clamp(21px, 1.6vw, 32px);
+  font-weight: 600;
+  padding: 6px 10px;
+  border-bottom: 2px solid #000000;
+  border-right: 2px solid #000000;
+  vertical-align: middle;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  line-height: 1.1;
+}
+.mb-table tbody tr.mb-filler td { border-right: none; }
+.mb-table .mb-center, .mb-table td.mb-dc { text-align: center; }
+.mb-table td.mb-xl { font-size: clamp(30px, 2.35vw, 46px); font-weight: 700; line-height: 1; }
+.mb-table td.mb-lg { font-size: clamp(26px, 2.05vw, 40px); font-weight: 700; }
+.mb-table td.mb-sm { font-size: clamp(17px, 1.2vw, 25px); font-weight: 500; white-space: normal; line-height: 1.15; }
+.mb-table td.mb-loc { padding-left: 22px; }
+.mb-table td.mb-loc.mb-xl { font-size: clamp(66px, 4.8vw, 98px); }
+.mb-table td.mb-loc.mb-lg { font-size: clamp(58px, 4.1vw, 82px); }
+.mb-table td.mb-loc.mb-md { font-size: clamp(49px, 3.5vw, 70px); font-weight: 700; }
+.mb-table td.mb-cust small {
+  display: block;
+  margin-top: 4px;
+  font-size: clamp(14px, 1vw, 20px);
+  font-weight: 500;
+  color: #374151;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.mb-table td.mb-num { font-size: clamp(30px, 2.35vw, 46px); }
+.mb-table td.mb-dc { font-size: clamp(38px, 2.7vw, 54px); font-weight: 700; }
+.mb-pack-code {
+  display: inline-block;
+  color: #ffffff;
+  border-radius: 8px;
+  padding: 2px 14px;
+  font-size: clamp(40px, 3vw, 62px);
+  font-weight: 800;
+  line-height: 1.1;
+}
+.mb-water {
+  display: block;
+  margin-top: 4px;
+  font-size: clamp(16px, 1.15vw, 24px);
+  color: #1f5fbf;
+  font-weight: 700;
+}

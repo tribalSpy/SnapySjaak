@@ -539,6 +539,189 @@ function useHeartbeatMonitor(enabled) {
   return state;
 }
 
+// ---------------------------------------------------------------------------
+// Methode B screen: the hall TV (no login, /methode-b). The occupied
+// locations of the Halindeling app's day, 4 rows a page, the next page every
+// 10 s, the day read again every 30 s -- as the old Streamlit "Method B
+// Screen". ?hal=B shows one hall, no ?hal = all halls (Total). Customers
+// combined under one main code share a colour.
+const MB_ROWS_PER_PAGE = 4;
+const MB_PAGE_SECONDS = 10;
+const MB_REFRESH_SECONDS = 30;
+const MB_PACKING_COLORS = {
+  CLM: "#9a5b13",
+  NP: "#1f5fbf",
+  NPD: "#0f7f86",
+  NKR: "#c62828",
+  R56: "#1e7b34",
+  P: "#8a7341",
+  I: "#5b6472",
+  SPE: "#6f3fb5",
+};
+// Combined groups: a light row tint and a strong band on the left.
+const MB_GROUP_COLORS = [
+  ["#fff1b8", "#c99a00"],
+  ["#d6e8ff", "#1f5fbf"],
+  ["#ffd9d9", "#c62828"],
+  ["#d3f5dc", "#1e7b34"],
+  ["#eadcff", "#6f3fb5"],
+  ["#ffe2c4", "#c45f00"],
+  ["#cdf3f7", "#0f7f86"],
+  ["#ffd6ec", "#b0306f"],
+];
+
+function mbCellSize(value) {
+  const text = String(value ?? "").trim();
+  const compact = text.replace(/\s+/g, "");
+  if (!compact) return "md";
+  if (compact.length <= 3) return "xl";
+  if (compact.length <= 6) return "lg";
+  if (text.length >= 24) return "sm";
+  return "md";
+}
+
+function mbNumber(value, digits = 2) {
+  if (value === null || value === undefined || !Number.isFinite(Number(value))) return "";
+  return Number(value).toLocaleString("nl-NL", { minimumFractionDigits: 0, maximumFractionDigits: digits });
+}
+
+function MethodBScreen() {
+  const params = new URLSearchParams(window.location.search);
+  const [hall, setHall] = useState(() => String(params.get("hal") || "").trim().toUpperCase());
+  const [day, setDay] = useState(null);
+  const [error, setError] = useState("");
+  const [pageIndex, setPageIndex] = useState(0);
+
+  useEffect(() => {
+    document.title = "Methode B screen";
+    let stopped = false;
+    let timer = null;
+    async function load() {
+      try {
+        const wantedDate = String(params.get("date") || "").slice(0, 10);
+        const response = await fetch(`/api/public/methode-b${wantedDate ? `?date=${encodeURIComponent(wantedDate)}` : ""}`, { headers: { Accept: "application/json" } });
+        const payload = await response.json().catch(() => ({}));
+        if (!response.ok) throw new Error(payload?.error || `HTTP ${response.status}`);
+        if (!stopped) {
+          setDay(payload);
+          setError(payload.stale ? payload.error || "The Halindeling app can't be reached" : "");
+        }
+      } catch (loadError) {
+        if (!stopped) setError(loadError instanceof Error ? loadError.message : String(loadError));
+      } finally {
+        if (!stopped) timer = window.setTimeout(load, MB_REFRESH_SECONDS * 1000);
+      }
+    }
+    load();
+    return () => {
+      stopped = true;
+      window.clearTimeout(timer);
+    };
+  }, []);
+
+  const allRows = day?.rows || [];
+  const halls = useMemo(() => [...new Set(allRows.map((row) => row.hal).filter(Boolean))].sort(), [allRows]);
+  const rows = useMemo(() => (hall ? allRows.filter((row) => row.hal === hall) : allRows), [allRows, hall]);
+
+  // Combined customers: rows sharing a main code (or a row that is another's
+  // main code) -- over the whole day, so a group keeps its colour per hall.
+  const groupColor = useMemo(() => {
+    const keyOf = (row) => (row.maincode || row.klant).toUpperCase();
+    const counts = new Map();
+    for (const row of allRows) counts.set(keyOf(row), (counts.get(keyOf(row)) || 0) + 1);
+    const colors = new Map();
+    for (const row of allRows) {
+      const key = keyOf(row);
+      if (counts.get(key) > 1 && !colors.has(key)) colors.set(key, MB_GROUP_COLORS[colors.size % MB_GROUP_COLORS.length]);
+    }
+    return (row) => colors.get(keyOf(row)) || null;
+  }, [allRows]);
+
+  const pageCount = Math.max(1, Math.ceil(rows.length / MB_ROWS_PER_PAGE));
+  const page = Math.min(pageIndex, pageCount - 1);
+  useEffect(() => {
+    const timer = window.setTimeout(() => setPageIndex((value) => (Math.min(value, pageCount - 1) + 1) % pageCount), MB_PAGE_SECONDS * 1000);
+    return () => window.clearTimeout(timer);
+  }, [page, pageCount, day]);
+
+  function chooseHall(next) {
+    setHall(next);
+    setPageIndex(0);
+    const url = new URL(window.location.href);
+    if (next) url.searchParams.set("hal", next);
+    else url.searchParams.delete("hal");
+    window.history.replaceState(null, "", url);
+  }
+
+  const pageRows = rows.slice(page * MB_ROWS_PER_PAGE, (page + 1) * MB_ROWS_PER_PAGE);
+  const fillers = Array.from({ length: Math.max(0, MB_ROWS_PER_PAGE - pageRows.length) });
+  const showLoc = (loc) => (hall ? loc.replace(new RegExp(`^${hall}(?=[A-Za-z0-9])`, "i"), "") : loc);
+  const dayLabel = day?.date ? fustOverviewDate(day.date) : "";
+
+  return (
+    <div className="mb-screen">
+      <div className="mb-bar">
+        <strong className="mb-title">Methode B</strong>
+        <div className="mb-chips">
+          <button type="button" className={!hall ? "active" : ""} onClick={() => chooseHall("")}>Total <small>{allRows.length}</small></button>
+          {halls.map((code) => (
+            <button key={code} type="button" className={hall === code ? "active" : ""} onClick={() => chooseHall(code)}>
+              Hall {code} <small>{allRows.filter((row) => row.hal === code).length}</small>
+            </button>
+          ))}
+        </div>
+        <span className="mb-meta">
+          {day?.date && day.date !== day.today ? <b className="mb-warn">Day {dayLabel} (no day saved for {fustOverviewDate(day.today)} yet)</b> : dayLabel}
+          {rows.length ? ` · page ${page + 1} / ${pageCount}` : ""}
+          {error ? <b className="mb-warn"> · {error}</b> : ""}
+        </span>
+      </div>
+      {!day && !error && <div className="mb-empty">Loading…</div>}
+      {!day && error && <div className="mb-empty">{error}</div>}
+      {day && !rows.length && <div className="mb-empty">No occupied locations{hall ? ` in hall ${hall}` : ""}.</div>}
+      {day && rows.length > 0 && (
+        <table className="mb-table">
+          <colgroup>
+            <col style={{ width: "14%" }} /><col style={{ width: "15%" }} /><col style={{ width: "8%" }} /><col style={{ width: "6%" }} />
+            <col style={{ width: "12%" }} /><col style={{ width: "15%" }} /><col style={{ width: "12%" }} /><col style={{ width: "18%" }} />
+          </colgroup>
+          <thead>
+            <tr><th>Locatie</th><th>Cust</th><th>Volume</th><th className="mb-center">DC</th><th>Setting</th><th>Packing</th><th>Main code</th><th>Remark</th></tr>
+          </thead>
+          <tbody>
+            {pageRows.map((row) => {
+              const color = groupColor(row);
+              const water = (row.packing.match(/\+\s*(352|v6k)/i) || [])[1] || "";
+              const more = row.klanten.filter((code) => code !== row.klant).length;
+              return (
+                <tr key={row.loc} style={color ? { background: color[0], boxShadow: `inset 14px 0 0 ${color[1]}` } : undefined}>
+                  <td className={`mb-loc mb-${mbCellSize(showLoc(row.loc))}`}>{showLoc(row.loc)}</td>
+                  <td className={`mb-cust mb-${mbCellSize(row.klant)}`}>
+                    {row.klant}
+                    <small>{[row.naam, row.country ? `(${row.country})` : "", more ? `+${more} code${more === 1 ? "" : "s"}` : ""].filter(Boolean).join(" ")}</small>
+                  </td>
+                  <td className="mb-num">{mbNumber(row.volume)}</td>
+                  <td className="mb-dc">{row.dc ?? ""}</td>
+                  <td className={`mb-${mbCellSize(row.setting)}`}>{row.setting}</td>
+                  <td className="mb-pack">
+                    {row.packingcode && <span className="mb-pack-code" style={{ background: MB_PACKING_COLORS[row.packingcode.toUpperCase()] || "#374151" }}>{row.packingcode}</span>}
+                    {water && <span className="mb-water">💧{water}</span>}
+                  </td>
+                  <td className={`mb-main mb-${mbCellSize(row.maincode)}`}>{row.maincode}</td>
+                  <td className="mb-sm">{row.remark}</td>
+                </tr>
+              );
+            })}
+            {fillers.map((_, index) => (
+              <tr key={`empty-${index}`} className="mb-filler"><td colSpan={8} /></tr>
+            ))}
+          </tbody>
+        </table>
+      )}
+    </div>
+  );
+}
+
 function ConnectionLostOverlay({ message, onRefresh }) {
   return (
     <div className="connection-overlay" role="dialog" aria-modal="true" aria-live="assertive">
@@ -10616,6 +10799,8 @@ function App() {
   const rawPathname = typeof window !== "undefined" ? window.location.pathname : "/";
   const normalizedPathname = rawPathname !== "/" ? rawPathname.replace(/\/+$/, "").toLowerCase() : rawPathname;
   const publicClockMode = normalizedPathname === "/inklokken";
+  // The hall TV: no login, like /inklokken.
+  const methodBMode = normalizedPathname === "/methode-b" || normalizedPathname === "/method-b";
   const [page, setPage] = useState("dashboard");
   // Pages the PD Step Plan sent you to show a bar back to the plan.
   const [fromStepPlan, setFromStepPlan] = useState(false);
@@ -10648,7 +10833,7 @@ function App() {
   const syncRunning = syncStatus?.state === "running";
 
   useEffect(() => {
-    if (publicClockMode) {
+    if (publicClockMode || methodBMode) {
       setAuth({ loading: false, user: null, setupRequired: false });
       return;
     }
@@ -10667,7 +10852,7 @@ function App() {
         }
       })
       .catch(() => setAuth({ loading: false, user: null, setupRequired: false }));
-  }, [publicClockMode]);
+  }, [publicClockMode, methodBMode]);
 
   useEffect(() => {
     if (!dateWasManuallySelected && data?.selected_date) {
@@ -10732,6 +10917,10 @@ function App() {
       }
       return next;
     });
+  }
+
+  if (methodBMode) {
+    return <MethodBScreen />;
   }
 
   if (publicClockMode) {
@@ -10838,6 +11027,9 @@ function App() {
               Warehouse Dashboard
             </a>
           )}
+          <a href="/methode-b" target="_blank" rel="noreferrer" title="The hall TV screen -- opens without a login (/methode-b, ?hal=B for one hall)">
+            Methode B screen
+          </a>
         </nav>
 
         {canViewPhotos && (

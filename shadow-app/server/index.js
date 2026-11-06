@@ -20468,6 +20468,73 @@ async function fetchHalindelingMainCodes(settings, date) {
   }
 }
 
+// The Methode B screen's day: only the occupied locations, only the fields
+// the screen shows. Cached 30 s, so a few TVs never hammer the Halindeling app;
+// when the app can't be reached the last good day is kept (marked stale).
+const methodBScreenCaches = new Map();
+async function loadMethodBScreenDay(wantedDate = "") {
+  const today = localDateIso();
+  const wanted = wantedDate || today;
+  if (!methodBScreenCaches.has(wanted)) {
+    if (methodBScreenCaches.size > 20) methodBScreenCaches.clear();
+    methodBScreenCaches.set(wanted, { at: 0, payload: null });
+  }
+  const methodBScreenCache = methodBScreenCaches.get(wanted);
+  if (methodBScreenCache.payload && Date.now() - methodBScreenCache.at < 30000) {
+    return methodBScreenCache.payload;
+  }
+  try {
+    const settings = await readFustSettings();
+    const base = String(settings.hal_locations_netlify_url || "https://halindeling.netlify.app").replace(/\/+$/, "");
+    const fetchJson = async (pathName) => {
+      const response = await fetch(`${base}${pathName}`, { headers: { Accept: "application/json" }, signal: AbortSignal.timeout(15000) });
+      if (!response.ok) {
+        throw new Error(`Halindeling app ${pathName} answered HTTP ${response.status}`);
+      }
+      return response.json();
+    };
+    const index = await fetchJson("/api/days");
+    const savedDays = (Array.isArray(index?.days) ? index.days : []).map((day) => String(day?.date || "")).filter(Boolean).sort();
+    const useDate = savedDays.includes(wanted) ? wanted : savedDays.filter((day) => day <= wanted).pop();
+    if (!useDate) {
+      throw new Error(`The Halindeling app has no saved day on or before ${wanted}`);
+    }
+    const day = await fetchJson(`/api/days/${encodeURIComponent(useDate)}`);
+    const text = (value) => String(value ?? "").trim();
+    const rows = (Array.isArray(day?.rows) ? day.rows : [])
+      .filter((row) => text(row?.loc) && text(row?.klant))
+      .map((row) => ({
+        loc: text(row.loc),
+        hal: text(row.hal).toUpperCase(),
+        rij: text(row.rij).toUpperCase(),
+        klant: text(row.klant),
+        klanten: Array.isArray(row.klanten) ? row.klanten.map(text).filter(Boolean) : [],
+        naam: text(row.naam),
+        country: text(row.country),
+        volume: row.volKlant === null || row.volKlant === undefined || row.volKlant === "" ? null : Number(row.volKlant),
+        dc: row.dc === null || row.dc === undefined || row.dc === "" ? null : Number(row.dc),
+        setting: text(row.setting),
+        packing: text(row.packing),
+        packingcode: text(row.packingcode),
+        maincode: text(row.maincode),
+        remark: text(row.remark),
+        rit: text(row.rit),
+        laadtijd: text(row.laadtijd),
+        carrier: text(row.carrier1 || row.ritnaam),
+      }));
+    const payload = { date: useDate, today: wanted, saved_at: day?.savedAt || "", source: text(day?.bron), rows, fetched_at: new Date().toISOString(), stale: false };
+    methodBScreenCache.at = Date.now();
+    methodBScreenCache.payload = payload;
+    return payload;
+  } catch (error) {
+    if (methodBScreenCache.payload) {
+      methodBScreenCache.at = Date.now() - 20000; // try again in ~10 s
+      return { ...methodBScreenCache.payload, stale: true, error: error instanceof Error ? error.message : String(error) };
+    }
+    throw error;
+  }
+}
+
 // Location -> customer rows for Hal Locations / Expedition stickers, as
 // [location, customer] rows the hal_locations_worker parser reads (column A
 // location, column B customer). From the Halindeling app: its saved day for
@@ -22611,6 +22678,19 @@ async function handleApi(req, res, url) {
       });
     } catch (error) {
       sendJson(res, 500, { error: error instanceof Error ? error.message : String(error), employees: [] });
+    }
+    return;
+  }
+
+  // Methode B screen (the hall TV, no login, read-only): the occupied
+  // locations of the Halindeling app's day -- today, else its latest saved
+  // day before today.
+  if (url.pathname === "/api/public/methode-b" && req.method === "GET") {
+    try {
+      const wanted = String(url.searchParams.get("date") || "").slice(0, 10);
+      sendJson(res, 200, await loadMethodBScreenDay(/^\d{4}-\d{2}-\d{2}$/.test(wanted) ? wanted : ""));
+    } catch (error) {
+      sendJson(res, 502, { error: error instanceof Error ? error.message : String(error) });
     }
     return;
   }
