@@ -691,7 +691,42 @@ function MethodBScreen() {
     return (row) => colors.get(keyOf(row)) || null;
   }, [allRows]);
 
-  const pageCount = Math.max(1, Math.ceil(rows.length / MB_ROWS_PER_PAGE));
+  // Pages of 4 rows, but a combined group is never split over two pages:
+  // its rows stay together (at its first row's place); a group that doesn't
+  // fit on the page starts the next one, and a group of more than 4 gets a
+  // page of its own with smaller rows.
+  const pages = useMemo(() => {
+    const keyOf = (row) => (row.maincode || row.klant).toUpperCase();
+    const members = new Map();
+    for (const row of rows) {
+      if (!groupColor(row)) continue;
+      const key = keyOf(row);
+      if (!members.has(key)) members.set(key, []);
+      members.get(key).push(row);
+    }
+    const blocks = [];
+    const placed = new Set();
+    for (const row of rows) {
+      const group = groupColor(row) ? members.get(keyOf(row)) : null;
+      if (!group) blocks.push([row]);
+      else if (!placed.has(keyOf(row))) {
+        placed.add(keyOf(row));
+        blocks.push(group);
+      }
+    }
+    const result = [];
+    let current = [];
+    for (const block of blocks) {
+      if (current.length && current.length + block.length > MB_ROWS_PER_PAGE) {
+        result.push(current);
+        current = [];
+      }
+      current = current.concat(block);
+    }
+    if (current.length) result.push(current);
+    return result;
+  }, [rows, groupColor]);
+  const pageCount = Math.max(1, pages.length);
   const page = Math.min(pageIndex, pageCount - 1);
   useEffect(() => {
     const timer = window.setTimeout(() => setPageIndex((value) => (Math.min(value, pageCount - 1) + 1) % pageCount), MB_PAGE_SECONDS * 1000);
@@ -707,8 +742,10 @@ function MethodBScreen() {
     window.history.replaceState(null, "", url);
   }
 
-  const pageRows = rows.slice(page * MB_ROWS_PER_PAGE, (page + 1) * MB_ROWS_PER_PAGE);
+  const pageRows = pages[page] || [];
   const fillers = Array.from({ length: Math.max(0, MB_ROWS_PER_PAGE - pageRows.length) });
+  // A page with a group of more than 4: all its rows share the screen.
+  const rowHeight = pageRows.length > MB_ROWS_PER_PAGE ? `calc((100vh - 46px - 44px) / ${pageRows.length})` : undefined;
   // Fit the texts after every page / data change and on a resize.
   const fitKey = `${hall}|${page}|${pageRows.map((row) => `${row.loc}:${row.klant}:${row.volume}:${row.dc}:${row.setting}:${row.packingcode}:${row.maincode}:${row.remark}`).join("|")}`;
   useLayoutEffect(() => {
@@ -756,7 +793,7 @@ function MethodBScreen() {
               const water = (row.packing.match(/\+\s*(352|v6k)/i) || [])[1] || "";
               const more = row.klanten.filter((code) => code !== row.klant).length;
               return (
-                <tr key={row.loc} style={color ? { background: color[0], boxShadow: `inset 14px 0 0 ${color[1]}` } : undefined}>
+                <tr key={row.loc} style={{ ...(color ? { background: color[0], boxShadow: `inset 14px 0 0 ${color[1]}` } : {}), ...(rowHeight ? { height: rowHeight } : {}) }}>
                   <td className="mb-loc"><span className="mb-fit mb-nowrap" data-fit="loc" data-h="0.72" data-uniform="1">{showLoc(row.loc)}</span></td>
                   <td className="mb-cust">
                     <span className="mb-fit mb-nowrap" data-fit="cust" data-h="0.5" data-uniform="1">{row.klant}</span>
