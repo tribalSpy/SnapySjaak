@@ -26002,7 +26002,7 @@ function InkoopCustomersTab() {
                           const pieces = monthGroups.get(month)?.[key]?.pieces || 0;
                           const share = Math.sqrt(pieces / rowMax);
                           return (
-                            <td key={month} className="num" style={pieces ? { background: `hsl(205 70% ${Math.round(95 - share * 45)}%)`, color: share > 0.7 ? "#fff" : undefined } : undefined}
+                            <td key={month} className={pieces ? `num ik-heat${share > 0.7 ? " ik-heat-strong" : ""}` : "num"} style={pieces ? { "--heat": share.toFixed(3) } : undefined}
                               title={pieces ? `${labelOf(key)} ${ikMonthLabel(month)}: ${ikPieces(pieces)} pcs` : undefined}>
                               {pieces ? ikPieces(pieces) : ""}
                             </td>

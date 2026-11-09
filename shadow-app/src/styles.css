@@ -4316,6 +4316,12 @@ table.data-table.balance-table.ik-table.ik-inv-invoices td:nth-child(n+7), table
    (the month table) were squeezed to 0 when the content was taller. */
 .ik-cust-drawer > * { flex-shrink: 0; }
 .ik-cust-heat td, .ik-cust-heat th { padding: 4px 6px; font-size: 0.8rem; white-space: nowrap; }
+/* Heat cells: --heat 0..1 (set per cell). Written in hsl() so the night
+   build (vite-dark-theme.js) leaves them alone -- night has its own rule. */
+.ik-table.ik-cust-heat tbody tr td.ik-heat { background: hsl(205 70% calc(95% - var(--heat) * 45%)); color: hsl(215 40% 12%); }
+.ik-table.ik-cust-heat tbody tr td.ik-heat.ik-heat-strong { color: hsl(0 0% 100%); }
+:root[data-theme="dark"] .ik-table.ik-cust-heat tbody tr td.ik-heat,
+:root[data-theme="dark"] .ik-table.ik-cust-heat tbody tr td.ik-heat.ik-heat-strong { background: hsl(205 55% calc(16% + var(--heat) * 30%)); color: hsl(210 30% 94%); }
 .ik-cust table.data-table th, .ik-cust table.data-table td, .ik-cust-drawer table.data-table th, .ik-cust-drawer table.data-table td,
 .ik-cust-settings table.data-table th, .ik-cust-settings table.data-table td { text-align: left; }
 .ik-cust table.data-table .num, .ik-cust-drawer table.data-table .num, .ik-cust-settings table.data-table .num { text-align: right; }
