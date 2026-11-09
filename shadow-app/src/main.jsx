@@ -548,6 +548,7 @@ function useHeartbeatMonitor(enabled) {
 const MB_ROWS_PER_PAGE = 4;
 const MB_PAGE_SECONDS = 10;
 const MB_REFRESH_SECONDS = 30;
+const MB_BAR_SECONDS = 5;
 const MB_PACKING_COLORS = {
   CLM: "#9a5b13",
   NP: "#1f5fbf",
@@ -636,6 +637,15 @@ function MethodBScreen() {
   const [error, setError] = useState("");
   const [pageIndex, setPageIndex] = useState(0);
   const tableRef = useRef(null);
+  // The top bar hides after MB_BAR_SECONDS without the mouse on it; moving
+  // onto the top edge of the screen shows it again.
+  const [barShown, setBarShown] = useState(true);
+  const [barHover, setBarHover] = useState(false);
+  useEffect(() => {
+    if (!barShown || barHover) return undefined;
+    const timer = window.setTimeout(() => setBarShown(false), MB_BAR_SECONDS * 1000);
+    return () => window.clearTimeout(timer);
+  }, [barShown, barHover]);
 
   useEffect(() => {
     document.title = "Methode B screen";
@@ -745,7 +755,7 @@ function MethodBScreen() {
   const pageRows = pages[page] || [];
   const fillers = Array.from({ length: Math.max(0, MB_ROWS_PER_PAGE - pageRows.length) });
   // A page with a group of more than 4: all its rows share the screen.
-  const rowHeight = pageRows.length > MB_ROWS_PER_PAGE ? `calc((100vh - 46px - 44px) / ${pageRows.length})` : undefined;
+  const rowHeight = pageRows.length > MB_ROWS_PER_PAGE ? `calc((100vh - 44px) / ${pageRows.length})` : undefined;
   // Fit the texts after every page / data change and on a resize.
   const fitKey = `${hall}|${page}|${pageRows.map((row) => `${row.loc}:${row.klant}:${row.volume}:${row.dc}:${row.setting}:${row.packingcode}:${row.maincode}:${row.remark}`).join("|")}`;
   useLayoutEffect(() => {
@@ -759,7 +769,12 @@ function MethodBScreen() {
 
   return (
     <div className="mb-screen">
-      <div className="mb-bar">
+      <div className="mb-hotzone" onMouseEnter={() => setBarShown(true)} />
+      <div
+        className={`mb-bar${barShown || error || !day ? "" : " mb-bar-hidden"}`}
+        onMouseEnter={() => { setBarHover(true); setBarShown(true); }}
+        onMouseLeave={() => setBarHover(false)}
+      >
         <strong className="mb-title">Methode B</strong>
         <div className="mb-chips">
           <button type="button" className={!hall ? "active" : ""} onClick={() => chooseHall("")}>Total <small>{allRows.length}</small></button>

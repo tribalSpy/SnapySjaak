@@ -4340,8 +4340,16 @@ table.data-table.balance-table.ik-table.ik-inv-invoices td:nth-child(n+7), table
   font-family: inherit;
   overflow: hidden;
 }
+/* The bar floats over the table's top and slides away after a few seconds
+   without the mouse on it; the top edge (.mb-hotzone) brings it back. */
+.mb-hotzone { position: absolute; top: 0; left: 0; right: 0; height: 24px; z-index: 4; }
 .mb-bar {
-  flex: 0 0 auto;
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  z-index: 5;
+  transition: transform 0.25s ease;
   display: flex;
   align-items: center;
   gap: 16px;
@@ -4350,6 +4358,7 @@ table.data-table.balance-table.ik-table.ik-inv-invoices td:nth-child(n+7), table
   background: #f3f4f6;
   border-bottom: 2px solid #000000;
 }
+.mb-bar.mb-bar-hidden { transform: translateY(-100%); }
 .mb-title { font-size: 22px; }
 .mb-chips { display: flex; gap: 6px; flex-wrap: nowrap; overflow: hidden; }
 .mb-chips button {
@@ -4371,7 +4380,7 @@ table.data-table.balance-table.ik-table.ik-inv-invoices td:nth-child(n+7), table
 .mb-table {
   flex: 1 1 auto;
   width: 100%;
-  height: calc(100vh - 46px);
+  height: 100vh;
   border-collapse: collapse;
   table-layout: fixed;
 }
@@ -4386,7 +4395,7 @@ table.data-table.balance-table.ik-table.ik-inv-invoices td:nth-child(n+7), table
   border-bottom: 2px solid #000000;
   border-right: 2px solid #000000;
 }
-.mb-table tbody tr { height: calc((100vh - 46px - 44px) / 4); }
+.mb-table tbody tr { height: calc((100vh - 44px) / 4); }
 .mb-table tbody td {
   font-size: 16px;
   font-weight: 800;
