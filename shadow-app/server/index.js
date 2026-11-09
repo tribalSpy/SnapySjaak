@@ -157,6 +157,16 @@ import {
   getInkoopLotGroupTexts,
   updateInkoopLotHoofdgroepen,
   getInkoopHoofdgroepGaps,
+  getInkoopHoofdgroepList,
+  saveInkoopHoofdgroep,
+  renameInkoopHoofdgroep,
+  deleteInkoopHoofdgroep,
+  moveInkoopHoofdgroepTerms,
+  saveInkoopHoofdgroepTerm,
+  deleteInkoopHoofdgroepTerm,
+  logInkoopHoofdgroepChange,
+  getInkoopHoofdgroepLog,
+  getInkoopCustomerMonthUnlinked,
   isInkoopCustomerMonthEmpty,
   saveInkoopErpLines,
   saveInkoopInvoiceLines,
@@ -12325,15 +12335,16 @@ function buildInkoopHoofdgroepMatcher(terms) {
     if (!byFirst.has(key)) byFirst.set(key, []);
     byFirst.get(key).push(row);
   }
-  const match = (text) => {
+  // The matching row (its normalized term and Hoofdgroep), or null.
+  const find = (text) => {
     const name = inkoopHoofdgroepNormalize(text);
-    if (!name) return "";
-    for (const row of byFirst.get(name[0]) || []) if (name.startsWith(row.term)) return row.hoofdgroep;
-    return "";
+    if (!name) return null;
+    for (const row of byFirst.get(name[0]) || []) if (name.startsWith(row.term)) return row;
+    return null;
   };
   // "Gr Pistache" / "Gr Aspidistra": the green's own name after "Gr ".
-  const matchName = (text) => match(text) || (/^gr\s/i.test(String(text || "").trim()) ? match(String(text).trim().slice(3)) : "");
-  return { count: list.length, match: matchName };
+  const findName = (text) => find(text) || (/^gr\s/i.test(String(text || "").trim()) ? find(String(text).trim().slice(3)) : null);
+  return { count: list.length, match: (text) => findName(text)?.hoofdgroep || "", find: findName };
 }
 
 // A sales-list lot's Hoofdgroep: plants (P) "Planten" and accessories (A)
@@ -12360,6 +12371,86 @@ async function refreshInkoopLotHoofdgroepen() {
   }
   const updated = await updateInkoopLotHoofdgroepen(changes);
   return { lots: lots.length, matched, updated, terms: matcher.count };
+}
+
+// Manage Hoofdgroepen: every Hoofdgroep (from the terms and the ones made by
+// hand) with its note and terms; each term with the sales-list lots / lines
+// it catches; and the dispatched pieces with no Hoofdgroep yet, per sales
+// group (a right-click links one: its name becomes a zoekterm).
+const INKOOP_FIXED_HOOFDGROEPEN = [["Planten", "every plant (Asrt / T = P)"], ["Deco", "every accessory (Asrt / T = A)"]];
+async function buildInkoopHoofdgroepManager() {
+  const [terms, groupRows, lots, unlinkedRows, gaps, handRows, log] = await Promise.all([
+    getInkoopHoofdgroepTerms(), getInkoopHoofdgroepList(), getInkoopLotGroupTexts(), getInkoopCustomerMonthUnlinked(),
+    getInkoopHoofdgroepGaps(500).catch(() => []), getInkoopSalesGroupMap().catch(() => []), getInkoopHoofdgroepLog(30).catch(() => []),
+  ]);
+  const matcher = buildInkoopHoofdgroepMatcher(terms);
+  const handMap = new Map(handRows.map((row) => [row.sales_group, row.main_group]));
+  // Lots and sales lines per (normalized) term.
+  const hits = new Map();
+  for (const lot of lots) {
+    const asrt = String(lot.asrt || "").trim().toUpperCase();
+    if (asrt === "P" || asrt === "A") continue;
+    const row = matcher.find(lot.description) || matcher.find(lot.product_group);
+    if (!row) continue;
+    const hit = hits.get(row.term) || { lots: 0, lines: 0 };
+    hit.lots += 1;
+    hit.lines += Number(lot.lines) || 0;
+    hits.set(row.term, hit);
+  }
+  const seen = new Set();
+  const termList = terms.map((row) => {
+    const key = inkoopHoofdgroepNormalize(row.term);
+    // "Achillea" and "achillea" are one term: the figures go to the first.
+    const hit = seen.has(key) ? null : hits.get(key);
+    seen.add(key);
+    return { term: row.term, product: row.product || "", hoofdgroep: row.hoofdgroep, lots: hit?.lots || 0, lines: hit?.lines || 0, duplicate: !hit && hits.has(key) };
+  }).sort((left, right) => left.term.localeCompare(right.term, "nl", { sensitivity: "base" }));
+  const groups = new Map();
+  const groupOf = (name) => {
+    if (!groups.has(name)) groups.set(name, { name, note: "", terms: 0, lots: 0, lines: 0, fixed: "" });
+    return groups.get(name);
+  };
+  for (const [name, rule] of INKOOP_FIXED_HOOFDGROEPEN) groupOf(name).fixed = rule;
+  for (const row of groupRows) groupOf(row.name).note = row.note || "";
+  for (const row of termList) {
+    const entry = groupOf(row.hoofdgroep);
+    entry.terms += 1;
+    entry.lots += row.lots;
+    entry.lines += row.lines;
+  }
+  // Not linked: the month rows without a Hoofdgroep whose sales group no
+  // zoekterm matches either.
+  const examples = new Map(gaps.map((gap) => [gap.product_group, gap.examples || []]));
+  const unlinked = new Map();
+  for (const row of unlinkedRows) {
+    if (row.sales_group && matcher.match(row.sales_group)) continue;
+    const key = row.sales_group || "";
+    const entry = unlinked.get(key) || { sales_group: key, pieces: 0, value: 0, customers: 0, mains: {}, examples: examples.get(key) || [] };
+    entry.pieces += Number(row.pieces) || 0;
+    entry.value += Number(row.value) || 0;
+    entry.customers = Math.max(entry.customers, Number(row.customers) || 0);
+    const main = inkoopHoofdgroepFallback(inkoopCustomerMainGroup(row.sales_group, row.t, handMap, row.level1));
+    entry.mains[main] = (entry.mains[main] || 0) + (Number(row.pieces) || 0);
+    unlinked.set(key, entry);
+  }
+  return {
+    groups: [...groups.values()].sort((left, right) => left.name.localeCompare(right.name, "nl", { sensitivity: "base" })),
+    terms: termList,
+    unlinked: [...unlinked.values()].map((entry) => ({
+      ...entry, value: Math.round(entry.value * 100) / 100,
+      falls_in: Object.entries(entry.mains).sort((left, right) => right[1] - left[1])[0]?.[0] || INKOOP_NO_HOOFDGROEP,
+    })).sort((left, right) => right.pieces - left.pieces),
+    log,
+    job: inkoopCustomerJob,
+  };
+}
+
+// After a change by hand: the lots' Hoofdgroep and the months worked out
+// again (the months in the background).
+async function applyInkoopHoofdgroepChange() {
+  const lots = await refreshInkoopLotHoofdgroepen();
+  await runInkoopCustomerRebuildAll();
+  return lots;
 }
 
 // A month row's / lot's Hoofdgroep: its T first (P Planten, A Deco), else
@@ -29274,6 +29365,95 @@ async function handleApi(req, res, url) {
       return;
     }
     sendJson(res, 200, { gaps: await getInkoopHoofdgroepGaps(80).catch(() => []) });
+    return;
+  }
+
+  // Klant inzicht › Manage Hoofdgroepen: the groups, their zoektermen and
+  // what has no Hoofdgroep yet.
+  if (url.pathname === "/api/inkoop/customers/hoofdgroepen" && req.method === "GET") {
+    if (!requirePermission(res, requestUser, PERMISSIONS.INKOOP_VIEW)) {
+      return;
+    }
+    try {
+      sendJson(res, 200, await buildInkoopHoofdgroepManager());
+    } catch (error) {
+      sendJson(res, 500, { error: error instanceof Error ? error.message : String(error) });
+    }
+    return;
+  }
+
+  // A change by hand: move terms, rename / make / note / remove a group,
+  // add / edit / remove a term, link a sales group (its name as a new term).
+  // Logged; then the lots' Hoofdgroep and the months are worked out again.
+  if (url.pathname === "/api/inkoop/customers/hoofdgroepen" && req.method === "POST") {
+    if (!requirePermission(res, requestUser, PERMISSIONS.INKOOP_VIEW)) {
+      return;
+    }
+    const body = await readRequestJson(req, 1024 * 1024);
+    const clean = (value) => String(value ?? "").replace(/\s+/g, " ").trim().slice(0, 120);
+    const action = String(body?.action || "");
+    const user = requestUser?.username || "";
+    try {
+      const fixed = new Set(INKOOP_FIXED_HOOFDGROEPEN.map(([name]) => name));
+      let recompute = true;
+      if (action === "move") {
+        const terms = (Array.isArray(body.terms) ? body.terms : []).map((term) => String(term)).filter(Boolean);
+        const to = clean(body.hoofdgroep);
+        if (!terms.length || !to) throw new Error("Pick the zoekterm(en) and a Hoofdgroep");
+        const moved = await moveInkoopHoofdgroepTerms(terms, to);
+        await logInkoopHoofdgroepChange(user, "move", { terms, to, moved });
+      } else if (action === "link") {
+        const salesGroups = (Array.isArray(body.sales_groups) ? body.sales_groups : [body.sales_group]).map(clean).filter(Boolean);
+        const to = clean(body.hoofdgroep);
+        if (!salesGroups.length || !to) throw new Error("Pick a product group and a Hoofdgroep");
+        for (const salesGroup of salesGroups) await saveInkoopHoofdgroepTerm({ term: salesGroup, product: salesGroup, hoofdgroep: to });
+        await logInkoopHoofdgroepChange(user, "link", { sales_groups: salesGroups, to });
+      } else if (action === "save-term") {
+        const term = clean(body.term);
+        const to = clean(body.hoofdgroep);
+        if (!term || !to) throw new Error("A zoekterm and a Hoofdgroep are needed");
+        await saveInkoopHoofdgroepTerm({ oldTerm: String(body.old_term || ""), term, product: clean(body.product), hoofdgroep: to });
+        await logInkoopHoofdgroepChange(user, body.old_term ? "edit-term" : "add-term", { old_term: body.old_term || "", term, product: clean(body.product), to });
+      } else if (action === "delete-term") {
+        const removed = await deleteInkoopHoofdgroepTerm(String(body.term || ""));
+        if (!removed) throw new Error("That zoekterm is not in the mapping");
+        await logInkoopHoofdgroepChange(user, "delete-term", removed);
+      } else if (action === "rename") {
+        const from = String(body.from || "");
+        const to = clean(body.to);
+        if (!from || !to) throw new Error("A new name is needed");
+        if (fixed.has(from)) throw new Error(`${from} is fixed (plants / accessories) and can't be renamed`);
+        if (from !== to) {
+          const terms = await renameInkoopHoofdgroep(from, to);
+          await logInkoopHoofdgroepChange(user, "rename", { from, to, terms });
+        }
+      } else if (action === "create") {
+        const name = clean(body.name);
+        if (!name) throw new Error("A name is needed");
+        await saveInkoopHoofdgroep(name, clean(body.note) || null);
+        await logInkoopHoofdgroepChange(user, "create", { name });
+        recompute = false;
+      } else if (action === "note") {
+        const name = clean(body.name);
+        if (!name) throw new Error("Which Hoofdgroep?");
+        const note = String(body.note ?? "").trim().slice(0, 2000);
+        await saveInkoopHoofdgroep(name, note);
+        await logInkoopHoofdgroepChange(user, "note", { name, note });
+        recompute = false;
+      } else if (action === "delete-group") {
+        const name = String(body.name || "");
+        if (fixed.has(name)) throw new Error(`${name} is fixed and can't be removed`);
+        await deleteInkoopHoofdgroep(name);
+        await logInkoopHoofdgroepChange(user, "delete-group", { name });
+        recompute = false;
+      } else {
+        throw new Error(`Unknown action "${action}"`);
+      }
+      const lots = recompute ? await applyInkoopHoofdgroepChange() : null;
+      sendJson(res, 200, { ...(await buildInkoopHoofdgroepManager()), lots });
+    } catch (error) {
+      sendJson(res, 400, { error: error instanceof Error ? error.message : String(error) });
+    }
     return;
   }
 

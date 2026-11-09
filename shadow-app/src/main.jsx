@@ -25824,6 +25824,9 @@ function InkoopCustomersTab() {
   const [search, setSearch] = useState("");
   const [sort, setSort] = useState({ key: "pieces", dir: -1 });
   const [openCode, setOpenCode] = useState("");
+  const [managing, setManaging] = useState(false);
+  const [reloadKey, setReloadKey] = useState(0);
+  const reloadOverview = useCallback(() => setReloadKey((value) => value + 1), []);
   const requestRef = useRef(0);
   useEffect(() => {
     const request = requestRef.current + 1;
@@ -25833,7 +25836,7 @@ function InkoopCustomersTab() {
       .then((payload) => { if (requestRef.current === request) { setData(payload); setError(""); } })
       .catch((loadError) => { if (requestRef.current === request) setError(loadError.message); })
       .finally(() => { if (requestRef.current === request) setLoading(false); });
-  }, [range.from, range.to]);
+  }, [range.from, range.to, reloadKey]);
   const mainLabelOf = ikGroupLabelOf(data?.group_list);
   const hoofdMain = new Map((data?.hoofdgroepen || []).map((entry) => [entry.name, entry.main]));
   // A group key of the view: its label and colour.
@@ -25949,6 +25952,7 @@ function InkoopCustomersTab() {
           <div className="ik-filter-group" role="group" aria-label="Groups">
             <button type="button" className={`ik-chip${hoofd ? "" : " on"}`} aria-pressed={!hoofd} onClick={() => setView("main")} title="The compressed main groups (Chrysanten, Rozen, Overige snijbloemen ...)">Main groups</button>
             <button type="button" className={`ik-chip${hoofd ? " on" : ""}`} aria-pressed={hoofd} onClick={() => setView("hoofd")} title="Our Hoofdgroepen (Chr t, Chr g, Lilium, Fillers B, Green per Bunch ...) from the mapping in Settings; plants Planten, accessories Deco">Hoofdgroep</button>
+            <button type="button" className="ik-chip" onClick={() => setManaging(true)} title="See what is in each Hoofdgroep, move zoektermen, rename groups, and link what has no Hoofdgroep yet">⚙ Manage Hoofdgroepen</button>
           </div>
           <span className="ik-info" title={"Every dispatch of the Connect export (\"Dispatched to\") counted for its customer, on the lot's date. The group: the lot's product name in our product list (Settings › Klant inzicht data: \"Chr g Topspin\" is the lot \"Topspin\", sales group Chr g), its sales group in one of the main groups (VBN 1 04 chrysanthemums, 1 07 greenery ...); without a sales group, by Connect's T (B flowers, P plants, A accessoires).\n\nValue and € / pc: what we paid for those pieces (the lot's price) -- the sales price is not in the data yet."}>ⓘ</span>
         </div>
@@ -26102,12 +26106,414 @@ function InkoopCustomersTab() {
         </div>
       )}
       {openCode && <IkCustomerDrawer code={openCode} range={range} hoofd={hoofd} hoofdMain={hoofdMain} onClose={() => setOpenCode("")} />}
+      {managing && (
+        <IkHoofdgroepManager
+          piecesOf={(name) => (data?.hoofdgroepen || []).find((entry) => entry.name === name)?.pieces || 0}
+          colorOf={(name) => IK_CUSTOMER_GROUP_COLORS[hoofdMain.get(name)] || IK_CUSTOMER_GROUP_COLORS.none}
+          onChanged={reloadOverview}
+          onClose={() => setManaging(false)}
+        />
+      )}
     </div>
   );
 }
 
 // One customer: its groups per month (pieces), their prices, its products
 // and its lots.
+// Manage Hoofdgroepen: a right-click menu -- plain items, or (pick) every
+// Hoofdgroep with a search and "new: …".
+function IkHoofdMenu({ menu, groups, onClose }) {
+  const [query, setQuery] = useState("");
+  useEffect(() => {
+    if (!menu) return undefined;
+    setQuery("");
+    const close = () => onClose();
+    const key = (event) => { if (event.key === "Escape") onClose(); };
+    // Attached after this click / right-click is over.
+    const timer = window.setTimeout(() => {
+      window.addEventListener("click", close);
+      window.addEventListener("contextmenu", close);
+      window.addEventListener("resize", close);
+      window.addEventListener("keydown", key);
+    }, 0);
+    return () => {
+      window.clearTimeout(timer);
+      window.removeEventListener("click", close);
+      window.removeEventListener("contextmenu", close);
+      window.removeEventListener("resize", close);
+      window.removeEventListener("keydown", key);
+    };
+  }, [menu, onClose]);
+  if (!menu) return null;
+  const words = query.toLowerCase().split(/\s+/).filter(Boolean);
+  const list = menu.pick ? groups.filter((group) => group.name !== menu.pick.exclude && words.every((word) => group.name.toLowerCase().includes(word))) : [];
+  const typed = query.replace(/\s+/g, " ").trim();
+  const isNew = typed && !groups.some((group) => group.name.toLowerCase() === typed.toLowerCase());
+  const height = menu.pick ? 420 : 40 + (menu.items?.length || 0) * 34;
+  const style = { left: Math.max(4, Math.min(menu.x, window.innerWidth - 300)), top: Math.max(4, Math.min(menu.y, window.innerHeight - height - 8)) };
+  const pick = (name) => { menu.pick.onPick(name); onClose(); };
+  return (
+    <div className="ik-ctx-menu ik-hoofd-menu" style={style} role="menu" onClick={(event) => event.stopPropagation()} onContextMenu={(event) => { event.preventDefault(); event.stopPropagation(); }}>
+      {menu.title && <div className="ik-ctx-title"><strong>{menu.title}</strong>{menu.subtitle && <span className="muted">{menu.subtitle}</span>}</div>}
+      {(menu.items || []).map((item) => (
+        <button key={item.label} type="button" role="menuitem" disabled={item.disabled} title={item.title} className={item.danger ? "danger" : ""}
+          onClick={() => { if (!item.keepOpen) onClose(); item.onClick(); }}>{item.label}</button>
+      ))}
+      {menu.pick && (
+        <>
+          <input autoFocus className="ik-hoofd-menu-search" value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search or type a new Hoofdgroep…"
+            onKeyDown={(event) => {
+              if (event.key !== "Enter") return;
+              if (list.length === 1 && !isNew) pick(list[0].name);
+              else if (isNew) pick(typed);
+            }} />
+          <div className="ik-hoofd-menu-list">
+            {isNew && <button type="button" role="menuitem" className="ik-hoofd-new" onClick={() => pick(typed)}>+ New Hoofdgroep “{typed}”</button>}
+            {list.map((group) => (
+              <button key={group.name} type="button" role="menuitem" onClick={() => pick(group.name)}>
+                <span>{group.name}</span><small className="muted">{group.terms ? `${group.terms} term(s)` : group.fixed ? "fixed" : "no terms"}</small>
+              </button>
+            ))}
+            {!list.length && !isNew && <div className="muted ik-hoofd-menu-empty">No Hoofdgroep matches.</div>}
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
+// Klant inzicht › Manage Hoofdgroepen: every Hoofdgroep with its zoektermen
+// (the start of a sales line's name / Productgroep that puts it there) and
+// note; move terms (right-click, the selection, or drag onto a group), add /
+// edit / remove terms, rename / make / remove groups; and "Not linked": the
+// dispatched pieces without a Hoofdgroep yet, per product group -- a
+// right-click links one (its name becomes a zoekterm of that group).
+const IK_NOT_LINKED = "\u0000not-linked";
+function IkHoofdgroepManager({ piecesOf, colorOf, onClose, onChanged }) {
+  const [data, setData] = useState(null);
+  const [error, setError] = useState("");
+  const [message, setMessage] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [selected, setSelected] = useState(IK_NOT_LINKED);
+  const [search, setSearch] = useState("");
+  const [checked, setChecked] = useState(() => new Set());
+  const [menu, setMenu] = useState(null);
+  const [editing, setEditing] = useState(null); // { old_term, term, product }
+  const [noteDraft, setNoteDraft] = useState(null);
+  const [renaming, setRenaming] = useState(null);
+  const [dropOn, setDropOn] = useState("");
+  const closeMenu = useCallback(() => setMenu(null), []);
+  useEffect(() => {
+    apiJson("/api/inkoop/customers/hoofdgroepen").then(setData).catch((loadError) => setError(loadError.message));
+  }, []);
+  // While the months are worked out again: ask every few seconds.
+  useEffect(() => {
+    if (!data?.job?.running) return undefined;
+    const timer = window.setTimeout(() => {
+      apiJson("/api/inkoop/customers/hoofdgroepen").then((payload) => {
+        setData(payload);
+        if (!payload.job?.running) onChanged?.();
+      }).catch(() => {});
+    }, 4000);
+    return () => window.clearTimeout(timer);
+  }, [data, onChanged]);
+  // Another group (or "Not linked") chosen: start clean; open the rename /
+  // note box at once when the right-click asked for it.
+  const choose = (name, open = {}) => {
+    setSelected(name);
+    setChecked(new Set());
+    setEditing(null);
+    setNoteDraft(open.note ?? null);
+    setRenaming(open.rename ?? null);
+  };
+
+  async function send(body, done) {
+    setBusy(true);
+    setError("");
+    setMessage("");
+    try {
+      const payload = await apiJson("/api/inkoop/customers/hoofdgroepen", { method: "POST", body: JSON.stringify(body) });
+      setData(payload);
+      setChecked(new Set());
+      setMessage(`${done}${payload.lots ? ` · ${ikPieces(payload.lots.matched)} of ${ikPieces(payload.lots.lots)} sales-list lots have a Hoofdgroep (${ikPieces(payload.lots.updated)} changed); the page figures follow when the months are worked out again.` : ""}`);
+      onChanged?.();
+      return payload;
+    } catch (sendError) {
+      setError(sendError.message);
+      return null;
+    } finally {
+      setBusy(false);
+    }
+  }
+  const groups = data?.groups || [];
+  const groupNames = new Set(groups.map((group) => group.name));
+  const terms = data?.terms || [];
+  const unlinked = data?.unlinked || [];
+  const unlinkedPieces = unlinked.reduce((sum, entry) => sum + entry.pieces, 0);
+  const words = search.toLowerCase().split(/\s+/).filter(Boolean);
+  const hits = (text) => words.every((word) => text.toLowerCase().includes(word));
+  const shownGroups = groups.filter((group) => !words.length || hits(group.name) || terms.some((term) => term.hoofdgroep === group.name && hits(`${term.term} ${term.product}`)));
+  const group = groups.find((entry) => entry.name === selected);
+  // The terms shown: the group's, or with a search every matching term.
+  const searching = words.length > 0 && selected !== IK_NOT_LINKED;
+  const shownTerms = terms.filter((term) => (searching ? hits(`${term.term} ${term.product} ${term.hoofdgroep}`) : term.hoofdgroep === selected));
+  const shownUnlinked = unlinked.filter((entry) => !words.length || hits(`${entry.sales_group} ${(entry.examples || []).join(" ")} ${entry.falls_in}`));
+
+  const toggle = (key) => setChecked((current) => {
+    const next = new Set(current);
+    if (next.has(key)) next.delete(key); else next.add(key);
+    return next;
+  });
+  const moveTerms = (list, to) => send({ action: "move", terms: list, hoofdgroep: to }, `${list.length === 1 ? `“${list[0]}”` : `${list.length} zoektermen`} → ${to}`);
+  const linkGroups = (list, to) => send({ action: "link", sales_groups: list, hoofdgroep: to }, `${list.length === 1 ? `“${list[0]}”` : `${list.length} product groups`} linked to ${to}`);
+  const pickMenu = (event, title, subtitle, onPick, exclude = "") => {
+    event.preventDefault();
+    setMenu({ x: event.clientX, y: event.clientY, title, subtitle, pick: { onPick, exclude } });
+  };
+  const termMenu = (event, term) => {
+    event.preventDefault();
+    const list = checked.has(term.term) && checked.size > 1 ? [...checked] : [term.term];
+    setMenu({
+      x: event.clientX, y: event.clientY, title: list.length > 1 ? `${list.length} zoektermen` : term.term, subtitle: list.length > 1 ? "" : `${term.product || "–"} · ${term.hoofdgroep}`,
+      items: [
+        { label: "→ Move to another Hoofdgroep…", keepOpen: true, onClick: () => setMenu({ x: event.clientX, y: event.clientY, title: `Move ${list.length > 1 ? `${list.length} zoektermen` : `“${term.term}”`} to`, pick: { onPick: (to) => moveTerms(list, to), exclude: term.hoofdgroep } }) },
+        { label: "✎ Edit zoekterm / product", disabled: list.length > 1, onClick: () => setEditing({ old_term: term.term, term: term.term, product: term.product, hoofdgroep: term.hoofdgroep }) },
+        { label: `↗ Show ${term.hoofdgroep}`, disabled: !searching, onClick: () => { setSearch(""); choose(term.hoofdgroep); } },
+        { label: "✕ Remove zoekterm", danger: true, disabled: list.length > 1, onClick: () => { if (window.confirm(`Remove the zoekterm “${term.term}” from ${term.hoofdgroep}?`)) send({ action: "delete-term", term: term.term }, `“${term.term}” removed`); } },
+      ],
+    });
+  };
+  const groupMenu = (event, entry) => {
+    event.preventDefault();
+    setMenu({
+      x: event.clientX, y: event.clientY, title: entry.name, subtitle: entry.fixed || `${entry.terms} zoekterm(en)`,
+      items: [
+        { label: "✎ Rename…", disabled: Boolean(entry.fixed), onClick: () => choose(entry.name, { rename: entry.name }) },
+        { label: "📝 Edit note", onClick: () => choose(entry.name, { note: entry.note || "" }) },
+        { label: "⇢ Merge into another Hoofdgroep…", disabled: Boolean(entry.fixed) || !entry.terms, keepOpen: true,
+          onClick: () => setMenu({ x: event.clientX, y: event.clientY, title: `Merge ${entry.name} into`, pick: { exclude: entry.name, onPick: (to) => { if (window.confirm(`Move all ${entry.terms} zoektermen of ${entry.name} to ${to}? ${entry.name} is gone after (its note goes to ${to} when that has none).`)) send({ action: "rename", from: entry.name, to }, `${entry.name} merged into ${to}`); } } }) },
+        { label: "✕ Remove (no terms only)", danger: true, disabled: Boolean(entry.fixed) || entry.terms > 0, onClick: () => send({ action: "delete-group", name: entry.name }, `${entry.name} removed`).then((payload) => payload && choose(IK_NOT_LINKED)) },
+      ],
+    });
+  };
+  const unlinkedMenu = (event, entry) => {
+    if (!entry.sales_group) { event.preventDefault(); return; }
+    const list = checked.has(entry.sales_group) && checked.size > 1 ? [...checked] : [entry.sales_group];
+    pickMenu(event, `Link ${list.length > 1 ? `${list.length} product groups` : `“${entry.sales_group}”`} to`, "its name becomes a zoekterm of that Hoofdgroep", (to) => linkGroups(list, to));
+  };
+  // Drag a term / product group onto a Hoofdgroep in the list.
+  const dragStart = (event, kind, key) => {
+    const list = checked.has(key) && checked.size > 1 ? [...checked] : [key];
+    event.dataTransfer.setData("application/x-ik-hoofd", JSON.stringify({ kind, list }));
+    event.dataTransfer.effectAllowed = "move";
+  };
+  const drop = (event, to) => {
+    event.preventDefault();
+    setDropOn("");
+    try {
+      const { kind, list } = JSON.parse(event.dataTransfer.getData("application/x-ik-hoofd") || "{}");
+      if (!list?.length) return;
+      if (kind === "term") moveTerms(list, to);
+      else if (kind === "unlinked") linkGroups(list, to);
+    } catch { /* not ours */ }
+  };
+  const dropProps = (name) => ({
+    onDragOver: (event) => { if (event.dataTransfer.types.includes("application/x-ik-hoofd")) { event.preventDefault(); setDropOn(name); } },
+    onDragLeave: () => setDropOn((current) => (current === name ? "" : current)),
+    onDrop: (event) => drop(event, name),
+  });
+  async function saveEdit() {
+    const target = editing.hoofdgroep || selected;
+    const payload = await send({ action: "save-term", old_term: editing.old_term || "", term: editing.term, product: editing.product, hoofdgroep: target }, editing.old_term ? `“${editing.term}” saved` : `“${editing.term}” added to ${target}`);
+    if (payload) setEditing(null);
+  }
+  async function newGroup() {
+    const name = window.prompt("Name of the new Hoofdgroep");
+    if (!name?.trim()) return;
+    const payload = await send({ action: "create", name: name.trim() }, `${name.trim()} made -- right-click terms or product groups to put them in it`);
+    if (payload) choose(name.replace(/\s+/g, " ").trim());
+  }
+  const job = data?.job;
+  return (
+    <div className="ik-drawer wide ik-hoofd-mgr" role="dialog" aria-label="Manage Hoofdgroepen">
+      <div className="ik-drawer-head">
+        <strong>Manage Hoofdgroepen</strong>
+        <span className="row-actions">
+          <input className="ik-side-search" value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Search a group, zoekterm, product…" />
+          <button type="button" onClick={newGroup} disabled={busy}>+ New Hoofdgroep</button>
+          <button type="button" onClick={onClose}>Close</button>
+        </span>
+      </div>
+      <div className="muted">
+        A flower line goes to the Hoofdgroep of the <strong>zoekterm</strong> its name (or Productgroep) starts with -- the longest wins; plants Planten, accessories Deco.
+        Right-click a zoekterm to move it, a product group under “Not linked” to link it, a Hoofdgroep to rename it; or drag them onto a Hoofdgroep. Tick several to move them at once.
+      </div>
+      {error && <div className="notice danger">{error}</div>}
+      {message && <div className="notice">{message}</div>}
+      {job?.running && <div className="muted">Working out the months again… {job.done} of {job.months}</div>}
+      {!data ? <div className="muted">Loading…</div> : (
+        <div className="ik-hoofd-grid" aria-busy={busy}>
+          <div className="ik-hoofd-list" role="listbox" aria-label="Hoofdgroepen">
+            <button type="button" className={`ik-hoofd-item ik-hoofd-unlinked${selected === IK_NOT_LINKED ? " on" : ""}`} onClick={() => choose(IK_NOT_LINKED)}>
+              <span>⚠ Not linked</span><small>{unlinked.length} · {ikPieces(unlinkedPieces)} pcs</small>
+            </button>
+            {shownGroups.map((entry) => (
+              <button key={entry.name} type="button" role="option" aria-selected={selected === entry.name}
+                className={`ik-hoofd-item${selected === entry.name ? " on" : ""}${dropOn === entry.name ? " drop" : ""}`}
+                onClick={() => choose(entry.name)} onContextMenu={(event) => groupMenu(event, entry)} {...dropProps(entry.name)}
+                title={[entry.fixed, entry.note].filter(Boolean).join("\n") || undefined}>
+                <span><i className="ik-cust-dot" style={{ background: colorOf(entry.name) }} />{entry.name}{entry.note ? " 📝" : ""}</span>
+                <small>{entry.fixed ? "fixed" : `${entry.terms} term(s)`}{piecesOf(entry.name) ? ` · ${ikPieces(piecesOf(entry.name))} pcs` : ""}</small>
+              </button>
+            ))}
+          </div>
+          <div className="ik-hoofd-detail">
+            {selected === IK_NOT_LINKED ? (
+              <>
+                <div className="ik-card-head">
+                  <strong>Not linked</strong>
+                  <span className="muted">dispatched pieces (all months) whose product group no zoekterm catches -- they now land in the main group on the right</span>
+                </div>
+                {checked.size > 0 && (
+                  <div className="row-actions ik-hoofd-bulk">
+                    <span>{checked.size} ticked</span>
+                    <button type="button" className="primary" disabled={busy} onClick={(event) => pickMenu(event, `Link ${checked.size} product groups to`, "", (to) => linkGroups([...checked], to))}>Link to…</button>
+                    <button type="button" onClick={() => setChecked(new Set())}>Clear</button>
+                  </div>
+                )}
+                <div className="ik-cust-scroll">
+                  <table className="data-table ik-table">
+                    <thead><tr><th aria-label="Tick" /><th>Product group</th><th className="num">Pieces</th><th className="num">Customers</th><th>Now in</th><th>Names</th><th aria-label="Link" /></tr></thead>
+                    <tbody>
+                      {shownUnlinked.map((entry) => (
+                        <tr key={entry.sales_group || "-"} draggable={Boolean(entry.sales_group)} onDragStart={(event) => dragStart(event, "unlinked", entry.sales_group)}
+                          onContextMenu={(event) => unlinkedMenu(event, entry)} className={checked.has(entry.sales_group) ? "selected" : ""}
+                          title={entry.sales_group ? "Right-click or drag onto a Hoofdgroep to link it" : "No product group known (not in the sales list, VBN code or product export) -- can't be linked by name"}>
+                          <td>{entry.sales_group && <input type="checkbox" checked={checked.has(entry.sales_group)} onChange={() => toggle(entry.sales_group)} aria-label={`Tick ${entry.sales_group}`} />}</td>
+                          <td><strong>{entry.sales_group || <span className="muted">(no product group)</span>}</strong></td>
+                          <td className="num">{ikPieces(entry.pieces)}</td>
+                          <td className="num">{entry.customers}</td>
+                          <td className="muted">{entry.falls_in}</td>
+                          <td className="muted ik-hoofd-examples">{(entry.examples || []).join(" · ")}</td>
+                          <td>{entry.sales_group && <button type="button" className="link-button" disabled={busy} onClick={(event) => unlinkedMenu(event, entry)}>Link…</button>}</td>
+                        </tr>
+                      ))}
+                      {!shownUnlinked.length && <tr><td colSpan={7} className="muted">{unlinked.length ? "Nothing matches the search." : "Everything has a Hoofdgroep."}</td></tr>}
+                    </tbody>
+                  </table>
+                </div>
+              </>
+            ) : (
+              <>
+                <div className="ik-card-head">
+                  {searching ? <strong>Zoektermen matching “{search}”</strong> : renaming !== null ? (
+                    <form className="row-actions" onSubmit={(event) => { event.preventDefault(); const to = renaming.trim(); if (!to || to === selected) { setRenaming(null); return; } if (groupNames.has(to) && !window.confirm(`${to} exists -- merge ${selected} into it?`)) return; send({ action: "rename", from: selected, to }, `${selected} → ${to}`).then((payload) => { if (payload) { setRenaming(null); choose(to); } }); }}>
+                      <input autoFocus value={renaming} onChange={(event) => setRenaming(event.target.value)} aria-label="New name" />
+                      <button type="submit" className="primary" disabled={busy}>Rename</button>
+                      <button type="button" onClick={() => setRenaming(null)}>Cancel</button>
+                    </form>
+                  ) : (
+                    <strong><i className="ik-cust-dot" style={{ background: colorOf(selected) }} />{selected}</strong>
+                  )}
+                  {!searching && group && (
+                    <span className="row-actions">
+                      {piecesOf(selected) > 0 && <span className="muted">{ikPieces(piecesOf(selected))} pcs in the period shown</span>}
+                      {!group.fixed && renaming === null && <button type="button" onClick={() => setRenaming(selected)}>Rename</button>}
+                      {noteDraft === null && <button type="button" onClick={() => setNoteDraft(group.note || "")}>{group.note ? "Edit note" : "Add note"}</button>}
+                    </span>
+                  )}
+                </div>
+                {!searching && group?.fixed && <div className="notice">{selected}: {group.fixed} -- by its Asrt, not by zoektermen.</div>}
+                {!searching && group && noteDraft === null && group.note && <div className="ik-hoofd-note">{group.note}</div>}
+                {!searching && noteDraft !== null && (
+                  <div className="ik-hoofd-note-edit">
+                    <textarea autoFocus rows={3} value={noteDraft} onChange={(event) => setNoteDraft(event.target.value)} placeholder="What belongs here, who buys it, season, price range…" />
+                    <span className="row-actions">
+                      <button type="button" className="primary" disabled={busy} onClick={() => send({ action: "note", name: selected, note: noteDraft }, "Note saved").then((payload) => payload && setNoteDraft(null))}>Save note</button>
+                      <button type="button" onClick={() => setNoteDraft(null)}>Cancel</button>
+                    </span>
+                  </div>
+                )}
+                {checked.size > 0 && (
+                  <div className="row-actions ik-hoofd-bulk">
+                    <span>{checked.size} ticked</span>
+                    <button type="button" className="primary" disabled={busy} onClick={(event) => pickMenu(event, `Move ${checked.size} zoektermen to`, "", (to) => moveTerms([...checked], to), searching ? "" : selected)}>Move to…</button>
+                    <button type="button" onClick={() => setChecked(new Set())}>Clear</button>
+                  </div>
+                )}
+                <div className="ik-cust-scroll">
+                  <table className="data-table ik-table">
+                    <thead><tr><th aria-label="Tick" /><th>Zoekterm</th><th>Product</th>{searching && <th>Hoofdgroep</th>}<th className="num" title="Sales-list lots this zoekterm puts in its group">Lots</th><th className="num">Sales lines</th><th aria-label="Actions" /></tr></thead>
+                    <tbody>
+                      {shownTerms.map((term) => (editing?.old_term === term.term ? (
+                        <tr key={term.term} className="ik-hoofd-editing">
+                          <td />
+                          <td><input autoFocus value={editing.term} onChange={(event) => setEditing({ ...editing, term: event.target.value })} aria-label="Zoekterm" onKeyDown={(event) => event.key === "Enter" && saveEdit()} /></td>
+                          <td><input value={editing.product} onChange={(event) => setEditing({ ...editing, product: event.target.value })} aria-label="Product" onKeyDown={(event) => event.key === "Enter" && saveEdit()} /></td>
+                          {searching && <td>{term.hoofdgroep}</td>}
+                          <td colSpan={3} className="row-actions"><button type="button" className="primary" disabled={busy || !editing.term.trim()} onClick={saveEdit}>Save</button><button type="button" onClick={() => setEditing(null)}>Cancel</button></td>
+                        </tr>
+                      ) : (
+                        <tr key={term.term} draggable onDragStart={(event) => dragStart(event, "term", term.term)} onContextMenu={(event) => termMenu(event, term)}
+                          className={checked.has(term.term) ? "selected" : ""} title="Right-click: move / edit / remove; or drag onto a Hoofdgroep">
+                          <td><input type="checkbox" checked={checked.has(term.term)} onChange={() => toggle(term.term)} aria-label={`Tick ${term.term}`} /></td>
+                          <td><strong>{term.term}</strong></td>
+                          <td>{term.product || <span className="muted">–</span>}</td>
+                          {searching && <td><button type="button" className="link-button" onClick={() => { setSearch(""); choose(term.hoofdgroep); }}>{term.hoofdgroep}</button></td>}
+                          <td className="num">{term.lots ? ikPieces(term.lots) : <span className="muted" title={term.duplicate ? "Same as another spelling of this term -- counted there" : "No sales-list line starts with it"}>{term.duplicate ? "=" : "0"}</span>}</td>
+                          <td className="num">{term.lines ? ikPieces(term.lines) : ""}</td>
+                          <td><button type="button" className="link-button" onClick={(event) => termMenu(event, term)} aria-label={`Actions for ${term.term}`}>⋯</button></td>
+                        </tr>
+                      )))}
+                      {!searching && !group?.fixed && (editing && !editing.old_term ? (
+                        <tr className="ik-hoofd-editing">
+                          <td />
+                          <td><input autoFocus value={editing.term} onChange={(event) => setEditing({ ...editing, term: event.target.value })} placeholder="Zoekterm (start of the name)" aria-label="New zoekterm" onKeyDown={(event) => event.key === "Enter" && saveEdit()} /></td>
+                          <td><input value={editing.product} onChange={(event) => setEditing({ ...editing, product: event.target.value })} placeholder="Product" aria-label="Product" onKeyDown={(event) => event.key === "Enter" && saveEdit()} /></td>
+                          <td colSpan={3} className="row-actions"><button type="button" className="primary" disabled={busy || !editing.term.trim()} onClick={saveEdit}>Add</button><button type="button" onClick={() => setEditing(null)}>Cancel</button></td>
+                        </tr>
+                      ) : (
+                        <tr><td /><td colSpan={5}><button type="button" className="link-button" onClick={() => setEditing({ old_term: "", term: "", product: "", hoofdgroep: selected })}>+ Add a zoekterm</button></td></tr>
+                      ))}
+                      {searching && !shownTerms.length && <tr><td colSpan={7} className="muted">No zoekterm matches.</td></tr>}
+                    </tbody>
+                  </table>
+                </div>
+              </>
+            )}
+            {data.log?.length > 0 && (
+              <details className="ik-hoofd-log">
+                <summary className="muted">Last changes</summary>
+                <ul>
+                  {data.log.map((entry) => (
+                    <li key={`${entry.at}|${entry.action}`} className="muted">
+                      {formatTimestamp(entry.at)} · {entry.user_name || "?"} · {entry.action} {ikHoofdLogText(entry)}
+                    </li>
+                  ))}
+                </ul>
+              </details>
+            )}
+          </div>
+        </div>
+      )}
+      <IkHoofdMenu menu={menu} groups={groups} onClose={closeMenu} />
+    </div>
+  );
+}
+
+function ikHoofdLogText(entry) {
+  const detail = entry.detail || {};
+  switch (entry.action) {
+    case "move": return `${(detail.terms || []).join(", ")} → ${detail.to}`;
+    case "link": return `${(detail.sales_groups || []).join(", ")} → ${detail.to}`;
+    case "rename": return `${detail.from} → ${detail.to}`;
+    case "add-term": return `${detail.term} → ${detail.to}`;
+    case "edit-term": return `${detail.old_term} → ${detail.term} (${detail.product || "–"}, ${detail.to})`;
+    case "delete-term": return `${detail.term} (${detail.hoofdgroep})`;
+    default: return detail.name || "";
+  }
+}
+
 function IkCustomerDrawer({ code, range, hoofd = false, hoofdMain = new Map(), onClose }) {
   const [data, setData] = useState(null);
   const [error, setError] = useState("");

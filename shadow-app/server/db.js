@@ -1692,6 +1692,115 @@ export async function getInkoopHoofdgroepTerms() {
   return result.rows;
 }
 
+// ---- Manage Hoofdgroepen (by hand) -----------------------------------------
+// The groups with a note / made by hand (the others exist by their terms).
+export async function getInkoopHoofdgroepList() {
+  if (!pool) return [];
+  const result = await pool.query("SELECT name, note FROM inkoop_hoofdgroepen ORDER BY name");
+  return result.rows;
+}
+
+export async function saveInkoopHoofdgroep(name, note = null) {
+  if (!pool) return;
+  await pool.query(
+    `INSERT INTO inkoop_hoofdgroepen (name, note) VALUES ($1, COALESCE($2, ''))
+     ON CONFLICT (name) DO UPDATE SET note = COALESCE($2, inkoop_hoofdgroepen.note), updated_at = now()`,
+    [name, note],
+  );
+}
+
+// A Hoofdgroep renamed: its terms, its note, and the lots that have it (the
+// months follow in the rebuild). An existing name: the two are merged.
+export async function renameInkoopHoofdgroep(from, to) {
+  if (!pool) return 0;
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    const terms = await client.query("UPDATE inkoop_hoofdgroep_terms SET hoofdgroep = $2, updated_at = now() WHERE hoofdgroep = $1", [from, to]);
+    const old = await client.query("DELETE FROM inkoop_hoofdgroepen WHERE name = $1 RETURNING note", [from]);
+    await client.query(
+      `INSERT INTO inkoop_hoofdgroepen (name, note) VALUES ($1, $2)
+       ON CONFLICT (name) DO UPDATE SET note = CASE WHEN inkoop_hoofdgroepen.note = '' THEN EXCLUDED.note ELSE inkoop_hoofdgroepen.note END, updated_at = now()`,
+      [to, old.rows[0]?.note || ""],
+    );
+    await client.query("UPDATE inkoop_lot_groups SET hoofdgroep = $2 WHERE hoofdgroep = $1", [from, to]);
+    await client.query("UPDATE inkoop_vbn_groups SET hoofdgroep = $2 WHERE hoofdgroep = $1", [from, to]);
+    await client.query("COMMIT");
+    return terms.rowCount;
+  } catch (error) {
+    await client.query("ROLLBACK");
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
+// A group without terms can be removed (one with terms: move them first).
+export async function deleteInkoopHoofdgroep(name) {
+  if (!pool) return 0;
+  const used = await pool.query("SELECT count(*)::int AS count FROM inkoop_hoofdgroep_terms WHERE hoofdgroep = $1", [name]);
+  if (used.rows[0].count) throw new Error(`${name} still has ${used.rows[0].count} zoekterm(en) -- move them first`);
+  const result = await pool.query("DELETE FROM inkoop_hoofdgroepen WHERE name = $1", [name]);
+  return result.rowCount;
+}
+
+export async function moveInkoopHoofdgroepTerms(terms, to) {
+  if (!pool || !terms?.length) return 0;
+  const result = await pool.query("UPDATE inkoop_hoofdgroep_terms SET hoofdgroep = $2, updated_at = now() WHERE term = ANY($1::text[])", [terms, to]);
+  return result.rowCount;
+}
+
+// A zoekterm added or edited (a new spelling replaces the old one).
+export async function saveInkoopHoofdgroepTerm({ oldTerm = "", term, product = "", hoofdgroep }) {
+  if (!pool) return;
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    if (oldTerm && oldTerm !== term) await client.query("DELETE FROM inkoop_hoofdgroep_terms WHERE term = $1", [oldTerm]);
+    await client.query(
+      `INSERT INTO inkoop_hoofdgroep_terms (term, product, hoofdgroep) VALUES ($1, $2, $3)
+       ON CONFLICT (term) DO UPDATE SET product = EXCLUDED.product, hoofdgroep = EXCLUDED.hoofdgroep, updated_at = now()`,
+      [term, product, hoofdgroep],
+    );
+    await client.query("COMMIT");
+  } catch (error) {
+    await client.query("ROLLBACK");
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
+export async function deleteInkoopHoofdgroepTerm(term) {
+  if (!pool) return 0;
+  const result = await pool.query("DELETE FROM inkoop_hoofdgroep_terms WHERE term = $1 RETURNING term, product, hoofdgroep", [term]);
+  return result.rows[0] || null;
+}
+
+export async function logInkoopHoofdgroepChange(userName, action, detail) {
+  if (!pool) return;
+  await pool.query("INSERT INTO inkoop_hoofdgroep_log (user_name, action, detail) VALUES ($1, $2, $3)", [userName || "", action, JSON.stringify(detail || {})]);
+}
+
+export async function getInkoopHoofdgroepLog(limit = 40) {
+  if (!pool) return [];
+  const result = await pool.query("SELECT at, user_name, action, detail FROM inkoop_hoofdgroep_log ORDER BY id DESC LIMIT $1", [limit]);
+  return result.rows;
+}
+
+// The dispatched pieces whose month row has no Hoofdgroep from its lot / VBN
+// code, per sales group (the page matches the name route itself).
+export async function getInkoopCustomerMonthUnlinked() {
+  if (!pool) return [];
+  const result = await pool.query(
+    `SELECT sales_group, t, level1, sum(pieces)::float8 AS pieces, sum(value)::float8 AS value, count(DISTINCT customer_code)::int AS customers
+       FROM inkoop_customer_month
+      WHERE hoofdgroep = '' AND upper(t) NOT IN ('P', 'A')
+      GROUP BY sales_group, t, level1`,
+  );
+  return result.rows;
+}
+
 // Every sales-list lot with what its Hoofdgroep is worked out from.
 export async function getInkoopLotGroupTexts() {
   if (!pool) return [];
@@ -5412,6 +5521,25 @@ const databaseMigrations = [
         ALTER TABLE inkoop_customer_month ADD PRIMARY KEY (month, customer_code, sales_group, t, src, level1, hoofdgroep);
       END IF;
     END $$
+  `,
+  // The Hoofdgroepen themselves (Klant inzicht › Manage Hoofdgroepen): a
+  // group can exist before it has a zoekterm, and has a note; every change
+  // of the mapping by hand is logged.
+  `
+    CREATE TABLE IF NOT EXISTS inkoop_hoofdgroepen (
+      name text PRIMARY KEY,
+      note text NOT NULL DEFAULT '',
+      updated_at timestamptz NOT NULL DEFAULT now()
+    )
+  `,
+  `
+    CREATE TABLE IF NOT EXISTS inkoop_hoofdgroep_log (
+      id bigserial PRIMARY KEY,
+      at timestamptz NOT NULL DEFAULT now(),
+      user_name text NOT NULL DEFAULT '',
+      action text NOT NULL,
+      detail jsonb NOT NULL DEFAULT '{}'::jsonb
+    )
   `,
   // One row per FloraHolland invoice: the totals King's journal export
   // needs (total incl. BTW, BTW per category, klok location) -- parsed from
