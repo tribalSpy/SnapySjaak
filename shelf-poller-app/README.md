@@ -72,6 +72,12 @@ and `trained_model_infer` (e.g. `...\shelf-training\models\infer.py`) in
 sent along for comparison only; it can never fail a job. Leave both empty to
 switch it off.
 
+"No module named 'ultralytics'" on the Shelf count page: the python in
+`trained_model_python` lacks the model's packages. Run
+`install_trained_model.bat` (this folder) once on the GPU PC -- it installs
+`shelf-training/training/requirements.txt` into exactly that python and
+checks the import.
+
 ## What this does
 
 - Sends heartbeat updates to Shadow (capabilities always `["shelf_count"]`).
