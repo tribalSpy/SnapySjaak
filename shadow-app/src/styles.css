@@ -1785,6 +1785,66 @@ pre {
   gap: 16px;
 }
 
+.ukdocs-customer-form-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  scroll-margin-top: 12px;
+}
+
+.ukdocs-customer-group {
+  border: 1px solid #d6dde5;
+  border-radius: 10px;
+  background: #fbfcfd;
+  padding: 0 14px;
+}
+
+.ukdocs-customer-group[open] {
+  padding-bottom: 14px;
+}
+
+.ukdocs-customer-group > summary {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  padding: 11px 0;
+  cursor: pointer;
+  list-style: none;
+}
+
+.ukdocs-customer-group > summary::-webkit-details-marker {
+  display: none;
+}
+
+.ukdocs-customer-group > summary::before {
+  content: "▸";
+  color: #6b7785;
+  width: 12px;
+}
+
+.ukdocs-customer-group[open] > summary::before {
+  content: "▾";
+}
+
+.ukdocs-customer-group > summary small {
+  color: #6b7785;
+}
+
+.ukdocs-customer-group[open] > summary {
+  margin-bottom: 6px;
+  border-bottom: 1px solid #e3e8ee;
+}
+
+.ukdocs-customer-group > * + * {
+  margin-top: 12px;
+}
+
+.data-table tr.selected-row td {
+  background: #eaf3fb;
+}
+
 .ukdocs-upload-grid {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));

@@ -3171,6 +3171,23 @@ const UKDOCS_CUSTOMER_FIELDS = [
   ["default_transport_mode", "Transport (PD Keuring default)", "transport"],
 ];
 
+// The customer form, folded into groups (every UKDOCS_CUSTOMER_FIELDS key
+// sits in one; a key in none lands in "Other").
+const UKDOCS_CUSTOMER_GROUP_DEFS = [
+  { key: "company", label: "Company", hint: "name, address, VAT, EORI", fields: ["customer_name", "customer_address", "vat_number", "eori_number", "importer_number"] },
+  { key: "shipment", label: "Shipment defaults", hint: "owner, importer, delivery terms, city, UK port, currency, transport", fields: ["default_owner", "default_importer", "default_delivery_terms", "default_city", "default_uk_arrival_port", "default_currency", "default_transport_mode"] },
+  { key: "export", label: "Export defaults", hint: "country of destination, regulation, customs, tolerances", fields: [] },
+  { key: "invoice", label: "Invoice", hint: "language / text, document references, what the invoice lines show", fields: ["default_invoice_language_text", "default_document_references"] },
+  { key: "emails", label: "Emails", hint: "papers ready, CSI, Eric Docs", fields: ["ready_email_subject", "ready_email_body", "csi_email_recipients", "csi_email_subject", "csi_email_body", "eric_docs_email_recipients", "eric_docs_email_subject", "eric_docs_email_body"] },
+  { key: "finance", label: "Finance Audit", hint: "transporteur, grensovergang, expediteur, Customer Connect, rit numbers", fields: ["transporter_name", "border_crossing_default", "expediteur_name", "customer_connect"] },
+  { key: "documents", label: "Documents & menus", hint: "required files, Gmail sync, ready email, which menus show the shipment", fields: [] },
+];
+const UKDOCS_CUSTOMER_GROUPED_KEYS = new Set(UKDOCS_CUSTOMER_GROUP_DEFS.flatMap((group) => group.fields));
+const UKDOCS_CUSTOMER_OTHER_KEYS = UKDOCS_CUSTOMER_FIELDS.map(([key]) => key).filter((key) => !UKDOCS_CUSTOMER_GROUPED_KEYS.has(key));
+const UKDOCS_CUSTOMER_GROUPS = UKDOCS_CUSTOMER_OTHER_KEYS.length
+  ? [...UKDOCS_CUSTOMER_GROUP_DEFS, { key: "other", label: "Other", hint: "", fields: UKDOCS_CUSTOMER_OTHER_KEYS }]
+  : UKDOCS_CUSTOMER_GROUP_DEFS;
+
 const UKDOCS_CUSTOMER_INVOICE_VISIBILITY_FIELDS = [
   ["show_invoice_vat_number", "Show VAT number on invoice"],
   ["show_invoice_eori_number", "Show EORI number on invoice"],
@@ -3852,6 +3869,10 @@ function UkdocsPage({ currentUser, onNavigate }) {
   const [error, setError] = useState("");
   const [state, setState] = useState(null);
   const [customerDraft, setCustomerDraft] = useState(emptyUkdocsCustomer());
+  const [customerGroupsOpen, setCustomerGroupsOpen] = useState({ company: true });
+  const [customerCopiedFrom, setCustomerCopiedFrom] = useState("");
+  const [showCustomerDetails, setShowCustomerDetails] = useState(false);
+  const customerFormRef = useRef(null);
   const [shipmentDraft, setShipmentDraft] = useState(emptyUkdocsShipmentDraft());
   const [shipmentLoadDate, setShipmentLoadDate] = useState("");
   const [analysis, setAnalysis] = useState(null);
@@ -4594,6 +4615,7 @@ function UkdocsPage({ currentUser, onNavigate }) {
       : [nextCustomer, ...customers];
     saveStatePatch({ customers: nextCustomers }, customerDraft.id ? "Customer updated." : "Customer added.");
     setCustomerDraft(emptyUkdocsCustomer());
+    setCustomerCopiedFrom("");
   }
 
   function startEditCustomer(customer) {
@@ -4601,7 +4623,28 @@ function UkdocsPage({ currentUser, onNavigate }) {
       ...customer,
       csi_email_recipients: Array.isArray(customer?.csi_email_recipients) ? customer.csi_email_recipients.join("\n") : (customer?.csi_email_recipients || ""),
     });
+    setCustomerCopiedFrom("");
     setActiveMenu("customers");
+    window.setTimeout(() => customerFormRef.current?.scrollIntoView({ behavior: "smooth", block: "start" }), 0);
+  }
+
+  // A new customer with everything of an existing one filled in (a deep
+  // copy, no id): saved only by "Add customer", the original stays as it is.
+  function copyCustomer(customer) {
+    const copy = JSON.parse(JSON.stringify(customer || {}));
+    delete copy.id;
+    setCustomerDraft({
+      ...emptyUkdocsCustomer(),
+      ...copy,
+      id: "",
+      customer_name: `${customer?.customer_name || ""} (copy)`.trim(),
+      csi_email_recipients: Array.isArray(copy.csi_email_recipients) ? copy.csi_email_recipients.join("\n") : (copy.csi_email_recipients || ""),
+      eric_docs_email_recipients: Array.isArray(copy.eric_docs_email_recipients) ? copy.eric_docs_email_recipients.join("\n") : (copy.eric_docs_email_recipients || ""),
+    });
+    setCustomerCopiedFrom(customer?.customer_name || "");
+    setCustomerGroupsOpen({ company: true });
+    setActiveMenu("customers");
+    window.setTimeout(() => customerFormRef.current?.scrollIntoView({ behavior: "smooth", block: "start" }), 0);
   }
 
   function selectShipment(shipment) {
@@ -4901,83 +4944,154 @@ function UkdocsPage({ currentUser, onNavigate }) {
             </div>
           </div>
           <div className="row-actions spread-actions"><button type="button" onClick={importCustomerFromExamples} disabled={saving || (!exampleImportFiles.invoice_example && !exampleImportFiles.export_example)}>{saving ? "Importing..." : "Import from example files"}</button></div>
-          <div className="form-grid">
-            {UKDOCS_CUSTOMER_FIELDS.map(([key, label, kind]) => (
-              <label key={key} className={kind === "textarea" ? "wide" : ""}>
-                <span>{label}</span>
-                {kind === "transport" ? (
-                  <select value={customerDraft[key] || "Truck"} onChange={(event) => setCustomerDraft({ ...customerDraft, [key]: event.target.value })}>
-                    <option value="Truck">Truck</option>
-                    <option value="Airplane">Airplane</option>
-                  </select>
-                ) : kind === "textarea" ? <textarea rows={3} value={Array.isArray(customerDraft[key]) ? customerDraft[key].join("\n") : (customerDraft[key] || "")} onChange={(event) => setCustomerDraft({ ...customerDraft, [key]: event.target.value })} /> : <input value={customerDraft[key] || ""} onChange={(event) => setCustomerDraft({ ...customerDraft, [key]: event.target.value })} />}
-              </label>
-            ))}
+          <div className="section-header ukdocs-customer-form-head" ref={customerFormRef}>
+            <h3>{customerDraft.id ? `Edit customer: ${customerDraft.customer_name || "-"}` : customerCopiedFrom ? `New customer -- copy of ${customerCopiedFrom}` : "New customer"}</h3>
+            <div className="row-actions">
+              <button type="button" onClick={() => setCustomerGroupsOpen(Object.fromEntries(UKDOCS_CUSTOMER_GROUPS.map((group) => [group.key, true])))}>Open all</button>
+              <button type="button" onClick={() => setCustomerGroupsOpen({ company: true })}>Close all</button>
+            </div>
           </div>
-          <div className="notice">Ready and CSI email templates can use placeholders like `{"{customer_name}"}`, `{"{shipment_reference}"}`, `{"{shipment_date}"}`, `{"{city}"}`, `{"{reference_connect}"}`, `{"{invoice_numbers}"}`, `{"{truck_number}"}`, `{"{trailer_number}"}`, `{"{border_crossing}"}`, `{"{pd_form}"}`, `{"{re_export}"}`, `{"{pd_type}"}`, `{"{pd_code}"}`, and `{"{notes}"}`.</div>
-          <div className="section-header"><h3>Invoice line visibility</h3></div>
-          <div className="form-grid">
-            {UKDOCS_CUSTOMER_INVOICE_VISIBILITY_FIELDS.map(([key, label]) => (
-              <label key={key} className="checkbox-label">
-                <input
-                  type="checkbox"
-                  checked={customerDraft[key] !== false}
-                  onChange={(event) => setCustomerDraft({ ...customerDraft, [key]: event.target.checked })}
-                />
-                <span>{label}</span>
-              </label>
-            ))}
+          {customerCopiedFrom && !customerDraft.id && <div className="notice">Everything of {customerCopiedFrom} is copied -- change the name (and what differs), then "Add customer". {customerCopiedFrom} itself is not changed.</div>}
+          {UKDOCS_CUSTOMER_GROUPS.map((group) => (
+            <details
+              key={group.key}
+              className="ukdocs-customer-group"
+              open={!!customerGroupsOpen[group.key]}
+              onToggle={(event) => { const isOpen = event.currentTarget.open; setCustomerGroupsOpen((current) => (!!current[group.key] === isOpen ? current : { ...current, [group.key]: isOpen })); }}
+            >
+              <summary><strong>{group.label}</strong><small>{group.hint}</small></summary>
+              {group.fields.length > 0 && (
+                <div className="form-grid">
+                  {group.fields.map((key) => {
+                    const [, label, kind] = UKDOCS_CUSTOMER_FIELDS.find(([fieldKey]) => fieldKey === key) || [key, key];
+                    return (
+                      <label key={key} className={kind === "textarea" ? "wide" : ""}>
+                        <span>{label}</span>
+                        {kind === "transport" ? (
+                          <select value={customerDraft[key] || "Truck"} onChange={(event) => setCustomerDraft({ ...customerDraft, [key]: event.target.value })}>
+                            <option value="Truck">Truck</option>
+                            <option value="Airplane">Airplane</option>
+                          </select>
+                        ) : kind === "textarea" ? <textarea rows={3} value={Array.isArray(customerDraft[key]) ? customerDraft[key].join("\n") : (customerDraft[key] || "")} onChange={(event) => setCustomerDraft({ ...customerDraft, [key]: event.target.value })} /> : <input value={customerDraft[key] || ""} onChange={(event) => setCustomerDraft({ ...customerDraft, [key]: event.target.value })} />}
+                      </label>
+                    );
+                  })}
+                </div>
+              )}
+              {group.key === "emails" && <div className="notice">Ready and CSI email templates can use placeholders like `{"{customer_name}"}`, `{"{shipment_reference}"}`, `{"{shipment_date}"}`, `{"{city}"}`, `{"{reference_connect}"}`, `{"{invoice_numbers}"}`, `{"{truck_number}"}`, `{"{trailer_number}"}`, `{"{border_crossing}"}`, `{"{pd_form}"}`, `{"{re_export}"}`, `{"{pd_type}"}`, `{"{pd_code}"}`, and `{"{notes}"}`.</div>}
+              {group.key === "invoice" && (
+                <div className="form-grid">
+                  {UKDOCS_CUSTOMER_INVOICE_VISIBILITY_FIELDS.map(([key, label]) => (
+                    <label key={key} className="checkbox-label">
+                      <input
+                        type="checkbox"
+                        checked={customerDraft[key] !== false}
+                        onChange={(event) => setCustomerDraft({ ...customerDraft, [key]: event.target.checked })}
+                      />
+                      <span>{label}</span>
+                    </label>
+                  ))}
+                </div>
+              )}
+              {group.key === "export" && (
+                <div className="form-grid">
+                  {UKDOCS_EXPORT_DEFAULT_FIELDS.map(([key, label, kind]) => (
+                    <label key={`customer-export-${key}`} className={kind === "textarea" ? "wide" : ""}>
+                      <span>{label}</span>
+                      {kind === "textarea" ? (
+                        <textarea rows={3} value={customerDraft.export_defaults?.[key] || ""} onChange={(event) => updateCustomerExportDefault(key, event.target.value)} />
+                      ) : (
+                        <input value={customerDraft.export_defaults?.[key] || ""} onChange={(event) => updateCustomerExportDefault(key, event.target.value)} />
+                      )}
+                    </label>
+                  ))}
+                </div>
+              )}
+              {group.key === "finance" && (
+                <>
+                  <div className="notice">Rit numbers: leave blank to keep using the category code ({UKDOCS_CATEGORY_DEFINITIONS.map((item) => item.code).join("/")}) as the rit number. Fill in only the categories where this customer uses a different rit.</div>
+                  <div className="form-grid">
+                    {UKDOCS_CATEGORY_DEFINITIONS.map((item) => (
+                      <label key={`customer-rit-${item.code}`}>
+                        <span>{item.label} (default {item.code})</span>
+                        <input value={customerDraft.rit_overrides?.[item.code] || ""} onChange={(event) => updateCustomerRitOverride(item.code, event.target.value)} />
+                      </label>
+                    ))}
+                  </div>
+                </>
+              )}
+              {group.key === "documents" && (
+                <>
+                  <div className="checkbox-grid">
+                    {UKDOCS_CUSTOMER_REQUIRED_DOCUMENT_FIELDS.map(([key, label]) => (
+                      <label key={key} className="checkbox-field">
+                        <input
+                          type="checkbox"
+                          checked={customerDraft[key] === true}
+                          onChange={(event) => setCustomerDraft({ ...customerDraft, [key]: event.target.checked })}
+                        />
+                        <span>{label}</span>
+                      </label>
+                    ))}
+                  </div>
+                  <div className="section-header"><h3>Menu document visibility</h3></div>
+                  <div className="checkbox-grid">
+                    {UKDOCS_CUSTOMER_MENU_DOCUMENT_FIELDS.map(([key, label]) => (
+                      <label key={key} className="checkbox-field">
+                        <input
+                          type="checkbox"
+                          checked={customerDraft[key] === true}
+                          onChange={(event) => setCustomerDraft({ ...customerDraft, [key]: event.target.checked })}
+                        />
+                        <span>{label}</span>
+                      </label>
+                    ))}
+                  </div>
+                </>
+              )}
+            </details>
+          ))}
+          <div className="row-actions spread-actions"><button type="button" className="primary" onClick={saveCustomer} disabled={saving}>{customerDraft.id ? "Update customer" : "Add customer"}</button><button type="button" onClick={() => { setCustomerDraft(emptyUkdocsCustomer()); setCustomerCopiedFrom(""); }} disabled={saving}>Clear form</button></div>
+          <div className="section-header">
+            <h3>Saved customers ({customers.length})</h3>
+            <label className="checkbox-label"><input type="checkbox" checked={showCustomerDetails} onChange={(event) => setShowCustomerDetails(event.target.checked)} /><span>Show details (delivery terms, mail template, UK port, currency, VAT)</span></label>
           </div>
-          <div className="section-header"><h3>Customer export defaults</h3></div>
-          <div className="form-grid">
-            {UKDOCS_EXPORT_DEFAULT_FIELDS.map(([key, label, kind]) => (
-              <label key={`customer-export-${key}`} className={kind === "textarea" ? "wide" : ""}>
-                <span>{label}</span>
-                {kind === "textarea" ? (
-                  <textarea rows={3} value={customerDraft.export_defaults?.[key] || ""} onChange={(event) => updateCustomerExportDefault(key, event.target.value)} />
-                ) : (
-                  <input value={customerDraft.export_defaults?.[key] || ""} onChange={(event) => updateCustomerExportDefault(key, event.target.value)} />
-                )}
-              </label>
-            ))}
+          <div className="table-wrap">
+            <table className="data-table">
+              <thead>
+                <tr>
+                  <th>Name</th>
+                  <th>Country of destination</th>
+                  <th>Transport</th>
+                  {showCustomerDetails && <><th>Delivery terms</th><th>Ready mail template</th><th>UK port</th><th>Currency</th><th>VAT</th></>}
+                  <th>Actions</th>
+                </tr>
+              </thead>
+              <tbody>
+                {customers.map((customer) => (
+                  <tr key={customer.id} className={customer.id === customerDraft.id ? "selected-row" : undefined}>
+                    <td>{customer.customer_name}</td>
+                    <td>{customer.export_defaults?.destination_country || <span className="muted" title="Not set for this customer: the global export default is used">{exportDefaults.destination_country ? `${exportDefaults.destination_country} (global)` : "-"}</span>}</td>
+                    <td>{customer.default_transport_mode || "Truck"}</td>
+                    {showCustomerDetails && (
+                      <>
+                        <td>{customer.default_delivery_terms || customer.export_defaults?.delivery_terms || "-"}</td>
+                        <td>{customer.ready_email_subject || customer.ready_email_body ? "Custom" : "Default"}</td>
+                        <td>{customer.default_uk_arrival_port || "-"}</td>
+                        <td>{customer.default_currency || customer.export_defaults?.currency || "-"}</td>
+                        <td>{customer.vat_number || "-"}</td>
+                      </>
+                    )}
+                    <td className="row-actions">
+                      <button type="button" onClick={() => startEditCustomer(customer)}>Edit</button>
+                      <button type="button" onClick={() => copyCustomer(customer)} title="A new customer with everything of this one filled in">Copy</button>
+                    </td>
+                  </tr>
+                ))}
+                {!customers.length && <tr><td colSpan={showCustomerDetails ? 9 : 4}>No UKdocs customers saved yet.</td></tr>}
+              </tbody>
+            </table>
           </div>
-          <div className="section-header"><h3>Rit numbers per category (Finance Audit)</h3></div>
-          <div className="notice">Leave blank to keep using the category code ({UKDOCS_CATEGORY_DEFINITIONS.map((item) => item.code).join("/")}) as the rit number. Fill in only the categories where this customer uses a different rit.</div>
-          <div className="form-grid">
-            {UKDOCS_CATEGORY_DEFINITIONS.map((item) => (
-              <label key={`customer-rit-${item.code}`}>
-                <span>{item.label} (default {item.code})</span>
-                <input value={customerDraft.rit_overrides?.[item.code] || ""} onChange={(event) => updateCustomerRitOverride(item.code, event.target.value)} />
-              </label>
-            ))}
-          </div>
-          <div className="row-actions spread-actions"><button type="button" className="primary" onClick={saveCustomer} disabled={saving}>{customerDraft.id ? "Update customer" : "Add customer"}</button><button type="button" onClick={() => setCustomerDraft(emptyUkdocsCustomer())} disabled={saving}>Clear form</button></div>
-          <div className="checkbox-grid">
-            {UKDOCS_CUSTOMER_REQUIRED_DOCUMENT_FIELDS.map(([key, label]) => (
-              <label key={key} className="checkbox-field">
-                <input
-                  type="checkbox"
-                  checked={customerDraft[key] === true}
-                  onChange={(event) => setCustomerDraft({ ...customerDraft, [key]: event.target.checked })}
-                />
-                <span>{label}</span>
-              </label>
-            ))}
-          </div>
-          <div className="section-header"><h3>Menu document visibility</h3></div>
-          <div className="checkbox-grid">
-            {UKDOCS_CUSTOMER_MENU_DOCUMENT_FIELDS.map(([key, label]) => (
-              <label key={key} className="checkbox-field">
-                <input
-                  type="checkbox"
-                  checked={customerDraft[key] === true}
-                  onChange={(event) => setCustomerDraft({ ...customerDraft, [key]: event.target.checked })}
-                />
-                <span>{label}</span>
-              </label>
-            ))}
-          </div>
-          <div className="table-wrap"><table className="data-table"><thead><tr><th>Name</th><th>Delivery terms</th><th>Ready mail template</th><th>UK port</th><th>Currency</th><th>VAT</th><th>Transport</th><th>Actions</th></tr></thead><tbody>{customers.map((customer) => <tr key={customer.id}><td>{customer.customer_name}</td><td>{customer.default_delivery_terms || customer.export_defaults?.delivery_terms || "-"}</td><td>{customer.ready_email_subject || customer.ready_email_body ? "Custom" : "Default"}</td><td>{customer.default_uk_arrival_port || "-"}</td><td>{customer.default_currency || customer.export_defaults?.currency || "-"}</td><td>{customer.vat_number || "-"}</td><td>{customer.default_transport_mode || "Truck"}</td><td className="row-actions"><button type="button" onClick={() => startEditCustomer(customer)}>Edit</button></td></tr>)}{!customers.length && <tr><td colSpan="8">No UKdocs customers saved yet.</td></tr>}</tbody></table></div>
         </div>
       )}
 
