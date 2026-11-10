@@ -6066,6 +6066,16 @@ function ukdocsCollectionDownloadEntries(collection, customer = null, menuKey = 
       "Inspection list",
     );
   }
+  if (visibility.inspection_list === true) {
+    (collection.documents?.inspection_list_extra_files || []).forEach((extraList, index) => {
+      pushEntry(
+        "inspection-list-extra",
+        extraList,
+        `/api/ukdocs-print/collections/${collectionId}/documents/inspection_list_extra/${index}`,
+        `Inspection list ${index + 2}`,
+      );
+    });
+  }
 
   if (visibility.locations_file === true && locationsFile?.storage_name) {
     pushEntry(
@@ -7109,6 +7119,19 @@ function UkdocsInspectionPage({ currentUser }) {
                     ? null
                     : selectedCollection.documents?.[documentDefinition.key] || null;
                   const tempFiles = selectedCollection.documents?.temp_phyto_files || [];
+                  if (documentDefinition.key === "inspection_list") {
+                    return (
+                      <UkdocsInspectionListsCard
+                        key="inspection_list"
+                        collection={selectedCollection}
+                        saving={saving}
+                        title={documentDefinition.label}
+                        accept={documentDefinition.accept}
+                        onUpload={uploadCollectionFile}
+                        onDelete={deleteCollectionDocument}
+                      />
+                    );
+                  }
                   return (
                     <div key={documentDefinition.key} className="ukdocs-upload-card">
                       <strong>{documentDefinition.label}</strong>
@@ -9140,7 +9163,6 @@ function EricDocsPage({ currentUser }) {
   const selectedCollection = filteredCollections.find((item) => item.id === selectedCollectionId || item.shipment_id === selectedCollectionId) || null;
   const selectedTempPhytoFiles = selectedCollection?.documents?.temp_phyto_files || [];
   const selectedOriginalPhytoFiles = selectedCollection?.documents?.phyto_files || [];
-  const selectedInspectionList = selectedCollection?.documents?.inspection_list || null;
   const selectedCheck = selectedCollection?.eric_docs_check || null;
 
   function openCollectionDetail(collectionId) {
@@ -9376,19 +9398,12 @@ function EricDocsPage({ currentUser }) {
                     </div>
                   )}
                 </div>
-                <div className="ukdocs-upload-card">
-                  <strong>Inspection list</strong>
-                  <input type="file" accept=".pdf" onChange={(event) => uploadCollectionFile("inspection_list", event.target.files?.[0])} disabled={saving} />
-                  <small>{selectedInspectionList?.storage_name ? `${selectedInspectionList.original_name || "Inspection list"} saved in Zending.` : "No file saved yet in Zending."}</small>
-                  {!!selectedInspectionList?.storage_name && (
-                    <div className="row-actions spread-actions">
-                      <a href={`/api/ukdocs-print/collections/${encodeURIComponent(selectedCollection.id)}/documents/inspection_list`} target="_blank" rel="noreferrer" className="ukdocs-download-link">
-                        {selectedInspectionList.original_name || "Inspection list"}
-                      </a>
-                      <button type="button" onClick={() => deleteCollectionDocument("inspection_list")} disabled={saving}>Delete</button>
-                    </div>
-                  )}
-                </div>
+                <UkdocsInspectionListsCard
+                  collection={selectedCollection}
+                  saving={saving}
+                  onUpload={(kind, file) => uploadCollectionFile(kind, file)}
+                  onDelete={deleteCollectionDocument}
+                />
               </div>
 
               <div className="row-actions spread-actions">
@@ -9901,6 +9916,50 @@ function buildUsedValueOptions(rows, field, extra = []) {
   return [...byKey.values()]
     .map((entry) => ({ value: [...entry.spellings.entries()].sort((left, right) => right[1] - left[1])[0][0], count: entry.count }))
     .sort((left, right) => right.count - left.count || left.value.localeCompare(right.value));
+}
+
+// The inspection list card: the first list (what makes the shipment
+// complete) plus any more for the same shipment -- each its own Open /
+// Delete; "add" picks one or several files (the first becomes the main one
+// when there is none yet).
+function UkdocsInspectionListsCard({ collection, saving, onUpload, onDelete, title = "Inspection list", accept = ".pdf" }) {
+  const first = collection?.documents?.inspection_list?.storage_name ? collection.documents.inspection_list : null;
+  const extra = (collection?.documents?.inspection_list_extra_files || []).filter((document) => document?.storage_name);
+  const all = [
+    ...(first ? [{ document: first, kind: "inspection_list", index: null, href: "inspection_list" }] : []),
+    ...extra.map((document, index) => ({ document, kind: "inspection_list_extra", index, href: `inspection_list_extra/${index}` })),
+  ];
+  const collectionId = encodeURIComponent(collection?.id || "");
+  return (
+    <div className="ukdocs-upload-card">
+      <strong>{title}{all.length > 1 ? ` (${all.length})` : ""}</strong>
+      <input
+        type="file"
+        accept={accept}
+        multiple
+        onChange={async (event) => {
+          const chosen = Array.from(event.target.files || []);
+          event.target.value = "";
+          let hasFirst = Boolean(first);
+          for (const nextFile of chosen) {
+            await onUpload(hasFirst ? "inspection_list_extra" : "inspection_list", nextFile);
+            hasFirst = true;
+          }
+        }}
+        disabled={saving}
+      />
+      <small>{all.length ? (all.length === 1 ? "1 inspection list saved -- choose a file to add a second one." : `${all.length} inspection lists saved (one is enough to be complete).`) : "No file saved yet. Several lists for one shipment are fine."}</small>
+      {all.map((item, position) => (
+        <div key={`${item.document.storage_name}-${position}`} className="row-actions spread-actions">
+          <a href={`/api/ukdocs-print/collections/${collectionId}/documents/${item.href}`} target="_blank" rel="noreferrer" className="ukdocs-download-link">
+            {item.document.original_name || `Inspection list ${position + 1}`}
+          </a>
+          {item.document.saved_at && <small>{formatTimestamp(item.document.saved_at)}</small>}
+          <button type="button" onClick={() => onDelete(item.kind, item.index)} disabled={saving}>Delete</button>
+        </div>
+      ))}
+    </div>
+  );
 }
 
 function PdKeuringPage({ currentUser }) {

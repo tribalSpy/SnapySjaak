@@ -2803,6 +2803,10 @@ function normalizeUkdocsPrintCollection(collection) {
       // Extra documents a specialist needs for the inspection (a Spanish
       // phyto for pistache going to KZ ...): as many as needed.
       extra_docs_files: normalizeUkdocsPrintDocumentList(collection?.documents?.extra_docs_files),
+      // A second (third ...) inspection list for the same shipment: the first
+      // one is inspection_list and is what makes the shipment complete; these
+      // go along wherever the inspection list goes.
+      inspection_list_extra_files: normalizeUkdocsPrintDocumentList(collection?.documents?.inspection_list_extra_files),
     },
     csi_report: normalizeUkdocsCsiReport(collection?.csi_report),
   };
@@ -14378,7 +14382,7 @@ async function saveUkdocsPrintUpload(collectionId, kind, filePayload, requestUse
   const originalName = path.basename(String(filePayload?.file_name || filePayload?.name || "").trim());
   const contentBase64 = String(filePayload?.content_base64 || "").trim();
   const mimeType = String(filePayload?.mime_type || guessMimeType(originalName)).trim() || "application/octet-stream";
-  if (!["phyto", "export_extra", "inspection_list", "locations_file", "temp_phyto", "temp_phyto_xml", "temp_phyto_plants_file", "temp_phyto_plants_xml_file", "ipaffs_file", "ipaffs_plants_file", "exit_confirmation", "extra_docs"].includes(kind)) {
+  if (!["phyto", "export_extra", "inspection_list", "locations_file", "temp_phyto", "temp_phyto_xml", "temp_phyto_plants_file", "temp_phyto_plants_xml_file", "ipaffs_file", "ipaffs_plants_file", "exit_confirmation", "extra_docs", "inspection_list_extra"].includes(kind)) {
     throw new Error("Unknown UKdocs Print document type");
   }
   if (!originalName || !contentBase64) {
@@ -14418,7 +14422,7 @@ async function saveUkdocsPrintUpload(collectionId, kind, filePayload, requestUse
 }
 
 async function saveUkdocsPrintBuffer(collectionId, kind, originalName, mimeType, fileBuffer, savedBy) {
-  if (!["phyto", "export_extra", "generated", "inspection_list", "locations_file", "temp_phyto", "temp_phyto_xml", "temp_phyto_plants_file", "temp_phyto_plants_xml_file", "ipaffs_file", "ipaffs_plants_file", "exit_confirmation", "extra_docs"].includes(kind)) {
+  if (!["phyto", "export_extra", "generated", "inspection_list", "locations_file", "temp_phyto", "temp_phyto_xml", "temp_phyto_plants_file", "temp_phyto_plants_xml_file", "ipaffs_file", "ipaffs_plants_file", "exit_confirmation", "extra_docs", "inspection_list_extra"].includes(kind)) {
     throw new Error("Unknown UKdocs Print document type");
   }
   const extension = safeExtension(originalName, mimeType);
@@ -16267,6 +16271,9 @@ function mergeUkdocsPrintCollectionPair(keeper, duplicate) {
       temp_phyto_plants_xml_file: chooseObject(keeper?.documents?.temp_phyto_plants_xml_file, duplicate?.documents?.temp_phyto_plants_xml_file),
       ipaffs_file: chooseObject(keeper?.documents?.ipaffs_file, duplicate?.documents?.ipaffs_file),
       ipaffs_plants_file: chooseObject(keeper?.documents?.ipaffs_plants_file, duplicate?.documents?.ipaffs_plants_file),
+      exit_confirmation_files: mergeUkdocsPrintDocumentLists(keeper?.documents?.exit_confirmation_files, duplicate?.documents?.exit_confirmation_files),
+      extra_docs_files: mergeUkdocsPrintDocumentLists(keeper?.documents?.extra_docs_files, duplicate?.documents?.extra_docs_files),
+      inspection_list_extra_files: mergeUkdocsPrintDocumentLists(keeper?.documents?.inspection_list_extra_files, duplicate?.documents?.inspection_list_extra_files),
     },
   });
 }
@@ -16467,6 +16474,9 @@ async function deleteUkdocsPrintCollectionFiles(collection) {
   }
   if (Array.isArray(collection?.documents?.extra_docs_files)) {
     documents.push(...collection.documents.extra_docs_files);
+  }
+  if (Array.isArray(collection?.documents?.inspection_list_extra_files)) {
+    documents.push(...collection.documents.inspection_list_extra_files);
   }
   if (collection?.documents?.temp_phyto_plants_file) {
     documents.push(collection.documents.temp_phyto_plants_file);
@@ -19841,6 +19851,9 @@ function ukdocsPrintListDocumentsField(kind) {
   if (kind === "extra_docs") {
     return "extra_docs_files";
   }
+  if (kind === "inspection_list_extra") {
+    return "inspection_list_extra_files";
+  }
   return "";
 }
 
@@ -21662,6 +21675,9 @@ async function ukdocsPrintCollectionAttachments(collection, customer = null, men
   }
   if (visibility.inspection_list === true && collection?.documents?.inspection_list) {
     documents.push({ document: collection.documents.inspection_list, kind: "inspection_list" });
+  }
+  if (visibility.inspection_list === true) {
+    documents.push(...(collection?.documents?.inspection_list_extra_files || []).map((document) => ({ document, kind: "inspection_list_extra" })));
   }
   if (visibility.locations_file === true && collection?.documents?.locations_file) {
     documents.push({ document: collection.documents.locations_file, kind: "locations_file" });
@@ -25277,6 +25293,13 @@ async function handleApi(req, res, url) {
       sendJson(res, 200, { collection: existingCollection, print_collections: normalizeUkdocsState(state).print_collections, skipped: true, reason: "extra document already exists" });
       return;
     }
+    if (kind === "inspection_list_extra" && (
+      hasUkdocsPrintDocumentWithName(existingCollection.documents?.inspection_list_extra_files, originalName)
+      || hasUkdocsPrintDocumentWithName(existingCollection.documents?.inspection_list ? [existingCollection.documents.inspection_list] : [], originalName)
+    )) {
+      sendJson(res, 200, { collection: existingCollection, print_collections: normalizeUkdocsState(state).print_collections, skipped: true, reason: "inspection list already exists" });
+      return;
+    }
     if (["inspection_list", "locations_file", "export_extra", "temp_phyto_plants_file", "temp_phyto_plants_xml_file", "ipaffs_file", "ipaffs_plants_file"].includes(kind) && existingCollection.documents?.[kind]?.storage_name) {
       await deleteSingleUkdocsPrintDocumentFile(existingCollection.documents[kind]);
       if (UKDOCS_CSI_DOCUMENT_KINDS.has(kind)) {
@@ -25305,6 +25328,11 @@ async function handleApi(req, res, url) {
                 ? { exit_confirmation_files: [...(existingCollection.documents?.exit_confirmation_files || []), savedDocument] }
               : kind === "extra_docs"
                 ? { extra_docs_files: [...(existingCollection.documents?.extra_docs_files || []), savedDocument] }
+              : kind === "inspection_list_extra"
+                // No first inspection list (yet): this one becomes it.
+                ? (existingCollection.documents?.inspection_list?.storage_name
+                  ? { inspection_list_extra_files: [...(existingCollection.documents?.inspection_list_extra_files || []), savedDocument] }
+                  : { inspection_list: savedDocument })
             : { [kind]: savedDocument }),
       },
       csi_report: shouldResetUkdocsCsiReportForDocumentKind(kind)
@@ -25341,6 +25369,8 @@ async function handleApi(req, res, url) {
         ? (collection?.documents?.exit_confirmation_files || [])[documentIndex]
       : kind === "extra_docs"
         ? (collection?.documents?.extra_docs_files || [])[documentIndex]
+      : kind === "inspection_list_extra"
+        ? (collection?.documents?.inspection_list_extra_files || [])[documentIndex]
         : collection?.documents?.[kind];
     if (!collection || !document?.storage_name) {
       sendText(res, 404, "UKdocs Print document not found");
@@ -25439,6 +25469,25 @@ async function handleApi(req, res, url) {
       }
       extraDocsFiles.splice(documentIndex, 1);
       updatedDocuments = { ...updatedDocuments, extra_docs_files: extraDocsFiles };
+    } else if (kind === "inspection_list_extra") {
+      const inspectionExtraFiles = [...(existingCollection.documents?.inspection_list_extra_files || [])];
+      removedDocument = inspectionExtraFiles[documentIndex] || null;
+      if (!removedDocument) {
+        sendJson(res, 404, { error: "UKdocs Print document not found" });
+        return;
+      }
+      inspectionExtraFiles.splice(documentIndex, 1);
+      updatedDocuments = { ...updatedDocuments, inspection_list_extra_files: inspectionExtraFiles };
+    } else if (kind === "inspection_list" && (existingCollection.documents?.inspection_list_extra_files || []).length) {
+      // The first inspection list goes, a second one takes its place (the
+      // shipment stays complete).
+      removedDocument = existingCollection.documents?.inspection_list || null;
+      if (!removedDocument) {
+        sendJson(res, 404, { error: "UKdocs Print document not found" });
+        return;
+      }
+      const [nextFirst, ...restExtra] = existingCollection.documents.inspection_list_extra_files;
+      updatedDocuments = { ...updatedDocuments, inspection_list: nextFirst, inspection_list_extra_files: restExtra };
     } else if (["export_extra", "inspection_list", "locations_file", "temp_phyto_plants_file", "temp_phyto_plants_xml_file", "ipaffs_file", "ipaffs_plants_file"].includes(kind)) {
       removedDocument = existingCollection.documents?.[kind] || null;
       if (!removedDocument) {
@@ -25499,6 +25548,37 @@ async function handleApi(req, res, url) {
           "--inspection", ukdocsPrintDocumentPath(inspectionDocument),
         ]);
         checkResult = JSON.parse(output.toString("utf8"));
+        // More than one inspection list: their totals together against the
+        // phyto's.
+        const extraInspections = (existingCollection.documents?.inspection_list_extra_files || []).filter((document) => document?.storage_name);
+        if (extraInspections.length && checkResult?.phyto_total !== null && checkResult?.phyto_total !== undefined && checkResult?.inspection_total !== null && checkResult?.inspection_total !== undefined) {
+          let inspectionTotal = Number(checkResult.inspection_total) || 0;
+          const listTotals = [inspectionTotal];
+          let extraError = "";
+          for (const extraDocument of extraInspections) {
+            const extraOutput = JSON.parse((await runEricDocsWorker([
+              "compare",
+              "--phyto", ukdocsPrintDocumentPath(phytoDocument),
+              "--inspection", ukdocsPrintDocumentPath(extraDocument),
+            ])).toString("utf8"));
+            if (extraOutput?.inspection_total === null || extraOutput?.inspection_total === undefined) {
+              extraError = `Could not find a "TOTAAL ... Stuks" line in inspection list ${extraDocument.original_name || ""}`.trim();
+              break;
+            }
+            inspectionTotal += Number(extraOutput.inspection_total) || 0;
+            listTotals.push(Number(extraOutput.inspection_total) || 0);
+          }
+          checkResult = extraError
+            ? { ...checkResult, ok: false, match: null, error: extraError }
+            : {
+              ...checkResult,
+              ok: true,
+              error: "",
+              inspection_total: inspectionTotal,
+              inspection_totals: listTotals,
+              match: Math.abs((Number(checkResult.phyto_total) || 0) - inspectionTotal) < 0.01,
+            };
+        }
       } catch (error) {
         checkResult = { ok: false, phyto_total: null, inspection_total: null, match: null, error: error instanceof Error ? error.message : String(error) };
       }
