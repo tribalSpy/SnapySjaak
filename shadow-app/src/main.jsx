@@ -3168,6 +3168,7 @@ const UKDOCS_CUSTOMER_FIELDS = [
   ["border_crossing_default", "Grensovergang (Finance Audit default)"],
   ["expediteur_name", "Expediteur (Finance Audit default)"],
   ["customer_connect", "Customer Connect (Finance Audit default)"],
+  ["default_transport_mode", "Transport (PD Keuring default)", "transport"],
 ];
 
 const UKDOCS_CUSTOMER_INVOICE_VISIBILITY_FIELDS = [
@@ -3316,6 +3317,7 @@ function emptyUkdocsCustomer() {
     border_crossing_default: "",
     expediteur_name: "",
     customer_connect: "",
+    default_transport_mode: "Truck",
     rit_overrides: Object.fromEntries(UKDOCS_CATEGORY_DEFINITIONS.map((item) => [item.code, ""])),
   };
 }
@@ -4903,7 +4905,12 @@ function UkdocsPage({ currentUser, onNavigate }) {
             {UKDOCS_CUSTOMER_FIELDS.map(([key, label, kind]) => (
               <label key={key} className={kind === "textarea" ? "wide" : ""}>
                 <span>{label}</span>
-                {kind === "textarea" ? <textarea rows={3} value={Array.isArray(customerDraft[key]) ? customerDraft[key].join("\n") : (customerDraft[key] || "")} onChange={(event) => setCustomerDraft({ ...customerDraft, [key]: event.target.value })} /> : <input value={customerDraft[key] || ""} onChange={(event) => setCustomerDraft({ ...customerDraft, [key]: event.target.value })} />}
+                {kind === "transport" ? (
+                  <select value={customerDraft[key] || "Truck"} onChange={(event) => setCustomerDraft({ ...customerDraft, [key]: event.target.value })}>
+                    <option value="Truck">Truck</option>
+                    <option value="Airplane">Airplane</option>
+                  </select>
+                ) : kind === "textarea" ? <textarea rows={3} value={Array.isArray(customerDraft[key]) ? customerDraft[key].join("\n") : (customerDraft[key] || "")} onChange={(event) => setCustomerDraft({ ...customerDraft, [key]: event.target.value })} /> : <input value={customerDraft[key] || ""} onChange={(event) => setCustomerDraft({ ...customerDraft, [key]: event.target.value })} />}
               </label>
             ))}
           </div>
@@ -4970,7 +4977,7 @@ function UkdocsPage({ currentUser, onNavigate }) {
               </label>
             ))}
           </div>
-          <div className="table-wrap"><table className="data-table"><thead><tr><th>Name</th><th>Delivery terms</th><th>Ready mail template</th><th>UK port</th><th>Currency</th><th>VAT</th><th>Actions</th></tr></thead><tbody>{customers.map((customer) => <tr key={customer.id}><td>{customer.customer_name}</td><td>{customer.default_delivery_terms || customer.export_defaults?.delivery_terms || "-"}</td><td>{customer.ready_email_subject || customer.ready_email_body ? "Custom" : "Default"}</td><td>{customer.default_uk_arrival_port || "-"}</td><td>{customer.default_currency || customer.export_defaults?.currency || "-"}</td><td>{customer.vat_number || "-"}</td><td className="row-actions"><button type="button" onClick={() => startEditCustomer(customer)}>Edit</button></td></tr>)}{!customers.length && <tr><td colSpan="7">No UKdocs customers saved yet.</td></tr>}</tbody></table></div>
+          <div className="table-wrap"><table className="data-table"><thead><tr><th>Name</th><th>Delivery terms</th><th>Ready mail template</th><th>UK port</th><th>Currency</th><th>VAT</th><th>Transport</th><th>Actions</th></tr></thead><tbody>{customers.map((customer) => <tr key={customer.id}><td>{customer.customer_name}</td><td>{customer.default_delivery_terms || customer.export_defaults?.delivery_terms || "-"}</td><td>{customer.ready_email_subject || customer.ready_email_body ? "Custom" : "Default"}</td><td>{customer.default_uk_arrival_port || "-"}</td><td>{customer.default_currency || customer.export_defaults?.currency || "-"}</td><td>{customer.vat_number || "-"}</td><td>{customer.default_transport_mode || "Truck"}</td><td className="row-actions"><button type="button" onClick={() => startEditCustomer(customer)}>Edit</button></td></tr>)}{!customers.length && <tr><td colSpan="8">No UKdocs customers saved yet.</td></tr>}</tbody></table></div>
         </div>
       )}
 
@@ -10307,6 +10314,9 @@ function PdKeuringPage({ currentUser }) {
                         ...current,
                         customer_id: chosen?.id || "",
                         customer_name: chosen?.customer_name || "",
+                        // Truck or airplane: the customer's default (UKdocs
+                        // customer settings), still changeable below.
+                        ...(chosen ? { transport_mode: chosen.default_transport_mode || "Truck" } : {}),
                       }));
                     }}
                   >

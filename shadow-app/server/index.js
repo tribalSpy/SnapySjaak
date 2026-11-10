@@ -2202,6 +2202,9 @@ function normalizeUkdocsCustomer(customer) {
     border_crossing_default: normalizeUkdocsText(customer?.border_crossing_default),
     expediteur_name: normalizeUkdocsText(customer?.expediteur_name),
     customer_connect: normalizeUkdocsText(customer?.customer_connect),
+    // How this customer's PD Keuring rows go by default: "Truck" or
+    // "Airplane" (a new row takes it; the row itself can still change it).
+    default_transport_mode: normalizeUkdocsTransportMode(customer?.default_transport_mode),
     // Per-customer rit number for each of the 4 fixed upload categories,
     // keyed by category code -- falls back to the category code itself
     // (the old global behavior) wherever it's blank, see
@@ -25137,8 +25140,10 @@ async function handleApi(req, res, url) {
         pd_keuring_made_by: "",
         truck_number: item?.truck_number || "",
         trailer_number: item?.trailer_number || "",
-        // Truck or airplane goes with the route: carried over.
-        transport_mode: item?.transport_mode,
+        // Truck or airplane goes with the route: carried over; when the
+        // row doesn't say, the customer's default transport.
+        transport_mode: String(item?.transport_mode || "").trim()
+          || state.customers.find((customer) => customer.id === String(item?.customer_id || "").trim())?.default_transport_mode,
         updated_at: new Date().toISOString(),
       });
       // Brand new, app-original row -- always unambiguous to write, never a
