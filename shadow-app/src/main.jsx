@@ -12170,6 +12170,55 @@ function FustListPanel({ metaData, loading, defaults = null }) {
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
   const [editingCodes, setEditingCodes] = useState(false);
+  // The rows (codes, extra rows) are shared: loaded from the server, and
+  // every change to them is saved there for the next person -- amounts stay
+  // on this screen only.
+  const [layoutState, setLayoutState] = useState({ loaded: false, saving: false, updated_at: "", updated_by: "", error: "" });
+  const layoutKey = JSON.stringify(form.rows.map((row) => [row.id, row.code, row.isCustom === true]));
+  const savedLayoutKey = useRef("");
+  useEffect(() => {
+    let cancelled = false;
+    apiJson("/api/fust/fust-list/rows")
+      .then((payload) => {
+        if (cancelled) return;
+        const saved = Array.isArray(payload.rows) ? payload.rows : [];
+        if (saved.length) {
+          setForm((current) => {
+            const amounts = new Map(current.rows.map((row) => [row.id, row]));
+            return {
+              ...current,
+              rows: saved.map((row) => ({
+                id: row.id,
+                code: row.code,
+                total_ok: amounts.get(row.id)?.total_ok || "",
+                total_broken: amounts.get(row.id)?.total_broken || "",
+                isCustom: row.is_custom === true,
+              })),
+            };
+          });
+          savedLayoutKey.current = JSON.stringify(saved.map((row) => [row.id, row.code, row.is_custom === true]));
+        }
+        setLayoutState((current) => ({ ...current, loaded: true, updated_at: payload.updated_at || "", updated_by: payload.updated_by || "" }));
+      })
+      .catch((loadError) => { if (!cancelled) setLayoutState((current) => ({ ...current, loaded: true, error: loadError.message })); });
+    return () => { cancelled = true; };
+  }, []);
+  useEffect(() => {
+    if (!layoutState.loaded) return undefined;
+    if (!savedLayoutKey.current) { savedLayoutKey.current = layoutKey; return undefined; }
+    if (layoutKey === savedLayoutKey.current) return undefined;
+    const timer = window.setTimeout(() => {
+      const rows = form.rows.map((row) => ({ id: row.id, code: row.code, is_custom: row.isCustom === true }));
+      setLayoutState((current) => ({ ...current, saving: true, error: "" }));
+      apiJson("/api/fust/fust-list/rows", { method: "PUT", body: JSON.stringify({ rows }) })
+        .then((payload) => {
+          savedLayoutKey.current = JSON.stringify((payload.rows || []).map((row) => [row.id, row.code, row.is_custom === true]));
+          setLayoutState((current) => ({ ...current, saving: false, updated_at: payload.updated_at || "", updated_by: payload.updated_by || "" }));
+        })
+        .catch((saveError) => setLayoutState((current) => ({ ...current, saving: false, error: saveError.message })));
+    }, 900);
+    return () => window.clearTimeout(timer);
+  }, [layoutKey, layoutState.loaded]);
   const customerOptions = records.filter((record) => record.country === form.country);
   const customerNames = [...new Set(customerOptions.map((record) => record.customer_name))].sort((left, right) => left.localeCompare(right));
   const selectedExporter = exporters.find((item) => item.name === form.exporter_name) || null;
@@ -12414,6 +12463,12 @@ function FustListPanel({ metaData, loading, defaults = null }) {
               {editingCodes ? "Done editing codes" : "Edit codes"}
             </button>
             <button type="button" onClick={addCustomRow} disabled={busy}>Add extra field</button>
+            <small className="muted">
+              {layoutState.saving ? "Saving the rows for everyone…"
+                : layoutState.error ? `Rows not saved: ${layoutState.error}`
+                : layoutState.updated_at ? `Codes and extra fields are saved for everyone (last change ${formatTimestamp(layoutState.updated_at)}${layoutState.updated_by ? ` by ${layoutState.updated_by}` : ""}).`
+                : "Codes and extra fields you change are saved for everyone."}
+            </small>
           </div>
 
           {loading && <div className="notice">Loading Data sheet options...</div>}

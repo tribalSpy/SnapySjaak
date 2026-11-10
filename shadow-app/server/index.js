@@ -1921,7 +1921,28 @@ function normalizeFustSettings(settings) {
     fust_customer_contacts: normalizeFustCustomerContactList(settings?.fust_customer_contacts),
     fust_api_base_url: String(settings?.fust_api_base_url || defaultFustSettings.fust_api_base_url).trim() || defaultFustSettings.fust_api_base_url,
     fust_api_key: String(settings?.fust_api_key || ""),
+    fust_list_rows: normalizeFustListLayout(settings?.fust_list_rows),
+    fust_list_rows_updated_at: String(settings?.fust_list_rows_updated_at || "").trim(),
+    fust_list_rows_updated_by: String(settings?.fust_list_rows_updated_by || "").trim(),
   };
+}
+
+// The Fust Lijst rows everyone starts from: the built-in codes (as edited)
+// and the extra rows added -- codes only, never amounts. Empty = the
+// built-in list.
+function normalizeFustListLayout(rows) {
+  if (!Array.isArray(rows)) {
+    return [];
+  }
+  const seen = new Set();
+  const layout = [];
+  for (const row of rows.slice(0, 200)) {
+    const id = String(row?.id || "").trim().slice(0, 80);
+    if (!id || seen.has(id)) continue;
+    seen.add(id);
+    layout.push({ id, code: String(row?.code || "").trim().toUpperCase().slice(0, 40), is_custom: row?.is_custom === true || row?.isCustom === true });
+  }
+  return layout;
 }
 
 async function readFustSettings() {
@@ -26161,6 +26182,11 @@ async function handleApi(req, res, url) {
       const nextSettings = normalizeFustSettings({
         ...currentSettings,
         ...body,
+        // The Fust Lijst rows are saved by their own endpoint; an older copy
+        // the Settings page loaded never overwrites them.
+        fust_list_rows: currentSettings.fust_list_rows,
+        fust_list_rows_updated_at: currentSettings.fust_list_rows_updated_at,
+        fust_list_rows_updated_by: currentSettings.fust_list_rows_updated_by,
       });
       await writeFustSettings(nextSettings);
       const cmrData = await loadCmrPrintData();
@@ -30243,6 +30269,32 @@ async function handleApi(req, res, url) {
       sheet_sync: deletion.sheet_sync,
       db_sync: deletion.db_sync,
     });
+    return;
+  }
+
+  // The Fust Lijst rows (codes + extra rows), shared by everyone.
+  if (url.pathname === "/api/fust/fust-list/rows" && (req.method === "GET" || req.method === "PUT")) {
+    if (!requireAnyPermission(res, requestUser, [PERMISSIONS.FUST_IN, PERMISSIONS.FUST_VIEW])) {
+      return;
+    }
+    if (req.method === "GET") {
+      const settings = await readFustSettings();
+      sendJson(res, 200, { rows: settings.fust_list_rows, updated_at: settings.fust_list_rows_updated_at, updated_by: settings.fust_list_rows_updated_by });
+      return;
+    }
+    if (!requirePermission(res, requestUser, PERMISSIONS.FUST_IN)) {
+      return;
+    }
+    const body = await readRequestJson(req, 256 * 1024);
+    const rows = normalizeFustListLayout(body?.rows);
+    if (!rows.length) {
+      sendJson(res, 400, { error: "No Fust Lijst rows given" });
+      return;
+    }
+    const currentSettings = await readFustSettings();
+    const updatedAt = new Date().toISOString();
+    await writeFustSettings({ ...currentSettings, fust_list_rows: rows, fust_list_rows_updated_at: updatedAt, fust_list_rows_updated_by: requestUser.username });
+    sendJson(res, 200, { rows, updated_at: updatedAt, updated_by: requestUser.username });
     return;
   }
 
