@@ -9691,6 +9691,97 @@ function PdStepPlanPage({ onNavigate }) {
   );
 }
 
+// A text box with a real dropdown of every value used before: opened (click,
+// focus or the ▾), it lists ALL of them -- not only the ones that match
+// what is in the box, as the browser's own suggestion list does -- most used
+// first; typing narrows the list, and a new value can still be typed.
+function UsedValuesCombo({ value, onChange, options, placeholder = "", ariaLabel = "", className = "" }) {
+  const [open, setOpen] = useState(false);
+  const [query, setQuery] = useState(null);
+  const [active, setActive] = useState(-1);
+  const inputRef = useRef(null);
+  const listRef = useRef(null);
+  const current = String(value || "");
+  const words = String(query || "").toLowerCase().split(/\s+/).filter(Boolean);
+  const shown = query === null ? options : options.filter((option) => words.every((word) => option.value.toLowerCase().includes(word)));
+  const openAll = () => {
+    setQuery(null);
+    setOpen(true);
+    setActive(Math.max(0, options.findIndex((option) => option.value === current)));
+  };
+  const pick = (next) => {
+    onChange(next);
+    setOpen(false);
+    setQuery(null);
+  };
+  useEffect(() => {
+    if (!open || active < 0) return;
+    listRef.current?.querySelector(`[data-index="${active}"]`)?.scrollIntoView({ block: "nearest" });
+  }, [open, active]);
+  return (
+    <span className={`used-combo${open ? " open" : ""}`}>
+      <input
+        ref={inputRef}
+        className={className}
+        value={current}
+        placeholder={placeholder}
+        aria-label={ariaLabel || undefined}
+        role="combobox"
+        aria-expanded={open}
+        autoComplete="off"
+        onFocus={openAll}
+        onClick={() => { if (!open) openAll(); }}
+        onBlur={() => window.setTimeout(() => setOpen(false), 120)}
+        onChange={(event) => { onChange(event.target.value); setQuery(event.target.value); setOpen(true); setActive(0); }}
+        onKeyDown={(event) => {
+          if (event.key === "ArrowDown") { event.preventDefault(); if (!open) openAll(); else setActive((index) => Math.min(shown.length - 1, index + 1)); }
+          else if (event.key === "ArrowUp") { event.preventDefault(); setActive((index) => Math.max(0, index - 1)); }
+          else if (event.key === "Enter" && open && shown[active]) { event.preventDefault(); pick(shown[active].value); }
+          else if (event.key === "Escape") setOpen(false);
+        }}
+      />
+      <button type="button" className="used-combo-toggle" tabIndex={-1} aria-label="Show all values"
+        onMouseDown={(event) => event.preventDefault()}
+        onClick={() => { if (open) setOpen(false); else { openAll(); inputRef.current?.focus(); } }}>▾</button>
+      {open && (
+        <ul className="used-combo-list" role="listbox" ref={listRef}>
+          {shown.map((option, index) => (
+            <li key={option.value} data-index={index} role="option" aria-selected={option.value === current}
+              className={`${index === active ? "active" : ""}${option.value === current ? " chosen" : ""}`}
+              onMouseDown={(event) => { event.preventDefault(); pick(option.value); }}
+              onMouseEnter={() => setActive(index)}>
+              <span>{option.value === current && <b className="used-combo-check">✓ </b>}{option.value}</span>
+              {option.count > 0 && <small>{option.count}×</small>}
+            </li>
+          ))}
+          {!shown.length && <li className="used-combo-empty">New value -- not used before</li>}
+        </ul>
+      )}
+    </span>
+  );
+}
+
+// Every value a field has had (all shipments so far) plus the synced
+// dropdown list, the most used first; the same text in other capitals is
+// one option (its most used spelling).
+function buildUsedValueOptions(rows, field, extra = []) {
+  const byKey = new Map();
+  const add = (raw, count) => {
+    const text = String(raw ?? "").trim();
+    if (!text) return;
+    const key = text.toLowerCase();
+    const entry = byKey.get(key) || { count: 0, spellings: new Map() };
+    entry.count += count;
+    entry.spellings.set(text, (entry.spellings.get(text) || 0) + count + 0.001);
+    byKey.set(key, entry);
+  };
+  for (const row of rows) add(row?.[field], 1);
+  for (const value of extra || []) add(value, 0);
+  return [...byKey.values()]
+    .map((entry) => ({ value: [...entry.spellings.entries()].sort((left, right) => right[1] - left[1])[0][0], count: entry.count }))
+    .sort((left, right) => right.count - left.count || left.value.localeCompare(right.value));
+}
+
 function PdKeuringPage({ currentUser }) {
   const canManageSettings = hasPermission(currentUser, PERMISSIONS.SETTINGS_MANAGE);
   const [activeMenu, setActiveMenu] = useState("planning");
@@ -9745,6 +9836,19 @@ function PdKeuringPage({ currentUser }) {
   const printCollections = state?.print_collections || [];
   const customers = state?.customers || [];
   const dayRows = printCollections.filter((item) => String(item.shipment_date || "").slice(0, 10) === selectedDate);
+  // The form's dropdowns: every value used until today (all shipments) plus
+  // the synced lists -- not for truck, trailer, boxes, pieces.
+  const usedOptions = useMemo(() => ({
+    city_name: buildUsedValueOptions(printCollections, "city_name", pdDropdownOptions.cities),
+    border_crossing: buildUsedValueOptions(printCollections, "border_crossing"),
+    hub_code: buildUsedValueOptions(printCollections, "hub_code", pdDropdownOptions.hub_codes),
+    remark: buildUsedValueOptions(printCollections, "remark"),
+    pd_form: buildUsedValueOptions(printCollections, "pd_form", pdDropdownOptions.pd_form_letters),
+    re_export: buildUsedValueOptions(printCollections, "re_export"),
+    pd_type: buildUsedValueOptions(printCollections, "pd_type", pdDropdownOptions.types),
+    pd_code: buildUsedValueOptions(printCollections, "pd_code", pdDropdownOptions.pd_codes),
+    pd_keuring_made_by: buildUsedValueOptions(printCollections, "pd_keuring_made_by", pdDropdownOptions.staff_names),
+  }), [printCollections, pdDropdownOptions]);
   // Opened from the PD Step Plan for one shipment: the fields it still
   // needs glow until they're filled in, and leaving with some still empty
   // asks to continue without them (recorded in the plan).
@@ -10152,13 +10256,6 @@ function PdKeuringPage({ currentUser }) {
 
           {rowDraft && (
             <>
-              <datalist id="pd-keuring-cities">{(pdDropdownOptions.cities || []).map((option) => <option key={option} value={option} />)}</datalist>
-              <datalist id="pd-keuring-hub-codes">{(pdDropdownOptions.hub_codes || []).map((option) => <option key={option} value={option} />)}</datalist>
-              <datalist id="pd-keuring-pd-forms">{(pdDropdownOptions.pd_form_letters || []).map((option) => <option key={option} value={option} />)}</datalist>
-              <datalist id="pd-keuring-types">{(pdDropdownOptions.types || []).map((option) => <option key={option} value={option} />)}</datalist>
-              <datalist id="pd-keuring-pd-codes">{(pdDropdownOptions.pd_codes || []).map((option) => <option key={option} value={option} />)}</datalist>
-              <datalist id="pd-keuring-staff-names">{(pdDropdownOptions.staff_names || []).map((option) => <option key={option} value={option} />)}</datalist>
-
               <div className="section-header"><h3>{rowDraft.id ? "Edit row" : "Add row"}</h3></div>
               {!pdDropdownOptions.cities?.length && (
                 <div className="notice">No dropdown suggestions loaded yet -- use "Sync dropdown options from data tab" below to pull the city/code/type lists from the spreadsheet.</div>
@@ -10166,35 +10263,35 @@ function PdKeuringPage({ currentUser }) {
               <div className="form-grid">
                 <label>
                   <span>City</span>
-                  <input list="pd-keuring-cities" value={rowDraft.city_name || ""} onChange={(event) => updateRowDraftField("city_name", event.target.value)} />
+                  <UsedValuesCombo value={rowDraft.city_name} options={usedOptions.city_name} onChange={(next) => updateRowDraftField("city_name", next)} />
                 </label>
                 <label>
                   <span>Border crossing</span>
-                  <input value={rowDraft.border_crossing || ""} onChange={(event) => updateRowDraftField("border_crossing", event.target.value)} />
+                  <UsedValuesCombo value={rowDraft.border_crossing} options={usedOptions.border_crossing} onChange={(next) => updateRowDraftField("border_crossing", next)} />
                 </label>
                 <label>
                   <span>Hub code</span>
-                  <input list="pd-keuring-hub-codes" value={rowDraft.hub_code || ""} onChange={(event) => updateRowDraftField("hub_code", event.target.value)} />
+                  <UsedValuesCombo value={rowDraft.hub_code} options={usedOptions.hub_code} onChange={(next) => updateRowDraftField("hub_code", next)} />
                 </label>
                 <label>
                   <span>Remark</span>
-                  <input value={rowDraft.remark || ""} onChange={(event) => updateRowDraftField("remark", event.target.value)} />
+                  <UsedValuesCombo value={rowDraft.remark} options={usedOptions.remark} onChange={(next) => updateRowDraftField("remark", next)} />
                 </label>
                 <label>
                   <span>PD form</span>
-                  <input list="pd-keuring-pd-forms" value={rowDraft.pd_form || ""} onChange={(event) => updateRowDraftField("pd_form", event.target.value)} />
+                  <UsedValuesCombo value={rowDraft.pd_form} options={usedOptions.pd_form} onChange={(next) => updateRowDraftField("pd_form", next)} />
                 </label>
                 <label>
                   <span>Re-export</span>
-                  <input value={rowDraft.re_export || ""} onChange={(event) => updateRowDraftField("re_export", event.target.value)} />
+                  <UsedValuesCombo value={rowDraft.re_export} options={usedOptions.re_export} onChange={(next) => updateRowDraftField("re_export", next)} />
                 </label>
                 <label>
                   <span>Type</span>
-                  <input list="pd-keuring-types" value={rowDraft.pd_type || ""} onChange={(event) => updateRowDraftField("pd_type", event.target.value)} />
+                  <UsedValuesCombo value={rowDraft.pd_type} options={usedOptions.pd_type} onChange={(next) => updateRowDraftField("pd_type", next)} />
                 </label>
                 <label>
                   <span>PD code</span>
-                  <input list="pd-keuring-pd-codes" value={rowDraft.pd_code || ""} onChange={(event) => updateRowDraftField("pd_code", event.target.value)} />
+                  <UsedValuesCombo value={rowDraft.pd_code} options={usedOptions.pd_code} onChange={(next) => updateRowDraftField("pd_code", next)} />
                 </label>
                 <label>
                   <span>Reference connect</span>
@@ -10219,7 +10316,7 @@ function PdKeuringPage({ currentUser }) {
                 </label>
                 <label>
                   <span>Keuring made by</span>
-                  <input list="pd-keuring-staff-names" value={rowDraft.pd_keuring_made_by || ""} onChange={(event) => updateRowDraftField("pd_keuring_made_by", event.target.value)} />
+                  <UsedValuesCombo value={rowDraft.pd_keuring_made_by} options={usedOptions.pd_keuring_made_by} onChange={(next) => updateRowDraftField("pd_keuring_made_by", next)} />
                 </label>
                 <label>
                   <span>Transport</span>

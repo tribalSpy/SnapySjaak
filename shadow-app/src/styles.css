@@ -4469,3 +4469,27 @@ table.data-table.balance-table.ik-table.ik-inv-invoices td:nth-child(n+7), table
 .ik-cust-tops { display: flex; flex-wrap: wrap; gap: 2px 12px; font-size: 0.82rem; }
 .ik-cust-tops > span { white-space: nowrap; }
 .ik-cust-hg { color: var(--ik-accent); font-weight: 600; }
+
+/* UsedValuesCombo: a text box with a dropdown of every value used before. */
+.used-combo { position: relative; display: flex; align-items: stretch; width: 100%; }
+.used-combo > input { flex: 1; min-width: 0; padding-right: 34px; }
+.used-combo-toggle {
+  position: absolute; right: 4px; top: 4px; bottom: 4px; width: 28px; padding: 0;
+  border: none; background: transparent; color: #6b7785; font-size: 0.9rem; line-height: 1;
+}
+.used-combo.open .used-combo-toggle { color: #17202a; }
+.used-combo-list {
+  position: absolute; top: calc(100% + 4px); left: 0; right: 0; z-index: 60;
+  max-height: 320px; overflow-y: auto; margin: 0; padding: 4px; list-style: none;
+  background: #ffffff; border: 1px solid #bac4ce; border-radius: 8px;
+  box-shadow: 0 8px 24px rgba(23, 32, 42, 0.18);
+}
+.used-combo-list li {
+  display: flex; justify-content: space-between; gap: 12px; align-items: baseline;
+  padding: 7px 10px; border-radius: 6px; cursor: pointer; color: #17202a; font-weight: 400;
+}
+.used-combo-list li small { color: #6b7785; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.used-combo-list li.active { background: #e3e8ee; }
+.used-combo-list li.chosen { font-weight: 700; }
+.used-combo-check { color: #1f7a5a; }
+.used-combo-list li.used-combo-empty { color: #6b7785; cursor: default; font-style: italic; }
