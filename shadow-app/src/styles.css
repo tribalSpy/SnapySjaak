@@ -4853,3 +4853,30 @@ table.data-table.balance-table.ik-table.ik-inv-invoices td:nth-child(n+7), table
   .user-row-card .user-row { grid-template-columns: 1fr; }
   .user-row-head .user-row-created { margin-left: 0; }
 }
+
+/* Tasks widget: % ring, green checks, the user's tab sections */
+.tw-root, .tw-admin { --tw-ok: hsl(142 64% 30%); --tw-ok-soft: hsl(142 60% 40% / 0.10); }
+:root[data-theme="dark"] .tw-root, :root[data-theme="dark"] .tw-admin { --tw-ok: hsl(142 55% 62%); --tw-ok-soft: hsl(142 55% 50% / 0.14); }
+.tw-ring { position: relative; display: inline-grid; place-items: center; flex: none; }
+.tw-task .tw-ring { margin-top: 1px; }
+.tw-ring svg { display: block; }
+.tw-ring-track { fill: none; stroke: var(--tw-line); stroke-width: 3; }
+.tw-ring-value { fill: none; stroke: var(--tw-accent); stroke-width: 3; stroke-linecap: round; }
+.tw-ring.full .tw-ring-value { stroke: var(--tw-ok); }
+.tw-ring-label { position: absolute; font-size: 10px; font-weight: 700; }
+.tw-list-head { font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em; color: var(--tw-muted); padding: 6px 8px 2px; }
+.tw-progress-top { display: flex; align-items: center; gap: 10px; padding: 2px 0 6px; border-bottom: 1px solid var(--tw-line); }
+.tw-progress-top > span:last-child { display: flex; flex-direction: column; }
+.tw-progress-top small { font-size: 12px; color: var(--tw-muted); }
+.tw-progress-check { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 2px 8px; align-items: center; padding: 5px 0; border-bottom: 1px solid var(--tw-line); }
+.tw-progress-check .tw-checks, .tw-progress-check > small { grid-column: 2; }
+.tw-checks { display: flex; flex-wrap: wrap; gap: 4px; }
+.tw-check { font-size: 11px; padding: 0 7px; border-radius: 999px; border: 1px solid var(--tw-line); color: var(--tw-muted); }
+.tw-check.on { color: var(--tw-ok); border-color: var(--tw-ok); background: var(--tw-ok-soft); font-weight: 600; }
+.tw-progress-more { font-size: 12px; }
+.tw-progress-more > summary { cursor: pointer; color: var(--tw-muted); padding: 6px 0 2px; }
+.tw-ring-label { inset: 0; display: grid; place-items: center; }
+.tw-progress-check .tw-progress-name { grid-area: auto; grid-column: 2; grid-row: 1; }
+.tw-progress-check > .tw-ring { grid-column: 1; grid-row: 1; }
+.tw-chips button { font-size: 12px; padding: 3px 7px; }
+.tw-add.tw-add-icon { padding: 2px 9px; font-size: 16px; line-height: 1.2; }

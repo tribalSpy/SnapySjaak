@@ -11565,7 +11565,7 @@ function TwAssigneeSelect({ value, onChange, directory, currentUser }) {
 }
 
 function TwTasks({ currentUser, directory, teamName, pulseKey, onOpenLink, big }) {
-  const [scope, setScope] = useState("mine");
+  const [scope, setScope] = useState("user");
   const [data, setData] = useState({ tasks: [], counts: { mine: 0, team: 0, created: 0 } });
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
@@ -11623,23 +11623,61 @@ function TwTasks({ currentUser, directory, teamName, pulseKey, onOpenLink, big }
   }
 
   const today = twToday();
+  const name = twDisplayName(currentUser.username);
   const chips = [
-    ["mine", "Mine", data.counts.mine],
-    ["team", "My teams", data.counts.team],
-    ["created", "I gave", data.counts.created],
-    ["done", "Done", null],
+    ["user", `${name}'s tasks`, data.counts.user],
+    ["team", "Team tasks", data.counts.team],
+    ["all", "All tasks", data.counts.all],
+    ["done", "✓", null, "Done (last 30 days)"],
   ];
+  const renderTask = (task) => {
+    const overdue = task.due_date && task.due_date < today && !["done", "cancelled"].includes(task.status);
+    const finished = ["done", "cancelled"].includes(task.status);
+    const requested = task.created_by === currentUser.username && task.assignee_user !== currentUser.username;
+    const pct = typeof task.link?.progress?.pct === "number" ? task.link.progress.pct : null;
+    return (
+      <li key={task.id} className={`tw-task${finished ? " finished" : ""}`}>
+        <input
+          type="checkbox"
+          checked={task.status === "done"}
+          disabled={busy || task.status === "cancelled"}
+          onChange={(event) => setStatus(task, event.target.checked ? "done" : "open")}
+          aria-label={task.status === "done" ? `Reopen: ${task.title}` : `Done: ${task.title}`}
+        />
+        {pct !== null && <TwRing pct={finished ? 100 : pct} />}
+        <button type="button" className="tw-task-main" onClick={() => setOpenId(task.id)}>
+          <span className="tw-task-title">
+            {task.priority !== "normal" && <span className={`tw-prio ${task.priority}`}>{task.priority === "urgent" ? "!! Urgent" : "! High"}</span>}
+            {task.title}
+          </span>
+          <span className="tw-task-meta">
+            {TW_SOURCE_LABELS[task.source] && <span className="tw-chip">{TW_SOURCE_LABELS[task.source]}</span>}
+            {task.due_date && <span className={overdue ? "tw-overdue" : ""}>{overdue ? "⚠ overdue " : "due "}{task.due_date}</span>}
+            {(requested || scope !== "user") && <span>→ {twAssigneeLabel(task, teamName) || "-"}</span>}
+            {!requested && task.created_by && task.created_by !== currentUser.username && <span>from {task.created_by}</span>}
+            {task.repeat !== "none" && <span>↻ {TW_REPEAT_LABELS[task.repeat]}</span>}
+            {task.messages > 0 && <span>💬 {task.messages}</span>}
+            {task.status === "in_progress" && <span>▶ in progress</span>}
+            {finished && <span>{task.status === "done" ? `✓ done${task.done_by ? ` by ${task.done_by}` : ""}` : "✕ cancelled"}</span>}
+          </span>
+        </button>
+      </li>
+    );
+  };
+  // The user's tab: their own tasks, then the ones they asked of others.
+  const ownTasks = scope === "user" ? data.tasks.filter((task) => task.assignee_user === currentUser.username) : data.tasks;
+  const requestedTasks = scope === "user" ? data.tasks.filter((task) => task.assignee_user !== currentUser.username) : [];
   return (
     <div className="tw-tasks">
       <div className="tw-toolbar">
         <div className="tw-chips">
-          {chips.map(([key, label, count]) => (
-            <button key={key} type="button" className={scope === key ? "on" : ""} aria-pressed={scope === key} onClick={() => setScope(key)}>
+          {chips.map(([key, label, count, hint]) => (
+            <button key={key} type="button" className={scope === key ? "on" : ""} aria-pressed={scope === key} onClick={() => setScope(key)} title={hint || undefined} aria-label={hint || undefined}>
               {label}{count ? <span className="tw-count">{count}</span> : null}
             </button>
           ))}
         </div>
-        <button type="button" className="tw-add" onClick={() => setAdding((value) => !value)} aria-expanded={adding}>{adding ? "Cancel" : "+ New"}</button>
+        <button type="button" className="tw-add tw-add-icon" onClick={() => setAdding((value) => !value)} aria-expanded={adding} aria-label={adding ? "Cancel" : "New task"} title={adding ? "Cancel" : "New task"}>{adding ? "×" : "+"}</button>
       </div>
       {adding && (
         <form className="tw-form" onSubmit={addTask}>
@@ -11666,38 +11704,11 @@ function TwTasks({ currentUser, directory, teamName, pulseKey, onOpenLink, big }
       )}
       {error && <div className="tw-note warn">{error}</div>}
       <ul className="tw-list">
-        {data.tasks.map((task) => {
-          const overdue = task.due_date && task.due_date < today && !["done", "cancelled"].includes(task.status);
-          const finished = ["done", "cancelled"].includes(task.status);
-          return (
-            <li key={task.id} className={`tw-task${finished ? " finished" : ""}`}>
-              <input
-                type="checkbox"
-                checked={task.status === "done"}
-                disabled={busy || task.status === "cancelled"}
-                onChange={(event) => setStatus(task, event.target.checked ? "done" : "open")}
-                aria-label={task.status === "done" ? `Reopen: ${task.title}` : `Done: ${task.title}`}
-              />
-              <button type="button" className="tw-task-main" onClick={() => setOpenId(task.id)}>
-                <span className="tw-task-title">
-                  {task.priority !== "normal" && <span className={`tw-prio ${task.priority}`}>{task.priority === "urgent" ? "!! Urgent" : "! High"}</span>}
-                  {task.title}
-                </span>
-                <span className="tw-task-meta">
-                  {TW_SOURCE_LABELS[task.source] && <span className="tw-chip">{TW_SOURCE_LABELS[task.source]}</span>}
-                  {task.due_date && <span className={overdue ? "tw-overdue" : ""}>{overdue ? "⚠ overdue " : "due "}{task.due_date}</span>}
-                  {scope !== "mine" && <span>→ {twAssigneeLabel(task, teamName) || "-"}</span>}
-                  {scope === "mine" && task.created_by && task.created_by !== currentUser.username && <span>from {task.created_by}</span>}
-                  {task.repeat !== "none" && <span>↻ {TW_REPEAT_LABELS[task.repeat]}</span>}
-                  {task.messages > 0 && <span>💬 {task.messages}</span>}
-                  {task.status === "in_progress" && <span>▶ in progress</span>}
-                  {finished && <span>{task.status === "done" ? `✓ done${task.done_by ? ` by ${task.done_by}` : ""}` : "✕ cancelled"}</span>}
-                </span>
-              </button>
-            </li>
-          );
-        })}
-        {!loading && !data.tasks.length && <li className="tw-empty">{scope === "done" ? "Nothing done in the last 30 days." : "Nothing open here."}</li>}
+        {scope === "user" && <li className="tw-list-head">For {name}{ownTasks.length ? ` (${ownTasks.length})` : ""}</li>}
+        {ownTasks.map(renderTask)}
+        {!loading && !ownTasks.length && <li className="tw-empty">{scope === "done" ? "Nothing done in the last 30 days." : "Nothing open here."}</li>}
+        {scope === "user" && !!requestedTasks.length && <li className="tw-list-head">Requested by {name} ({requestedTasks.length})</li>}
+        {requestedTasks.map(renderTask)}
         {loading && <li className="tw-empty">Loading…</li>}
       </ul>
     </div>
@@ -11801,6 +11812,28 @@ function TwTaskDetail({ id, currentUser, directory, teamName, onBack, onOpenLink
   );
 }
 
+// "filipe" -> "Filipe" (the tabs and headings speak to the user by name).
+function twDisplayName(username) {
+  const text = String(username || "").trim();
+  return text ? text.charAt(0).toUpperCase() + text.slice(1) : "My";
+}
+
+// A small % circle (how far a task that follows something is).
+function TwRing({ pct, size = 22 }) {
+  const value = Math.max(0, Math.min(100, Number(pct) || 0));
+  const radius = (size - 4) / 2;
+  const length = 2 * Math.PI * radius;
+  return (
+    <span className={`tw-ring${value >= 100 ? " full" : ""}`} role="img" aria-label={`${value}% done`} title={`${value}% done`} style={{ width: size, height: size }}>
+      <svg viewBox={`0 0 ${size} ${size}`} width={size} height={size} aria-hidden="true">
+        <circle cx={size / 2} cy={size / 2} r={radius} className="tw-ring-track" />
+        <circle cx={size / 2} cy={size / 2} r={radius} className="tw-ring-value" strokeDasharray={`${(value / 100) * length} ${length}`} transform={`rotate(-90 ${size / 2} ${size / 2})`} />
+      </svg>
+      {size >= 34 && <span className="tw-ring-label">{value}%</span>}
+    </span>
+  );
+}
+
 // A row of little blocks: the steps done, the one it is at, the ones to come.
 function TwSteps({ step, steps, complete }) {
   return (
@@ -11812,35 +11845,55 @@ function TwSteps({ step, steps, complete }) {
   );
 }
 
-// The day's step plan inside its one task: the day step it is at, and per
-// shipment its step and a simple status (stuck ones first).
+// The day's step plan inside its one task: per shipment the Pipeline
+// Monitor's four checks the app's own actions turn green (complete, CSI done,
+// papers sent, OK) -- what the % follows. The step plan's own steps only
+// folded below ("Step plan details").
+const TW_CHECKS = [["complete", "Complete"], ["csi", "CSI done"], ["papers", "Papers sent"], ["ok", "OK"]];
 function TwStepPlanProgress({ progress }) {
   const rows = [...(progress.rows || [])].sort((left, right) => (
     Number(Boolean(right.stuck)) - Number(Boolean(left.stuck))
-    || Number(left.complete) - Number(right.complete)
-    || left.step - right.step
+    || (left.pct ?? 0) - (right.pct ?? 0)
     || String(left.customer).localeCompare(String(right.customer))
   ));
   return (
     <div className="tw-progress">
-      <div className="tw-progress-row day">
-        <span className="tw-progress-name">Day steps</span>
-        <TwSteps step={progress.day.step} steps={progress.day.steps} complete={progress.day.complete} />
-        <span className="tw-progress-status">{progress.day.complete ? "✓ done" : `${progress.day.step}/${progress.day.steps} · ${progress.day.label}`}</span>
+      <div className="tw-progress-top">
+        <TwRing pct={progress.pct ?? 0} size={40} />
+        <span><strong>{progress.ready ?? 0}/{progress.total} shipment(s) ready</strong><small>all green in the Pipeline Monitor{progress.stuck ? ` · ⚠ ${progress.stuck} stuck` : ""}</small></span>
       </div>
       {rows.map((row) => (
-        <div key={row.id} className={`tw-progress-row${row.complete ? " complete" : ""}`}>
+        <div key={row.id} className="tw-progress-check">
+          <TwRing pct={row.pct ?? 0} size={18} />
           <span className="tw-progress-name">{row.customer} <small>{row.route}</small></span>
-          <TwSteps step={row.step} steps={row.steps} complete={row.complete} />
-          <span className="tw-progress-status">
-            {row.complete ? `✓ complete${row.papers_sent ? " · papers sent" : ""}` : `${row.step}/${row.steps} · ${row.label}`}
-            {!row.complete && row.status && <small>{row.status}</small>}
-            {row.stuck && <small className="tw-overdue">⚠ {row.stuck}</small>}
+          <span className="tw-checks">
+            {TW_CHECKS.map(([key, label]) => (
+              <span key={key} className={`tw-check${row.checks?.[key] ? " on" : ""}`}>{row.checks?.[key] ? "✓" : "○"} {label}</span>
+            ))}
           </span>
+          {row.stuck && <small className="tw-overdue">⚠ {row.stuck}</small>}
         </div>
       ))}
       {!rows.length && <div className="tw-empty">No shipments for this day yet.</div>}
-      <small className="tw-progress-foot">{progress.done}/{progress.total} shipment(s) complete · updated {twShortTime(progress.updated_at)} -- follows the step plan by itself</small>
+      <details className="tw-progress-more">
+        <summary>Step plan details</summary>
+        <div className="tw-progress-row day">
+          <span className="tw-progress-name">Day steps</span>
+          <TwSteps step={progress.day.step} steps={progress.day.steps} complete={progress.day.complete} />
+          <span className="tw-progress-status">{progress.day.complete ? "✓ done" : `${progress.day.step}/${progress.day.steps} · ${progress.day.label}`}</span>
+        </div>
+        {rows.map((row) => (
+          <div key={row.id} className={`tw-progress-row${row.complete ? " complete" : ""}`}>
+            <span className="tw-progress-name">{row.customer}</span>
+            <TwSteps step={row.step} steps={row.steps} complete={row.complete} />
+            <span className="tw-progress-status">
+              {row.complete ? "✓ step plan complete" : `${row.step}/${row.steps} · ${row.label}`}
+              {!row.complete && row.status && <small>{row.status}</small>}
+            </span>
+          </div>
+        ))}
+      </details>
+      <small className="tw-progress-foot">Updated {twShortTime(progress.updated_at)} -- follows the Pipeline Monitor by itself; done when every shipment is green.</small>
     </div>
   );
 }

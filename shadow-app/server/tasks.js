@@ -243,7 +243,9 @@ async function listTasks(user, scope) {
   if (scope === "team") where = `status IN ('open', 'in_progress') AND assignee_team = ANY($2::text[])`;
   else if (scope === "created") where = `status IN ('open', 'in_progress') AND created_by = $1 AND coalesce(assignee_user, '') <> $1`;
   else if (scope === "done") { where = `status IN ('done', 'cancelled') AND ${visible} AND updated_at > now() - interval '30 days'`; limit = 100; }
-  else if (scope === "all" && user.role === "admin") { where = "status IN ('open', 'in_progress') AND $1 = $1 AND $2::text[] IS NOT NULL"; limit = 300; }
+  else if (scope === "all") { where = user.role === "admin" ? "status IN ('open', 'in_progress')" : `status IN ('open', 'in_progress') AND ${visible}`; limit = 300; }
+  // The user's tab: their own tasks and the ones they asked of others.
+  else if (scope === "user") where = `status IN ('open', 'in_progress') AND (assignee_user = $1 OR (created_by = $1 AND coalesce(assignee_user, '') <> $1))`;
   else where = `status IN ('open', 'in_progress') AND assignee_user = $1`;
   // Both parameters typed in every scope (one scope uses only one of them).
   const result = await dbQuery(
@@ -255,14 +257,21 @@ async function listTasks(user, scope) {
     `SELECT
        count(*) FILTER (WHERE assignee_user = $1) AS mine,
        count(*) FILTER (WHERE assignee_team = ANY($2::text[])) AS team,
-       count(*) FILTER (WHERE created_by = $1 AND coalesce(assignee_user, '') <> $1) AS created
+       count(*) FILTER (WHERE created_by = $1 AND coalesce(assignee_user, '') <> $1) AS created,
+       count(*) FILTER (WHERE $3 OR assignee_user = $1 OR assignee_team = ANY($2::text[]) OR created_by = $1) AS all_open
      FROM app_tasks WHERE status IN ('open', 'in_progress')`,
-    [me, teams],
+    [me, teams, user.role === "admin"],
   );
   const row = counts.rows[0] || {};
   return {
     tasks: result.rows.map(taskRow),
-    counts: { mine: Number(row.mine) || 0, team: Number(row.team) || 0, created: Number(row.created) || 0 },
+    counts: {
+      mine: Number(row.mine) || 0,
+      team: Number(row.team) || 0,
+      created: Number(row.created) || 0,
+      user: (Number(row.mine) || 0) + (Number(row.created) || 0),
+      all: Number(row.all_open) || 0,
+    },
   };
 }
 
@@ -527,8 +536,22 @@ function stepPlanProgress(date, plan, monitor) {
       : step?.key === "day"
         ? `Waiting for the day steps (${dayStep ? `${dayStep.number}. ${dayStep.label}` : "-"})`
         : step?.status || (step?.missing || [])[0] || "";
+    // What the task follows: the Pipeline Monitor's four checks, done by the
+    // app's own actions -- complete, CSI done, papers sent, no problem. (Eric
+    // Docs has no CSI; papers turned off for the customer count as done.)
+    const checks = {
+      complete: watch ? watch.complete === true : row.complete === true,
+      csi: row.route === "ericdocs" ? true : watch?.csi_status === "done",
+      papers: watch ? (watch.papers_sent === true || watch.papers_status === "off") : false,
+      ok: watch ? watch.needs_attention !== true : false,
+    };
+    const checksDone = Object.values(checks).filter(Boolean).length;
     return {
       id: row.collection_id,
+      checks,
+      pct: Math.round((checksDone / 4) * 100),
+      csi_status: watch?.csi_status || "",
+      papers_status: watch?.papers_status || "",
       customer: row.customer_name || "-",
       route: row.route === "ericdocs" ? "Eric Docs" : "CSI",
       step: Math.min(row.current_step + 1, row.steps.length),
@@ -551,6 +574,9 @@ function stepPlanProgress(date, plan, monitor) {
     },
     rows,
     total: rows.length,
+    // Ready = all four green; the % over every shipment's four checks.
+    ready: rows.filter((row) => row.pct === 100).length,
+    pct: rows.length ? Math.round(rows.reduce((sum, row) => sum + row.pct, 0) / rows.length) : 0,
     done: rows.filter((row) => row.complete).length,
     stuck: rows.filter((row) => row.stuck).length,
     updated_at: new Date().toISOString(),
@@ -564,7 +590,8 @@ function stableJson(value) {
   return JSON.stringify(value ?? null);
 }
 
-export async function syncStepPlanTasks({ dates, buildPlan }) {
+export async function syncStepPlanTasks({ dates: wantedDates, buildPlan }) {
+  let dates = wantedDates || [];
   if (!isDatabaseEnabled()) return { made: 0, closed: 0, updated: 0 };
   const config = await readTaskConfig();
   // The older per-step tasks (one per step): replaced by the one per day.
@@ -572,6 +599,11 @@ export async function syncStepPlanTasks({ dates, buildPlan }) {
   await closeTasks(older.rows, "system", "Replaced by one step plan task per day.");
   if (!config.step_plan.enabled || !config.step_plan.assign_to) return { made: 0, closed: older.rows.length, updated: 0 };
   const assignee = parseAssignee(config.step_plan.assign_to);
+  // Earlier days whose task is still open are followed until they are green.
+  const stillOpen = await dbQuery(
+    "SELECT substr(source_key, 11) AS day FROM app_tasks WHERE source = 'step_plan' AND status IN ('open', 'in_progress') AND source_key ~ '^step_plan:[0-9]{4}-[0-9]{2}-[0-9]{2}$' AND created_at > now() - interval '14 days'",
+  );
+  dates = [...new Set([...(dates || []), ...stillOpen.rows.map((row) => row.day)])];
   let made = 0;
   let closed = older.rows.length;
   let updated = 0;
@@ -579,11 +611,18 @@ export async function syncStepPlanTasks({ dates, buildPlan }) {
     const built = await buildPlan(date);
     const plan = built?.plan;
     if (!plan) continue;
-    // Nothing set up for that day (no stock control, no shipments): no task.
-    if (!plan.day?.collection_id && !(plan.rows || []).length) continue;
+    // No shipments that day (any more): no task -- an open one closes.
+    if (!(plan.rows || []).length) {
+      const gone = (await dbQuery("SELECT * FROM app_tasks WHERE source_key = $1 AND status IN ('open', 'in_progress')", [`step_plan:${date}`])).rows;
+      await closeTasks(gone, "system", "No shipments for this day in the step plan any more.");
+      closed += gone.length;
+      continue;
+    }
     const progress = stepPlanProgress(date, plan, built.monitor);
-    const complete = progress.day.complete && progress.rows.every((row) => row.complete);
-    const title = `Step plan ${date}: ${complete ? "all done" : `day step ${progress.day.step}/${progress.day.steps}`} · ${progress.done}/${progress.total} shipment(s) done${progress.stuck ? ` · ${progress.stuck} stuck` : ""}`;
+    // Done when every shipment is green in the Pipeline Monitor (the step
+    // plan's own steps are only shown inside the task).
+    const complete = progress.total > 0 && progress.ready === progress.total;
+    const title = `Step plan ${date} · ${progress.ready}/${progress.total} shipment(s) ready${progress.stuck ? ` · ${progress.stuck} stuck` : ""}`;
     const sourceKey = `step_plan:${date}`;
     const link = { page: "pdstepplan", date, progress };
     const existing = (await dbQuery("SELECT * FROM app_tasks WHERE source_key = $1", [sourceKey])).rows[0];
