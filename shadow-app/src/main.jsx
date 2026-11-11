@@ -3891,6 +3891,8 @@ function UkdocsPage({ currentUser, onNavigate }) {
   // Right-click "Add factuur" menu on a Finance Audit summary row --
   // { x, y, shipmentId } while open, else null.
   const [financeAuditContextMenu, setFinanceAuditContextMenu] = useState(null);
+  // "Edit invoice numbers" dialog: { shipmentId, rows: [{ category, label, value, original }] }.
+  const [financeAuditInvoiceEdit, setFinanceAuditInvoiceEdit] = useState(null);
   const financeAuditInvoiceInputRef = useRef(null);
   const financeAuditInvoiceTargetShipmentId = useRef("");
   const financeAuditFolderInputRef = useRef(null);
@@ -4228,6 +4230,62 @@ function UkdocsPage({ currentUser, onNavigate }) {
   function openFinanceAuditContextMenu(event, shipmentId) {
     event.preventDefault();
     setFinanceAuditContextMenu({ x: event.clientX, y: event.clientY, shipmentId });
+  }
+
+  function openFinanceAuditInvoiceEdit() {
+    const shipmentId = financeAuditContextMenu?.shipmentId || "";
+    setFinanceAuditContextMenu(null);
+    const shipment = shipments.find((item) => item.id === shipmentId);
+    if (!shipment) {
+      return;
+    }
+    const rows = UKDOCS_CATEGORY_DEFINITIONS
+      .filter((category) => shipment.uploaded_files?.[category.code]?.file_name || String(shipment.invoice_numbers_by_category?.[category.code] || "").trim())
+      .map((category) => {
+        const original = String(shipment.invoice_numbers_by_category?.[category.code] || "").trim();
+        return { category: category.code, label: category.label, value: original, original };
+      });
+    setFinanceAuditInvoiceEdit({ shipmentId, rows });
+  }
+
+  async function saveFinanceAuditInvoiceEdit() {
+    const edit = financeAuditInvoiceEdit;
+    if (!edit) {
+      return;
+    }
+    const changed = edit.rows.filter((row) => row.value.trim() !== row.original);
+    if (!changed.length) {
+      setFinanceAuditInvoiceEdit(null);
+      return;
+    }
+    const summary = changed.map((row) => `${row.label}: ${row.original || "(empty)"} -> ${row.value.trim() || "(empty)"}`).join("\n");
+    if (!window.confirm(`Change these invoice numbers everywhere they show (shipment, UKdocs Print, CSI, PD Keuring, audit)?\n\n${summary}`)) {
+      return;
+    }
+    setSaving(true);
+    setError("");
+    setMessage("");
+    try {
+      const payload = await apiJson(`/api/finance-audit/shipments/${encodeURIComponent(edit.shipmentId)}/invoice-numbers`, {
+        method: "PUT",
+        body: JSON.stringify({ invoice_numbers_by_category: Object.fromEntries(changed.map((row) => [row.category, row.value.trim()])) }),
+      });
+      setState(payload.state);
+      // A sending open on the New shipment page takes the new numbers too, so
+      // a later Generate does not put the old ones back.
+      const savedShipment = (payload.state?.shipments || []).find((item) => item.id === edit.shipmentId);
+      if (savedShipment) {
+        setShipmentDraft((current) => (current.id === edit.shipmentId
+          ? { ...current, invoice_numbers_by_category: savedShipment.invoice_numbers_by_category, invoice_numbers: savedShipment.invoice_numbers }
+          : current));
+      }
+      setFinanceAuditInvoiceEdit(null);
+      setMessage(`Invoice numbers changed (${payload.changed}): ${payload.shipments_changed} shipment record(s), ${payload.collections_changed} print collection(s).`);
+    } catch (saveError) {
+      setError(saveError.message);
+    } finally {
+      setSaving(false);
+    }
   }
 
   function triggerFinanceAuditInvoiceUpload() {
@@ -5352,8 +5410,36 @@ function UkdocsPage({ currentUser, onNavigate }) {
               <button type="button" className="finance-audit-context-backdrop" onClick={() => setFinanceAuditContextMenu(null)} aria-label="Close menu" />
               <div className="finance-audit-context-menu" style={{ top: financeAuditContextMenu.y, left: financeAuditContextMenu.x }}>
                 <button type="button" onClick={triggerFinanceAuditInvoiceUpload}>Add factuur</button>
+                <button type="button" onClick={openFinanceAuditInvoiceEdit}>Edit invoice numbers</button>
               </div>
             </>
+          )}
+          {financeAuditInvoiceEdit && (
+            <div className="finance-audit-modal-backdrop" onClick={() => !saving && setFinanceAuditInvoiceEdit(null)}>
+              <div className="finance-audit-modal" role="dialog" aria-label="Edit invoice numbers" onClick={(event) => event.stopPropagation()}>
+                <h3>Edit invoice numbers</h3>
+                <p className="muted">The new number replaces the old one everywhere: this sending, UKdocs Print / CSI / PD Keuring, emails and the audit. Already generated invoice files keep the old number until you generate them again.</p>
+                {!financeAuditInvoiceEdit.rows.length && <p>This sending has no categories.</p>}
+                {financeAuditInvoiceEdit.rows.map((row, index) => (
+                  <label key={row.category} className="finance-audit-modal-field">
+                    <span>{row.label} ({row.category}){row.value.trim() !== row.original ? ` -- was ${row.original || "empty"}` : ""}</span>
+                    <input
+                      value={row.value}
+                      autoFocus={index === 0}
+                      onChange={(event) => setFinanceAuditInvoiceEdit((current) => ({
+                        ...current,
+                        rows: current.rows.map((item) => (item.category === row.category ? { ...item, value: event.target.value } : item)),
+                      }))}
+                      onKeyDown={(event) => { if (event.key === "Enter") saveFinanceAuditInvoiceEdit(); }}
+                    />
+                  </label>
+                ))}
+                <div className="row-actions">
+                  <button type="button" className="primary" onClick={saveFinanceAuditInvoiceEdit} disabled={saving}>{saving ? "Saving..." : "Save"}</button>
+                  <button type="button" onClick={() => setFinanceAuditInvoiceEdit(null)} disabled={saving}>Cancel</button>
+                </div>
+              </div>
+            </div>
           )}
         </div>
       )}

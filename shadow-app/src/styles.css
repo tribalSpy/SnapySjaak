@@ -2026,6 +2026,44 @@ pre {
   background: #eef6ff;
 }
 
+.finance-audit-modal-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  background: rgba(15, 23, 42, 0.35);
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  padding: 80px 16px;
+}
+
+.finance-audit-modal {
+  width: min(460px, 100%);
+  background: #fff;
+  border: 1px solid #cdd8e4;
+  border-radius: 8px;
+  box-shadow: 0 12px 32px rgba(15, 23, 42, 0.25);
+  padding: 16px 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.finance-audit-modal h3 {
+  margin: 0;
+}
+
+.finance-audit-modal p {
+  margin: 0;
+  font-size: 0.9em;
+}
+
+.finance-audit-modal-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
 .finance-audit-invoice-check {
   display: flex;
   flex-wrap: wrap;

@@ -2441,6 +2441,18 @@ function normalizeUkdocsShipment(shipment) {
     notes: String(shipment?.notes || "").trim(),
     print_collection_id: normalizeUkdocsText(shipment?.print_collection_id),
     reference_connect: normalizeUkdocsText(shipment?.reference_connect),
+    // Invoice numbers corrected on Finance Audit: who, when, old -> new.
+    invoice_number_edits: Array.isArray(shipment?.invoice_number_edits)
+      ? shipment.invoice_number_edits.slice(-100).map((edit) => ({
+        at: normalizeUkdocsText(edit?.at),
+        by: normalizeUkdocsText(edit?.by),
+        changes: (Array.isArray(edit?.changes) ? edit.changes : []).map((change) => ({
+          category: normalizeUkdocsText(change?.category),
+          from: normalizeUkdocsText(change?.from),
+          to: normalizeUkdocsText(change?.to),
+        })),
+      }))
+      : [],
     created_by: normalizeUkdocsText(shipment?.created_by),
     created_at: normalizeUkdocsText(shipment?.created_at),
     updated_at: normalizeUkdocsText(shipment?.updated_at),
@@ -25880,6 +25892,134 @@ async function handleApi(req, res, url) {
   // "F734879_01.pdf" -> "734879") and cross-checked against the number found
   // inside the PDF text itself. Several files can be sent in one call (right-
   // click a summary row -> "Add factuur" -> pick multiple PDFs).
+  // Finance Audit: correct a sending's invoice numbers (per category). The
+  // new number goes everywhere the old one shows: the shipment (per category
+  // and the combined "a/b/c"), older saved versions of the same sending, its
+  // print collection (UKdocs Print, CSI, PD Keuring, Eric Docs, emails) and
+  // its audit reports. Each correction is logged on the shipment
+  // (invoice_number_edits). Matched factuur PDFs stay as they are.
+  const financeAuditInvoiceEditMatch = url.pathname.match(/^\/api\/finance-audit\/shipments\/([^/]+)\/invoice-numbers$/);
+  if (financeAuditInvoiceEditMatch && req.method === "PUT") {
+    if (!requirePermission(res, requestUser, PERMISSIONS.UKDOCS_VIEW)) {
+      return;
+    }
+    const shipmentId = decodeURIComponent(financeAuditInvoiceEditMatch[1]);
+    const body = await readRequestJson(req, 64 * 1024);
+    const wanted = body?.invoice_numbers_by_category && typeof body.invoice_numbers_by_category === "object" ? body.invoice_numbers_by_category : {};
+    const state = await readUkdocsState();
+    const shipment = state.shipments.find((item) => item.id === shipmentId);
+    if (!shipment) {
+      sendJson(res, 404, { error: "Shipment not found" });
+      return;
+    }
+    const categories = ["508", "515", "1000", "920"];
+    const changes = [];
+    for (const category of categories) {
+      if (!Object.prototype.hasOwnProperty.call(wanted, category)) continue;
+      const next = normalizeUkdocsText(wanted[category]);
+      const previous = normalizeUkdocsText(shipment.invoice_numbers_by_category?.[category]);
+      if (next !== previous) changes.push({ category, from: previous, to: next });
+    }
+    if (!changes.length) {
+      sendJson(res, 200, { changed: 0, state });
+      return;
+    }
+    const escapeRegExp = (value) => String(value).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    // Swaps one whole invoice number for another inside a text like
+    // "736519/736517"; an emptied number is taken out with its separator.
+    const swapToken = (text, from, to) => {
+      const source = String(text || "");
+      if (!from) return source;
+      const pattern = new RegExp(`(^|[^A-Za-z0-9])${escapeRegExp(from)}(?=$|[^A-Za-z0-9])`, "g");
+      let next = source.replace(pattern, (whole, before) => `${before}${to}`);
+      if (!to) {
+        next = next.replace(/\s*\/\s*\/\s*/g, "/").replace(/^\s*[\/,;]\s*|\s*[\/,;]\s*$/g, "").trim();
+      }
+      return next;
+    };
+    const combined = (byCategory, uploadedFiles) => categories
+      .filter((category) => uploadedFiles?.[category]?.file_name || String(byCategory?.[category] || "").trim())
+      .map((category) => String(byCategory?.[category] || "").trim())
+      .filter(Boolean)
+      .join("/");
+    const applyToText = (text, onlySwap = false) => {
+      let next = String(text || "");
+      for (const change of changes) {
+        if (change.from) {
+          next = swapToken(next, change.from, change.to);
+        } else if (!onlySwap && change.to && !ukdocsPrintInvoiceTokens(next).includes(normalizeUkdocsPrintToken(change.to))) {
+          next = next ? `${next}/${change.to}` : change.to;
+        }
+      }
+      return next;
+    };
+    const editedAt = new Date().toISOString();
+    const oldCombined = String(shipment.invoice_numbers || "");
+    const collectionId = shipment.print_collection_id || "";
+    // The sending itself and its older saved versions (same print collection).
+    const touchedShipmentIds = new Set();
+    state.shipments = state.shipments.map((item) => {
+      const isTarget = item.id === shipment.id;
+      if (!isTarget && !(collectionId && item.print_collection_id === collectionId)) return item;
+      const byCategory = { ...(item.invoice_numbers_by_category || {}) };
+      let changed = false;
+      for (const change of changes) {
+        const current = normalizeUkdocsText(byCategory[change.category]);
+        if (isTarget || (change.from && current === change.from)) {
+          if (current !== change.to) {
+            byCategory[change.category] = change.to;
+            changed = true;
+          }
+        }
+      }
+      if (!changed) return item;
+      touchedShipmentIds.add(item.id);
+      const previousCombined = String(item.invoice_numbers || "");
+      const invoiceNumbers = !previousCombined || previousCombined === combined(item.invoice_numbers_by_category, item.uploaded_files)
+        ? combined(byCategory, item.uploaded_files)
+        : applyToText(previousCombined);
+      return {
+        ...item,
+        invoice_numbers_by_category: byCategory,
+        invoice_numbers: invoiceNumbers,
+        invoice_number_edits: [...(item.invoice_number_edits || []), { at: editedAt, by: requestUser.username, changes }],
+        ...(isTarget ? { updated_at: editedAt } : {}),
+      };
+    });
+    const newCombined = String(state.shipments.find((item) => item.id === shipment.id)?.invoice_numbers || "");
+    // The print collection: what UKdocs Print / CSI / PD Keuring / emails show.
+    let collectionsChanged = 0;
+    state.print_collections = state.print_collections.map((collection) => {
+      const linked = (collectionId && collection.id === collectionId) || collection.shipment_id === shipment.id;
+      if (!linked) return collection;
+      const previousInvoices = String(collection.invoice_numbers || "");
+      const invoiceNumbers = !previousInvoices || previousInvoices === oldCombined ? newCombined : applyToText(previousInvoices);
+      const previousReference = String(collection.shipment_reference || "");
+      const shipmentReference = previousReference && (previousReference === previousInvoices || previousReference === oldCombined)
+        ? invoiceNumbers
+        : applyToText(previousReference, true);
+      if (invoiceNumbers === previousInvoices && shipmentReference === previousReference) return collection;
+      collectionsChanged += 1;
+      return { ...collection, invoice_numbers: invoiceNumbers, shipment_reference: shipmentReference, updated_at: editedAt };
+    });
+    // Audit reports name the sending by its reference.
+    state.audit_reports = state.audit_reports.map((report) => {
+      if (!touchedShipmentIds.has(report.shipment_id)) return report;
+      const previousReference = String(report.shipment_reference || "");
+      const shipmentReference = previousReference === oldCombined ? newCombined : applyToText(previousReference, true);
+      return shipmentReference === previousReference ? report : { ...report, shipment_reference: shipmentReference };
+    });
+    await writeUkdocsState(state);
+    sendJson(res, 200, {
+      changed: changes.length,
+      changes,
+      shipments_changed: touchedShipmentIds.size,
+      collections_changed: collectionsChanged,
+      state: await readUkdocsState(),
+    });
+    return;
+  }
+
   if (url.pathname === "/api/finance-audit/invoice-documents" && req.method === "POST") {
     if (!requirePermission(res, requestUser, PERMISSIONS.UKDOCS_VIEW)) {
       return;
