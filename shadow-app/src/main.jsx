@@ -11278,6 +11278,886 @@ function FoutenOverviewPage() {
   );
 }
 
+// ---- Tasks + chat widget ---------------------------------------------------
+// A small glass pill on every page (for a user who turned it on): open tasks
+// and unread messages as badges; drag it anywhere (it snaps to the nearest
+// side and stays there), click it to open Tasks / Chat.
+const TW_SOURCE_LABELS = { manual: "", step_plan: "Step plan", invoice_diff: "Factuur", followup: "Follow-up", claim: "Claim" };
+const TW_PRIORITY_LABELS = { normal: "Normal", high: "High", urgent: "Urgent" };
+const TW_REPEAT_LABELS = { none: "Once", daily: "Every day", workdays: "Every workday", weekly: "Every week" };
+const TW_PILL = 56;
+
+function twToday() {
+  const now = new Date();
+  return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`;
+}
+
+function twShortTime(value) {
+  if (!value) return "";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "";
+  const today = new Date();
+  const sameDay = date.toDateString() === today.toDateString();
+  return sameDay
+    ? date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })
+    : `${date.toLocaleDateString([], { day: "2-digit", month: "2-digit" })} ${date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}`;
+}
+
+function twReadStoredPos() {
+  try {
+    const saved = JSON.parse(window.localStorage.getItem("tasks-widget-pos") || "null");
+    if (saved && Number.isFinite(saved.x) && Number.isFinite(saved.y)) return saved;
+  } catch {
+    // no storage: the default place
+  }
+  return null;
+}
+
+function twAssigneeLabel(task, teamName) {
+  if (task.assignee_user && task.assignee_team) return `${task.assignee_user} (${teamName(task.assignee_team)})`;
+  if (task.assignee_user) return task.assignee_user;
+  if (task.assignee_team) return teamName(task.assignee_team);
+  return "";
+}
+
+function TasksChatWidget({ currentUser, onOpenLink }) {
+  const [pos, setPos] = useState(() => twReadStoredPos() || currentUser?.settings?.widget_pos || { x: 1, y: 0.82 });
+  const [viewport, setViewport] = useState(() => ({ w: window.innerWidth, h: window.innerHeight }));
+  const [drag, setDrag] = useState(null);
+  const dragRef = useRef(null);
+  const [open, setOpen] = useState(false);
+  const [big, setBig] = useState(false);
+  const [tab, setTab] = useState("tasks");
+  const [pulse, setPulse] = useState({ open_tasks: 0, unread: 0, newest_task: null, newest_message: null });
+  const [pulseError, setPulseError] = useState("");
+  const [toast, setToast] = useState(null);
+  const seen = useRef({ task: null, message: null, ready: false });
+  const [directory, setDirectory] = useState({ users: [], teams: [] });
+  const [chatTarget, setChatTarget] = useState(null);
+  const savePosTimer = useRef(null);
+
+  const teamName = useCallback((key) => directory.teams.find((team) => team.key === key)?.name || key, [directory.teams]);
+
+  useEffect(() => {
+    const onResize = () => setViewport({ w: window.innerWidth, h: window.innerHeight });
+    window.addEventListener("resize", onResize);
+    return () => window.removeEventListener("resize", onResize);
+  }, []);
+
+  useEffect(() => {
+    apiJsonRequest("/api/users/directory").then(setDirectory).catch(() => {});
+  }, []);
+
+  // The badges: one cheap call every 15 s (a minute while the tab is hidden).
+  useEffect(() => {
+    let cancelled = false;
+    let timer = null;
+    const load = async () => {
+      try {
+        const response = await fetch("/api/widget/pulse", { credentials: "same-origin" });
+        const payload = await response.json().catch(() => ({}));
+        if (cancelled) return;
+        if (!response.ok) {
+          setPulseError(payload.error || "Tasks are not available.");
+        } else {
+          setPulseError("");
+          setPulse(payload);
+          const previous = seen.current;
+          if (previous.ready) {
+            if (payload.newest_task && payload.newest_task.id !== previous.task && Number(payload.newest_task.id) > Number(previous.task || 0)) {
+              setToast({ kind: "task", text: payload.newest_task.title, by: payload.newest_task.created_by });
+            } else if (payload.newest_message && payload.newest_message.id !== previous.message && Number(payload.newest_message.id) > Number(previous.message || 0)) {
+              setToast({ kind: "message", text: payload.newest_message.body, by: payload.newest_message.from, channel: payload.newest_message.channel, title: payload.newest_message.title });
+            }
+          }
+          seen.current = { task: payload.newest_task?.id || previous.task, message: payload.newest_message?.id || previous.message, ready: true };
+        }
+      } catch {
+        // offline for a moment: the next round tries again
+      }
+      if (!cancelled) timer = window.setTimeout(load, document.hidden ? 60000 : 15000);
+    };
+    load();
+    const onVisible = () => {
+      if (!document.hidden) {
+        window.clearTimeout(timer);
+        load();
+      }
+    };
+    // Something changed here (a message read, a task ticked): the badges now.
+    const onRefresh = () => {
+      window.clearTimeout(timer);
+      load();
+    };
+    document.addEventListener("visibilitychange", onVisible);
+    window.addEventListener("tw-refresh", onRefresh);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+      document.removeEventListener("visibilitychange", onVisible);
+      window.removeEventListener("tw-refresh", onRefresh);
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!toast) return undefined;
+    const timer = window.setTimeout(() => setToast(null), 4000);
+    return () => window.clearTimeout(timer);
+  }, [toast]);
+
+  useEffect(() => {
+    if (!open) return undefined;
+    const onKey = (event) => { if (event.key === "Escape") setOpen(false); };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [open]);
+
+  // Where the pill is: its place as a fraction of the screen, so it stays on
+  // the same side when the window changes size.
+  const margin = 12;
+  const maxLeft = Math.max(margin, viewport.w - TW_PILL - margin);
+  const maxTop = Math.max(margin, viewport.h - TW_PILL - margin);
+  const left = drag ? drag.left : margin + pos.x * (maxLeft - margin);
+  const top = drag ? drag.top : margin + pos.y * (maxTop - margin);
+
+  function savePos(next) {
+    setPos(next);
+    try {
+      window.localStorage.setItem("tasks-widget-pos", JSON.stringify(next));
+    } catch {
+      // no storage: it is saved on the server too
+    }
+    window.clearTimeout(savePosTimer.current);
+    savePosTimer.current = window.setTimeout(() => {
+      apiJsonRequest("/api/me/settings", { method: "PUT", body: JSON.stringify({ widget_pos: next }) }).catch(() => {});
+    }, 800);
+  }
+
+  function onPointerDown(event) {
+    if (event.button !== undefined && event.button !== 0) return;
+    dragRef.current = { startX: event.clientX, startY: event.clientY, left, top, moved: false };
+    event.currentTarget.setPointerCapture?.(event.pointerId);
+  }
+
+  function onPointerMove(event) {
+    const current = dragRef.current;
+    if (!current) return;
+    const dx = event.clientX - current.startX;
+    const dy = event.clientY - current.startY;
+    if (!current.moved && Math.hypot(dx, dy) < 5) return;
+    current.moved = true;
+    current.lastLeft = Math.min(maxLeft, Math.max(margin, current.left + dx));
+    current.lastTop = Math.min(maxTop, Math.max(margin, current.top + dy));
+    setDrag({ left: current.lastLeft, top: current.lastTop });
+  }
+
+  function onPointerUp() {
+    const current = dragRef.current;
+    dragRef.current = null;
+    if (!current) return;
+    if (!current.moved) {
+      setOpen((value) => !value);
+      return;
+    }
+    const finalLeft = current.lastLeft ?? current.left;
+    const finalTop = current.lastTop ?? current.top;
+    setDrag(null);
+    // Snaps to the nearest side.
+    const x = finalLeft + TW_PILL / 2 < viewport.w / 2 ? 0 : 1;
+    const y = maxTop > margin ? Math.min(1, Math.max(0, (finalTop - margin) / (maxTop - margin))) : 0;
+    savePos({ x, y });
+  }
+
+  // The panel opens from the pill: on its side, upwards when the pill is low.
+  const panelW = Math.min(big ? 760 : 380, viewport.w - 2 * margin);
+  const panelH = Math.min(big ? 640 : 500, viewport.h - 2 * margin);
+  const onRight = left + TW_PILL / 2 > viewport.w / 2;
+  const panelLeft = Math.min(viewport.w - panelW - margin, Math.max(margin, onRight ? left + TW_PILL - panelW : left));
+  const below = top + TW_PILL / 2 < viewport.h / 2;
+  const panelTop = Math.min(viewport.h - panelH - margin, Math.max(margin, below ? top + TW_PILL + 8 : top - panelH - 8));
+
+  const openChat = (target) => {
+    setChatTarget(target);
+    setTab("chat");
+    setOpen(true);
+  };
+
+  return (
+    <div className="tw-root" aria-live="polite">
+      <button
+        type="button"
+        className={`tw-pill${drag ? " dragging" : ""}${open ? " active" : ""}`}
+        style={{ left, top }}
+        onPointerDown={onPointerDown}
+        onPointerMove={onPointerMove}
+        onPointerUp={onPointerUp}
+        onPointerCancel={() => { dragRef.current = null; setDrag(null); }}
+        aria-label={`Tasks and chat: ${pulse.open_tasks} open task(s), ${pulse.unread} unread message(s)`}
+        aria-expanded={open}
+        title="Tasks & chat -- drag to move"
+      >
+        <svg viewBox="0 0 24 24" width="24" height="24" aria-hidden="true">
+          <path d="M4 5h9M4 10h7M4 15h5" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" fill="none" />
+          <path d="M14 12.5h6.5a1 1 0 0 1 1 1v4.5a1 1 0 0 1-1 1H18l-2.5 2v-2H14a1 1 0 0 1-1-1v-4.5a1 1 0 0 1 1-1z" stroke="currentColor" strokeWidth="1.6" fill="none" strokeLinejoin="round" />
+        </svg>
+        {pulse.open_tasks > 0 && <span className="tw-badge tasks" title="Open tasks">{pulse.open_tasks > 99 ? "99+" : pulse.open_tasks}</span>}
+        {pulse.unread > 0 && <span className="tw-badge unread" title="Unread messages">{pulse.unread > 99 ? "99+" : pulse.unread}</span>}
+      </button>
+
+      {toast && !open && (
+        <button
+          type="button"
+          className="tw-toast"
+          style={{ top: Math.min(viewport.h - 90, Math.max(margin, top + 4)), ...(onRight ? { right: viewport.w - left + 10 } : { left: left + TW_PILL + 10 }) }}
+          onClick={() => {
+            if (toast.kind === "message") openChat({ channel: toast.channel });
+            else { setTab("tasks"); setOpen(true); }
+            setToast(null);
+          }}
+        >
+          <strong>{toast.kind === "task" ? "New task" : `Message${toast.title ? ` · ${toast.title}` : ""}`}</strong>
+          <span>{toast.by && toast.by !== "system" ? `${toast.by}: ` : ""}{toast.text}</span>
+        </button>
+      )}
+
+      {open && (
+        <section className={`tw-panel${big ? " big" : ""}`} style={{ left: panelLeft, top: panelTop, width: panelW, height: panelH }} role="dialog" aria-label="Tasks and chat">
+          <header className="tw-head">
+            <div className="tw-tabs" role="tablist">
+              <button type="button" role="tab" aria-selected={tab === "tasks"} className={tab === "tasks" ? "on" : ""} onClick={() => setTab("tasks")}>
+                Tasks{pulse.open_tasks ? <span className="tw-count">{pulse.open_tasks}</span> : null}
+              </button>
+              <button type="button" role="tab" aria-selected={tab === "chat"} className={tab === "chat" ? "on" : ""} onClick={() => setTab("chat")}>
+                Chat{pulse.unread ? <span className="tw-count">{pulse.unread}</span> : null}
+              </button>
+            </div>
+            <div className="tw-head-actions">
+              <button type="button" className="tw-icon" onClick={() => setBig((value) => !value)} aria-label={big ? "Smaller" : "Bigger"} title={big ? "Smaller" : "Bigger"}>{big ? "⤡" : "⤢"}</button>
+              <button type="button" className="tw-icon" onClick={() => setOpen(false)} aria-label="Close" title="Close (Esc)">×</button>
+            </div>
+          </header>
+          {pulseError && <div className="tw-note warn">{pulseError}</div>}
+          <div className="tw-body">
+            {tab === "tasks"
+              ? <TwTasks currentUser={currentUser} directory={directory} teamName={teamName} pulseKey={`${pulse.open_tasks}-${pulse.newest_task?.id || ""}`} onOpenLink={(link) => { onOpenLink(link); setBig(false); }} big={big} />
+              : <TwChat currentUser={currentUser} directory={directory} teamName={teamName} target={chatTarget} onTargetUsed={() => setChatTarget(null)} pulseKey={`${pulse.unread}-${pulse.newest_message?.id || ""}`} />}
+          </div>
+        </section>
+      )}
+    </div>
+  );
+}
+
+function TwAssigneeSelect({ value, onChange, directory, currentUser }) {
+  return (
+    <select value={value} onChange={(event) => onChange(event.target.value)}>
+      <option value={`user:${currentUser.username}`}>Me ({currentUser.username})</option>
+      {!!directory.teams.length && (
+        <optgroup label="Team">
+          {directory.teams.map((team) => <option key={team.key} value={`team:${team.key}`}>{team.name}</option>)}
+        </optgroup>
+      )}
+      <optgroup label="Person">
+        {directory.users.filter((user) => user.username !== currentUser.username).map((user) => <option key={user.username} value={`user:${user.username}`}>{user.username}</option>)}
+      </optgroup>
+    </select>
+  );
+}
+
+function TwTasks({ currentUser, directory, teamName, pulseKey, onOpenLink, big }) {
+  const [scope, setScope] = useState("mine");
+  const [data, setData] = useState({ tasks: [], counts: { mine: 0, team: 0, created: 0 } });
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState("");
+  const [openId, setOpenId] = useState("");
+  const [adding, setAdding] = useState(false);
+  const [draft, setDraft] = useState(() => ({ title: "", body: "", assignee: `user:${currentUser.username}`, due_date: "", priority: "normal", repeat: "none" }));
+  const [busy, setBusy] = useState(false);
+
+  const load = useCallback(async () => {
+    try {
+      const payload = await apiJsonRequest(`/api/tasks?scope=${scope}`);
+      setData(payload);
+      setError("");
+    } catch (loadError) {
+      setError(loadError.message);
+    } finally {
+      setLoading(false);
+    }
+  }, [scope]);
+
+  useEffect(() => { setLoading(true); load(); }, [load]);
+  useEffect(() => { load(); }, [pulseKey]);
+
+  async function setStatus(task, status) {
+    setBusy(true);
+    try {
+      await apiJsonRequest(`/api/tasks/${task.id}`, { method: "PATCH", body: JSON.stringify({ status }) });
+      await load();
+      window.dispatchEvent(new Event("tw-refresh"));
+    } catch (saveError) {
+      setError(saveError.message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function addTask(event) {
+    event.preventDefault();
+    if (!draft.title.trim()) return;
+    setBusy(true);
+    try {
+      await apiJsonRequest("/api/tasks", { method: "POST", body: JSON.stringify(draft) });
+      setDraft({ title: "", body: "", assignee: `user:${currentUser.username}`, due_date: "", priority: "normal", repeat: "none" });
+      setAdding(false);
+      await load();
+    } catch (saveError) {
+      setError(saveError.message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  if (openId) {
+    return <TwTaskDetail id={openId} currentUser={currentUser} directory={directory} teamName={teamName} onBack={() => { setOpenId(""); load(); }} onOpenLink={onOpenLink} />;
+  }
+
+  const today = twToday();
+  const chips = [
+    ["mine", "Mine", data.counts.mine],
+    ["team", "My teams", data.counts.team],
+    ["created", "I gave", data.counts.created],
+    ["done", "Done", null],
+  ];
+  return (
+    <div className="tw-tasks">
+      <div className="tw-toolbar">
+        <div className="tw-chips">
+          {chips.map(([key, label, count]) => (
+            <button key={key} type="button" className={scope === key ? "on" : ""} aria-pressed={scope === key} onClick={() => setScope(key)}>
+              {label}{count ? <span className="tw-count">{count}</span> : null}
+            </button>
+          ))}
+        </div>
+        <button type="button" className="tw-add" onClick={() => setAdding((value) => !value)} aria-expanded={adding}>{adding ? "Cancel" : "+ New"}</button>
+      </div>
+      {adding && (
+        <form className="tw-form" onSubmit={addTask}>
+          <input autoFocus value={draft.title} onChange={(event) => setDraft({ ...draft, title: event.target.value })} placeholder="What needs doing?" maxLength={300} />
+          <div className={`tw-form-row${big ? "" : " stack"}`}>
+            <label><span>For</span><TwAssigneeSelect value={draft.assignee} onChange={(assignee) => setDraft({ ...draft, assignee })} directory={directory} currentUser={currentUser} /></label>
+            <label><span>Due</span><input type="date" value={draft.due_date} onChange={(event) => setDraft({ ...draft, due_date: event.target.value })} /></label>
+          </div>
+          <div className="tw-form-row">
+            <label><span>Priority</span>
+              <select value={draft.priority} onChange={(event) => setDraft({ ...draft, priority: event.target.value })}>
+                {Object.entries(TW_PRIORITY_LABELS).map(([key, label]) => <option key={key} value={key}>{label}</option>)}
+              </select>
+            </label>
+            <label><span>Repeat</span>
+              <select value={draft.repeat} onChange={(event) => setDraft({ ...draft, repeat: event.target.value })}>
+                {Object.entries(TW_REPEAT_LABELS).map(([key, label]) => <option key={key} value={key}>{label}</option>)}
+              </select>
+            </label>
+          </div>
+          <textarea value={draft.body} onChange={(event) => setDraft({ ...draft, body: event.target.value })} placeholder="Details (optional)" rows={2} />
+          <button type="submit" className="tw-primary" disabled={busy || !draft.title.trim()}>Add task</button>
+        </form>
+      )}
+      {error && <div className="tw-note warn">{error}</div>}
+      <ul className="tw-list">
+        {data.tasks.map((task) => {
+          const overdue = task.due_date && task.due_date < today && !["done", "cancelled"].includes(task.status);
+          const finished = ["done", "cancelled"].includes(task.status);
+          return (
+            <li key={task.id} className={`tw-task${finished ? " finished" : ""}`}>
+              <input
+                type="checkbox"
+                checked={task.status === "done"}
+                disabled={busy || task.status === "cancelled"}
+                onChange={(event) => setStatus(task, event.target.checked ? "done" : "open")}
+                aria-label={task.status === "done" ? `Reopen: ${task.title}` : `Done: ${task.title}`}
+              />
+              <button type="button" className="tw-task-main" onClick={() => setOpenId(task.id)}>
+                <span className="tw-task-title">
+                  {task.priority !== "normal" && <span className={`tw-prio ${task.priority}`}>{task.priority === "urgent" ? "!! Urgent" : "! High"}</span>}
+                  {task.title}
+                </span>
+                <span className="tw-task-meta">
+                  {TW_SOURCE_LABELS[task.source] && <span className="tw-chip">{TW_SOURCE_LABELS[task.source]}</span>}
+                  {task.due_date && <span className={overdue ? "tw-overdue" : ""}>{overdue ? "⚠ overdue " : "due "}{task.due_date}</span>}
+                  {scope !== "mine" && <span>→ {twAssigneeLabel(task, teamName) || "-"}</span>}
+                  {scope === "mine" && task.created_by && task.created_by !== currentUser.username && <span>from {task.created_by}</span>}
+                  {task.repeat !== "none" && <span>↻ {TW_REPEAT_LABELS[task.repeat]}</span>}
+                  {task.messages > 0 && <span>💬 {task.messages}</span>}
+                  {task.status === "in_progress" && <span>▶ in progress</span>}
+                  {finished && <span>{task.status === "done" ? `✓ done${task.done_by ? ` by ${task.done_by}` : ""}` : "✕ cancelled"}</span>}
+                </span>
+              </button>
+            </li>
+          );
+        })}
+        {!loading && !data.tasks.length && <li className="tw-empty">{scope === "done" ? "Nothing done in the last 30 days." : "Nothing open here."}</li>}
+        {loading && <li className="tw-empty">Loading…</li>}
+      </ul>
+    </div>
+  );
+}
+
+function TwTaskDetail({ id, currentUser, directory, teamName, onBack, onOpenLink }) {
+  const [task, setTask] = useState(null);
+  const [events, setEvents] = useState([]);
+  const [error, setError] = useState("");
+  const [busy, setBusy] = useState(false);
+
+  const load = useCallback(async () => {
+    try {
+      const payload = await apiJsonRequest(`/api/tasks/${id}`);
+      setTask(payload.task);
+      setEvents(payload.events || []);
+    } catch (loadError) {
+      setError(loadError.message);
+    }
+  }, [id]);
+  useEffect(() => { load(); }, [load]);
+
+  async function change(changes) {
+    setBusy(true);
+    setError("");
+    try {
+      const payload = await apiJsonRequest(`/api/tasks/${id}`, { method: "PATCH", body: JSON.stringify(changes) });
+      setTask(payload.task);
+      await load();
+      window.dispatchEvent(new Event("tw-refresh"));
+    } catch (saveError) {
+      setError(saveError.message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  if (!task) {
+    return (
+      <div className="tw-detail">
+        <button type="button" className="tw-back" onClick={onBack}>← Tasks</button>
+        {error ? <div className="tw-note warn">{error}</div> : <div className="tw-empty">Loading…</div>}
+      </div>
+    );
+  }
+  const finished = ["done", "cancelled"].includes(task.status);
+  const assignee = task.assignee_user ? `user:${task.assignee_user}` : task.assignee_team ? `team:${task.assignee_team}` : "";
+  const myTeams = directory.users.find((user) => user.username === currentUser.username)?.teams || [];
+  const canTake = task.assignee_team && myTeams.includes(task.assignee_team) && task.assignee_user !== currentUser.username;
+  return (
+    <div className="tw-detail">
+      <button type="button" className="tw-back" onClick={onBack}>← Tasks</button>
+      <h3>{task.title}</h3>
+      <div className="tw-task-meta">
+        {TW_SOURCE_LABELS[task.source] && <span className="tw-chip">{TW_SOURCE_LABELS[task.source]}</span>}
+        <span>from {task.created_by || "?"} · {twShortTime(task.created_at)}</span>
+        <span>{finished ? (task.status === "done" ? `✓ done${task.done_by ? ` by ${task.done_by}` : ""}` : "✕ cancelled") : task.status === "in_progress" ? "▶ in progress" : "○ open"}</span>
+      </div>
+      {task.body && <p className="tw-text">{task.body}</p>}
+      <div className="tw-actions">
+        {!finished && <button type="button" className="tw-primary" disabled={busy} onClick={() => change({ status: "done" })}>✓ Done</button>}
+        {!finished && task.status !== "in_progress" && <button type="button" disabled={busy} onClick={() => change({ status: "in_progress" })}>▶ Start</button>}
+        {finished && <button type="button" disabled={busy} onClick={() => change({ status: "open" })}>Reopen</button>}
+        {canTake && !finished && <button type="button" disabled={busy} onClick={() => change({ take: true })}>Take it</button>}
+        {task.link?.page && <button type="button" onClick={() => onOpenLink(task.link)}>Open ↗</button>}
+        {!finished && <button type="button" disabled={busy} onClick={() => { if (window.confirm("Cancel this task?")) change({ status: "cancelled" }); }}>Cancel task</button>}
+      </div>
+      {!finished && (
+        <div className="tw-form-row stack">
+          <label><span>For</span><TwAssigneeSelect value={assignee} onChange={(next) => change({ assignee: next })} directory={directory} currentUser={currentUser} /></label>
+          <label><span>Due</span><input type="date" value={task.due_date || ""} onChange={(event) => change({ due_date: event.target.value })} /></label>
+          <label><span>Priority</span>
+            <select value={task.priority} onChange={(event) => change({ priority: event.target.value })}>
+              {Object.entries(TW_PRIORITY_LABELS).map(([key, label]) => <option key={key} value={key}>{label}</option>)}
+            </select>
+          </label>
+          <label><span>Repeat</span>
+            <select value={task.repeat} onChange={(event) => change({ repeat: event.target.value })}>
+              {Object.entries(TW_REPEAT_LABELS).map(([key, label]) => <option key={key} value={key}>{label}</option>)}
+            </select>
+          </label>
+        </div>
+      )}
+      {error && <div className="tw-note warn">{error}</div>}
+      <div className="tw-section-title">Comments</div>
+      <TwThread channel={`task:${task.id}`} currentUser={currentUser} compact />
+      <details className="tw-history">
+        <summary>History ({events.length})</summary>
+        <ul>
+          {events.map((event, index) => (
+            <li key={index}>
+              <span>{twShortTime(event.at)}</span> <strong>{event.by_user || "?"}</strong> {event.action}
+              {(event.from_value || event.to_value) && event.action !== "body" ? `: ${event.from_value || "-"} → ${event.to_value || "-"}` : ""}
+            </li>
+          ))}
+        </ul>
+      </details>
+    </div>
+  );
+}
+
+function TwThread({ channel, withUser = "", currentUser, compact = false }) {
+  const [messages, setMessages] = useState([]);
+  const [resolvedChannel, setResolvedChannel] = useState(channel || "");
+  const [text, setText] = useState("");
+  const [error, setError] = useState("");
+  const [hasMore, setHasMore] = useState(false);
+  const listRef = useRef(null);
+  const lastIdRef = useRef("0");
+
+  const query = withUser ? `with=${encodeURIComponent(withUser)}` : `channel=${encodeURIComponent(channel)}`;
+
+  const markRead = useCallback((targetChannel, lastId) => {
+    if (!targetChannel || !lastId || lastId === "0") return;
+    apiJsonRequest("/api/chat/read", { method: "POST", body: JSON.stringify({ channel: targetChannel, last_id: lastId }) })
+      .then(() => window.dispatchEvent(new Event("tw-refresh")))
+      .catch(() => {});
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    setMessages([]);
+    lastIdRef.current = "0";
+    apiJsonRequest(`/api/chat/messages?${query}`)
+      .then((payload) => {
+        if (cancelled) return;
+        setResolvedChannel(payload.channel);
+        setMessages(payload.messages || []);
+        setHasMore(payload.has_more === true);
+        const last = (payload.messages || []).at(-1)?.id || "0";
+        lastIdRef.current = last;
+        markRead(payload.channel, last);
+        window.setTimeout(() => { if (listRef.current) listRef.current.scrollTop = listRef.current.scrollHeight; }, 0);
+      })
+      .catch((loadError) => { if (!cancelled) setError(loadError.message); });
+    return () => { cancelled = true; };
+  }, [query, markRead]);
+
+  // New messages while open: every 5 s.
+  useEffect(() => {
+    if (!resolvedChannel) return undefined;
+    const timer = window.setInterval(async () => {
+      if (document.hidden) return;
+      try {
+        const payload = await apiJsonRequest(`/api/chat/messages?channel=${encodeURIComponent(resolvedChannel)}&after_id=${lastIdRef.current}`);
+        if (payload.messages?.length) {
+          const list = listRef.current;
+          const atBottom = !list || list.scrollHeight - list.scrollTop - list.clientHeight < 40;
+          setMessages((current) => [...current, ...payload.messages.filter((message) => !current.some((item) => item.id === message.id))]);
+          lastIdRef.current = payload.messages.at(-1).id;
+          markRead(resolvedChannel, lastIdRef.current);
+          if (atBottom) window.setTimeout(() => { if (listRef.current) listRef.current.scrollTop = listRef.current.scrollHeight; }, 0);
+        }
+      } catch {
+        // the next round tries again
+      }
+    }, 5000);
+    return () => window.clearInterval(timer);
+  }, [resolvedChannel, markRead]);
+
+  async function loadOlder() {
+    const first = messages[0]?.id;
+    if (!first) return;
+    const payload = await apiJsonRequest(`/api/chat/messages?channel=${encodeURIComponent(resolvedChannel)}&before_id=${first}`);
+    setMessages((current) => [...(payload.messages || []), ...current]);
+    setHasMore(payload.has_more === true);
+  }
+
+  async function send(event) {
+    event?.preventDefault();
+    const body = text.trim();
+    if (!body) return;
+    setError("");
+    try {
+      const payload = await apiJsonRequest("/api/chat/messages", { method: "POST", body: JSON.stringify(withUser ? { to_user: withUser, body } : { channel: resolvedChannel, body }) });
+      setText("");
+      setMessages((current) => [...current, payload.message]);
+      lastIdRef.current = payload.message.id;
+      setResolvedChannel(payload.message.channel);
+      window.setTimeout(() => { if (listRef.current) listRef.current.scrollTop = listRef.current.scrollHeight; }, 0);
+    } catch (sendError) {
+      setError(sendError.message);
+    }
+  }
+
+  async function remove(message) {
+    if (!window.confirm("Delete this message?")) return;
+    try {
+      await apiJsonRequest(`/api/chat/messages/${message.id}`, { method: "DELETE" });
+      setMessages((current) => current.map((item) => (item.id === message.id ? { ...item, deleted: true, body: "" } : item)));
+    } catch (deleteError) {
+      setError(deleteError.message);
+    }
+  }
+
+  return (
+    <div className={`tw-thread${compact ? " compact" : ""}`}>
+      <div className="tw-messages" ref={listRef}>
+        {hasMore && <button type="button" className="tw-older" onClick={loadOlder}>Older messages</button>}
+        {messages.map((message, index) => {
+          const mine = message.from === currentUser.username;
+          const showName = !mine && (index === 0 || messages[index - 1].from !== message.from);
+          return (
+            <div key={message.id} className={`tw-msg${mine ? " mine" : ""}`}>
+              {showName && <span className="tw-msg-from">{message.from}</span>}
+              <div className="tw-bubble" title={new Date(message.at).toLocaleString()}>
+                {message.deleted ? <em>message deleted</em> : message.body}
+                {mine && !message.deleted && <button type="button" className="tw-msg-del" onClick={() => remove(message)} aria-label="Delete message">×</button>}
+              </div>
+              <span className="tw-msg-time">{twShortTime(message.at)}</span>
+            </div>
+          );
+        })}
+        {!messages.length && <div className="tw-empty">{compact ? "No comments yet." : "No messages yet -- say hello."}</div>}
+      </div>
+      {error && <div className="tw-note warn">{error}</div>}
+      <form className="tw-compose" onSubmit={send}>
+        <textarea
+          value={text}
+          rows={1}
+          onChange={(event) => setText(event.target.value)}
+          onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); send(); } }}
+          placeholder={compact ? "Add a comment…" : "Message… (Enter sends, Shift+Enter new line)"}
+        />
+        <button type="submit" className="tw-primary" disabled={!text.trim()} aria-label="Send">➤</button>
+      </form>
+    </div>
+  );
+}
+
+function TwChat({ currentUser, directory, teamName, target, onTargetUsed, pulseKey }) {
+  const [channels, setChannels] = useState([]);
+  const [error, setError] = useState("");
+  const [active, setActive] = useState(null);
+  const [newWith, setNewWith] = useState("");
+
+  const load = useCallback(async () => {
+    try {
+      const payload = await apiJsonRequest("/api/chat/channels");
+      setChannels(payload.channels || []);
+      setError("");
+    } catch (loadError) {
+      setError(loadError.message);
+    }
+  }, []);
+  useEffect(() => { load(); }, [load, pulseKey]);
+  useEffect(() => {
+    if (target) {
+      setActive(target);
+      onTargetUsed();
+    }
+  }, [target, onTargetUsed]);
+
+  if (active) {
+    const info = channels.find((item) => item.channel === active.channel);
+    const title = active.withUser || info?.title || (active.channel?.startsWith("team:") ? teamName(active.channel.slice(5)) : active.channel);
+    return (
+      <div className="tw-chat-open">
+        <button type="button" className="tw-back" onClick={() => { setActive(null); load(); }}>← Chats</button>
+        <div className="tw-section-title">{active.channel?.startsWith("team:") ? "Team · " : active.channel?.startsWith("task:") ? "Task · " : ""}{title}</div>
+        <TwThread channel={active.channel} withUser={active.withUser || ""} currentUser={currentUser} />
+      </div>
+    );
+  }
+  const others = directory.users.filter((user) => user.username !== currentUser.username);
+  return (
+    <div className="tw-chat">
+      <div className="tw-toolbar">
+        <select value={newWith} onChange={(event) => setNewWith(event.target.value)} aria-label="Start a chat with">
+          <option value="">New chat with…</option>
+          {others.map((user) => <option key={user.username} value={user.username}>{user.username}</option>)}
+        </select>
+        <button type="button" className="tw-add" disabled={!newWith} onClick={() => { setActive({ withUser: newWith }); setNewWith(""); }}>Open</button>
+      </div>
+      {error && <div className="tw-note warn">{error}</div>}
+      <ul className="tw-list">
+        {channels.map((item) => (
+          <li key={item.channel}>
+            <button type="button" className="tw-channel" onClick={() => setActive({ channel: item.channel })}>
+              <span className="tw-avatar" aria-hidden="true">{item.kind === "team" ? "👥" : item.kind === "task" ? "☑" : (item.title || "?").slice(0, 1).toUpperCase()}</span>
+              <span className="tw-channel-main">
+                <span className="tw-task-title">{item.title}{item.kind === "team" ? " (team)" : ""}</span>
+                <span className="tw-task-meta">{item.last ? `${item.last.from === currentUser.username ? "You" : item.last.from}: ${item.last.body}` : "No messages yet"}</span>
+              </span>
+              {item.unread > 0 && <span className="tw-count strong" aria-label={`${item.unread} unread`}>{item.unread}</span>}
+            </button>
+          </li>
+        ))}
+        {!channels.length && <li className="tw-empty">No chats yet. Pick someone above, or ask an admin to put you in a team.</li>}
+      </ul>
+    </div>
+  );
+}
+
+// Users > Teams & tasks (admin): the teams, who is in which, who uses the
+// widget, and the automatic tasks' rules.
+function AppTeamsTasksCard() {
+  const [config, setConfig] = useState(null);
+  const [catalog, setCatalog] = useState({ day: [], shipment: [] });
+  const [users, setUsers] = useState([]);
+  const [error, setError] = useState("");
+  const [message, setMessage] = useState("");
+  const [newTeam, setNewTeam] = useState("");
+  const [busy, setBusy] = useState(false);
+
+  const load = useCallback(async () => {
+    try {
+      const [teamsPayload, usersPayload] = await Promise.all([apiJson("/api/app-teams"), apiJson("/api/users")]);
+      setConfig(teamsPayload.config);
+      setCatalog(teamsPayload.step_catalog || { day: [], shipment: [] });
+      setUsers(usersPayload.users || []);
+    } catch (loadError) {
+      setError(loadError.message);
+    }
+  }, []);
+  useEffect(() => { load(); }, [load]);
+
+  async function saveConfig(next, note = "Saved.") {
+    setBusy(true);
+    setError("");
+    try {
+      const payload = await apiJson("/api/app-teams", { method: "PUT", body: JSON.stringify({ config: next }) });
+      setConfig(payload.config);
+      setMessage(note);
+    } catch (saveError) {
+      setError(saveError.message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function saveUser(username, changes) {
+    setError("");
+    try {
+      const payload = await apiJson(`/api/users-teams/${encodeURIComponent(username)}`, { method: "PUT", body: JSON.stringify(changes) });
+      setUsers((current) => current.map((user) => (user.username === username ? { ...user, ...payload.user } : user)));
+      setMessage(`${username} saved.`);
+    } catch (saveError) {
+      setError(saveError.message);
+    }
+  }
+
+  if (!config) {
+    return <section className="data-table-card"><h2>Teams &amp; tasks</h2>{error ? <div className="notice danger">{error}</div> : <p>Loading…</p>}</section>;
+  }
+  const targets = [
+    ...config.teams.map((team) => [`team:${team.key}`, `Team: ${team.name}`]),
+    ...users.map((user) => [`user:${user.username}`, user.username]),
+  ];
+  const assign = config.step_plan.assign || {};
+  const setAssign = (key, value) => {
+    const nextAssign = { ...assign };
+    if (value) nextAssign[key] = value;
+    else delete nextAssign[key];
+    saveConfig({ ...config, step_plan: { ...config.step_plan, assign: nextAssign } });
+  };
+  return (
+    <section className="data-table-card tw-admin">
+      <div className="section-header"><h2>Teams &amp; tasks</h2></div>
+      <p className="muted">The tasks &amp; chat widget: teams, who is in which, who sees the widget (off unless ticked -- each user can also turn it on in the menu), and the tasks the app makes by itself.</p>
+      {error && <div className="notice danger">{error}</div>}
+      {message && <div className="notice">{message}</div>}
+
+      <h3>Teams</h3>
+      <div className="tw-admin-teams">
+        {config.teams.map((team) => (
+          <span key={team.key} className="tw-chip big">
+            <input
+              value={team.name}
+              aria-label={`Team name ${team.key}`}
+              onChange={(event) => setConfig({ ...config, teams: config.teams.map((item) => (item.key === team.key ? { ...item, name: event.target.value } : item)) })}
+              onBlur={() => saveConfig(config, "Team renamed.")}
+            />
+            <button type="button" aria-label={`Remove team ${team.name}`} onClick={() => { if (window.confirm(`Remove team ${team.name}? Tasks already given to it stay.`)) saveConfig({ ...config, teams: config.teams.filter((item) => item.key !== team.key) }, "Team removed."); }}>×</button>
+          </span>
+        ))}
+        <form onSubmit={(event) => { event.preventDefault(); if (newTeam.trim()) { saveConfig({ ...config, teams: [...config.teams, { key: newTeam, name: newTeam.trim() }] }, "Team added."); setNewTeam(""); } }}>
+          <input value={newTeam} onChange={(event) => setNewTeam(event.target.value)} placeholder="New team" />
+          <button type="submit" disabled={busy || !newTeam.trim()}>Add</button>
+        </form>
+      </div>
+
+      <h3>People</h3>
+      <div className="table-wrap">
+        <table className="data-table">
+          <thead><tr><th>User</th>{config.teams.map((team) => <th key={team.key}>{team.name}</th>)}<th>Widget</th></tr></thead>
+          <tbody>
+            {users.map((user) => (
+              <tr key={user.username}>
+                <td>{user.username}</td>
+                {config.teams.map((team) => (
+                  <td key={team.key}>
+                    <input
+                      type="checkbox"
+                      aria-label={`${user.username} in ${team.name}`}
+                      checked={(user.teams || []).includes(team.key)}
+                      onChange={(event) => saveUser(user.username, { teams: event.target.checked ? [...(user.teams || []), team.key] : (user.teams || []).filter((key) => key !== team.key) })}
+                    />
+                  </td>
+                ))}
+                <td>
+                  <input type="checkbox" aria-label={`${user.username} uses the widget`} checked={user.settings?.use_widget === true} onChange={(event) => saveUser(user.username, { teams: user.teams || [], use_widget: event.target.checked })} />
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+
+      <h3>Automatic tasks</h3>
+      <div className="tw-admin-rules">
+        <label className="checkbox-label"><input type="checkbox" checked={config.followup.enabled} onChange={(event) => saveConfig({ ...config, followup: { ...config.followup, enabled: event.target.checked } })} /><span>Follow-up: a line sent to a department becomes a task for its team (closed when its lines are resolved)</span></label>
+        <div className="tw-admin-inline">
+          {Object.entries(config.followup.department_team).map(([department, team]) => (
+            <label key={department}><span>{department}</span>
+              <select value={team} onChange={(event) => saveConfig({ ...config, followup: { ...config.followup, department_team: { ...config.followup.department_team, [department]: event.target.value } } })}>
+                {config.teams.map((item) => <option key={item.key} value={item.key}>{item.name}</option>)}
+              </select>
+            </label>
+          ))}
+        </div>
+        <label className="checkbox-label"><input type="checkbox" checked={config.claims.enabled} onChange={(event) => saveConfig({ ...config, claims: { enabled: event.target.checked } })} /><span>Claims: credit received / closed / written off -- a task for whoever made the claim</span></label>
+        <label className="checkbox-label"><input type="checkbox" checked={config.invoice_diff.enabled} onChange={(event) => saveConfig({ ...config, invoice_diff: { ...config.invoice_diff, enabled: event.target.checked } })} /><span>Important invoice differences (days with all 4 files, compared): one task per grower and day</span></label>
+        <div className="tw-admin-inline">
+          <label><span>From € (open difference)</span><input type="number" min="1" step="1" value={config.invoice_diff.min_amount} onChange={(event) => setConfig({ ...config, invoice_diff: { ...config.invoice_diff, min_amount: event.target.value } })} onBlur={() => saveConfig(config)} /></label>
+          <label><span>For team</span>
+            <select value={config.invoice_diff.team} onChange={(event) => saveConfig({ ...config, invoice_diff: { ...config.invoice_diff, team: event.target.value } })}>
+              {config.teams.map((item) => <option key={item.key} value={item.key}>{item.name}</option>)}
+            </select>
+          </label>
+        </div>
+        <label className="checkbox-label"><input type="checkbox" checked={config.step_plan.enabled} onChange={(event) => saveConfig({ ...config, step_plan: { ...config.step_plan, enabled: event.target.checked } })} /><span>PD step plan: the step a day / shipment is at becomes a task for whoever it is given to below (today and tomorrow; closes when the step is done)</span></label>
+        <div className="tw-admin-steps">
+          <strong>Day steps</strong>
+          {catalog.day.map((step) => (
+            <label key={step.key}><span>{step.number}. {step.label}</span>
+              <select value={assign[`day:${step.key}`] || ""} onChange={(event) => setAssign(`day:${step.key}`, event.target.value)}>
+                <option value="">— no task —</option>
+                {targets.map(([value, label]) => <option key={value} value={value}>{label}</option>)}
+              </select>
+            </label>
+          ))}
+          <strong>Per shipment</strong>
+          {catalog.shipment.map((step) => (
+            <label key={step.key}><span>{step.label}</span>
+              <select value={assign[`ship:${step.key}`] || ""} onChange={(event) => setAssign(`ship:${step.key}`, event.target.value)}>
+                <option value="">— no task —</option>
+                {targets.map(([value, label]) => <option key={value} value={value}>{label}</option>)}
+              </select>
+            </label>
+          ))}
+          <button type="button" disabled={busy} onClick={async () => { try { const payload = await apiJson("/api/app-teams/run-step-plan", { method: "POST" }); setMessage(`Step plan checked: ${payload.result?.made || 0} new task(s), ${payload.result?.closed || 0} closed.`); } catch (runError) { setError(runError.message); } }}>Check the step plan now</button>
+        </div>
+      </div>
+      {config.updated_at && <small className="muted">Last change {formatTimestamp(config.updated_at)}{config.updated_by ? ` by ${config.updated_by}` : ""}.</small>}
+    </section>
+  );
+}
+
 function App() {
   const [auth, setAuth] = useState({ loading: true, user: null, setupRequired: false });
   const rawPathname = typeof window !== "undefined" ? window.location.pathname : "/";
@@ -11307,6 +12187,23 @@ function App() {
   // page rendered by setPage().
   const canViewWarehouse = hasPermission(auth.user, PERMISSIONS.WAREHOUSE_VIEW);
   const visiblePages = availablePagesForUser(auth.user);
+  // A task's "Open" in the widget: that page (and, for Inkoop, its tab).
+  function openAppLink(link) {
+    if (!link?.page || !visiblePages.some((item) => item.key === link.page)) return;
+    if (link.page !== page && pageLeaveGuard && !pageLeaveGuard(link.page)) return;
+    window.__appOpenLink = link;
+    setPage(link.page);
+    setFromStepPlan(false);
+    window.dispatchEvent(new CustomEvent("app-open-link", { detail: link }));
+  }
+  async function setUseWidget(useWidget) {
+    try {
+      const payload = await apiJson("/api/me/settings", { method: "PUT", body: JSON.stringify({ use_widget: useWidget }) });
+      setAuth((current) => ({ ...current, user: { ...current.user, ...payload.user } }));
+    } catch {
+      // stays as it was
+    }
+  }
   const onPhotosPage = page === "dashboard" && canViewPhotos;
   const { data, loading, error } = useDashboardData(requestedDate, searchTerm, syncVersion, loggedIn && onPhotosPage);
 
@@ -11471,6 +12368,7 @@ function App() {
       </button>
       <ThemeLamp />
       <ApiLoadingBar />
+      {auth.user?.settings?.use_widget === true && <TasksChatWidget currentUser={auth.user} onOpenLink={openAppLink} />}
       {sidebarOpen && (
         <button
           type="button"
@@ -11539,6 +12437,10 @@ function App() {
 
         <div className="signed-in">
           <p>Signed in as <strong>{auth.user.username}</strong></p>
+          <label className="checkbox-label tw-sidebar-toggle" title="A small tasks & chat button on every page (only for you)">
+            <input type="checkbox" checked={auth.user?.settings?.use_widget === true} onChange={(event) => setUseWidget(event.target.checked)} />
+            <span>Tasks &amp; chat widget</span>
+          </label>
           <button onClick={handleLogout}>Log out</button>
         </div>
       </aside>
@@ -11886,6 +12788,8 @@ function UsersPage({ currentUser }) {
           />
         ))}
       </div>
+
+      <AppTeamsTasksCard />
     </section>
   );
 }
@@ -21741,6 +22645,19 @@ function InkoopControlePage({ currentUser }) {
   }, [comparing]);
   // "" = the Inkoop menu (tiles, as the Fust menu).
   const [activeTab, setActiveTab] = useState("");
+  // A task opened from the widget: straight to its tab (e.g. Follow-up).
+  useEffect(() => {
+    const apply = (link) => {
+      if (link?.page === "inkoop" && link.tab) {
+        setActiveTab(link.tab);
+        window.__appOpenLink = null;
+      }
+    };
+    apply(window.__appOpenLink);
+    const onLink = (event) => apply(event.detail);
+    window.addEventListener("app-open-link", onLink);
+    return () => window.removeEventListener("app-open-link", onLink);
+  }, []);
   // The workspaces' filter bar: period, betaalwijze, flows, grower, the
   // day(s) picked in the calendar.
   const [bar, setBar] = useState(() => {

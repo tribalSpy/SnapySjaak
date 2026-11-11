@@ -212,6 +212,16 @@ import {
   upsertWarehouseStatus,
 } from "./db.js";
 import { createBunchesService } from "./bunches.js";
+import {
+  createAppTasksRoutes,
+  normalizeUserTeams,
+  normalizeUserWidgetSettings,
+  autoTasksForFollowupMove,
+  autoCloseFollowupTasks,
+  autoTaskForClaimStep,
+  syncInvoiceDiffTasks,
+  syncStepPlanTasks,
+} from "./tasks.js";
 import ExcelJS from "exceljs";
 import sharp from "sharp";
 
@@ -1697,6 +1707,10 @@ function sanitizeStoredUser(user) {
     role,
     permissions: normalizePermissions(role, user?.permissions),
     fust_hidden_tabs: normalizeFustHiddenTabs(user?.fust_hidden_tabs),
+    // The tasks widget: the teams a user is in (admin sets them) and their
+    // own widget settings (off unless turned on).
+    teams: normalizeUserTeams(user?.teams),
+    settings: { ...(user?.settings && typeof user.settings === "object" && !Array.isArray(user.settings) ? user.settings : {}), ...normalizeUserWidgetSettings(user?.settings) },
   };
 }
 
@@ -6578,9 +6592,79 @@ function publicUser(user) {
     role: normalizedUser.role,
     permissions: normalizedUser.permissions,
     fust_hidden_tabs: normalizedUser.fust_hidden_tabs,
+    teams: normalizedUser.teams,
+    settings: normalizeUserWidgetSettings(normalizedUser.settings),
     created_at: normalizedUser.created_at,
   };
 }
+
+// ---- Tasks + chat widget (server/tasks.js) --------------------------------
+// The step plan's steps a task can be given for (Users > Teams & tasks).
+function appTaskStepCatalog() {
+  return {
+    day: [
+      { key: "stock_setup", number: 1, label: "Stock control PD keuring set up (Voorraad)" },
+      ...PD_STEP_PLAN_DAY_STEPS.map((step) => ({ key: step.key, number: step.number, label: step.label })),
+    ],
+    shipment: [
+      { key: "setup", label: "PD Keuring (city, PD type, form)" },
+      { key: "references", label: "Connect / truck / plate (/ pieces)" },
+      { key: "tour_dumps", label: "Tour data dumps and IPAFFS" },
+      { key: "documents", label: "Invoices & export docs" },
+      { key: "papers", label: "Papers: UKdocs CSI / Eric Docs" },
+      { key: "ecert_finish", label: "e-Cert: finish, digital signature" },
+    ],
+  };
+}
+
+async function runAppStepPlanTaskSync(extraDates = []) {
+  const state = await readUkdocsState();
+  const today = localDateIso();
+  const dates = [...new Set([today, addDaysToIsoDate(today, 1), ...extraDates.filter(Boolean)])];
+  return syncStepPlanTasks({ dates, buildPlan: (date) => buildPdStepPlan(state, date) });
+}
+
+// After a step is marked / skipped: the tasks follow a few seconds later
+// (never in the way of the save itself).
+let appStepPlanTaskTimer = null;
+const appStepPlanTaskDates = new Set();
+function scheduleAppStepPlanTaskSync(date) {
+  if (date) appStepPlanTaskDates.add(String(date).slice(0, 10));
+  clearTimeout(appStepPlanTaskTimer);
+  appStepPlanTaskTimer = setTimeout(() => {
+    const dates = [...appStepPlanTaskDates];
+    appStepPlanTaskDates.clear();
+    runAppStepPlanTaskSync(dates).catch((error) => console.error("Step plan tasks:", error?.message || error));
+  }, 3000);
+}
+
+// Important invoice differences: the open follow-up lines of the last days
+// that are ready (all 4 files) and compared.
+async function runAppInvoiceDiffTaskSync() {
+  if (!isDatabaseEnabled()) return undefined;
+  const state = await readInkoopState();
+  const to = localDateIso();
+  const from = addDaysToIsoDate(to, -7);
+  const period = await inkoopFollowupPeriodItems(state, from, to);
+  if (period.error) return undefined;
+  const statusById = new Map((await getInkoopIssueStatuses()).map((row) => [row.id, row]));
+  const open = (period.items || []).filter((item) => statusById.get(item.id)?.status !== "resolved");
+  const days = await getInkoopDataDayStatuses(from, to);
+  const pending = new Set(period.pending || []);
+  const dates = days.filter((day) => day.state === "ready" && !pending.has(day.date)).map((day) => day.date);
+  const readyDates = new Set(dates);
+  return syncInvoiceDiffTasks({ dates, items: open.filter((item) => readyDates.has(item.day || item.date)) });
+}
+
+const handleAppTasksRoute = createAppTasksRoutes({
+  readUsers,
+  writeUsers,
+  publicUser,
+  sendJson,
+  readRequestJson,
+  stepCatalog: appTaskStepCatalog,
+  runStepPlanSync: () => runAppStepPlanTaskSync(),
+});
 
 function hashPassword(password, salt = crypto.randomBytes(16).toString("hex")) {
   const hash = crypto.scryptSync(String(password), salt, 64).toString("hex");
@@ -23528,6 +23612,11 @@ async function handleApi(req, res, url) {
     return;
   }
 
+  // Tasks + chat widget routes (/api/tasks, /api/chat/, /api/widget/, ...).
+  if (await handleAppTasksRoute(req, res, url, requestUser)) {
+    return;
+  }
+
   if (url.pathname === "/api/expedition-stickers" && req.method === "GET") {
     if (!requirePermission(res, requestUser, PERMISSIONS.EXPEDITION_STICKERS_VIEW)) {
       return;
@@ -24636,6 +24725,7 @@ async function handleApi(req, res, url) {
     }));
     await writeUkdocsState(state);
     sendJson(res, 200, buildPdStepPlan(state, String(existing.shipment_date || "").slice(0, 10)));
+    scheduleAppStepPlanTaskSync(String(existing.shipment_date || "").slice(0, 10));
     return;
   }
 
@@ -24675,6 +24765,7 @@ async function handleApi(req, res, url) {
     }));
     await writeUkdocsState(state);
     sendJson(res, 200, buildPdStepPlan(state, String(existing.shipment_date || date).slice(0, 10)));
+    scheduleAppStepPlanTaskSync(String(existing.shipment_date || date).slice(0, 10));
     return;
   }
 
@@ -28999,6 +29090,26 @@ async function handleApi(req, res, url) {
         { by: requestUser.username, note },
       );
       sendJson(res, 200, { ok: true, saved: saved.length });
+      // Tasks widget: lines sent to a department -> a task for its team;
+      // lines resolved -> their tasks close once all their lines are.
+      if (changes.department !== undefined) {
+        autoTasksForFollowupMove({
+          department: changes.department,
+          departmentLabel: INKOOP_FOLLOWUP_DEPARTMENTS.find(([key]) => key === changes.department)?.[1] || changes.department,
+          entries: list.map((item) => {
+            const known = found.get(item.id) || item.snapshot || {};
+            return { id: String(item.id), grower: known.grower || "", day: known.day || inkoopIsoDate(item.day) || "", money_diff: known.money_diff };
+          }),
+          note,
+          by: requestUser.username,
+        }).catch(() => {});
+      }
+      if (changes.status === "resolved") {
+        autoCloseFollowupTasks(list.map((item) => String(item.id)), async (ids) => {
+          const statusById = new Map((await getInkoopIssueStatuses()).map((row) => [row.id, row]));
+          return ids.every((id) => statusById.get(id)?.status === "resolved");
+        }, requestUser.username).catch(() => {});
+      }
     } catch (error) {
       sendJson(res, 400, { error: error instanceof Error ? error.message : String(error) });
     }
@@ -29105,6 +29216,9 @@ async function handleApi(req, res, url) {
         );
       }
       sendJson(res, 200, { ok: true, claim: saved });
+      if (["credit_received", "closed", "written_off"].includes(step)) {
+        autoTaskForClaimStep({ claim: { ...claim, ...saved }, step, by: requestUser.username, note }).catch(() => {});
+      }
     } catch (error) {
       sendJson(res, 400, { error: error instanceof Error ? error.message : String(error) });
     }
@@ -31335,6 +31449,17 @@ async function startServer() {
   setInterval(() => {
     runIfOnline("dag-foutjes sheet sync", syncPendingDagFoutjesDaysToSheet).catch(() => {});
   }, 15 * 60 * 1000);
+
+  // Tasks widget: the step plan's tasks (today, tomorrow) and important
+  // invoice differences, every 5 / 15 minutes (nothing logged when quiet).
+  if (isDatabaseEnabled()) {
+    const appStepPlanJob = async () => { await runAppStepPlanTaskSync(); };
+    const appInvoiceDiffJob = async () => { await runAppInvoiceDiffTaskSync(); };
+    setTimeout(() => runIfOnline("Tasks: step plan", appStepPlanJob).catch((error) => console.error("Tasks: step plan", error?.message || error)), 90 * 1000);
+    setInterval(() => runIfOnline("Tasks: step plan", appStepPlanJob).catch((error) => console.error("Tasks: step plan", error?.message || error)), 5 * 60 * 1000);
+    setTimeout(() => runIfOnline("Tasks: invoice differences", appInvoiceDiffJob).catch((error) => console.error("Tasks: invoice differences", error?.message || error)), 3 * 60 * 1000);
+    setInterval(() => runIfOnline("Tasks: invoice differences", appInvoiceDiffJob).catch((error) => console.error("Tasks: invoice differences", error?.message || error)), 15 * 60 * 1000);
+  }
 
   const runFustReminderCheck = async () => {
     try {

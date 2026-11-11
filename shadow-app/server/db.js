@@ -5759,6 +5759,75 @@ const databaseMigrations = [
       updated_at timestamptz NOT NULL DEFAULT now()
     )
   `,
+  // Tasks + chat between users (server/tasks.js, the floating widget).
+  `
+    CREATE TABLE IF NOT EXISTS app_tasks (
+      id bigserial PRIMARY KEY,
+      title text NOT NULL,
+      body text NOT NULL DEFAULT '',
+      assignee_user text,
+      assignee_team text,
+      created_by text NOT NULL DEFAULT '',
+      priority text NOT NULL DEFAULT 'normal',
+      due_date date,
+      status text NOT NULL DEFAULT 'open',
+      done_by text,
+      done_at timestamptz,
+      source text NOT NULL DEFAULT 'manual',
+      source_key text UNIQUE,
+      link jsonb NOT NULL DEFAULT '{}'::jsonb,
+      repeat text NOT NULL DEFAULT 'none',
+      created_at timestamptz NOT NULL DEFAULT now(),
+      updated_at timestamptz NOT NULL DEFAULT now()
+    )
+  `,
+  `
+    CREATE INDEX IF NOT EXISTS app_tasks_open_idx ON app_tasks (status, assignee_user, assignee_team)
+  `,
+  `
+    CREATE TABLE IF NOT EXISTS app_task_events (
+      id bigserial PRIMARY KEY,
+      task_id bigint NOT NULL,
+      at timestamptz NOT NULL DEFAULT now(),
+      by_user text NOT NULL DEFAULT '',
+      action text NOT NULL,
+      from_value text NOT NULL DEFAULT '',
+      to_value text NOT NULL DEFAULT ''
+    )
+  `,
+  `
+    CREATE INDEX IF NOT EXISTS app_task_events_task_idx ON app_task_events (task_id, id)
+  `,
+  `
+    CREATE TABLE IF NOT EXISTS app_chat_messages (
+      id bigserial PRIMARY KEY,
+      channel text NOT NULL,
+      from_user text NOT NULL,
+      body text NOT NULL,
+      at timestamptz NOT NULL DEFAULT now(),
+      edited_at timestamptz,
+      deleted boolean NOT NULL DEFAULT false
+    )
+  `,
+  `
+    CREATE INDEX IF NOT EXISTS app_chat_messages_channel_idx ON app_chat_messages (channel, id)
+  `,
+  `
+    CREATE TABLE IF NOT EXISTS app_chat_reads (
+      user_name text NOT NULL,
+      channel text NOT NULL,
+      last_read_id bigint NOT NULL DEFAULT 0,
+      PRIMARY KEY (user_name, channel)
+    )
+  `,
+  `
+    CREATE TABLE IF NOT EXISTS app_task_settings (
+      key text PRIMARY KEY,
+      value jsonb NOT NULL DEFAULT '{}'::jsonb,
+      updated_by text NOT NULL DEFAULT '',
+      updated_at timestamptz NOT NULL DEFAULT now()
+    )
+  `,
 ];
 
 // Every statement in databaseMigrations is idempotent (CREATE TABLE IF NOT
