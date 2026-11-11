@@ -6621,7 +6621,14 @@ async function runAppStepPlanTaskSync(extraDates = []) {
   const state = await readUkdocsState();
   const today = localDateIso();
   const dates = [...new Set([today, addDaysToIsoDate(today, 1), ...extraDates.filter(Boolean)])];
-  return syncStepPlanTasks({ dates, buildPlan: (date) => buildPdStepPlan(state, date) });
+  // The step plan of the day plus the Pipeline Monitor's view (what is stuck).
+  return syncStepPlanTasks({
+    dates,
+    buildPlan: async (date) => ({
+      plan: buildPdStepPlan(state, date),
+      monitor: await buildUkdocsPipelineMonitor(state, date).catch(() => null),
+    }),
+  });
 }
 
 // After a step is marked / skipped: the tasks follow a few seconds later

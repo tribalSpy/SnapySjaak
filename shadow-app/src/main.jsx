@@ -11758,6 +11758,7 @@ function TwTaskDetail({ id, currentUser, directory, teamName, onBack, onOpenLink
         <span>{finished ? (task.status === "done" ? `✓ done${task.done_by ? ` by ${task.done_by}` : ""}` : "✕ cancelled") : task.status === "in_progress" ? "▶ in progress" : "○ open"}</span>
       </div>
       {task.body && <p className="tw-text">{task.body}</p>}
+      {task.source === "step_plan" && task.link?.progress && <TwStepPlanProgress progress={task.link.progress} />}
       <div className="tw-actions">
         {!finished && <button type="button" className="tw-primary" disabled={busy} onClick={() => change({ status: "done" })}>✓ Done</button>}
         {!finished && task.status !== "in_progress" && <button type="button" disabled={busy} onClick={() => change({ status: "in_progress" })}>▶ Start</button>}
@@ -11796,6 +11797,50 @@ function TwTaskDetail({ id, currentUser, directory, teamName, onBack, onOpenLink
           ))}
         </ul>
       </details>
+    </div>
+  );
+}
+
+// A row of little blocks: the steps done, the one it is at, the ones to come.
+function TwSteps({ step, steps, complete }) {
+  return (
+    <span className="tw-steps" role="img" aria-label={complete ? "all steps done" : `step ${step} of ${steps}`}>
+      {Array.from({ length: steps }, (_, index) => (
+        <span key={index} className={complete || index < step - 1 ? "done" : index === step - 1 ? "now" : ""} />
+      ))}
+    </span>
+  );
+}
+
+// The day's step plan inside its one task: the day step it is at, and per
+// shipment its step and a simple status (stuck ones first).
+function TwStepPlanProgress({ progress }) {
+  const rows = [...(progress.rows || [])].sort((left, right) => (
+    Number(Boolean(right.stuck)) - Number(Boolean(left.stuck))
+    || Number(left.complete) - Number(right.complete)
+    || left.step - right.step
+    || String(left.customer).localeCompare(String(right.customer))
+  ));
+  return (
+    <div className="tw-progress">
+      <div className="tw-progress-row day">
+        <span className="tw-progress-name">Day steps</span>
+        <TwSteps step={progress.day.step} steps={progress.day.steps} complete={progress.day.complete} />
+        <span className="tw-progress-status">{progress.day.complete ? "✓ done" : `${progress.day.step}/${progress.day.steps} · ${progress.day.label}`}</span>
+      </div>
+      {rows.map((row) => (
+        <div key={row.id} className={`tw-progress-row${row.complete ? " complete" : ""}`}>
+          <span className="tw-progress-name">{row.customer} <small>{row.route}</small></span>
+          <TwSteps step={row.step} steps={row.steps} complete={row.complete} />
+          <span className="tw-progress-status">
+            {row.complete ? `✓ complete${row.papers_sent ? " · papers sent" : ""}` : `${row.step}/${row.steps} · ${row.label}`}
+            {!row.complete && row.status && <small>{row.status}</small>}
+            {row.stuck && <small className="tw-overdue">⚠ {row.stuck}</small>}
+          </span>
+        </div>
+      ))}
+      {!rows.length && <div className="tw-empty">No shipments for this day yet.</div>}
+      <small className="tw-progress-foot">{progress.done}/{progress.total} shipment(s) complete · updated {twShortTime(progress.updated_at)} -- follows the step plan by itself</small>
     </div>
   );
 }
@@ -11997,7 +12042,6 @@ function TwChat({ currentUser, directory, teamName, target, onTargetUsed, pulseK
 // widget, and the automatic tasks' rules.
 function AppTeamsTasksCard() {
   const [config, setConfig] = useState(null);
-  const [catalog, setCatalog] = useState({ day: [], shipment: [] });
   const [users, setUsers] = useState([]);
   const [error, setError] = useState("");
   const [message, setMessage] = useState("");
@@ -12008,7 +12052,6 @@ function AppTeamsTasksCard() {
     try {
       const [teamsPayload, usersPayload] = await Promise.all([apiJson("/api/app-teams"), apiJson("/api/users")]);
       setConfig(teamsPayload.config);
-      setCatalog(teamsPayload.step_catalog || { day: [], shipment: [] });
       setUsers(usersPayload.users || []);
     } catch (loadError) {
       setError(loadError.message);
@@ -12048,13 +12091,6 @@ function AppTeamsTasksCard() {
     ...config.teams.map((team) => [`team:${team.key}`, `Team: ${team.name}`]),
     ...users.map((user) => [`user:${user.username}`, user.username]),
   ];
-  const assign = config.step_plan.assign || {};
-  const setAssign = (key, value) => {
-    const nextAssign = { ...assign };
-    if (value) nextAssign[key] = value;
-    else delete nextAssign[key];
-    saveConfig({ ...config, step_plan: { ...config.step_plan, assign: nextAssign } });
-  };
   return (
     <section className="data-table-card tw-admin">
       <div className="section-header"><h2>Teams &amp; tasks</h2></div>
@@ -12062,7 +12098,8 @@ function AppTeamsTasksCard() {
       {error && <div className="notice danger">{error}</div>}
       {message && <div className="notice">{message}</div>}
 
-      <h3>Teams</h3>
+      <details className="tw-admin-fold">
+      <summary>Teams <span className="muted">({config.teams.map((team) => team.name).join(", ")})</span></summary>
       <div className="tw-admin-teams">
         {config.teams.map((team) => (
           <span key={team.key} className="tw-chip big">
@@ -12080,8 +12117,10 @@ function AppTeamsTasksCard() {
           <button type="submit" disabled={busy || !newTeam.trim()}>Add</button>
         </form>
       </div>
+      </details>
 
-      <h3>People</h3>
+      <details className="tw-admin-fold">
+      <summary>People <span className="muted">({users.filter((user) => (user.teams || []).length).length} in a team, {users.filter((user) => user.settings?.use_widget === true).length} with the widget)</span></summary>
       <div className="table-wrap">
         <table className="data-table">
           <thead><tr><th>User</th>{config.teams.map((team) => <th key={team.key}>{team.name}</th>)}<th>Widget</th></tr></thead>
@@ -12107,8 +12146,10 @@ function AppTeamsTasksCard() {
           </tbody>
         </table>
       </div>
+      </details>
 
-      <h3>Automatic tasks</h3>
+      <details className="tw-admin-fold">
+      <summary>Automatic tasks <span className="muted">({[config.followup.enabled && "follow-up", config.claims.enabled && "claims", config.invoice_diff.enabled && `invoice differences from € ${config.invoice_diff.min_amount}`, config.step_plan.enabled && config.step_plan.assign_to && "step plan"].filter(Boolean).join(", ") || "none"})</span></summary>
       <div className="tw-admin-rules">
         <label className="checkbox-label"><input type="checkbox" checked={config.followup.enabled} onChange={(event) => saveConfig({ ...config, followup: { ...config.followup, enabled: event.target.checked } })} /><span>Follow-up: a line sent to a department becomes a task for its team (closed when its lines are resolved)</span></label>
         <div className="tw-admin-inline">
@@ -12130,29 +12171,18 @@ function AppTeamsTasksCard() {
             </select>
           </label>
         </div>
-        <label className="checkbox-label"><input type="checkbox" checked={config.step_plan.enabled} onChange={(event) => saveConfig({ ...config, step_plan: { ...config.step_plan, enabled: event.target.checked } })} /><span>PD step plan: the step a day / shipment is at becomes a task for whoever it is given to below (today and tomorrow; closes when the step is done)</span></label>
-        <div className="tw-admin-steps">
-          <strong>Day steps</strong>
-          {catalog.day.map((step) => (
-            <label key={step.key}><span>{step.number}. {step.label}</span>
-              <select value={assign[`day:${step.key}`] || ""} onChange={(event) => setAssign(`day:${step.key}`, event.target.value)}>
-                <option value="">— no task —</option>
-                {targets.map(([value, label]) => <option key={value} value={value}>{label}</option>)}
-              </select>
-            </label>
-          ))}
-          <strong>Per shipment</strong>
-          {catalog.shipment.map((step) => (
-            <label key={step.key}><span>{step.label}</span>
-              <select value={assign[`ship:${step.key}`] || ""} onChange={(event) => setAssign(`ship:${step.key}`, event.target.value)}>
-                <option value="">— no task —</option>
-                {targets.map(([value, label]) => <option key={value} value={value}>{label}</option>)}
-              </select>
-            </label>
-          ))}
-          <button type="button" disabled={busy} onClick={async () => { try { const payload = await apiJson("/api/app-teams/run-step-plan", { method: "POST" }); setMessage(`Step plan checked: ${payload.result?.made || 0} new task(s), ${payload.result?.closed || 0} closed.`); } catch (runError) { setError(runError.message); } }}>Check the step plan now</button>
+        <label className="checkbox-label"><input type="checkbox" checked={config.step_plan.enabled} onChange={(event) => saveConfig({ ...config, step_plan: { ...config.step_plan, enabled: event.target.checked } })} /><span>PD step plan: one task per day (today, tomorrow) showing the step the day is at and each shipment's step and status (as the Pipeline Monitor, with what is stuck); done by itself when everything is complete</span></label>
+        <div className="tw-admin-inline">
+          <label><span>Give it to</span>
+            <select value={config.step_plan.assign_to || ""} onChange={(event) => saveConfig({ ...config, step_plan: { ...config.step_plan, assign_to: event.target.value } })}>
+              <option value="">— nobody (no task) —</option>
+              {targets.map(([value, label]) => <option key={value} value={value}>{label}</option>)}
+            </select>
+          </label>
+          <button type="button" disabled={busy || !config.step_plan.assign_to} onClick={async () => { try { const payload = await apiJson("/api/app-teams/run-step-plan", { method: "POST" }); setMessage(`Step plan checked: ${payload.result?.made || 0} new, ${payload.result?.updated || 0} updated, ${payload.result?.closed || 0} closed.`); } catch (runError) { setError(runError.message); } }}>Check the step plan now</button>
         </div>
       </div>
+      </details>
       {config.updated_at && <small className="muted">Last change {formatTimestamp(config.updated_at)}{config.updated_by ? ` by ${config.updated_by}` : ""}.</small>}
     </section>
   );
@@ -12739,6 +12769,8 @@ function UsersPage({ currentUser }) {
 
   return (
     <section className="users-page">
+      <details className="user-add">
+      <summary>+ Add user</summary>
       <form className="user-form" onSubmit={addUser}>
         <label>
           <span>Username</span>
@@ -12773,6 +12805,7 @@ function UsersPage({ currentUser }) {
           onChange={(permissions) => setForm({ ...form, permissions })}
         />
       </form>
+      </details>
 
       {error && <div className="notice danger">{error}</div>}
       {message && <div className="notice">{message}</div>}
@@ -12799,6 +12832,8 @@ function UserRow({ user, currentUser, onSave, onDelete }) {
   const [role, setRole] = useState(user.role);
   const [permissions, setPermissions] = useState(normalizePermissions(user.role, user.permissions));
   const [fustHidden, setFustHidden] = useState(user.fust_hidden_tabs || []);
+  // Folded to one line; click to change access, menus, password.
+  const [open, setOpen] = useState(false);
 
   useEffect(() => {
     setRole(user.role);
@@ -12806,13 +12841,20 @@ function UserRow({ user, currentUser, onSave, onDelete }) {
     setFustHidden(user.fust_hidden_tabs || []);
   }, [user.permissions, user.role, user.fust_hidden_tabs]);
 
+  const menuCount = user.role === "admin" ? ALL_PERMISSIONS.length : normalizePermissions(user.role, user.permissions).length;
   return (
-    <article className="user-row">
-      <div>
+    <article className={`user-row-card${open ? " open" : ""}`}>
+      <button type="button" className="user-row-head" onClick={() => setOpen((value) => !value)} aria-expanded={open}>
+        <span className="user-row-arrow" aria-hidden="true">{open ? "▾" : "▸"}</span>
         <strong>{user.username}</strong>
-        <span>{user.role} | created {formatTimestamp(user.created_at)}</span>
-      </div>
-
+        <span className="user-row-tag">{user.role}</span>
+        <span>{user.role === "admin" ? "all menus" : `${menuCount} menu(s)`}</span>
+        {!!(user.teams || []).length && <span>teams: {user.teams.join(", ")}</span>}
+        {user.settings?.use_widget === true && <span>widget on</span>}
+        <span className="user-row-created">created {formatTimestamp(user.created_at)}</span>
+      </button>
+      {open && (
+      <div className="user-row">
       <div className="user-row-actions">
         <label>
           <span>Role</span>
@@ -12856,7 +12898,9 @@ function UserRow({ user, currentUser, onSave, onDelete }) {
         <button type="submit">Set password</button>
       </form>
 
-      <button disabled={user.username === currentUser.username} onClick={onDelete}>Delete</button>
+      <button disabled={user.username === currentUser.username} onClick={() => { if (window.confirm(`Delete user ${user.username}?`)) onDelete(); }}>Delete</button>
+      </div>
+      )}
     </article>
   );
 }

@@ -122,11 +122,14 @@ function normalizeTaskConfig(value) {
     const cleanTarget = String(target || "").trim().slice(0, 80);
     if (cleanKey && /^(user|team):./.test(cleanTarget)) assign[cleanKey] = cleanTarget;
   }
+  // One step plan task per day, for this team / person (the older per-step
+  // choice: its first one).
+  const assignTo = String(source.step_plan?.assign_to ?? Object.values(assign)[0] ?? "").trim().slice(0, 80);
   const minAmount = Number(source.invoice_diff?.min_amount);
   const departmentTeam = { control: "invoice_control", inkoop: "inkoop", finance: "finance", ...(source.followup?.department_team || {}) };
   return {
     teams,
-    step_plan: { enabled: source.step_plan?.enabled !== false, assign },
+    step_plan: { enabled: source.step_plan?.enabled !== false, assign_to: /^(user|team):./.test(assignTo) ? assignTo : "" },
     invoice_diff: {
       enabled: source.invoice_diff?.enabled !== false,
       min_amount: Number.isFinite(minAmount) && minAmount > 0 ? Math.round(minAmount * 100) / 100 : 50,
@@ -505,66 +508,108 @@ export async function syncInvoiceDiffTasks({ dates, items }) {
   return { made, closed: stale.length };
 }
 
-// The PD step plan of some dates: the step each shipment (and the day) is at
-// becomes a task for whoever that step is given to; a task whose step is
-// done closes by itself.
+// The PD step plan: ONE task per day for whoever the step plan is given to.
+// It carries the day's progress (link.progress): the day step it is at and,
+// per shipment, the step and a simple status (as the Pipeline Monitor, with
+// what is stuck) -- kept up to date after every mark / skip and every 5 min.
+// Done by itself when the day and every shipment are complete; opened again
+// when a shipment is added later.
+function stepPlanProgress(date, plan, monitor) {
+  const day = plan.day || { steps: [], current_step: 0, complete: true };
+  const dayStep = day.complete ? null : day.steps[day.current_step];
+  const monitorById = new Map((monitor?.rows || []).map((row) => [row.collection_id, row]));
+  const rows = (plan.rows || []).map((row) => {
+    const step = row.complete ? null : row.steps[row.current_step];
+    const watch = monitorById.get(row.collection_id);
+    const stuck = (watch?.attention_reasons || []).find((reason) => /stuck/i.test(reason)) || "";
+    const status = row.complete
+      ? "Complete"
+      : step?.key === "day"
+        ? `Waiting for the day steps (${dayStep ? `${dayStep.number}. ${dayStep.label}` : "-"})`
+        : step?.status || (step?.missing || [])[0] || "";
+    return {
+      id: row.collection_id,
+      customer: row.customer_name || "-",
+      route: row.route === "ericdocs" ? "Eric Docs" : "CSI",
+      step: Math.min(row.current_step + 1, row.steps.length),
+      steps: row.steps.length,
+      label: row.complete ? "Done" : step?.label || "",
+      status: String(status).slice(0, 200),
+      stuck: String(stuck).slice(0, 200),
+      papers_sent: watch?.papers_sent === true,
+      complete: row.complete === true,
+    };
+  });
+  return {
+    date,
+    day: {
+      complete: day.complete === true,
+      step: day.complete ? day.steps.length : Math.min(day.current_step + 1, day.steps.length),
+      steps: day.steps.length,
+      label: dayStep ? dayStep.label : "Day steps done",
+      missing: (dayStep?.missing || []).slice(0, 3),
+    },
+    rows,
+    total: rows.length,
+    done: rows.filter((row) => row.complete).length,
+    stuck: rows.filter((row) => row.stuck).length,
+    updated_at: new Date().toISOString(),
+  };
+}
+
+// JSON with its keys sorted (Postgres keeps jsonb keys in its own order).
+function stableJson(value) {
+  if (Array.isArray(value)) return `[${value.map(stableJson).join(",")}]`;
+  if (value && typeof value === "object") return `{${Object.keys(value).sort().map((key) => `${JSON.stringify(key)}:${stableJson(value[key])}`).join(",")}}`;
+  return JSON.stringify(value ?? null);
+}
+
 export async function syncStepPlanTasks({ dates, buildPlan }) {
-  if (!isDatabaseEnabled()) return { made: 0, closed: 0 };
+  if (!isDatabaseEnabled()) return { made: 0, closed: 0, updated: 0 };
   const config = await readTaskConfig();
-  if (!config.step_plan.enabled) return { made: 0, closed: 0 };
+  // The older per-step tasks (one per step): replaced by the one per day.
+  const older = await dbQuery("SELECT * FROM app_tasks WHERE source = 'step_plan' AND status IN ('open', 'in_progress') AND source_key LIKE 'step_plan:%:%'");
+  await closeTasks(older.rows, "system", "Replaced by one step plan task per day.");
+  if (!config.step_plan.enabled || !config.step_plan.assign_to) return { made: 0, closed: older.rows.length, updated: 0 };
+  const assignee = parseAssignee(config.step_plan.assign_to);
   let made = 0;
-  let closed = 0;
+  let closed = older.rows.length;
+  let updated = 0;
   for (const date of dates || []) {
-    const plan = buildPlan(date);
+    const built = await buildPlan(date);
+    const plan = built?.plan;
     if (!plan) continue;
-    const want = [];
-    const day = plan.day;
-    if (day && !day.complete) {
-      const step = day.steps[day.current_step];
-      const target = step && config.step_plan.assign[`day:${step.key}`];
-      if (target) {
-        want.push({
-          source_key: `step_plan:${date}:day:${step.key}`,
-          title: `Step plan ${date} -- step ${step.number}: ${step.label}`,
-          body: (step.missing || []).slice(0, 8).join("\n"),
-          target,
-        });
-      }
-    }
-    for (const row of plan.rows || []) {
-      if (row.complete) continue;
-      const step = row.steps[row.current_step];
-      if (!step || step.key === "day") continue;
-      const target = config.step_plan.assign[`ship:${step.key}`];
-      if (!target) continue;
-      want.push({
-        source_key: `step_plan:${date}:${row.collection_id}:${step.key}`,
-        title: `Step plan ${date} -- ${row.customer_name}: ${step.label}`,
-        body: [...(step.missing || []).slice(0, 8), step.status ? `Status: ${step.status}` : ""].filter(Boolean).join("\n"),
-        target,
-      });
-    }
-    for (const entry of want) {
-      const row = await createSystemTask({
-        source: "step_plan",
-        source_key: entry.source_key,
-        title: entry.title,
-        body: entry.body,
-        ...parseAssignee(entry.target),
-        due_date: date,
-        link: { page: "pdstepplan", date },
-      });
+    // Nothing set up for that day (no stock control, no shipments): no task.
+    if (!plan.day?.collection_id && !(plan.rows || []).length) continue;
+    const progress = stepPlanProgress(date, plan, built.monitor);
+    const complete = progress.day.complete && progress.rows.every((row) => row.complete);
+    const title = `Step plan ${date}: ${complete ? "all done" : `day step ${progress.day.step}/${progress.day.steps}`} · ${progress.done}/${progress.total} shipment(s) done${progress.stuck ? ` · ${progress.stuck} stuck` : ""}`;
+    const sourceKey = `step_plan:${date}`;
+    const link = { page: "pdstepplan", date, progress };
+    const existing = (await dbQuery("SELECT * FROM app_tasks WHERE source_key = $1", [sourceKey])).rows[0];
+    if (!existing) {
+      if (complete) continue;
+      const row = await createSystemTask({ source: "step_plan", source_key: sourceKey, title, body: "", ...assignee, due_date: date, link });
       if (row) made += 1;
+      continue;
     }
-    const keys = want.map((entry) => entry.source_key);
-    const open = await dbQuery(
-      "SELECT * FROM app_tasks WHERE source = 'step_plan' AND status IN ('open', 'in_progress') AND source_key LIKE $1 AND NOT (source_key = ANY($2::text[]))",
-      [`step_plan:${date}:%`, keys],
-    );
-    await closeTasks(open.rows, "system", "The step is done in the step plan.");
-    closed += open.rows.length;
+    // Keep the progress up to date (the history only gets the open / close).
+    const before = stableJson({ title: existing.title, progress: { ...(existing.link?.progress || {}), updated_at: "" } });
+    const after = stableJson({ title, progress: { ...progress, updated_at: "" } });
+    if (before !== after) {
+      await dbQuery("UPDATE app_tasks SET title = $2, link = $3, updated_at = now() WHERE id = $1", [existing.id, title, JSON.stringify(link)]);
+      updated += 1;
+    }
+    if (complete && OPEN_STATUSES.includes(existing.status)) {
+      await closeTasks([existing], "system", "The day and every shipment are complete in the step plan.");
+      closed += 1;
+    } else if (!complete && existing.status === "done" && existing.done_by === "system") {
+      await dbQuery("UPDATE app_tasks SET status = 'open', done_by = NULL, done_at = NULL, updated_at = now() WHERE id = $1", [existing.id]);
+      await logTaskEvent(existing.id, "system", "status", "done", "open");
+      await logTaskEvent(existing.id, "system", "note", "", "Not complete any more (a shipment was added or changed).");
+    }
   }
-  return { made, closed };
+  return { made, closed, updated };
 }
 
 // ---------------------------------------------------------------------------
