@@ -4880,3 +4880,7 @@ table.data-table.balance-table.ik-table.ik-inv-invoices td:nth-child(n+7), table
 .tw-progress-check > .tw-ring { grid-column: 1; grid-row: 1; }
 .tw-chips button { font-size: 12px; padding: 3px 7px; }
 .tw-add.tw-add-icon { padding: 2px 9px; font-size: 16px; line-height: 1.2; }
+
+/* On the right side the badges sit on the button's left (always visible). */
+.tw-pill.on-right .tw-badge.tasks { right: auto; left: -6px; }
+.tw-pill.on-right .tw-badge.unread { right: auto; left: -6px; }

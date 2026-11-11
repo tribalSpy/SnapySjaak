@@ -11322,7 +11322,9 @@ function twAssigneeLabel(task, teamName) {
 
 function TasksChatWidget({ currentUser, onOpenLink }) {
   const [pos, setPos] = useState(() => twReadStoredPos() || currentUser?.settings?.widget_pos || { x: 1, y: 0.82 });
-  const [viewport, setViewport] = useState(() => ({ w: window.innerWidth, h: window.innerHeight }));
+  // The screen without its scrollbar (clientWidth), so the button never
+  // sits under it.
+  const [viewport, setViewport] = useState(() => ({ w: document.documentElement.clientWidth || window.innerWidth, h: document.documentElement.clientHeight || window.innerHeight }));
   const [drag, setDrag] = useState(null);
   const dragRef = useRef(null);
   const [open, setOpen] = useState(false);
@@ -11339,7 +11341,7 @@ function TasksChatWidget({ currentUser, onOpenLink }) {
   const teamName = useCallback((key) => directory.teams.find((team) => team.key === key)?.name || key, [directory.teams]);
 
   useEffect(() => {
-    const onResize = () => setViewport({ w: window.innerWidth, h: window.innerHeight });
+    const onResize = () => setViewport({ w: document.documentElement.clientWidth || window.innerWidth, h: document.documentElement.clientHeight || window.innerHeight });
     window.addEventListener("resize", onResize);
     return () => window.removeEventListener("resize", onResize);
   }, []);
@@ -11486,7 +11488,7 @@ function TasksChatWidget({ currentUser, onOpenLink }) {
     <div className="tw-root" aria-live="polite">
       <button
         type="button"
-        className={`tw-pill${drag ? " dragging" : ""}${open ? " active" : ""}`}
+        className={`tw-pill${drag ? " dragging" : ""}${open ? " active" : ""}${onRight ? " on-right" : ""}`}
         style={{ left, top }}
         onPointerDown={onPointerDown}
         onPointerMove={onPointerMove}
