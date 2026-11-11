@@ -243,7 +243,9 @@ async function listTasks(user, scope) {
   if (scope === "team") where = `status IN ('open', 'in_progress') AND assignee_team = ANY($2::text[])`;
   else if (scope === "created") where = `status IN ('open', 'in_progress') AND created_by = $1 AND coalesce(assignee_user, '') <> $1`;
   else if (scope === "done") { where = `status IN ('done', 'cancelled') AND ${visible} AND updated_at > now() - interval '30 days'`; limit = 100; }
-  else if (scope === "all") { where = user.role === "admin" ? "status IN ('open', 'in_progress')" : `status IN ('open', 'in_progress') AND ${visible}`; limit = 300; }
+  // All tasks = the user's own and their teams' together (not the ones they
+  // gave to others).
+  else if (scope === "all") { where = "status IN ('open', 'in_progress') AND (assignee_user = $1 OR assignee_team = ANY($2::text[]))"; limit = 300; }
   // The user's tab: their own tasks and the ones they asked of others.
   else if (scope === "user") where = `status IN ('open', 'in_progress') AND (assignee_user = $1 OR (created_by = $1 AND coalesce(assignee_user, '') <> $1))`;
   else where = `status IN ('open', 'in_progress') AND assignee_user = $1`;
@@ -258,9 +260,9 @@ async function listTasks(user, scope) {
        count(*) FILTER (WHERE assignee_user = $1) AS mine,
        count(*) FILTER (WHERE assignee_team = ANY($2::text[])) AS team,
        count(*) FILTER (WHERE created_by = $1 AND coalesce(assignee_user, '') <> $1) AS created,
-       count(*) FILTER (WHERE $3 OR assignee_user = $1 OR assignee_team = ANY($2::text[]) OR created_by = $1) AS all_open
+       count(*) FILTER (WHERE assignee_user = $1 OR assignee_team = ANY($2::text[])) AS all_open
      FROM app_tasks WHERE status IN ('open', 'in_progress')`,
-    [me, teams, user.role === "admin"],
+    [me, teams],
   );
   const row = counts.rows[0] || {};
   return {

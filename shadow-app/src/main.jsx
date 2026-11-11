@@ -11565,7 +11565,7 @@ function TwAssigneeSelect({ value, onChange, directory, currentUser }) {
 }
 
 function TwTasks({ currentUser, directory, teamName, pulseKey, onOpenLink, big }) {
-  const [scope, setScope] = useState("user");
+  const [scope, setScope] = useState("all");
   const [data, setData] = useState({ tasks: [], counts: { mine: 0, team: 0, created: 0 } });
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
@@ -11625,9 +11625,9 @@ function TwTasks({ currentUser, directory, teamName, pulseKey, onOpenLink, big }
   const today = twToday();
   const name = twDisplayName(currentUser.username);
   const chips = [
+    ["all", "All tasks", data.counts.all],
     ["user", `${name}'s tasks`, data.counts.user],
     ["team", "Team tasks", data.counts.team],
-    ["all", "All tasks", data.counts.all],
     ["done", "✓", null, "Done (last 30 days)"],
   ];
   const renderTask = (task) => {
