@@ -29,3 +29,9 @@ node_modules/
 llm-poller-app/config.json
 king-poller-app/delivered_batches.json
 king-poller-app/config.json
+
+# Media poller: local config, work files and test output
+media-poller-app/config.json
+media-poller-app/work/
+media-poller-app/test_output/
+media-poller-app/.venv/

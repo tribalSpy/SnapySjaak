@@ -244,6 +244,28 @@ def find_product_type_code(item):
     return ""
 
 
+# VBN product features of a line (Product/ApplicableGoodsCharacteristics:
+# TypeCode = feature code like S20 (length), S62, S98; ValueCode = its value
+# like 055). Kept as {"S20": "055", ...} for the Campagnes article cards --
+# additive only, nothing else reads it. Lines without the block give {}.
+def find_characteristics(item):
+    features = {}
+    for element in item.iter():
+        if "Characteristic" not in local_tag(element.tag):
+            continue
+        code = ""
+        value = ""
+        for child in element:
+            tag = local_tag(child.tag)
+            if tag == "TypeCode" and not code:
+                code = (child.text or "").strip()
+            elif tag in ("ValueCode", "Value", "ValueMeasure") and not value:
+                value = (child.text or "").strip()
+        if code and value and code not in features:
+            features[code] = value
+    return features
+
+
 def find_supplier_info(item):
     for party in item.iter():
         if local_tag(party.tag) != "SupplierParty":
@@ -434,6 +456,7 @@ def parse_invoice_xml(xml_bytes):
             "company_name": invoicee["name"],
             "line_date": line_date,
             "product_type_code": find_product_type_code(item),
+            "characteristics": find_characteristics(item),
             **king_line_fields(item),
         })
     return lines

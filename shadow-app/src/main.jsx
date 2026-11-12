@@ -3,6 +3,7 @@ import { createRoot } from "react-dom/client";
 import JSZip from "jszip";
 import { FRANCE_DEPARTEMENTS, FRANCE_REGIONS, FRANCE_VIEWBOX } from "./france-departements.js";
 import "./styles.css";
+import CampaignsPage from "./CampaignsPage.jsx";
 
 // Night mode (the lamp, top right): kept per browser, set before the first
 // paint so a page never flashes white. The colours come from styles.css
@@ -79,6 +80,8 @@ const PERMISSIONS = {
   ERIC_DOCS_VIEW: "eric_docs:view",
   INKOOP_VIEW: "inkoop:view",
   SHELF_COUNT_VIEW: "shelf_count:view",
+  CAMPAIGN_VIEW: "campaign:view",
+  CAMPAIGN_MANAGE: "campaign:manage",
 };
 const ALL_PERMISSIONS = Object.values(PERMISSIONS);
 const DEFAULT_PERMISSIONS_BY_ROLE = {
@@ -104,6 +107,7 @@ const PAGE_DEFINITIONS = [
   { key: "pdkeuring", label: "PD Keuring", permission: PERMISSIONS.PD_KEURING_VIEW },
   { key: "pdstepplan", label: "PD Step Plan", permission: PERMISSIONS.PD_KEURING_VIEW },
   { key: "inkoop", label: "Inkoop Controle", permission: PERMISSIONS.INKOOP_VIEW },
+  { key: "campaigns", label: "Campagnes", permission: PERMISSIONS.CAMPAIGN_VIEW },
   { key: "clock", label: "Inklokken", permission: PERMISSIONS.CLOCK_VIEW },
   { key: "users", label: "Users", permission: PERMISSIONS.USERS_MANAGE },
   { key: "settings", label: "Settings", permission: PERMISSIONS.SETTINGS_MANAGE },
@@ -289,6 +293,11 @@ function pageHeading(page) {
       return {
         title: "PD Step Plan",
         caption: "The whole PD day in order: PD keuringen, the day steps (stock control, Connect, phyto, e-Cert), then per shipment up to the signed phyto in e-Cert.",
+      };
+    case "campaigns":
+      return {
+        title: "Campagnes",
+        caption: "Plan next month's offer articles, the grower deals behind them and the awareness campaign before it.",
       };
     case "inkoop":
       return {
@@ -12986,6 +12995,7 @@ function App() {
         {page === "pdkeuring" && <PdKeuringPage currentUser={auth.user} />}
         {page === "pdstepplan" && <PdStepPlanPage onNavigate={(next) => { setFromStepPlan(true); setPage(next); }} />}
         {page === "inkoop" && <InkoopControlePage currentUser={auth.user} />}
+        {page === "campaigns" && <CampaignsPage apiJson={apiJson} />}
         {page === "settings" && <SettingsPage currentUser={auth.user} />}
         {page === "ukdocs" && <UkdocsPage currentUser={auth.user} onNavigate={setPage} />}
         {page === "dashboard" && canViewPhotos && (

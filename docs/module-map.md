@@ -17,6 +17,7 @@ Quick module reference for the Shadow app.
 | `UKDocs Exportdocs` | Manage UK export zending collections and send-ready workflows |
 | `Phyto Inspection` | Handle inspection-only papers for voorraad and nakeuring flows |
 | `Inklokken` | Employee clock IN/OUT records |
+| `Campagnes` | Monthly offer catalogue (articles from our invoices), grower deals, campaign planning |
 | `Users` | Access and permission management |
 | `Settings` | External connections and system configuration |
 
@@ -27,6 +28,8 @@ Quick module reference for the Shadow app.
 | `shadow-app/src/main.jsx` | Main frontend screens and client logic |
 | `shadow-app/src/styles.css` | Shared frontend styling |
 | `shadow-app/server/index.js` | Main backend API and app server |
+| `shadow-app/server/campaigns.js` | Campagnes backend: campaigns, article cards, grower deals, deadline tasks |
+| `shadow-app/src/CampaignsPage.jsx` | Campagnes screens |
 | `shadow-app/server/bunches.js` | Bunches import, run history, downloads, and print-list backend logic |
 | `shadow-app/public/bunches.html` | Embedded Bunches frontend used inside the Shadow app |
 | `shadow-app/public/dag-foutjes.html` | Embedded mistake registration app |

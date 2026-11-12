@@ -70,8 +70,29 @@ dependency installs, matching how they've always been set up.
 - `shelf-training\labeling\start_label_studio.bat` (only while actively
   labeling -- no need to keep it running otherwise)
 
-Consider Windows Scheduled Tasks (`schtasks /Create ...`) so the two
+- `media-poller-app\run_poller.bat` (Campagnes photos / videos -- see below)
+
+Consider Windows Scheduled Tasks (`schtasks /Create ...`) so the
 pollers restart automatically on reboot -- see each poller's own README.
+
+## 5b. Media poller (Campagnes photos and videos)
+
+The BEAST makes every Campagnes photo and video. Render only queues the work.
+
+1. Install ffmpeg with NVENC: `winget install Gyan.FFmpeg`. Open a new terminal and check that `ffmpeg -encoders` lists `h264_nvenc`.
+2. Copy `media-poller-app\config.example.json` to `config.json` and fill in:
+   - `server_url`, `api_key`, `agent_name` (e.g. `beast-media-1`);
+   - the Drive login (`drive.service_account_file`, or `drive.oauth`);
+   - `caption_model`: an Ollama model on this PC, used for the FR/EN captions.
+3. Drive folders:
+   - **Library:** a Social folder where people drop HD photos.
+   - **Output:** a folder where the BEAST writes what it makes.
+   - A service account can't write into a normal My Drive. Put both folders in a **Shared Drive** and add the service account as *Content manager*, or use the OAuth login.
+   - Paste both folder links in SnappySjaak › Campagnes › Settings.
+4. Run `media-poller-app\run_poller.bat`. The first run makes its own `.venv`.
+5. Quick check without the server: `python poller.py --test-recipe zoom_in --photo some.jpg --title "Test"`. The result goes in `media-poller-app\test_output\`.
+
+The existing llm-poller never takes `media_*` jobs (db.js keeps them for pollers that ask for them by name). Ollama and Excel jobs therefore never wait behind a video.
 
 ## 6. Optional: automate Step 7 (feedback loop)
 

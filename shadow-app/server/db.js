@@ -2772,6 +2772,82 @@ export async function searchInkoopInvoiceLines({ from, to, product, supplier, su
   return { rows, truncated: result.rows.length > max, kinds };
 }
 
+// Campagnes "Add from invoices": the distinct articles we bought (VBN code +
+// invoice name + grower) in the last months, with what the invoices say
+// about them -- pieces, price range, last price, the usual packages x per
+// package and the latest VBN features (S20 length...). Read only.
+export async function searchInkoopArticles({ product, grower, vbn, months = 18, limit = 80 } = {}) {
+  if (!pool) return [];
+  const conditions = ["l.invoice_date >= (current_date - ($1::int * interval '1 month'))", "l.quantity IS NOT NULL", "l.quantity > 0"];
+  const values = [Math.max(1, Math.min(36, Number(months) || 18))];
+  const like = (value) => `%${String(value).replace(/[\\%_]/g, (match) => `\\${match}`)}%`;
+  const words = (value) => String(value || "").split(/\s+/).filter(Boolean).slice(0, 8);
+  for (const word of words(product)) {
+    values.push(like(word));
+    conditions.push(`l.description ILIKE $${values.length}`);
+  }
+  for (const word of words(grower)) {
+    values.push(like(word));
+    conditions.push(`(l.supplier_name ILIKE $${values.length} OR l.supplier_fh_number ILIKE $${values.length} OR l.supplier_gln ILIKE $${values.length})`);
+  }
+  if (String(vbn || "").trim()) {
+    values.push(String(vbn).trim());
+    conditions.push(`l.raw->>'vbn_code' = $${values.length}`);
+  }
+  if (values.length === 1) return [];
+  values.push(Math.max(1, Math.min(300, Number(limit) || 80)));
+  const result = await pool.query(
+    `
+      SELECT vbn_code, description, supplier_name,
+        max(supplier_gln) AS supplier_gln, max(supplier_fh_number) AS supplier_fh_number,
+        count(*)::int AS lines, sum(quantity)::float8 AS pieces,
+        min(unit_price)::float8 AS min_price, max(unit_price)::float8 AS max_price,
+        (array_agg(unit_price::float8 ORDER BY invoice_date DESC))[1] AS last_price,
+        to_char(max(invoice_date), 'YYYY-MM-DD') AS last_date,
+        to_char(min(invoice_date), 'YYYY-MM-DD') AS first_date,
+        mode() WITHIN GROUP (ORDER BY packages) AS packages,
+        mode() WITHIN GROUP (ORDER BY per_package) AS per_package,
+        (array_agg(features ORDER BY invoice_date DESC) FILTER (WHERE features IS NOT NULL))[1] AS features,
+        array_agg(DISTINCT invoice_type) AS invoice_types,
+        (array_agg(marketplace ORDER BY invoice_date DESC))[1] AS marketplace
+      FROM (
+        SELECT COALESCE(l.raw->>'vbn_code', '') AS vbn_code, l.description, l.supplier_name, l.supplier_gln, l.supplier_fh_number,
+          l.quantity, l.unit_price, l.invoice_date, l.invoice_type,
+          NULLIF(l.raw->>'packages', '')::float8 AS packages, NULLIF(l.raw->>'per_package', '')::float8 AS per_package,
+          l.raw->'characteristics' AS features, COALESCE(l.raw->>'marketplace_name', '') AS marketplace,
+          ${INKOOP_LINE_KIND_SQL} AS kind
+        FROM inkoop_invoice_lines l
+        WHERE ${conditions.join(" AND ")}
+      ) lines
+      WHERE kind = 'product'
+      GROUP BY vbn_code, description, supplier_name
+      ORDER BY sum(quantity) DESC
+      LIMIT $${values.length}
+    `,
+    values,
+  );
+  return result.rows;
+}
+
+// Our own product export cards (height, pot size, sales group, last sale)
+// for the Campagnes article picker. Read only.
+export async function searchInkoopProductCards({ q, limit = 40 } = {}) {
+  if (!pool) return [];
+  const words = String(q || "").split(/\s+/).filter(Boolean).slice(0, 8);
+  if (!words.length) return [];
+  const values = words.map((word) => `%${word.replace(/[\\%_]/g, (match) => `\\${match}`)}%`);
+  const conditions = values.map((_, index) => `(description ILIKE $${index + 1} OR sales_group ILIKE $${index + 1} OR product_id ILIKE $${index + 1})`);
+  values.push(Math.max(1, Math.min(200, Number(limit) || 40)));
+  const result = await pool.query(
+    `SELECT product_id, sales_group_id, sales_group, description, height::float8 AS height, pot_size::float8 AS pot_size,
+       ready_for_sales, on_list, to_char(last_sale_date, 'YYYY-MM-DD') AS last_sale_date, last_client, last_price::float8 AS last_price
+     FROM inkoop_products WHERE ${conditions.join(" AND ")}
+     ORDER BY last_sale_date DESC NULLS LAST LIMIT $${values.length}`,
+    values,
+  );
+  return result.rows;
+}
+
 // ---- Stored comparison (inkoop_match_days / inkoop_match_rows) ----------
 
 export async function getInkoopMatchDays({ from, to, withData = true } = {}) {
@@ -4359,7 +4435,9 @@ export async function claimNextLlmJob(agentName, apiKey, options = {}) {
     // exception: "shelf_count" is never handed to a poller that didn't ask
     // for it by name, so an unrelated/older poller can never claim (and
     // wrongly fail) a job type it has no idea how to run. Same for
-    // "king_export" (the King ERP delivery poller, king-poller-app).
+    // "king_export" (the King ERP delivery poller, king-poller-app), and
+    // every "media_*" job (photos / videos / AI for Campagnes, run only by
+    // the BEAST PC's media-poller-app).
     const allowedJobTypes = Array.isArray(options.jobTypes) ? options.jobTypes.filter(Boolean) : null;
     const jobResult = await client.query(
       `
@@ -4369,7 +4447,7 @@ export async function claimNextLlmJob(agentName, apiKey, options = {}) {
           AND attempt_count < max_attempts
           AND (
             ($1::text[] IS NOT NULL AND job_type = ANY($1::text[]))
-            OR ($1::text[] IS NULL AND job_type NOT IN ('shelf_count', 'king_export'))
+            OR ($1::text[] IS NULL AND job_type NOT IN ('shelf_count', 'king_export') AND job_type NOT LIKE 'media\\_%')
           )
         ORDER BY priority DESC, created_at ASC
         LIMIT 1
@@ -5828,6 +5906,218 @@ const databaseMigrations = [
       updated_at timestamptz NOT NULL DEFAULT now()
     )
   `,
+  // ---- Campagnes (server/campaigns.js) -- monthly offer catalogue, grower
+  // deals. Own tables only; nothing else reads or changes them.
+  // A master article card: the steady conditions of an article (as the
+  // invoice shows it), reused by every campaign it is offered in.
+  `
+    CREATE TABLE IF NOT EXISTS camp_articles (
+      id bigserial PRIMARY KEY,
+      name text NOT NULL DEFAULT '',
+      name_fr text NOT NULL DEFAULT '',
+      name_en text NOT NULL DEFAULT '',
+      vbn_codes text[] NOT NULL DEFAULT '{}',
+      product_id text NOT NULL DEFAULT '',
+      hoofdgroep text NOT NULL DEFAULT '',
+      sales_group text NOT NULL DEFAULT '',
+      conditions jsonb NOT NULL DEFAULT '{}'::jsonb,
+      growers jsonb NOT NULL DEFAULT '[]'::jsonb,
+      match_rules jsonb NOT NULL DEFAULT '{}'::jsonb,
+      photo_asset_ids text[] NOT NULL DEFAULT '{}',
+      notes text NOT NULL DEFAULT '',
+      archived boolean NOT NULL DEFAULT false,
+      created_by text NOT NULL DEFAULT '',
+      created_at timestamptz NOT NULL DEFAULT now(),
+      updated_by text NOT NULL DEFAULT '',
+      updated_at timestamptz NOT NULL DEFAULT now()
+    )
+  `,
+  // One offer month: the campaign window runs before it (default the month
+  // before), stage = where the month is in its timeline.
+  `
+    CREATE TABLE IF NOT EXISTS camp_campaigns (
+      id bigserial PRIMARY KEY,
+      offer_month text NOT NULL UNIQUE,
+      title_fr text NOT NULL DEFAULT '',
+      title_en text NOT NULL DEFAULT '',
+      campaign_start date,
+      campaign_end date,
+      stage text NOT NULL DEFAULT 'selecting',
+      deadlines jsonb NOT NULL DEFAULT '{}'::jsonb,
+      notes text NOT NULL DEFAULT '',
+      created_by text NOT NULL DEFAULT '',
+      created_at timestamptz NOT NULL DEFAULT now(),
+      updated_by text NOT NULL DEFAULT '',
+      updated_at timestamptz NOT NULL DEFAULT now()
+    )
+  `,
+  // An article in a campaign: the month's own offer price / quantity.
+  `
+    CREATE TABLE IF NOT EXISTS camp_items (
+      id bigserial PRIMARY KEY,
+      campaign_id bigint NOT NULL REFERENCES camp_campaigns(id) ON DELETE CASCADE,
+      article_id bigint NOT NULL REFERENCES camp_articles(id),
+      status text NOT NULL DEFAULT 'shortlist',
+      offer_price numeric,
+      planned_qty numeric,
+      sort_order integer NOT NULL DEFAULT 0,
+      notes text NOT NULL DEFAULT '',
+      created_by text NOT NULL DEFAULT '',
+      created_at timestamptz NOT NULL DEFAULT now(),
+      updated_by text NOT NULL DEFAULT '',
+      updated_at timestamptz NOT NULL DEFAULT now(),
+      UNIQUE (campaign_id, article_id)
+    )
+  `,
+  // An agreement with a grower about an article in a campaign.
+  `
+    CREATE TABLE IF NOT EXISTS camp_grower_deals (
+      id bigserial PRIMARY KEY,
+      item_id bigint NOT NULL REFERENCES camp_items(id) ON DELETE CASCADE,
+      grower_name text NOT NULL DEFAULT '',
+      grower_code text NOT NULL DEFAULT '',
+      grower_gln text NOT NULL DEFAULT '',
+      grower_fh text NOT NULL DEFAULT '',
+      status text NOT NULL DEFAULT 'idea',
+      agreed_price numeric,
+      qty_plan jsonb NOT NULL DEFAULT '[]'::jsonb,
+      conditions jsonb NOT NULL DEFAULT '{}'::jsonb,
+      valid_from date,
+      valid_to date,
+      next_action_at date,
+      next_action text NOT NULL DEFAULT '',
+      created_by text NOT NULL DEFAULT '',
+      created_at timestamptz NOT NULL DEFAULT now(),
+      updated_by text NOT NULL DEFAULT '',
+      updated_at timestamptz NOT NULL DEFAULT now()
+    )
+  `,
+  `
+    CREATE TABLE IF NOT EXISTS camp_grower_contacts (
+      id bigserial PRIMARY KEY,
+      deal_id bigint NOT NULL REFERENCES camp_grower_deals(id) ON DELETE CASCADE,
+      at timestamptz NOT NULL DEFAULT now(),
+      kind text NOT NULL DEFAULT 'note',
+      note text NOT NULL DEFAULT '',
+      by_user text NOT NULL DEFAULT ''
+    )
+  `,
+  "CREATE INDEX IF NOT EXISTS camp_items_campaign_idx ON camp_items (campaign_id)",
+  "CREATE INDEX IF NOT EXISTS camp_grower_deals_item_idx ON camp_grower_deals (item_id)",
+  "CREATE INDEX IF NOT EXISTS camp_grower_contacts_deal_idx ON camp_grower_contacts (deal_id)",
+  // Module settings (task target, default lead time) -- one jsonb row.
+  `
+    CREATE TABLE IF NOT EXISTS camp_settings (
+      key text PRIMARY KEY,
+      value jsonb NOT NULL DEFAULT '{}'::jsonb,
+      updated_by text NOT NULL DEFAULT '',
+      updated_at timestamptz NOT NULL DEFAULT now()
+    )
+  `,
+  // ---- Campagnes media (server/media.js) -- made on the BEAST PC.
+  `
+    CREATE TABLE IF NOT EXISTS media_themes (
+      id bigserial PRIMARY KEY,
+      key text NOT NULL UNIQUE,
+      name text NOT NULL DEFAULT '',
+      description text NOT NULL DEFAULT '',
+      recipes text[] NOT NULL DEFAULT '{}',
+      caption_prompt text NOT NULL DEFAULT '',
+      hashtags text NOT NULL DEFAULT '',
+      look jsonb NOT NULL DEFAULT '{}'::jsonb,
+      music text NOT NULL DEFAULT '',
+      cadence text NOT NULL DEFAULT '',
+      autopilot boolean NOT NULL DEFAULT false,
+      active boolean NOT NULL DEFAULT true,
+      sort_order integer NOT NULL DEFAULT 0,
+      updated_at timestamptz NOT NULL DEFAULT now()
+    )
+  `,
+  // A photo in the Social Drive library (found by the BEAST's scan).
+  `
+    CREATE TABLE IF NOT EXISTS media_assets (
+      id bigserial PRIMARY KEY,
+      drive_id text NOT NULL UNIQUE,
+      name text NOT NULL DEFAULT '',
+      folder_path text NOT NULL DEFAULT '',
+      mime text NOT NULL DEFAULT '',
+      width integer,
+      height integer,
+      size bigint,
+      taken_at timestamptz,
+      thumb_id text NOT NULL DEFAULT '',
+      tags text[] NOT NULL DEFAULT '{}',
+      article_ids bigint[] NOT NULL DEFAULT '{}',
+      theme_keys text[] NOT NULL DEFAULT '{}',
+      scan_id text,
+      missing boolean NOT NULL DEFAULT false,
+      seen_at timestamptz NOT NULL DEFAULT now()
+    )
+  `,
+  // Something the BEAST makes (a video / photo set) and its Drive outputs.
+  `
+    CREATE TABLE IF NOT EXISTS media_items (
+      id bigserial PRIMARY KEY,
+      title text NOT NULL DEFAULT '',
+      theme_key text NOT NULL DEFAULT '',
+      recipe text NOT NULL DEFAULT '',
+      article_ids bigint[] NOT NULL DEFAULT '{}',
+      campaign_id bigint,
+      asset_ids bigint[] NOT NULL DEFAULT '{}',
+      options jsonb NOT NULL DEFAULT '{}'::jsonb,
+      status text NOT NULL DEFAULT 'draft',
+      job_id text,
+      outputs jsonb NOT NULL DEFAULT '[]'::jsonb,
+      caption_fr text NOT NULL DEFAULT '',
+      caption_en text NOT NULL DEFAULT '',
+      hashtags text NOT NULL DEFAULT '',
+      error text NOT NULL DEFAULT '',
+      render_seconds numeric,
+      created_by text NOT NULL DEFAULT '',
+      created_at timestamptz NOT NULL DEFAULT now(),
+      updated_at timestamptz NOT NULL DEFAULT now()
+    )
+  `,
+  // A post on a platform: planned, approved, published (by hand for now).
+  `
+    CREATE TABLE IF NOT EXISTS social_posts (
+      id bigserial PRIMARY KEY,
+      media_item_id bigint REFERENCES media_items(id) ON DELETE SET NULL,
+      platform text NOT NULL,
+      scheduled_at timestamptz,
+      posted_at timestamptz,
+      status text NOT NULL DEFAULT 'planned',
+      mode text NOT NULL DEFAULT 'manual',
+      post_url text NOT NULL DEFAULT '',
+      platform_post_id text NOT NULL DEFAULT '',
+      caption text NOT NULL DEFAULT '',
+      approved_by text NOT NULL DEFAULT '',
+      notes text NOT NULL DEFAULT '',
+      created_by text NOT NULL DEFAULT '',
+      created_at timestamptz NOT NULL DEFAULT now(),
+      updated_at timestamptz NOT NULL DEFAULT now()
+    )
+  `,
+  `
+    CREATE TABLE IF NOT EXISTS social_post_stats (
+      post_id bigint NOT NULL REFERENCES social_posts(id) ON DELETE CASCADE,
+      day date NOT NULL,
+      views integer,
+      reach integer,
+      likes integer,
+      comments integer,
+      shares integer,
+      saves integer,
+      follows integer,
+      clicks integer,
+      source text NOT NULL DEFAULT 'manual',
+      updated_by text NOT NULL DEFAULT '',
+      updated_at timestamptz NOT NULL DEFAULT now(),
+      PRIMARY KEY (post_id, day)
+    )
+  `,
+  "CREATE INDEX IF NOT EXISTS media_items_campaign_idx ON media_items (campaign_id)",
+  "CREATE INDEX IF NOT EXISTS social_posts_item_idx ON social_posts (media_item_id)",
 ];
 
 // Every statement in databaseMigrations is idempotent (CREATE TABLE IF NOT

@@ -225,6 +225,8 @@ import {
   closeFacturenTask,
   syncInvoiceDuplicateTasks,
 } from "./tasks.js";
+import { createCampaignRoutes, runCampaignDeadlineTasks } from "./campaigns.js";
+import { createMediaRoutes, createMediaAgentRoutes, handleMediaJobResult, handleMediaJobFail } from "./media.js";
 import ExcelJS from "exceljs";
 import sharp from "sharp";
 
@@ -741,6 +743,8 @@ const allPermissions = [
   "eric_docs:view",
   "inkoop:view",
   "shelf_count:view",
+  "campaign:view",
+  "campaign:manage",
 ];
 const PERMISSIONS = {
   PHOTOS_VIEW: "photos:view",
@@ -767,6 +771,8 @@ const PERMISSIONS = {
   ERIC_DOCS_VIEW: "eric_docs:view",
   INKOOP_VIEW: "inkoop:view",
   SHELF_COUNT_VIEW: "shelf_count:view",
+  CAMPAIGN_VIEW: "campaign:view",
+  CAMPAIGN_MANAGE: "campaign:manage",
 };
 const roleDefaultPermissions = {
   admin: allPermissions,
@@ -6993,6 +6999,61 @@ const handleAppTasksRoute = createAppTasksRoutes({
   runStepPlanSync: () => runAppStepPlanTaskSync(),
 });
 
+// Campagnes media (server/media.js): library, themes, renders on the BEAST,
+// posts. The BEAST's library scan reports in through the agent route.
+const handleMediaRoute = createMediaRoutes({ sendJson, readRequestJson, requirePermission, hasUserPermission, PERMISSIONS });
+const handleMediaAgentRoute = createMediaAgentRoutes({
+  sendJson,
+  readRequestJson,
+  checkAgentKey: (req, res) => {
+    if (!llmPollerEnabled()) {
+      sendJson(res, 503, { error: "SHADOW_LLM_POLLER_API_KEY is not configured" });
+      return false;
+    }
+    const apiKey = readAgentApiKey(req);
+    if (!apiKey || apiKey !== llmPollerApiKey) {
+      sendPollerUnauthorized(res);
+      return false;
+    }
+    return true;
+  },
+});
+
+// Campagnes (server/campaigns.js). The Hoofdgroep of an article name comes
+// from the same mapping as Klant inzicht (kept 10 minutes); the Connect
+// grower code of an invoice supplier from the stamgegevens + learned links.
+let campaignHoofdgroepCache = null;
+const handleCampaignRoute = createCampaignRoutes({
+  sendJson,
+  readRequestJson,
+  requirePermission,
+  hasUserPermission,
+  PERMISSIONS,
+  hoofdgroepFor: async () => {
+    if (!campaignHoofdgroepCache || Date.now() - campaignHoofdgroepCache.at > 10 * 60 * 1000) {
+      const terms = await getInkoopHoofdgroepTerms().catch(() => []);
+      campaignHoofdgroepCache = { at: Date.now(), matcher: buildInkoopHoofdgroepMatcher(terms) };
+    }
+    return (name) => campaignHoofdgroepCache.matcher.match(name) || "";
+  },
+  growerCodeFor: async (rows) => {
+    const codes = new Map();
+    try {
+      const state = await readInkoopState();
+      const directory = await inkoopGrowerDirectory(state);
+      const byGln = { ...directory.matcherMaps.gln, ...state.supplier_map };
+      const byFh = { ...directory.matcherMaps.fh, ...state.supplier_fh_map };
+      for (const row of rows) {
+        const entry = byGln[row.supplier_gln] || byFh[row.supplier_fh_number];
+        if (entry?.code) codes.set(`${row.supplier_gln || ""}|${row.supplier_fh_number || ""}`, entry.code);
+      }
+    } catch (error) {
+      console.error("Campaign grower codes:", error?.message || error);
+    }
+    return codes;
+  },
+});
+
 function hashPassword(password, salt = crypto.randomBytes(16).toString("hex")) {
   const hash = crypto.scryptSync(String(password), salt, 64).toString("hex");
   return `${salt}:${hash}`;
@@ -10227,6 +10288,11 @@ function flattenInkoopInvoiceLines(invoices, sourceFileName, fallbackDate) {
         // purchase it credits ("*factnr:3135476").
         referentie: normalizeUkdocsText(line?.referentie),
         credit_of: normalizeUkdocsText(line?.credit_of),
+        // VBN features from the XML ({S20: "055", ...}: length, pot size...)
+        // for the Campagnes article cards. Only kept when the line has them.
+        ...(line?.characteristics && typeof line.characteristics === "object" && Object.keys(line.characteristics).length
+          ? { characteristics: line.characteristics }
+          : {}),
       });
     });
   }
@@ -23459,6 +23525,11 @@ async function handleApi(req, res, url) {
   // The Uniware recorder's daily factuur fetch for Finance Audit UKdocs
   // (machine key = the poller key): which invoice numbers of a day still
   // need their factuur, and the PDFs it got from Uniware.
+  // The BEAST's media library scan (poller key).
+  if (await handleMediaAgentRoute(req, res, url)) {
+    return;
+  }
+
   if (url.pathname.startsWith("/api/agent/finance-audit/")) {
     if (!llmPollerEnabled()) {
       sendJson(res, 503, { error: "SHADOW_LLM_POLLER_API_KEY is not configured" });
@@ -23656,6 +23727,9 @@ async function handleApi(req, res, url) {
       sendJson(res, 404, { error: "LLM job not found for this agent" });
       return;
     }
+    if (String(job.job_type || "").startsWith("media_")) {
+      await handleMediaJobResult(job);
+    }
     if (job.job_type === "excel_to_pdf" && job.collection_id) {
       await saveUkdocsGeneratedInvoicePdfResult(job);
       kickUkdocsCsiSendQueue();
@@ -23777,6 +23851,9 @@ async function handleApi(req, res, url) {
     if (!job) {
       sendJson(res, 404, { error: "LLM job not found for this agent" });
       return;
+    }
+    if (String(job.job_type || "").startsWith("media_")) {
+      await handleMediaJobFail(job, body.error_text);
     }
     if (job.job_type === "king_export" && job.payload_json?.batch_id) {
       // A retried delivery stays "queued"; only a final failure is shown as failed.
@@ -24080,6 +24157,14 @@ async function handleApi(req, res, url) {
 
   // Tasks + chat widget routes (/api/tasks, /api/chat/, /api/widget/, ...).
   if (await handleAppTasksRoute(req, res, url, requestUser)) {
+    return;
+  }
+
+  // Campagnes (/api/campaigns...) and its media (/api/media/...).
+  if (await handleCampaignRoute(req, res, url, requestUser)) {
+    return;
+  }
+  if (await handleMediaRoute(req, res, url, requestUser)) {
     return;
   }
 
@@ -31962,6 +32047,10 @@ async function startServer() {
     setInterval(() => runIfOnline("Tasks: step plan", appStepPlanJob).catch((error) => console.error("Tasks: step plan", error?.message || error)), 5 * 60 * 1000);
     setTimeout(() => runIfOnline("Tasks: invoice differences", appInvoiceDiffJob).catch((error) => console.error("Tasks: invoice differences", error?.message || error)), 3 * 60 * 1000);
     setInterval(() => runIfOnline("Tasks: invoice differences", appInvoiceDiffJob).catch((error) => console.error("Tasks: invoice differences", error?.message || error)), 15 * 60 * 1000);
+    // Campagnes: a task for each campaign deadline coming up (once each).
+    const campaignDeadlineJob = async () => { await runCampaignDeadlineTasks(); };
+    setTimeout(() => runIfOnline("Campagnes: deadlines", campaignDeadlineJob).catch((error) => console.error("Campagnes: deadlines", error?.message || error)), 4 * 60 * 1000);
+    setInterval(() => runIfOnline("Campagnes: deadlines", campaignDeadlineJob).catch((error) => console.error("Campagnes: deadlines", error?.message || error)), 60 * 60 * 1000);
   }
 
   const runFustReminderCheck = async () => {

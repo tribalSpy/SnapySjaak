@@ -339,6 +339,23 @@ Main behavior:
 - exposes connection tests
 - includes Fust database backfill and backup tools
 
+## 4.14 Campagnes
+
+Purpose:
+
+- plan the monthly offer catalogue (about 50 articles for next month's offer), the awareness campaign that runs the month before, and the agreements with the growers behind each article
+
+Main behavior:
+
+- `Planning`: one card per offer month with the campaign window, the stage, the deadlines (articles chosen, grower deals done, content ready, evaluation) and progress toward the target number of articles
+- `Catalogue`: the articles of one offer month with offer price, planned quantity, status and grower deals; articles are added from our own purchase invoices (VBN code, grower, packages x per package, price range, VBN features such as S20 length), from earlier article cards, or from the product export
+- `Growers`: every grower deal (status, agreed price, quantities per week, conditions, next action) with a contact log, grouped per grower
+- `Articles`: the reusable master article cards with their steady conditions, FR/EN names and the sales match rules
+- `Settings`: who gets the campaign tasks, how many months before the offer the campaign runs, the target number of articles
+- tasks are made for upcoming deadlines and for a grower deal's next-action date
+- data lives in its own `camp_*` tables; invoice data is only read
+- later phases (see the plan): content made on the BEAST PC (photos, videos, AI, FR/EN captions), the post calendar with approval, publishing, and results (sales of the campaign articles + social stats)
+
 ## 5. Main Integrations
 
 ## 5.1 PostgreSQL

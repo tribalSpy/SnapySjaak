@@ -1,0 +1,21 @@
+{
+  "server_url": "https://your-render-app.onrender.com",
+  "api_key": "set-the-same-value-as-SHADOW_LLM_POLLER_API_KEY",
+  "agent_name": "beast-media-1",
+  "pc_name": "BEAST",
+  "poll_interval_seconds": 10,
+  "work_dir": "",
+  "brand_name": "Sjaak van der Vijver",
+  "drive": {
+    "service_account_file": "C:/SnappySjaak/credentials/drive-service-account.json",
+    "oauth": { "client_id": "", "client_secret": "", "refresh_token": "" }
+  },
+  "ffmpeg_path": "",
+  "music_dir": "C:/SnappySjaak/music",
+  "font_regular": "",
+  "font_bold": "",
+  "ollama_url": "http://127.0.0.1:11434",
+  "caption_model": "",
+  "caption_timeout_seconds": 180,
+  "capabilities": ["media_render", "media_scan"]
+}
