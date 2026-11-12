@@ -4901,3 +4901,7 @@ table.data-table.balance-table.ik-table.ik-inv-invoices td:nth-child(n+7), table
 .tw-recorder-head { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; }
 .tw-recorder-head small { color: var(--tw-muted); }
 .tw-recorder-log { margin: 0; max-height: 110px; overflow: auto; font-size: 11px; white-space: pre-wrap; color: var(--tw-muted); background: transparent; }
+/* Task opened: who / due / priority / repeat on one line, the selects after "Edit" */
+.tw-task-facts { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 10px; font-size: 12px; color: var(--tw-muted); }
+.tw-task-facts .tw-prio { margin-right: 0; }
+.tw-link { border: 0; background: none; padding: 0; color: var(--tw-accent); cursor: pointer; font-size: 12px; text-decoration: underline; margin-left: auto; }

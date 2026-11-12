@@ -11775,6 +11775,7 @@ function TwTasks({ currentUser, directory, teamName, pulseKey, onOpenLink, big }
 
 function TwTaskDetail({ id, currentUser, directory, teamName, onBack, onOpenLink }) {
   const [task, setTask] = useState(null);
+  const [editing, setEditing] = useState(false);
   const [events, setEvents] = useState([]);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
@@ -11837,7 +11838,16 @@ function TwTaskDetail({ id, currentUser, directory, teamName, onBack, onOpenLink
         {task.link?.page && <button type="button" onClick={() => onOpenLink(task.link)}>Open ↗</button>}
         {!finished && <button type="button" disabled={busy} onClick={() => { if (window.confirm("Cancel this task?")) change({ status: "cancelled" }); }}>Cancel task</button>}
       </div>
-      {!finished && (
+      {/* For / due / priority / repeat were set when the task was made: one
+          short line here, the selects only after "Edit". */}
+      <div className="tw-task-facts">
+        <span>→ {twAssigneeLabel(task, teamName) || "-"}</span>
+        {task.due_date && <span>due {task.due_date}</span>}
+        {task.priority !== "normal" && <span className="tw-prio">{TW_PRIORITY_LABELS[task.priority]}</span>}
+        {task.repeat !== "none" && <span>↻ {TW_REPEAT_LABELS[task.repeat]}</span>}
+        {!finished && <button type="button" className="tw-link" onClick={() => setEditing((value) => !value)} aria-expanded={editing}>{editing ? "Done editing" : "Edit"}</button>}
+      </div>
+      {!finished && editing && (
         <div className="tw-form-row stack">
           <label><span>For</span><TwAssigneeSelect value={assignee} onChange={(next) => change({ assignee: next })} directory={directory} currentUser={currentUser} /></label>
           <label><span>Due</span><input type="date" value={task.due_date || ""} onChange={(event) => change({ due_date: event.target.value })} /></label>
