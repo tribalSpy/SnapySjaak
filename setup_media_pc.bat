@@ -16,7 +16,7 @@ echo ============================================
 echo.
 
 rem ---- 1. Python 3.12 ---------------------------------------------------
-echo [1/5] Python 3.12 ...
+echo [1/6] Python 3.12 ...
 set "PYTHON_CMD="
 where py >nul 2>nul
 if not errorlevel 1 (
@@ -43,7 +43,7 @@ echo   using !PYTHON_CMD!
 
 rem ---- 2. ffmpeg --------------------------------------------------------
 echo.
-echo [2/5] ffmpeg ...
+echo [2/6] ffmpeg ...
 set "FFMPEG_OK="
 where ffmpeg >nul 2>nul
 if not errorlevel 1 set "FFMPEG_OK=1"
@@ -76,7 +76,7 @@ if defined FFMPEG_EXE (
 
 rem ---- 3. Python environment -------------------------------------------
 echo.
-echo [3/5] Python environment media-poller-app\.venv ...
+echo [3/6] Python environment media-poller-app\.venv ...
 if not exist "media-poller-app\.venv\Scripts\python.exe" (
     !PYTHON_CMD! -m venv media-poller-app\.venv
     if errorlevel 1 (
@@ -97,7 +97,7 @@ if errorlevel 1 (
 
 rem ---- 4. config.json ---------------------------------------------------
 echo.
-echo [4/5] config.json ...
+echo [4/6] config.json ...
 if not exist "media-poller-app\config.json" (
     copy /y "media-poller-app\config.example.json" "media-poller-app\config.json" >nul
     if defined FFMPEG_EXE (
@@ -112,7 +112,7 @@ if not exist "media-poller-app\music" mkdir "media-poller-app\music"
 
 rem ---- 5. quick test ----------------------------------------------------
 echo.
-echo [5/5] Test render ^(no server, no Drive^) ...
+echo [5/6] Test render ^(no server, no Drive^) ...
 "media-poller-app\.venv\Scripts\python.exe" -c "from PIL import Image,ImageDraw;im=Image.new('RGB',(2000,2000),(245,245,240));d=ImageDraw.Draw(im);[d.ellipse((400+i*300,700,700+i*300,1000),fill=(120+i*30,60,160)) for i in range(4)];im.save('media-poller-app/work_test.jpg')"
 "media-poller-app\.venv\Scripts\python.exe" media-poller-app\poller.py --test-recipe zoom_in --photo media-poller-app\work_test.jpg --title "Test" --duration 4 --out media-poller-app\test_output
 if errorlevel 1 (
@@ -121,6 +121,42 @@ if errorlevel 1 (
     echo   Test video in media-poller-app\test_output\
 )
 del /q "media-poller-app\work_test.jpg" >nul 2>nul
+
+rem ---- 6. AI part (optional) --------------------------------------------
+echo.
+echo [6/6] AI part ^(Flower Drop slow motion, living photo, photo to art^) ...
+echo   Installs torch for CUDA 12.8 ^(RTX 50xx^) + diffusers into the same
+echo   environment, checks the GPU and can download the models ^(about 40 GB,
+echo   into the Hugging Face cache -- set HF_HOME first for another disk^).
+choice /c YN /m "  Install the AI part now"
+if errorlevel 2 goto :skip_ai
+"media-poller-app\.venv\Scripts\python.exe" -m pip install torch torchvision --index-url https://download.pytorch.org/whl/cu128
+if errorlevel 1 (
+    echo   [ERROR] torch install failed -- see above.
+    goto :skip_ai
+)
+"media-poller-app\.venv\Scripts\python.exe" -m pip install -r media-poller-app\requirements-ai.txt
+if errorlevel 1 (
+    echo   [ERROR] AI requirements failed -- see above.
+    goto :skip_ai
+)
+pushd media-poller-app
+"..\media-poller-app\.venv\Scripts\python.exe" ai.py
+set "AI_CHECK=!errorlevel!"
+popd
+if not "!AI_CHECK!"=="0" (
+    echo   [WARNING] The GPU check failed -- update the NVIDIA driver and run this again.
+    goto :skip_ai
+)
+"media-poller-app\.venv\Scripts\python.exe" -c "import json;p='media-poller-app/config.json';c=json.load(open(p,encoding='utf-8'));c.setdefault('ai',{});c['ai']['enabled']=True;c['ai'].setdefault('window','19:00-07:00');json.dump(c,open(p,'w',encoding='utf-8'),indent=2)"
+echo   AI switched on in config.json ^(ai.enabled, night window 19:00-07:00^).
+choice /c YN /m "  Download the AI models now (about 40 GB; else on the first AI job)"
+if errorlevel 2 goto :skip_ai
+pushd media-poller-app
+"..\media-poller-app\.venv\Scripts\python.exe" ai.py --download
+popd
+echo   Try it: cd media-poller-app ^& .venv\Scripts\python.exe poller.py --test-recipe ai_flower_drop --photo some.jpg --title "Viola"
+:skip_ai
 
 echo.
 echo ============================================

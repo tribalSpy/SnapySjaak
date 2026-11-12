@@ -8,7 +8,11 @@
   "brand_name": "Sjaak van der Vijver",
   "drive": {
     "service_account_file": "C:/SnappySjaak/credentials/drive-service-account.json",
-    "oauth": { "client_id": "", "client_secret": "", "refresh_token": "" }
+    "oauth": {
+      "client_id": "",
+      "client_secret": "",
+      "refresh_token": ""
+    }
   },
   "ffmpeg_path": "",
   "music_dir": "C:/SnappySjaak/music",
@@ -17,5 +21,17 @@
   "ollama_url": "http://127.0.0.1:11434",
   "caption_model": "",
   "caption_timeout_seconds": 180,
-  "capabilities": ["media_render", "media_scan"]
+  "capabilities": [
+    "media_render",
+    "media_scan"
+  ],
+  "ai": {
+    "enabled": false,
+    "window": "19:00-07:00",
+    "video_model": "Wan-AI/Wan2.2-TI2V-5B-Diffusers",
+    "video_steps": 40,
+    "art_model": "stabilityai/stable-diffusion-xl-base-1.0",
+    "art_controlnet": "diffusers/controlnet-canny-sdxl-1.0",
+    "cpu_offload": false
+  }
 }

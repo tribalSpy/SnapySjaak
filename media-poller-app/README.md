@@ -11,6 +11,7 @@ It sends back only ids and texts. The other pollers never take `media_*` jobs.
 
 ## Setup
 
+0. **Easiest:** run `setup_media_pc.bat` (repo root). It does steps 1–3 and, if you want, the AI part.
 1. **ffmpeg:** install a build with NVENC (e.g. `winget install Gyan.FFmpeg`) so `ffmpeg` is on PATH, or set `ffmpeg_path`. The poller checks NVENC with a test encode at start and falls back to libx264.
 2. **Config:** copy `config.example.json` to `config.json` and fill in:
    - `server_url`, `api_key` (same as `SHADOW_LLM_POLLER_API_KEY` on Render), `agent_name`;
@@ -55,4 +56,20 @@ The output goes in `test_output/`. Add `--captions` to also try the Ollama capti
 
 **Formats:** `9x16` (Reels/Shorts/TikTok, 1080×1920), `4x5` (feed, 1080×1350), `1x1` (1080×1080).
 
-The AI recipes (Flower Drop slow motion, living photo, photo → art) come with the ComfyUI setup in phase 4.
+## AI recipes (RTX 5090)
+
+`setup_media_pc.bat`, step 6, installs the AI part: torch for CUDA 12.8 and diffusers. It checks the GPU, switches `ai.enabled` on and can download the models (about 40 GB, into the Hugging Face cache; set `HF_HOME` first to use another disk).
+
+| Recipe | Model | What it makes |
+| --- | --- | --- |
+| `ai_flower_drop` | Wan 2.2 TI2V-5B (Apache-2.0) | petals and flowers falling around the product, 2× slow motion (ffmpeg motion interpolation), about 10 s |
+| `ai_living` | Wan 2.2 | the photo gently comes alive |
+| `ai_art` | SDXL + ControlNet canny (OpenRAIL++) | pencil sketch / watercolour / oil that keeps the photo's lines; a morph video plus the art stills |
+
+- **Text:** every AI video gets the same FR/EN text, brand name and formats as the other recipes.
+- **Licences:** all three models allow commercial use. Flux-dev is not used (non-commercial).
+- **Night window:** AI jobs wait for `ai.window` (default `19:00-07:00`), so they don't fight Ollama or shelf-training for the GPU. "Make it now" in the app skips the wait. Ollama is unloaded before an AI job, and the GPU is freed after it.
+- **Something not working?**
+  - `python ai.py` checks torch, CUDA and the GPU.
+  - `python poller.py --test-recipe ai_flower_drop --photo foto.jpg --title "Viola"` tries a real AI render.
+  - If Wan 2.2 5B won't load as image-to-video in your diffusers version, run `pip install -U diffusers`. Or set `ai.video_model` to `Wan-AI/Wan2.2-I2V-A14B-Diffusers` with `ai.cpu_offload: true` (bigger, slower, needs 64 GB+ RAM).

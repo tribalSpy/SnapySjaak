@@ -226,7 +226,7 @@ import {
   syncInvoiceDuplicateTasks,
 } from "./tasks.js";
 import { createCampaignRoutes, runCampaignDeadlineTasks } from "./campaigns.js";
-import { createMediaRoutes, createMediaAgentRoutes, handleMediaJobResult, handleMediaJobFail } from "./media.js";
+import { createMediaRoutes, createMediaAgentRoutes, handleMediaJobResult, handleMediaJobFail, requeueStaleMediaJobs } from "./media.js";
 import ExcelJS from "exceljs";
 import sharp from "sharp";
 
@@ -32051,6 +32051,10 @@ async function startServer() {
     const campaignDeadlineJob = async () => { await runCampaignDeadlineTasks(); };
     setTimeout(() => runIfOnline("Campagnes: deadlines", campaignDeadlineJob).catch((error) => console.error("Campagnes: deadlines", error?.message || error)), 4 * 60 * 1000);
     setInterval(() => runIfOnline("Campagnes: deadlines", campaignDeadlineJob).catch((error) => console.error("Campagnes: deadlines", error?.message || error)), 60 * 60 * 1000);
+    // Media jobs a BEAST claimed and then dropped (crash / reboot) go back
+    // to the queue.
+    const staleMediaJob = async () => { await requeueStaleMediaJobs(); };
+    setInterval(() => runIfOnline("Campagnes: stale media jobs", staleMediaJob).catch((error) => console.error("Campagnes: stale media jobs", error?.message || error)), 10 * 60 * 1000);
   }
 
   const runFustReminderCheck = async () => {

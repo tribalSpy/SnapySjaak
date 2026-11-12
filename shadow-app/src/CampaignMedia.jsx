@@ -80,7 +80,7 @@ export function MakeTab({ apiJson, canManage, campaignId }) {
   const { meta, themes } = useMediaMeta(apiJson);
   const [campaigns, setCampaigns] = useState([]);
   const [form, setForm] = useState({ campaign_id: campaignId || "", article_ids: [], theme_key: "", recipe: "", asset_ids: [], variants: ["9x16"],
-    duration: 8, text_fr: "", text_en: "", show_conditions: true, show_price: false, fit: "auto", title: "" });
+    duration: 8, text_fr: "", text_en: "", show_conditions: true, show_price: false, fit: "auto", title: "", now: false, ai_prompt: "", art_styles: ["sketch", "watercolor", "oil"] });
   const [items, setItems] = useState([]);
   const [campaignItems, setCampaignItems] = useState([]);
   const [assets, setAssets] = useState([]);
@@ -152,7 +152,8 @@ export function MakeTab({ apiJson, canManage, campaignId }) {
         campaign_id: form.campaign_id || null,
         article_ids: form.article_ids,
         asset_ids: form.asset_ids,
-        options: { duration: form.duration, variants: form.variants, text_fr: form.text_fr, text_en: form.text_en, show_conditions: form.show_conditions, show_price: form.show_price, fit: form.fit },
+        options: { duration: form.duration, variants: form.variants, text_fr: form.text_fr, text_en: form.text_en, show_conditions: form.show_conditions, show_price: form.show_price, fit: form.fit,
+          ...(recipe?.engine === "ai" ? { now: form.now, ai_prompt: form.ai_prompt, art_styles: form.art_styles } : {}) },
       }) });
       setNotice(`Sent to the BEAST (item ${result.item_id}). It appears below when it's ready.`);
       setForm((current) => ({ ...current, asset_ids: [], title: "", text_fr: "", text_en: "" }));
@@ -191,7 +192,7 @@ export function MakeTab({ apiJson, canManage, campaignId }) {
                 <option value="">— choose —</option>
                 {orderedRecipes.map((entry) => (
                   <option key={entry.key} value={entry.key} disabled={!entry.available}>
-                    {entry.kind === "video" ? "🎬" : "🖼"} {entry.label}{entry.available ? "" : " (AI — coming)"}
+                    {entry.kind === "video" ? "🎬" : "🖼"} {entry.label}{entry.available ? "" : " (needs the BEAST's AI part)"}
                   </option>
                 ))}
               </select>
@@ -206,6 +207,25 @@ export function MakeTab({ apiJson, canManage, campaignId }) {
                 <option value="cover">Fill the frame</option>
               </select>
             </label>
+            {recipe?.engine === "ai" && (
+              <>
+                <label className="cp-wide">Extra for the AI (optional, English)
+                  <input value={form.ai_prompt} placeholder="e.g. pink petals, morning light" onChange={(event) => set("ai_prompt", event.target.value)} />
+                </label>
+                {form.recipe === "ai_art" && (
+                  <div className="cp-wide cp-row">
+                    <span>Styles:</span>
+                    {[["sketch", "Pencil sketch"], ["watercolor", "Watercolour"], ["oil", "Oil painting"]].map(([key, label]) => (
+                      <label key={key} className="cp-check"><input type="checkbox" checked={form.art_styles.includes(key)} onChange={() => toggle("art_styles", key)} /> {label}</label>
+                    ))}
+                  </div>
+                )}
+                <label className="cp-check cp-wide">
+                  <input type="checkbox" checked={form.now} onChange={(event) => set("now", event.target.checked)} />
+                  Make it now (else it waits for the BEAST's night window, when the GPU is free) — AI takes several minutes
+                </label>
+              </>
+            )}
             <label>Text FR (optional)<input value={form.text_fr} placeholder="the article's FR name" onChange={(event) => set("text_fr", event.target.value)} /></label>
             <label>Text EN (optional)<input value={form.text_en} placeholder="the article's EN name" onChange={(event) => set("text_en", event.target.value)} /></label>
             <div className="cp-wide cp-row">

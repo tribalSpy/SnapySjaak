@@ -37,10 +37,38 @@ for stream in (sys.stdout, sys.stderr):
         pass
 
 import recipes  # noqa: E402
-from captions import make_captions  # noqa: E402
+from captions import make_captions, unload_ollama  # noqa: E402
 
-VERSION = "1.0.0"
-JOB_TYPES = ["media_scan", "media_render"]  # media_ai comes with the AI setup (phase 4)
+VERSION = "1.1.0"
+BASE_JOB_TYPES = ["media_scan", "media_render"]
+
+
+def ai_enabled(config: dict) -> bool:
+    return bool((config.get("ai") or {}).get("enabled"))
+
+
+def in_ai_window(config: dict, now=None) -> bool:
+    """AI jobs run in the night window (GPU free from Ollama / training)
+    unless sent as "now". Window "19:00-07:00"; empty = always."""
+    window = str((config.get("ai") or {}).get("window") or "").strip()
+    if not window or "-" not in window:
+        return True
+    now = now or time.localtime()
+    minutes = now.tm_hour * 60 + now.tm_min
+    try:
+        start, end = [int(part.split(":")[0]) * 60 + int(part.split(":")[1]) for part in window.split("-")]
+    except Exception:
+        return True
+    return start <= minutes < end if start < end else (minutes >= start or minutes < end)
+
+
+def job_types(config: dict) -> list[str]:
+    types = list(BASE_JOB_TYPES)
+    if ai_enabled(config):
+        types.append("media_ai_now")
+        if in_ai_window(config):
+            types.append("media_ai")
+    return types
 
 
 def load_json(path: Path):
@@ -91,7 +119,7 @@ def render_context(config: dict, payload: dict, stem: str) -> dict:
 # ---------------------------------------------------------------------------
 # jobs
 
-def run_render(config: dict, payload: dict) -> dict:
+def run_render(config: dict, payload: dict, use_ai: bool = False) -> dict:
     from drive import Drive
 
     started = time.time()
@@ -109,8 +137,13 @@ def run_render(config: dict, payload: dict) -> dict:
                 drive.download(asset["drive_id"], target)
             photos.append(target)
         stem = f"{payload.get('recipe')}_{payload.get('item_id')}_{time.strftime('%Y%m%d_%H%M%S')}"
-        outputs = recipes.make(payload["recipe"], photos, payload.get("articles") or [], payload.get("options") or {},
-                               render_context(config, payload, stem), job_dir)
+        context = render_context(config, payload, stem)
+        if use_ai:
+            import ai
+            unload_ollama(config)  # the GPU for the AI model
+            outputs = ai.make(payload["recipe"], config, photos, payload.get("articles") or [], payload.get("options") or {}, context, job_dir)
+        else:
+            outputs = recipes.make(payload["recipe"], photos, payload.get("articles") or [], payload.get("options") or {}, context, job_dir)
         output = payload.get("output") or {}
         folder_id = drive.ensure_path(output["folder_id"], output.get("subfolder") or [])
         uploaded = []
@@ -197,6 +230,10 @@ def run_job(config: dict, job: dict) -> dict:
     payload = job.get("payload_json") or {}
     if job_type == "media_render":
         return run_render(config, payload)
+    if job_type in ("media_ai", "media_ai_now"):
+        if not ai_enabled(config):
+            raise RuntimeError("AI is not switched on on this PC (config ai.enabled)")
+        return run_render(config, payload, use_ai=True)
     if job_type == "media_scan":
         return run_scan(config, payload)
     raise RuntimeError(f"Unsupported job type: {job_type}")
@@ -209,8 +246,8 @@ def heartbeat_payload(config: dict, status: str) -> dict:
         "model_name": config.get("caption_model") or "",
         "version": VERSION,
         "status": status,
-        "capabilities": config["capabilities"],
-        "job_types": JOB_TYPES,
+        "capabilities": sorted(set(config["capabilities"]) | ({"media_ai"} if ai_enabled(config) else set())),
+        "job_types": job_types(config),
         "meta": {"python": platform.python_version(), "platform": platform.platform(), "app": "media-poller-app"},
     }
 
@@ -220,7 +257,8 @@ def main_loop(config: dict) -> None:
         if not config.get(key):
             raise SystemExit(f"config.json: {key} is missing")
     Path(config["work_dir"]).mkdir(parents=True, exist_ok=True)
-    print(f"Media poller {VERSION} for {config['server_url']} as {config['agent_name']} (encoder: {recipes.detect_codec(config.get('ffmpeg_path') or recipes.find_ffmpeg())})")
+    print(f"Media poller {VERSION} for {config['server_url']} as {config['agent_name']} (encoder: {recipes.detect_codec(config.get('ffmpeg_path') or recipes.find_ffmpeg())}, "
+          f"AI: {'on, window ' + str((config.get('ai') or {}).get('window') or 'always') if ai_enabled(config) else 'off'})")
     while True:
         try:
             response = api_request(config, "POST", "/api/llm/agent/poll", heartbeat_payload(config, "online"))
@@ -255,7 +293,14 @@ def test_recipe(config: dict, args) -> None:
                      "conditions": {"length_cm": 55, "packages": 10, "per_package": 50, "origin": "Nederland / Pays-Bas"}}]
     context = render_context(config, {"title": args.title, "brand": {"name": config.get("brand_name", "Sjaak van der Vijver"), "accent": "#1f7a5a"}}, args.test_recipe)
     started = time.time()
-    outputs = recipes.make(args.test_recipe, photos, articles, options, context, out)
+    if args.ai_prompt:
+        options["ai_prompt"] = args.ai_prompt
+    if args.test_recipe.startswith("ai_"):
+        import ai
+        unload_ollama(config)
+        outputs = ai.make(args.test_recipe, config, photos, articles, options, context, out)
+    else:
+        outputs = recipes.make(args.test_recipe, photos, articles, options, context, out)
     print(f"Made in {time.time() - started:.1f}s with {recipes.detect_codec(context['ffmpeg'] or recipes.find_ffmpeg())}:")
     for item in outputs:
         print(f"  {item['path']}  {item['width']}x{item['height']} {item.get('duration', '')}")
@@ -274,6 +319,7 @@ if __name__ == "__main__":
     parser.add_argument("--duration", type=float, default=8)
     parser.add_argument("--out")
     parser.add_argument("--captions", action="store_true")
+    parser.add_argument("--ai-prompt", default="")
     cli = parser.parse_args()
     cfg = load_config()
     if cli.test_recipe:

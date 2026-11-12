@@ -79,6 +79,8 @@ pollers restart automatically on reboot -- see each poller's own README.
 
 The BEAST makes every Campagnes photo and video. Render only queues the work.
 
+Run `setup_media_pc.bat` from the repo root. It does steps 1, 2 and 4 below, makes a test video, and optionally installs the AI part (torch CUDA 12.8, diffusers, models). By hand:
+
 1. Install ffmpeg with NVENC: `winget install Gyan.FFmpeg`. Open a new terminal and check that `ffmpeg -encoders` lists `h264_nvenc`.
 2. Copy `media-poller-app\config.example.json` to `config.json` and fill in:
    - `server_url`, `api_key`, `agent_name` (e.g. `beast-media-1`);

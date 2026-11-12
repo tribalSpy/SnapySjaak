@@ -28,8 +28,17 @@ export const MEDIA_RECIPES = [
   { key: "ai_art", label: "AI: photo → art drawing", kind: "video", engine: "ai", photos: "1" },
 ];
 const RECIPE_KEYS = new Set(MEDIA_RECIPES.map((recipe) => recipe.key));
-// Until phase 4 the BEAST has no AI engine: those recipes can't be queued.
-const AI_ENABLED = String(process.env.MEDIA_AI_ENABLED || "") === "1";
+
+// AI recipes can be queued once a BEAST has said (in the last 14 days) that
+// it has the AI part switched on (capability media_ai).
+async function aiAvailable() {
+  try {
+    const result = await dbQuery("SELECT 1 FROM llm_agents WHERE capabilities ? 'media_ai' AND last_seen_at > now() - interval '14 days' LIMIT 1");
+    return Boolean(result.rows[0]);
+  } catch {
+    return false;
+  }
+}
 
 export const MEDIA_PLATFORMS = ["instagram", "facebook", "tiktok", "youtube", "linkedin", "pinterest"];
 const POST_STATUSES = ["planned", "approved", "published", "failed", "cancelled"];
@@ -246,7 +255,7 @@ async function queueRender(itemId, by) {
   const item = itemRow(itemResult.rows[0] || {});
   if (!itemResult.rows[0]) throw Object.assign(new Error("Item not found"), { status: 404 });
   const recipe = MEDIA_RECIPES.find((entry) => entry.key === item.recipe);
-  if (recipe?.engine === "ai" && !AI_ENABLED) throw Object.assign(new Error("AI recipes come with the BEAST's AI setup (phase 4)"), { status: 400 });
+  if (recipe?.engine === "ai" && !(await aiAvailable())) throw Object.assign(new Error("The BEAST has no AI part yet (setup_media_pc.bat, AI step; config ai.enabled)"), { status: 400 });
   const settings = await readMediaSettings();
   if (!settings.output_folder_id) throw Object.assign(new Error("Set the output Drive folder first (Settings)"), { status: 400 });
   const assets = item.asset_ids.length
@@ -265,7 +274,8 @@ async function queueRender(itemId, by) {
   const themeResult = await dbQuery("SELECT * FROM media_themes WHERE key = $1", [item.theme_key]);
   const theme = themeResult.rows[0] ? themeRow(themeResult.rows[0]) : null;
   const job = await createLlmJob({
-    job_type: recipe?.engine === "ai" ? "media_ai" : "media_render",
+    // AI waits for the BEAST's night window unless asked for now.
+    job_type: recipe?.engine === "ai" ? (item.options.now ? "media_ai_now" : "media_ai") : "media_render",
     created_by: by,
     priority: 10,
     max_attempts: 2,
@@ -406,7 +416,10 @@ export function createMediaRoutes({ sendJson, readRequestJson, requirePermission
       if (pathname === "/api/media/meta" && method === "GET") {
         sendJson(res, 200, {
           settings: await readMediaSettings(),
-          recipes: MEDIA_RECIPES.map((recipe) => ({ ...recipe, available: recipe.engine !== "ai" || AI_ENABLED })),
+          recipes: await (async () => {
+            const ai = await aiAvailable();
+            return MEDIA_RECIPES.map((recipe) => ({ ...recipe, available: recipe.engine !== "ai" || ai }));
+          })(),
           platforms: MEDIA_PLATFORMS,
           post_statuses: POST_STATUSES,
           variants: VARIANTS,
@@ -553,8 +566,8 @@ export function createMediaRoutes({ sendJson, readRequestJson, requirePermission
           sendJson(res, 400, { error: "Choose what to make" });
           return true;
         }
-        if (MEDIA_RECIPES.find((recipe) => recipe.key === body.recipe)?.engine === "ai" && !AI_ENABLED) {
-          sendJson(res, 400, { error: "AI recipes come with the BEAST's AI setup (phase 4)" });
+        if (MEDIA_RECIPES.find((recipe) => recipe.key === body.recipe)?.engine === "ai" && !(await aiAvailable())) {
+          sendJson(res, 400, { error: "The BEAST has no AI part yet (setup_media_pc.bat, AI step; config ai.enabled)" });
           return true;
         }
         const options = body.options && typeof body.options === "object" ? body.options : {};
@@ -566,6 +579,9 @@ export function createMediaRoutes({ sendJson, readRequestJson, requirePermission
           show_price: options.show_price === true,
           show_conditions: options.show_conditions !== false,
           music: text(options.music, 200),
+          now: options.now === true,
+          ai_prompt: text(options.ai_prompt, 300),
+          art_styles: textList(options.art_styles, 20, 3).filter((style) => ["sketch", "watercolor", "oil"].includes(style)),
           points: (Array.isArray(options.points) ? options.points : []).slice(0, 8)
             .map((point) => ({ x: Math.max(0, Math.min(1, num(point?.x) ?? 0.5)), y: Math.max(0, Math.min(1, num(point?.y) ?? 0.5)) })),
         };
@@ -717,6 +733,25 @@ export function createMediaRoutes({ sendJson, readRequestJson, requirePermission
       return true;
     }
   };
+}
+
+// A media job claimed by a BEAST that then went away (crash, reboot, power)
+// stays "claimed" forever: after 90 minutes (AI) / 30 minutes (others) it
+// goes back to the queue, or fails when its attempts are used up.
+export async function requeueStaleMediaJobs() {
+  if (!isDatabaseEnabled()) return { requeued: 0, failed: 0 };
+  const stale = `job_type LIKE 'media\\_%' AND status = 'claimed'
+    AND claimed_at < now() - (CASE WHEN job_type LIKE 'media\\_ai%' THEN interval '90 minutes' ELSE interval '30 minutes' END)`;
+  const requeued = await dbQuery(`UPDATE llm_jobs SET status = 'pending', agent_name = '', updated_at = now() WHERE ${stale} AND attempt_count < max_attempts RETURNING id`);
+  const failed = await dbQuery(
+    `UPDATE llm_jobs SET status = 'failed', error_text = 'The BEAST stopped answering during this job', finished_at = now(), updated_at = now()
+     WHERE ${stale} AND attempt_count >= max_attempts RETURNING id, payload_json`,
+  );
+  for (const row of failed.rows) {
+    const itemId = Number(row.payload_json?.item_id);
+    if (itemId) await dbQuery("UPDATE media_items SET status = 'failed', error = 'The BEAST stopped answering during this job', updated_at = now() WHERE id = $1 AND job_id = $2", [itemId, row.id]);
+  }
+  return { requeued: requeued.rowCount, failed: failed.rowCount };
 }
 
 // HTTP for the BEAST (poller key, before the login check): the library scan

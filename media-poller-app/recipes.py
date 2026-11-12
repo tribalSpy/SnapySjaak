@@ -302,10 +302,10 @@ class Encoder:
         self.ffmpeg = context.get("ffmpeg") or find_ffmpeg()
         self.codec = context.get("video_codec") or detect_codec(self.ffmpeg)
 
-    def open(self, path: Path, size, music: Path | None, duration: float):
+    def open(self, path: Path, size, music: Path | None, duration: float, fps: int = FPS):
         width, height = size
         command = [self.ffmpeg, "-y", "-hide_banner", "-loglevel", "error",
-                   "-f", "rawvideo", "-pix_fmt", "rgb24", "-s", f"{width}x{height}", "-r", str(FPS), "-i", "-"]
+                   "-f", "rawvideo", "-pix_fmt", "rgb24", "-s", f"{width}x{height}", "-r", str(fps), "-i", "-"]
         if music and music.exists():
             command += ["-i", str(music)]
             audio = ["-filter:a", f"afade=t=in:d=0.8,afade=t=out:st={max(0.0, duration - 1.2):.2f}:d=1.2", "-c:a", "aac", "-b:a", "160k"]
@@ -354,9 +354,9 @@ def detect_codec(ffmpeg: str) -> str:
     return codec
 
 
-def write_video(path: Path, size, frames, total_frames: int, context: dict, music: Path | None) -> None:
+def write_video(path: Path, size, frames, total_frames: int, context: dict, music: Path | None, fps: int = FPS) -> None:
     encoder = Encoder(context)
-    process = encoder.open(path, size, music, total_frames / FPS)
+    process = encoder.open(path, size, music, total_frames / fps, fps)
     try:
         for frame in frames:
             process.stdin.write(frame.tobytes())
@@ -622,3 +622,7 @@ def make(recipe: str, photos: list[Path], articles: list[dict], options: dict, c
     else:
         raise RuntimeError(f"Unknown recipe: {recipe}")
     return outputs
+
+
+def write_video_fps(path: Path, size, frames, total_frames: int, context: dict, music: Path | None, fps: int) -> None:
+    write_video(path, size, frames, total_frames, context, music, fps)

@@ -1,0 +1,12 @@
+# The AI part (setup_media_pc.bat installs it). torch comes first, from the
+# CUDA 12.8 index (needed for the RTX 50xx / Blackwell):
+#   pip install torch torchvision --index-url https://download.pytorch.org/whl/cu128
+diffusers>=0.35
+transformers>=4.51
+accelerate>=1.6
+huggingface_hub>=0.30
+sentencepiece
+ftfy
+safetensors
+opencv-python-headless
+numpy
