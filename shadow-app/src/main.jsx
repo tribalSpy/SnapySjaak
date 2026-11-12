@@ -10043,6 +10043,9 @@ function FinanceAuditFetchSummary({ runs, isAdmin }) {
   // "Check what the next fetch gets": the open audits without a factuur.
   const [check, setCheck] = useState(null);
   const [checking, setChecking] = useState(false);
+  // "Run on this PC": the recorder action, started from here too (only
+  // looked for once opened -- PCs without the recorder aren't asked).
+  const [showRun, setShowRun] = useState(false);
   async function runCheck() {
     setChecking(true);
     try {
@@ -10069,8 +10072,10 @@ function FinanceAuditFetchSummary({ runs, isAdmin }) {
         <strong>Automatic factuur fetch (Uniware)</strong>
         <span>{last ? `${line(last)} · ${formatTimestamp(last.at)}${last.agent ? ` · ${last.agent}` : ""}` : "Not run yet -- the recorder's daily action fills this in."}</span>
         <button type="button" className="fa-fetch-check" onClick={check ? () => setCheck(null) : runCheck} disabled={checking}>{checking ? "Checking…" : check ? "Hide the check" : "Check what the next fetch gets"}</button>
+        <button type="button" className="fa-fetch-check" onClick={() => setShowRun((value) => !value)} aria-expanded={showRun}>{showRun ? "Hide" : "▶ Fetch now (this PC)"}</button>
         {isAdmin && <a href="/api/agent/recorder-config" title="The recorder's connection file (server address + key) -- put it in the uniware-recorder folder">Recorder setup file</a>}
       </div>
+      {showRun && <div className="tw-admin fa-fetch-run"><TwRecorderRun action="facturen-finance-audit" /></div>}
       {check?.error && <div className="notice danger">{check.error}</div>}
       {check && !check.error && (
         <div className="fa-fetch-checklist">

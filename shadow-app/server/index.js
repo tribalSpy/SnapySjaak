@@ -8328,6 +8328,47 @@ function matchInkoopVeilingLines(erpRows, invoices, supplierMap = {}, supplierNa
     && !inkoopValuesDiffer(row.pieces, other.quantity) && priceFits(row, other.unit_price) && inkoopLotNameScore(other, row) > 0
     && resolveInkoopSupplierCode(other?.supplier_gln, other?.supplier_fh_number, other?.supplier_name, supplierMap, supplierNameMap, manualLinks, supplierFhMap).codes.includes(resolveErpRowSupplierCode(row, validSupplierCodes))
   ));
+  // The same lines by grower (name), for the two checks below.
+  const noBriefLinesByGrower = new Map();
+  for (const lines of noBriefLinesByDate.values()) for (const invoiceLine of lines) {
+    const key = normalizeUkdocsText(invoiceLine?.supplier_name).toUpperCase();
+    if (!noBriefLinesByGrower.has(key)) noBriefLinesByGrower.set(key, []);
+    noBriefLinesByGrower.get(key).push(invoiceLine);
+  }
+  const isOtherLine = (other, line) => other !== line && !(other?.id && other.id === line?.id);
+  const withinDays = (left, right, days) => Math.abs(Date.parse(String(left || "").slice(0, 10)) - Date.parse(String(right || "").slice(0, 10))) / 86400000 <= days;
+  const sameGrowerLines = (line, row) => (noBriefLinesByGrower.get(normalizeUkdocsText(line?.supplier_name).toUpperCase()) || [])
+    .filter((other) => isOtherLine(other, line) && withinDays(other?.invoice_date, row?.date, 2) && priceFits(row, other.unit_price));
+  // A lot of exactly a line's pieces and price that another line of the
+  // grower (2 days) with the same pieces names clearly better is that
+  // line's (11-10 sassenvip: ALTAJ LIGHT BLUE 1 x 20 took "Altaj lavender",
+  // the lavender line then the 8 x 20 "Light Pink" lot, and the light pink
+  // line was left without).
+  const lotBetterNamedByOtherLine = (line, row) => {
+    const own = inkoopLotNameScore(line, row);
+    const ownFine = inkoopFineNameScore(line, row);
+    return sameGrowerLines(line, row).some((other) => !inkoopValuesDiffer(row.pieces, other.quantity)
+      && inkoopLotNameScore(other, row) > own && inkoopFineNameScore(other, row) > ownFine);
+  };
+  // A lot another line of the grower fits exactly (pieces and price, a name
+  // at least as good) while this line doesn't: that line's (13-10 vdEijk
+  // EUPHOR P PRI GEM 8 @ 1.07 took the 8 @ 0.83 lot of the 0.84 line by name).
+  const lotFitsOtherLineExactly = (line, row) => {
+    if (!inkoopValuesDiffer(row.pieces, line.quantity) && priceFits(row, line.unit_price)) return false;
+    const own = inkoopLotNameScore(line, row);
+    return sameGrowerLines(line, row).some((other) => !inkoopValuesDiffer(row.pieces, other.quantity) && inkoopLotNameScore(other, row) >= own);
+  };
+  // Lines of one product (the same name, grower and price, 2 days) that
+  // together are exactly a lot's pieces: one lot for all of them (2 x
+  // ALTAJ LIGHT BLUE 1 x 20 = "Altaj Light Blue" 2 x 20) -- not taken by
+  // the first as a lot with other pieces; the pool step pairs them.
+  const sameNameLinesFillLot = (line, row) => {
+    const name = normalizeUkdocsText(line?.description).toUpperCase();
+    const alike = sameGrowerLines(line, row).filter((other) => normalizeUkdocsText(other?.description).toUpperCase() === name);
+    if (!alike.length) return false;
+    const pieces = alike.reduce((sum, other) => sum + (Number(other.quantity) || 0), Number(line?.quantity) || 0);
+    return !inkoopValuesDiffer(row.pieces, pieces);
+  };
   // The plants each grower invoices (first word: BEG, RHODO, DENDR). A lot
   // whose name starts with one of them -- not the line's own -- is another
   // product of that grower: a line without a name fit doesn't take it
@@ -8399,6 +8440,15 @@ function matchInkoopVeilingLines(erpRows, invoices, supplierMap = {}, supplierNa
       picked = { row: null, ambiguous: false };
     }
     if (picked.row && namesAnotherProduct(line, picked.row)) picked = { row: null, ambiguous: false };
+    if (picked.row && lotBetterNamedByOtherLine(line, picked.row)) picked = { row: null, ambiguous: false };
+    // Several alike lots: not the ones another line names better (2 x ALTAJ
+    // LIGHT BLUE took "Altaj Delft Blue" -- it shares "blue" -- among the
+    // lots of 20, and the DELFT BLUE line was left with the 2 x 20).
+    if (picked.ambiguous) {
+      const free = (picked.candidates || []).filter((row) => !lotBetterNamedByOtherLine(line, row));
+      if (!free.length) picked = { row: null, ambiguous: false };
+      else if (free.length < (picked.candidates || []).length) picked = { ...picked, candidates: free };
+    }
     // No brief number to go on: the product name helps ("CHR S AAA
     // AURINKO" on the invoice, "Aurinko" in Connect). Among several lots
     // with the same pieces and price, the one with the name; with none
@@ -8412,12 +8462,13 @@ function matchInkoopVeilingLines(erpRows, invoices, supplierMap = {}, supplierNa
       // (16-10 RO PATHIT GEM 5 SRT: "Ro Pathit Gem 5 Srt" of 19-10).
       const lineDay = Date.parse(normalizeUkdocsText(line?.invoice_date).slice(0, 10));
       const nearExact = candidates.filter((row) => !consumedErpRows.has(row) && !inkoopValuesDiffer(row.pieces, line.quantity) && priceFits(row, line.unit_price)
-        && !(Math.abs(Date.parse(String(row?.date || "").slice(0, 10)) - lineDay) / 86400000 > 4));
+        && !(Math.abs(Date.parse(String(row?.date || "").slice(0, 10)) - lineDay) / 86400000 > 4) && !lotBetterNamedByOtherLine(line, row));
       const named = inkoopBestNamedRow(picked.candidates || [], line) || inkoopFineNamedRow(picked.candidates || [], line) || inkoopFineNamedRow(nearExact, line);
       if (named) picked = { row: named, ambiguous: false };
     } else if (!picked.row || (inkoopValuesDiffer(picked.row.pieces, line.quantity) && !priceFits(picked.row, line.unit_price) && !nameMatches(picked.row))) {
       const named = inkoopBestNamedRow(candidates.filter((row) => !consumedErpRows.has(row)
-        && (!inkoopValuesDiffer(row.pieces, line.quantity) || priceFits(row, line.unit_price))), line);
+        && (!inkoopValuesDiffer(row.pieces, line.quantity) || priceFits(row, line.unit_price))
+        && !lotFitsOtherLineExactly(line, row)), line);
       if (named) picked = { row: named, ambiguous: false, by_name: true };
     }
     // One invoice line booked as several lots, also under the grower's
@@ -8459,7 +8510,8 @@ function matchInkoopVeilingLines(erpRows, invoices, supplierMap = {}, supplierNa
     // another product, not this one (it used to be taken -- and called OK).
     const quantityDiffers = picked.row && inkoopValuesDiffer(picked.row.pieces, line.quantity);
     const priceDiffers = picked.row && inkoopValuesDiffer(parseFloat(picked.row.price), line.unit_price);
-    if (!picked.row || (quantityDiffers && !priceFits(picked.row, line.unit_price) && !nameMatches(picked.row))) {
+    if (!picked.row || (quantityDiffers && !priceFits(picked.row, line.unit_price) && !nameMatches(picked.row))
+      || (quantityDiffers && sameNameLinesFillLot(line, picked.row))) {
       onlyInInvoice.push({ ...context, supplier_code: codesLabel, supplier_match_type: resolved.match_type });
       return;
     }
@@ -9074,7 +9126,9 @@ function matchInkoopVeilingLines(erpRows, invoices, supplierMap = {}, supplierNa
       const daysOff = (row) => Math.abs((Date.parse(String(row?.date || "").slice(0, 10)) - Date.parse(day)) / 86400000);
       const fitting = (Array.isArray(erpRows) ? erpRows : []).filter((row) => !consumedErpRows.has(row)
         && [row?.suppl, row?.avc, row?.transp, resolveErpRowSupplierCode(row, validSupplierCodes)].some((code) => pool.codes.has(normalizeInkoopKey(code)))
-        && daysOff(row) <= 1
+        // Two days: AI2 lines of a Saturday, their lot entered on Monday
+        // (24-10 sassenvip 2 x ALTAJ SUNSET 20 = "Altaj Sunset" 40 of 26-10).
+        && daysOff(row) <= 2
         && priceFits(row, sample.unit_price) && Number(row.pieces) > 0
         && (!perBox || !(Number(row?.cont) > 0) || Number(row.cont) === perBox)
         && inkoopLotNameScore(sample, row) > 0)

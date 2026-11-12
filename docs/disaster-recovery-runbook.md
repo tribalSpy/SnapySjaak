@@ -18,7 +18,9 @@ exact same app, just pointed at its own local data instead of Render's.
    (it's deliberately excluded from git) — copy that file over separately
    from your local dev setup, into the same relative path in the clone.
 2. **Run `setup_standby_pc.bat`** (repo root, double-click it). It will:
-   - Check for Node.js, Python, and PostgreSQL, and offer to install anything
+   - Check for Node.js, Python, and PostgreSQL, and off
+   - er to install anything
+   - 
      missing via `winget`. PostgreSQL's installer needs a superuser password
      set interactively, so that one step isn't silent — remember whatever
      password you set, you'll need it in step 4 below.

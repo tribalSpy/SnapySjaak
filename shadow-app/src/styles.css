@@ -4906,3 +4906,4 @@ table.data-table.balance-table.ik-table.ik-inv-invoices td:nth-child(n+7), table
 .fa-fetch-check { font-size: 0.85rem; padding: 2px 10px; min-height: 0; }
 .fa-fetch-checklist { display: flex; flex-direction: column; gap: 6px; margin-top: 4px; }
 .fa-fetch-checklist .table-wrap { max-height: 360px; overflow: auto; }
+.fa-fetch-run { max-width: 520px; }
