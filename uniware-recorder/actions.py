@@ -2523,6 +2523,11 @@ class ActionRun:
                 continue
             if numeric:
                 passed = self._passed_number(rows, int(target.strip()), len(target.strip()), seen_numbers, direction)
+                # Past it going down: the list may have opened lower than its
+                # top (on the factuur opened before) -- search above first.
+                if passed == "gone" and direction == "Down":
+                    self.say(f"{label}: '{target}' not below -- searching the part above")
+                    passed = "other_way"
                 if passed == "gone":
                     raise RuntimeError(f"{label}: '{target}' is not in the list (the numbers go past it).")
                 if passed == "other_way":
