@@ -948,11 +948,16 @@ def bring_to_front(hwnd: int) -> bool:
     # Windows only lets a process take focus right after input; a harmless
     # Alt tap counts as that.
     controller = keyboard.Controller()
-    controller.press(keyboard.Key.alt)
-    controller.release(keyboard.Key.alt)
-    user32.SetForegroundWindow(hwnd)
-    time.sleep(0.4)
-    return screen_reader.foreground_window() == hwnd
+    # A few tries: a viewer that just opened can take the focus back once.
+    for _ in range(3):
+        controller.press(keyboard.Key.alt)
+        controller.release(keyboard.Key.alt)
+        user32.SetForegroundWindow(hwnd)
+        time.sleep(0.4)
+        if screen_reader.foreground_window() == hwnd:
+            return True
+        time.sleep(0.6)
+    return False
 
 
 # ------------------------------------------------------------------ other windows
@@ -1589,7 +1594,14 @@ class ActionRun:
             temp.replace(target)
             self.exported_files.append(str(target))
             self.say(f"{label}: dump {source} -> {target}")
-        if self.action.get("close_dump_window", True):
+        close_key = str(self.action.get("close_dump_key") or "").strip()
+        if not close_key and "sumatrapdf.exe" in (Path(process_exe(pid)).name.lower(), expected_exe):
+            close_key = "ctrl+w"
+        if self.action.get("close_dump_window", True) and close_key:
+            # A viewer with tabs (SumatraPDF): close the tab of THIS file with
+            # its key (Ctrl+W), so the window doesn't collect a tab per print.
+            self._close_viewer_tab(source.name, close_key, label)
+        elif self.action.get("close_dump_window", True):
             # Close every new window of that program -- also one that only
             # appears now (the workbook after Excel's "Openen") -- until none
             # is left for 2 seconds.
@@ -1606,6 +1618,36 @@ class ActionRun:
                 elif time.time() - quiet_since >= 2:
                     break
                 time.sleep(0.5)
+
+    def _close_viewer_tab(self, file_name: str, close_key: str, label: str):
+        """Close the viewer tab showing file_name: bring that viewer window to
+        the front, press the close key (only when that window really is in
+        front -- the key must never reach Uniware) and wait until its title
+        no longer shows the file."""
+        wanted = file_name.lower()
+
+        def showing():
+            return [handle for handle, (_, title) in visible_windows().items()
+                    if window_file_name(screen_reader.window_title(handle) or title).lower() == wanted]
+
+        controller = keyboard.Controller()
+        for _ in range(3):
+            windows = showing()
+            if not windows:
+                self.say(f"{label}: closed the viewer tab of {file_name}")
+                return
+            viewer = windows[0]
+            if not bring_to_front(viewer):
+                time.sleep(1)
+                continue
+            send_combo(controller, close_key)
+            deadline = time.time() + 8
+            while time.time() < deadline and viewer in showing():
+                time.sleep(0.5)
+        if showing():
+            self.say(f"{label}: could not close the viewer tab of {file_name} -- going on")
+        else:
+            self.say(f"{label}: closed the viewer tab of {file_name}")
 
     def _export_dir(self) -> Path:
         target_dir = Path((self.action.get("export_dir") or "").strip() or (self.action.get("uniware_dump_dir") or "").strip() or OUTPUTS_DIR)
