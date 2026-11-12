@@ -6117,6 +6117,26 @@ const databaseMigrations = [
     )
   `,
   "CREATE INDEX IF NOT EXISTS media_items_campaign_idx ON media_items (campaign_id)",
+  // Accounts posted to through the platforms' APIs (Meta: a Facebook Page
+  // and its Instagram account, with the page token) -- server/social.js.
+  `
+    CREATE TABLE IF NOT EXISTS social_accounts (
+      id bigserial PRIMARY KEY,
+      platform text NOT NULL,
+      account_id text NOT NULL,
+      name text NOT NULL DEFAULT '',
+      username text NOT NULL DEFAULT '',
+      token text NOT NULL DEFAULT '',
+      page_id text NOT NULL DEFAULT '',
+      connected_by text NOT NULL DEFAULT '',
+      disabled boolean NOT NULL DEFAULT false,
+      updated_at timestamptz NOT NULL DEFAULT now(),
+      UNIQUE (platform, account_id)
+    )
+  `,
+  "ALTER TABLE social_posts ADD COLUMN IF NOT EXISTS account_id text NOT NULL DEFAULT ''",
+  "ALTER TABLE social_posts ADD COLUMN IF NOT EXISTS error text NOT NULL DEFAULT ''",
+  "ALTER TABLE social_posts ADD COLUMN IF NOT EXISTS publish_job_id text",
   "CREATE INDEX IF NOT EXISTS social_posts_item_idx ON social_posts (media_item_id)",
 ];
 

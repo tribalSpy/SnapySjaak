@@ -73,3 +73,21 @@ The output goes in `test_output/`. Add `--captions` to also try the Ollama capti
   - `python ai.py` checks torch, CUDA and the GPU.
   - `python poller.py --test-recipe ai_flower_drop --photo foto.jpg --title "Viola"` tries a real AI render.
   - If Wan 2.2 5B won't load as image-to-video in your diffusers version, run `pip install -U diffusers`. Or set `ai.video_model` to `Wan-AI/Wan2.2-I2V-A14B-Diffusers` with `ai.cpu_offload: true` (bigger, slower, needs 64 GB+ RAM).
+
+## Posting to Instagram and Facebook (automatic, after approval)
+
+SnappySjaak queues an approved post when it is due. The BEAST (`media_publish` job) then does the posting:
+
+1. downloads the video or photos from Drive;
+2. gets the page token from SnappySjaak right before posting;
+3. posts with Meta's Graph API (`meta_publish.py`):
+   - **Instagram:** a Reel with a resumable upload, or a photo / carousel. Photos go up first as temporary unpublished Page photos, because Instagram fetches photos from a link; those temporary photos are deleted afterwards.
+   - **Facebook Page:** a Reel for 9:16, a page video, or one post with several photos.
+
+The post link comes back to the app.
+
+**Stats:** twice a day a `media_stats` job reads views, reach, likes, comments, shares and saves of the last 35 days of posts.
+
+**No double posts:** a publish job is never retried by itself. If it fails, the post shows the error. Check on Instagram or Facebook whether it went out before you press **Post now** again.
+
+The Meta app setup is in SnappySjaak › Campagnes › Settings › Instagram & Facebook.

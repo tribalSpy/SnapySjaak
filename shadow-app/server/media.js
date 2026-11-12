@@ -11,6 +11,7 @@
 // Posts can be recorded by hand (posted from the phone / browser, link
 // pasted back) until the platforms' APIs are approved; stats too.
 import { createLlmJob, dbQuery, isDatabaseEnabled } from "./db.js";
+import { API_PLATFORMS, handleSocialJobFail, handleSocialJobResult } from "./social.js";
 
 // Everything the BEAST knows how to make. engine "ai" = phase 4 (ComfyUI).
 export const MEDIA_RECIPES = [
@@ -214,6 +215,9 @@ function postRow(row) {
     posted_at: row.posted_at,
     status: row.status,
     mode: row.mode,
+    account_id: row.account_id,
+    platform_post_id: row.platform_post_id,
+    error: row.error,
     post_url: row.post_url,
     caption: row.caption,
     approved_by: row.approved_by,
@@ -310,6 +314,10 @@ export async function handleMediaJobResult(job) {
   try {
     const result = job.result_json || {};
     if (job.job_type === "media_scan") return;
+    if (job.job_type === "media_publish" || job.job_type === "media_stats") {
+      await handleSocialJobResult(job);
+      return;
+    }
     const itemId = Number(job.payload_json?.item_id);
     if (!itemId) return;
     const outputs = (Array.isArray(result.outputs) ? result.outputs : []).slice(0, 60).map((output) => ({
@@ -340,6 +348,10 @@ export async function handleMediaJobResult(job) {
 
 export async function handleMediaJobFail(job, errorText) {
   try {
+    if (job.job_type === "media_publish") {
+      await handleSocialJobFail(job, errorText);
+      return;
+    }
     const itemId = Number(job.payload_json?.item_id);
     if (!itemId) return;
     const final = job.status === "failed";
@@ -663,17 +675,29 @@ export function createMediaRoutes({ sendJson, readRequestJson, requirePermission
           return true;
         }
         const posted = body.status === "published";
+        // Automatic (API) where the platform's account is connected and it
+        // was asked for; by hand otherwise.
+        const accounts = (await dbQuery("SELECT platform, account_id FROM social_accounts WHERE NOT disabled ORDER BY id")).rows;
         const ids = [];
+        const modes = {};
         for (const platform of platforms) {
+          const chosen = body.accounts?.[platform];
+          const account = accounts.find((row) => row.platform === platform && (!chosen || row.account_id === chosen));
+          const auto = !posted && body.auto !== false && API_PLATFORMS.includes(platform) && Boolean(account);
+          if (auto && !body.scheduled_at) {
+            sendJson(res, 400, { error: "An automatic post needs a planned date and time" });
+            return true;
+          }
           const result = await dbQuery(
-            `INSERT INTO social_posts (media_item_id, platform, scheduled_at, posted_at, status, mode, post_url, caption, notes, created_by)
-             VALUES ($1, $2, $3, $4, $5, 'manual', $6, $7, $8, $9) RETURNING id`,
+            `INSERT INTO social_posts (media_item_id, platform, scheduled_at, posted_at, status, mode, account_id, post_url, caption, notes, created_by)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11) RETURNING id`,
             [Number(body.media_item_id) || null, platform, body.scheduled_at || null, posted ? body.posted_at || new Date().toISOString() : null,
-              posted ? "published" : "planned", text(body.post_url, 500), text(body.caption, 4000), text(body.notes, 1000), by],
+              posted ? "published" : "planned", auto ? "api" : "manual", auto ? account.account_id : "", text(body.post_url, 500), text(body.caption, 4000), text(body.notes, 1000), by],
           );
           ids.push(Number(result.rows[0].id));
+          modes[platform] = auto ? "api" : "manual";
         }
-        sendJson(res, 200, { ids });
+        sendJson(res, 200, { ids, modes });
         return true;
       }
       if ((match = pathname.match(/^\/api\/media\/posts\/(\d+)$/))) {
@@ -681,6 +705,25 @@ export function createMediaRoutes({ sendJson, readRequestJson, requirePermission
         if (method === "PATCH") {
           if (!needManage(res, requestUser)) return true;
           const body = await readRequestJson(req);
+          const current = (await dbQuery("SELECT status, mode FROM social_posts WHERE id = $1", [id])).rows[0];
+          if (!current) {
+            sendJson(res, 404, { error: "Post not found" });
+            return true;
+          }
+          if (current.status === "publishing") {
+            sendJson(res, 409, { error: "This post is being published right now" });
+            return true;
+          }
+          // An approved automatic post: go out at the next minute.
+          if (body.publish_now === true) {
+            if (current.mode !== "api" || !["planned", "approved", "failed"].includes(current.status)) {
+              sendJson(res, 400, { error: "Only an automatic post that hasn't gone out can be posted now" });
+              return true;
+            }
+            await dbQuery("UPDATE social_posts SET status = 'approved', approved_by = $2, scheduled_at = now(), error = '', updated_at = now() WHERE id = $1", [id, by]);
+            sendJson(res, 200, { ok: true });
+            return true;
+          }
           const sets = [];
           const values = [id];
           const add = (sql, value) => { values.push(value); sets.push(`${sql} = $${values.length}`); };

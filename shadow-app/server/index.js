@@ -227,6 +227,7 @@ import {
 } from "./tasks.js";
 import { createCampaignRoutes, runCampaignDeadlineTasks } from "./campaigns.js";
 import { createMediaRoutes, createMediaAgentRoutes, handleMediaJobResult, handleMediaJobFail, requeueStaleMediaJobs } from "./media.js";
+import { createSocialRoutes, createSocialAgentRoutes, queueDueSocialPosts, queueSocialStatsJob } from "./social.js";
 import ExcelJS from "exceljs";
 import sharp from "sharp";
 
@@ -7002,6 +7003,21 @@ const handleAppTasksRoute = createAppTasksRoutes({
 // Campagnes media (server/media.js): library, themes, renders on the BEAST,
 // posts. The BEAST's library scan reports in through the agent route.
 const handleMediaRoute = createMediaRoutes({ sendJson, readRequestJson, requirePermission, hasUserPermission, PERMISSIONS });
+// Posting through the platforms' APIs (Meta for now; server/social.js).
+const handleSocialRoute = createSocialRoutes({ sendJson, readRequestJson, requirePermission, PERMISSIONS, publicBaseUrl: (req) => publicBaseUrl(req) });
+const checkMediaAgentKey = (req, res) => {
+  if (!llmPollerEnabled()) {
+    sendJson(res, 503, { error: "SHADOW_LLM_POLLER_API_KEY is not configured" });
+    return false;
+  }
+  const apiKey = readAgentApiKey(req);
+  if (!apiKey || apiKey !== llmPollerApiKey) {
+    sendPollerUnauthorized(res);
+    return false;
+  }
+  return true;
+};
+const handleSocialAgentRoute = createSocialAgentRoutes({ sendJson, checkAgentKey: checkMediaAgentKey });
 const handleMediaAgentRoute = createMediaAgentRoutes({
   sendJson,
   readRequestJson,
@@ -23525,8 +23541,11 @@ async function handleApi(req, res, url) {
   // The Uniware recorder's daily factuur fetch for Finance Audit UKdocs
   // (machine key = the poller key): which invoice numbers of a day still
   // need their factuur, and the PDFs it got from Uniware.
-  // The BEAST's media library scan (poller key).
+  // The BEAST's media library scan and platform tokens (poller key).
   if (await handleMediaAgentRoute(req, res, url)) {
+    return;
+  }
+  if (await handleSocialAgentRoute(req, res, url)) {
     return;
   }
 
@@ -24165,6 +24184,9 @@ async function handleApi(req, res, url) {
     return;
   }
   if (await handleMediaRoute(req, res, url, requestUser)) {
+    return;
+  }
+  if (await handleSocialRoute(req, res, url, requestUser)) {
     return;
   }
 
@@ -32055,6 +32077,13 @@ async function startServer() {
     // to the queue.
     const staleMediaJob = async () => { await requeueStaleMediaJobs(); };
     setInterval(() => runIfOnline("Campagnes: stale media jobs", staleMediaJob).catch((error) => console.error("Campagnes: stale media jobs", error?.message || error)), 10 * 60 * 1000);
+    // Approved automatic posts that are due go to the BEAST (every minute);
+    // the BEAST fetches the posts' stats twice a day.
+    const duePostsJob = async () => { await queueDueSocialPosts(); };
+    setInterval(() => runIfOnline("Campagnes: due posts", duePostsJob).catch((error) => console.error("Campagnes: due posts", error?.message || error)), 60 * 1000);
+    const socialStatsJob = async () => { await queueSocialStatsJob(); };
+    setTimeout(() => runIfOnline("Campagnes: post stats", socialStatsJob).catch((error) => console.error("Campagnes: post stats", error?.message || error)), 10 * 60 * 1000);
+    setInterval(() => runIfOnline("Campagnes: post stats", socialStatsJob).catch((error) => console.error("Campagnes: post stats", error?.message || error)), 12 * 60 * 60 * 1000);
   }
 
   const runFustReminderCheck = async () => {

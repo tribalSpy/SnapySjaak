@@ -354,7 +354,10 @@ Main behavior:
 - `Settings`: who gets the campaign tasks, how many months before the offer the campaign runs, the target number of articles
 - tasks are made for upcoming deadlines and for a grower deal's next-action date
 - data lives in its own `camp_*` tables; invoice data is only read
-- later phases (see the plan): content made on the BEAST PC (photos, videos, AI, FR/EN captions), the post calendar with approval, publishing, and results (sales of the campaign articles + social stats)
+- `Make`, `Library`, `Posts`: photos and videos made on the BEAST PC (media-poller-app), including AI (Flower Drop, living photo, photo to art), with FR/EN captions
+- posts on Instagram and the Facebook Page go out automatically after approval at the planned time (Meta Graph API, posted by the BEAST); other platforms are posted by hand and recorded with their link
+- stats come in automatically for Instagram / Facebook posts (twice a day); stats of the other platforms are typed in
+- Settings › Instagram & Facebook: the Meta app (id, secret, redirect link) and the connected Page and Instagram account
 
 ## 5. Main Integrations
 

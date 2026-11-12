@@ -7,6 +7,8 @@ if not exist ".venv\Scripts\python.exe" (
   ".venv\Scripts\python.exe" -m pip install --upgrade pip
   ".venv\Scripts\python.exe" -m pip install -r requirements.txt
 )
+rem New requirements after a pull_code (quick when nothing changed).
+".venv\Scripts\python.exe" -m pip install -q -r requirements.txt
 :loop
 ".venv\Scripts\python.exe" poller.py
 echo Poller stopped -- restarting in 15 seconds (close this window to stop).

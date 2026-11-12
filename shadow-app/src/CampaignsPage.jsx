@@ -4,7 +4,7 @@
 // from our purchase invoices; the steady conditions live on reusable
 // master article cards.
 import React, { Fragment, useCallback, useEffect, useMemo, useState } from "react";
-import { LibraryTab, MakeTab, MediaSettings, PostsTab, ThemesEditor } from "./CampaignMedia.jsx";
+import { LibraryTab, MakeTab, MediaSettings, PostsTab, SocialSettings, ThemesEditor } from "./CampaignMedia.jsx";
 
 const STAGE_LABELS = {
   selecting: "Choosing articles",
@@ -149,6 +149,7 @@ export default function CampaignsPage({ apiJson }) {
         <>
           <SettingsTab apiJson={apiJson} meta={meta} onSaved={(settings) => setMeta({ ...meta, settings })} />
           <MediaSettings apiJson={apiJson} />
+          <SocialSettings apiJson={apiJson} />
           <ThemesEditor apiJson={apiJson} />
         </>
       )}

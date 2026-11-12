@@ -40,7 +40,8 @@ import recipes  # noqa: E402
 from captions import make_captions, unload_ollama  # noqa: E402
 
 VERSION = "1.1.0"
-BASE_JOB_TYPES = ["media_scan", "media_render"]
+# Posting and stats don't use the GPU: always taken.
+BASE_JOB_TYPES = ["media_scan", "media_render", "media_publish", "media_stats"]
 
 
 def ai_enabled(config: dict) -> bool:
@@ -85,6 +86,7 @@ def load_config() -> dict:
     if not config.get("work_dir"):
         config["work_dir"] = str(APP_DIR / "work")
     config.setdefault("capabilities", ["media_render", "media_scan"])
+    config["capabilities"] = sorted(set(config["capabilities"]) | {"media_publish"})
     config["server_url"] = os.environ.get("SHADOW_POLLER_SERVER_URL", config.get("server_url", "")).rstrip("/")
     config["api_key"] = os.environ.get("SHADOW_POLLER_API_KEY", config.get("api_key", ""))
     return config
@@ -225,11 +227,60 @@ def run_scan(config: dict, payload: dict) -> dict:
     return {"photos": total, "scan_id": scan_id}
 
 
+def platform_token(config: dict, platform: str, account_id: str) -> dict:
+    from urllib.parse import urlencode
+    return api_request(config, "GET", f"/api/agent/social/token?{urlencode({'platform': platform, 'account_id': account_id})}")
+
+
+def run_publish(config: dict, payload: dict) -> dict:
+    """Post one approved item to Instagram / Facebook (Meta Graph API)."""
+    from drive import Drive
+    import meta_publish
+
+    token = platform_token(config, payload["platform"], payload["account_id"])
+    drive = Drive(config)
+    work = Path(config["work_dir"])
+    work.mkdir(parents=True, exist_ok=True)
+    job_dir = Path(tempfile.mkdtemp(prefix=f"post{payload.get('post_id')}_", dir=work))
+    try:
+        files = []
+        for index, output in enumerate(payload["media"]["files"]):
+            target = job_dir / f"{index:02d}_{output.get('name') or output['drive_id']}"
+            drive.download(output["drive_id"], target)
+            files.append(target)
+        print(f"  posting {payload['media']['kind']} ({len(files)} file(s)) to {payload['platform']}")
+        result = meta_publish.publish(token, payload, files)
+        print(f"  posted: {result.get('post_url') or result.get('platform_post_id')}")
+        return result
+    finally:
+        shutil.rmtree(job_dir, ignore_errors=True)
+
+
+def run_stats(config: dict, payload: dict) -> dict:
+    import meta_publish
+
+    tokens, stats, errors = {}, [], 0
+    for post in payload.get("posts") or []:
+        key = (post["platform"], post["account_id"])
+        try:
+            if key not in tokens:
+                tokens[key] = platform_token(config, *key)
+            stats.append(meta_publish.stats_for(tokens[key], post))
+        except Exception as error:  # noqa: BLE001
+            errors += 1
+            print(f"  stats for post {post.get('post_id')}: {str(error)[:160]}")
+    return {"stats": stats, "errors": errors}
+
+
 def run_job(config: dict, job: dict) -> dict:
     job_type = job.get("job_type")
     payload = job.get("payload_json") or {}
     if job_type == "media_render":
         return run_render(config, payload)
+    if job_type == "media_publish":
+        return run_publish(config, payload)
+    if job_type == "media_stats":
+        return run_stats(config, payload)
     if job_type in ("media_ai", "media_ai_now"):
         if not ai_enabled(config):
             raise RuntimeError("AI is not switched on on this PC (config ai.enabled)")

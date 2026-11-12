@@ -7,7 +7,7 @@
 import React, { Fragment, useCallback, useEffect, useMemo, useState } from "react";
 
 const PLATFORM_LABELS = { instagram: "Instagram", facebook: "Facebook", tiktok: "TikTok", youtube: "YouTube", linkedin: "LinkedIn", pinterest: "Pinterest" };
-const POST_LABELS = { planned: "Planned", approved: "Approved", published: "Published", failed: "Failed", cancelled: "Cancelled" };
+const POST_LABELS = { planned: "Planned", approved: "Approved", publishing: "Going out…", published: "Published", failed: "Failed", cancelled: "Cancelled" };
 const ITEM_STATUS = { draft: "Draft", queued: "On the BEAST", ready: "Ready", failed: "Failed", archived: "Archived" };
 const VARIANT_LABELS = { "9x16": "9:16 Reel / Short / TikTok", "4x5": "4:5 feed", "1x1": "1:1 square" };
 
@@ -312,9 +312,14 @@ function ItemCard({ item, themes, recipes, onOpen }) {
 function ItemDetail({ apiJson, canManage, itemId, meta, onClose }) {
   const [item, setItem] = useState(null);
   const [draft, setDraft] = useState({ caption_fr: "", caption_en: "", hashtags: "" });
-  const [post, setPost] = useState({ platforms: [], status: "planned", scheduled_at: "", post_url: "", lang: "fr" });
+  const [post, setPost] = useState({ platforms: [], status: "planned", scheduled_at: "", post_url: "", lang: "fr", auto: true, accounts: {} });
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
+  const [connected, setConnected] = useState([]);
+  useEffect(() => {
+    apiJson("/api/social/status").then((data) => setConnected(data.accounts)).catch(() => {});
+  }, [apiJson]);
+  const autoPlatforms = post.platforms.filter((platform) => connected.some((account) => account.platform === platform));
 
   const load = useCallback(() => {
     apiJson("/api/media/items").then((data) => {
@@ -362,8 +367,11 @@ function ItemDetail({ apiJson, canManage, itemId, meta, onClose }) {
         posted_at: post.status === "published" && post.scheduled_at ? new Date(post.scheduled_at).toISOString() : undefined,
         post_url: post.post_url,
         caption: captionFor(post.lang),
+        auto: post.auto,
+        accounts: post.accounts,
       }) });
-      setNotice(post.status === "published" ? "Recorded as posted." : "Planned — see the Posts tab.");
+      setNotice(post.status === "published" ? "Recorded as posted."
+        : autoPlatforms.length && post.auto ? "Planned. Approve it in the Posts tab — then it goes out by itself at the planned time." : "Planned — see the Posts tab.");
       setPost({ ...post, platforms: [], post_url: "" });
       load();
     } catch (err) {
@@ -429,7 +437,8 @@ function ItemDetail({ apiJson, canManage, itemId, meta, onClose }) {
           </div>
           {canManage && item.status === "ready" && (
             <div className="info-panel cp-form">
-              <strong className="cp-wide">Post it (by hand for now: download, post from the phone / browser, paste the link)</strong>
+              <strong className="cp-wide">Post it</strong>
+              <p className="cp-wide cp-hint">Instagram / Facebook when connected (Settings): automatic after approval. Other platforms: by hand — download, post from the phone, paste the link.</p>
               <div className="cp-wide cp-row">
                 {(meta?.platforms || []).map((platform) => (
                   <label key={platform} className="cp-check">
@@ -456,7 +465,27 @@ function ItemDetail({ apiJson, canManage, itemId, meta, onClose }) {
                 </select>
               </label>
               {post.status === "published" && <label>Link to the post<input value={post.post_url} placeholder="https://www.instagram.com/p/…" onChange={(event) => setPost({ ...post, post_url: event.target.value })} /></label>}
-              <div className="cp-wide"><button type="button" className="primary" disabled={!post.platforms.length} onClick={addPost}>{post.status === "published" ? "Record as posted" : "Plan"}</button></div>
+              {post.status === "planned" && autoPlatforms.length > 0 && (
+                <div className="cp-wide cp-row">
+                  <label className="cp-check">
+                    <input type="checkbox" checked={post.auto} onChange={(event) => setPost({ ...post, auto: event.target.checked })} />
+                    Post automatically on {autoPlatforms.map((platform) => PLATFORM_LABELS[platform]).join(" + ")} (after approval)
+                  </label>
+                  {post.auto && autoPlatforms.map((platform) => {
+                    const options = connected.filter((account) => account.platform === platform);
+                    return options.length > 1 ? (
+                      <select key={platform} value={post.accounts[platform] || options[0].account_id}
+                        onChange={(event) => setPost({ ...post, accounts: { ...post.accounts, [platform]: event.target.value } })}>
+                        {options.map((account) => <option key={account.account_id} value={account.account_id}>{PLATFORM_LABELS[platform]}: {account.username ? `@${account.username}` : account.name}</option>)}
+                      </select>
+                    ) : null;
+                  })}
+                </div>
+              )}
+              <div className="cp-wide">
+                <button type="button" className="primary" disabled={!post.platforms.length || (post.status === "planned" && post.auto && autoPlatforms.length > 0 && !post.scheduled_at)} onClick={addPost}>{post.status === "published" ? "Record as posted" : "Plan"}</button>
+                {post.status === "planned" && post.auto && autoPlatforms.length > 0 && !post.scheduled_at && <span className="cp-hint"> Choose when it goes out.</span>}
+              </div>
             </div>
           )}
           {item.posts?.length > 0 && (
@@ -596,6 +625,24 @@ export function PostsTab({ apiJson, canManage }) {
     }
   }
 
+  async function postNow(post) {
+    if (!window.confirm(`Post this on ${PLATFORM_LABELS[post.platform]} now?`)) return;
+    setError("");
+    try {
+      await apiJson(`/api/media/posts/${post.id}`, { method: "PATCH", body: JSON.stringify({ publish_now: true }) });
+      load();
+    } catch (err) {
+      setError(err.message);
+    }
+  }
+
+  // While something is going out, look again every 15 seconds.
+  useEffect(() => {
+    if (!(posts || []).some((post) => post.status === "publishing" || (post.mode === "api" && post.status === "approved"))) return undefined;
+    const timer = setInterval(load, 15000);
+    return () => clearInterval(timer);
+  }, [posts, load]);
+
   function markPosted(post) {
     const link = window.prompt("Link to the post (optional):", post.post_url || "");
     if (link === null) return;
@@ -625,15 +672,19 @@ export function PostsTab({ apiJson, canManage }) {
                   <td>{canManage && post.status !== "published"
                     ? <input type="datetime-local" value={localInput(post.scheduled_at)} onChange={(event) => patch(post, { scheduled_at: event.target.value ? new Date(event.target.value).toISOString() : null })} />
                     : when(post.posted_at || post.scheduled_at)}</td>
-                  <td>{PLATFORM_LABELS[post.platform] || post.platform}</td>
+                  <td>{PLATFORM_LABELS[post.platform] || post.platform} <span className={`cp-chip ${post.mode === "api" ? "cp-post-approved" : ""}`}>{post.mode === "api" ? "auto" : "by hand"}</span></td>
                   <td className="cp-wrap">{post.item_title || post.recipe || "—"}</td>
-                  <td><span className={`cp-chip cp-post-${post.status}`}>{POST_LABELS[post.status]}</span></td>
+                  <td>
+                    <span className={`cp-chip cp-post-${post.status}`}>{POST_LABELS[post.status] || post.status}</span>
+                    {post.error && <div className="cp-error-text">{post.error}</div>}
+                  </td>
                   <td>{post.post_url ? <a href={post.post_url} target="_blank" rel="noreferrer">open</a> : ""}</td>
                   <td className="cp-wrap">{totals(post)}</td>
                   {canManage && (
                     <td className="cp-row">
                       {post.status === "planned" && <button type="button" onClick={() => patch(post, { status: "approved" })}>Approve</button>}
-                      {["planned", "approved"].includes(post.status) && <button type="button" onClick={() => markPosted(post)}>Posted ✓</button>}
+                      {post.mode === "api" && ["planned", "approved", "failed"].includes(post.status) && <button type="button" onClick={() => postNow(post)}>Post now</button>}
+                      {(post.mode !== "api" ? ["planned", "approved"] : ["failed"]).includes(post.status) && <button type="button" onClick={() => markPosted(post)}>Posted ✓</button>}
                       {post.status === "published" && <button type="button" onClick={() => setStatsFor(statsFor === post.id ? null : post.id)}>Stats</button>}
                       {["planned", "approved"].includes(post.status) && <button type="button" className="link-button" onClick={() => remove(post)}>✕</button>}
                     </td>
@@ -825,5 +876,92 @@ function ThemeForm({ theme, recipes, onSave, onCancel }) {
         <button type="button" onClick={onCancel}>Cancel</button>
       </div>
     </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Instagram & Facebook (Meta app + connected accounts)
+
+export function SocialSettings({ apiJson }) {
+  const [status, setStatus] = useState(null);
+  const [form, setForm] = useState({ app_id: "", app_secret: "", config_id: "", graph_version: "" });
+  const [error, setError] = useState("");
+  const [notice, setNotice] = useState("");
+  const load = useCallback(() => {
+    apiJson("/api/social/status").then((data) => {
+      setStatus(data);
+      setForm({ app_id: data.meta_app.app_id, app_secret: "", config_id: data.meta_app.config_id, graph_version: data.meta_app.graph_version });
+    }).catch((err) => setError(err.message));
+  }, [apiJson]);
+  useEffect(load, [load]);
+  if (!status) return <Message error={error} />;
+
+  async function save() {
+    setError("");
+    try {
+      await apiJson("/api/social/meta/app", { method: "PUT", body: JSON.stringify(form) });
+      setNotice("Saved.");
+      load();
+    } catch (err) {
+      setError(err.message);
+    }
+  }
+
+  async function connect() {
+    setError("");
+    try {
+      const data = await apiJson("/api/social/meta/auth-url");
+      window.open(data.url, "_blank", "noopener");
+      setNotice("Log in with Facebook in the new tab and tick the company's Page and its Instagram account; then come back and press Refresh.");
+    } catch (err) {
+      setError(err.message);
+    }
+  }
+
+  async function disconnect(account) {
+    if (!window.confirm(`Disconnect ${account.platform} ${account.username || account.name}? Planned automatic posts to it will fail.`)) return;
+    try {
+      await apiJson(`/api/social/accounts/${account.id}`, { method: "DELETE" });
+      load();
+    } catch (err) {
+      setError(err.message);
+    }
+  }
+
+  return (
+    <section className="cp-section">
+      <h3 className="cp-h3">Instagram &amp; Facebook (automatic posting)</h3>
+      <div className="info-panel cp-form">
+        <p className="cp-wide cp-hint">
+          A Meta app in development mode may post to the company's own Instagram (Business / Creator, linked to the Facebook Page) without App Review —
+          the person who connects must be an admin of the app. In the Meta app, add this link under Facebook Login › Valid OAuth Redirect URIs:
+        </p>
+        <code className="cp-wide cp-code">{status.redirect_uri}</code>
+        <label>Meta app id<input value={form.app_id} onChange={(event) => setForm({ ...form, app_id: event.target.value })} /></label>
+        <label>App secret {status.meta_app.has_secret ? "(saved — leave empty to keep)" : ""}<input type="password" value={form.app_secret} onChange={(event) => setForm({ ...form, app_secret: event.target.value })} /></label>
+        <label>Login configuration id (only for "Facebook Login for Business")<input value={form.config_id} onChange={(event) => setForm({ ...form, config_id: event.target.value })} /></label>
+        <label>Graph API version<input value={form.graph_version} placeholder="v23.0" onChange={(event) => setForm({ ...form, graph_version: event.target.value })} /></label>
+        <Message error={error} notice={notice} />
+        <div className="cp-wide cp-row">
+          <button type="button" onClick={save}>Save</button>
+          <button type="button" className="primary" disabled={!status.meta_app.app_id || !status.meta_app.has_secret} onClick={connect}>Connect Instagram &amp; Facebook</button>
+          <button type="button" className="link-button" onClick={load}>Refresh</button>
+        </div>
+        <div className="cp-wide">
+          <strong>Connected</strong>
+          {status.accounts.length ? (
+            <ul className="cp-log">
+              {status.accounts.map((account) => (
+                <li key={account.id}>
+                  {PLATFORM_LABELS[account.platform]}: {account.username ? `@${account.username}` : account.name}
+                  <span className="cp-hint"> · by {account.connected_by} · {when(account.updated_at)}</span>
+                  {" "}<button type="button" className="link-button" onClick={() => disconnect(account)}>disconnect</button>
+                </li>
+              ))}
+            </ul>
+          ) : <p className="cp-hint">Nothing connected yet.</p>}
+        </div>
+      </div>
+    </section>
   );
 }
