@@ -3162,7 +3162,9 @@ function financeAuditSendings(state) {
 // the Uniware reference the recorder picks it by (finance_audit_overrides
 // .factuur_ref). Without a reference it can't be fetched (missing_ref).
 const FINANCE_AUDIT_FETCH_DAYS = 60;
-function financeAuditNeededInvoices(state, { from = addDaysToIsoDate(localDateIso(), -FINANCE_AUDIT_FETCH_DAYS), to = localDateIso() } = {}) {
+// Up to yesterday: today's sendings get their facturen later in the day,
+// they aren't missing yet.
+function financeAuditNeededInvoices(state, { from = addDaysToIsoDate(localDateIso(), -FINANCE_AUDIT_FETCH_DAYS), to = addDaysToIsoDate(localDateIso(), -1) } = {}) {
   const items = [];
   const missingRef = [];
   const noNumber = [];
