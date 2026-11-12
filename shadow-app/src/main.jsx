@@ -9598,6 +9598,19 @@ function PdStepPlanPage({ onNavigate }) {
       return localDateIso();
     }
   });
+  // A step plan task opened from the widget: its own day.
+  useEffect(() => {
+    const apply = (link) => {
+      if (link?.page === "pdstepplan" && /^\d{4}-\d{2}-\d{2}$/.test(String(link.date || ""))) {
+        setDate(link.date);
+        window.__appOpenLink = null;
+      }
+    };
+    apply(window.__appOpenLink);
+    const onLink = (event) => apply(event.detail);
+    window.addEventListener("app-open-link", onLink);
+    return () => window.removeEventListener("app-open-link", onLink);
+  }, []);
   const [plan, setPlan] = useState(null);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
