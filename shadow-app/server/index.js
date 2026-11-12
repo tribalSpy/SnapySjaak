@@ -23469,6 +23469,7 @@ async function handleApi(req, res, url) {
         const after = await readUkdocsState();
         const neededAfter = financeAuditNeededInvoices(after);
         const stillNeeded = [...neededAfter.items, ...neededAfter.missing_ref].flatMap((item) => item.invoice_numbers);
+        const haveAfter = new Set((after.finance_audit_invoice_documents || []).map((document) => normalizeUkdocsPrintToken(document.invoice_number)));
         const missingRef = neededAfter.missing_ref.map((item) => `${item.invoice_numbers.join("/")} (${item.customer || "?"} ${item.date})`);
         // A batch at a time: one fetch run per PC and day keeps adding up.
         const runs = after.finance_audit_fetch_runs || [];
@@ -23480,8 +23481,11 @@ async function handleApi(req, res, url) {
           needed: sameRun ? sameRun.needed : neededBefore.items.reduce((sum, item) => sum + item.invoice_numbers.length, 0),
           sent: (sameRun?.sent || 0) + files.length,
           matched: [...new Set([...(sameRun?.matched || []), ...results.filter((result) => result.ok).map((result) => result.invoice_number)])],
-          not_matched: [...(sameRun?.not_matched || []), ...results.filter((result) => !result.ok).map((result) => ({ invoice: result.invoice_number || "", file: result.file_name, error: result.error }))],
-          not_found: [...new Set([...(sameRun?.not_found || []), ...notFound])],
+          // Without what has its factuur by now (a later batch fetched it,
+          // or the right PDF of a wrongly read one came in).
+          not_matched: [...(sameRun?.not_matched || []), ...results.filter((result) => !result.ok).map((result) => ({ invoice: result.invoice_number || "", file: result.file_name, error: result.error }))]
+            .filter((item) => !haveAfter.has(String(item.invoice || "")) && !haveAfter.has((String(item.file || "").match(/\d{5,}/) || [""])[0])),
+          not_found: [...new Set([...(sameRun?.not_found || []), ...notFound])].filter((number) => !haveAfter.has(String(number))),
           still_needed: stillNeeded,
           missing_ref: missingRef,
         };

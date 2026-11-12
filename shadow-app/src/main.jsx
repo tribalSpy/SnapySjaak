@@ -5362,7 +5362,7 @@ function UkdocsPage({ currentUser, onNavigate }) {
               </span>
             )}
           </div>
-          <FinanceAuditFetchSummary runs={state?.finance_audit_fetch_runs || []} isAdmin={currentUser?.role === "admin"} />
+          <FinanceAuditFetchSummary runs={state?.finance_audit_fetch_runs || []} isAdmin={currentUser?.role === "admin"} invoiceDocuments={state?.finance_audit_invoice_documents || []} />
           <div className="table-wrap">
             <table className="data-table">
               <thead>
@@ -10131,8 +10131,17 @@ function buildUsedValueOptions(rows, field, extra = []) {
 // What the Uniware recorder's daily factuur fetch did (newest first): how
 // many facturen the day needed, fetched and matched, and which are still
 // missing -- not found in Uniware, or a PDF that didn't match.
-function FinanceAuditFetchSummary({ runs, isAdmin }) {
-  const last = runs[0] || null;
+function FinanceAuditFetchSummary({ runs, isAdmin, invoiceDocuments = [] }) {
+  // The last run, without what has its factuur by now (fetched later in
+  // the day, or a wrong PDF whose right one came in since).
+  const have = new Set((invoiceDocuments || []).map((document) => String(document.invoice_number || "").trim()).filter(Boolean));
+  const fileNumber = (name) => (String(name || "").match(/\d{5,}/) || [""])[0];
+  const last = runs[0] ? {
+    ...runs[0],
+    not_found: (runs[0].not_found || []).filter((number) => !have.has(String(number))),
+    not_matched: (runs[0].not_matched || []).filter((item) => !have.has(String(item.invoice || "")) && !have.has(fileNumber(item.file))),
+    still_needed: (runs[0].still_needed || []).filter((number) => !have.has(String(number))),
+  } : null;
   // "Check what the next fetch gets": the open audits without a factuur.
   const [check, setCheck] = useState(null);
   const [checking, setChecking] = useState(false);
