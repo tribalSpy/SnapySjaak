@@ -6819,9 +6819,11 @@ function appTaskStepCatalog() {
 async function runAppStepPlanTaskSync(extraDates = []) {
   const state = await readUkdocsState();
   const today = localDateIso();
-  const dates = [...new Set([today, addDaysToIsoDate(today, 1), ...extraDates.filter(Boolean)])];
+  // Today only (and earlier days not green yet) -- never a day ahead.
+  const dates = [...new Set([today, ...extraDates.filter((date) => date && date <= today)])];
   // The step plan of the day plus the Pipeline Monitor's view (what is stuck).
   return syncStepPlanTasks({
+    today,
     dates,
     buildPlan: async (date) => ({
       plan: buildPdStepPlan(state, date),

@@ -605,13 +605,24 @@ function stableJson(value) {
   return JSON.stringify(value ?? null);
 }
 
-export async function syncStepPlanTasks({ dates: wantedDates, buildPlan }) {
+export async function syncStepPlanTasks({ today = "", dates: wantedDates, buildPlan }) {
   let dates = wantedDates || [];
   if (!isDatabaseEnabled()) return { made: 0, closed: 0, updated: 0 };
   const config = await readTaskConfig();
   // The older per-step tasks (one per step): replaced by the one per day.
   const older = await dbQuery("SELECT * FROM app_tasks WHERE source = 'step_plan' AND status IN ('open', 'in_progress') AND source_key LIKE 'step_plan:%:%'");
   await closeTasks(older.rows, "system", "Replaced by one step plan task per day.");
+  // A day ahead is not tracked (made once before): it closes now, and on
+  // its own day it opens again by itself (closed by "system").
+  if (today) {
+    const ahead = await dbQuery(
+      "SELECT * FROM app_tasks WHERE source = 'step_plan' AND status IN ('open', 'in_progress') AND source_key ~ '^step_plan:[0-9]{4}-[0-9]{2}-[0-9]{2}$' AND substr(source_key, 11) > $1",
+      [today],
+    );
+    await closeTasks(ahead.rows, "system", "Not today yet -- it opens again on its own day.");
+    older.rows.push(...ahead.rows);
+    dates = dates.filter((date) => date <= today);
+  }
   if (!config.step_plan.enabled || !config.step_plan.assign_to) return { made: 0, closed: older.rows.length, updated: 0 };
   const assignee = parseAssignee(config.step_plan.assign_to);
   // Earlier days whose task is still open are followed until they are green.
