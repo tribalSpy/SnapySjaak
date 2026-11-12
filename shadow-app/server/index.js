@@ -23342,7 +23342,17 @@ async function handleApi(req, res, url) {
         await writeUkdocsState(after);
         sendJson(res, 200, { date, results: results.map(({ document, ...rest }) => rest), still_needed: stillNeeded, missing_ref: missingRef });
         // The day's task on the task board: done (with what the run did).
-        closeFacturenTask(date, `uniware:${agent}`, `${summary.matched.length} matched, ${summary.not_found.length} not found in Uniware, ${stillNeeded.length} still missing${missingRef.length ? ` (${missingRef.length} without Uniware ref)` : ""}.`).catch(() => {});
+        // Done only when every factuur with a code was tried (found or not
+        // found in Uniware); a run that stopped halfway leaves it open.
+        const triedNotFound = new Set(summary.not_found);
+        const withRefLeft = neededAfter.items.flatMap((item) => item.invoice_numbers);
+        const untried = withRefLeft.filter((number) => !triedNotFound.has(number));
+        closeFacturenTask(
+          date,
+          `uniware:${agent}`,
+          `${summary.matched.length} matched, ${summary.not_found.length} not found in Uniware, ${stillNeeded.length} still missing${missingRef.length ? ` (${missingRef.length} without Uniware ref)` : ""}${untried.length ? ` -- the run stopped with ${untried.length} not tried yet; run it again.` : "."}`,
+          { withRef: withRefLeft.length, missingRef: neededAfter.missing_ref.reduce((sum, item) => sum + item.invoice_numbers.length, 0), finished: !untried.length },
+        ).catch(() => {});
         return;
       }
       sendJson(res, 404, { error: "Not found" });

@@ -674,9 +674,7 @@ export async function syncFacturenTask({ date, withRef, missingRef }) {
   if (!config.facturen.enabled || !config.facturen.assign_to) return null;
   if ([0, 6].includes(new Date(`${date}T12:00:00Z`).getUTCDay())) return null;
   const sourceKey = `recorder:facturen:${date}`;
-  const total = withRef + missingRef;
-  const title = `Facturen Finance Audit ${date} · ${total} missing${missingRef ? ` (${missingRef} without Uniware ref)` : ""}`;
-  const link = { page: "ukdocs", recorder_action: config.facturen.action, missing: total, with_ref: withRef, missing_ref: missingRef };
+  const { title, link } = facturenTaskTitle(date, withRef, missingRef, config.facturen.action);
   const existing = (await dbQuery("SELECT * FROM app_tasks WHERE source_key = $1", [sourceKey])).rows[0];
   if (!existing) {
     if (!withRef) return null;
@@ -690,10 +688,19 @@ export async function syncFacturenTask({ date, withRef, missingRef }) {
       link,
     });
   }
-  if (OPEN_STATUSES.includes(existing.status) && existing.title !== title) {
+  // The count follows what's really missing, also on a task marked done.
+  if (existing.title !== title) {
     await dbQuery("UPDATE app_tasks SET title = $2, link = $3, updated_at = now() WHERE id = $1", [existing.id, title, JSON.stringify(link)]);
   }
   return existing;
+}
+
+function facturenTaskTitle(date, withRef, missingRef, action) {
+  const total = withRef + missingRef;
+  return {
+    title: `Facturen Finance Audit ${date} · ${total} missing${missingRef ? ` (${missingRef} without Uniware ref)` : ""}`,
+    link: { page: "ukdocs", recorder_action: action, missing: total, with_ref: withRef, missing_ref: missingRef },
+  };
 }
 
 // A factuur number typed on more than one sending (one is wrong): one task
@@ -727,10 +734,26 @@ export async function syncInvoiceDuplicateTasks({ duplicates }) {
   return { made, closed: fixed.length };
 }
 
-export async function closeFacturenTask(date, by, note) {
+// A fetch run sent its facturen: the day's task shows the new count and the
+// run's note; it's done only when the run got through every factuur it could
+// try (one that stopped halfway leaves the task open for the next run).
+export async function closeFacturenTask(date, by, note, counts = null) {
   if (!isDatabaseEnabled()) return;
-  const open = (await dbQuery("SELECT * FROM app_tasks WHERE source_key = $1 AND status IN ('open', 'in_progress')", [`recorder:facturen:${date}`])).rows;
-  await closeTasks(open, by, note);
+  const row = (await dbQuery("SELECT * FROM app_tasks WHERE source_key = $1", [`recorder:facturen:${date}`])).rows[0];
+  if (!row) return;
+  if (counts) {
+    const config = await readTaskConfig();
+    const { title, link } = facturenTaskTitle(date, counts.withRef, counts.missingRef, config.facturen.action);
+    if (row.title !== title) {
+      await dbQuery("UPDATE app_tasks SET title = $2, link = $3, updated_at = now() WHERE id = $1", [row.id, title, JSON.stringify(link)]);
+    }
+  }
+  if (counts && !counts.finished) {
+    if (note) await logTaskEvent(row.id, by, "note", "", note);
+    return;
+  }
+  if (OPEN_STATUSES.includes(row.status)) await closeTasks([row], by, note);
+  else if (note) await logTaskEvent(row.id, by, "note", "", note);
 }
 
 // ---------------------------------------------------------------------------
