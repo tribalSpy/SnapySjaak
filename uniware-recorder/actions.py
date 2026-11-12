@@ -2326,6 +2326,10 @@ class ActionRun:
         if not target.strip():
             raise RuntimeError(f"{label}: no value to look for in the list (fill in the field).")
         direction, previous_text = "Down", None
+        # A number in a list whose numbers run in order (e.g. facturen):
+        # once the list has gone past it, it isn't there -- stop looking.
+        numeric = target.strip().isdigit()
+        seen_numbers: list[int] = []
         for _ in range(60):
             self._check(hwnd)
             image, _, _, _, text, layout = self._read(hwnd, timeout=1.5)
@@ -2344,6 +2348,14 @@ class ActionRun:
                 self._press(controller, "Down" if distance > 0 else "Up", abs(distance))
                 previous_text = None
                 continue
+            if numeric:
+                passed = self._passed_number(rows, int(target.strip()), len(target.strip()), seen_numbers, direction)
+                if passed == "gone":
+                    raise RuntimeError(f"{label}: '{target}' is not in the list (the numbers go past it).")
+                if passed == "other_way":
+                    if direction == "Up":
+                        raise RuntimeError(f"{label}: '{target}' is not in the list (the numbers go past it).")
+                    direction, previous_text = "Up", None
             # Not on screen: move past the visible rows to scroll the list.
             if text == previous_text:
                 if direction == "Up":
@@ -2355,6 +2367,33 @@ class ActionRun:
             self._press(controller, direction, to_edge + max(1, len(rows) - 1))
         self._save_problem_screen(screen_reader.capture_window(hwnd))
         raise RuntimeError(f"{label}: '{target}' is not in the list today. Stopped (screenshot in outputs).")
+
+    @staticmethod
+    def _passed_number(rows, target: int, length: int, seen_numbers: list, direction: str) -> str:
+        """The list's numbers of the target's length (one per row, e.g. the
+        factuur column -- not dates or longer numbers): "gone" when the
+        target lies between numbers already seen (so it isn't there),
+        "other_way" when it lies on the side we're scrolling away from, ""
+        when it may still come."""
+        pattern = re.compile(r"(?<![\d\-./,])(\d{%d})(?![\d\-./,])" % length)
+        numbers = []
+        for row in rows:
+            match = pattern.search(row.get("text") or "")
+            if match:
+                numbers.append(int(match.group(1)))
+        if len(numbers) < 2:
+            return ""
+        seen_numbers.extend(numbers)
+        low, high = min(seen_numbers), max(seen_numbers)
+        if low < target < high:
+            return "gone"
+        ascending = numbers[-1] > numbers[0]
+        further_down = target > high if ascending else target < low
+        if direction == "Down" and not further_down:
+            return "other_way"
+        if direction == "Up" and further_down:
+            return "gone"
+        return ""
 
     def _save_problem_screen(self, image):
         OUTPUTS_DIR.mkdir(parents=True, exist_ok=True)
@@ -2446,7 +2485,9 @@ class ActionRun:
         matched = [result for result in results if result.get("ok")]
         self.say(f"SnappySjaak: {len(matched)} matched, {len(results) - len(matched)} not matched" + (f"; still without factuur: {', '.join(answer.get('still_needed') or [])}" if answer.get("still_needed") else " -- all facturen of the day are in."))
         for result in results:
-            if not result.get("ok"):
+            if result.get("ok"):
+                self.say(f"  {result.get('file_name')}: factuur {result.get('invoice_number')} matched")
+            else:
                 self.say(f"  not matched: {result.get('file_name')} -- {result.get('error')}")
         if fill_list:
             data = load_day_list(fill_list)

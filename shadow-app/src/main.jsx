@@ -10066,6 +10066,16 @@ function FinanceAuditFetchSummary({ runs, isAdmin }) {
             {checkRows.some((row) => row.status === "no_code") && <>, <span className="ukdocs-status-badge danger">{checkRows.filter((row) => row.status === "no_code").length} no customer code</span></>}
             {checkRows.some((row) => row.status === "no_number") && <>, <span className="ukdocs-status-badge danger">{checkRows.filter((row) => row.status === "no_number").length} no factuur number</span></>}
           </div>
+          {!!check.duplicates?.length && (
+            <div className="fa-fetch-line">
+              <span className="ukdocs-status-badge danger">Same factuur number on more than one sending</span>
+              {check.duplicates.map((item) => (
+                <span key={item.invoice} title="One of these is wrong -- fix it with right-click > Edit invoice numbers on that sending">
+                  <strong>{item.invoice}</strong>: {item.sendings.map((owner) => `${owner.customer || "?"} ${owner.date} (${categoryLabel(owner.category)})`).join(" + ")};
+                </span>
+              ))}
+            </div>
+          )}
           {checkRows.length ? (
             <div className="table-wrap">
               <table className="data-table">

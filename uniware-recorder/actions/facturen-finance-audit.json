@@ -10,7 +10,7 @@
   "uniware_dump_dir": "",
   "uniware_dump_pattern": "dump.*.csv",
   "uniware_dump_wait": 180,
-  "back_key": "Esc",
+  "back_key": "F12",
   "close_dump_window": true,
   "join_dumps": false,
   "snappysjaak_send": true,

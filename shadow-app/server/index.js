@@ -3166,6 +3166,10 @@ function financeAuditNeededInvoices(state, { from = addDaysToIsoDate(localDateIs
   const missingRef = [];
   const noNumber = [];
   const seen = new Set();
+  // A factuur exists once: its PDF on any sending counts (a number typed on
+  // two sendings by mistake must not be fetched again every day).
+  const haveNumbers = new Set((state.finance_audit_invoice_documents || []).map((document) => normalizeUkdocsPrintToken(document.invoice_number)));
+  const owners = new Map();
   const sendings = financeAuditSendings(state)
     .filter((item) => String(item.shipment_date || "").slice(0, 10) >= from && String(item.shipment_date || "").slice(0, 10) <= to)
     .sort((left, right) => String(left.shipment_date || "").localeCompare(String(right.shipment_date || "")));
@@ -3177,12 +3181,14 @@ function financeAuditNeededInvoices(state, { from = addDaysToIsoDate(localDateIs
         noNumber.push({ shipment_id: shipment.id, category, customer: customer?.customer_name || "", date: String(shipment.shipment_date || "").slice(0, 10) });
         continue;
       }
+      const date = String(shipment.shipment_date || "").slice(0, 10);
+      for (const token of ukdocsPrintInvoiceTokens(shipment.invoice_numbers_by_category?.[category])) {
+        owners.set(token, [...(owners.get(token) || []), { shipment_id: shipment.id, category, customer: customer?.customer_name || "", date }]);
+      }
       const missing = ukdocsPrintInvoiceTokens(shipment.invoice_numbers_by_category?.[category]).filter((token) => {
         if (seen.has(token)) return false;
         seen.add(token);
-        return !(state.finance_audit_invoice_documents || []).some((document) => (
-          document.shipment_id === shipment.id && document.category === category && normalizeUkdocsPrintToken(document.invoice_number) === token
-        ));
+        return !haveNumbers.has(token);
       });
       if (!missing.length) continue;
       const override = (state.finance_audit_overrides || []).find((item) => item.shipment_id === shipment.id && item.category === category);
@@ -3199,7 +3205,12 @@ function financeAuditNeededInvoices(state, { from = addDaysToIsoDate(localDateIs
       (entry.ref ? items : missingRef).push(entry);
     }
   }
-  return { from, to, items, missing_ref: missingRef, no_number: noNumber };
+  // The same factuur number on more than one sending: one of them is wrong
+  // (fix it with "Edit invoice numbers").
+  const duplicates = [...owners.entries()]
+    .filter(([, list]) => new Set(list.map((owner) => owner.shipment_id)).size > 1)
+    .map(([invoice, list]) => ({ invoice, sendings: list }));
+  return { from, to, items, missing_ref: missingRef, no_number: noNumber, duplicates };
 }
 
 // The Uniware recorder's daily fetches, newest first (the last 30).
