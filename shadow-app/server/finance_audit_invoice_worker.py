@@ -157,6 +157,30 @@ def _decimal(text: str) -> float | None:
         return None
 
 
+PRICE_THEN_TAIL_RE = re.compile(r"(\d+[.,]\d{2,3})\s+([\d.,][\d.,\s]*)$")
+
+
+def _join_split_amount(line: str) -> str:
+    """The PDF's text splits an amount anywhere ("46 .25", "17.5 0",
+    "65. 60", "13 4.50"): after the price, the rest of the line is the
+    amount -- glued together when pieces x price then gives it."""
+    if re.match(r"^\d+\s+x\s*\d+[.,]\d+\s*=", line):
+        # A bouquet's content (no price to check with): only an amount
+        # split inside its last "x.yy" -- "5.5 8", "13. 20", "46 .25".
+        return re.sub(r"\s(\d+)(?=\s?[.,]\s?\d\s?\d$)\s?([.,])\s?(\d)\s?(\d)$", r" \1\2\3\4", line)
+    head = re.match(r"^(\d+)\s+(?:x\s*\d+\s*=\s*(\d+)\s+)?", line)
+    match = PRICE_THEN_TAIL_RE.search(line)
+    if not head or not match or " " not in match.group(2).strip():
+        return line
+    pieces = int(head.group(2) or head.group(1))
+    price = _decimal(match.group(1))
+    amount_text = re.sub(r"\s+", "", match.group(2))
+    amount = normalize_amount(amount_text)
+    if price is None or amount is None or abs(pieces * price - amount) > 0.02 + amount * 0.001:
+        return line
+    return f"{line[:match.start(2)].rstrip()} {amount_text}"
+
+
 def parse_invoice_lines(text: str) -> list[dict]:
     """The goods lines, up to the last "Sub total" (the packaging and the
     statistics block after it are never in the export). A bouquet counts
@@ -166,7 +190,7 @@ def parse_invoice_lines(text: str) -> list[dict]:
     cut = text.rfind("Sub total")
     goods = text[:cut] if cut >= 0 else text
     lines = []
-    raw = [line.strip() for line in goods.splitlines()]
+    raw = [_join_split_amount(line.strip()) for line in goods.splitlines()]
     for index, line in enumerate(raw):
         part = PART_LINE_RE.match(line)
         if part:
@@ -341,7 +365,15 @@ def explain_difference(invoice_lines: list[dict], export_lines: list[dict]) -> d
 def explain_files(data_path: Path, pdf_paths: list[Path]) -> dict:
     invoice_lines = []
     for pdf in pdf_paths:
-        invoice_lines += parse_invoice_lines(extract_pdf_text(pdf))
+        text = extract_pdf_text(pdf)
+        lines = parse_invoice_lines(text)
+        # All lines read? They must add up to the factuur's own total, or
+        # the "difference" would be lines we just couldn't read.
+        total = parse_invoice_text(text).get("total_amount")
+        read = round(sum(line["amount"] for line in lines), 2)
+        if total is not None and abs(read - total) > 0.02:
+            return {"ok": False, "error": f"Could not read all of factuur {pdf.stem}'s lines ({read:.2f} of {total:.2f}) -- can't say exactly where the difference is.", "text": ""}
+        invoice_lines += lines
     export_lines = read_export_lines(data_path)
     if not invoice_lines:
         return {"ok": False, "error": "Could not read the factuur's lines", "text": ""}
