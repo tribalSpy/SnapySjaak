@@ -797,6 +797,35 @@ def _column_of(layout: list, anchor: dict) -> list[dict]:
     return items
 
 
+def _teal_list_cursor(rows: list[dict]) -> list[dict]:
+    """A list drawn all in teal (e.g. Prg. 243's popup of a customer's
+    facturen): there the selected row is the one row that is NOT teal (it's
+    grey). Four or more teal rows in a row = such a list; its selected row
+    is the lone non-teal row in or right next to that block (and, when the
+    rows start with the same code, starting with it too). Not one clear row
+    = nothing marked selected (the run stops rather than guess)."""
+    teal = [index for index, row in enumerate(rows) if row["highlighted"]]
+    if len(teal) < 4:
+        return rows
+    first, last = teal[0], teal[-1]
+    block = rows[first:last + 1]
+    if sum(1 for row in block if row["highlighted"]) < 0.8 * len(block):
+        return rows
+    gaps = sorted(rows[index + 1]["y"] - rows[index]["y"] for index in range(first, last))
+    step = gaps[len(gaps) // 2] if gaps else 26
+    candidates = [index for index in range(first, last + 1) if not rows[index]["highlighted"]]
+    if first > 0 and rows[first]["y"] - rows[first - 1]["y"] <= 1.6 * step:
+        candidates.append(first - 1)
+    if last < len(rows) - 1 and rows[last + 1]["y"] - rows[last]["y"] <= 1.6 * step:
+        candidates.append(last + 1)
+    first_words = [row["text"].split()[0] for row in block if row["highlighted"] and row["text"].split()]
+    common = max(set(first_words), key=first_words.count) if first_words else ""
+    if common and first_words.count(common) >= 0.8 * len(first_words):
+        candidates = [index for index in candidates if rows[index]["text"].split()[:1] == [common]]
+    chosen = candidates[0] if len(candidates) == 1 else None
+    return [{**row, "highlighted": index == chosen} for index, row in enumerate(rows)]
+
+
 def list_items(layout: list, target: str) -> list[dict]:
     """The list to move through, as rows {text, y, highlighted}. A popup
     list lies on top of a table (its own teal cell vs the table's teal row):
@@ -2333,7 +2362,7 @@ class ActionRun:
         for _ in range(60):
             self._check(hwnd)
             image, _, _, _, text, layout = self._read(hwnd, timeout=1.5)
-            rows = list_items(layout, target)
+            rows = _teal_list_cursor(list_items(layout, target))
             highlighted = [index for index, row in enumerate(rows) if row["highlighted"]]
             if not highlighted:
                 self._save_problem_screen(image)
@@ -2732,6 +2761,14 @@ class ActionRun:
             self.say(f"Step {number}: {step['key']}" + (f" on '{step['pick']}'" if step.get("pick") else f" on '{step['enter_on']}'" if step.get("enter_on") else ""))
         reading = self._wait_for(hwnd, step, f"Step {number}")
         screen_id, title, selected, text, layout = reading
+        # Opened a row by its number (e.g. a factuur): Uniware's title shows
+        # "Fak. : <number>" -- another number = the wrong row was opened, so
+        # stop before printing the wrong one.
+        if step.get("pick") and "{" in step["pick"]:
+            wanted = re.sub(r"\{([a-z0-9_]+)\}", lambda match: self.values.get(match.group(1), ""), step["pick"]).strip()
+            opened = re.search(r"Fak\.?\s*:?\s*([0-9OoSsIlBDZ]{5,8})", title or "")
+            if wanted.isdigit() and opened and clean_number(opened.group(1)) != wanted:
+                raise RuntimeError(f"opened factuur {clean_number(opened.group(1))}, not {wanted} -- the wrong row; not printed")
         if step.get("read_column") and step.get("read_field"):
             self._read_column_value(hwnd, step, f"Step {number}", layout)
         if step.get("capture"):
