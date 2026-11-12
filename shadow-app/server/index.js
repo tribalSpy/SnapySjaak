@@ -3176,8 +3176,8 @@ async function saveFinanceAuditDataFiles(shipmentId, uploadedFiles) {
 // The factuur(s) of a sending + category against its data file, line by
 // line: { ok, text, only_export, only_factuur, price_diff, pieces_diff,
 // factuur, export } -- or { ok: false, error }.
-async function explainFinanceAuditDifference(state, shipmentId, category) {
-  const dataPath = financeAuditDataFilePath(shipmentId, category);
+async function explainFinanceAuditDifference(state, shipmentId, category, candidatePath = "") {
+  const dataPath = candidatePath || financeAuditDataFilePath(shipmentId, category);
   if (!dataPath || !(await fs.stat(dataPath).catch(() => null))) {
     return { ok: false, missing_data: true, error: "No data file kept for this sending (made before this was added) -- pick it with Explain…" };
   }
@@ -3201,11 +3201,16 @@ async function explainFinanceAuditDifferences(pairs, { overwrite = false } = {})
   const results = [];
   const state = await readUkdocsState();
   for (const pair of unique) {
-    const result = await explainFinanceAuditDifference(state, pair.shipment_id, pair.category);
+    const result = await explainFinanceAuditDifference(state, pair.shipment_id, pair.category, pair.data_path || "");
     results.push({ ...pair, ...result });
   }
+  // A data file that doesn't fit the factuur: our own earlier note (from
+  // that wrong file) goes; a note someone typed stays.
+  // Only when the KEPT file is wrong -- a wrong file just picked isn't kept,
+  // and the note from the right kept file stays.
+  const wrong = results.filter((result) => result.wrong_file && !result.data_path);
   const notes = results.filter((result) => result.ok && result.text);
-  if (!notes.length) return results;
+  if (!notes.length && !wrong.length) return results;
   const fresh = await readUkdocsState();
   const overrides = [...(fresh.finance_audit_overrides || [])];
   let changed = false;
@@ -3223,6 +3228,14 @@ async function explainFinanceAuditDifferences(pairs, { overwrite = false } = {})
     }
     result.opmerking_set = true;
     changed = true;
+  }
+  for (const result of wrong) {
+    const index = overrides.findIndex((item) => item.shipment_id === result.shipment_id && item.category === result.category);
+    if (index >= 0 && String(overrides[index].opmerking || "").startsWith("Factuur check:")) {
+      overrides[index] = { ...overrides[index], opmerking: "" };
+      result.opmerking_cleared = true;
+      changed = true;
+    }
   }
   if (changed) {
     fresh.finance_audit_overrides = overrides;
@@ -26630,11 +26643,20 @@ async function handleApi(req, res, url) {
       sendJson(res, 404, { error: "Sending not found" });
       return;
     }
+    // A picked data file is tried first and kept only when it fits the
+    // factuur (a wrong one never replaces the kept one).
     const dataBase64 = String(body?.data_file?.content_base64 || "").trim();
-    if (dataBase64) {
-      await saveFinanceAuditDataFiles(shipmentId, { [category]: { content_base64: dataBase64 } });
+    const keptPath = financeAuditDataFilePath(shipmentId, category);
+    const candidatePath = dataBase64 ? `${keptPath}.${crypto.randomUUID()}.candidate` : "";
+    if (candidatePath) {
+      await fs.mkdir(financeAuditDataFilesDir, { recursive: true });
+      await fs.writeFile(candidatePath, Buffer.from(dataBase64, "base64"));
     }
-    const [result] = await explainFinanceAuditDifferences([{ shipment_id: shipmentId, category }]);
+    const [result] = await explainFinanceAuditDifferences([{ shipment_id: shipmentId, category, data_path: candidatePath }]);
+    if (candidatePath) {
+      if (result && !result.wrong_file && !result.missing_data) await fs.rename(candidatePath, keptPath);
+      else await fs.unlink(candidatePath).catch(() => {});
+    }
     const nextState = await readUkdocsState();
     sendJson(res, 200, { result, finance_audit_overrides: nextState.finance_audit_overrides });
     return;

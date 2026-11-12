@@ -265,6 +265,18 @@ def explain_difference(invoice_lines: list[dict], export_lines: list[dict]) -> d
     # 1. The same line on both sides (same product first).
     pair(lambda f, e: _name_key(f["description"]) == _name_key(e["description"]) and f["pieces"] == e["pieces"] and _same(f["amount"], e["amount"]))
     pair(lambda f, e: f["pieces"] == e["pieces"] and _same(f["amount"], e["amount"]))
+    # Most lines without their twin: the data file of another sending (picked
+    # by mistake) -- say so instead of listing everything as a difference.
+    same_lines = len(invoice_lines) - len(facts)
+    if invoice_lines and same_lines < 0.5 * len(invoice_lines):
+        return {
+            "ok": False,
+            "wrong_file": True,
+            "error": f"This data file doesn't fit this factuur: only {same_lines} of its {len(invoice_lines)} lines are the same -- pick the right data file.",
+            "text": "",
+            "factuur": {"lines": len(invoice_lines), "pieces": sum(line["pieces"] for line in invoice_lines), "amount": round(sum(line["amount"] for line in invoice_lines), 2)},
+            "export": {"lines": len(export_lines), "pieces": sum(line["pieces"] for line in export_lines), "amount": round(sum(line["amount"] for line in export_lines), 2)},
+        }
     # 2. One side split over several lines of one product.
     for export in list(exports):
         same = [f for f in facts if _name_key(f["description"]) == _name_key(export["description"])]

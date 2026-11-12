@@ -4331,7 +4331,7 @@ function UkdocsPage({ currentUser, onNavigate }) {
       }
       const label = `${row.customer_name || "Sending"} ${row.datum || ""} ${row.type || row.category}`;
       if (result.ok) setMessage(`${label}: ${result.text || "no difference line by line."}${result.opmerking_set ? " (put in Opmerking)" : ""}`);
-      else setError(`${label}: ${result.error || "could not compare."}`);
+      else setError(`${label}: ${result.error || "could not compare."}${result.opmerking_cleared ? " (the earlier Factuur check note was removed)" : ""}`);
       setFinanceAuditExplain((current) => ({
         ...current,
         [key]: result.ok
@@ -5486,6 +5486,17 @@ function UkdocsPage({ currentUser, onNavigate }) {
                                         {(!comparison.colliMatch || !comparison.amountMatch) && (
                                           <button type="button" className="fa-explain-button" disabled={financeAuditExplain[row.key]?.busy} onClick={() => explainFinanceAuditRow(row)} title="Compares the factuur's lines with the data file's lines; the difference goes into an empty Opmerking">
                                             {financeAuditExplain[row.key]?.busy ? "Comparing…" : "Where is the difference?"}
+                                          </button>
+                                        )}
+                                        {(!comparison.colliMatch || !comparison.amountMatch) && (
+                                          <button
+                                            type="button"
+                                            className="fa-explain-button"
+                                            disabled={financeAuditExplain[row.key]?.busy}
+                                            onClick={() => { financeAuditDataTarget.current = row; financeAuditDataInputRef.current?.click(); }}
+                                            title="Pick (another) data file for this line -- the one uploaded in UKdocs; it replaces the kept one only when it fits this factuur"
+                                          >
+                                            Other data file…
                                           </button>
                                         )}
                                       </>
