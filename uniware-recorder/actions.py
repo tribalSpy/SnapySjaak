@@ -1356,6 +1356,7 @@ class ActionRun:
         self.exported_files: list[str] = []
         self.dump_parts: list[Path] = []  # "join the dumps": one per Ctrl+P
         self.used_dump_files: set[str] = set()  # never the same file twice
+        self.viewer_dirs: list[str] = []  # folders a viewer's file was found in this run
         # The collected columns waiting for the dump that only arrives at the
         # end (Uniware's own folder dump, "dump.filipe....csv").
         self.pending_dump_merge = None
@@ -1558,7 +1559,21 @@ class ActionRun:
         extra = [self.action.get("uniware_dump_dir") or "", self.action.get("export_dir") or ""]
         while source is None:
             title = shown_title()
-            source = dump_file_of_window(pid, title, self.started.timestamp(), extra, self.used_dump_files)
+            # The folder(s) the viewer's files are in (the action's
+            # "viewer_file_dirs", e.g. Uniware's \\10.1.21.4\docs\Office\cmd\tmp,
+            # and where one was found this run): the file by its name there,
+            # without listing the folder. A viewer started by hand on a file
+            # elsewhere (Downloads) otherwise sends the search there.
+            name = window_file_name(title)
+            if name:
+                configured = self.action.get("viewer_file_dirs") or []
+                for folder in ([configured] if isinstance(configured, str) else list(configured)) + self.viewer_dirs:
+                    path = Path(this_pcs_folder(str(folder))) / name if folder else None
+                    if path is not None and path.is_file() and str(path).lower() not in self.used_dump_files:
+                        source = path
+                        break
+            if source is None:
+                source = dump_file_of_window(pid, title, self.started.timestamp(), extra, self.used_dump_files)
             if source is None:
                 if time.time() - started > max_wait + 30:
                     raise RuntimeError(f"{label}: could not find the file shown in '{title}'. Tell which folder it is in under Edit (Uniware saves its dump in).")
@@ -1571,6 +1586,8 @@ class ActionRun:
             previous_size = size
             time.sleep(1)
         self.used_dump_files.add(str(source).lower())
+        if str(source.parent) not in self.viewer_dirs:
+            self.viewer_dirs.append(str(source.parent))
         if self.action.get("join_dumps"):
             # Several dumps in one run (e.g. tour 508: one per company) become
             # one file at the end -- named then, so a value read later (the

@@ -192,5 +192,8 @@
       "max_wait": 30,
       "wait_text": ""
     }
+  ],
+  "viewer_file_dirs": [
+    "\\\\10.1.21.4\\docs\\Office\\cmd\\tmp"
   ]
 }
