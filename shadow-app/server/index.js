@@ -3164,6 +3164,7 @@ const FINANCE_AUDIT_FETCH_DAYS = 60;
 function financeAuditNeededInvoices(state, { from = addDaysToIsoDate(localDateIso(), -FINANCE_AUDIT_FETCH_DAYS), to = localDateIso() } = {}) {
   const items = [];
   const missingRef = [];
+  const noNumber = [];
   const seen = new Set();
   const sendings = financeAuditSendings(state)
     .filter((item) => String(item.shipment_date || "").slice(0, 10) >= from && String(item.shipment_date || "").slice(0, 10) <= to)
@@ -3172,6 +3173,10 @@ function financeAuditNeededInvoices(state, { from = addDaysToIsoDate(localDateIs
     const customer = (state.customers || []).find((item) => item.id === shipment.customer_id);
     for (const category of ["508", "515", "1000", "920"]) {
       if (!shipment.uploaded_files?.[category]?.file_name) continue;
+      if (!ukdocsPrintInvoiceTokens(shipment.invoice_numbers_by_category?.[category]).length) {
+        noNumber.push({ shipment_id: shipment.id, category, customer: customer?.customer_name || "", date: String(shipment.shipment_date || "").slice(0, 10) });
+        continue;
+      }
       const missing = ukdocsPrintInvoiceTokens(shipment.invoice_numbers_by_category?.[category]).filter((token) => {
         if (seen.has(token)) return false;
         seen.add(token);
@@ -3194,7 +3199,7 @@ function financeAuditNeededInvoices(state, { from = addDaysToIsoDate(localDateIs
       (entry.ref ? items : missingRef).push(entry);
     }
   }
-  return { from, to, items, missing_ref: missingRef };
+  return { from, to, items, missing_ref: missingRef, no_number: noNumber };
 }
 
 // The Uniware recorder's daily fetches, newest first (the last 30).
@@ -26390,6 +26395,16 @@ async function handleApi(req, res, url) {
       "cache-control": "no-store",
     });
     res.end(`${JSON.stringify({ server_url: `${proto}://${host}`, api_key: llmPollerApiKey }, null, 2)}\n`);
+    return;
+  }
+
+  // What the next daily factuur fetch gets (the open audits of the last 60
+  // days without a factuur) -- the same list the recorder asks for.
+  if (url.pathname === "/api/finance-audit/needed-invoices" && req.method === "GET") {
+    if (!requirePermission(res, requestUser, PERMISSIONS.UKDOCS_VIEW)) {
+      return;
+    }
+    sendJson(res, 200, financeAuditNeededInvoices(await readUkdocsState()));
     return;
   }
 

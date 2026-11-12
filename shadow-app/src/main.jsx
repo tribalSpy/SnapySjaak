@@ -10026,6 +10026,25 @@ function buildUsedValueOptions(rows, field, extra = []) {
 // missing -- not found in Uniware, or a PDF that didn't match.
 function FinanceAuditFetchSummary({ runs, isAdmin }) {
   const last = runs[0] || null;
+  // "Check what the next fetch gets": the open audits without a factuur.
+  const [check, setCheck] = useState(null);
+  const [checking, setChecking] = useState(false);
+  async function runCheck() {
+    setChecking(true);
+    try {
+      setCheck(await apiJson("/api/finance-audit/needed-invoices"));
+    } catch (checkError) {
+      setCheck({ error: checkError.message });
+    } finally {
+      setChecking(false);
+    }
+  }
+  const checkRows = check && !check.error ? [
+    ...(check.items || []).flatMap((item) => item.invoice_numbers.map((number) => ({ ...item, number, status: "fetch" }))),
+    ...(check.missing_ref || []).flatMap((item) => item.invoice_numbers.map((number) => ({ ...item, number, status: "no_code" }))),
+    ...(check.no_number || []).map((item) => ({ ...item, number: "", ref: "", status: "no_number" })),
+  ].sort((left, right) => String(left.date).localeCompare(String(right.date)) || String(left.customer).localeCompare(String(right.customer))) : [];
+  const categoryLabel = (code) => UKDOCS_CATEGORY_DEFINITIONS.find((item) => item.code === code)?.label || code;
   const line = (run) => {
     const missing = run.still_needed?.length || 0;
     return `${run.date}: ${run.needed} to fetch, ${run.sent} fetched, ${run.matched.length} matched${missing ? `, ${missing} still missing (last 60 days)` : " -- complete"}`;
@@ -10035,8 +10054,43 @@ function FinanceAuditFetchSummary({ runs, isAdmin }) {
       <div className="fa-fetch-head">
         <strong>Automatic factuur fetch (Uniware)</strong>
         <span>{last ? `${line(last)} · ${formatTimestamp(last.at)}${last.agent ? ` · ${last.agent}` : ""}` : "Not run yet -- the recorder's daily action fills this in."}</span>
+        <button type="button" className="fa-fetch-check" onClick={check ? () => setCheck(null) : runCheck} disabled={checking}>{checking ? "Checking…" : check ? "Hide the check" : "Check what the next fetch gets"}</button>
         {isAdmin && <a href="/api/agent/recorder-config" title="The recorder's connection file (server address + key) -- put it in the uniware-recorder folder">Recorder setup file</a>}
       </div>
+      {check?.error && <div className="notice danger">{check.error}</div>}
+      {check && !check.error && (
+        <div className="fa-fetch-checklist">
+          <div>
+            Open audits without a factuur, {check.from} -- {check.to}:{" "}
+            <strong>{checkRows.filter((row) => row.status === "fetch").length} will be fetched</strong>
+            {checkRows.some((row) => row.status === "no_code") && <>, <span className="ukdocs-status-badge danger">{checkRows.filter((row) => row.status === "no_code").length} no customer code</span></>}
+            {checkRows.some((row) => row.status === "no_number") && <>, <span className="ukdocs-status-badge danger">{checkRows.filter((row) => row.status === "no_number").length} no factuur number</span></>}
+          </div>
+          {checkRows.length ? (
+            <div className="table-wrap">
+              <table className="data-table">
+                <thead><tr><th>Datum</th><th>Customer</th><th>Type</th><th>Factuur nummer</th><th>Uniware code</th><th>Next fetch</th></tr></thead>
+                <tbody>
+                  {checkRows.map((row, index) => (
+                    <tr key={`${row.shipment_id}-${row.category}-${row.number}-${index}`}>
+                      <td>{row.date}</td>
+                      <td>{row.customer || "-"}</td>
+                      <td>{categoryLabel(row.category)}</td>
+                      <td>{row.number || "-"}</td>
+                      <td>{row.ref || "-"}</td>
+                      <td>
+                        {row.status === "fetch" && <span className="ukdocs-status-badge success">✓ will be fetched</span>}
+                        {row.status === "no_code" && <span className="ukdocs-status-badge danger">✕ no Uniware code -- set it on the customer</span>}
+                        {row.status === "no_number" && <span className="ukdocs-status-badge danger">✕ no factuur number on the sending</span>}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          ) : <div className="muted">Nothing open -- every audit of the last 60 days has its factuur.</div>}
+        </div>
+      )}
       {!!last?.not_found?.length && <div className="fa-fetch-line"><span className="ukdocs-status-badge danger">Not found in Uniware</span> {last.not_found.join(", ")}</div>}
       {!!last?.not_matched?.length && (
         <div className="fa-fetch-line">
