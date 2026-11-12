@@ -4329,6 +4329,9 @@ function UkdocsPage({ currentUser, onNavigate }) {
         financeAuditDataInputRef.current?.click();
         return;
       }
+      const label = `${row.customer_name || "Sending"} ${row.datum || ""} ${row.type || row.category}`;
+      if (result.ok) setMessage(`${label}: ${result.text || "no difference line by line."}${result.opmerking_set ? " (put in Opmerking)" : ""}`);
+      else setError(`${label}: ${result.error || "could not compare."}`);
       setFinanceAuditExplain((current) => ({
         ...current,
         [key]: result.ok
@@ -4341,11 +4344,38 @@ function UkdocsPage({ currentUser, onNavigate }) {
   }
 
   function handleFinanceAuditDataInputChange(event) {
-    const file = event.target.files?.[0];
-    const row = financeAuditDataTarget.current;
+    const files = Array.from(event.target.files || []);
+    const target = financeAuditDataTarget.current;
     event.target.value = "";
     financeAuditDataTarget.current = null;
-    if (file && row) explainFinanceAuditRow(row, file);
+    if (!files.length || !target) return;
+    if (target.key) {
+      explainFinanceAuditRow(target, files[0]);
+      return;
+    }
+    // Right-click on a sending: each data file to its category -- by the
+    // factuur number in its name ("data 810   741778.xlsx"), else by the
+    // rit / category number, else the sending's only category.
+    const rows = financeAuditRows.filter((item) => item.shipment_id === target.shipmentId);
+    const unplaced = [];
+    for (const file of files) {
+      const name = file.name.toLowerCase();
+      const numbers = (row) => String(row.factuur_nummer || "").split(/[^0-9]+/).filter((token) => token.length >= 5);
+      const row = rows.find((item) => numbers(item).some((number) => name.includes(number)))
+        || rows.find((item) => [item.rit, item.category].some((code) => code && new RegExp(`(^|[^0-9])${String(code).replace(/[^0-9A-Za-z]/g, "\\$&")}([^0-9]|$)`).test(name)))
+        || (rows.length === 1 && files.length === 1 ? rows[0] : null);
+      if (row) explainFinanceAuditRow(row, file);
+      else unplaced.push(file.name);
+    }
+    if (unplaced.length) {
+      setError(`Not placed (no factuur number or category of this sending in the name): ${unplaced.join(", ")}`);
+    }
+  }
+
+  function triggerFinanceAuditDataUpload() {
+    financeAuditDataTarget.current = { shipmentId: financeAuditContextMenu?.shipmentId || "" };
+    setFinanceAuditContextMenu(null);
+    financeAuditDataInputRef.current?.click();
   }
 
   function triggerFinanceAuditInvoiceUpload() {
@@ -5477,6 +5507,7 @@ function UkdocsPage({ currentUser, onNavigate }) {
             ref={financeAuditDataInputRef}
             type="file"
             accept=".xlsx"
+            multiple
             style={{ display: "none" }}
             onChange={handleFinanceAuditDataInputChange}
           />
@@ -5486,6 +5517,7 @@ function UkdocsPage({ currentUser, onNavigate }) {
               <div className="finance-audit-context-menu" style={{ top: financeAuditContextMenu.y, left: financeAuditContextMenu.x }}>
                 <button type="button" onClick={triggerFinanceAuditInvoiceUpload}>Add factuur</button>
                 <button type="button" onClick={openFinanceAuditInvoiceEdit}>Edit invoice numbers</button>
+                <button type="button" onClick={triggerFinanceAuditDataUpload} title="The data file(s) uploaded in UKdocs for this sending: compared line by line with the factuur; the difference goes into an empty Opmerking">Data file: where is the difference?</button>
               </div>
             </>
           )}
