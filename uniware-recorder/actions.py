@@ -175,6 +175,9 @@ def action_fields(action: dict) -> list[str]:
     fields = []
     # Filled per order by a "for each order" step -- not asked at start.
     filled = {step["foreach"].get("field") or "order" for step in action.get("steps", []) if step.get("foreach")}
+    # A day list filled from SnappySjaak brings each item's code too ({ref}).
+    if action.get("snappysjaak_fill") and filled:
+        filled.add("ref")
     for step in action.get("steps", []):
         for name in re.findall(r"\{([a-z0-9_]+)\}", (step.get("text") or "") + (step.get("pick") or "")):
             if name not in fields and name not in filled and name not in DATE_WORDS:
