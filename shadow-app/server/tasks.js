@@ -141,6 +141,12 @@ function normalizeTaskConfig(value) {
       department_team: Object.fromEntries(Object.entries(departmentTeam).map(([key, team]) => [key, normalizeTeamKey(team)])),
     },
     claims: { enabled: source.claims?.enabled !== false },
+    // The same factuur number on more than one sending: a task per number
+    // for this team to check and fix (Edit invoice numbers).
+    invoice_duplicates: {
+      enabled: source.invoice_duplicates?.enabled !== false,
+      team: normalizeTeamKey(source.invoice_duplicates?.team) || "pd_phyto",
+    },
     // A daily task with a "Run on this PC" button that starts a Uniware
     // recorder action (the facturen for Finance Audit).
     facturen: {
@@ -688,6 +694,37 @@ export async function syncFacturenTask({ date, withRef, missingRef }) {
     await dbQuery("UPDATE app_tasks SET title = $2, link = $3, updated_at = now() WHERE id = $1", [existing.id, title, JSON.stringify(link)]);
   }
   return existing;
+}
+
+// A factuur number typed on more than one sending (one is wrong): one task
+// per number for the team, closed by itself once the number is on one
+// sending only.
+export async function syncInvoiceDuplicateTasks({ duplicates }) {
+  if (!isDatabaseEnabled()) return { made: 0, closed: 0 };
+  const config = await readTaskConfig();
+  const keep = new Set();
+  let made = 0;
+  if (config.invoice_duplicates.enabled) {
+    for (const duplicate of duplicates || []) {
+      const sourceKey = `invoice_dup:${duplicate.invoice}`;
+      keep.add(sourceKey);
+      const where = duplicate.sendings.map((owner) => `${owner.customer || "?"} ${owner.date} (${owner.category})`);
+      const row = await createSystemTask({
+        source: "invoice_dup",
+        source_key: sourceKey,
+        title: `Factuur ${duplicate.invoice} is on ${duplicate.sendings.length} sendings -- check and fix`,
+        body: `The same factuur number is on:\n${where.map((line) => `- ${line}`).join("\n")}\nOne of them is wrong: Finance Audit UKdocs, right-click the wrong sending > Edit invoice numbers. A factuur PDF of the old number is removed then; the next factuur fetch gets the right one.`,
+        assignee_team: config.invoice_duplicates.team,
+        priority: "high",
+        link: { page: "ukdocs", invoice: duplicate.invoice },
+      });
+      if (row) made += 1;
+    }
+  }
+  const open = await dbQuery("SELECT * FROM app_tasks WHERE source = 'invoice_dup' AND status IN ('open', 'in_progress')");
+  const fixed = open.rows.filter((row) => !keep.has(row.source_key));
+  await closeTasks(fixed, "system", "The factuur number is on one sending only now.");
+  return { made, closed: fixed.length };
 }
 
 export async function closeFacturenTask(date, by, note) {

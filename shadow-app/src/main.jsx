@@ -4271,7 +4271,7 @@ function UkdocsPage({ currentUser, onNavigate }) {
       return;
     }
     const summary = changed.map((row) => `${row.label}: ${row.original || "(empty)"} -> ${row.value.trim() || "(empty)"}`).join("\n");
-    if (!window.confirm(`Change these invoice numbers everywhere they show (shipment, UKdocs Print, CSI, PD Keuring, audit)?\n\n${summary}`)) {
+    if (!window.confirm(`Change these invoice numbers everywhere they show (shipment, UKdocs Print, CSI, PD Keuring, audit)?\nA factuur PDF already matched to an old number is removed (it's the wrong one); the next factuur fetch gets the new one.\n\n${summary}`)) {
       return;
     }
     setSaving(true);
@@ -4292,7 +4292,8 @@ function UkdocsPage({ currentUser, onNavigate }) {
           : current));
       }
       setFinanceAuditInvoiceEdit(null);
-      setMessage(`Invoice numbers changed (${payload.changed}): ${payload.shipments_changed} shipment record(s), ${payload.collections_changed} print collection(s).`);
+      setMessage(`Invoice numbers changed (${payload.changed}): ${payload.shipments_changed} shipment record(s), ${payload.collections_changed} print collection(s).`
+        + (payload.facturen_removed?.length ? ` Factuur PDF of the old number removed (${payload.facturen_removed.join(", ")}) -- the next factuur fetch gets the right one.` : ""));
     } catch (saveError) {
       setError(saveError.message);
     } finally {
@@ -11394,7 +11395,7 @@ function FoutenOverviewPage() {
 // A small glass pill on every page (for a user who turned it on): open tasks
 // and unread messages as badges; drag it anywhere (it snaps to the nearest
 // side and stays there), click it to open Tasks / Chat.
-const TW_SOURCE_LABELS = { manual: "", step_plan: "Step plan", invoice_diff: "Factuur", followup: "Follow-up", claim: "Claim" };
+const TW_SOURCE_LABELS = { manual: "", step_plan: "Step plan", invoice_diff: "Factuur", followup: "Follow-up", claim: "Claim", invoice_dup: "Invoice nr", recorder: "Uniware" };
 const TW_PRIORITY_LABELS = { normal: "Normal", high: "High", urgent: "Urgent" };
 const TW_REPEAT_LABELS = { none: "Once", daily: "Every day", workdays: "Every workday", weekly: "Every week" };
 const TW_PILL = 56;
@@ -12428,6 +12429,14 @@ function AppTeamsTasksCard() {
           </label>
           <label><span>Recorder action (its name in the recorder's actions folder)</span>
             <input value={config.facturen?.action || ""} onChange={(event) => setConfig({ ...config, facturen: { ...config.facturen, action: event.target.value } })} onBlur={() => saveConfig(config)} placeholder="facturen-finance-audit" />
+          </label>
+        </div>
+        <label className="checkbox-label"><input type="checkbox" checked={config.invoice_duplicates?.enabled !== false} onChange={(event) => saveConfig({ ...config, invoice_duplicates: { ...config.invoice_duplicates, enabled: event.target.checked } })} /><span>Same factuur number on more than one sending: a task per number to check and fix it (closed by itself once fixed)</span></label>
+        <div className="tw-admin-inline">
+          <label><span>For team</span>
+            <select value={config.invoice_duplicates?.team || "pd_phyto"} onChange={(event) => saveConfig({ ...config, invoice_duplicates: { ...config.invoice_duplicates, team: event.target.value } })}>
+              {config.teams.map((item) => <option key={item.key} value={item.key}>{item.name}</option>)}
+            </select>
           </label>
         </div>
         <label className="checkbox-label"><input type="checkbox" checked={config.step_plan.enabled} onChange={(event) => saveConfig({ ...config, step_plan: { ...config.step_plan, enabled: event.target.checked } })} /><span>PD step plan: one task per day (today, tomorrow) showing the step the day is at and each shipment's step and status (as the Pipeline Monitor, with what is stuck); done by itself when everything is complete</span></label>

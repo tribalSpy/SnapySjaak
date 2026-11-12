@@ -223,6 +223,7 @@ import {
   syncStepPlanTasks,
   syncFacturenTask,
   closeFacturenTask,
+  syncInvoiceDuplicateTasks,
 } from "./tasks.js";
 import ExcelJS from "exceljs";
 import sharp from "sharp";
@@ -26376,14 +26377,45 @@ async function handleApi(req, res, url) {
       const shipmentReference = previousReference === oldCombined ? newCombined : applyToText(previousReference, true);
       return shipmentReference === previousReference ? report : { ...report, shipment_reference: shipmentReference };
     });
+    // A factuur PDF matched to the old number on this sending is wrong now:
+    // it goes (the PDF file too), and the next factuur fetch gets the right
+    // one for the new number.
+    const removedFacturen = [];
+    for (const change of changes) {
+      const kept = new Set(ukdocsPrintInvoiceTokens(change.to));
+      const gone = new Set(ukdocsPrintInvoiceTokens(change.from).filter((token) => !kept.has(token)));
+      if (!gone.size) continue;
+      for (const document of state.finance_audit_invoice_documents || []) {
+        if (touchedShipmentIds.has(document.shipment_id) && document.category === change.category && gone.has(normalizeUkdocsPrintToken(document.invoice_number))) {
+          removedFacturen.push(document);
+        }
+      }
+    }
+    if (removedFacturen.length) {
+      state.finance_audit_invoice_documents = state.finance_audit_invoice_documents.filter((document) => !removedFacturen.includes(document));
+      for (const document of removedFacturen) {
+        if (document.storage_name) await fs.unlink(path.join(ukdocsPrintFilesDir, document.storage_name)).catch(() => {});
+      }
+      const target = state.shipments.find((item) => item.id === shipment.id);
+      if (target) {
+        target.invoice_number_edits = [...(target.invoice_number_edits || []), {
+          at: editedAt,
+          by: requestUser.username,
+          changes: removedFacturen.map((document) => ({ category: document.category, from: `factuur PDF ${document.invoice_number} (${document.file_name})`, to: "removed -- wrong number" })),
+        }];
+      }
+    }
     await writeUkdocsState(state);
     sendJson(res, 200, {
       changed: changes.length,
       changes,
       shipments_changed: touchedShipmentIds.size,
       collections_changed: collectionsChanged,
+      facturen_removed: removedFacturen.map((document) => document.invoice_number),
       state: await readUkdocsState(),
     });
+    // The same number on two sendings fixed: its task closes.
+    syncInvoiceDuplicateTasks({ duplicates: financeAuditNeededInvoices(await readUkdocsState()).duplicates }).catch(() => {});
     return;
   }
 
@@ -31697,6 +31729,8 @@ async function startServer() {
         withRef: needed.items.reduce((sum, item) => sum + item.invoice_numbers.length, 0),
         missingRef: needed.missing_ref.reduce((sum, item) => sum + item.invoice_numbers.length, 0),
       });
+      // The same factuur number on two sendings: a task to fix it.
+      await syncInvoiceDuplicateTasks({ duplicates: needed.duplicates });
     };
     setTimeout(() => runIfOnline("Tasks: step plan", appStepPlanJob).catch((error) => console.error("Tasks: step plan", error?.message || error)), 90 * 1000);
     setInterval(() => runIfOnline("Tasks: step plan", appStepPlanJob).catch((error) => console.error("Tasks: step plan", error?.message || error)), 5 * 60 * 1000);
