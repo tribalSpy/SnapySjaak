@@ -1012,6 +1012,9 @@ def process_command_line(pid: int) -> str:
 
 
 DUMP_SEARCH_DEPTH = 4
+# A number list sorted by date, not by number (Prg. 243's facturen): how far
+# past the wanted number the list must be before it counts as not there.
+NUMBER_ORDER_SLACK = 3000
 
 
 def this_pcs_folder(folder: str) -> str:
@@ -2541,10 +2544,14 @@ class ActionRun:
     @staticmethod
     def _passed_number(rows, target: int, length: int, seen_numbers: list, direction: str) -> str:
         """The list's numbers of the target's length (one per row, e.g. the
-        factuur column -- not dates or longer numbers): "gone" when the
-        target lies between numbers already seen (so it isn't there),
-        "other_way" when it lies on the side we're scrolling away from, ""
-        when it may still come."""
+        factuur column -- not dates or longer numbers): "gone" when the list
+        is clearly past the target, "other_way" when it lies clearly on the
+        side we're scrolling away from, "" when it may still come.
+
+        Only ROUGHLY in order: Prg. 243 sorts by date, and within the dates
+        the numbers jump (738644, 738642, 738698, ... 738632 among the
+        7381xx) -- so a number between two seen ones may still come; only
+        NUMBER_ORDER_SLACK past it counts as gone."""
         pattern = re.compile(r"(?<![\d\-./,])(\d{%d})(?![\d\-./,])" % length)
         numbers = []
         for row in rows:
@@ -2553,16 +2560,30 @@ class ActionRun:
                 numbers.append(int(match.group(1)))
         if len(numbers) < 2:
             return ""
+        first_screen = not seen_numbers
         seen_numbers.extend(numbers)
-        low, high = min(seen_numbers), max(seen_numbers)
-        if low < target < high:
-            return "gone"
-        ascending = numbers[-1] > numbers[0]
-        further_down = target > high if ascending else target < low
-        if direction == "Down" and not further_down:
-            return "other_way"
-        if direction == "Up" and further_down:
-            return "gone"
+        if first_screen:
+            seen_numbers.insert(0, len(numbers))  # how many the first screen had
+        first = seen_numbers[1:1 + seen_numbers[0]]
+        values = seen_numbers[1:]
+        low, high = min(values), max(values)
+        slack = NUMBER_ORDER_SLACK
+        # The list's direction from the first screen (top to bottom), not
+        # from later screens after turning back.
+        ascending = first[-1] > first[0]
+        # Scrolling toward smaller numbers (down a newest-first list): past
+        # it once the smallest seen is well below the target.
+        toward_small = (direction == "Down") != ascending
+        if toward_small:
+            if direction == "Down" and target > high + slack:
+                return "other_way"
+            if low < target - slack:
+                return "gone"
+        else:
+            if direction == "Down" and target < low - slack:
+                return "other_way"
+            if high > target + slack:
+                return "gone"
         return ""
 
     def _save_problem_screen(self, image):
