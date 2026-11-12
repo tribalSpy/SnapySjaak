@@ -221,6 +221,8 @@ import {
   autoTaskForClaimStep,
   syncInvoiceDiffTasks,
   syncStepPlanTasks,
+  syncFacturenTask,
+  closeFacturenTask,
 } from "./tasks.js";
 import ExcelJS from "exceljs";
 import sharp from "sharp";
@@ -2136,6 +2138,9 @@ function normalizeUkdocsFinanceAuditOverride(entry) {
     opmerking: String(entry?.opmerking || "").trim(),
     value_override: normalizeUkdocsText(entry?.value_override),
     volume_override: normalizeUkdocsText(entry?.volume_override),
+    // The reference Uniware lists this factuur under (picked from its menu
+    // by the recorder's daily factuur fetch).
+    factuur_ref: normalizeUkdocsText(entry?.factuur_ref),
   };
 }
 
@@ -3148,32 +3153,43 @@ function financeAuditSendings(state) {
   });
 }
 
-// The invoice numbers of a day's sendings that have no factuur yet -- what
-// the Uniware recorder's daily action fetches.
-function financeAuditNeededInvoices(state, date) {
-  const needed = [];
+// The facturen Finance Audit still misses: per sending and category of the
+// last 60 days (CSI passed), the invoice numbers without a factuur, with
+// the Uniware reference the recorder picks it by (finance_audit_overrides
+// .factuur_ref). Without a reference it can't be fetched (missing_ref).
+const FINANCE_AUDIT_FETCH_DAYS = 60;
+function financeAuditNeededInvoices(state, { from = addDaysToIsoDate(localDateIso(), -FINANCE_AUDIT_FETCH_DAYS), to = localDateIso() } = {}) {
+  const items = [];
+  const missingRef = [];
   const seen = new Set();
-  for (const shipment of financeAuditSendings(state).filter((item) => String(item.shipment_date || "").slice(0, 10) === date)) {
+  const sendings = financeAuditSendings(state)
+    .filter((item) => String(item.shipment_date || "").slice(0, 10) >= from && String(item.shipment_date || "").slice(0, 10) <= to)
+    .sort((left, right) => String(left.shipment_date || "").localeCompare(String(right.shipment_date || "")));
+  for (const shipment of sendings) {
     const customer = (state.customers || []).find((item) => item.id === shipment.customer_id);
     for (const category of ["508", "515", "1000", "920"]) {
       if (!shipment.uploaded_files?.[category]?.file_name) continue;
-      for (const token of ukdocsPrintInvoiceTokens(shipment.invoice_numbers_by_category?.[category])) {
-        const have = (state.finance_audit_invoice_documents || []).some((document) => (
+      const missing = ukdocsPrintInvoiceTokens(shipment.invoice_numbers_by_category?.[category]).filter((token) => {
+        if (seen.has(token)) return false;
+        seen.add(token);
+        return !(state.finance_audit_invoice_documents || []).some((document) => (
           document.shipment_id === shipment.id && document.category === category && normalizeUkdocsPrintToken(document.invoice_number) === token
         ));
-        if (have || seen.has(token)) continue;
-        seen.add(token);
-        needed.push({ invoice_number: token, shipment_id: shipment.id, category, customer: customer?.customer_name || "", date });
-      }
+      });
+      if (!missing.length) continue;
+      const override = (state.finance_audit_overrides || []).find((item) => item.shipment_id === shipment.id && item.category === category);
+      const entry = {
+        ref: String(override?.factuur_ref || "").trim(),
+        invoice_numbers: missing,
+        shipment_id: shipment.id,
+        category,
+        customer: customer?.customer_name || "",
+        date: String(shipment.shipment_date || "").slice(0, 10),
+      };
+      (entry.ref ? items : missingRef).push(entry);
     }
   }
-  return needed;
-}
-
-function previousWorkdayIso(fromIso = localDateIso()) {
-  let day = addDaysToIsoDate(fromIso, -1);
-  while ([0, 6].includes(new Date(`${day}T12:00:00Z`).getUTCDay())) day = addDaysToIsoDate(day, -1);
-  return day;
+  return { from, to, items, missing_ref: missingRef };
 }
 
 // The Uniware recorder's daily fetches, newest first (the last 30).
@@ -3190,7 +3206,8 @@ function normalizeFinanceAuditFetchRuns(runs) {
       matched: (Array.isArray(run.matched) ? run.matched : []).map((value) => text(value, 40)).slice(0, 200),
       not_matched: (Array.isArray(run.not_matched) ? run.not_matched : []).map((item) => ({ invoice: text(item?.invoice, 40), file: text(item?.file, 200), error: text(item?.error, 300) })).slice(0, 200),
       not_found: (Array.isArray(run.not_found) ? run.not_found : []).map((value) => text(value, 40)).slice(0, 200),
-      still_needed: (Array.isArray(run.still_needed) ? run.still_needed : []).map((value) => text(value, 40)).slice(0, 200),
+      still_needed: (Array.isArray(run.still_needed) ? run.still_needed : []).map((value) => text(value, 40)).slice(0, 300),
+      missing_ref: (Array.isArray(run.missing_ref) ? run.missing_ref : []).map((value) => text(value, 80)).slice(0, 300),
     }))
     .sort((left, right) => String(right.at).localeCompare(String(left.at)))
     .slice(0, 30);
@@ -23257,46 +23274,53 @@ async function handleApi(req, res, url) {
     }
     try {
       if (url.pathname === "/api/agent/finance-audit/needed-invoices" && req.method === "GET") {
-        const date = /^\d{4}-\d{2}-\d{2}$/.test(String(url.searchParams.get("date") || "")) ? url.searchParams.get("date") : previousWorkdayIso();
-        sendJson(res, 200, { date, invoices: financeAuditNeededInvoices(await readUkdocsState(), date) });
+        // Every factuur still missing of the last 60 days -- one not ready in
+        // Uniware yet is simply asked for again the next day.
+        const needed = financeAuditNeededInvoices(await readUkdocsState());
+        sendJson(res, 200, needed);
         return;
       }
       if (url.pathname === "/api/agent/finance-audit/invoice-documents" && req.method === "POST") {
         const body = await readRequestJson(req, 120 * 1024 * 1024);
-        const date = /^\d{4}-\d{2}-\d{2}$/.test(String(body?.date || "")) ? body.date : previousWorkdayIso();
+        const date = localDateIso();
         const agent = String(body?.agent || "recorder").trim().slice(0, 60) || "recorder";
         const files = Array.isArray(body?.files) ? body.files : [];
         const notFound = (Array.isArray(body?.not_found) ? body.not_found : []).map((value) => String(value || "").trim()).filter(Boolean);
         const state = await readUkdocsState();
-        // That day's sendings first, then the 14 days before (a late upload
-        // still lands on its sending).
-        const from = addDaysToIsoDate(date, -14);
+        const neededBefore = financeAuditNeededInvoices(state);
+        // The sendings of the fetch window (and two weeks more, so a factuur
+        // of a sending just past it still lands).
+        const from = addDaysToIsoDate(neededBefore.from, -14);
         const candidateShipments = financeAuditSendings(state)
-          .filter((shipment) => String(shipment.shipment_date || "").slice(0, 10) >= from && String(shipment.shipment_date || "").slice(0, 10) <= addDaysToIsoDate(date, 1))
-          .sort((left, right) => Number(String(right.shipment_date || "").slice(0, 10) === date) - Number(String(left.shipment_date || "").slice(0, 10) === date));
-        const neededBefore = financeAuditNeededInvoices(state, date);
+          .filter((shipment) => String(shipment.shipment_date || "").slice(0, 10) >= from)
+          .sort((left, right) => String(right.shipment_date || "").localeCompare(String(left.shipment_date || "")));
         const { results } = files.length
-          ? await matchFinanceAuditInvoiceFiles({ files, candidateShipments, by: `uniware:${agent}`, scopeLabel: `the sendings of ${date} (or the 14 days before)` })
+          ? await matchFinanceAuditInvoiceFiles({ files, candidateShipments, by: `uniware:${agent}`, scopeLabel: `the sendings of the last ${FINANCE_AUDIT_FETCH_DAYS} days` })
           : { results: [] };
         const after = await readUkdocsState();
-        const stillNeeded = financeAuditNeededInvoices(after, date).map((item) => item.invoice_number);
-        // A batch at a time: one fetch run per agent and date keeps adding up.
+        const neededAfter = financeAuditNeededInvoices(after);
+        const stillNeeded = [...neededAfter.items, ...neededAfter.missing_ref].flatMap((item) => item.invoice_numbers);
+        const missingRef = neededAfter.missing_ref.map((item) => `${item.invoice_numbers.join("/")} (${item.customer || "?"} ${item.date})`);
+        // A batch at a time: one fetch run per PC and day keeps adding up.
         const runs = after.finance_audit_fetch_runs || [];
         const sameRun = runs.find((run) => run.date === date && run.agent === agent && Date.now() - Date.parse(run.at) < 3 * 60 * 60 * 1000);
         const summary = {
           at: new Date().toISOString(),
           date,
           agent,
-          needed: sameRun ? sameRun.needed : neededBefore.length,
+          needed: sameRun ? sameRun.needed : neededBefore.items.reduce((sum, item) => sum + item.invoice_numbers.length, 0),
           sent: (sameRun?.sent || 0) + files.length,
           matched: [...new Set([...(sameRun?.matched || []), ...results.filter((result) => result.ok).map((result) => result.invoice_number)])],
           not_matched: [...(sameRun?.not_matched || []), ...results.filter((result) => !result.ok).map((result) => ({ invoice: result.invoice_number || "", file: result.file_name, error: result.error }))],
           not_found: [...new Set([...(sameRun?.not_found || []), ...notFound])],
           still_needed: stillNeeded,
+          missing_ref: missingRef,
         };
         after.finance_audit_fetch_runs = [summary, ...runs.filter((run) => run !== sameRun)];
         await writeUkdocsState(after);
-        sendJson(res, 200, { date, results: results.map(({ document, ...rest }) => rest), still_needed: stillNeeded });
+        sendJson(res, 200, { date, results: results.map(({ document, ...rest }) => rest), still_needed: stillNeeded, missing_ref: missingRef });
+        // The day's task on the task board: done (with what the run did).
+        closeFacturenTask(date, `uniware:${agent}`, `${summary.matched.length} matched, ${summary.not_found.length} not found in Uniware, ${stillNeeded.length} still missing${missingRef.length ? ` (${missingRef.length} without Uniware ref)` : ""}.`).catch(() => {});
         return;
       }
       sendJson(res, 404, { error: "Not found" });
@@ -31633,7 +31657,16 @@ async function startServer() {
   // invoice differences, every 5 / 15 minutes (nothing logged when quiet).
   if (isDatabaseEnabled()) {
     const appStepPlanJob = async () => { await runAppStepPlanTaskSync(); };
-    const appInvoiceDiffJob = async () => { await runAppInvoiceDiffTaskSync(); };
+    const appInvoiceDiffJob = async () => {
+      await runAppInvoiceDiffTaskSync();
+      // The day's "Facturen Finance Audit" task (run on a PC with the recorder).
+      const needed = financeAuditNeededInvoices(await readUkdocsState());
+      await syncFacturenTask({
+        date: localDateIso(),
+        withRef: needed.items.reduce((sum, item) => sum + item.invoice_numbers.length, 0),
+        missingRef: needed.missing_ref.reduce((sum, item) => sum + item.invoice_numbers.length, 0),
+      });
+    };
     setTimeout(() => runIfOnline("Tasks: step plan", appStepPlanJob).catch((error) => console.error("Tasks: step plan", error?.message || error)), 90 * 1000);
     setInterval(() => runIfOnline("Tasks: step plan", appStepPlanJob).catch((error) => console.error("Tasks: step plan", error?.message || error)), 5 * 60 * 1000);
     setTimeout(() => runIfOnline("Tasks: invoice differences", appInvoiceDiffJob).catch((error) => console.error("Tasks: invoice differences", error?.message || error)), 3 * 60 * 1000);

@@ -141,6 +141,13 @@ function normalizeTaskConfig(value) {
       department_team: Object.fromEntries(Object.entries(departmentTeam).map(([key, team]) => [key, normalizeTeamKey(team)])),
     },
     claims: { enabled: source.claims?.enabled !== false },
+    // A daily task with a "Run on this PC" button that starts a Uniware
+    // recorder action (the facturen for Finance Audit).
+    facturen: {
+      enabled: source.facturen?.enabled === true,
+      assign_to: /^(user|team):./.test(String(source.facturen?.assign_to || "")) ? String(source.facturen.assign_to).trim().slice(0, 80) : "",
+      action: String(source.facturen?.action || "facturen-finance-audit").trim().slice(0, 80) || "facturen-finance-audit",
+    },
     updated_at: source.updated_at || "",
     updated_by: source.updated_by || "",
   };
@@ -651,6 +658,42 @@ export async function syncStepPlanTasks({ dates: wantedDates, buildPlan }) {
     }
   }
   return { made, closed, updated };
+}
+
+// The day's "Facturen Finance Audit" task (workdays): how many facturen are
+// still missing, with a Run button for the recorder action on the PC.
+export async function syncFacturenTask({ date, withRef, missingRef }) {
+  if (!isDatabaseEnabled()) return null;
+  const config = await readTaskConfig();
+  if (!config.facturen.enabled || !config.facturen.assign_to) return null;
+  if ([0, 6].includes(new Date(`${date}T12:00:00Z`).getUTCDay())) return null;
+  const sourceKey = `recorder:facturen:${date}`;
+  const total = withRef + missingRef;
+  const title = `Facturen Finance Audit ${date} · ${total} missing${missingRef ? ` (${missingRef} without Uniware ref)` : ""}`;
+  const link = { page: "ukdocs", recorder_action: config.facturen.action, missing: total, with_ref: withRef, missing_ref: missingRef };
+  const existing = (await dbQuery("SELECT * FROM app_tasks WHERE source_key = $1", [sourceKey])).rows[0];
+  if (!existing) {
+    if (!withRef) return null;
+    return createSystemTask({
+      source: "recorder",
+      source_key: sourceKey,
+      title,
+      body: "Fetches every factuur Finance Audit still misses (last 60 days) from Uniware, one by one, and sends them to Finance Audit. Press \u25b6 Run on this PC (the recorder dashboard open, Uniware on screen, hands off the keyboard until it's done). Not ready yet in Uniware = asked again tomorrow.",
+      ...parseAssignee(config.facturen.assign_to),
+      due_date: date,
+      link,
+    });
+  }
+  if (OPEN_STATUSES.includes(existing.status) && existing.title !== title) {
+    await dbQuery("UPDATE app_tasks SET title = $2, link = $3, updated_at = now() WHERE id = $1", [existing.id, title, JSON.stringify(link)]);
+  }
+  return existing;
+}
+
+export async function closeFacturenTask(date, by, note) {
+  if (!isDatabaseEnabled()) return;
+  const open = (await dbQuery("SELECT * FROM app_tasks WHERE source_key = $1 AND status IN ('open', 'in_progress')", [`recorder:facturen:${date}`])).rows;
+  await closeTasks(open, by, note);
 }
 
 // ---------------------------------------------------------------------------

@@ -2386,35 +2386,39 @@ class ActionRun:
         self.captures.append({"step": step_number, "pages": pages})
         self.say(f"Captured {len(pages)} page(s) of {title}")
 
-    def _snappysjaak_date(self) -> str:
-        """The day the SnappySjaak link is about: the {date} field when the
-        action has one (yesterday / last_workday / 14-11-2026 ...), else ""
-        (= the previous workday, SnappySjaak's default)."""
-        day = parse_date_value(self.values.get("date", "")) if self.values.get("date") else None
-        return day.isoformat() if day else ""
-
     def _snappysjaak_fill(self) -> bool:
-        """"Before the run: fill the day list from SnappySjaak" -- the
-        factuur numbers still needed. False = nothing to do today."""
+        """"Before the run: fill the day list from SnappySjaak" -- every
+        factuur Finance Audit still misses (last 60 days), one item per
+        Uniware reference (the key the for each picks from the menu; its
+        invoice number(s) in the note). Not ready in Uniware yet = asked for
+        again next time. False = nothing to fetch."""
         fill = self.action.get("snappysjaak_fill") or {}
         if not fill.get("list"):
             return True
         import snappysjaak  # noqa: PLC0415 -- only for actions that use it
-        answer = snappysjaak.needed_invoices(self._snappysjaak_date())
-        self.snappysjaak_day = answer.get("date") or ""
-        invoices = answer.get("invoices") or []
-        data = {"name": fill["list"], "items": [{
-            "key": str(item.get("invoice_number") or ""),
-            "row": index,
-            "type": "factuur",
-            "label": "",
-            "note": " · ".join(part for part in (item.get("customer"), item.get("category")) if part),
-            "warning": "",
-            "brief": "",
-        } for index, item in enumerate(invoices, start=1) if item.get("invoice_number")]}
-        save_day_list(data)
-        self.say(f"SnappySjaak: {len(data['items'])} factuur/facturen needed for {self.snappysjaak_day} -> day list '{fill['list']}'")
-        return bool(data["items"])
+        answer = snappysjaak.needed_invoices()
+        self.snappysjaak_filled = True
+        items, seen = [], set()
+        for entry in answer.get("items") or []:
+            ref = str(entry.get("ref") or "").strip()
+            if not ref or ref in seen:
+                continue
+            seen.add(ref)
+            items.append({
+                "key": ref,
+                "row": len(items) + 1,
+                "type": "factuur",
+                "label": "",
+                "note": " · ".join(part for part in ("/".join(entry.get("invoice_numbers") or []), entry.get("customer"), entry.get("date"), entry.get("category")) if part),
+                "warning": "",
+                "brief": "",
+                "value": "/".join(entry.get("invoice_numbers") or []),
+            })
+        save_day_list({"name": fill["list"], "items": items})
+        missing_ref = answer.get("missing_ref") or []
+        self.say(f"SnappySjaak: {len(items)} factuur reference(s) to fetch ({answer.get('from', '')} .. {answer.get('to', '')}) -> day list '{fill['list']}'"
+                 + (f"; {len(missing_ref)} sending(s) without a Uniware ref yet (fill it in on Finance Audit)" if missing_ref else ""))
+        return bool(items)
 
     def _snappysjaak_send(self):
         """"After the run: send the files to SnappySjaak Finance Audit" --
@@ -2427,10 +2431,10 @@ class ActionRun:
         not_found = []
         if fill_list:
             not_found = [item["key"] for item in load_day_list(fill_list).get("items", []) if item.get("label") == "not found"]
-        if not pdfs and not not_found and not getattr(self, "snappysjaak_day", ""):
+        if not pdfs and not not_found and not getattr(self, "snappysjaak_filled", False):
             return
         self.say(f"Sending {len(pdfs)} PDF(s) to SnappySjaak Finance Audit" + (f" ({len(not_found)} not found in Uniware)" if not_found else ""))
-        answer = snappysjaak.upload_invoices(getattr(self, "snappysjaak_day", "") or self._snappysjaak_date(), pdfs, not_found, os.environ.get("COMPUTERNAME", "recorder"))
+        answer = snappysjaak.upload_invoices("", pdfs, not_found, os.environ.get("COMPUTERNAME", "recorder"))
         results = answer.get("results") or []
         matched = [result for result in results if result.get("ok")]
         self.say(f"SnappySjaak: {len(matched)} matched, {len(results) - len(matched)} not matched" + (f"; still without factuur: {', '.join(answer.get('still_needed') or [])}" if answer.get("still_needed") else " -- all facturen of the day are in."))

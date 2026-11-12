@@ -283,34 +283,41 @@ other programs.
 
 ## Daily facturen for Finance Audit (SnappySjaak)
 
-Fetches the factuur PDFs Finance Audit UKdocs still needs, every day, by
-itself: it asks SnappySjaak which invoice numbers of yesterday's sendings
-(CSI passed) have no factuur yet, opens each one in Uniware, saves the PDF as
-`<number>.pdf` and sends them to SnappySjaak, which matches them like "Match
-factuur folder" (by the number inside the PDF). The Finance Audit page shows
-what the last fetch did: needed / fetched / matched, not found in Uniware,
-still without factuur.
+Fetches every factuur PDF Finance Audit UKdocs still misses (the sendings of
+the last 60 days, CSI passed), one by one, and sends them to SnappySjaak,
+which matches each PDF by the invoice number inside it (like "Match factuur
+folder"). A factuur Uniware doesn't have yet is simply asked for again the
+next run. Started from SnappySjaak's task board: the daily task "Facturen
+Finance Audit" has a **Run on this PC** button (this dashboard open on the
+same PC, Uniware open and signed in).
+
+In Uniware each factuur is picked from a menu by its **Uniware ref**: fill it
+in per sending and category on Finance Audit UKdocs (expand the sending, the
+"Uniware ref" box under the factuur number, Save). A factuur without a ref
+can't be fetched -- the page lists those ("No Uniware ref yet").
 
 **Once:**
-1. In SnappySjaak (admin): Finance Audit UKdocs -> **Recorder setup file**.
-   Put the downloaded `snappysjaak.json` in this folder (it holds the server
-   address and the machine key -- keep it on this PC only, never in git).
-2. Record an action, e.g. "Facturen Finance Audit": from the main menu to the
-   screen where a factuur is opened by its number, type a number, open it
+1. SnappySjaak (admin): Finance Audit UKdocs -> **Recorder setup file**. Put
+   the downloaded `snappysjaak.json` in this folder (server address + machine
+   key; it stays on this PC, never in git). It also lets the SnappySjaak page
+   start actions here -- no other web page can.
+2. Record the action, named e.g. "Facturen Finance Audit" (its file name,
+   `facturen-finance-audit`, is what the task starts): from the main menu to
+   the menu/list where the facturen are, arrow to one reference and open it
    (the PDF viewer opens), close the viewer, back to the menu. Stop.
 3. Edit that action:
    - **SnappySjaak**: day list `facturen`, tick **send the PDFs ...**.
-   - "Add for each order" before the step that types the number: day list
-     `facturen`, the steps up to the viewer, field `invoice`, tick **only
-     orders without a result yet**, **mark done** and **skip a failing item**.
-   - The step that types the number: `{invoice}`.
+   - "Add for each order" before the step that picks the reference: day list
+     `facturen`, the steps up to the viewer, field `ref`, tick **only orders
+     without a result yet**, **mark done** and **skip a failing item**.
+   - The step that picks the reference: **find row with** `{ref}`.
    - The step that opens the viewer: tick **opens the dump in a new window**.
-   - Dump file: rename it to `{invoice}`, put it in a folder of your choice.
-4. Week plan: every workday, e.g. 07:00, this action, "start by itself".
+   - Dump file: rename it to `{ref}`, put it in a folder of your choice.
+4. SnappySjaak (admin): Users -> Teams & tasks -> Automatic tasks: tick
+   **Facturen Finance Audit**, give it to yourself, recorder action
+   `facturen-finance-audit`.
 
-Which day: the previous workday (Monday: Friday). With a `{date}` field in the
-action, its value is used (e.g. `last_workday`, or a date for an older day).
-Nothing needed -> the run ends at once (nothing is typed in Uniware). A
-number Uniware doesn't have is marked "not found" in the day list and the run
-goes on; it shows on the Finance Audit page. The day list shows per number:
-done / not found / matched / not matched (with the reason).
+**Every workday**: open the task in the task board -> **Run on this PC**,
+hands off keyboard and mouse until it's done. The task closes by itself when
+SnappySjaak has the result; the Finance Audit page shows what was fetched,
+not found, not matched (with the reason) and what is still missing.

@@ -4893,3 +4893,11 @@ table.data-table.balance-table.ik-table.ik-inv-invoices td:nth-child(n+7), table
 .fa-fetch-line { display: flex; flex-wrap: wrap; gap: 4px 8px; align-items: center; }
 .fa-fetch-more summary { cursor: pointer; color: #5a6876; }
 .fa-fetch-more ul { margin: 4px 0 0; padding-left: 18px; }
+
+/* Finance Audit: the Uniware factuur ref per category */
+.fa-ref-input { display: block; width: 100%; min-width: 90px; margin-top: 4px; font-size: 0.85rem; padding: 3px 6px; }
+/* Task board: Run on this PC (Uniware recorder) */
+.tw-recorder { display: flex; flex-direction: column; gap: 6px; border: 1px solid var(--tw-line); border-radius: 12px; padding: 8px; background: var(--tw-glass-strong); }
+.tw-recorder-head { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; }
+.tw-recorder-head small { color: var(--tw-muted); }
+.tw-recorder-log { margin: 0; max-height: 110px; overflow: auto; font-size: 11px; white-space: pre-wrap; color: var(--tw-muted); background: transparent; }

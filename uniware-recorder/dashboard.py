@@ -114,17 +114,62 @@ def stop_hotkey_listener():
     keyboard.Listener(on_press=on_press, on_release=on_release, daemon=True).start()
 
 
+def allowed_origins() -> set[str]:
+    """Pages that may start actions here besides this dashboard itself: the
+    SnappySjaak app of snappysjaak.json (its task board's "Run on this PC").
+    Any other web page is refused."""
+    origins = set()
+    try:
+        import snappysjaak  # noqa: PLC0415
+        url = urlparse(snappysjaak.settings()["url"])
+        if url.scheme and url.netloc:
+            origins.add(f"{url.scheme}://{url.netloc}")
+    except Exception:  # noqa: BLE001 -- no link file: only this dashboard
+        pass
+    return origins
+
+
 class Handler(BaseHTTPRequestHandler):
     def log_message(self, *args):
         pass
+
+    def _origin(self) -> str:
+        return str(self.headers.get("Origin") or "")
+
+    def _foreign_origin(self) -> bool:
+        """A request from another web page than this dashboard and not from
+        the SnappySjaak app -- refused (a random site must never be able to
+        start keystrokes in Uniware)."""
+        origin = self._origin()
+        if not origin or origin in (f"http://127.0.0.1:{PORT}", f"http://localhost:{PORT}"):
+            return False
+        return origin not in allowed_origins()
 
     def send(self, status: int, body, content_type="application/json"):
         data = body if isinstance(body, bytes) else (json.dumps(body, ensure_ascii=False) if content_type == "application/json" else body).encode("utf-8")
         self.send_response(status)
         self.send_header("Content-Type", f"{content_type}; charset=utf-8")
         self.send_header("Cache-Control", "no-store")
+        if self._origin() and self._origin() in allowed_origins():
+            self.send_header("Access-Control-Allow-Origin", self._origin())
+            self.send_header("Vary", "Origin")
         self.end_headers()
         self.wfile.write(data)
+
+    def do_OPTIONS(self):
+        # The browser asks first (CORS + "private network" for 127.0.0.1).
+        if self._origin() not in allowed_origins():
+            self.send_response(403)
+            self.end_headers()
+            return
+        self.send_response(204)
+        self.send_header("Access-Control-Allow-Origin", self._origin())
+        self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+        self.send_header("Access-Control-Allow-Headers", "content-type")
+        self.send_header("Access-Control-Allow-Private-Network", "true")
+        self.send_header("Access-Control-Max-Age", "600")
+        self.send_header("Vary", "Origin")
+        self.end_headers()
 
     def body(self) -> dict:
         length = int(self.headers.get("Content-Length") or 0)
@@ -132,10 +177,23 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_GET(self):
         path = urlparse(self.path).path
+        if self._foreign_origin():
+            self.send(403, {"error": "not allowed from that page"})
+            return
         if path == "/":
             self.send(200, PAGE, "text/html")
         elif path == "/api/state":
             self.send(200, state_payload())
+        elif path == "/api/run-status":
+            # Light: only the running action (the SnappySjaak task follows it).
+            run = STATE["run"]
+            self.send(200, {"busy": busy(), "run": {
+                "active": bool(run and run.active),
+                "name": run.action.get("name", "") if run else "",
+                "slug": run.action.get("slug", "") if run else "",
+                "result": run.result if run else "",
+                "log": run.log[-20:] if run else [],
+            }})
         elif path.startswith("/outputs/"):
             name = Path(unquote(path[len("/outputs/"):])).name
             file = actions.OUTPUTS_DIR / name
@@ -149,6 +207,9 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         path = urlparse(self.path).path
+        if self._foreign_origin():
+            self.send(403, {"error": "not allowed from that page"})
+            return
         try:
             body = self.body()
             with LOCK:

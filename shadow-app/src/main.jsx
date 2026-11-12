@@ -2912,6 +2912,7 @@ function buildUkdocsFinanceAuditRows(state) {
         factuur_nummer: shipment.invoice_numbers_by_category?.[category] || "",
         location_connect: collection?.reference_connect || "",
         opmerking: override?.opmerking || "",
+        factuur_ref: override?.factuur_ref || "",
         is_euro_customer: isEuroCustomer,
         waarde_gbp: !isEuroCustomer ? rawValue : "",
         waarde_eu: isEuroCustomer ? rawValue : "",
@@ -4156,7 +4157,7 @@ function UkdocsPage({ currentUser, onNavigate }) {
     }
   }
 
-  const FINANCE_AUDIT_EDIT_FIELDS = ["opmerking", "value_override", "volume_override"];
+  const FINANCE_AUDIT_EDIT_FIELDS = ["opmerking", "value_override", "volume_override", "factuur_ref"];
 
   function financeAuditEditKey(shipmentId, category) {
     return `${shipmentId}-${category}`;
@@ -4166,6 +4167,14 @@ function UkdocsPage({ currentUser, onNavigate }) {
     const edits = financeAuditEdits[financeAuditEditKey(row.shipment_id, row.category)];
     if (edits && field in edits) {
       return edits[field];
+    }
+    return financeAuditSavedValue(row, field);
+  }
+
+  // The value as saved (without what is being typed).
+  function financeAuditSavedValue(row, field) {
+    if (field === "factuur_ref") {
+      return row.factuur_ref || "";
     }
     if (field === "value_override") {
       return row.waarde_gbp || row.waarde_eu || "";
@@ -4186,7 +4195,7 @@ function UkdocsPage({ currentUser, onNavigate }) {
     if (!edits) {
       return false;
     }
-    return FINANCE_AUDIT_EDIT_FIELDS.some((field) => field in edits && edits[field] !== financeAuditFieldValue(row, field));
+    return FINANCE_AUDIT_EDIT_FIELDS.some((field) => field in edits && edits[field] !== financeAuditSavedValue(row, field));
   }
 
   async function saveFinanceAuditEdit(row) {
@@ -4203,6 +4212,7 @@ function UkdocsPage({ currentUser, onNavigate }) {
       opmerking: "opmerking" in edits ? edits.opmerking : (existingOverride.opmerking || row.opmerking || ""),
       value_override: "value_override" in edits ? edits.value_override : (existingOverride.value_override || ""),
       volume_override: "volume_override" in edits ? edits.volume_override : (existingOverride.volume_override || ""),
+      factuur_ref: "factuur_ref" in edits ? String(edits.factuur_ref || "").trim() : (existingOverride.factuur_ref || ""),
     };
     const nextOverrides = existingOverrides.some((item) => item.shipment_id === row.shipment_id && item.category === row.category)
       ? existingOverrides.map((item) => (item.shipment_id === row.shipment_id && item.category === row.category ? nextOverride : item))
@@ -5347,7 +5357,17 @@ function UkdocsPage({ currentUser, onNavigate }) {
                               <td>{row.omschrijving || "-"}</td>
                               <td>{row.type}</td>
                               <td colSpan={6} />
-                              <td>{row.factuur_nummer || "-"}</td>
+                              <td>
+                                {row.factuur_nummer || "-"}
+                                <input
+                                  className="fa-ref-input"
+                                  value={financeAuditFieldValue(row, "factuur_ref")}
+                                  onChange={(event) => updateFinanceAuditEdit(row, "factuur_ref", event.target.value)}
+                                  placeholder="Uniware ref"
+                                  aria-label={`Uniware factuur reference for ${row.factuur_nummer || row.type}`}
+                                  title="The reference Uniware lists this factuur under -- the daily factuur fetch picks it from Uniware's menu by this"
+                                />
+                              </td>
                               <td colSpan={1} />
                               <td><input value={financeAuditFieldValue(row, "opmerking")} onChange={(event) => updateFinanceAuditEdit(row, "opmerking", event.target.value)} /></td>
                               <td>{row.is_euro_customer ? "-" : <input value={financeAuditFieldValue(row, "value_override")} onChange={(event) => updateFinanceAuditEdit(row, "value_override", event.target.value)} placeholder="GBP" />}</td>
@@ -10016,7 +10036,7 @@ function FinanceAuditFetchSummary({ runs, isAdmin }) {
   const last = runs[0] || null;
   const line = (run) => {
     const missing = run.still_needed?.length || 0;
-    return `${run.date}: ${run.needed} needed, ${run.sent} fetched, ${run.matched.length} matched${missing ? `, ${missing} still missing` : " -- complete"}`;
+    return `${run.date}: ${run.needed} to fetch, ${run.sent} fetched, ${run.matched.length} matched${missing ? `, ${missing} still missing (last 60 days)` : " -- complete"}`;
   };
   return (
     <div className={`fa-fetch${last && !(last.still_needed || []).length ? " ok" : ""}`}>
@@ -10033,6 +10053,7 @@ function FinanceAuditFetchSummary({ runs, isAdmin }) {
         </div>
       )}
       {!!last?.still_needed?.length && <div className="fa-fetch-line"><span className="ukdocs-status-badge muted">Still without factuur</span> {last.still_needed.join(", ")}</div>}
+      {!!last?.missing_ref?.length && <div className="fa-fetch-line"><span className="ukdocs-status-badge danger">No Uniware ref yet (can't be fetched)</span> {last.missing_ref.join(", ")} <small>-- fill in "Uniware ref" in the sending's expanded rows</small></div>}
       {runs.length > 1 && (
         <details className="fa-fetch-more">
           <summary>Earlier fetches ({runs.length - 1})</summary>
@@ -11807,6 +11828,7 @@ function TwTaskDetail({ id, currentUser, directory, teamName, onBack, onOpenLink
       </div>
       {task.body && <p className="tw-text">{task.body}</p>}
       {task.source === "step_plan" && task.link?.progress && <TwStepPlanProgress progress={task.link.progress} />}
+      {task.link?.recorder_action && !finished && <TwRecorderRun action={task.link.recorder_action} />}
       <div className="tw-actions">
         {!finished && <button type="button" className="tw-primary" disabled={busy} onClick={() => change({ status: "done" })}>✓ Done</button>}
         {!finished && task.status !== "in_progress" && <button type="button" disabled={busy} onClick={() => change({ status: "in_progress" })}>▶ Start</button>}
@@ -11853,6 +11875,75 @@ function TwTaskDetail({ id, currentUser, directory, teamName, onBack, onOpenLink
 function twDisplayName(username) {
   const text = String(username || "").trim();
   return text ? text.charAt(0).toUpperCase() + text.slice(1) : "My";
+}
+
+// "Run on this PC": starts a Uniware recorder action through the recorder
+// dashboard on this PC (http://127.0.0.1:8765, it lets this app's address
+// in -- see snappysjaak.json) and follows it. Its result reaches the task
+// through SnappySjaak (the run closes the task).
+const TW_RECORDER_URL = "http://127.0.0.1:8765";
+function TwRecorderRun({ action }) {
+  const [status, setStatus] = useState(null);
+  const [error, setError] = useState("");
+  const [starting, setStarting] = useState(false);
+  const poll = useCallback(async () => {
+    try {
+      const response = await fetch(`${TW_RECORDER_URL}/api/run-status`, { cache: "no-store" });
+      setStatus({ reachable: true, ...(await response.json()) });
+    } catch {
+      setStatus({ reachable: false });
+    }
+  }, []);
+  useEffect(() => {
+    poll();
+    const timer = window.setInterval(poll, 2000);
+    return () => window.clearInterval(timer);
+  }, [poll]);
+  async function start() {
+    setStarting(true);
+    setError("");
+    try {
+      const response = await fetch(`${TW_RECORDER_URL}/api/actions/${encodeURIComponent(action)}/run`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ values: {} }),
+      });
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok || payload.error) throw new Error(payload.error || `The recorder answered ${response.status}`);
+      await poll();
+    } catch (startError) {
+      setError(startError instanceof TypeError
+        ? "The recorder isn't reachable on this PC -- start run_dashboard.bat (with snappysjaak.json in its folder)."
+        : startError.message);
+    } finally {
+      setStarting(false);
+    }
+  }
+  async function stop() {
+    await fetch(`${TW_RECORDER_URL}/api/run/stop`, { method: "POST", headers: { "content-type": "application/json" }, body: "{}" }).catch(() => {});
+    poll();
+  }
+  const run = status?.run;
+  const mine = run && run.slug === action;
+  return (
+    <div className="tw-recorder">
+      <div className="tw-recorder-head">
+        <strong>Uniware on this PC</strong>
+        <small>{status === null ? "checking…" : status.reachable ? (run?.active ? `running: ${run.name}` : "recorder ready") : "recorder not open"}</small>
+      </div>
+      <div className="tw-actions">
+        {!(run?.active) && <button type="button" className="tw-primary" disabled={starting || !status?.reachable} onClick={start}>▶ Run on this PC</button>}
+        {run?.active && <button type="button" onClick={stop}>■ Stop</button>}
+      </div>
+      {run?.active && <small className="muted">Hands off keyboard and mouse until it's done (Ctrl+Alt+Q stops).</small>}
+      {mine && !!run.log?.length && (
+        <pre className="tw-recorder-log">{run.log.slice(-6).join("\n")}</pre>
+      )}
+      {mine && !run.active && run.result && <small className={run.result === "done" ? "" : "tw-overdue"}>{run.result === "done" ? "✓ Finished -- the task closes when SnappySjaak has the result." : `✕ ${run.result}`}</small>}
+      {status && !status.reachable && <small className="muted">Start the recorder dashboard on this PC (uniware-recorder\run_dashboard.bat), with Uniware open and signed in.</small>}
+      {error && <small className="tw-overdue">{error}</small>}
+    </div>
+  );
 }
 
 // A small % circle (how far a task that follows something is).
@@ -12259,6 +12350,18 @@ function AppTeamsTasksCard() {
             <select value={config.invoice_diff.team} onChange={(event) => saveConfig({ ...config, invoice_diff: { ...config.invoice_diff, team: event.target.value } })}>
               {config.teams.map((item) => <option key={item.key} value={item.key}>{item.name}</option>)}
             </select>
+          </label>
+        </div>
+        <label className="checkbox-label"><input type="checkbox" checked={config.facturen?.enabled === true} onChange={(event) => saveConfig({ ...config, facturen: { ...config.facturen, enabled: event.target.checked } })} /><span>Facturen Finance Audit: a task every workday (while facturen are missing) with "Run on this PC" -- starts the Uniware recorder action that fetches every missing factuur of the last 60 days</span></label>
+        <div className="tw-admin-inline">
+          <label><span>Give it to</span>
+            <select value={config.facturen?.assign_to || ""} onChange={(event) => saveConfig({ ...config, facturen: { ...config.facturen, assign_to: event.target.value } })}>
+              <option value="">— nobody (no task) —</option>
+              {targets.map(([value, label]) => <option key={value} value={value}>{label}</option>)}
+            </select>
+          </label>
+          <label><span>Recorder action (its name in the recorder's actions folder)</span>
+            <input value={config.facturen?.action || ""} onChange={(event) => setConfig({ ...config, facturen: { ...config.facturen, action: event.target.value } })} onBlur={() => saveConfig(config)} placeholder="facturen-finance-audit" />
           </label>
         </div>
         <label className="checkbox-label"><input type="checkbox" checked={config.step_plan.enabled} onChange={(event) => saveConfig({ ...config, step_plan: { ...config.step_plan, enabled: event.target.checked } })} /><span>PD step plan: one task per day (today, tomorrow) showing the step the day is at and each shipment's step and status (as the Pipeline Monitor, with what is stuck); done by itself when everything is complete</span></label>
