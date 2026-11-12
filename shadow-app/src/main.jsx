@@ -3898,6 +3898,11 @@ function UkdocsPage({ currentUser, onNavigate }) {
   const [financeAuditInvoiceEdit, setFinanceAuditInvoiceEdit] = useState(null);
   const financeAuditInvoiceInputRef = useRef(null);
   const financeAuditInvoiceTargetShipmentId = useRef("");
+  // "Where is the difference?" per row key: { busy, text, error }; the data
+  // file picker for an older sending (its data file wasn't kept).
+  const [financeAuditExplain, setFinanceAuditExplain] = useState({});
+  const financeAuditDataInputRef = useRef(null);
+  const financeAuditDataTarget = useRef(null);
   const financeAuditFolderInputRef = useRef(null);
   // Progress while bulk-matching a folder of factuur PDFs -- null when idle.
   const [financeAuditFolderProgress, setFinanceAuditFolderProgress] = useState(null);
@@ -4301,6 +4306,48 @@ function UkdocsPage({ currentUser, onNavigate }) {
     }
   }
 
+  async function explainFinanceAuditRow(row, dataFile = null) {
+    const key = row.key;
+    setFinanceAuditExplain((current) => ({ ...current, [key]: { busy: true } }));
+    try {
+      const payload = await apiJson("/api/finance-audit/explain", {
+        method: "POST",
+        body: JSON.stringify({
+          shipment_id: row.shipment_id,
+          category: row.category,
+          ...(dataFile ? { data_file: { file_name: dataFile.name, content_base64: await fileToBase64(dataFile) } } : {}),
+        }),
+      });
+      const result = payload.result || {};
+      if (payload.finance_audit_overrides) {
+        setState((current) => ({ ...current, finance_audit_overrides: payload.finance_audit_overrides }));
+      }
+      if (!result.ok && result.missing_data && !dataFile) {
+        // An older sending: pick its data file (the one uploaded in UKdocs).
+        financeAuditDataTarget.current = row;
+        setFinanceAuditExplain((current) => ({ ...current, [key]: { error: "Pick this sending's data file (the one uploaded in UKdocs for this category)." } }));
+        financeAuditDataInputRef.current?.click();
+        return;
+      }
+      setFinanceAuditExplain((current) => ({
+        ...current,
+        [key]: result.ok
+          ? { text: result.text || "No difference line by line -- factuur and data file have the same lines." }
+          : { error: result.error || "Could not compare." },
+      }));
+    } catch (explainError) {
+      setFinanceAuditExplain((current) => ({ ...current, [key]: { error: explainError.message } }));
+    }
+  }
+
+  function handleFinanceAuditDataInputChange(event) {
+    const file = event.target.files?.[0];
+    const row = financeAuditDataTarget.current;
+    event.target.value = "";
+    financeAuditDataTarget.current = null;
+    if (file && row) explainFinanceAuditRow(row, file);
+  }
+
   function triggerFinanceAuditInvoiceUpload() {
     financeAuditInvoiceTargetShipmentId.current = financeAuditContextMenu?.shipmentId || "";
     setFinanceAuditContextMenu(null);
@@ -4324,7 +4371,7 @@ function UkdocsPage({ currentUser, onNavigate }) {
         method: "POST",
         body: JSON.stringify({ shipment_id: shipmentId, files: payloadFiles }),
       });
-      setState((current) => ({ ...current, finance_audit_invoice_documents: payload.finance_audit_invoice_documents }));
+      setState((current) => ({ ...current, finance_audit_invoice_documents: payload.finance_audit_invoice_documents, ...(payload.finance_audit_overrides ? { finance_audit_overrides: payload.finance_audit_overrides } : {}) }));
       const results = payload.results || [];
       const failed = results.filter((item) => !item.ok);
       setMessage(failed.length
@@ -4401,7 +4448,7 @@ function UkdocsPage({ currentUser, onNavigate }) {
           method: "POST",
           body: JSON.stringify({ shipment_ids: shipmentIds, files: payloadFiles }),
         });
-        setState((current) => ({ ...current, finance_audit_invoice_documents: payload.finance_audit_invoice_documents }));
+        setState((current) => ({ ...current, finance_audit_invoice_documents: payload.finance_audit_invoice_documents, ...(payload.finance_audit_overrides ? { finance_audit_overrides: payload.finance_audit_overrides } : {}) }));
         const results = payload.results || [];
         const batchFailed = results.filter((item) => !item.ok);
         matched += results.length - batchFailed.length;
@@ -5395,9 +5442,16 @@ function UkdocsPage({ currentUser, onNavigate }) {
                                         <span className={`ukdocs-status-badge ${comparison.amountMatch ? "success" : "danger"}`}>
                                           Value -- Factuur {comparison.amount.toFixed(2)} vs Export {comparison.expectedAmount ? comparison.expectedAmount.toFixed(2) : "?"} {comparison.amountMatch ? "match" : "MISMATCH"}
                                         </span>
+                                        {(!comparison.colliMatch || !comparison.amountMatch) && (
+                                          <button type="button" className="fa-explain-button" disabled={financeAuditExplain[row.key]?.busy} onClick={() => explainFinanceAuditRow(row)} title="Compares the factuur's lines with the data file's lines; the difference goes into an empty Opmerking">
+                                            {financeAuditExplain[row.key]?.busy ? "Comparing…" : "Where is the difference?"}
+                                          </button>
+                                        )}
                                       </>
                                     )}
                                   </div>
+                                  {financeAuditExplain[row.key]?.text && <div className="fa-explain-result">{financeAuditExplain[row.key].text}</div>}
+                                  {financeAuditExplain[row.key]?.error && <div className="fa-explain-result danger">{financeAuditExplain[row.key].error}</div>}
                                 </td>
                               </tr>
                             )}
@@ -5418,6 +5472,13 @@ function UkdocsPage({ currentUser, onNavigate }) {
             multiple
             style={{ display: "none" }}
             onChange={handleFinanceAuditInvoiceInputChange}
+          />
+          <input
+            ref={financeAuditDataInputRef}
+            type="file"
+            accept=".xlsx"
+            style={{ display: "none" }}
+            onChange={handleFinanceAuditDataInputChange}
           />
           {financeAuditContextMenu && (
             <>

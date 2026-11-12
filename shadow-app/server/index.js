@@ -257,6 +257,10 @@ const clockRecordsPath = path.join(cacheDir, "clock-records.json");
 const ukdocsStatePath = path.join(cacheDir, "ukdocs-state.json");
 const inkoopStatePath = path.join(cacheDir, "inkoop-state.json");
 const ukdocsPrintFilesDir = path.join(cacheDir, "ukdocs-print-files");
+// The data file per sending + category that UKdocs made the invoices from
+// (<shipment id>-<category>.xlsx), for Finance Audit's "where is the
+// difference" -- UKdocs itself keeps only the totals.
+const financeAuditDataFilesDir = path.join(cacheDir, "finance-audit-data-files");
 const inkoopInvoicePdfFilesDir = path.join(cacheDir, "inkoop-invoice-pdfs");
 const fustBackupDir = path.join(cacheDir, "fust-backups");
 const syncScriptPath = path.join(repoRoot, "sync_index.py");
@@ -3138,8 +3142,93 @@ async function matchFinanceAuditInvoiceFiles({ files, candidateShipments, by, sc
       ...added,
     ];
     await writeUkdocsState(state);
+    // A factuur that differs from the export: where, in Opmerking.
+    await explainFinanceAuditDifferences(added.map((document) => ({ shipment_id: document.shipment_id, category: document.category })))
+      .catch((error) => console.error("Finance Audit explain:", error?.message || error));
   }
   return { results, added };
+}
+
+// ---- Finance Audit: where a factuur differs from the export -----------------
+const FINANCE_AUDIT_CATEGORIES = ["508", "515", "1000", "920"];
+
+function financeAuditDataFilePath(shipmentId, category) {
+  const id = String(shipmentId || "").replace(/[^A-Za-z0-9_-]/g, "");
+  if (!id || !FINANCE_AUDIT_CATEGORIES.includes(String(category))) return "";
+  return path.join(financeAuditDataFilesDir, `${id}-${category}.xlsx`);
+}
+
+// The data files uploaded in UKdocs for a sending (content_base64 per
+// category), kept as files -- a new upload replaces the old one.
+async function saveFinanceAuditDataFiles(shipmentId, uploadedFiles) {
+  const files = uploadedFiles && typeof uploadedFiles === "object" ? uploadedFiles : {};
+  for (const category of FINANCE_AUDIT_CATEGORIES) {
+    const content = String(files?.[category]?.content_base64 || "").trim();
+    const target = financeAuditDataFilePath(shipmentId, category);
+    if (!content || !target) continue;
+    await fs.mkdir(financeAuditDataFilesDir, { recursive: true });
+    const temp = `${target}.tmp`;
+    await fs.writeFile(temp, Buffer.from(content, "base64"));
+    await fs.rename(temp, target);
+  }
+}
+
+// The factuur(s) of a sending + category against its data file, line by
+// line: { ok, text, only_export, only_factuur, price_diff, pieces_diff,
+// factuur, export } -- or { ok: false, error }.
+async function explainFinanceAuditDifference(state, shipmentId, category) {
+  const dataPath = financeAuditDataFilePath(shipmentId, category);
+  if (!dataPath || !(await fs.stat(dataPath).catch(() => null))) {
+    return { ok: false, missing_data: true, error: "No data file kept for this sending (made before this was added) -- pick it with Explain…" };
+  }
+  const pdfs = (state.finance_audit_invoice_documents || [])
+    .filter((document) => document.shipment_id === shipmentId && document.category === category && document.storage_name)
+    .map((document) => path.join(ukdocsPrintFilesDir, document.storage_name));
+  if (!pdfs.length) return { ok: false, error: "No factuur PDF on this sending yet." };
+  try {
+    const output = await runFinanceAuditInvoiceWorker(["explain", "--data", dataPath, ...pdfs.flatMap((pdf) => ["--pdf", pdf])]);
+    return JSON.parse(output.toString("utf8"));
+  } catch (error) {
+    return { ok: false, error: error instanceof Error ? error.message : String(error) };
+  }
+}
+
+// Explain the given sendings' differences: the text goes into Opmerking when
+// that is still empty (a note someone wrote is never overwritten).
+async function explainFinanceAuditDifferences(pairs, { overwrite = false } = {}) {
+  const unique = [...new Map((pairs || []).map((pair) => [`${pair.shipment_id}|${pair.category}`, pair])).values()];
+  if (!unique.length) return [];
+  const results = [];
+  const state = await readUkdocsState();
+  for (const pair of unique) {
+    const result = await explainFinanceAuditDifference(state, pair.shipment_id, pair.category);
+    results.push({ ...pair, ...result });
+  }
+  const notes = results.filter((result) => result.ok && result.text);
+  if (!notes.length) return results;
+  const fresh = await readUkdocsState();
+  const overrides = [...(fresh.finance_audit_overrides || [])];
+  let changed = false;
+  for (const result of notes) {
+    const note = `Factuur check: ${result.text}`.slice(0, 900);
+    const index = overrides.findIndex((item) => item.shipment_id === result.shipment_id && item.category === result.category);
+    if (index >= 0) {
+      const current = String(overrides[index].opmerking || "");
+      // Our own earlier note may be updated; a note someone typed never.
+      if (current && !current.startsWith("Factuur check:") && !overwrite) continue;
+      if (current === note) continue;
+      overrides[index] = { ...overrides[index], opmerking: note };
+    } else {
+      overrides.push({ shipment_id: result.shipment_id, category: result.category, opmerking: note });
+    }
+    result.opmerking_set = true;
+    changed = true;
+  }
+  if (changed) {
+    fresh.finance_audit_overrides = overrides;
+    await writeUkdocsState(fresh);
+  }
+  return results;
 }
 
 // The sendings Finance Audit shows (CSI passed), the newest saved version
@@ -25424,6 +25513,9 @@ async function handleApi(req, res, url) {
     });
     state.audit_reports = [auditReport, ...state.audit_reports];
     await writeUkdocsState(state);
+    // The uploaded data files (one row per line), kept next to the sending:
+    // Finance Audit explains a factuur mismatch line by line from them.
+    await saveFinanceAuditDataFiles(shipment.id, body?.uploaded_files).catch((error) => console.error("Finance Audit data files:", error?.message || error));
     const pdfJobs = await queueUkdocsInvoicePdfJobs(printCollection, requestUser);
 
     sendJson(res, 200, {
@@ -26519,6 +26611,31 @@ async function handleApi(req, res, url) {
     return;
   }
 
+  // Where a factuur differs from the export, line by line. With a data file
+  // (an older sending, made before data files were kept): that one is kept
+  // for the sending first. The answer goes into an empty Opmerking.
+  if (url.pathname === "/api/finance-audit/explain" && req.method === "POST") {
+    if (!requirePermission(res, requestUser, PERMISSIONS.UKDOCS_VIEW)) {
+      return;
+    }
+    const body = await readRequestJson(req, 20 * 1024 * 1024);
+    const shipmentId = String(body?.shipment_id || "").trim();
+    const category = String(body?.category || "").trim();
+    const state = await readUkdocsState();
+    if (!state.shipments.some((item) => item.id === shipmentId) || !FINANCE_AUDIT_CATEGORIES.includes(category)) {
+      sendJson(res, 404, { error: "Sending not found" });
+      return;
+    }
+    const dataBase64 = String(body?.data_file?.content_base64 || "").trim();
+    if (dataBase64) {
+      await saveFinanceAuditDataFiles(shipmentId, { [category]: { content_base64: dataBase64 } });
+    }
+    const [result] = await explainFinanceAuditDifferences([{ shipment_id: shipmentId, category }]);
+    const nextState = await readUkdocsState();
+    sendJson(res, 200, { result, finance_audit_overrides: nextState.finance_audit_overrides });
+    return;
+  }
+
   if (url.pathname === "/api/finance-audit/invoice-documents" && req.method === "POST") {
     if (!requirePermission(res, requestUser, PERMISSIONS.UKDOCS_VIEW)) {
       return;
@@ -26554,7 +26671,7 @@ async function handleApi(req, res, url) {
       scopeLabel: singleShipmentId ? "this shipment" : "any of the visible sendings",
     });
     const nextState = await readUkdocsState();
-    sendJson(res, 200, { results, finance_audit_invoice_documents: nextState.finance_audit_invoice_documents });
+    sendJson(res, 200, { results, finance_audit_invoice_documents: nextState.finance_audit_invoice_documents, finance_audit_overrides: nextState.finance_audit_overrides });
     return;
   }
 
