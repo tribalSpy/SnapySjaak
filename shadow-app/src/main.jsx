@@ -5406,6 +5406,17 @@ function UkdocsPage({ currentUser, onNavigate }) {
                               {invoiceStatus === "match" ? "Factuur OK" : "Factuur MISMATCH"}
                             </span>
                           )}
+                          {invoiceStatus === "mismatch" && group.rows.map((row) => {
+                            // The reason (line by line): just found, or the
+                            // "Factuur check:" note kept in Opmerking.
+                            const note = String(row.opmerking || "");
+                            const reason = financeAuditExplain[row.key]?.text || (note.startsWith("Factuur check:") ? note.slice("Factuur check:".length).trim() : "");
+                            return reason ? (
+                              <div key={row.key} className="fa-mismatch-reason" title={reason}>
+                                {group.rows.length > 1 ? `${row.type || row.category}: ` : ""}{reason}
+                              </div>
+                            ) : null;
+                          })}
                         </td>
                         <td>{group.location_connect || "-"}</td>
                         <td>-</td>
