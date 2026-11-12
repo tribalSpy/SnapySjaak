@@ -2243,6 +2243,9 @@ function normalizeUkdocsCustomer(customer) {
     border_crossing_default: normalizeUkdocsText(customer?.border_crossing_default),
     expediteur_name: normalizeUkdocsText(customer?.expediteur_name),
     customer_connect: normalizeUkdocsText(customer?.customer_connect),
+    // The code Uniware lists the customer's facturen under (e.g. "LTD") --
+    // the daily factuur fetch picks it from Uniware's menu.
+    uniware_factuur_ref: normalizeUkdocsText(customer?.uniware_factuur_ref),
     // How this customer's PD Keuring rows go by default: "Truck" or
     // "Airplane" (a new row takes it; the row itself can still change it).
     default_transport_mode: normalizeUkdocsTransportMode(customer?.default_transport_mode),
@@ -3178,8 +3181,10 @@ function financeAuditNeededInvoices(state, { from = addDaysToIsoDate(localDateIs
       });
       if (!missing.length) continue;
       const override = (state.finance_audit_overrides || []).find((item) => item.shipment_id === shipment.id && item.category === category);
+      // The customer's Uniware factuur code (Customers > Finance Audit); a
+      // code set on the sending's own row wins.
       const entry = {
-        ref: String(override?.factuur_ref || "").trim(),
+        ref: String(override?.factuur_ref || customer?.uniware_factuur_ref || "").trim(),
         invoice_numbers: missing,
         shipment_id: shipment.id,
         category,

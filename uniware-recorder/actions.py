@@ -2389,34 +2389,38 @@ class ActionRun:
     def _snappysjaak_fill(self) -> bool:
         """"Before the run: fill the day list from SnappySjaak" -- every
         factuur Finance Audit still misses (last 60 days), one item per
-        Uniware reference (the key the for each picks from the menu; its
-        invoice number(s) in the note). Not ready in Uniware yet = asked for
-        again next time. False = nothing to fetch."""
+        factuur number ({invoice}, the for each's field) with its customer's
+        Uniware code ({ref}, picked from the menu first). Not ready in
+        Uniware yet = asked for again next time. False = nothing to fetch."""
         fill = self.action.get("snappysjaak_fill") or {}
         if not fill.get("list"):
             return True
         import snappysjaak  # noqa: PLC0415 -- only for actions that use it
         answer = snappysjaak.needed_invoices()
         self.snappysjaak_filled = True
+        # One item per factuur number; its customer's Uniware code as {ref}
+        # (picked from the menu first, then the factuur itself).
         items, seen = [], set()
         for entry in answer.get("items") or []:
             ref = str(entry.get("ref") or "").strip()
-            if not ref or ref in seen:
-                continue
-            seen.add(ref)
-            items.append({
-                "key": ref,
-                "row": len(items) + 1,
-                "type": "factuur",
-                "label": "",
-                "note": " · ".join(part for part in ("/".join(entry.get("invoice_numbers") or []), entry.get("customer"), entry.get("date"), entry.get("category")) if part),
-                "warning": "",
-                "brief": "",
-                "value": "/".join(entry.get("invoice_numbers") or []),
-            })
+            for number in entry.get("invoice_numbers") or []:
+                number = str(number).strip()
+                if not ref or not number or number in seen:
+                    continue
+                seen.add(number)
+                items.append({
+                    "key": number,
+                    "ref": ref,
+                    "row": len(items) + 1,
+                    "type": "factuur",
+                    "label": "",
+                    "note": " · ".join(part for part in (ref, entry.get("customer"), entry.get("date"), entry.get("category")) if part),
+                    "warning": "",
+                    "brief": "",
+                })
         save_day_list({"name": fill["list"], "items": items})
         missing_ref = answer.get("missing_ref") or []
-        self.say(f"SnappySjaak: {len(items)} factuur reference(s) to fetch ({answer.get('from', '')} .. {answer.get('to', '')}) -> day list '{fill['list']}'"
+        self.say(f"SnappySjaak: {len(items)} factuur/facturen to fetch ({answer.get('from', '')} .. {answer.get('to', '')}) -> day list '{fill['list']}'"
                  + (f"; {len(missing_ref)} sending(s) without a Uniware ref yet (fill it in on Finance Audit)" if missing_ref else ""))
         return bool(items)
 
@@ -2531,6 +2535,10 @@ class ActionRun:
         self.say(f"{label}: for each of {len(items)} order(s) in '{settings['list']}' -- steps {start + 1}-{end}")
         for position, item in enumerate(items, start=1):
             self.values[settings["field"]] = item["key"]
+            # An item's code next to its number (e.g. a factuur's customer
+            # code): {ref} in the steps.
+            if item.get("ref") and settings["field"] != "ref":
+                self.values["ref"] = str(item["ref"])
             self.current_item = (settings["list"], item["key"])
             self.say(f"{label}: ({position}/{len(items)}) {settings['field']} = {item['key']}")
             files_before = len(self.exported_files)

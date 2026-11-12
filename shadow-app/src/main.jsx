@@ -3169,6 +3169,7 @@ const UKDOCS_CUSTOMER_FIELDS = [
   ["border_crossing_default", "Grensovergang (Finance Audit default)"],
   ["expediteur_name", "Expediteur (Finance Audit default)"],
   ["customer_connect", "Customer Connect (Finance Audit default)"],
+  ["uniware_factuur_ref", "Uniware factuur code (Finance Audit daily fetch, e.g. LTD)"],
   ["default_transport_mode", "Transport (PD Keuring default)", "transport"],
 ];
 
@@ -3180,7 +3181,7 @@ const UKDOCS_CUSTOMER_GROUP_DEFS = [
   { key: "export", label: "Export defaults", hint: "country of destination, regulation, customs, tolerances", fields: [] },
   { key: "invoice", label: "Invoice", hint: "language / text, document references, what the invoice lines show", fields: ["default_invoice_language_text", "default_document_references"] },
   { key: "emails", label: "Emails", hint: "papers ready, CSI, Eric Docs", fields: ["ready_email_subject", "ready_email_body", "csi_email_recipients", "csi_email_subject", "csi_email_body", "eric_docs_email_recipients", "eric_docs_email_subject", "eric_docs_email_body"] },
-  { key: "finance", label: "Finance Audit", hint: "transporteur, grensovergang, expediteur, Customer Connect, rit numbers", fields: ["transporter_name", "border_crossing_default", "expediteur_name", "customer_connect"] },
+  { key: "finance", label: "Finance Audit", hint: "transporteur, grensovergang, expediteur, Customer Connect, rit numbers", fields: ["transporter_name", "border_crossing_default", "expediteur_name", "customer_connect", "uniware_factuur_ref"] },
   { key: "documents", label: "Documents & menus", hint: "required files, Gmail sync, ready email, which menus show the shipment", fields: [] },
 ];
 const UKDOCS_CUSTOMER_GROUPED_KEYS = new Set(UKDOCS_CUSTOMER_GROUP_DEFS.flatMap((group) => group.fields));
@@ -3335,6 +3336,7 @@ function emptyUkdocsCustomer() {
     border_crossing_default: "",
     expediteur_name: "",
     customer_connect: "",
+    uniware_factuur_ref: "",
     default_transport_mode: "Truck",
     rit_overrides: Object.fromEntries(UKDOCS_CATEGORY_DEFINITIONS.map((item) => [item.code, ""])),
   };
@@ -5357,17 +5359,7 @@ function UkdocsPage({ currentUser, onNavigate }) {
                               <td>{row.omschrijving || "-"}</td>
                               <td>{row.type}</td>
                               <td colSpan={6} />
-                              <td>
-                                {row.factuur_nummer || "-"}
-                                <input
-                                  className="fa-ref-input"
-                                  value={financeAuditFieldValue(row, "factuur_ref")}
-                                  onChange={(event) => updateFinanceAuditEdit(row, "factuur_ref", event.target.value)}
-                                  placeholder="Uniware ref"
-                                  aria-label={`Uniware factuur reference for ${row.factuur_nummer || row.type}`}
-                                  title="The reference Uniware lists this factuur under -- the daily factuur fetch picks it from Uniware's menu by this"
-                                />
-                              </td>
+                              <td>{row.factuur_nummer || "-"}</td>
                               <td colSpan={1} />
                               <td><input value={financeAuditFieldValue(row, "opmerking")} onChange={(event) => updateFinanceAuditEdit(row, "opmerking", event.target.value)} /></td>
                               <td>{row.is_euro_customer ? "-" : <input value={financeAuditFieldValue(row, "value_override")} onChange={(event) => updateFinanceAuditEdit(row, "value_override", event.target.value)} placeholder="GBP" />}</td>
@@ -10053,7 +10045,7 @@ function FinanceAuditFetchSummary({ runs, isAdmin }) {
         </div>
       )}
       {!!last?.still_needed?.length && <div className="fa-fetch-line"><span className="ukdocs-status-badge muted">Still without factuur</span> {last.still_needed.join(", ")}</div>}
-      {!!last?.missing_ref?.length && <div className="fa-fetch-line"><span className="ukdocs-status-badge danger">No Uniware ref yet (can't be fetched)</span> {last.missing_ref.join(", ")} <small>-- fill in "Uniware ref" in the sending's expanded rows</small></div>}
+      {!!last?.missing_ref?.length && <div className="fa-fetch-line"><span className="ukdocs-status-badge danger">No Uniware ref yet (can't be fetched)</span> {last.missing_ref.join(", ")} <small>-- set the customer's "Uniware factuur code" (UKDocs Export &gt; Customers &gt; Finance Audit)</small></div>}
       {runs.length > 1 && (
         <details className="fa-fetch-more">
           <summary>Earlier fetches ({runs.length - 1})</summary>

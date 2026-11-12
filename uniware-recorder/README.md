@@ -291,10 +291,11 @@ next run. Started from SnappySjaak's task board: the daily task "Facturen
 Finance Audit" has a **Run on this PC** button (this dashboard open on the
 same PC, Uniware open and signed in).
 
-In Uniware each factuur is picked from a menu by its **Uniware ref**: fill it
-in per sending and category on Finance Audit UKdocs (expand the sending, the
-"Uniware ref" box under the factuur number, Save). A factuur without a ref
-can't be fetched -- the page lists those ("No Uniware ref yet").
+In Uniware the facturen are picked from a menu by the customer's code (e.g.
+`LTD` for Unitrade, `I GM K` for Glendale Flowers): set it once per customer
+in SnappySjaak, UKDocs Export -> Customers -> Edit -> Finance Audit ->
+**Uniware factuur code**. A customer without a code can't be fetched -- the
+Finance Audit page lists those facturen ("No Uniware ref yet").
 
 **Once:**
 1. SnappySjaak (admin): Finance Audit UKdocs -> **Recorder setup file**. Put
@@ -303,16 +304,20 @@ can't be fetched -- the page lists those ("No Uniware ref yet").
    start actions here -- no other web page can.
 2. Record the action, named e.g. "Facturen Finance Audit" (its file name,
    `facturen-finance-audit`, is what the task starts): from the main menu to
-   the menu/list where the facturen are, arrow to one reference and open it
-   (the PDF viewer opens), close the viewer, back to the menu. Stop.
+   the menu where you choose the customer code, pick one (e.g. LTD), then the
+   factuur in its list, open it (the PDF viewer opens), close the viewer,
+   back to the menu. Stop.
 3. Edit that action:
    - **SnappySjaak**: day list `facturen`, tick **send the PDFs ...**.
-   - "Add for each order" before the step that picks the reference: day list
-     `facturen`, the steps up to the viewer, field `ref`, tick **only orders
-     without a result yet**, **mark done** and **skip a failing item**.
-   - The step that picks the reference: **find row with** `{ref}`.
+   - "Add for each order" before the step that picks the customer code: day
+     list `facturen`, the steps up to the viewer, field `invoice`, tick
+     **only orders without a result yet**, **mark done** and **skip a failing
+     item**.
+   - The step that picks the customer code: **find row with** `{ref}`.
+   - The step that picks the factuur: **find row with** `{invoice}` (or type
+     `{invoice}` if Uniware asks for the number).
    - The step that opens the viewer: tick **opens the dump in a new window**.
-   - Dump file: rename it to `{ref}`, put it in a folder of your choice.
+   - Dump file: rename it to `{invoice}`, put it in a folder of your choice.
 4. SnappySjaak (admin): Users -> Teams & tasks -> Automatic tasks: tick
    **Facturen Finance Audit**, give it to yourself, recorder action
    `facturen-finance-audit`.
