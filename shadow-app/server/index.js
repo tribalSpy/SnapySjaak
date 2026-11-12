@@ -867,6 +867,7 @@ const defaultUkdocsState = {
   pd_reference: [],
   finance_audit_overrides: [],
   finance_audit_invoice_documents: [],
+  finance_audit_fetch_runs: [],
   pd_dropdown_options: {
     cities: [],
     pd_codes: [],
@@ -3037,6 +3038,164 @@ function summarizeUkdocsWarnings(warnings) {
     .join(" | ");
 }
 
+// Factuur PDFs matched to a (shipment, category) by their invoice number --
+// "Add factuur", "Match factuur folder" and the Uniware recorder's daily
+// fetch all go through here. The number comes from inside the PDF (the
+// file name only when the PDF has none). Saved into a freshly read state at
+// the end (only the documents change), so nothing written meanwhile is lost;
+// the same (shipment, category, number) uploaded again replaces the earlier
+// one.
+async function matchFinanceAuditInvoiceFiles({ files, candidateShipments, by, scopeLabel = "any of the visible sendings" }) {
+  const results = [];
+  const added = [];
+  for (const file of files) {
+    const fileName = String(file?.file_name || "").trim();
+    const contentBase64 = String(file?.content_base64 || "").trim();
+    if (!fileName || !contentBase64) {
+      results.push({ file_name: fileName || "(unnamed)", ok: false, error: "Empty file" });
+      continue;
+    }
+    const fileBuffer = Buffer.from(contentBase64, "base64");
+    const extension = safeExtension(fileName, "application/pdf");
+    const storageName = `finance-invoice-${Date.now()}-${crypto.randomUUID()}${extension}`;
+    const storagePath = path.join(ukdocsPrintFilesDir, storageName);
+    await fs.mkdir(ukdocsPrintFilesDir, { recursive: true });
+    await fs.writeFile(storagePath, fileBuffer);
+
+    let parsed;
+    try {
+      const output = await runFinanceAuditInvoiceWorker(["parse", "--input", storagePath]);
+      parsed = JSON.parse(output.toString("utf8"));
+    } catch (error) {
+      parsed = { ok: false, error: error instanceof Error ? error.message : String(error) };
+    }
+
+    const filenameMatch = fileName.match(/(\d{5,8})/);
+    const invoiceNumber = String(parsed?.invoice_number || "").trim() || (filenameMatch ? filenameMatch[1] : "");
+    if (!invoiceNumber) {
+      await fs.unlink(storagePath).catch(() => {});
+      results.push({ file_name: fileName, ok: false, error: "Could not find an invoice number in the filename or inside the PDF" });
+      continue;
+    }
+
+    let matchedShipmentId = "";
+    let matchedCategory = "";
+    for (const candidate of candidateShipments) {
+      const category = ["508", "515", "1000", "920"].find((item) =>
+        ukdocsPrintInvoiceTokens(candidate.invoice_numbers_by_category?.[item]).includes(invoiceNumber));
+      if (category) {
+        matchedShipmentId = candidate.id;
+        matchedCategory = category;
+        break;
+      }
+    }
+    if (!matchedCategory) {
+      await fs.unlink(storagePath).catch(() => {});
+      results.push({ file_name: fileName, invoice_number: invoiceNumber, ok: false, error: `Invoice ${invoiceNumber} doesn't match any invoice number on ${scopeLabel}` });
+      continue;
+    }
+
+    const document = normalizeUkdocsFinanceAuditInvoiceDocument({
+      shipment_id: matchedShipmentId,
+      category: matchedCategory,
+      invoice_number: invoiceNumber,
+      file_name: fileName,
+      storage_name: storageName,
+      uploaded_at: new Date().toISOString(),
+      uploaded_by: by,
+      parsed,
+    });
+    // The same invoice twice in one batch: the later one wins.
+    const earlier = added.findIndex((item) => item.shipment_id === matchedShipmentId && item.category === matchedCategory && item.invoice_number === invoiceNumber);
+    if (earlier >= 0) {
+      await fs.unlink(path.join(ukdocsPrintFilesDir, added[earlier].storage_name)).catch(() => {});
+      added.splice(earlier, 1);
+    }
+    added.push(document);
+    results.push({ file_name: fileName, invoice_number: invoiceNumber, ok: true, document });
+  }
+
+  if (added.length) {
+    const state = await readUkdocsState();
+    const sameAs = (left, right) => left.shipment_id === right.shipment_id && left.category === right.category && left.invoice_number === right.invoice_number;
+    for (const document of added) {
+      const previous = state.finance_audit_invoice_documents.find((item) => sameAs(item, document));
+      if (previous?.storage_name) {
+        await fs.unlink(path.join(ukdocsPrintFilesDir, previous.storage_name)).catch(() => {});
+      }
+    }
+    state.finance_audit_invoice_documents = [
+      ...state.finance_audit_invoice_documents.filter((item) => !added.some((document) => sameAs(item, document))),
+      ...added,
+    ];
+    await writeUkdocsState(state);
+  }
+  return { results, added };
+}
+
+// The sendings Finance Audit shows (CSI passed), the newest saved version
+// per print collection -- as the page builds its rows.
+function financeAuditSendings(state) {
+  const latest = new Map();
+  for (const shipment of state.shipments || []) {
+    const key = shipment.print_collection_id || shipment.id;
+    const existing = latest.get(key);
+    if (!existing || String(shipment.updated_at || "") > String(existing.updated_at || "")) latest.set(key, shipment);
+  }
+  return [...latest.values()].filter((shipment) => {
+    const collection = (state.print_collections || []).find((item) => item.id === shipment.print_collection_id);
+    return collection?.csi_check_passed === true;
+  });
+}
+
+// The invoice numbers of a day's sendings that have no factuur yet -- what
+// the Uniware recorder's daily action fetches.
+function financeAuditNeededInvoices(state, date) {
+  const needed = [];
+  const seen = new Set();
+  for (const shipment of financeAuditSendings(state).filter((item) => String(item.shipment_date || "").slice(0, 10) === date)) {
+    const customer = (state.customers || []).find((item) => item.id === shipment.customer_id);
+    for (const category of ["508", "515", "1000", "920"]) {
+      if (!shipment.uploaded_files?.[category]?.file_name) continue;
+      for (const token of ukdocsPrintInvoiceTokens(shipment.invoice_numbers_by_category?.[category])) {
+        const have = (state.finance_audit_invoice_documents || []).some((document) => (
+          document.shipment_id === shipment.id && document.category === category && normalizeUkdocsPrintToken(document.invoice_number) === token
+        ));
+        if (have || seen.has(token)) continue;
+        seen.add(token);
+        needed.push({ invoice_number: token, shipment_id: shipment.id, category, customer: customer?.customer_name || "", date });
+      }
+    }
+  }
+  return needed;
+}
+
+function previousWorkdayIso(fromIso = localDateIso()) {
+  let day = addDaysToIsoDate(fromIso, -1);
+  while ([0, 6].includes(new Date(`${day}T12:00:00Z`).getUTCDay())) day = addDaysToIsoDate(day, -1);
+  return day;
+}
+
+// The Uniware recorder's daily fetches, newest first (the last 30).
+function normalizeFinanceAuditFetchRuns(runs) {
+  const text = (value, length = 200) => String(value ?? "").trim().slice(0, length);
+  return (Array.isArray(runs) ? runs : [])
+    .filter((run) => run && typeof run === "object" && run.at)
+    .map((run) => ({
+      at: text(run.at, 40),
+      date: text(run.date, 10),
+      agent: text(run.agent, 80),
+      needed: Number(run.needed) || 0,
+      sent: Number(run.sent) || 0,
+      matched: (Array.isArray(run.matched) ? run.matched : []).map((value) => text(value, 40)).slice(0, 200),
+      not_matched: (Array.isArray(run.not_matched) ? run.not_matched : []).map((item) => ({ invoice: text(item?.invoice, 40), file: text(item?.file, 200), error: text(item?.error, 300) })).slice(0, 200),
+      not_found: (Array.isArray(run.not_found) ? run.not_found : []).map((value) => text(value, 40)).slice(0, 200),
+      still_needed: (Array.isArray(run.still_needed) ? run.still_needed : []).map((value) => text(value, 40)).slice(0, 200),
+    }))
+    .sort((left, right) => String(right.at).localeCompare(String(left.at)))
+    .slice(0, 30);
+}
+
 function normalizeUkdocsState(state) {
   return {
     company_settings: normalizeUkdocsCompanySettings(state?.company_settings || defaultUkdocsState.company_settings),
@@ -3056,6 +3215,7 @@ function normalizeUkdocsState(state) {
       ? state.finance_audit_invoice_documents.map(normalizeUkdocsFinanceAuditInvoiceDocument).filter((item) => item.shipment_id && item.category)
       : [],
     deleted_print_collections: normalizeUkdocsDeletedPrintCollections(state?.deleted_print_collections),
+    finance_audit_fetch_runs: normalizeFinanceAuditFetchRuns(state?.finance_audit_fetch_runs),
   };
 }
 
@@ -23082,6 +23242,70 @@ async function handleApi(req, res, url) {
     return;
   }
 
+  // The Uniware recorder's daily factuur fetch for Finance Audit UKdocs
+  // (machine key = the poller key): which invoice numbers of a day still
+  // need their factuur, and the PDFs it got from Uniware.
+  if (url.pathname.startsWith("/api/agent/finance-audit/")) {
+    if (!llmPollerEnabled()) {
+      sendJson(res, 503, { error: "SHADOW_LLM_POLLER_API_KEY is not configured" });
+      return;
+    }
+    const apiKey = readAgentApiKey(req);
+    if (!apiKey || apiKey !== llmPollerApiKey) {
+      sendPollerUnauthorized(res);
+      return;
+    }
+    try {
+      if (url.pathname === "/api/agent/finance-audit/needed-invoices" && req.method === "GET") {
+        const date = /^\d{4}-\d{2}-\d{2}$/.test(String(url.searchParams.get("date") || "")) ? url.searchParams.get("date") : previousWorkdayIso();
+        sendJson(res, 200, { date, invoices: financeAuditNeededInvoices(await readUkdocsState(), date) });
+        return;
+      }
+      if (url.pathname === "/api/agent/finance-audit/invoice-documents" && req.method === "POST") {
+        const body = await readRequestJson(req, 120 * 1024 * 1024);
+        const date = /^\d{4}-\d{2}-\d{2}$/.test(String(body?.date || "")) ? body.date : previousWorkdayIso();
+        const agent = String(body?.agent || "recorder").trim().slice(0, 60) || "recorder";
+        const files = Array.isArray(body?.files) ? body.files : [];
+        const notFound = (Array.isArray(body?.not_found) ? body.not_found : []).map((value) => String(value || "").trim()).filter(Boolean);
+        const state = await readUkdocsState();
+        // That day's sendings first, then the 14 days before (a late upload
+        // still lands on its sending).
+        const from = addDaysToIsoDate(date, -14);
+        const candidateShipments = financeAuditSendings(state)
+          .filter((shipment) => String(shipment.shipment_date || "").slice(0, 10) >= from && String(shipment.shipment_date || "").slice(0, 10) <= addDaysToIsoDate(date, 1))
+          .sort((left, right) => Number(String(right.shipment_date || "").slice(0, 10) === date) - Number(String(left.shipment_date || "").slice(0, 10) === date));
+        const neededBefore = financeAuditNeededInvoices(state, date);
+        const { results } = files.length
+          ? await matchFinanceAuditInvoiceFiles({ files, candidateShipments, by: `uniware:${agent}`, scopeLabel: `the sendings of ${date} (or the 14 days before)` })
+          : { results: [] };
+        const after = await readUkdocsState();
+        const stillNeeded = financeAuditNeededInvoices(after, date).map((item) => item.invoice_number);
+        // A batch at a time: one fetch run per agent and date keeps adding up.
+        const runs = after.finance_audit_fetch_runs || [];
+        const sameRun = runs.find((run) => run.date === date && run.agent === agent && Date.now() - Date.parse(run.at) < 3 * 60 * 60 * 1000);
+        const summary = {
+          at: new Date().toISOString(),
+          date,
+          agent,
+          needed: sameRun ? sameRun.needed : neededBefore.length,
+          sent: (sameRun?.sent || 0) + files.length,
+          matched: [...new Set([...(sameRun?.matched || []), ...results.filter((result) => result.ok).map((result) => result.invoice_number)])],
+          not_matched: [...(sameRun?.not_matched || []), ...results.filter((result) => !result.ok).map((result) => ({ invoice: result.invoice_number || "", file: result.file_name, error: result.error }))],
+          not_found: [...new Set([...(sameRun?.not_found || []), ...notFound])],
+          still_needed: stillNeeded,
+        };
+        after.finance_audit_fetch_runs = [summary, ...runs.filter((run) => run !== sameRun)];
+        await writeUkdocsState(after);
+        sendJson(res, 200, { date, results: results.map(({ document, ...rest }) => rest), still_needed: stillNeeded });
+        return;
+      }
+      sendJson(res, 404, { error: "Not found" });
+    } catch (error) {
+      sendJson(res, 400, { error: error instanceof Error ? error.message : String(error) });
+    }
+    return;
+  }
+
   if (url.pathname === "/api/llm/agent/heartbeat" && req.method === "POST") {
     if (!isDatabaseEnabled()) {
       sendJson(res, 503, { error: "Database is not enabled" });
@@ -26118,6 +26342,28 @@ async function handleApi(req, res, url) {
     return;
   }
 
+  // snappysjaak.json for the Uniware recorder (server address + machine
+  // key), put next to its actions -- admin only, the key never shows in a page.
+  if (url.pathname === "/api/agent/recorder-config" && req.method === "GET") {
+    if (requestUser.role !== "admin") {
+      sendForbidden(res);
+      return;
+    }
+    if (!llmPollerEnabled()) {
+      sendJson(res, 503, { error: "SHADOW_LLM_POLLER_API_KEY is not configured on the server" });
+      return;
+    }
+    const proto = String(req.headers["x-forwarded-proto"] || "http").split(",")[0].trim();
+    const host = String(req.headers["x-forwarded-host"] || req.headers.host || "").split(",")[0].trim();
+    res.writeHead(200, {
+      "content-type": "application/json",
+      "content-disposition": 'attachment; filename="snappysjaak.json"',
+      "cache-control": "no-store",
+    });
+    res.end(`${JSON.stringify({ server_url: `${proto}://${host}`, api_key: llmPollerApiKey }, null, 2)}\n`);
+    return;
+  }
+
   if (url.pathname === "/api/finance-audit/invoice-documents" && req.method === "POST") {
     if (!requirePermission(res, requestUser, PERMISSIONS.UKDOCS_VIEW)) {
       return;
@@ -26146,86 +26392,12 @@ async function handleApi(req, res, url) {
       return;
     }
 
-    const results = [];
-    let changed = false;
-    for (const file of files) {
-      const fileName = String(file?.file_name || "").trim();
-      const contentBase64 = String(file?.content_base64 || "").trim();
-      if (!fileName || !contentBase64) {
-        results.push({ file_name: fileName || "(unnamed)", ok: false, error: "Empty file" });
-        continue;
-      }
-      const fileBuffer = Buffer.from(contentBase64, "base64");
-      const extension = safeExtension(fileName, "application/pdf");
-      const storageName = `finance-invoice-${Date.now()}-${crypto.randomUUID()}${extension}`;
-      const storagePath = path.join(ukdocsPrintFilesDir, storageName);
-      await fs.mkdir(ukdocsPrintFilesDir, { recursive: true });
-      await fs.writeFile(storagePath, fileBuffer);
-
-      let parsed;
-      try {
-        const output = await runFinanceAuditInvoiceWorker(["parse", "--input", storagePath]);
-        parsed = JSON.parse(output.toString("utf8"));
-      } catch (error) {
-        parsed = { ok: false, error: error instanceof Error ? error.message : String(error) };
-      }
-
-      const filenameMatch = fileName.match(/(\d{5,8})/);
-      const invoiceNumber = String(parsed?.invoice_number || "").trim() || (filenameMatch ? filenameMatch[1] : "");
-      if (!invoiceNumber) {
-        await fs.unlink(storagePath).catch(() => {});
-        results.push({ file_name: fileName, ok: false, error: "Could not find an invoice number in the filename or inside the PDF" });
-        continue;
-      }
-
-      let matchedShipmentId = "";
-      let matchedCategory = "";
-      for (const candidate of candidateShipments) {
-        const category = ["508", "515", "1000", "920"].find((item) =>
-          ukdocsPrintInvoiceTokens(candidate.invoice_numbers_by_category?.[item]).includes(invoiceNumber));
-        if (category) {
-          matchedShipmentId = candidate.id;
-          matchedCategory = category;
-          break;
-        }
-      }
-      if (!matchedCategory) {
-        await fs.unlink(storagePath).catch(() => {});
-        results.push({ file_name: fileName, ok: false, error: `Invoice ${invoiceNumber} doesn't match any invoice number on ${singleShipmentId ? "this shipment" : "any of the visible sendings"}` });
-        continue;
-      }
-
-      const document = normalizeUkdocsFinanceAuditInvoiceDocument({
-        shipment_id: matchedShipmentId,
-        category: matchedCategory,
-        invoice_number: invoiceNumber,
-        file_name: fileName,
-        storage_name: storageName,
-        uploaded_at: new Date().toISOString(),
-        uploaded_by: requestUser.username,
-        parsed,
-      });
-      // Re-uploading the same invoice (e.g. re-running a folder match after
-      // fixing a parse issue) replaces the earlier attempt for this exact
-      // (shipment, category, invoice number) instead of piling up a
-      // duplicate -- the old stored PDF is deleted too.
-      const previousDocument = state.finance_audit_invoice_documents.find((item) =>
-        item.shipment_id === matchedShipmentId && item.category === matchedCategory && item.invoice_number === invoiceNumber);
-      if (previousDocument?.storage_name) {
-        await fs.unlink(path.join(ukdocsPrintFilesDir, previousDocument.storage_name)).catch(() => {});
-      }
-      state.finance_audit_invoice_documents = [
-        ...state.finance_audit_invoice_documents.filter((item) =>
-          !(item.shipment_id === matchedShipmentId && item.category === matchedCategory && item.invoice_number === invoiceNumber)),
-        document,
-      ];
-      changed = true;
-      results.push({ file_name: fileName, ok: true, document });
-    }
-
-    if (changed) {
-      await writeUkdocsState(state);
-    }
+    const { results } = await matchFinanceAuditInvoiceFiles({
+      files,
+      candidateShipments,
+      by: requestUser.username,
+      scopeLabel: singleShipmentId ? "this shipment" : "any of the visible sendings",
+    });
     const nextState = await readUkdocsState();
     sendJson(res, 200, { results, finance_audit_invoice_documents: nextState.finance_audit_invoice_documents });
     return;

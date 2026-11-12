@@ -2,8 +2,8 @@
 
 Lists the named actions (actions/*.json) with a Start button, records new
 ones, lets typed text become a field and steps capture their screen, and
-shows each run's progress and output files. Runs only on this PC; nothing
-is sent anywhere.
+shows each run's progress and output files. Runs only on this PC; only an
+action with "send to SnappySjaak" (Edit) sends its files, to SnappySjaak.
 """
 from __future__ import annotations
 
@@ -240,6 +240,16 @@ class Handler(BaseHTTPRequestHandler):
                         action["close_dump_window"] = bool(body.get("close_dump_window"))
                     if "join_dumps" in body:
                         action["join_dumps"] = bool(body.get("join_dumps"))
+                    # SnappySjaak link: fill a day list before the run, send
+                    # the files after it (Finance Audit facturen).
+                    if "snappysjaak_fill_list" in body:
+                        fill_list = str(body.get("snappysjaak_fill_list") or "").strip()
+                        if fill_list:
+                            action["snappysjaak_fill"] = {"list": fill_list, "source": "finance-audit-needed"}
+                        else:
+                            action.pop("snappysjaak_fill", None)
+                    if "snappysjaak_send" in body:
+                        action["snappysjaak_send"] = bool(body.get("snappysjaak_send"))
                     for index, change in enumerate(body.get("steps") or []):
                         if index < len(action["steps"]):
                             step = action["steps"][index]
@@ -576,6 +586,11 @@ function edit(slug) {
     <p class="row"><label>Rename it to <input id="editExportName" size="28" placeholder="{action}_{date}_{time}" value="${esc(a.export_name || "")}"></label>
       <label>and put it in <input id="editExportDir" size="50" placeholder="e.g. the OneDrive folder" value="${esc(a.export_dir || "")}"></label></p>
     <p class="muted">At the end of the run it waits for the new dump file Uniware writes (e.g. dump.filipe.2026-10-14_16_57_30.csv), waits until it is completely written, then renames it, e.g. <code>tour-508_{date}</code> gives tour-508_20261014.csv. You can use {date}, {time}, {action} and the fields. Same name again = replaced. No new file within Max wait = the run fails and the file is left alone.</p>
+    <h3>SnappySjaak (Finance Audit facturen)</h3>
+    <p class="row"><label>Before the run: fill day list <input id="editSnappyFill" size="16" placeholder="e.g. facturen" value="${esc((a.snappysjaak_fill && a.snappysjaak_fill.list) || "")}"></label>
+      with the factuur numbers SnappySjaak still needs (the sendings of the {date} field, else the previous workday)</p>
+    <p class="row"><label><input type="checkbox" id="editSnappySend" ${a.snappysjaak_send ? "checked" : ""}> After the run: send the PDFs (and the numbers not found) to SnappySjaak Finance Audit</label></p>
+    <p class="muted">Needs snappysjaak.json in this folder (SnappySjaak: Finance Audit UKdocs -> "Recorder setup file"). With a for each on that day list: tick "mark done" and "skip a failing item"; the dump name {invoice} (the for each's field) names each PDF after its number.</p>
     <table><tr><th>#</th><th>Step</th><th>Goes to</th><th>Field (typed text) / list row</th><th>Wait until screen shows</th><th>Max wait (s)</th><th>Read column (into field)</th><th>Capture screen</th><th>All pages</th><th>Remove</th></tr>
     ${a.steps.map((s, i) => `<tr><td>${i + 1}</td>
       <td>${s.foreach ? foreachEditor(s.foreach, i) : s.classify ? classifyEditor(s.classify, i) : s.loop ? loopEditor(s.loop, i) : s.text !== undefined ? `type <code>${esc(s.text)}</code>` : `${s.menu ? `menu <strong>${s.menu.map(esc).join(" &rsaquo; ")}</strong>, then ` : ""}<input data-step-key="${i}" value="${esc(s.key)}" size="9" title="The key this step presses -- change it (e.g. Left instead of Right) without recording again">${s.enter_on ? ` on "${esc(s.enter_on)}"` : ""}${s.key ? `<div><label><input type="checkbox" data-step-window="${i}" ${s.opens_window ? "checked" : ""}> opens the dump in a new window</label>${s.opens_window && s.opens_window.title ? `<div class="muted">recorded: ${esc(s.opens_window.title)}${s.opens_window.exe ? ` (${esc(s.opens_window.exe)})` : ""}</div>` : ""}</div>` : ""}`}</td>
@@ -655,7 +670,9 @@ function foreachEditor(settings, i) {
       <label>the next <input data-fe-count="${i}" size="3" value="${esc(settings.count || 1)}"> step(s)</label>
       <strong>= steps ${i + 2} to ${i + 1 + Number(settings.count || 1)}</strong>
       <label>order number as field <input data-fe-field="${i}" size="7" value="${esc(settings.field || "order")}"></label></div>
-    <div class="row"><label><input type="checkbox" data-fe-open="${i}" ${settings.only_open !== false ? "checked" : ""}> only orders without a result yet (a stopped run continues where it was)</label></div>
+    <div class="row"><label><input type="checkbox" data-fe-open="${i}" ${settings.only_open !== false ? "checked" : ""}> only orders without a result yet (a stopped run continues where it was)</label>
+      <label><input type="checkbox" data-fe-done="${i}" ${settings.mark_done ? "checked" : ""}> mark done after its steps</label>
+      <label><input type="checkbox" data-fe-skip="${i}" ${settings.skip_errors ? "checked" : ""}> skip a failing item ("not found") and go on</label></div>
     <div class="muted">In those steps, typed text {${esc(settings.field || "order")}} is the order number, e.g. Ctrl+F, then type {${esc(settings.field || "order")}}, Enter, F11, a check step, back.</div>`;
 }
 function classifyEditor(settings, i) {
@@ -707,6 +724,8 @@ function saveEdit() {
       count: document.querySelector(`[data-fe-count="${i}"]`).value,
       field: document.querySelector(`[data-fe-field="${i}"]`).value,
       only_open: document.querySelector(`[data-fe-open="${i}"]`).checked,
+      mark_done: document.querySelector(`[data-fe-done="${i}"]`).checked,
+      skip_errors: document.querySelector(`[data-fe-skip="${i}"]`).checked,
     } : null,
     classify: s.classify ? {
       word: document.querySelector(`[data-cl-word="${i}"]`).value,
@@ -718,7 +737,7 @@ function saveEdit() {
   // Show the saved steps right away: an Edit table that still showed the old
   // steps looked like nothing happened, and saving it again changed the
   // wrong (renumbered) steps.
-  api(`/api/actions/${editing}/update`, { description: $("editDesc").value, export_dir: $("editExportDir").value, back_key: $("editBackKey").value, close_dump_window: $("editCloseWindow").checked, join_dumps: $("editJoinDumps").checked, export_name: $("editExportName").value, uniware_dump_dir: $("editUniwareDir").value, uniware_dump_pattern: $("editUniwarePattern").value, uniware_dump_wait: $("editUniwareWait").value, steps }).then((payload) => { if (payload) edit(editing); });
+  api(`/api/actions/${editing}/update`, { description: $("editDesc").value, export_dir: $("editExportDir").value, back_key: $("editBackKey").value, close_dump_window: $("editCloseWindow").checked, join_dumps: $("editJoinDumps").checked, export_name: $("editExportName").value, uniware_dump_dir: $("editUniwareDir").value, uniware_dump_pattern: $("editUniwarePattern").value, uniware_dump_wait: $("editUniwareWait").value, snappysjaak_fill_list: $("editSnappyFill").value, snappysjaak_send: $("editSnappySend").checked, steps }).then((payload) => { if (payload) edit(editing); });
 }
 api("/api/state");
 setInterval(() => { if (state && (state.recording.active || state.run.active || (state.plan_run && state.plan_run.active))) api("/api/state"); }, 1000);

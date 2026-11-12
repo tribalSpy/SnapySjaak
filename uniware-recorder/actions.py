@@ -578,6 +578,13 @@ def normalize_foreach(settings: dict) -> dict:
         "count": count,
         # Only items that have no label yet (a run can be repeated / resumed).
         "only_open": settings.get("only_open", True) is not False,
+        # An item whose steps ran through gets "done" (with its file); with
+        # only_open a later run skips it.
+        "mark_done": settings.get("mark_done") is True,
+        # An item whose steps fail (e.g. a factuur Uniware doesn't have) is
+        # marked "not found" and the run goes on with the next one: back to
+        # the menu and through the steps before the for each again.
+        "skip_errors": settings.get("skip_errors") is True,
     }
 
 
@@ -2379,9 +2386,73 @@ class ActionRun:
         self.captures.append({"step": step_number, "pages": pages})
         self.say(f"Captured {len(pages)} page(s) of {title}")
 
+    def _snappysjaak_date(self) -> str:
+        """The day the SnappySjaak link is about: the {date} field when the
+        action has one (yesterday / last_workday / 14-11-2026 ...), else ""
+        (= the previous workday, SnappySjaak's default)."""
+        day = parse_date_value(self.values.get("date", "")) if self.values.get("date") else None
+        return day.isoformat() if day else ""
+
+    def _snappysjaak_fill(self) -> bool:
+        """"Before the run: fill the day list from SnappySjaak" -- the
+        factuur numbers still needed. False = nothing to do today."""
+        fill = self.action.get("snappysjaak_fill") or {}
+        if not fill.get("list"):
+            return True
+        import snappysjaak  # noqa: PLC0415 -- only for actions that use it
+        answer = snappysjaak.needed_invoices(self._snappysjaak_date())
+        self.snappysjaak_day = answer.get("date") or ""
+        invoices = answer.get("invoices") or []
+        data = {"name": fill["list"], "items": [{
+            "key": str(item.get("invoice_number") or ""),
+            "row": index,
+            "type": "factuur",
+            "label": "",
+            "note": " · ".join(part for part in (item.get("customer"), item.get("category")) if part),
+            "warning": "",
+            "brief": "",
+        } for index, item in enumerate(invoices, start=1) if item.get("invoice_number")]}
+        save_day_list(data)
+        self.say(f"SnappySjaak: {len(data['items'])} factuur/facturen needed for {self.snappysjaak_day} -> day list '{fill['list']}'")
+        return bool(data["items"])
+
+    def _snappysjaak_send(self):
+        """"After the run: send the files to SnappySjaak Finance Audit" --
+        the PDFs of this run, and the numbers Uniware didn't have."""
+        if not self.action.get("snappysjaak_send"):
+            return
+        import snappysjaak  # noqa: PLC0415
+        pdfs = [Path(path) for path in self.exported_files if str(path).lower().endswith(".pdf") and Path(path).is_file()]
+        fill_list = (self.action.get("snappysjaak_fill") or {}).get("list") or ""
+        not_found = []
+        if fill_list:
+            not_found = [item["key"] for item in load_day_list(fill_list).get("items", []) if item.get("label") == "not found"]
+        if not pdfs and not not_found and not getattr(self, "snappysjaak_day", ""):
+            return
+        self.say(f"Sending {len(pdfs)} PDF(s) to SnappySjaak Finance Audit" + (f" ({len(not_found)} not found in Uniware)" if not_found else ""))
+        answer = snappysjaak.upload_invoices(getattr(self, "snappysjaak_day", "") or self._snappysjaak_date(), pdfs, not_found, os.environ.get("COMPUTERNAME", "recorder"))
+        results = answer.get("results") or []
+        matched = [result for result in results if result.get("ok")]
+        self.say(f"SnappySjaak: {len(matched)} matched, {len(results) - len(matched)} not matched" + (f"; still without factuur: {', '.join(answer.get('still_needed') or [])}" if answer.get("still_needed") else " -- all facturen of the day are in."))
+        for result in results:
+            if not result.get("ok"):
+                self.say(f"  not matched: {result.get('file_name')} -- {result.get('error')}")
+        if fill_list:
+            data = load_day_list(fill_list)
+            for result in results:
+                entry = day_list_item(data, Path(str(result.get("file_name") or "")).stem) or day_list_item(data, str(result.get("invoice_number") or ""))
+                if entry is not None:
+                    entry["label"] = "matched" if result.get("ok") else "not matched"
+                    entry["note"] = "" if result.get("ok") else str(result.get("error") or "")[:300]
+            save_day_list(data)
+
     def run(self):
         self.active = True
         try:
+            if not self._snappysjaak_fill():
+                self.result = "done"
+                self.say("Nothing to fetch today -- every factuur is already in SnappySjaak.")
+                return
             hwnd = find_uniware_window(self.title_part)
             if not hwnd:
                 raise RuntimeError("Uniware window not found -- start Uniware (logged in) first.")
@@ -2422,6 +2493,12 @@ class ActionRun:
             except OSError as error:
                 self.result = "failed"
                 self.say(f"Could not write the output: {error}")
+            # Also after a stop: what was fetched still goes to SnappySjaak.
+            try:
+                self._snappysjaak_send()
+            except Exception as error:  # noqa: BLE001 -- shown in the dashboard
+                self.result = "failed"
+                self.say(f"Could not send to SnappySjaak: {error}")
             self.active = False
 
     def _run_steps(self, hwnd, controller, steps: list, start: int, end: int, selected):
@@ -2435,6 +2512,7 @@ class ActionRun:
             if step.get("foreach"):
                 settings = step["foreach"]
                 block_end = min(end, index + 1 + int(settings.get("count") or 1))
+                self._foreach_prefix = (start, index)
                 self._run_foreach(hwnd, controller, steps, index + 1, block_end, settings, f"Step {number}")
                 selected = self._read(hwnd)[3]
                 index = block_end
@@ -2451,16 +2529,47 @@ class ActionRun:
             self.values[settings["field"]] = item["key"]
             self.current_item = (settings["list"], item["key"])
             self.say(f"{label}: ({position}/{len(items)}) {settings['field']} = {item['key']}")
+            files_before = len(self.exported_files)
             try:
                 self._run_steps(hwnd, controller, steps, start, end, None)
             except Exception as error:
                 data = load_day_list(settings["list"])
                 entry = day_list_item(data, item["key"])
+                if self.stop_requested or not settings.get("skip_errors"):
+                    if entry is not None:
+                        entry["note"] = f"stopped: {error}"[:300]
+                        save_day_list(data)
+                    raise
                 if entry is not None:
-                    entry["note"] = f"stopped: {error}"[:300]
+                    entry["label"] = "not found"
+                    entry["note"] = f"{error}"[:300]
+                    entry["checked"] = datetime.datetime.now().isoformat(timespec="seconds")
                     save_day_list(data)
-                raise
+                self.say(f"{label}: {item['key']} not found ({error}) -- going on with the next")
+                self._recover_for_next_item(hwnd, controller, steps)
+                continue
+            if settings.get("mark_done"):
+                data = load_day_list(settings["list"])
+                entry = day_list_item(data, item["key"])
+                if entry is not None:
+                    new_files = [Path(path).name for path in self.exported_files[files_before:]]
+                    entry["label"] = "done"
+                    entry["note"] = ", ".join(new_files)[:300] if new_files else entry.get("note", "")
+                    entry["checked"] = datetime.datetime.now().isoformat(timespec="seconds")
+                    save_day_list(data)
         self.current_item = None
+
+    def _recover_for_next_item(self, hwnd, controller, steps):
+        """After an item that failed: close a stray viewer, back to the menu
+        and through the steps before the for each again, so the next item
+        starts where the for each starts."""
+        if not bring_to_front(hwnd):
+            raise RuntimeError("Could not bring Uniware back to the front after a failed item.")
+        time.sleep(0.5)
+        self._back_to_menu(hwnd, controller, self._read(hwnd)[1:])
+        prefix_start, prefix_end = getattr(self, "_foreach_prefix", (0, 0))
+        if prefix_end > prefix_start:
+            self._run_steps(hwnd, controller, steps, prefix_start, prefix_end, None)
 
     def _classify(self, hwnd, settings: dict, label: str):
         """The screen of the current day-list order (e.g. its product lines

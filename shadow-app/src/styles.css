@@ -4884,3 +4884,12 @@ table.data-table.balance-table.ik-table.ik-inv-invoices td:nth-child(n+7), table
 /* On the right side the badges sit on the button's left (always visible). */
 .tw-pill.on-right .tw-badge.tasks { right: auto; left: -6px; }
 .tw-pill.on-right .tw-badge.unread { right: auto; left: -6px; }
+
+/* Finance Audit: the recorder's daily factuur fetch */
+.fa-fetch { border: 1px solid #d6dde5; border-left: 4px solid #c58a1a; border-radius: 8px; background: #ffffff; padding: 8px 12px; display: flex; flex-direction: column; gap: 4px; font-size: 0.92rem; }
+.fa-fetch.ok { border-left-color: #2e8b57; }
+.fa-fetch-head { display: flex; flex-wrap: wrap; gap: 6px 14px; align-items: baseline; }
+.fa-fetch-head a { margin-left: auto; font-size: 0.85rem; }
+.fa-fetch-line { display: flex; flex-wrap: wrap; gap: 4px 8px; align-items: center; }
+.fa-fetch-more summary { cursor: pointer; color: #5a6876; }
+.fa-fetch-more ul { margin: 4px 0 0; padding-left: 18px; }

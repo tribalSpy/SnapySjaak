@@ -5272,6 +5272,7 @@ function UkdocsPage({ currentUser, onNavigate }) {
               </span>
             )}
           </div>
+          <FinanceAuditFetchSummary runs={state?.finance_audit_fetch_runs || []} isAdmin={currentUser?.role === "admin"} />
           <div className="table-wrap">
             <table className="data-table">
               <thead>
@@ -10008,6 +10009,40 @@ function buildUsedValueOptions(rows, field, extra = []) {
 // complete) plus any more for the same shipment -- each its own Open /
 // Delete; "add" picks one or several files (the first becomes the main one
 // when there is none yet).
+// What the Uniware recorder's daily factuur fetch did (newest first): how
+// many facturen the day needed, fetched and matched, and which are still
+// missing -- not found in Uniware, or a PDF that didn't match.
+function FinanceAuditFetchSummary({ runs, isAdmin }) {
+  const last = runs[0] || null;
+  const line = (run) => {
+    const missing = run.still_needed?.length || 0;
+    return `${run.date}: ${run.needed} needed, ${run.sent} fetched, ${run.matched.length} matched${missing ? `, ${missing} still missing` : " -- complete"}`;
+  };
+  return (
+    <div className={`fa-fetch${last && !(last.still_needed || []).length ? " ok" : ""}`}>
+      <div className="fa-fetch-head">
+        <strong>Automatic factuur fetch (Uniware)</strong>
+        <span>{last ? `${line(last)} · ${formatTimestamp(last.at)}${last.agent ? ` · ${last.agent}` : ""}` : "Not run yet -- the recorder's daily action fills this in."}</span>
+        {isAdmin && <a href="/api/agent/recorder-config" title="The recorder's connection file (server address + key) -- put it in the uniware-recorder folder">Recorder setup file</a>}
+      </div>
+      {!!last?.not_found?.length && <div className="fa-fetch-line"><span className="ukdocs-status-badge danger">Not found in Uniware</span> {last.not_found.join(", ")}</div>}
+      {!!last?.not_matched?.length && (
+        <div className="fa-fetch-line">
+          <span className="ukdocs-status-badge danger">Fetched, not matched</span>
+          {last.not_matched.map((item, index) => <span key={index} title={item.error}>{item.invoice || item.file}{index < last.not_matched.length - 1 ? ", " : ""}</span>)}
+        </div>
+      )}
+      {!!last?.still_needed?.length && <div className="fa-fetch-line"><span className="ukdocs-status-badge muted">Still without factuur</span> {last.still_needed.join(", ")}</div>}
+      {runs.length > 1 && (
+        <details className="fa-fetch-more">
+          <summary>Earlier fetches ({runs.length - 1})</summary>
+          <ul>{runs.slice(1, 15).map((run, index) => <li key={index}>{line(run)} · {formatTimestamp(run.at)}{run.not_found?.length ? ` · not found: ${run.not_found.join(", ")}` : ""}</li>)}</ul>
+        </details>
+      )}
+    </div>
+  );
+}
+
 function UkdocsInspectionListsCard({ collection, saving, onUpload, onDelete, title = "Inspection list", accept = ".pdf" }) {
   const first = collection?.documents?.inspection_list?.storage_name ? collection.documents.inspection_list : null;
   const extra = (collection?.documents?.inspection_list_extra_files || []).filter((document) => document?.storage_name);
