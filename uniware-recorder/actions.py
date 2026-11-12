@@ -671,6 +671,38 @@ def normalize_list_loop(loop: dict) -> dict:
 ARROW_KEYS = {"Down", "Up", "Page Down", "Page Up"}
 
 
+def _teal_block_selected(rows: list[dict]):
+    """A list drawn all in teal (Prg. 243's facturen): four or more rows with
+    teal in them, one after the other. Its selected row is the lone row
+    without teal (grey) in or right next to that block, starting with the
+    same code as the others. Returns that row's index, -1 = a teal list
+    without a clear selected row (nothing selected), None = not such a list."""
+    teal = [index for index, row in enumerate(rows) if row["cursor_parts"] > 0]
+    if len(teal) < 4:
+        return None
+    first, last = teal[0], teal[-1]
+    if len(teal) < 0.8 * (last - first + 1):
+        return None
+    gaps = sorted(rows[index + 1]["y"] - rows[index]["y"] for index in range(first, last))
+    step = gaps[len(gaps) // 2] if gaps else 26
+    candidates = [index for index in range(first, last + 1) if rows[index]["cursor_parts"] == 0]
+    if first > 0 and rows[first]["y"] - rows[first - 1]["y"] <= 1.6 * step:
+        candidates.append(first - 1)
+    if last < len(rows) - 1 and rows[last + 1]["y"] - rows[last]["y"] <= 1.6 * step:
+        candidates.append(last + 1)
+
+    def first_word(row):
+        parts = sorted(row["parts"], key=lambda part: part["x"])
+        words = " ".join(part["text"] for part in parts).split()
+        return words[0] if words else ""
+
+    words = [first_word(rows[index]) for index in teal]
+    common = max(set(words), key=words.count) if words else ""
+    if common and words.count(common) >= 0.8 * len(words):
+        candidates = [index for index in candidates if first_word(rows[index]) == common]
+    return candidates[0] if len(candidates) == 1 else -1
+
+
 def screen_rows(layout: list) -> list[dict]:
     """Text lines grouped into screen rows (top to bottom): {text, y,
     highlighted}. OCR splits a list row into one line per column."""
@@ -688,6 +720,10 @@ def screen_rows(layout: list) -> list[dict]:
     # for column headers).
     for row in rows:
         row["cursor_parts"] = sum(1 for part in row["parts"] if part.get("cursor"))
+    teal_list = _teal_block_selected(rows)
+    if teal_list is not None:
+        return [{"y": row["y"], "highlighted": index == teal_list,
+                 "text": " ".join(part["text"] for part in sorted(row["parts"], key=lambda part: part["x"]))} for index, row in enumerate(rows)]
     most = max((row["cursor_parts"] for row in rows), default=0)
     return [{"y": row["y"], "highlighted": (row["cursor_parts"] == most) if most else row["highlighted"],
              "text": " ".join(part["text"] for part in sorted(row["parts"], key=lambda part: part["x"]))} for row in rows]
@@ -1442,7 +1478,24 @@ class ActionRun:
         self.values[field] = distinct[0]
         self.say(f"{label}: {column} = {self.values[field]} -> {{{field}}}")
 
-    def _take_window_dump(self, hwnd, windows_before: dict, step: dict, label: str):
+    def _new_file_in_folder(self, before: dict, max_wait: float, label: str):
+        """The file that appeared (or changed) in the action's dump folder
+        since `before` -- waits for it, up to max_wait."""
+        folder = Path(self.action["uniware_dump_dir"].strip())
+        pattern = self.action.get("uniware_dump_pattern") or "*.*"
+        started = time.time()
+        while time.time() - started <= max_wait:
+            if self.stop_requested:
+                raise RuntimeError("Stopped by you.")
+            new = [path for path in folder.glob(pattern)
+                   if path.is_file() and str(path).lower() not in self.used_dump_files
+                   and (path.name not in before or path.stat().st_mtime > before[path.name])]
+            if new:
+                return max(new, key=lambda path: path.stat().st_mtime)
+            time.sleep(0.5)
+        raise RuntimeError(f"{label}: no new file ({pattern}) in {folder} within {max_wait:.0f}s -- the viewer showed an old one?")
+
+    def _take_window_dump(self, hwnd, windows_before: dict, step: dict, label: str, folder_before: dict | None = None):
         """The key opened the data in another program's window (Uniware's
         Ctrl+P): wait for that window, find its file, copy it as the dump
         (renamed, to the dump folder) and close the window."""
@@ -1450,11 +1503,26 @@ class ActionRun:
         max_wait = float(step.get("max_wait") or 60)
         started = time.time()
         window = None
+        # A viewer that keeps one window and opens every file as a tab
+        # (SumatraPDF): its title shows the file it has open -- the file of
+        # this key press is the one whose name wasn't there before (nor
+        # taken already). A window showing an old name is never taken.
+        names_before = {window_file_name(info[1]).lower() for info in windows_before.values() if window_file_name(info[1])}
+        used_names = {Path(path).name.lower() for path in self.used_dump_files}
+        expected_exe = str((step.get("opens_window") or {}).get("exe") or "").lower()
         while window is None:
             if self.stop_requested:
                 raise RuntimeError("Stopped by you.")
             for other, (pid, title) in visible_windows().items():
-                if other not in windows_before and pid != uniware_pid:
+                if pid == uniware_pid:
+                    continue
+                name = window_file_name(screen_reader.window_title(other) or title).lower()
+                fresh = bool(name) and name not in names_before and name not in used_names
+                # A window that was already there counts only when it's the
+                # program recorded for this step (e.g. SumatraPDF.exe).
+                if fresh and other in windows_before and expected_exe and Path(process_exe(pid)).name.lower() != expected_exe:
+                    fresh = False
+                if fresh or (other not in windows_before and not name):
                     window = (other, pid, title)
                     break
             if window is None:
@@ -1465,17 +1533,23 @@ class ActionRun:
         time.sleep(1.5)  # let the program put the file name in its title
 
         def program_windows():
-            # The program's new windows: Excel first shows "Openen", then
-            # the workbook in another window.
-            return {handle: info[1] for handle, info in visible_windows().items() if handle not in windows_before and info[0] == pid}
+            # The program's new windows (Excel first shows "Openen", then the
+            # workbook in another window) and the window that showed the new
+            # file (a viewer reusing its window, the file as a new tab).
+            return {handle: info[1] for handle, info in visible_windows().items()
+                    if info[0] == pid and (handle not in windows_before or handle == other)}
 
         def shown_title():
             titles = [screen_reader.window_title(handle) or text for handle, text in program_windows().items()]
-            return next((text for text in titles if window_file_name(text)), titles[0] if titles else title)
+            fresh = [text for text in titles if window_file_name(text) and window_file_name(text).lower() not in names_before and window_file_name(text).lower() not in used_names]
+            return (fresh or [text for text in titles if window_file_name(text)] or titles or [title])[0]
 
         title = shown_title()
         self.say(f"{label}: {step['key']} opened '{title}' ({Path(process_exe(pid)).name})")
         source = None
+        if folder_before is not None:
+            source = self._new_file_in_folder(folder_before, max_wait + 30, label)
+            self.say(f"{label}: the new file is {source.name}")
         extra = [self.action.get("uniware_dump_dir") or "", self.action.get("export_dir") or ""]
         while source is None:
             title = shown_title()
@@ -2753,9 +2827,13 @@ class ActionRun:
                 else:
                     raise RuntimeError(f"Menu item '{step['enter_on']}' not found.")
             windows_before = visible_windows() if step.get("opens_window") else None
+            # The folder the opened file is written to (Edit: "Uniware saves
+            # its dump in"): what's in it now, so the file of THIS key press is
+            # the new one -- the viewer's title can still show the last one.
+            folder_before = self._dump_files_now() if step.get("opens_window") and (self.action.get("uniware_dump_dir") or "").strip() else None
             send_combo(controller, step["key"])
             if windows_before is not None:
-                self._take_window_dump(hwnd, windows_before, step, f"Step {number}")
+                self._take_window_dump(hwnd, windows_before, step, f"Step {number}", folder_before)
                 if not bring_to_front(hwnd):
                     raise RuntimeError("Could not bring Uniware back to the front after the dump window.")
             self.say(f"Step {number}: {step['key']}" + (f" on '{step['pick']}'" if step.get("pick") else f" on '{step['enter_on']}'" if step.get("enter_on") else ""))
