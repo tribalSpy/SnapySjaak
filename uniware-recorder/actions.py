@@ -1640,6 +1640,14 @@ class ActionRun:
             if not bring_to_front(viewer):
                 time.sleep(1)
                 continue
+            # bring_to_front taps Alt (Windows wants a key press before a
+            # window may come to the front): in SumatraPDF that opens its
+            # menu, which then eats the Ctrl+W. Escape closes that menu.
+            time.sleep(0.3)
+            send_combo(controller, "Esc")
+            time.sleep(0.3)
+            if screen_reader.foreground_window() != viewer:
+                continue
             send_combo(controller, close_key)
             deadline = time.time() + 8
             while time.time() < deadline and viewer in showing():
