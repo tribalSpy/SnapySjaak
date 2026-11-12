@@ -142,6 +142,8 @@ PLAIN_LINE_RE = re.compile(rf"^(\d+)\s+(.+?)\s+(\d+[.,]\d{{2,3}})\s+({NUMBER}[.,
 # Item (GBP), boxes x per box = pieces: "6 x 5 = 30 Chico Premium Asteca pb
 # 50 A1 30 MX MX 31 2.51 75.30", "50 x1 = 50 Bags Paper ... 0.60 30.00"
 ITEM_LINE_RE = re.compile(rf"^(\d+)\s+x\s*\d+\s*=\s*(\d+)\s+(.+?)\s+(\d+[.,]\d{{2,3}})\s+({NUMBER}[.,]\d{{2}})\s*$")
+# Glendale (EUR): "1 - 1  1 x 18  (418)  18 Viola  F1 Mixed  9.0 15  1,20  21,60"
+BOX_LINE_RE = re.compile(rf"^\d+\s*-\s*\d+\s+\d+\s*x\s*\d+\s+\(\d+\)\s+(\d+)\s+(.+?)\s+(\d+[.,]\d{{2,3}})\s+({NUMBER}[.,]\d{{2}})\s*$")
 # A bouquet's content: "24 x 3.00 = 72.00 Chr t boeket promo 1 80 50 NL NL 37 23.52"
 PART_LINE_RE = re.compile(rf"^(\d+)\s+x\s*\d+[.,]\d+\s*=\s*(\d+)(?:[.,]\d+)?\s+(.+?)\s+({NUMBER}[.,]\d{{2}})\s*$")
 
@@ -168,11 +170,12 @@ def _join_split_amount(line: str) -> str:
         # A bouquet's content (no price to check with): only an amount
         # split inside its last "x.yy" -- "5.5 8", "13. 20", "46 .25".
         return re.sub(r"\s(\d+)(?=\s?[.,]\s?\d\s?\d$)\s?([.,])\s?(\d)\s?(\d)$", r" \1\2\3\4", line)
-    head = re.match(r"^(\d+)\s+(?:x\s*\d+\s*=\s*(\d+)\s+)?", line)
+    box = re.match(r"^\d+\s*-\s*\d+\s+\d+\s*x\s*\d+\s+\(\d+\)\s+(\d+)\s", line)
+    head = box or re.match(r"^(\d+)\s+(?:x\s*\d+\s*=\s*(\d+)\s+)?", line)
     match = PRICE_THEN_TAIL_RE.search(line)
     if not head or not match or " " not in match.group(2).strip():
         return line
-    pieces = int(head.group(2) or head.group(1))
+    pieces = int(head.group(1)) if box else int(head.group(2) or head.group(1))
     price = _decimal(match.group(1))
     amount_text = re.sub(r"\s+", "", match.group(2))
     amount = normalize_amount(amount_text)
@@ -198,8 +201,11 @@ def parse_invoice_lines(text: str) -> list[dict]:
             if amount is not None and pieces:
                 lines.append({"pieces": pieces, "description": description.strip(), "price": round(amount / pieces, 3), "amount": round(amount, 2)})
             continue
-        item = ITEM_LINE_RE.match(line)
-        if item:
+        boxed = BOX_LINE_RE.match(line)
+        item = None if boxed else ITEM_LINE_RE.match(line)
+        if boxed:
+            pieces, description, price, amount = int(boxed.group(1)), boxed.group(2), _decimal(boxed.group(3)), _decimal(boxed.group(4))
+        elif item:
             # A bouquet: its contents follow on the next lines -- those count.
             following = next((later for later in raw[index + 1:] if later), "")
             if PART_LINE_RE.match(following):

@@ -2146,6 +2146,10 @@ function normalizeUkdocsFinanceAuditOverride(entry) {
     // The reference Uniware lists this factuur under (picked from its menu
     // by the recorder's daily factuur fetch).
     factuur_ref: normalizeUkdocsText(entry?.factuur_ref),
+    // More facturen for this sending + category than the number on its
+    // papers ("739688/739689"): Finance Audit fetches, matches and adds
+    // them up too; the papers keep their number.
+    extra_invoices: normalizeUkdocsText(entry?.extra_invoices),
   };
 }
 
@@ -3058,7 +3062,17 @@ function summarizeUkdocsWarnings(warnings) {
 // the end (only the documents change), so nothing written meanwhile is lost;
 // the same (shipment, category, number) uploaded again replaces the earlier
 // one.
+// A sending + category's factuur numbers for Finance Audit: its own, plus
+// the "Extra facturen" set on Finance Audit (one sending billed on more
+// facturen than the number on its papers -- the papers keep theirs).
+function financeAuditCategoryTokens(state, shipment, category) {
+  const own = ukdocsPrintInvoiceTokens(shipment?.invoice_numbers_by_category?.[category]);
+  const override = (state?.finance_audit_overrides || []).find((item) => item.shipment_id === shipment?.id && item.category === category);
+  return [...new Set([...own, ...ukdocsPrintInvoiceTokens(override?.extra_invoices)])];
+}
+
 async function matchFinanceAuditInvoiceFiles({ files, candidateShipments, by, scopeLabel = "any of the visible sendings" }) {
+  const overridesState = await readUkdocsState();
   const results = [];
   const added = [];
   for (const file of files) {
@@ -3095,7 +3109,7 @@ async function matchFinanceAuditInvoiceFiles({ files, candidateShipments, by, sc
     let matchedCategory = "";
     for (const candidate of candidateShipments) {
       const category = ["508", "515", "1000", "920"].find((item) =>
-        ukdocsPrintInvoiceTokens(candidate.invoice_numbers_by_category?.[item]).includes(invoiceNumber));
+        financeAuditCategoryTokens(overridesState, candidate, item).includes(invoiceNumber));
       if (category) {
         matchedShipmentId = candidate.id;
         matchedCategory = category;
@@ -3282,15 +3296,16 @@ function financeAuditNeededInvoices(state, { from = addDaysToIsoDate(localDateIs
     const customer = (state.customers || []).find((item) => item.id === shipment.customer_id);
     for (const category of ["508", "515", "1000", "920"]) {
       if (!shipment.uploaded_files?.[category]?.file_name) continue;
-      if (!ukdocsPrintInvoiceTokens(shipment.invoice_numbers_by_category?.[category]).length) {
+      const categoryTokens = financeAuditCategoryTokens(state, shipment, category);
+      if (!categoryTokens.length) {
         noNumber.push({ shipment_id: shipment.id, category, customer: customer?.customer_name || "", date: String(shipment.shipment_date || "").slice(0, 10) });
         continue;
       }
       const date = String(shipment.shipment_date || "").slice(0, 10);
-      for (const token of ukdocsPrintInvoiceTokens(shipment.invoice_numbers_by_category?.[category])) {
+      for (const token of categoryTokens) {
         owners.set(token, [...(owners.get(token) || []), { shipment_id: shipment.id, category, customer: customer?.customer_name || "", date }]);
       }
-      const missing = ukdocsPrintInvoiceTokens(shipment.invoice_numbers_by_category?.[category]).filter((token) => {
+      const missing = categoryTokens.filter((token) => {
         if (seen.has(token)) return false;
         seen.add(token);
         return !haveNumbers.has(token);

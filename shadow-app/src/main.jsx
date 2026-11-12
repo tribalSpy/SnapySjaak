@@ -2913,6 +2913,8 @@ function buildUkdocsFinanceAuditRows(state) {
         location_connect: collection?.reference_connect || "",
         opmerking: override?.opmerking || "",
         factuur_ref: override?.factuur_ref || "",
+        // Extra facturen for this sending (Finance Audit only).
+        extra_invoices: override?.extra_invoices || "",
         is_euro_customer: isEuroCustomer,
         waarde_gbp: !isEuroCustomer ? rawValue : "",
         waarde_eu: isEuroCustomer ? rawValue : "",
@@ -2967,7 +2969,7 @@ function groupUkdocsFinanceAuditRows(rows) {
       group.types.push(row.type);
     }
     if (row.factuur_nummer) {
-      group.factuur_nummers.push(row.factuur_nummer);
+      group.factuur_nummers.push(row.factuur_nummer + (row.extra_invoices ? ` + ${row.extra_invoices}` : ""));
     }
     group.waarde_gbp_total += Number(row.waarde_gbp) || 0;
     group.waarde_eu_total += Number(row.waarde_eu) || 0;
@@ -3896,6 +3898,8 @@ function UkdocsPage({ currentUser, onNavigate }) {
   const [financeAuditContextMenu, setFinanceAuditContextMenu] = useState(null);
   // "Edit invoice numbers" dialog: { shipmentId, rows: [{ category, label, value, original }] }.
   const [financeAuditInvoiceEdit, setFinanceAuditInvoiceEdit] = useState(null);
+  // "Extra facturen" dialog: { shipmentId, rows: [{ category, label, own, value }] }.
+  const [financeAuditExtraEdit, setFinanceAuditExtraEdit] = useState(null);
   const financeAuditInvoiceInputRef = useRef(null);
   const financeAuditInvoiceTargetShipmentId = useRef("");
   // "Where is the difference?" per row key: { busy, text, error }; the data
@@ -4220,6 +4224,7 @@ function UkdocsPage({ currentUser, onNavigate }) {
       value_override: "value_override" in edits ? edits.value_override : (existingOverride.value_override || ""),
       volume_override: "volume_override" in edits ? edits.volume_override : (existingOverride.volume_override || ""),
       factuur_ref: "factuur_ref" in edits ? String(edits.factuur_ref || "").trim() : (existingOverride.factuur_ref || ""),
+      extra_invoices: existingOverride.extra_invoices || "",
     };
     const nextOverrides = existingOverrides.some((item) => item.shipment_id === row.shipment_id && item.category === row.category)
       ? existingOverrides.map((item) => (item.shipment_id === row.shipment_id && item.category === row.category ? nextOverride : item))
@@ -4263,6 +4268,38 @@ function UkdocsPage({ currentUser, onNavigate }) {
         return { category: category.code, label: category.label, value: original, original };
       });
     setFinanceAuditInvoiceEdit({ shipmentId, rows });
+  }
+
+  function openFinanceAuditExtraEdit() {
+    const shipmentId = financeAuditContextMenu?.shipmentId || "";
+    setFinanceAuditContextMenu(null);
+    const shipment = shipments.find((item) => item.id === shipmentId);
+    if (!shipment) return;
+    const overrides = state?.finance_audit_overrides || [];
+    const rows = UKDOCS_CATEGORY_DEFINITIONS
+      .filter((category) => shipment.uploaded_files?.[category.code]?.file_name || String(shipment.invoice_numbers_by_category?.[category.code] || "").trim())
+      .map((category) => ({
+        category: category.code,
+        label: category.label,
+        own: String(shipment.invoice_numbers_by_category?.[category.code] || "").trim(),
+        value: overrides.find((item) => item.shipment_id === shipmentId && item.category === category.code)?.extra_invoices || "",
+      }));
+    setFinanceAuditExtraEdit({ shipmentId, rows });
+  }
+
+  async function saveFinanceAuditExtraEdit() {
+    const edit = financeAuditExtraEdit;
+    if (!edit) return;
+    let next = [...(state?.finance_audit_overrides || [])];
+    for (const row of edit.rows) {
+      // "739688, 739689" / "739688 739689" -> "739688/739689"
+      const value = String(row.value || "").split(/[^0-9]+/).filter(Boolean).join("/");
+      const index = next.findIndex((item) => item.shipment_id === edit.shipmentId && item.category === row.category);
+      if (index >= 0) next[index] = { ...next[index], extra_invoices: value };
+      else if (value) next.push({ shipment_id: edit.shipmentId, category: row.category, extra_invoices: value });
+    }
+    await saveStatePatch({ finance_audit_overrides: next }, "Extra facturen saved -- the next factuur fetch gets them; Add factuur accepts them for this sending.");
+    setFinanceAuditExtraEdit(null);
   }
 
   async function saveFinanceAuditInvoiceEdit() {
@@ -5448,7 +5485,7 @@ function UkdocsPage({ currentUser, onNavigate }) {
                               <td>{row.omschrijving || "-"}</td>
                               <td>{row.type}</td>
                               <td colSpan={6} />
-                              <td>{row.factuur_nummer || "-"}</td>
+                              <td>{row.factuur_nummer || "-"}{row.extra_invoices ? <span className="muted" title="Extra facturen (Finance Audit only)"> + {row.extra_invoices}</span> : null}</td>
                               <td colSpan={1} />
                               <td><input value={financeAuditFieldValue(row, "opmerking")} onChange={(event) => updateFinanceAuditEdit(row, "opmerking", event.target.value)} /></td>
                               <td>{row.is_euro_customer ? "-" : <input value={financeAuditFieldValue(row, "value_override")} onChange={(event) => updateFinanceAuditEdit(row, "value_override", event.target.value)} placeholder="GBP" />}</td>
@@ -5539,9 +5576,32 @@ function UkdocsPage({ currentUser, onNavigate }) {
               <div className="finance-audit-context-menu" style={{ top: financeAuditContextMenu.y, left: financeAuditContextMenu.x }}>
                 <button type="button" onClick={triggerFinanceAuditInvoiceUpload}>Add factuur</button>
                 <button type="button" onClick={openFinanceAuditInvoiceEdit}>Edit invoice numbers</button>
+                <button type="button" onClick={openFinanceAuditExtraEdit} title="The sending was billed on more facturen than the number on its papers: add them here (Finance Audit only, the papers keep their number)">Extra facturen…</button>
                 <button type="button" onClick={triggerFinanceAuditDataUpload} title="The data file(s) uploaded in UKdocs for this sending: compared line by line with the factuur; the difference goes into an empty Opmerking">Data file: where is the difference?</button>
               </div>
             </>
+          )}
+          {financeAuditExtraEdit && (
+            <div className="finance-audit-modal-backdrop" onClick={() => !saving && setFinanceAuditExtraEdit(null)}>
+              <div className="finance-audit-modal" role="dialog" aria-label="Extra facturen" onClick={(event) => event.stopPropagation()}>
+                <h3>Extra facturen</h3>
+                <p className="muted">This sending was billed on more facturen than the number on its papers. The extra numbers count for Finance Audit only: the daily fetch gets them, Add factuur accepts them, and the factuur check adds them all up. The papers, CSI and PD Keuring keep their number.</p>
+                {financeAuditExtraEdit.rows.map((row, index) => (
+                  <label key={row.category} className="finance-audit-modal-field">
+                    <span>{row.label} ({row.category}) -- on the papers: {row.own || "none"}</span>
+                    <input
+                      value={row.value}
+                      placeholder="e.g. 739688, 739689"
+                      onChange={(event) => setFinanceAuditExtraEdit((current) => ({ ...current, rows: current.rows.map((item, itemIndex) => (itemIndex === index ? { ...item, value: event.target.value } : item)) }))}
+                    />
+                  </label>
+                ))}
+                <div className="row-actions">
+                  <button type="button" className="primary" onClick={saveFinanceAuditExtraEdit} disabled={saving}>{saving ? "Saving..." : "Save"}</button>
+                  <button type="button" onClick={() => setFinanceAuditExtraEdit(null)} disabled={saving}>Cancel</button>
+                </div>
+              </div>
+            </div>
           )}
           {financeAuditInvoiceEdit && (
             <div className="finance-audit-modal-backdrop" onClick={() => !saving && setFinanceAuditInvoiceEdit(null)}>
