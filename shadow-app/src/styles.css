@@ -5556,3 +5556,14 @@ table.data-table.balance-table.ik-table.ik-inv-invoices td:nth-child(n+7), table
 .tw-week {
   margin-left: 8px;
 }
+
+/* The right-click menu: a warning (e.g. matched via the data, no unlink). */
+.ik-ctx-warn {
+  margin: 2px 4px 4px;
+  padding: 6px 8px;
+  border-radius: 6px;
+  background: #fef3c7;
+  color: #92400e;
+  font-size: 0.85rem;
+  max-width: 300px;
+}

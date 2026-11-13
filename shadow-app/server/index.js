@@ -29421,12 +29421,22 @@ async function handleApi(req, res, url) {
         const list = [...to.values()].sort((left, right) => right.pieces - left.pieces);
         return { pieces: list.reduce((sum, entry) => sum + entry.pieces, 0), to: list, lots: found.length, of_lots: lotsOf(row).length };
       };
+      // A matched line linked by hand (Track & Trace / suggestions): the hand
+      // link holding its lot(s) -- it can be unlinked; else matched by the data.
+      const handPairOf = (row) => {
+        if (row.list !== "matched_ok" && row.list !== "matched_mismatch") return null;
+        const lots = lotsOf(row);
+        if (!lots.length) return null;
+        const pair = (state.manual_line_pairs || []).find((entry) => lots.every((lot) => (entry.lots || []).map((value) => String(value).trim()).includes(lot)));
+        return pair ? { id: pair.id, by: pair.by || "", note: pair.note || "", at: pair.at || "", lots: (pair.lots || []).map((lot) => String(lot).trim()) } : null;
+      };
       sendJson(res, 200, {
         from, to, grower,
         lines: lines.map((row) => ({
           ...row, grower: view.growerOf(row), bw: view.bwOf(row), flow: inkoopOverviewFlow(row),
           status: verifiedRowIds.has(row.row_id) ? (row.list === "only_in_erp" ? "verified_connect" : "verified") : INKOOP_OVERVIEW_STATUS[row.list] || row.list,
           ...(row.list === "matched_mismatch" ? { dispatch: dispatchOf(row) } : {}),
+          ...(handPairOf(row) ? { hand_pair: handPairOf(row) } : {}),
         })),
         capped: lines.length >= limit,
       });

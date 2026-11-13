@@ -20667,7 +20667,9 @@ function IkDispatchNote({ dispatch, invoicePieces, connectPieces }) {
 
 // A grower's stored lines (one request per grower and period), each as a
 // pair: the invoice side | the difference | the Connect side.
-function IkPairLines({ from, to, company, grower, bar, flow = "", date = "", statuses = null, onLineMenu = null }) {
+// unlinkedLots: lots whose hand link was just taken off -- shown as such
+// until the day is compared again (it runs in the background).
+function IkPairLines({ from, to, company, grower, bar, flow = "", date = "", statuses = null, onLineMenu = null, reloadKey = 0, unlinkedLots = null }) {
   const [data, setData] = useState(null);
   const [error, setError] = useState("");
   useEffect(() => {
@@ -20680,7 +20682,7 @@ function IkPairLines({ from, to, company, grower, bar, flow = "", date = "", sta
       .then((payload) => { if (!cancelled) setData(payload); })
       .catch((loadError) => { if (!cancelled) setError(loadError.message); });
     return () => { cancelled = true; };
-  }, [from, to, company, grower]);
+  }, [from, to, company, grower, reloadKey]);
   const lines = (data?.lines || []).filter((line) => (
     (!bar.bw?.length || bar.bw.includes(line.bw || "?"))
     && (!bar.flows?.length || bar.flows.includes(line.flow))
@@ -20707,10 +20709,12 @@ function IkPairLines({ from, to, company, grower, bar, flow = "", date = "", sta
         <tbody>
           {lines.map((line, index) => {
             const invoiceSide = line.status !== "connect_only";
+            const justUnlinked = Boolean(unlinkedLots && line.lot && String(line.lot).split("+").some((lot) => unlinkedLots.has(lot.trim())));
             const connectSide = line.status === "matched" || line.status === "mismatch" || line.status === "connect_only";
             return (
-              <tr key={`${line.invoice_number}-${line.lot}-${index}`} className={`ik-status-${line.status}`}
-                onContextMenu={onLineMenu ? (event) => onLineMenu(event, line) : undefined} title={onLineMenu ? "Right-click: claim (the supplier credits later)" : undefined}>
+              <tr key={`${line.invoice_number}-${line.lot}-${index}`} className={`ik-status-${line.status}`} style={justUnlinked ? { opacity: 0.45 } : undefined}
+                onContextMenu={onLineMenu && !justUnlinked ? (event) => onLineMenu(event, line) : justUnlinked ? (event) => event.preventDefault() : undefined}
+                title={onLineMenu ? `Right-click: ${line.hand_pair ? "unlink (linked by hand) or " : ""}claim (the supplier credits later)` : undefined}>
                 <td title={IK_STATUS_LABEL[line.status] || line.status} className="ik-status-icon">{IK_STATUS_ICON[line.status] || "·"}</td>
                 <td>{fustOverviewDate(line.date)}</td>
                 <td className="ik-inv">
@@ -20735,6 +20739,8 @@ function IkPairLines({ from, to, company, grower, bar, flow = "", date = "", sta
                 </td>
                 <td><i className="ik-dot" style={{ background: INKOOP_FLOW_COLORS[line.flow] }} />{line.flow}</td>
                 <td className="muted">
+                  {justUnlinked ? <div>🔗 unlinked -- being compared again</div>
+                    : line.hand_pair && <div title={line.hand_pair.note || ""}>✋ linked by hand{line.hand_pair.by ? ` (${line.hand_pair.by})` : ""}</div>}
                   {line.note}
                   {line.dispatch && <IkDispatchNote dispatch={line.dispatch} invoicePieces={line.invoice_quantity} connectPieces={line.erp_quantity} />}
                 </td>
@@ -21717,6 +21723,26 @@ function InkoopTrackTraceWorkspace({ bar, setBar, overview, company, matchRound 
       overview.reload();
     }
   }
+  // A matched line linked by hand: take the hand link off -- its invoice
+  // line(s) and lot(s) are open again (to link them right).
+  const [unlinkedLots, setUnlinkedLots] = useState(() => new Set());
+  // Compared again (matchRound): the lines show as they are now.
+  useEffect(() => { setUnlinkedLots(new Set()); }, [matchRound]);
+  async function unlinkMatched(line) {
+    const pair = line.hand_pair;
+    if (!pair) return;
+    if (!window.confirm(`Unlink ${line.description}${line.lot ? ` -- lot ${line.lot}` : ""}?\nLinked by hand${pair.by ? ` by ${pair.by}` : ""}${pair.note ? `: ${pair.note}` : ""}.\nIts invoice line(s) and lot(s) of this link are open again.`)) return;
+    setIssueError("");
+    try {
+      await apiJson(`/api/inkoop/manual-pairs/${encodeURIComponent(pair.id)}`, { method: "DELETE" });
+      setUnlinkedLots((current) => new Set([...current, ...(pair.lots?.length ? pair.lots : String(line.lot || "").split("+").map((lot) => lot.trim()).filter(Boolean))]));
+      setPairsKey((value) => value + 1);
+      setIssueRound((value) => value + 1);
+      overview.reload();
+    } catch (unlinkError) {
+      setIssueError(unlinkError.message);
+    }
+  }
   const openDrawer = (issue) => setDrawer(issue);
   const issueDay = (issue) => issue.day || inkoopIssueInvoiceDay(issue);
   function openVerifyMenu(event, issue) {
@@ -21956,11 +21982,19 @@ function InkoopTrackTraceWorkspace({ bar, setBar, overview, company, matchRound 
               <button type="button" className="link-button" onClick={() => setShowMatched((current) => !current)}>
                 {showMatched ? "▾" : "▸"} ✓ {chosenSum.matched_lines} matched line(s) · {formatInkoopEuro(chosenSum.matched_value)}{chosenSum.mismatch_lines ? ` · ⚠ ${chosenSum.mismatch_lines} with figures that differ` : ""}
               </button>
-              {showMatched && <IkPairLines from={from} to={to} company={company} grower={chosen} bar={bar} statuses={["matched", "mismatch"]}
+              {showMatched && <IkPairLines from={from} to={to} company={company} grower={chosen} bar={bar} statuses={["matched", "mismatch"]} reloadKey={`${pairsKey}.${issueRound}.${matchRound}`} unlinkedLots={unlinkedLots}
                 onLineMenu={(event, line) => {
                   event.preventDefault();
-                  setMenu({ x: event.clientX, y: event.clientY, title: line.description, items: [ikClaimFromPairLine(line, chosen)], claimOnly: true,
-                    note: "A matched line: a claim on it stays in the follow-up until the credit is in." });
+                  const hand = line.hand_pair;
+                  setMenu({
+                    x: event.clientX, y: event.clientY, title: line.description, items: [ikClaimFromPairLine(line, chosen)], claimOnly: true,
+                    note: "A matched line: a claim on it stays in the follow-up until the credit is in.",
+                    ...(hand ? {
+                      actions: [{ label: `🔗 Unlink (linked by hand${hand.by ? ` by ${hand.by}` : ""})`, onClick: () => unlinkMatched(line) }],
+                    } : {
+                      warning: "⚠ Matched via the data (the comparison paired it) -- not linked by hand, so it can't be unlinked here.",
+                    }),
+                  });
                 }} />}
             </div>
             {focusNote && <div className="notice info">{focusNote} <button type="button" className="link-button" onClick={() => setFocusNote("")}>✕</button></div>}
@@ -22166,6 +22200,10 @@ function IkFollowupResolveMenu({ menu, onPick, onClose, departments = [], catego
     <div className="ik-ctx-menu" style={style} role="menu" onClick={(event) => event.stopPropagation()} onContextMenu={(event) => event.preventDefault()}>
       <div className="ik-ctx-title"><strong>{menu.title}</strong><span className="muted">{open.length} line(s) · net <InkoopMoneyDiff value={net} /></span></div>
       {menu.note && <div className="ik-ctx-sub muted">{menu.note}</div>}
+      {menu.warning && <div className="ik-ctx-warn">{menu.warning}</div>}
+      {(menu.actions || []).map((action) => (
+        <button key={action.label} type="button" role="menuitem" disabled={action.disabled} onClick={() => { action.onClick(); onClose(); }}>{action.label}</button>
+      ))}
       {showScopes && (
         <div className="ik-ctx-scope">
           {scopes.map(([key, label, list]) => (
