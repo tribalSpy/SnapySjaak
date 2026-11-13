@@ -23171,19 +23171,43 @@ function ikMatchedWhy(item) {
   return pieces && price ? "pieces + price" : pieces ? "other pieces" : price ? "other price" : "total";
 }
 
+// Flowers / plants by FloraHolland's account on the invoice line (001
+// flowers, 002 / 003 plants); without one (AI2) "other".
+function ikMatchedKind(item) {
+  const account = String(item.invoice?.account || "").trim();
+  if (account === "001") return "flowers";
+  if (account === "002" || account === "003") return "plants";
+  return "other";
+}
+
+function ikMatchedSamePieces(item) {
+  const invoice = item.invoice || {};
+  const lot = item.lot || {};
+  if (invoice.quantity === null || invoice.quantity === undefined || lot.pieces === null || lot.pieces === undefined) return false;
+  return Math.abs(invoice.quantity - lot.pieces) < 0.0001;
+}
+
 function InkoopMatchedDiffsWorkspace({ bar, matchRound = 0, onOpenTrackTrace }) {
   const [withResolved, setWithResolved] = useState(false);
   const [minEuro, setMinEuro] = useState("");
   const [search, setSearch] = useState("");
+  // Growers start folded; a click opens one.
   const [open, setOpen] = useState({});
+  // "same": pieces match -- a real price difference; "other": the pieces
+  // differ -- often a lot not linked to the invoice line yet.
+  const [pieces, setPieces] = useState("all");
+  const [kind, setKind] = useState("all");
   const query = { from: bar.from, to: bar.to, ...(bar.grower ? { grower: bar.grower } : {}), status: withResolved ? "all" : "open" };
   const { data, error, loading } = useInkoopFollowup(query, String(matchRound));
   const deptLabel = Object.fromEntries(data?.departments || []);
   const min = Number(String(minEuro).replace(",", ".")) || 0;
   const words = search.toLowerCase().split(/\s+/).filter(Boolean);
-  const items = (data?.items || []).filter((item) => item.type === "mismatch"
+  const base = (data?.items || []).filter((item) => item.type === "mismatch"
     && Math.abs(item.money_diff || 0) >= min
     && words.every((word) => `${item.description} ${item.invoice_number} ${item.lot?.lot || ""}`.toLowerCase().includes(word)));
+  const count = (test) => base.filter(test).length;
+  const piecesTest = { all: () => true, same: ikMatchedSamePieces, other: (item) => !ikMatchedSamePieces(item) };
+  const items = base.filter((item) => piecesTest[pieces](item) && (kind === "all" || ikMatchedKind(item) === kind));
   // day -> grower -> lines
   const days = [];
   for (const item of items) {
@@ -23214,7 +23238,7 @@ function InkoopMatchedDiffsWorkspace({ bar, matchRound = 0, onOpenTrackTrace }) 
     const book = new ExcelJS.Workbook();
     const ws = book.addWorksheet("Matched differences", { views: [{ state: "frozen", ySplit: 1 }] });
     const head = ["Day", "Grower", "Product", "Invoice", "Invoice line", "Connect lot", "Invoice pcs", "Connect pcs", "Pieces diff", "Invoice €/pc", "Connect €/pc", "Price diff €/pc",
-      "Invoice €", "Connect €", "Difference €", "Why", "Status", "Department", "Note"];
+      "Invoice €", "Connect €", "Difference €", "Why", "Group", "Status", "Department", "Note"];
     ws.addRow(head).font = { bold: true };
     for (const day of days) for (const grower of day.growers) for (const item of grower.lines) {
       const inv = item.invoice || {};
@@ -23222,7 +23246,7 @@ function InkoopMatchedDiffsWorkspace({ bar, matchRound = 0, onOpenTrackTrace }) 
       ws.addRow([item.day || item.date, item.grower, item.description, item.invoice_number, ikFollowupInvoiceText(item), ikFollowupLotText(item),
         inv.quantity ?? "", lot.pieces ?? "", inv.quantity !== undefined && lot.pieces !== undefined && inv.quantity !== null && lot.pieces !== null ? inv.quantity - lot.pieces : "",
         inv.unit_price ?? "", lot.price ?? "", inv.unit_price !== undefined && lot.price !== undefined && inv.unit_price !== null && lot.price !== null ? Math.round((inv.unit_price - lot.price) * 10000) / 10000 : "",
-        item.invoice_value, item.connect_value, item.money_diff, ikMatchedWhy(item), INKOOP_FU_STATUS_LABEL[item.status] || item.status || "Open",
+        item.invoice_value, item.connect_value, item.money_diff, ikMatchedWhy(item), ikMatchedKind(item), INKOOP_FU_STATUS_LABEL[item.status] || item.status || "Open",
         deptLabel[item.department] || item.department || "", item.note || ""]);
     }
     ws.autoFilter = { from: { row: 1, column: 1 }, to: { row: 1, column: head.length } };
@@ -23260,6 +23284,20 @@ function InkoopMatchedDiffsWorkspace({ bar, matchRound = 0, onOpenTrackTrace }) 
         {data?.pending_days?.length > 0 && <div className="notice info">Being compared again: {data.pending_days.map(fustOverviewDate).join(", ")} -- shown as last compared.</div>}
         {data?.waiting_days?.length > 0 && <div className="muted">Days still waiting for data (not in this list yet): {data.waiting_days.map((day) => fustOverviewDate(day.date)).join(", ")}</div>}
         <div className="row-actions">
+          <span className="muted">Pieces:</span>
+          {[["all", "All", () => true], ["same", "Same pieces (price differences)", ikMatchedSamePieces], ["other", "Other pieces (maybe a lot not linked)", (item) => !ikMatchedSamePieces(item)]].map(([key, label, test]) => (
+            <button key={key} type="button" className={`ik-chip${pieces === key ? " on" : ""}`} onClick={() => setPieces(key)}>{label} {count((item) => test(item) && (kind === "all" || ikMatchedKind(item) === kind))}</button>
+          ))}
+          <span className="muted">· Group:</span>
+          {[["all", "All"], ["flowers", "Flowers"], ["plants", "Plants"], ...(count((item) => ikMatchedKind(item) === "other") ? [["other", "Other"]] : [])].map(([key, label]) => (
+            <button key={key} type="button" className={`ik-chip${kind === key ? " on" : ""}`} onClick={() => setKind(key)}>
+              {label} {count((item) => piecesTest[pieces](item) && (key === "all" || ikMatchedKind(item) === key))}
+            </button>
+          ))}
+          <button type="button" className="link-button" onClick={() => setOpen(Object.fromEntries(days.flatMap((day) => day.growers.map((grower) => [`${day.day}|${grower.grower}`, true]))))}>Open all</button>
+          <button type="button" className="link-button" onClick={() => setOpen({})}>Fold all</button>
+        </div>
+        <div className="row-actions">
           <span className="ukdocs-status-badge info">{items.length} line(s)</span>
           <span className="ukdocs-status-badge warning">{formatInkoopEuro(gross)} in differences</span>
           <span className={`ukdocs-status-badge ${total > 0 ? "danger" : "success"}`}>net {formatInkoopEuro(total)} {total > 0 ? "paid more than Connect counts" : total < 0 ? "paid less" : ""}</span>
@@ -23274,11 +23312,12 @@ function InkoopMatchedDiffsWorkspace({ bar, matchRound = 0, onOpenTrackTrace }) 
           </div>
           {day.growers.map((grower) => {
             const key = `${day.day}|${grower.grower}`;
-            const shown = open[key] !== false;
+            const shown = open[key] === true;
             return (
               <div key={key} className="ik-md-grower">
                 <button type="button" className="link-button" onClick={() => setOpen({ ...open, [key]: !shown })}>
-                  {shown ? "▾" : "▸"} <strong>{grower.grower || "?"}</strong> <span className="muted">· {grower.lines.length} line(s) · {formatInkoopEuro(grower.gross)} in differences · net {formatInkoopEuro(grower.money)}</span>
+                  {shown ? "▾" : "▸"} <strong>{grower.grower || "?"}</strong> <span className="muted">· {grower.lines.length} line(s) · {formatInkoopEuro(grower.gross)} in differences · net {formatInkoopEuro(grower.money)}
+                    {grower.lines.some((item) => !ikMatchedSamePieces(item)) ? ` · ⚠ ${grower.lines.filter((item) => !ikMatchedSamePieces(item)).length} with other pieces` : ""}</span>
                 </button>
                 {onOpenTrackTrace && <button type="button" className="link-button" onClick={() => onOpenTrackTrace({ grower: grower.grower, day: day.day })}>Track &amp; Trace</button>}
                 {shown && (
@@ -23309,7 +23348,11 @@ function InkoopMatchedDiffsWorkspace({ bar, matchRound = 0, onOpenTrackTrace }) 
                               <td className="ik-num" style={{ fontWeight: why.includes("pieces") ? 700 : undefined }}>{inv.quantity ?? "?"} / {lot.pieces ?? "?"}</td>
                               <td className="ik-num" style={{ fontWeight: why.includes("price") ? 700 : undefined }}>{perPiece(inv.unit_price)} / {perPiece(lot.price)}</td>
                               <td className="ik-num" style={{ color: item.money_diff > 0 ? "var(--x-b91c1c)" : "var(--x-15803d)", fontWeight: 700 }}>{item.money_diff > 0 ? "+" : ""}{formatInkoopEuro(item.money_diff)}</td>
-                              <td>{why}</td>
+                              <td>
+                                {why}
+                                {!ikMatchedSamePieces(item) && <div className="ik-fu-warn" title="When the pieces differ, often another Connect lot belongs to this invoice line too -- check and link it in Track & Trace">maybe a lot not linked</div>}
+                                <div className="muted">{({ flowers: "flowers", plants: "plants", other: "" })[ikMatchedKind(item)]}</div>
+                              </td>
                               <td>{INKOOP_FU_STATUS_LABEL[item.status] || item.status || "Open"}{item.department ? <div className="muted">{deptLabel[item.department] || item.department}</div> : null}{item.note ? <div className="muted">{item.note}</div> : null}</td>
                             </tr>
                           );

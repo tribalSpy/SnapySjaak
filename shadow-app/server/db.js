@@ -3370,6 +3370,18 @@ export async function getInkoopCorrectionLines({ from, to, marginDays = 4 } = {}
 // The credit lines (a negative quantity or total) on the brief numbers of
 // some lots, from a day on -- a lot booked to a retour customer waits for
 // one. A brief number's split letters (F9H9CDa / b) count as the same.
+// FloraHolland's account (001 flowers, 002 / 003 plants) of invoice lines by
+// id -- the comparison leaves it out of its lines.
+export async function getInkoopInvoiceLineAccounts(ids) {
+  const list = [...new Set((ids || []).map((id) => String(id || "").trim()).filter(Boolean))];
+  if (!pool || !list.length) return [];
+  const result = await pool.query(
+    "SELECT id, COALESCE(raw->>'account_id', '') AS account FROM inkoop_invoice_lines WHERE id = ANY($1::text[])",
+    [list],
+  );
+  return result.rows;
+}
+
 // Invoice lines by their own id (a correction's credit line linked to a lot
 // by hand in the Corrections check).
 export async function getInkoopInvoiceLinesByIds(ids) {

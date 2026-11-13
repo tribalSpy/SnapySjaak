@@ -58,6 +58,7 @@ import {
   getInkoopCorrectionLines,
   getInkoopCreditLinesByPav,
   getInkoopInvoiceLinesByIds,
+  getInkoopInvoiceLineAccounts,
   getInkoopCreditPurchaseCandidates,
   getInkoopInvoiceSupplierIdentities,
   getInkoopAi2LinesWithoutBoxes,
@@ -14495,6 +14496,15 @@ async function inkoopRetourDispatchRows(state, range) {
   return withCredits.sort((left, right) => right.day.localeCompare(left.day) || left.grower.localeCompare(right.grower));
 }
 
+// The invoice account (flowers / plants) of the follow-up lines' invoice
+// lines, read by line id (the comparison leaves it out).
+async function inkoopAttachLineAccounts(items) {
+  const wanted = items.filter((item) => item.invoice?.id && !item.invoice.account);
+  if (!wanted.length) return items;
+  const accounts = new Map((await getInkoopInvoiceLineAccounts(wanted.map((item) => item.invoice.id)).catch(() => [])).map((row) => [row.id, row.account]));
+  return items.map((item) => (item.invoice?.id && accounts.get(item.invoice.id) ? { ...item, invoice: { ...item.invoice, account: accounts.get(item.invoice.id) } } : item));
+}
+
 // A retour lot without a brief number (Handel / AI2, "000000") never finds
 // its credit by PAV: when a correction was linked to this lot by hand in the
 // Corrections check, that correction's credit is the lot's credit.
@@ -14548,6 +14558,9 @@ function inkoopFollowupItem(issue, day) {
       id: invoice.id || "", quantity: number(invoice.quantity), unit_price: number(invoice.unit_price), total: number(invoice.total),
       packages: number(invoice.packages), per_package: number(invoice.per_package), reference: normalizeUkdocsText(invoice.reference_bt || invoice.pav),
       invoice_type: invoice.invoice_type || "", company: invoice.company_number || "", supplier_name: invoice.supplier_name || "",
+      // FloraHolland's account on the line: 001 flowers, 002 / 003 plants
+      // (Matched differences splits on it; AI2 lines have none).
+      account: normalizeUkdocsText(invoice.account_id),
       // A corrected line (credited and invoiced again): its own lines.
       ...(invoice.matched_as_correction && Array.isArray(invoice.correction_lines) && invoice.correction_lines.length > 1 ? {
         correction: invoice.correction_lines.map((step) => ({ id: step.id || "", invoice_number: step.invoice_number || "", invoice_date: String(step.invoice_date || "").slice(0, 10),
@@ -29798,7 +29811,7 @@ async function handleApi(req, res, url) {
         }
       }
       if (grower) items = items.filter((item) => String(item.grower || "").toLowerCase().includes(grower));
-      items = await inkoopAttachRetourCredits(await inkoopRefreshSnapshotInvoices(items));
+      items = await inkoopAttachLineAccounts(await inkoopAttachRetourCredits(await inkoopRefreshSnapshotInvoices(items)));
       let merged = await inkoopAttachSupplierCredits(items.map((item) => inkoopFollowupWithStatus(item, statusById.get(item.id))));
       if (category) merged = merged.filter((item) => item.category === category);
       if (claimsOnly) merged = merged.filter(isClaim);
