@@ -550,8 +550,16 @@ export async function syncMatchedDiffTasks({ dates, items }) {
   if (!config.matched_diff.enabled || !dates?.length) return { made: 0, closed: 0 };
   const money = (value) => `€ ${(Number(value) || 0).toFixed(2)}`;
   const groups = new Map();
+  // Only real price differences: the invoice line and its lot have the
+  // same pieces. Other pieces are mostly a lot not linked yet -- linking
+  // work for Control in the Follow-up, not a price question for Inkoop.
+  const samePieces = (item) => {
+    const invoicePieces = Number(item.invoice?.quantity);
+    const lotPieces = Number(item.lot?.pieces);
+    return Number.isFinite(invoicePieces) && Number.isFinite(lotPieces) && Math.abs(invoicePieces - lotPieces) < 0.0001;
+  };
   for (const item of items || []) {
-    if (item.type !== "mismatch") continue;
+    if (item.type !== "mismatch" || !samePieces(item)) continue;
     const day = isoDay(item.day || item.date);
     if (!day) continue;
     const grower = String(item.grower || "").trim() || "?";
@@ -579,9 +587,9 @@ export async function syncMatchedDiffTasks({ dates, items }) {
     const row = await createSystemTask({
       source: "matched_diff",
       source_key: sourceKey,
-      title: `Price / pieces check ${group.day}: ${group.grower} -- ${money(group.gross)} in differences, net ${money(group.money)} (${lines.length} matched line(s))`,
+      title: `Price check ${group.day}: ${group.grower} -- ${money(group.gross)} in differences, net ${money(group.money)} (${lines.length} line(s), same pieces)`,
       body: [
-        `Matched invoice lines of ${group.grower} on ${group.day} that differ from their Connect lot: ${money(group.gross)} in differences over ${lines.length} line(s), net ${money(group.money)} (more than 0 = we pay more than Connect counts).`,
+        `Invoice lines of ${group.grower} on ${group.day} with the same pieces as their Connect lot but another price: ${money(group.gross)} in differences over ${lines.length} line(s), net ${money(group.money)} (more than 0 = we pay more than Connect counts).`,
         ...lineText,
         ...(lines.length > 12 ? [`... and ${lines.length - 12} more (Inkoop Controle > Matched differences)`] : []),
       ].join("\n"),
@@ -597,7 +605,7 @@ export async function syncMatchedDiffTasks({ dates, items }) {
     [dates],
   );
   const stale = open.rows.filter((row) => !keep.has(row.source_key));
-  await closeTasks(stale, "system", "The matched differences of this grower and day are resolved / below the amount now.");
+  await closeTasks(stale, "system", "The price differences (same pieces) of this grower and day are resolved / below the amount now.");
   return { made, closed: stale.length };
 }
 

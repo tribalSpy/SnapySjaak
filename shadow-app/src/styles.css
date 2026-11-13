@@ -5442,3 +5442,19 @@ table.data-table.balance-table.ik-table.ik-inv-invoices td:nth-child(n+7), table
   color: #17202a;
   box-shadow: 0 10px 34px rgba(0, 0, 0, 0.35);
 }
+
+/* Tasks widget: tasks per day (calendar), this week open, the rest folded. */
+.tw-day-head { display: flex; align-items: center; gap: 6px; text-transform: none; letter-spacing: 0; font-size: 12px; border-top: 1px solid var(--tw-line); margin-top: 4px; }
+.tw-folded { list-style: none; padding: 4px 0; border-top: 1px solid var(--tw-line); }
+.tw-folded summary { cursor: pointer; font-size: 12px; font-weight: 700; color: var(--tw-muted); padding: 4px 8px; display: flex; align-items: center; gap: 6px; }
+.tw-folded .tw-list { padding: 0; margin: 0; }
+.tw-cal { border: 1px solid var(--tw-line); border-radius: 10px; padding: 6px; margin: 4px 0 6px; }
+.tw-cal-head { display: flex; align-items: center; justify-content: space-between; font-size: 12px; padding: 0 2px 4px; }
+.tw-cal-head button { border: 0; background: transparent; color: inherit; font-size: 16px; cursor: pointer; padding: 0 6px; }
+.tw-cal-grid { display: grid; grid-template-columns: repeat(7, 1fr); gap: 2px; }
+.tw-cal-dow { font-size: 10px; text-align: center; color: var(--tw-muted); }
+.tw-cal-day { display: flex; flex-direction: column; align-items: center; justify-content: center; min-height: 30px; padding: 1px 0; border: 1px solid transparent; border-radius: 6px; background: transparent; color: inherit; font-size: 11px; cursor: pointer; }
+.tw-cal-day small { font-size: 9px; font-weight: 700; line-height: 1; padding: 1px 4px; border-radius: 999px; background: var(--tw-ok-soft); color: var(--tw-ok); }
+.tw-cal-day.has { font-weight: 700; }
+.tw-cal-day.today { border-color: var(--tw-line); }
+.tw-cal-day.on { border-color: var(--tw-ok); background: var(--tw-ok-soft); }

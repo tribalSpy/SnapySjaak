@@ -11890,8 +11890,74 @@ function TwAssigneeSelect({ value, onChange, directory, currentUser }) {
   );
 }
 
+// The day a task is about: an automatic task for a grower / day (invoice or
+// price differences) its data day, else its due date, else the day made.
+function twTaskDay(task) {
+  return String(task.link?.day || task.due_date || task.created_at || "").slice(0, 10);
+}
+
+function twIsoDay(date) {
+  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
+}
+
+function twWeekBounds(today) {
+  const date = new Date(`${today}T12:00:00`);
+  const monday = new Date(date);
+  monday.setDate(date.getDate() - ((date.getDay() + 6) % 7));
+  const sunday = new Date(monday);
+  sunday.setDate(monday.getDate() + 6);
+  return { from: twIsoDay(monday), to: twIsoDay(sunday) };
+}
+
+function twDayLabel(day) {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(day)) return "No date";
+  return new Date(`${day}T12:00:00`).toLocaleDateString("en-GB", { weekday: "short", day: "2-digit", month: "2-digit" });
+}
+
+// The tasks per day in a month: a click on a day shows only that day.
+function TwTaskCalendar({ tasks, month, setMonth, day, onDay }) {
+  const counts = new Map();
+  for (const task of tasks) {
+    const key = twTaskDay(task);
+    counts.set(key, (counts.get(key) || 0) + 1);
+  }
+  const [year, mon] = month.split("-").map(Number);
+  const first = new Date(year, mon - 1, 1);
+  const lead = (first.getDay() + 6) % 7;
+  const daysInMonth = new Date(year, mon, 0).getDate();
+  const cells = [...Array(lead).fill(null), ...Array.from({ length: daysInMonth }, (_, index) => twIsoDay(new Date(year, mon - 1, index + 1)))];
+  const shift = (step) => {
+    const next = new Date(year, mon - 1 + step, 1);
+    setMonth(`${next.getFullYear()}-${String(next.getMonth() + 1).padStart(2, "0")}`);
+  };
+  const today = twToday();
+  return (
+    <div className="tw-cal">
+      <div className="tw-cal-head">
+        <button type="button" onClick={() => shift(-1)} aria-label="Previous month">‹</button>
+        <strong>{first.toLocaleDateString("en-GB", { month: "long", year: "numeric" })}</strong>
+        <button type="button" onClick={() => shift(1)} aria-label="Next month">›</button>
+      </div>
+      <div className="tw-cal-grid">
+        {["M", "T", "W", "T", "F", "S", "S"].map((label, index) => <span key={`h${index}`} className="tw-cal-dow">{label}</span>)}
+        {cells.map((cell, index) => (cell ? (
+          <button key={cell} type="button" className={`tw-cal-day${cell === day ? " on" : ""}${cell === today ? " today" : ""}${counts.get(cell) ? " has" : ""}`}
+            onClick={() => onDay(cell === day ? "" : cell)} title={counts.get(cell) ? `${counts.get(cell)} task(s)` : ""}>
+            <span>{Number(cell.slice(8))}</span>
+            {counts.get(cell) ? <small>{counts.get(cell)}</small> : null}
+          </button>
+        ) : <span key={`e${index}`} />))}
+      </div>
+    </div>
+  );
+}
+
 function TwTasks({ currentUser, directory, teamName, pulseKey, onOpenLink, big }) {
   const [scope, setScope] = useState("all");
+  // By day: a calendar to pick one day; this week open, the rest folded.
+  const [showCalendar, setShowCalendar] = useState(false);
+  const [calendarMonth, setCalendarMonth] = useState(() => twToday().slice(0, 7));
+  const [dayFilter, setDayFilter] = useState("");
   const [data, setData] = useState({ tasks: [], counts: { mine: 0, team: 0, created: 0 } });
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
@@ -11991,8 +12057,28 @@ function TwTasks({ currentUser, directory, teamName, pulseKey, onOpenLink, big }
     );
   };
   // The user's tab: their own tasks, then the ones they asked of others.
-  const ownTasks = scope === "user" ? data.tasks.filter((task) => task.assignee_user === currentUser.username) : data.tasks;
+  const ownAll = scope === "user" ? data.tasks.filter((task) => task.assignee_user === currentUser.username) : data.tasks;
   const requestedTasks = scope === "user" ? data.tasks.filter((task) => task.assignee_user !== currentUser.username) : [];
+  const ownTasks = dayFilter ? ownAll.filter((task) => twTaskDay(task) === dayFilter) : ownAll;
+  // Per day: this week's days open (in order), earlier and later weeks folded.
+  const week = twWeekBounds(today);
+  const byDay = (list, newestFirst = false) => {
+    const map = new Map();
+    for (const task of list) {
+      const key = twTaskDay(task) || "none";
+      map.set(key, [...(map.get(key) || []), task]);
+    }
+    return [...map.entries()].sort((left, right) => (newestFirst ? right[0].localeCompare(left[0]) : left[0].localeCompare(right[0])));
+  };
+  const renderDays = (list, newestFirst = false) => byDay(list, newestFirst).map(([key, tasks]) => (
+    <Fragment key={key}>
+      <li className="tw-list-head tw-day-head">{key === today ? "Today" : twDayLabel(key)} <span className="tw-count">{tasks.length}</span></li>
+      {tasks.map(renderTask)}
+    </Fragment>
+  ));
+  const thisWeek = ownTasks.filter((task) => twTaskDay(task) >= week.from && twTaskDay(task) <= week.to);
+  const earlier = ownTasks.filter((task) => !twTaskDay(task) || twTaskDay(task) < week.from);
+  const later = ownTasks.filter((task) => twTaskDay(task) > week.to);
   return (
     <div className="tw-tasks">
       <div className="tw-toolbar">
@@ -12003,8 +12089,15 @@ function TwTasks({ currentUser, directory, teamName, pulseKey, onOpenLink, big }
             </button>
           ))}
         </div>
+        <button type="button" className={`tw-add tw-add-icon${showCalendar || dayFilter ? " on" : ""}`} onClick={() => setShowCalendar((value) => !value)} aria-expanded={showCalendar} aria-label="Tasks per day" title="Tasks per day (calendar)">📅</button>
         <button type="button" className="tw-add tw-add-icon" onClick={() => setAdding((value) => !value)} aria-expanded={adding} aria-label={adding ? "Cancel" : "New task"} title={adding ? "Cancel" : "New task"}>{adding ? "×" : "+"}</button>
       </div>
+      {showCalendar && <TwTaskCalendar tasks={ownAll} month={calendarMonth} setMonth={setCalendarMonth} day={dayFilter} onDay={setDayFilter} />}
+      {dayFilter && (
+        <div className="tw-note">
+          Only {twDayLabel(dayFilter)} ({ownTasks.length}) <button type="button" className="link-button" onClick={() => setDayFilter("")}>all days</button>
+        </div>
+      )}
       {adding && (
         <form className="tw-form" onSubmit={addTask}>
           <input autoFocus value={draft.title} onChange={(event) => setDraft({ ...draft, title: event.target.value })} placeholder="What needs doing?" maxLength={300} />
@@ -12031,7 +12124,27 @@ function TwTasks({ currentUser, directory, teamName, pulseKey, onOpenLink, big }
       {error && <div className="tw-note warn">{error}</div>}
       <ul className="tw-list">
         {scope === "user" && <li className="tw-list-head">For {name}{ownTasks.length ? ` (${ownTasks.length})` : ""}</li>}
-        {ownTasks.map(renderTask)}
+        {scope === "done" || dayFilter ? ownTasks.map(renderTask) : (
+          <>
+            {renderDays(thisWeek)}
+            {!!earlier.length && (
+              <li className="tw-folded">
+                <details>
+                  <summary>Earlier weeks <span className="tw-count">{earlier.length}</span></summary>
+                  <ul className="tw-list">{renderDays(earlier, true)}</ul>
+                </details>
+              </li>
+            )}
+            {!!later.length && (
+              <li className="tw-folded">
+                <details>
+                  <summary>Later <span className="tw-count">{later.length}</span></summary>
+                  <ul className="tw-list">{renderDays(later)}</ul>
+                </details>
+              </li>
+            )}
+          </>
+        )}
         {!loading && !ownTasks.length && <li className="tw-empty">{scope === "done" ? "Nothing done in the last 30 days." : "Nothing open here."}</li>}
         {scope === "user" && !!requestedTasks.length && <li className="tw-list-head">Requested by {name} ({requestedTasks.length})</li>}
         {requestedTasks.map(renderTask)}
@@ -12632,9 +12745,12 @@ function AppTeamsTasksCard() {
             </select>
           </label>
         </div>
-        <label className="checkbox-label"><input type="checkbox" checked={config.matched_diff?.enabled !== false} onChange={(event) => saveConfig({ ...config, matched_diff: { ...config.matched_diff, enabled: event.target.checked } })} /><span>Matched differences for Inkoop (invoice line paired to its Connect lot, other price / pieces): one task per grower and day -- Control still sees the lines in its follow-up</span></label>
+        <label className="checkbox-label"><input type="checkbox" checked={config.matched_diff?.enabled !== false} onChange={(event) => saveConfig({ ...config, matched_diff: { ...config.matched_diff, enabled: event.target.checked } })} /><span>Price differences for Inkoop (invoice line and its Connect lot with the same pieces, another price): one task per grower and day -- lines with other pieces stay with Control in the follow-up</span></label>
         <div className="tw-admin-inline">
-          <label><span>From € (matched difference)</span><input type="number" min="1" step="1" value={config.matched_diff?.min_amount ?? 25} onChange={(event) => setConfig({ ...config, matched_diff: { ...config.matched_diff, min_amount: event.target.value } })} onBlur={() => saveConfig(config)} /></label>
+          {!config.teams.some((item) => item.key === (config.matched_diff?.team || "inkoop")) && (
+            <span className="tw-overdue">⚠ Team "{config.matched_diff?.team || "inkoop"}" isn't in the team list -- add it (and its people) above, or nobody sees these tasks</span>
+          )}
+          <label><span>From € (price difference, same pieces)</span><input type="number" min="1" step="1" value={config.matched_diff?.min_amount ?? 25} onChange={(event) => setConfig({ ...config, matched_diff: { ...config.matched_diff, min_amount: event.target.value } })} onBlur={() => saveConfig(config)} /></label>
           <label><span>For team</span>
             <select value={config.matched_diff?.team || "inkoop"} onChange={(event) => saveConfig({ ...config, matched_diff: { ...config.matched_diff, team: event.target.value } })}>
               {config.teams.map((item) => <option key={item.key} value={item.key}>{item.name}</option>)}
