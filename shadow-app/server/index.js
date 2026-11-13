@@ -6981,7 +6981,8 @@ async function runAppInvoiceDiffTaskSync() {
   if (!isDatabaseEnabled()) return undefined;
   const state = await readInkoopState();
   const to = localDateIso();
-  const from = addDaysToIsoDate(to, -7);
+  // The widest look-back of the two rules (each keeps to its own days back).
+  const from = addDaysToIsoDate(to, -31);
   const period = await inkoopFollowupPeriodItems(state, from, to);
   if (period.error) return undefined;
   const statusById = new Map((await getInkoopIssueStatuses()).map((row) => [row.id, row]));

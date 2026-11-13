@@ -163,6 +163,8 @@ function normalizeTaskConfig(value) {
       team_flowers: upgrade ? "inkoop_fl" : teamOr(source.matched_diff?.team_flowers, "inkoop_fl"),
       team_plants: upgrade ? "inkoop_pl" : teamOr(source.matched_diff?.team_plants, "inkoop_pl"),
       team_other: upgrade ? "" : teamOr(source.matched_diff?.team_other ?? "", ""),
+      // How far back data days get a task (the widget folds older weeks).
+      days_back: Math.max(1, Math.min(31, Number(source.matched_diff?.days_back) || 21)),
     },
     followup: {
       enabled: source.followup?.enabled !== false,
@@ -515,6 +517,17 @@ export async function autoTaskForClaimStep({ claim, step, by, note }) {
   }
 }
 
+// Only the data days of the last `days` days (and their lines).
+function withinDaysBack(dates, items, days) {
+  const since = new Date(`${localToday()}T12:00:00`);
+  since.setDate(since.getDate() - days);
+  const first = `${since.getFullYear()}-${String(since.getMonth() + 1).padStart(2, "0")}-${String(since.getDate()).padStart(2, "0")}`;
+  return {
+    dates: (dates || []).filter((date) => date >= first),
+    items: (items || []).filter((item) => (isoDay(item.day || item.date) || "") >= first),
+  };
+}
+
 // Important invoice differences of the ready, compared days: one task per
 // grower and day whose open lines differ by at least the amount set.
 export async function syncInvoiceDiffTasks({ dates, items }) {
@@ -527,6 +540,7 @@ export async function syncInvoiceDiffTasks({ dates, items }) {
     return { made: 0, closed: open.rows.length };
   }
   if (!dates?.length) return { made: 0, closed: 0 };
+  ({ dates, items } = withinDaysBack(dates, items, config.invoice_diff.days_back));
   const groups = new Map();
   for (const item of items || []) {
     const day = isoDay(item.day || item.date);
@@ -574,6 +588,7 @@ export async function syncMatchedDiffTasks({ dates, items }) {
   if (!isDatabaseEnabled()) return { made: 0, closed: 0 };
   const config = await readTaskConfig();
   if (!config.matched_diff.enabled || !dates?.length) return { made: 0, closed: 0 };
+  ({ dates, items } = withinDaysBack(dates, items, config.matched_diff.days_back));
   const money = (value) => `€ ${(Number(value) || 0).toFixed(2)}`;
   const groups = new Map();
   // Only real price differences: the invoice line and its lot have the

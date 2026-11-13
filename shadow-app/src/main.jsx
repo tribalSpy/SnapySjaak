@@ -12782,6 +12782,7 @@ function AppTeamsTasksCard() {
           {[config.matched_diff?.team_flowers, config.matched_diff?.team_plants, config.matched_diff?.team_other].filter((key) => key && !config.teams.some((item) => item.key === key)).map((key) => (
             <span key={key} className="tw-overdue">⚠ Team "{key}" isn't in the team list -- add it (and its people) above, or nobody sees these tasks</span>
           ))}
+          <label><span>Days back</span><input type="number" min="1" max="31" step="1" value={config.matched_diff?.days_back ?? 21} onChange={(event) => setConfig({ ...config, matched_diff: { ...config.matched_diff, days_back: event.target.value } })} onBlur={() => saveConfig(config)} /></label>
           <label><span>From € (price difference, same pieces)</span><input type="number" min="1" step="1" value={config.matched_diff?.min_amount ?? 25} onChange={(event) => setConfig({ ...config, matched_diff: { ...config.matched_diff, min_amount: event.target.value } })} onBlur={() => saveConfig(config)} /></label>
           {[["team_flowers", "Flowers (001) for"], ["team_plants", "Plants (002 / 003) for"], ["team_other", "Other (no account, AI2) for"]].map(([field, label]) => (
             <label key={field}><span>{label}</span>

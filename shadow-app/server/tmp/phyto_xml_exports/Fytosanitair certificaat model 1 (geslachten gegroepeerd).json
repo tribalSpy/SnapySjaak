@@ -1,0 +1,402 @@
+[
+  {
+    "line_number":"0001",
+    "product_name":"Aloe vera",
+    "botanical_name":"Aloe vera",
+    "package_count":5,
+    "package_unit":"Box",
+    "declared_quantity":78,
+    "quantity_unit":"Pieces",
+    "formatted_quantity":"78 Pieces"
+  },
+  {
+    "line_number":"0002",
+    "product_name":"Anthurium hybrid",
+    "botanical_name":"Anthurium Hybrid",
+    "package_count":3,
+    "package_unit":"Box",
+    "declared_quantity":19,
+    "quantity_unit":"Pieces",
+    "formatted_quantity":"19 Pieces"
+  },
+  {
+    "line_number":"0003",
+    "product_name":"Begonia hybrid",
+    "botanical_name":"Begonia Hybrid",
+    "package_count":1,
+    "package_unit":"Box",
+    "declared_quantity":6,
+    "quantity_unit":"Pieces",
+    "formatted_quantity":"6 Pieces"
+  },
+  {
+    "line_number":"0004",
+    "product_name":"Curio ficoides",
+    "botanical_name":"Curio ficoides",
+    "package_count":1,
+    "package_unit":"Box",
+    "declared_quantity":13,
+    "quantity_unit":"Pieces",
+    "formatted_quantity":"13 Pieces"
+  },
+  {
+    "line_number":"0005",
+    "product_name":"Calathea hybrid",
+    "botanical_name":"Calathea Hybrid",
+    "package_count":4,
+    "package_unit":"Box",
+    "declared_quantity":30,
+    "quantity_unit":"Pieces",
+    "formatted_quantity":"30 Pieces"
+  },
+  {
+    "line_number":"0006",
+    "product_name":"Campanula portenschlagiana",
+    "botanical_name":"Campanula portenschlagiana",
+    "package_count":1,
+    "package_unit":"Box",
+    "declared_quantity":8,
+    "quantity_unit":"Pieces",
+    "formatted_quantity":"8 Pieces"
+  },
+  {
+    "line_number":"0007",
+    "product_name":"Celosia hybrid",
+    "botanical_name":"Celosia Hybrid",
+    "package_count":1,
+    "package_unit":"Box",
+    "declared_quantity":10,
+    "quantity_unit":"Pieces",
+    "formatted_quantity":"10 Pieces"
+  },
+  {
+    "line_number":"0008",
+    "product_name":"Chlorophytum comosum",
+    "botanical_name":"Chlorophytum comosum",
+    "package_count":1,
+    "package_unit":"Box",
+    "declared_quantity":8,
+    "quantity_unit":"Pieces",
+    "formatted_quantity":"8 Pieces"
+  },
+  {
+    "line_number":"0009",
+    "product_name":"Chrysanthemum hybrid",
+    "botanical_name":"Chrysanthemum Hybrid",
+    "package_count":5,
+    "package_unit":"Box",
+    "declared_quantity":50,
+    "quantity_unit":"Pieces",
+    "formatted_quantity":"50 Pieces"
+  },
+  {
+    "line_number":"0010",
+    "product_name":"Crassula ovata",
+    "botanical_name":"Crassula ovata",
+    "package_count":2,
+    "package_unit":"Box",
+    "declared_quantity":12,
+    "quantity_unit":"Pieces",
+    "formatted_quantity":"12 Pieces"
+  },
+  {
+    "line_number":"0011",
+    "product_name":"Cupressus macrocarpa",
+    "botanical_name":"Cupressus macrocarpa",
+    "package_count":1,
+    "package_unit":"Box",
+    "declared_quantity":10,
+    "quantity_unit":"Pieces",
+    "formatted_quantity":"10 Pieces"
+  },
+  {
+    "line_number":"0012",
+    "product_name":"Cyclamen persicum",
+    "botanical_name":"Cyclamen persicum",
+    "package_count":3,
+    "package_unit":"Box",
+    "declared_quantity":24,
+    "quantity_unit":"Pieces",
+    "formatted_quantity":"24 Pieces"
+  },
+  {
+    "line_number":"0013",
+    "product_name":"Dianthus hybrid",
+    "botanical_name":"Dianthus Hybrid",
+    "package_count":4,
+    "package_unit":"Box",
+    "declared_quantity":40,
+    "quantity_unit":"Pieces",
+    "formatted_quantity":"40 Pieces"
+  },
+  {
+    "line_number":"0014",
+    "product_name":"Dracaena sanderiana",
+    "botanical_name":"Dracaena sanderiana",
+    "package_count":1,
+    "package_unit":"Box",
+    "declared_quantity":28,
+    "quantity_unit":"Pieces",
+    "formatted_quantity":"28 Pieces"
+  },
+  {
+    "line_number":"0015",
+    "product_name":"Dypsis lutescens",
+    "botanical_name":"Dypsis lutescens",
+    "package_count":1,
+    "package_unit":"Box",
+    "declared_quantity":2,
+    "quantity_unit":"Pieces",
+    "formatted_quantity":"2 Pieces"
+  },
+  {
+    "line_number":"0016",
+    "product_name":"Echeveria hybrid",
+    "botanical_name":"Echeveria Hybrid",
+    "package_count":1,
+    "package_unit":"Box",
+    "declared_quantity":12,
+    "quantity_unit":"Pieces",
+    "formatted_quantity":"12 Pieces"
+  },
+  {
+    "line_number":"0017",
+    "product_name":"Epipremnum pinnatum",
+    "botanical_name":"Epipremnum pinnatum",
+    "package_count":3,
+    "package_unit":"Box",
+    "declared_quantity":30,
+    "quantity_unit":"Pieces",
+    "formatted_quantity":"30 Pieces"
+  },
+  {
+    "line_number":"0018",
+    "product_name":"Sageretia hybrid, bonsai",
+    "botanical_name":"Sageretia Hybrid",
+    "package_count":1,
+    "package_unit":"Box",
+    "declared_quantity":7,
+    "quantity_unit":"Pieces",
+    "formatted_quantity":"7 Pieces"
+  },
+  {
+    "line_number":"0019",
+    "product_name":"Fittonia hybrid",
+    "botanical_name":"Fittonia Hybrid",
+    "package_count":1,
+    "package_unit":"Box",
+    "declared_quantity":21,
+    "quantity_unit":"Pieces",
+    "formatted_quantity":"21 Pieces"
+  },
+  {
+    "line_number":"0020",
+    "product_name":"Fuchsia hybrid",
+    "botanical_name":"Fuchsia Hybrid",
+    "package_count":1,
+    "package_unit":"Box",
+    "declared_quantity":14,
+    "quantity_unit":"Pieces",
+    "formatted_quantity":"14 Pieces"
+  },
+  {
+    "line_number":"0021",
+    "product_name":"Gerbera hybrid",
+    "botanical_name":"Gerbera Hybrid",
+    "package_count":4,
+    "package_unit":"Box",
+    "declared_quantity":40,
+    "quantity_unit":"Pieces",
+    "formatted_quantity":"40 Pieces"
+  },
+  {
+    "line_number":"0022",
+    "product_name":"Guzmania hybrid",
+    "botanical_name":"Guzmania Hybrid",
+    "package_count":1,
+    "package_unit":"Box",
+    "declared_quantity":10,
+    "quantity_unit":"Pieces",
+    "formatted_quantity":"10 Pieces"
+  },
+  {
+    "line_number":"0023",
+    "product_name":"Helianthus annuus",
+    "botanical_name":"Helianthus annuus",
+    "package_count":2,
+    "package_unit":"Box",
+    "declared_quantity":16,
+    "quantity_unit":"Pieces",
+    "formatted_quantity":"16 Pieces"
+  },
+  {
+    "line_number":"0024",
+    "product_name":"Hibiscus rosa-sinensis",
+    "botanical_name":"Hibiscus rosa-sinensis",
+    "package_count":4,
+    "package_unit":"Box",
+    "declared_quantity":32,
+    "quantity_unit":"Pieces",
+    "formatted_quantity":"32 Pieces"
+  },
+  {
+    "line_number":"0025",
+    "product_name":"Hydrangea macrophylla",
+    "botanical_name":"Hydrangea macrophylla",
+    "package_count":3,
+    "package_unit":"Box",
+    "declared_quantity":17,
+    "quantity_unit":"Pieces",
+    "formatted_quantity":"17 Pieces"
+  },
+  {
+    "line_number":"0026",
+    "product_name":"Kalanchoe blossfeldiana",
+    "botanical_name":"Kalanchoe blossfeldiana",
+    "package_count":13,
+    "package_unit":"Box",
+    "declared_quantity":119,
+    "quantity_unit":"Pieces",
+    "formatted_quantity":"119 Pieces"
+  },
+  {
+    "line_number":"0027",
+    "product_name":"Lavandula angustifolia",
+    "botanical_name":"Lavandula angustifolia",
+    "package_count":3,
+    "package_unit":"Box",
+    "declared_quantity":39,
+    "quantity_unit":"Pieces",
+    "formatted_quantity":"39 Pieces"
+  },
+  {
+    "line_number":"0028",
+    "product_name":"Lilium hybrid",
+    "botanical_name":"Lilium Hybrid",
+    "package_count":1,
+    "package_unit":"Box",
+    "declared_quantity":3,
+    "quantity_unit":"Pieces",
+    "formatted_quantity":"3 Pieces"
+  },
+  {
+    "line_number":"0029",
+    "product_name":"Mandevilla sanderi",
+    "botanical_name":"Mandevilla sanderi",
+    "package_count":4,
+    "package_unit":"Box",
+    "declared_quantity":36,
+    "quantity_unit":"Pieces",
+    "formatted_quantity":"36 Pieces"
+  },
+  {
+    "line_number":"0030",
+    "product_name":"Maranta leuconeura",
+    "botanical_name":"Maranta leuconeura",
+    "package_count":1,
+    "package_unit":"Box",
+    "declared_quantity":10,
+    "quantity_unit":"Pieces",
+    "formatted_quantity":"10 Pieces"
+  },
+  {
+    "line_number":"0031",
+    "product_name":"Nephrolepis exaltata",
+    "botanical_name":"Nephrolepis exaltata",
+    "package_count":1,
+    "package_unit":"Box",
+    "declared_quantity":10,
+    "quantity_unit":"Pieces",
+    "formatted_quantity":"10 Pieces"
+  },
+  {
+    "line_number":"0032",
+    "product_name":"Phalaenopsis hybrid",
+    "botanical_name":"Phalaenopsis hybrid",
+    "package_count":3,
+    "package_unit":"Box",
+    "declared_quantity":30,
+    "quantity_unit":"Pieces",
+    "formatted_quantity":"30 Pieces"
+  },
+  {
+    "line_number":"0033",
+    "product_name":"Platycodon grandiflorus",
+    "botanical_name":"Platycodon grandiflorus",
+    "package_count":1,
+    "package_unit":"Box",
+    "declared_quantity":10,
+    "quantity_unit":"Pieces",
+    "formatted_quantity":"10 Pieces"
+  },
+  {
+    "line_number":"0034",
+    "product_name":"Rosa hybrid",
+    "botanical_name":"Rosa Hybrid",
+    "package_count":10,
+    "package_unit":"Box",
+    "declared_quantity":120,
+    "quantity_unit":"Pieces",
+    "formatted_quantity":"120 Pieces"
+  },
+  {
+    "line_number":"0035",
+    "product_name":"Salvia nemorosa",
+    "botanical_name":"Salvia nemorosa",
+    "package_count":1,
+    "package_unit":"Box",
+    "declared_quantity":8,
+    "quantity_unit":"Pieces",
+    "formatted_quantity":"8 Pieces"
+  },
+  {
+    "line_number":"0036",
+    "product_name":"Sansevieria trifasciata",
+    "botanical_name":"Sansevieria trifasciata",
+    "package_count":4,
+    "package_unit":"Box",
+    "declared_quantity":41,
+    "quantity_unit":"Pieces",
+    "formatted_quantity":"41 Pieces"
+  },
+  {
+    "line_number":"0037",
+    "product_name":"Schefflera arboricola",
+    "botanical_name":"Schefflera arboricola",
+    "package_count":2,
+    "package_unit":"Box",
+    "declared_quantity":16,
+    "quantity_unit":"Pieces",
+    "formatted_quantity":"16 Pieces"
+  },
+  {
+    "line_number":"0038",
+    "product_name":"Spathiphyllum hybrid",
+    "botanical_name":"Spathiphyllum Hybrid",
+    "package_count":4,
+    "package_unit":"Box",
+    "declared_quantity":42,
+    "quantity_unit":"Pieces",
+    "formatted_quantity":"42 Pieces"
+  },
+  {
+    "line_number":"0039",
+    "product_name":"Zamioculcas zamiifolia",
+    "botanical_name":"Zamioculcas zamiifolia",
+    "package_count":1,
+    "package_unit":"Box",
+    "declared_quantity":6,
+    "quantity_unit":"Pieces",
+    "formatted_quantity":"6 Pieces"
+  },
+  {
+    "line_number":"0040",
+    "product_name":"Zantedeschia hybrid",
+    "botanical_name":"Zantedeschia Hybrid",
+    "package_count":2,
+    "package_unit":"Box",
+    "declared_quantity":17,
+    "quantity_unit":"Pieces",
+    "formatted_quantity":"17 Pieces"
+  }
+]
