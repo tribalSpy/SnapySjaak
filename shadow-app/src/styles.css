@@ -5418,3 +5418,11 @@ table.data-table.balance-table.ik-table.ik-inv-invoices td:nth-child(n+7), table
   font-size: 0.82rem;
   word-break: break-all;
 }
+
+/* Inkoop: Matched differences */
+.ik-md-grower {
+  display: grid;
+  gap: 6px;
+  padding: 6px 0;
+  border-top: 1px solid #e3e8ee;
+}

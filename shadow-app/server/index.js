@@ -220,6 +220,7 @@ import {
   autoCloseFollowupTasks,
   autoTaskForClaimStep,
   syncInvoiceDiffTasks,
+  syncMatchedDiffTasks,
   syncStepPlanTasks,
   syncFacturenTask,
   closeFacturenTask,
@@ -6987,7 +6988,11 @@ async function runAppInvoiceDiffTaskSync() {
   const pending = new Set(period.pending || []);
   const dates = days.filter((day) => day.state === "ready" && !pending.has(day.date)).map((day) => day.date);
   const readyDates = new Set(dates);
-  return syncInvoiceDiffTasks({ dates, items: open.filter((item) => readyDates.has(item.day || item.date)) });
+  const readyItems = open.filter((item) => readyDates.has(item.day || item.date));
+  const result = await syncInvoiceDiffTasks({ dates, items: readyItems });
+  // The matched lines with a difference also go to Inkoop (own rule).
+  await syncMatchedDiffTasks({ dates, items: readyItems });
+  return result;
 }
 
 const handleAppTasksRoute = createAppTasksRoutes({

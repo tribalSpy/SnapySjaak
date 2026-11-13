@@ -136,6 +136,14 @@ function normalizeTaskConfig(value) {
       team: normalizeTeamKey(source.invoice_diff?.team) || "invoice_control",
       days_back: Math.max(1, Math.min(31, Number(source.invoice_diff?.days_back) || 7)),
     },
+    // Matched lines with a difference (invoice line and Connect lot paired,
+    // other price / pieces): one task per grower and day for Inkoop, next to
+    // the invoice_diff task (Control keeps seeing the lines too).
+    matched_diff: {
+      enabled: source.matched_diff?.enabled !== false,
+      min_amount: Number.isFinite(Number(source.matched_diff?.min_amount)) && Number(source.matched_diff?.min_amount) > 0 ? Math.round(Number(source.matched_diff.min_amount) * 100) / 100 : 25,
+      team: normalizeTeamKey(source.matched_diff?.team) || "inkoop",
+    },
     followup: {
       enabled: source.followup?.enabled !== false,
       department_team: Object.fromEntries(Object.entries(departmentTeam).map(([key, team]) => [key, normalizeTeamKey(team)])),
@@ -529,6 +537,67 @@ export async function syncInvoiceDiffTasks({ dates, items }) {
   );
   const stale = open.rows.filter((row) => !keep.has(row.source_key));
   await closeTasks(stale, "system", "The open differences of this grower and day are below the amount now.");
+  return { made, closed: stale.length };
+}
+
+// Matched differences for Inkoop: per grower and day, the open matched lines
+// with a difference (invoice line paired to its Connect lot, other price /
+// pieces) adding up to the amount -> one task, listing the lines. Closed by
+// itself when they are resolved / below the amount.
+export async function syncMatchedDiffTasks({ dates, items }) {
+  if (!isDatabaseEnabled()) return { made: 0, closed: 0 };
+  const config = await readTaskConfig();
+  if (!config.matched_diff.enabled || !dates?.length) return { made: 0, closed: 0 };
+  const money = (value) => `€ ${(Number(value) || 0).toFixed(2)}`;
+  const groups = new Map();
+  for (const item of items || []) {
+    if (item.type !== "mismatch") continue;
+    const day = isoDay(item.day || item.date);
+    if (!day) continue;
+    const grower = String(item.grower || "").trim() || "?";
+    const key = `${day}|${grower}`;
+    const group = groups.get(key) || { day, grower, lines: [], money: 0, gross: 0 };
+    group.lines.push(item);
+    group.money += Number(item.money_diff) || 0;
+    // Over- and under-charges both need a look: the amount counts them both
+    // (+120 and -100 is 220 to check, not 20).
+    group.gross += Math.abs(Number(item.money_diff) || 0);
+    groups.set(key, group);
+  }
+  const keep = new Set();
+  let made = 0;
+  for (const group of groups.values()) {
+    if (group.gross < config.matched_diff.min_amount) continue;
+    const sourceKey = `matched_diff:${group.day}:${group.grower}`;
+    keep.add(sourceKey);
+    const lines = [...group.lines].sort((a, b) => Math.abs(b.money_diff) - Math.abs(a.money_diff));
+    const lineText = lines.slice(0, 12).map((item) => {
+      const inv = item.invoice || {};
+      const lot = item.lot || {};
+      return `• ${item.description || "?"}: invoice ${inv.quantity ?? "?"} pcs @ ${money(inv.unit_price)} (${item.invoice_number || "?"}) -- Connect lot ${lot.lot || "?"} ${lot.pieces ?? "?"} pcs @ ${money(lot.price)} => ${money(item.money_diff)}`;
+    });
+    const row = await createSystemTask({
+      source: "matched_diff",
+      source_key: sourceKey,
+      title: `Price / pieces check ${group.day}: ${group.grower} -- ${money(group.gross)} in differences, net ${money(group.money)} (${lines.length} matched line(s))`,
+      body: [
+        `Matched invoice lines of ${group.grower} on ${group.day} that differ from their Connect lot: ${money(group.gross)} in differences over ${lines.length} line(s), net ${money(group.money)} (more than 0 = we pay more than Connect counts).`,
+        ...lineText,
+        ...(lines.length > 12 ? [`... and ${lines.length - 12} more (Inkoop Controle > Matched differences)`] : []),
+      ].join("\n"),
+      assignee_team: config.matched_diff.team,
+      priority: group.gross >= config.matched_diff.min_amount * 5 ? "high" : "normal",
+      due_date: localToday(),
+      link: { page: "inkoop", tab: "md", grower: group.grower, day: group.day },
+    });
+    if (row) made += 1;
+  }
+  const open = await dbQuery(
+    "SELECT * FROM app_tasks WHERE source = 'matched_diff' AND status IN ('open', 'in_progress') AND split_part(source_key, ':', 2) = ANY($1::text[])",
+    [dates],
+  );
+  const stale = open.rows.filter((row) => !keep.has(row.source_key));
+  await closeTasks(stale, "system", "The matched differences of this grower and day are resolved / below the amount now.");
   return { made, closed: stale.length };
 }
 

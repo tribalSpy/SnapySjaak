@@ -12632,6 +12632,15 @@ function AppTeamsTasksCard() {
             </select>
           </label>
         </div>
+        <label className="checkbox-label"><input type="checkbox" checked={config.matched_diff?.enabled !== false} onChange={(event) => saveConfig({ ...config, matched_diff: { ...config.matched_diff, enabled: event.target.checked } })} /><span>Matched differences for Inkoop (invoice line paired to its Connect lot, other price / pieces): one task per grower and day -- Control still sees the lines in its follow-up</span></label>
+        <div className="tw-admin-inline">
+          <label><span>From € (matched difference)</span><input type="number" min="1" step="1" value={config.matched_diff?.min_amount ?? 25} onChange={(event) => setConfig({ ...config, matched_diff: { ...config.matched_diff, min_amount: event.target.value } })} onBlur={() => saveConfig(config)} /></label>
+          <label><span>For team</span>
+            <select value={config.matched_diff?.team || "inkoop"} onChange={(event) => saveConfig({ ...config, matched_diff: { ...config.matched_diff, team: event.target.value } })}>
+              {config.teams.map((item) => <option key={item.key} value={item.key}>{item.name}</option>)}
+            </select>
+          </label>
+        </div>
         <label className="checkbox-label"><input type="checkbox" checked={config.facturen?.enabled === true} onChange={(event) => saveConfig({ ...config, facturen: { ...config.facturen, enabled: event.target.checked } })} /><span>Facturen Finance Audit: a task every workday (while facturen are missing) with "Run on this PC" -- starts the Uniware recorder action that fetches every missing factuur of the last 60 days</span></label>
         <div className="tw-admin-inline">
           <label><span>Give it to</span>
@@ -23080,6 +23089,176 @@ function InkoopFollowupWorkspace({ bar, onOpenTrackTrace, onOpenConnectData, mat
   );
 }
 
+// Matched differences: only the invoice lines that ARE paired to their
+// Connect lot but differ (other price per piece, other pieces, or both) --
+// per day, per grower, line by line with the lot it is matched with. The
+// same follow-up lines as the Follow-up tab (Control still sees them); the
+// Inkoop team gets a task per grower and day from these (Tasks settings).
+function ikMatchedWhy(item) {
+  const invoice = item.invoice || {};
+  const lot = item.lot || {};
+  const pieces = invoice.quantity !== null && lot.pieces !== null && invoice.quantity !== undefined && lot.pieces !== undefined && Math.abs(invoice.quantity - lot.pieces) > 0.0001;
+  const price = invoice.unit_price !== null && lot.price !== null && invoice.unit_price !== undefined && lot.price !== undefined && Math.abs(invoice.unit_price - lot.price) > 0.00001;
+  return pieces && price ? "pieces + price" : pieces ? "other pieces" : price ? "other price" : "total";
+}
+
+function InkoopMatchedDiffsWorkspace({ bar, matchRound = 0, onOpenTrackTrace }) {
+  const [withResolved, setWithResolved] = useState(false);
+  const [minEuro, setMinEuro] = useState("");
+  const [search, setSearch] = useState("");
+  const [open, setOpen] = useState({});
+  const query = { from: bar.from, to: bar.to, ...(bar.grower ? { grower: bar.grower } : {}), status: withResolved ? "all" : "open" };
+  const { data, error, loading } = useInkoopFollowup(query, String(matchRound));
+  const deptLabel = Object.fromEntries(data?.departments || []);
+  const min = Number(String(minEuro).replace(",", ".")) || 0;
+  const words = search.toLowerCase().split(/\s+/).filter(Boolean);
+  const items = (data?.items || []).filter((item) => item.type === "mismatch"
+    && Math.abs(item.money_diff || 0) >= min
+    && words.every((word) => `${item.description} ${item.invoice_number} ${item.lot?.lot || ""}`.toLowerCase().includes(word)));
+  // day -> grower -> lines
+  const days = [];
+  for (const item of items) {
+    const dayKey = item.day || item.date;
+    let day = days.find((entry) => entry.day === dayKey);
+    if (!day) days.push(day = { day: dayKey, growers: [], money: 0, gross: 0, lines: 0 });
+    let grower = day.growers.find((entry) => entry.grower === item.grower);
+    if (!grower) day.growers.push(grower = { grower: item.grower, lines: [], money: 0, gross: 0 });
+    grower.lines.push(item);
+    grower.money += item.money_diff || 0;
+    grower.gross += Math.abs(item.money_diff || 0);
+    day.money += item.money_diff || 0;
+    day.gross += Math.abs(item.money_diff || 0);
+    day.lines += 1;
+  }
+  days.sort((a, b) => String(b.day).localeCompare(String(a.day)));
+  days.forEach((day) => {
+    day.growers.sort((a, b) => b.gross - a.gross);
+    day.growers.forEach((grower) => grower.lines.sort((a, b) => Math.abs(b.money_diff) - Math.abs(a.money_diff)));
+  });
+  const total = items.reduce((sum, item) => sum + (item.money_diff || 0), 0);
+  const gross = items.reduce((sum, item) => sum + Math.abs(item.money_diff || 0), 0);
+  const perPiece = (value) => (value === null || value === undefined ? "?" : `€ ${Number(value).toFixed(3).replace(/0$/, "")}`);
+
+  async function exportExcel() {
+    const ExcelModule = await import("exceljs");
+    const ExcelJS = ExcelModule.default || ExcelModule;
+    const book = new ExcelJS.Workbook();
+    const ws = book.addWorksheet("Matched differences", { views: [{ state: "frozen", ySplit: 1 }] });
+    const head = ["Day", "Grower", "Product", "Invoice", "Invoice line", "Connect lot", "Invoice pcs", "Connect pcs", "Pieces diff", "Invoice €/pc", "Connect €/pc", "Price diff €/pc",
+      "Invoice €", "Connect €", "Difference €", "Why", "Status", "Department", "Note"];
+    ws.addRow(head).font = { bold: true };
+    for (const day of days) for (const grower of day.growers) for (const item of grower.lines) {
+      const inv = item.invoice || {};
+      const lot = item.lot || {};
+      ws.addRow([item.day || item.date, item.grower, item.description, item.invoice_number, ikFollowupInvoiceText(item), ikFollowupLotText(item),
+        inv.quantity ?? "", lot.pieces ?? "", inv.quantity !== undefined && lot.pieces !== undefined && inv.quantity !== null && lot.pieces !== null ? inv.quantity - lot.pieces : "",
+        inv.unit_price ?? "", lot.price ?? "", inv.unit_price !== undefined && lot.price !== undefined && inv.unit_price !== null && lot.price !== null ? Math.round((inv.unit_price - lot.price) * 10000) / 10000 : "",
+        item.invoice_value, item.connect_value, item.money_diff, ikMatchedWhy(item), INKOOP_FU_STATUS_LABEL[item.status] || item.status || "Open",
+        deptLabel[item.department] || item.department || "", item.note || ""]);
+    }
+    ws.autoFilter = { from: { row: 1, column: 1 }, to: { row: 1, column: head.length } };
+    head.forEach((title, index) => {
+      const column = ws.getColumn(index + 1);
+      column.width = ["Invoice line", "Connect lot"].includes(title) ? 60 : ["Product", "Grower"].includes(title) ? 28 : 14;
+      if (["Invoice €", "Connect €", "Difference €"].includes(title)) column.numFmt = '"€"#,##0.00';
+    });
+    const buffer = await book.xlsx.writeBuffer();
+    const url = URL.createObjectURL(new Blob([buffer], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" }));
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = `matched-differences-${bar.from}-${bar.to}${bar.grower ? `-${bar.grower}` : ""}.xlsx`;
+    link.click();
+    window.setTimeout(() => URL.revokeObjectURL(url), 10000);
+  }
+
+  return (
+    <div className="overview-stack">
+      <div className="card ik-card">
+        <div className="ik-card-head">
+          <span>
+            <strong>Matched differences</strong>{" "}
+            <span className="muted">invoice lines paired to their Connect lot that still differ (other price per piece / other pieces) -- per day, grower and line. The same lines stay in the Follow-up for Control; Inkoop gets a task per grower and day (Tasks settings).</span>
+          </span>
+          <span className="row-actions">
+            <label className="checkbox-label"><input type="checkbox" checked={withResolved} onChange={(event) => setWithResolved(event.target.checked)} /><span>Also resolved</span></label>
+            <label><span>From €</span><input type="number" min="0" step="1" value={minEuro} onChange={(event) => setMinEuro(event.target.value)} style={{ width: 80 }} /></label>
+            <input placeholder="Product / invoice / lot" value={search} onChange={(event) => setSearch(event.target.value)} />
+            <button type="button" onClick={exportExcel} disabled={!items.length}>Excel</button>
+          </span>
+        </div>
+        {loading && <div className="notice info">Loading…</div>}
+        {error && <div className="notice danger">{error}</div>}
+        {data?.pending_days?.length > 0 && <div className="notice info">Being compared again: {data.pending_days.map(fustOverviewDate).join(", ")} -- shown as last compared.</div>}
+        {data?.waiting_days?.length > 0 && <div className="muted">Days still waiting for data (not in this list yet): {data.waiting_days.map((day) => fustOverviewDate(day.date)).join(", ")}</div>}
+        <div className="row-actions">
+          <span className="ukdocs-status-badge info">{items.length} line(s)</span>
+          <span className="ukdocs-status-badge warning">{formatInkoopEuro(gross)} in differences</span>
+          <span className={`ukdocs-status-badge ${total > 0 ? "danger" : "success"}`}>net {formatInkoopEuro(total)} {total > 0 ? "paid more than Connect counts" : total < 0 ? "paid less" : ""}</span>
+          <span className="ukdocs-status-badge muted">{days.length} day(s) · {new Set(items.map((item) => item.grower)).size} grower(s)</span>
+        </div>
+      </div>
+      {days.map((day) => (
+        <div key={day.day} className="card ik-card">
+          <div className="ik-card-head">
+            <strong>{fustOverviewDate(day.day)}</strong>
+            <span className="muted">{day.lines} line(s) · {formatInkoopEuro(day.gross)} in differences · net {formatInkoopEuro(day.money)}</span>
+          </div>
+          {day.growers.map((grower) => {
+            const key = `${day.day}|${grower.grower}`;
+            const shown = open[key] !== false;
+            return (
+              <div key={key} className="ik-md-grower">
+                <button type="button" className="link-button" onClick={() => setOpen({ ...open, [key]: !shown })}>
+                  {shown ? "▾" : "▸"} <strong>{grower.grower || "?"}</strong> <span className="muted">· {grower.lines.length} line(s) · {formatInkoopEuro(grower.gross)} in differences · net {formatInkoopEuro(grower.money)}</span>
+                </button>
+                {onOpenTrackTrace && <button type="button" className="link-button" onClick={() => onOpenTrackTrace({ grower: grower.grower, day: day.day })}>Track &amp; Trace</button>}
+                {shown && (
+                  <div className="table-wrap">
+                    <table className="data-table balance-table">
+                      <thead>
+                        <tr>
+                          <th>Product</th>
+                          <th>Invoice line</th>
+                          <th>Matched with (Connect lot)</th>
+                          <th className="ik-num">Pieces inv / Connect</th>
+                          <th className="ik-num">€/pc inv / Connect</th>
+                          <th className="ik-num">Difference</th>
+                          <th>Why</th>
+                          <th>Status</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {grower.lines.map((item) => {
+                          const inv = item.invoice || {};
+                          const lot = item.lot || {};
+                          const why = ikMatchedWhy(item);
+                          return (
+                            <tr key={item.id}>
+                              <td>{item.description}<div className="muted">{item.invoice_number}</div></td>
+                              <td className="ik-inv-text" style={{ whiteSpace: "normal", minWidth: 220 }}>{ikFollowupInvoiceText(item)}</td>
+                              <td className="ik-con-text" style={{ whiteSpace: "normal", minWidth: 220 }}>{ikFollowupLotText(item)}</td>
+                              <td className="ik-num" style={{ fontWeight: why.includes("pieces") ? 700 : undefined }}>{inv.quantity ?? "?"} / {lot.pieces ?? "?"}</td>
+                              <td className="ik-num" style={{ fontWeight: why.includes("price") ? 700 : undefined }}>{perPiece(inv.unit_price)} / {perPiece(lot.price)}</td>
+                              <td className="ik-num" style={{ color: item.money_diff > 0 ? "var(--x-b91c1c)" : "var(--x-15803d)", fontWeight: 700 }}>{item.money_diff > 0 ? "+" : ""}{formatInkoopEuro(item.money_diff)}</td>
+                              <td>{why}</td>
+                              <td>{INKOOP_FU_STATUS_LABEL[item.status] || item.status || "Open"}{item.department ? <div className="muted">{deptLabel[item.department] || item.department}</div> : null}{item.note ? <div className="muted">{item.note}</div> : null}</td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      ))}
+      {data && !loading && !items.length && <div className="notice">No matched differences in this period{bar.grower ? ` for ${bar.grower}` : ""}.</div>}
+    </div>
+  );
+}
+
 // The Inkoop menu: the workspaces as tiles (as the Fust menu), each with one
 // live figure of this month.
 const INKOOP_WORKSPACES = [
@@ -23087,6 +23266,7 @@ const INKOOP_WORKSPACES = [
   ["trace", "Dashboard", "The money trace: totals, days, growers, flows, pairs"],
   ["tracktrace", "Track & Trace", "A grower's invoice lines and Connect lots side by side; check and link"],
   ["fu", "Follow-up", "Open lines per department (Control → Inkoop / Finance), categories like High control"],
+  ["md", "Matched differences", "Paired invoice lines that still differ from their Connect lot: per day, grower and line"],
   ["search", "Search", "Invoice lines and Connect lots, side by side"],
   ["destinations", "Corrections", "The corrections check; sold per country"],
   ["customers", "Klant inzicht", "What the dispatch customers get: per group, per month, on the map"],
@@ -23126,6 +23306,16 @@ function InkoopMenu({ onOpen, monthRows }) {
         <span className="muted">last 30 days</span>
       </span>
     ) : null,
+    md: followup ? (() => {
+      const matched = (followup.items || []).filter((item) => item.type === "mismatch");
+      return (
+        <span className="ik-tile-fu">
+          <span>Open <strong>{matched.length}</strong></span>
+          <span>{formatInkoopEuro(matched.reduce((sum, item) => sum + (item.money_diff || 0), 0))}</span>
+          <span className="muted">last 30 days</span>
+        </span>
+      );
+    })() : null,
   };
   return (
     <div className="fust-tile-grid ik-menu" aria-label="Inkoop menu">
@@ -23176,6 +23366,11 @@ function InkoopControlePage({ currentUser }) {
     const apply = (link) => {
       if (link?.page === "inkoop" && link.tab) {
         setActiveTab(link.tab);
+        // A task for one grower and day (matched differences / invoice
+        // differences): the bar on that grower and day.
+        if (link.grower && /^\d{4}-\d{2}-\d{2}$/.test(String(link.day || ""))) {
+          setBar((current) => ({ ...current, grower: link.grower, from: link.day, to: link.day, day: null }));
+        }
         window.__appOpenLink = null;
       }
     };
@@ -23626,7 +23821,7 @@ function InkoopControlePage({ currentUser }) {
   // import history / master-data counts below wait for this (was: nothing
   // shown until it arrived).
   const pageDataNote = loading ? <div className="notice info">Loading import history and master data...</div> : null;
-  const inWorkspace = activeTab === "trace" || activeTab === "tracktrace" || activeTab === "fu";
+  const inWorkspace = activeTab === "trace" || activeTab === "tracktrace" || activeTab === "fu" || activeTab === "md";
   // Track & Trace opened from a Follow-up line ("Link") or the Dashboard's
   // right-click: the way back, with that tab's own period and grower.
   const [ttReturn, setTtReturn] = useState(null);
@@ -23658,7 +23853,7 @@ function InkoopControlePage({ currentUser }) {
         <div className="section-header fust-section-nav">
           <h2>{INKOOP_SETUP_KEYS.has(activeTab) ? <span className="muted">Setup › </span> : null}{INKOOP_TAB_TITLES[activeTab] || activeTab}</h2>
           <div className="row-actions">
-            {activeTab === "tracktrace" && ttReturn && <button type="button" className="primary" onClick={backToFollowup}>← Back to {ttReturn.tab === "trace" ? "Dashboard" : ttReturn.tab === "overview" ? "Financieel overzicht" : "Follow-up"}</button>}
+            {activeTab === "tracktrace" && ttReturn && <button type="button" className="primary" onClick={backToFollowup}>← Back to {ttReturn.tab === "trace" ? "Dashboard" : ttReturn.tab === "overview" ? "Financieel overzicht" : ttReturn.tab === "md" ? "Matched differences" : "Follow-up"}</button>}
             {INKOOP_SETUP_KEYS.has(activeTab) && <button type="button" onClick={() => setActiveTab("setup")}>Setup</button>}
             <button type="button" onClick={() => setActiveTab("")}>Inkoop menu</button>
           </div>
@@ -23668,7 +23863,7 @@ function InkoopControlePage({ currentUser }) {
       {activeTab === "setup" && <InkoopSetupMenu onOpen={setActiveTab} />}
       {withBar && (
         <IkFilterBar bar={bar} setBar={setBar} companies={companies} company={selectedCompany} setCompany={setSelectedCompany} growers={barGrowers}
-          parts={activeTab === "search" ? ["period", "company", "grower"] : activeTab === "fu" ? ["period", "bw", "flow", "grower"] : undefined} />
+          parts={activeTab === "search" ? ["period", "company", "grower"] : activeTab === "fu" ? ["period", "bw", "flow", "grower"] : activeTab === "md" ? ["period", "grower"] : undefined} />
       )}
       {withBar && barTooLong && <div className="notice danger">{bar.grower ? "One grower: a year at most." : "All growers: 3 months at most -- type one grower in the bar to search up to a year."}</div>}
       {/* Only on the tabs that filter by it (Overview, Corrections, King,
@@ -23717,6 +23912,10 @@ function InkoopControlePage({ currentUser }) {
       {activeTab === "fu" && !barTooLong && (
         <InkoopFollowupWorkspace bar={bar} matchRound={matchRound} onOpenConnectData={() => setActiveTab("connectdata")}
           onOpenTrackTrace={(item) => openTrackTrace("fu", { grower: item.grower, from: item.day || item.date, to: item.day || item.date })} />
+      )}
+      {activeTab === "md" && !barTooLong && (
+        <InkoopMatchedDiffsWorkspace bar={bar} matchRound={matchRound}
+          onOpenTrackTrace={({ grower, day }) => openTrackTrace("md", { grower, from: day, to: day })} />
       )}
       {activeTab === "tracktrace" && !barTooLong && <InkoopTrackTraceWorkspace bar={bar} setBar={setBar} overview={overview} company={selectedCompany} matchRound={matchRound} />}
 
