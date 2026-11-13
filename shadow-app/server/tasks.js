@@ -17,7 +17,14 @@ export const APP_TASK_DEFAULT_TEAMS = [
   { key: "finance", name: "Finance" },
   { key: "expeditie", name: "Expeditie" },
   { key: "pd_phyto", name: "PD / Phyto" },
+  { key: "inkoop_fl", name: "Inkoop FL" },
+  { key: "inkoop_pl", name: "Inkoop PL" },
 ];
+// Settings version 2 (13-11-2026): the price difference tasks split into
+// flowers (Inkoop FL) and plants (Inkoop PL); the old "Factuur check" tasks
+// (every open difference: not matched, other pieces) off -- only the most
+// important ones (same pieces, we pay more) stay.
+const TASK_CONFIG_VERSION = 2;
 const TASK_STATUSES = ["open", "in_progress", "done", "cancelled"];
 const TASK_PRIORITIES = ["normal", "high", "urgent"];
 const TASK_REPEATS = ["none", "daily", "workdays", "weekly"];
@@ -112,7 +119,12 @@ function taskRow(row) {
 
 function normalizeTaskConfig(value) {
   const source = value && typeof value === "object" ? value : {};
-  const teams = (Array.isArray(source.teams) && source.teams.length ? source.teams : APP_TASK_DEFAULT_TEAMS)
+  const upgrade = (Number(source.version) || 1) < TASK_CONFIG_VERSION;
+  const savedTeams = Array.isArray(source.teams) && source.teams.length ? source.teams : APP_TASK_DEFAULT_TEAMS;
+  const withNewTeams = upgrade
+    ? [...savedTeams, ...APP_TASK_DEFAULT_TEAMS.filter((team) => ["inkoop_fl", "inkoop_pl"].includes(team.key) && !savedTeams.some((other) => normalizeTeamKey(other?.key || other?.name) === team.key))]
+    : savedTeams;
+  const teams = withNewTeams
     .map((team) => ({ key: normalizeTeamKey(team?.key || team?.name), name: String(team?.name || team?.key || "").trim().slice(0, 60) }))
     .filter((team, index, list) => team.key && team.name && list.findIndex((other) => other.key === team.key) === index)
     .slice(0, 40);
@@ -127,11 +139,13 @@ function normalizeTaskConfig(value) {
   const assignTo = String(source.step_plan?.assign_to ?? Object.values(assign)[0] ?? "").trim().slice(0, 80);
   const minAmount = Number(source.invoice_diff?.min_amount);
   const departmentTeam = { control: "invoice_control", inkoop: "inkoop", finance: "finance", ...(source.followup?.department_team || {}) };
+  const teamOr = (value, fallback) => (value === "" ? "" : normalizeTeamKey(value) || fallback);
   return {
+    version: TASK_CONFIG_VERSION,
     teams,
     step_plan: { enabled: source.step_plan?.enabled !== false, assign_to: /^(user|team):./.test(assignTo) ? assignTo : "" },
     invoice_diff: {
-      enabled: source.invoice_diff?.enabled !== false,
+      enabled: upgrade ? false : source.invoice_diff?.enabled !== false,
       min_amount: Number.isFinite(minAmount) && minAmount > 0 ? Math.round(minAmount * 100) / 100 : 50,
       team: normalizeTeamKey(source.invoice_diff?.team) || "invoice_control",
       days_back: Math.max(1, Math.min(31, Number(source.invoice_diff?.days_back) || 7)),
@@ -143,6 +157,12 @@ function normalizeTaskConfig(value) {
       enabled: source.matched_diff?.enabled !== false,
       min_amount: Number.isFinite(Number(source.matched_diff?.min_amount)) && Number(source.matched_diff?.min_amount) > 0 ? Math.round(Number(source.matched_diff.min_amount) * 100) / 100 : 25,
       team: normalizeTeamKey(source.matched_diff?.team) || "inkoop",
+      // Per group (FloraHolland account on the invoice line: 001 flowers,
+      // 002 / 003 plants); "" = no task for that group. Other = no account
+      // (AI2 ...).
+      team_flowers: upgrade ? "inkoop_fl" : teamOr(source.matched_diff?.team_flowers, "inkoop_fl"),
+      team_plants: upgrade ? "inkoop_pl" : teamOr(source.matched_diff?.team_plants, "inkoop_pl"),
+      team_other: upgrade ? "" : teamOr(source.matched_diff?.team_other ?? "", ""),
     },
     followup: {
       enabled: source.followup?.enabled !== false,
@@ -500,7 +520,13 @@ export async function autoTaskForClaimStep({ claim, step, by, note }) {
 export async function syncInvoiceDiffTasks({ dates, items }) {
   if (!isDatabaseEnabled()) return { made: 0, closed: 0 };
   const config = await readTaskConfig();
-  if (!config.invoice_diff.enabled || !dates?.length) return { made: 0, closed: 0 };
+  if (!config.invoice_diff.enabled) {
+    // Switched off: its open tasks go away.
+    const open = await dbQuery("SELECT * FROM app_tasks WHERE source = 'invoice_diff' AND status IN ('open', 'in_progress')");
+    if (open.rows.length) await closeTasks(open.rows, "system", "Factuur check tasks are switched off (Tasks settings) -- only the price differences go to Inkoop FL / PL.");
+    return { made: 0, closed: open.rows.length };
+  }
+  if (!dates?.length) return { made: 0, closed: 0 };
   const groups = new Map();
   for (const item of items || []) {
     const day = isoDay(item.day || item.date);
@@ -564,9 +590,13 @@ export async function syncMatchedDiffTasks({ dates, items }) {
     if ((Number(item.money_diff) || 0) < 0) continue;
     const day = isoDay(item.day || item.date);
     if (!day) continue;
+    const account = String(item.invoice?.account || "").trim();
+    const kind = account === "001" ? "flowers" : account === "002" || account === "003" ? "plants" : "other";
+    const team = config.matched_diff[`team_${kind}`];
+    if (!team) continue;
     const grower = String(item.grower || "").trim() || "?";
-    const key = `${day}|${grower}`;
-    const group = groups.get(key) || { day, grower, lines: [], money: 0, gross: 0 };
+    const key = `${day}|${grower}|${kind}`;
+    const group = groups.get(key) || { day, grower, kind, team, lines: [], money: 0, gross: 0 };
     group.lines.push(item);
     group.money += Number(item.money_diff) || 0;
     // Only over-charges get here (plus values are accepted above).
@@ -577,7 +607,8 @@ export async function syncMatchedDiffTasks({ dates, items }) {
   let made = 0;
   for (const group of groups.values()) {
     if (group.gross < config.matched_diff.min_amount) continue;
-    const sourceKey = `matched_diff:${group.day}:${group.grower}`;
+    const sourceKey = `matched_diff:${group.day}:${group.grower}:${group.kind}`;
+    const kindLabel = { flowers: "Flowers", plants: "Plants", other: "Other" }[group.kind];
     keep.add(sourceKey);
     const lines = [...group.lines].sort((a, b) => Math.abs(b.money_diff) - Math.abs(a.money_diff));
     const lineText = lines.slice(0, 12).map((item) => {
@@ -588,16 +619,16 @@ export async function syncMatchedDiffTasks({ dates, items }) {
     const row = await createSystemTask({
       source: "matched_diff",
       source_key: sourceKey,
-      title: `Price check ${group.day}: ${group.grower} -- ${money(group.gross)} in differences, net ${money(group.money)} (${lines.length} line(s), same pieces)`,
+      title: `Price check ${kindLabel} ${group.day}: ${group.grower} -- ${money(group.money)} paid more (${lines.length} line(s))`,
       body: [
         `Invoice lines of ${group.grower} on ${group.day} with the same pieces as their Connect lot but another price: ${money(group.gross)} in differences over ${lines.length} line(s), we pay more than Connect counts (lines where we pay less are accepted as a plus value).`,
         ...lineText,
         ...(lines.length > 12 ? [`... and ${lines.length - 12} more (Inkoop Controle > Matched differences)`] : []),
       ].join("\n"),
-      assignee_team: config.matched_diff.team,
+      assignee_team: group.team,
       priority: group.gross >= config.matched_diff.min_amount * 5 ? "high" : "normal",
       due_date: localToday(),
-      link: { page: "inkoop", tab: "md", grower: group.grower, day: group.day },
+      link: { page: "inkoop", tab: "md", grower: group.grower, day: group.day, kind: group.kind },
     });
     if (row) made += 1;
   }
@@ -607,7 +638,10 @@ export async function syncMatchedDiffTasks({ dates, items }) {
   );
   const stale = open.rows.filter((row) => !keep.has(row.source_key));
   await closeTasks(stale, "system", "The price differences (same pieces) of this grower and day are resolved / below the amount now.");
-  return { made, closed: stale.length };
+  // The tasks from before the flowers / plants split (no group in the key).
+  const old = await dbQuery("SELECT * FROM app_tasks WHERE source = 'matched_diff' AND status IN ('open', 'in_progress') AND source_key !~ ':(flowers|plants|other)$'");
+  if (old.rows.length) await closeTasks(old.rows, "system", "Replaced by the price check per group (flowers / plants).");
+  return { made, closed: stale.length + old.rows.length };
 }
 
 // The PD step plan: ONE task per day for whoever the step plan is given to.

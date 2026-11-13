@@ -12768,7 +12768,7 @@ function AppTeamsTasksCard() {
           ))}
         </div>
         <label className="checkbox-label"><input type="checkbox" checked={config.claims.enabled} onChange={(event) => saveConfig({ ...config, claims: { enabled: event.target.checked } })} /><span>Claims: credit received / closed / written off -- a task for whoever made the claim</span></label>
-        <label className="checkbox-label"><input type="checkbox" checked={config.invoice_diff.enabled} onChange={(event) => saveConfig({ ...config, invoice_diff: { ...config.invoice_diff, enabled: event.target.checked } })} /><span>Important invoice differences (days with all 4 files, compared): one task per grower and day</span></label>
+        <label className="checkbox-label"><input type="checkbox" checked={config.invoice_diff.enabled} onChange={(event) => saveConfig({ ...config, invoice_diff: { ...config.invoice_diff, enabled: event.target.checked } })} /><span>Factuur check: every open invoice difference (not matched, other pieces too) -- one task per grower and day. Off = only the price differences below</span></label>
         <div className="tw-admin-inline">
           <label><span>From € (open difference)</span><input type="number" min="1" step="1" value={config.invoice_diff.min_amount} onChange={(event) => setConfig({ ...config, invoice_diff: { ...config.invoice_diff, min_amount: event.target.value } })} onBlur={() => saveConfig(config)} /></label>
           <label><span>For team</span>
@@ -12777,17 +12777,20 @@ function AppTeamsTasksCard() {
             </select>
           </label>
         </div>
-        <label className="checkbox-label"><input type="checkbox" checked={config.matched_diff?.enabled !== false} onChange={(event) => saveConfig({ ...config, matched_diff: { ...config.matched_diff, enabled: event.target.checked } })} /><span>Price differences for Inkoop (invoice line and its Connect lot with the same pieces, another price): one task per grower and day -- lines with other pieces stay with Control in the follow-up</span></label>
+        <label className="checkbox-label"><input type="checkbox" checked={config.matched_diff?.enabled !== false} onChange={(event) => saveConfig({ ...config, matched_diff: { ...config.matched_diff, enabled: event.target.checked } })} /><span>Price differences for Inkoop -- only the most important: invoice line and its Connect lot with the same pieces, and we pay more (paying less is a plus value, no task). One task per grower, day and group; not matched / other pieces stay with Control in the follow-up</span></label>
         <div className="tw-admin-inline">
-          {!config.teams.some((item) => item.key === (config.matched_diff?.team || "inkoop")) && (
-            <span className="tw-overdue">⚠ Team "{config.matched_diff?.team || "inkoop"}" isn't in the team list -- add it (and its people) above, or nobody sees these tasks</span>
-          )}
+          {[config.matched_diff?.team_flowers, config.matched_diff?.team_plants, config.matched_diff?.team_other].filter((key) => key && !config.teams.some((item) => item.key === key)).map((key) => (
+            <span key={key} className="tw-overdue">⚠ Team "{key}" isn't in the team list -- add it (and its people) above, or nobody sees these tasks</span>
+          ))}
           <label><span>From € (price difference, same pieces)</span><input type="number" min="1" step="1" value={config.matched_diff?.min_amount ?? 25} onChange={(event) => setConfig({ ...config, matched_diff: { ...config.matched_diff, min_amount: event.target.value } })} onBlur={() => saveConfig(config)} /></label>
-          <label><span>For team</span>
-            <select value={config.matched_diff?.team || "inkoop"} onChange={(event) => saveConfig({ ...config, matched_diff: { ...config.matched_diff, team: event.target.value } })}>
-              {config.teams.map((item) => <option key={item.key} value={item.key}>{item.name}</option>)}
-            </select>
-          </label>
+          {[["team_flowers", "Flowers (001) for"], ["team_plants", "Plants (002 / 003) for"], ["team_other", "Other (no account, AI2) for"]].map(([field, label]) => (
+            <label key={field}><span>{label}</span>
+              <select value={config.matched_diff?.[field] ?? ""} onChange={(event) => saveConfig({ ...config, matched_diff: { ...config.matched_diff, [field]: event.target.value } })}>
+                <option value="">— no task —</option>
+                {config.teams.map((item) => <option key={item.key} value={item.key}>{item.name}</option>)}
+              </select>
+            </label>
+          ))}
         </div>
         <label className="checkbox-label"><input type="checkbox" checked={config.facturen?.enabled === true} onChange={(event) => saveConfig({ ...config, facturen: { ...config.facturen, enabled: event.target.checked } })} /><span>Facturen Finance Audit: a task every workday (while facturen are missing) with "Run on this PC" -- starts the Uniware recorder action that fetches every missing factuur of the last 60 days</span></label>
         <div className="tw-admin-inline">
@@ -23467,8 +23470,11 @@ function InkoopMatchedDiffsWorkspace({ bar, matchRound = 0, onOpenTrackTrace }) 
   const [open, setOpen] = useState({});
   // "same": pieces match -- a real price difference; "other": the pieces
   // differ -- often a lot not linked to the invoice line yet.
-  const [pieces, setPieces] = useState("all");
-  const [kind, setKind] = useState("all");
+  // Standard: the most important -- same pieces (a real price difference).
+  const [pieces, setPieces] = useState("same");
+  const [kind, setKind] = useState(bar.mdKind || "all");
+  // Opened from a Price check task: its group (flowers / plants).
+  useEffect(() => { if (bar.mdKind) setKind(bar.mdKind); }, [bar.mdKind]);
   const query = { from: bar.from, to: bar.to, ...(bar.grower ? { grower: bar.grower } : {}), status: withResolved ? "all" : "open" };
   const { data, error, loading } = useInkoopFollowup(query, `${matchRound}.${round}`);
   const deptLabel = Object.fromEntries(data?.departments || []);
@@ -23786,7 +23792,7 @@ function InkoopControlePage({ currentUser }) {
         // A task for one grower and day (matched differences / invoice
         // differences): the bar on that grower and day.
         if (link.grower && /^\d{4}-\d{2}-\d{2}$/.test(String(link.day || ""))) {
-          setBar((current) => ({ ...current, grower: link.grower, from: link.day, to: link.day, day: null }));
+          setBar((current) => ({ ...current, grower: link.grower, from: link.day, to: link.day, day: null, ...(link.kind ? { mdKind: link.kind } : {}) }));
         }
         window.__appOpenLink = null;
       }
