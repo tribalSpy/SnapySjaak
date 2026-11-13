@@ -551,20 +551,34 @@ function stepPlanProgress(date, plan, monitor) {
       : step?.key === "day"
         ? `Waiting for the day steps (${dayStep ? `${dayStep.number}. ${dayStep.label}` : "-"})`
         : step?.status || (step?.missing || [])[0] || "";
-    // What the task follows: the Pipeline Monitor's four checks, done by the
-    // app's own actions -- complete, CSI done, papers sent, no problem. (Eric
-    // Docs has no CSI; papers turned off for the customer count as done.)
-    const checks = {
-      complete: watch ? watch.complete === true : row.complete === true,
-      csi: row.route === "ericdocs" ? true : watch?.csi_status === "done",
-      papers: watch ? (watch.papers_sent === true || watch.papers_status === "off") : false,
-      ok: watch ? watch.needs_attention !== true : false,
-    };
-    const checksDone = Object.values(checks).filter(Boolean).length;
+    // The Pipeline Monitor's checks, only the ones that apply to this
+    // shipment: CSI only for a UKdocs CSI shipment (an Eric Docs one shows
+    // "Eric Docs sent" instead), "Papers sent" only when the customer gets
+    // the papers email.
+    const papersStep = row.steps.find((entry) => entry.key === "papers");
+    const checkList = [
+      ["complete", "Complete", watch ? watch.complete === true : row.complete === true],
+      row.route === "ericdocs"
+        ? ["ericdocs", "Eric Docs sent", papersStep?.done === true]
+        : ["csi", "CSI done", watch?.csi_status === "done"],
+      ...(watch?.papers_status === "off" ? [] : [["papers", "Papers sent", watch ? watch.papers_sent === true : false]]),
+      ["ok", "OK", watch ? watch.needs_attention !== true : false],
+    ];
+    const checks = Object.fromEntries(checkList.map(([key, , on]) => [key, on]));
+    // The % follows the shipment's own steps that apply to it (steps not
+    // needed -- e-Cert for a nakeuring / no phyto, day steps for no phyto,
+    // tour dumps marked not needed -- are left out), so a shipment that is
+    // further along shows it.
+    const applicable = row.steps.filter((entry) => !entry.not_needed);
+    const stepsDone = applicable.filter((entry) => entry.done).length;
+    const allChecks = checkList.every(([, , on]) => on);
     return {
       id: row.collection_id,
       checks,
-      pct: Math.round((checksDone / 4) * 100),
+      check_list: checkList.map(([key, label, on]) => ({ key, label, on })),
+      // Ready (what closes the day's task) = its checks green, as before.
+      ready: allChecks,
+      pct: applicable.length ? Math.round((stepsDone / applicable.length) * 100) : 100,
       csi_status: watch?.csi_status || "",
       papers_status: watch?.papers_status || "",
       customer: row.customer_name || "-",
@@ -589,8 +603,9 @@ function stepPlanProgress(date, plan, monitor) {
     },
     rows,
     total: rows.length,
-    // Ready = all four green; the % over every shipment's four checks.
-    ready: rows.filter((row) => row.pct === 100).length,
+    // Ready = its checks that apply all green; the % over every shipment's
+    // own steps.
+    ready: rows.filter((row) => row.ready).length,
     pct: rows.length ? Math.round(rows.reduce((sum, row) => sum + row.pct, 0) / rows.length) : 0,
     done: rows.filter((row) => row.complete).length,
     stuck: rows.filter((row) => row.stuck).length,

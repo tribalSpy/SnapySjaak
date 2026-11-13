@@ -12273,8 +12273,10 @@ function TwStepPlanProgress({ progress }) {
           <TwRing pct={row.pct ?? 0} size={18} />
           <span className="tw-progress-name">{row.customer} <small>{row.route}</small></span>
           <span className="tw-checks">
-            {TW_CHECKS.map(([key, label]) => (
-              <span key={key} className={`tw-check${row.checks?.[key] ? " on" : ""}`}>{row.checks?.[key] ? "✓" : "○"} {label}</span>
+            {/* Only the checks that apply to this shipment (no "CSI done" on an
+                Eric Docs one, no "Papers sent" when the customer gets no papers). */}
+            {(row.check_list || TW_CHECKS.map(([key, label]) => ({ key, label, on: row.checks?.[key] }))).map((check) => (
+              <span key={check.key} className={`tw-check${check.on ? " on" : ""}`}>{check.on ? "✓" : "○"} {check.label}</span>
             ))}
           </span>
           {row.stuck && <small className="tw-overdue">⚠ {row.stuck}</small>}

@@ -16502,13 +16502,25 @@ function buildPdStepPlan(state, targetDate) {
     const markStep = (key, label, extraDone = false) => ({
       key, label, page: "", manual: true, mark: marks[key] || null,
       done: Boolean(marks[key]) || extraDone, missing: [], skippable: [], skipped: [], warnings: marks[key]?.not_needed ? [`Not needed (by ${marks[key].by || "?"})`] : [],
+      // Marked "Not needed": left out of the shipment's progress.
+      not_needed: Boolean(marks[key]?.not_needed),
     });
+    // The shared day steps (stock control, Connect, phyto, e-Cert) don't hold
+    // a shipment back that doesn't need them (no phyto needed) or that has
+    // already moved past them (its invoices & export docs are made): it goes
+    // on to its own next step.
+    const docsDone = docs.missing.length === 0;
+    const dayStep = noPhytoNeeded
+      ? { key: "day", label: "Day steps: not needed (no phyto needed)", page: "day", day: true, done: true, not_needed: true, missing: [], skippable: [], skipped: [], warnings: [] }
+      : !day.complete && docsDone
+        ? { key: "day", label: "Day steps: passed (invoices & export docs already made)", page: "day", day: true, done: true, passed: true, missing: [], skippable: [], skipped: [], warnings: [`Day steps still open: ${dayNext.number}. ${dayNext.label}`] }
+        : {
+          key: "day", label: "Day steps (stock control, Connect, phyto, e-Cert)", page: "day", day: true,
+          done: day.complete, missing: day.complete ? [] : [`Next: ${dayNext.number}. ${dayNext.label}`], skippable: [], skipped: [], warnings: [],
+        };
     const steps = [
       { key: "setup", label: "PD Keuring", page: "pdkeuring", done: setup.missing.length === 0, missing: setup.missing, skippable: setup.skippable, skipped: setup.skipped, warnings: setup.warnings },
-      {
-        key: "day", label: "Day steps (stock control, Connect, phyto, e-Cert)", page: "day", day: true,
-        done: day.complete, missing: day.complete ? [] : [`Next: ${dayNext.number}. ${dayNext.label}`], skippable: [], skipped: [], warnings: [],
-      },
+      dayStep,
       { key: "references", label: route === "ericdocs" ? "Connect / truck / plate / pieces" : "Connect / truck / plate", page: "pdkeuring", done: refs.missing.length === 0, missing: refs.missing, skippable: refs.skippable, skipped: refs.skipped, warnings: refs.warnings },
       // Invoices made means the dumps were there (or weren't needed).
       markStep("tour_dumps", "Tour data dumps (flowers / acc / plants) and IPAFFS", docs.missing.length === 0 && docsMissingRaw.length === 0),
@@ -16518,9 +16530,9 @@ function buildPdStepPlan(state, targetDate) {
       // nothing to do here.
       // No phyto needed: no e-Cert at all.
       noPhytoNeeded
-        ? { ...markStep("ecert_finish", "e-Cert: not needed (no phyto needed)", true), manual: false }
+        ? { ...markStep("ecert_finish", "e-Cert: not needed (no phyto needed)", true), manual: false, not_needed: true }
         : route === "ericdocs"
-          ? { ...markStep("ecert_finish", "e-Cert: not needed for a nakeuring (signed at the first keuring)", true), manual: false }
+          ? { ...markStep("ecert_finish", "e-Cert: not needed for a nakeuring (signed at the first keuring)", true), manual: false, not_needed: true }
           : markStep("ecert_finish", "e-Cert: finish the shipment, ask for the digital signature"),
     ];
     const currentIndex = steps.findIndex((step) => !step.done);
