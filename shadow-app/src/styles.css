@@ -5551,3 +5551,8 @@ table.data-table.balance-table.ik-table.ik-inv-invoices td:nth-child(n+7), table
   background: #1f7a5a;
   color: #fff;
 }
+
+/* Tasks widget: a folded week inside "Earlier weeks" / "Later". */
+.tw-week {
+  margin-left: 8px;
+}

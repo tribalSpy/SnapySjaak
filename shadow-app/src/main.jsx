@@ -11909,6 +11909,14 @@ function twWeekBounds(today) {
   return { from: twIsoDay(monday), to: twIsoDay(sunday) };
 }
 
+function twIsoWeek(day) {
+  const date = new Date(`${day}T12:00:00`);
+  const thursday = new Date(date);
+  thursday.setDate(date.getDate() + 3 - ((date.getDay() + 6) % 7));
+  const firstThursday = new Date(thursday.getFullYear(), 0, 4);
+  return 1 + Math.round(((thursday - firstThursday) / 86400000 - 3 + ((firstThursday.getDay() + 6) % 7)) / 7);
+}
+
 function twDayLabel(day) {
   if (!/^\d{4}-\d{2}-\d{2}$/.test(day)) return "No date";
   return new Date(`${day}T12:00:00`).toLocaleDateString("en-GB", { weekday: "short", day: "2-digit", month: "2-digit" });
@@ -12076,6 +12084,30 @@ function TwTasks({ currentUser, directory, teamName, pulseKey, onOpenLink, big }
       {tasks.map(renderTask)}
     </Fragment>
   ));
+  // Earlier / later: one fold per week (newest first for earlier), its days
+  // inside -- open a week to go deeper.
+  const renderWeeks = (list, newestFirst = false) => {
+    const weeks = new Map();
+    for (const task of list) {
+      const day = twTaskDay(task);
+      const key = /^\d{4}-\d{2}-\d{2}$/.test(day) ? twWeekBounds(day).from : "none";
+      weeks.set(key, [...(weeks.get(key) || []), task]);
+    }
+    return [...weeks.entries()]
+      .sort((left, right) => (newestFirst ? right[0].localeCompare(left[0]) : left[0].localeCompare(right[0])))
+      .map(([monday, tasks]) => {
+        const bounds = monday === "none" ? null : twWeekBounds(monday);
+        const label = bounds ? `Week ${twIsoWeek(monday)} · ${twDayLabel(bounds.from)} – ${twDayLabel(bounds.to)}` : "No date";
+        return (
+          <li key={monday} className="tw-folded tw-week">
+            <details>
+              <summary>{label} <span className="tw-count">{tasks.length}</span></summary>
+              <ul className="tw-list">{renderDays(tasks, newestFirst)}</ul>
+            </details>
+          </li>
+        );
+      });
+  };
   const thisWeek = ownTasks.filter((task) => twTaskDay(task) >= week.from && twTaskDay(task) <= week.to);
   const earlier = ownTasks.filter((task) => !twTaskDay(task) || twTaskDay(task) < week.from);
   const later = ownTasks.filter((task) => twTaskDay(task) > week.to);
@@ -12131,7 +12163,7 @@ function TwTasks({ currentUser, directory, teamName, pulseKey, onOpenLink, big }
               <li className="tw-folded">
                 <details>
                   <summary>Earlier weeks <span className="tw-count">{earlier.length}</span></summary>
-                  <ul className="tw-list">{renderDays(earlier, true)}</ul>
+                  <ul className="tw-list">{renderWeeks(earlier, true)}</ul>
                 </details>
               </li>
             )}
@@ -12139,7 +12171,7 @@ function TwTasks({ currentUser, directory, teamName, pulseKey, onOpenLink, big }
               <li className="tw-folded">
                 <details>
                   <summary>Later <span className="tw-count">{later.length}</span></summary>
-                  <ul className="tw-list">{renderDays(later)}</ul>
+                  <ul className="tw-list">{renderWeeks(later)}</ul>
                 </details>
               </li>
             )}
