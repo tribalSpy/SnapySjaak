@@ -19982,6 +19982,31 @@ function inkoopSameGrower(left, right) {
   return Boolean(a && b) && (a === b || a.startsWith(b) || b.startsWith(a));
 }
 
+// The growers a typed name means: by their shown name (the Connect code's
+// name) or by a name they also go by -- the invoice's own supplier name or
+// the Connect code ("aka" on the overview rows). "floralqualitygroup" finds
+// the grower its lines are listed under even when that has another name.
+function inkoopGrowersMatching(rows, query) {
+  const names = new Set();
+  if (!String(query || "").trim()) return names;
+  for (const row of rows || []) {
+    if (names.has(row.grower)) continue;
+    if (inkoopSameGrower(row.grower, query) || (row.aka || []).some((alias) => inkoopSameGrower(alias, query))) names.add(row.grower);
+  }
+  return names;
+}
+
+// The other names a grower goes by (for "aka" hints), from its rows.
+function inkoopGrowerAliases(rows, grower) {
+  const key = inkoopGrowerKey(grower);
+  const aliases = new Set();
+  for (const row of rows || []) {
+    if (row.grower !== grower) continue;
+    for (const alias of row.aka || []) if (inkoopGrowerKey(alias) && inkoopGrowerKey(alias) !== key) aliases.add(alias);
+  }
+  return [...aliases];
+}
+
 function inkoopDownloadCsv(fileName, rows) {
   const text = rows.map((row) => row.map((cell) => {
     const value = cell === null || cell === undefined ? "" : String(cell);
@@ -20095,10 +20120,11 @@ function useInkoopOverviewRows(from, to, company, grower = "") {
 // The bar's filters on overview rows: betaalwijze, flow, grower and the
 // day(s) picked in the mini calendar.
 function inkoopBarRows(rows, bar, { useDay = true, useGrower = true } = {}) {
+  const growerNames = useGrower && bar.grower ? inkoopGrowersMatching(rows, bar.grower) : null;
   return (rows || []).filter((row) => (
     (!bar.bw?.length || bar.bw.includes(row.bw || "?"))
     && (!bar.flows?.length || bar.flows.includes(row.flow || "Other"))
-    && (!useGrower || !bar.grower || inkoopSameGrower(row.grower, bar.grower))
+    && (!growerNames || growerNames.has(row.grower))
     && (!useDay || !bar.day || (row.date >= bar.day.from && row.date <= bar.day.to))
   ));
 }
@@ -20706,7 +20732,7 @@ function IkTraceTable({ rows, from, to, company, bar, setBar, onOpenTrackTrace }
   const levels = span_days > 62 ? ["month", "week", "day"] : span_days > 13 ? ["week", "day"] : ["day"];
   // A grower typed in the bar or clicked in a tile: opened at once.
   useEffect(() => {
-    const match = bar.grower ? [...new Set(rows.map((row) => row.grower))].find((name) => inkoopSameGrower(name, bar.grower)) : "";
+    const match = bar.grower ? [...inkoopGrowersMatching(rows, bar.grower)][0] || "" : "";
     if (match) setOpen((current) => new Set([...current, `g|${match}`]));
   }, [bar.grower, rows.length]); // eslint-disable-line react-hooks/exhaustive-deps
   const toggle = (key) => setOpen((current) => { const next = new Set(current); if (next.has(key)) next.delete(key); else next.add(key); return next; });
@@ -20733,7 +20759,8 @@ function IkTraceTable({ rows, from, to, company, bar, setBar, onOpenTrackTrace }
   const span = shownColumns.length + 2;
   // Every grower the bar's name matches ("melissa": melissaflowers,
   // Melissa Jacoba, ...) -- the Excel holds them all.
-  const chosenGrowers = bar.grower ? growers.filter((item) => inkoopSameGrower(item.key, bar.grower)).map((item) => item.key) : [];
+  const matchingGrowers = bar.grower ? inkoopGrowersMatching(rows, bar.grower) : new Set();
+  const chosenGrowers = bar.grower ? growers.filter((item) => matchingGrowers.has(item.key)).map((item) => item.key) : [];
   const chosenGrower = chosenGrowers.length === 1 ? chosenGrowers[0] : chosenGrowers.length ? bar.grower : "";
   const figures = (sum) => [sum.invoice_lines, sum.invoice_value.toFixed(2), sum.matched_lines, sum.matched_value.toFixed(2), sum.not_matched_lines, sum.not_matched_value.toFixed(2), sum.connect_only_lines, sum.connect_only_value.toFixed(2), sum.connect_value.toFixed(2), sum.difference.toFixed(2), sum.matched_pct === null ? "" : sum.matched_pct.toFixed(1)];
   const figureHead = ["Invoice lines", "Invoice value", "Matched lines", "Matched value", "Not matched lines", "Not matched value", "Only in Connect lots", "Only in Connect value", "Connect total", "Difference", "Matched %"];
@@ -21272,6 +21299,24 @@ function InkoopTrackTraceWorkspace({ bar, setBar, overview, company, matchRound 
   }, [pendingLinks.length]);
   const [otherLineGrower, setOtherLineGrower] = useState("");
   const [otherLineSearch, setOtherLineSearch] = useState("");
+  // "Find a product": which growers had it in the period (invoice lines and
+  // Connect lots) -- a click opens that grower.
+  const [productQuery, setProductQuery] = useState("");
+  const [productResult, setProductResult] = useState(null);
+  useEffect(() => {
+    const product = productQuery.trim();
+    if (product.replace(/\s+/g, "").length < 3) { setProductResult(null); return undefined; }
+    let cancelled = false;
+    const timer = window.setTimeout(() => {
+      const params = new URLSearchParams({ from, to, product });
+      if (company) params.set("company", company);
+      setProductResult((current) => ({ ...(current || {}), loading: true }));
+      apiJson(`/api/inkoop/product-growers?${params.toString()}`)
+        .then((payload) => { if (!cancelled) setProductResult(payload); })
+        .catch((loadError) => { if (!cancelled) setProductResult({ error: loadError.message, growers: [] }); });
+    }, 450);
+    return () => { cancelled = true; window.clearTimeout(timer); };
+  }, [productQuery, from, to, company]);
   useEffect(() => {
     let cancelled = false;
     setIssueError("");
@@ -21291,9 +21336,11 @@ function InkoopTrackTraceWorkspace({ bar, setBar, overview, company, matchRound 
   for (const row of growerRows) byGrower.set(row.grower, [...(byGrower.get(row.grower) || []), row]);
   const growers = [...byGrower.entries()].map(([name, rows]) => ({ name, rows, sum: inkoopOverviewSum(rows) }))
     .map((entry) => ({ ...entry, open: openOf(entry.sum) }))
-    .filter((entry) => !growerFilter || inkoopGrowerKey(entry.name).includes(inkoopGrowerKey(growerFilter)))
+    .map((entry) => ({ ...entry, aka: inkoopGrowerAliases(entry.rows, entry.name) }))
+    // Found by its shown name or a name it also goes by (invoice name, code).
+    .filter((entry) => !growerFilter || [entry.name, ...entry.aka].some((name) => inkoopGrowerKey(name).includes(inkoopGrowerKey(growerFilter))))
     .sort((left, right) => right.open - left.open || Math.abs(right.sum.difference) - Math.abs(left.sum.difference));
-  const chosen = bar.grower ? [...byGrower.keys()].find((name) => inkoopSameGrower(name, bar.grower)) || bar.grower : "";
+  const chosen = bar.grower ? [...inkoopGrowersMatching(growerRows, bar.grower)][0] || bar.grower : "";
   const chosenRows = chosen ? growerRows.filter((row) => row.grower === chosen) : [];
   const chosenSum = inkoopOverviewSum(chosenRows);
   // How many invoices (and invoice lines) the chosen grower has in the period.
@@ -21669,13 +21716,35 @@ function InkoopTrackTraceWorkspace({ bar, setBar, overview, company, matchRound 
           <div className="ik-grower-list">
             {growers.map((entry) => (
               <button key={entry.name} type="button" className={`ik-grower${entry.name === chosen ? " on" : ""}`} onClick={() => setBar((current) => ({ ...current, grower: entry.name === chosen ? "" : entry.name }))}>
-                <span className="ik-grower-name">{entry.name}</span>
+                <span className="ik-grower-name" title={entry.aka.length ? `Also: ${entry.aka.join(", ")}` : undefined}>
+                  {entry.name}
+                  {growerFilter && entry.aka.some((name) => inkoopGrowerKey(name).includes(inkoopGrowerKey(growerFilter))) && !inkoopGrowerKey(entry.name).includes(inkoopGrowerKey(growerFilter))
+                    ? <small className="muted"> (aka {entry.aka.find((name) => inkoopGrowerKey(name).includes(inkoopGrowerKey(growerFilter)))})</small> : null}
+                </span>
                 <span className={entry.open ? "money-loss" : "muted"}>{entry.open ? formatInkoopEuro(entry.open) : "✓"}</span>
                 <IkBar pct={entry.sum.matched_pct} />
               </button>
             ))}
             {!growers.length && <div className="muted">No growers for this choice.</div>}
           </div>
+        </div>
+        <div className="data-table-card ik-card ik-growers">
+          <input value={productQuery} onChange={(event) => setProductQuery(event.target.value)} placeholder="Find a product… (e.g. phlebodium)" />
+          {productResult?.loading && <div className="muted">Searching…</div>}
+          {productResult?.error && <div className="muted">{productResult.error}</div>}
+          {productResult && !productResult.loading && !productResult.error && (
+            <div className="ik-grower-list">
+              <div className="muted">{productResult.growers.length} grower(s) with “{productResult.product}”{productResult.truncated ? " (first results)" : ""}</div>
+              {productResult.growers.map((entry) => (
+                <button key={entry.grower} type="button" className={`ik-grower${entry.grower === chosen ? " on" : ""}`}
+                  title={[entry.products.join(" · "), entry.aka.length ? `Also: ${entry.aka.join(", ")}` : ""].filter(Boolean).join(" -- ")}
+                  onClick={() => setBar((current) => ({ ...current, grower: entry.grower }))}>
+                  <span className="ik-grower-name">{entry.grower}<small className="muted"> · {entry.products[0]}</small></span>
+                  <span className="muted">{entry.invoice_lines} line(s) · {entry.lots} lot(s)</span>
+                </button>
+              ))}
+            </div>
+          )}
         </div>
         {linkDock === "side" && linkPanel}
       </aside>
@@ -23853,7 +23922,7 @@ function InkoopControlePage({ currentUser }) {
         <div className="section-header fust-section-nav">
           <h2>{INKOOP_SETUP_KEYS.has(activeTab) ? <span className="muted">Setup › </span> : null}{INKOOP_TAB_TITLES[activeTab] || activeTab}</h2>
           <div className="row-actions">
-            {activeTab === "tracktrace" && ttReturn && <button type="button" className="primary" onClick={backToFollowup}>← Back to {ttReturn.tab === "trace" ? "Dashboard" : ttReturn.tab === "overview" ? "Financieel overzicht" : ttReturn.tab === "md" ? "Matched differences" : "Follow-up"}</button>}
+            {activeTab === "tracktrace" && ttReturn && <button type="button" className="primary" onClick={backToFollowup}>← Back to {ttReturn.tab === "trace" ? "Dashboard" : ttReturn.tab === "overview" ? "Financieel overzicht" : ttReturn.tab === "md" ? "Matched differences" : ttReturn.tab === "destinations" ? "Corrections" : "Follow-up"}</button>}
             {INKOOP_SETUP_KEYS.has(activeTab) && <button type="button" onClick={() => setActiveTab("setup")}>Setup</button>}
             <button type="button" onClick={() => setActiveTab("")}>Inkoop menu</button>
           </div>
@@ -23921,7 +23990,7 @@ function InkoopControlePage({ currentUser }) {
 
       {activeTab === "dashboard" && <InkoopDashboardTab key={`dashboard-${matchRound}`} company={selectedCompany} />}
 
-      {activeTab === "destinations" && <InkoopDestinationsTab />}
+      {activeTab === "destinations" && <InkoopDestinationsTab onOpenTrackTrace={(target) => openTrackTrace("destinations", target)} />}
 
       {activeTab === "customers" && <InkoopCustomersTab />}
 
@@ -28931,7 +29000,76 @@ function InkoopCustomerDataCard() {
   );
 }
 
-function InkoopDestinationsTab() {
+// A correction line's own menu (click the line): where it was compared,
+// open it in Track & Trace, link it to other Connect lot(s) by hand or back
+// to the automatic pairing.
+function IkCorrectionLineMenu({ menu, onClose, onOpenTrackTrace, onChanged }) {
+  const [lots, setLots] = useState("");
+  const [note, setNote] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  useEffect(() => { setLots(""); setNote(""); setError(""); }, [menu]);
+  if (!menu) return null;
+  const { item } = menu;
+  const grower = ikCorrectionFollowupItem(item).grower;
+  const day = String(item.invoice_date || "").slice(0, 10);
+  async function save(remove = false) {
+    setBusy(true);
+    setError("");
+    try {
+      if (remove) {
+        await apiJson(`/api/inkoop/corrections/lot-link?key=${encodeURIComponent(item.link_key)}`, { method: "DELETE" });
+      } else {
+        await apiJson("/api/inkoop/corrections/lot-link", { method: "POST", body: JSON.stringify({ key: item.link_key, lots, note }) });
+      }
+      onChanged();
+      onClose();
+    } catch (saveError) {
+      setError(saveError.message);
+    } finally {
+      setBusy(false);
+    }
+  }
+  const left = Math.min(menu.x, window.innerWidth - 380);
+  const top = Math.min(menu.y, window.innerHeight - 320);
+  return (
+    <>
+      <div className="ik-menu-backdrop" onClick={onClose} role="presentation" style={{ position: "fixed", inset: 0, zIndex: 60 }} />
+      <div className="card ik-card" role="dialog" aria-label="Correction" style={{ position: "fixed", left, top, zIndex: 61, width: 370, display: "grid", gap: 8, boxShadow: "0 8px 30px rgba(0,0,0,0.25)" }}>
+        <strong>{item.description || item.pav} · {item.invoice_number}</strong>
+        <div className="muted">
+          {grower || "?"} · {fustOverviewDate(day)}<br />
+          Compared with Connect lot(s): <strong>{(item.lot_numbers || []).join(" + ") || "none found"}</strong>
+          {item.linked_by_hand
+            ? <> · ✋ linked by hand ({item.linked_by_hand.by}{item.linked_by_hand.note ? `: ${item.linked_by_hand.note}` : ""}){item.auto_lot ? ` -- automatic was ${item.auto_lot}` : ""}</>
+            : <> · automatic ({item.pav ? "by its brief number" : "same grower, product and price -- its purchase's lot"})</>}
+        </div>
+        {grower && onOpenTrackTrace && (
+          <button type="button" className="primary" onClick={() => { onClose(); onOpenTrackTrace({ grower, from: addDaysToIso(day, -4), to: addDaysToIso(day, 4) }); }}>
+            Open in Track &amp; Trace ({grower}, ±4 days)
+          </button>
+        )}
+        {item.link_key && (
+          <>
+            <label style={{ display: "grid", gap: 4 }}>
+              <span>Link to other Connect lot(s) -- the lot numbers, separated by a space or +</span>
+              <input value={lots} onChange={(event) => setLots(event.target.value)} placeholder="e.g. 44990155" />
+            </label>
+            <input value={note} onChange={(event) => setNote(event.target.value)} placeholder="Why (note)" />
+            <div className="row-actions">
+              <button type="button" onClick={() => save(false)} disabled={busy || !lots.trim()}>Link</button>
+              {item.linked_by_hand && <button type="button" onClick={() => save(true)} disabled={busy}>Back to automatic</button>}
+              <button type="button" className="link-button" onClick={onClose}>Close</button>
+            </div>
+          </>
+        )}
+        {error && <div className="notice danger">{error}</div>}
+      </div>
+    </>
+  );
+}
+
+function InkoopDestinationsTab({ onOpenTrackTrace }) {
   // The period being picked vs the one shown: nothing loads until "Show",
   // so picking two dates doesn't fire a request per click.
   const [draftPeriod, setDraftPeriod] = useState({ days: 7 });
@@ -28954,6 +29092,7 @@ function InkoopDestinationsTab() {
   const closeMenu = useCallback(() => setMenu(null), []);
   const [followError, setFollowError] = useState("");
   const [followRound, setFollowRound] = useState(0);
+  const [lineMenu, setLineMenu] = useState(null);
   useEffect(() => {
     if (view !== "dispatch") return undefined;
     let cancelled = false;
@@ -29128,7 +29267,9 @@ function InkoopDestinationsTab() {
             <tbody>
               {!corrections && <tr><td colSpan={15}>Loading corrections...</td></tr>}
               {correctionRows.map((item, index) => (
-                <tr key={`${item.invoice_number}-${item.pav}-${index}`} onContextMenu={(event) => { event.preventDefault(); openFollow(event, ikCorrectionFollowupItem(item), `${item.description || item.pav} · ${item.invoice_number}`); }}>
+                <tr key={`${item.invoice_number}-${item.pav}-${index}`} style={{ cursor: "pointer" }} title="Click: where it was compared, Track & Trace, link to another lot"
+                  onClick={(event) => { if (event.target.closest("a, button, input")) return; setLineMenu({ x: event.clientX, y: event.clientY, item }); }}
+                  onContextMenu={(event) => { event.preventDefault(); openFollow(event, ikCorrectionFollowupItem(item), `${item.description || item.pav} · ${item.invoice_number}`); }}>
                   <td>{inkoopShortDate(item.invoice_date)}</td>
                   <td><InkoopInvoiceLink invoiceNumber={item.invoice_number} /></td>
                   <td>{item.pav}</td>
@@ -29136,7 +29277,11 @@ function InkoopDestinationsTab() {
                   <td>{item.original || "-"}</td>
                   <td>{item.credited ? `-${item.credited}` : "-"}</td>
                   <td>{item.reissued || "-"}</td>
-                  <td>{item.received || "-"}</td>
+                  <td>
+                    {item.received || "-"}
+                    {(item.lot_numbers || []).length > 0 && <div className="muted">lot {item.lot_numbers.join(" + ")}</div>}
+                    {item.linked_by_hand && <div className="muted" title={item.linked_by_hand.note || ""}>✋ by hand</div>}
+                  </td>
                   <td><strong>{item.over_invoiced ? `+${item.over_invoiced} paid too much` : item.returned || 0}</strong></td>
                   <td>{item.retour_pieces || 0}</td>
                   <td>{formatInkoopEuro(item.total)}</td>
@@ -29155,6 +29300,7 @@ function InkoopDestinationsTab() {
       </div>
       </div>
       )}
+      <IkCorrectionLineMenu menu={lineMenu} onClose={() => setLineMenu(null)} onOpenTrackTrace={onOpenTrackTrace} onChanged={() => setFollowRound((value) => value + 1)} />
       <IkFollowupResolveMenu menu={menu} onPick={verifyAs} onClose={closeMenu} departments={settings?.departments || []} categories={settings?.categories || []} onFollow={follow}
         onClaim={async (list, to, label) => {
           setFollowError("");

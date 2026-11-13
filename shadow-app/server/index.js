@@ -9936,7 +9936,7 @@ function matchInkoopVeilingLines(erpRows, invoices, supplierMap = {}, supplierNa
   };
 }
 
-const defaultInkoopState = { imports: [], supplier_map: {}, supplier_name_map: {}, supplier_fh_map: {}, supplier_bw_map: {}, customer_map: {}, manual_supplier_links: [], facturation_groups: [], king_ledger_map: null, king_settings: {}, mail_import: {}, followup: {}, grower_skip_codes: [], excluded_erp_codes: [], supplier_bedrijf_map: {}, transaction_costs: null, manual_bw_map: {}, manual_line_pairs: [] };
+const defaultInkoopState = { imports: [], supplier_map: {}, supplier_name_map: {}, supplier_fh_map: {}, supplier_bw_map: {}, customer_map: {}, manual_supplier_links: [], facturation_groups: [], king_ledger_map: null, king_settings: {}, mail_import: {}, followup: {}, grower_skip_codes: [], excluded_erp_codes: [], supplier_bedrijf_map: {}, transaction_costs: null, manual_bw_map: {}, manual_line_pairs: [], correction_lot_links: {} };
 
 // Connect codes whose invoices carry a % transaction cost on the price.
 const INKOOP_DEFAULT_TRANSACTION_COSTS = { VDEIJK: 1 };
@@ -10178,7 +10178,22 @@ function normalizeInkoopState(state) {
     transaction_costs: normalizeInkoopTransactionCosts(state?.transaction_costs),
     // Invoice line(s) <-> Connect lot(s) linked by hand (Follow-up).
     manual_line_pairs: normalizeInkoopManualLinePairs(state?.manual_line_pairs),
+    // Corrections check: the Connect lot(s) of a correction set by hand
+    // ("pav:<brief number>" / "line:<credit line id>" -> lots), winning over
+    // the automatic pairing.
+    correction_lot_links: normalizeInkoopCorrectionLotLinks(state?.correction_lot_links),
   };
+}
+
+function normalizeInkoopCorrectionLotLinks(value) {
+  const out = {};
+  for (const [key, link] of Object.entries(value && typeof value === "object" ? value : {})) {
+    const cleanKey = normalizeUkdocsText(key).slice(0, 120);
+    const lots = [...new Set((Array.isArray(link?.lots) ? link.lots : []).map((lot) => String(lot || "").replace(/\D/g, "")).filter(Boolean))].slice(0, 20);
+    if (!/^(pav|line):./.test(cleanKey) || !lots.length) continue;
+    out[cleanKey] = { lots, by: normalizeUkdocsText(link?.by).slice(0, 80), at: normalizeUkdocsText(link?.at).slice(0, 40), note: normalizeUkdocsText(link?.note).slice(0, 300) };
+  }
+  return out;
 }
 
 function normalizeInkoopManualLinePairs(list) {
@@ -11972,6 +11987,12 @@ function refreshInkoopInvoiceNameCodesLater() {
   refreshInkoopInvoiceNameCodes().catch((error) => console.error("Inkoop grower names by GLN failed:", error instanceof Error ? error.message : error));
 }
 
+// A grower name reduced for comparing ("Floral Quality Group" =
+// "floralqualitygroup"), as the page's inkoopGrowerKey.
+function inkoopGrowerKeyServer(name) {
+  return String(name || "").toLowerCase().replace(/\(verkoop\)/g, "").replace(/[^a-z0-9]/g, "");
+}
+
 function inkoopOverviewNaming(state) {
   const codeToName = buildInkoopCodeNameMap(state.supplier_map, state.supplier_name_map, state.supplier_fh_map, state.facturation_groups);
   // An invoice line without a lot is stored without a code: its grower by
@@ -13598,10 +13619,11 @@ async function computeInkoopCorrectionRetourChecks(state, { from, to }) {
         correction_lines: group,
         lot_source: { lot: (lotsByPav.get(inkoopPavBase(credit.pav)) || []).join("+") },
         erp_pieces: erpPiecesByPav.get(inkoopPavBase(credit.pav)) || 0,
+        link_key: `pav:${pav}`,
       });
     } else {
       // Handel / AI2 credit: no PAV -- paired with its purchase below.
-      items.push({ ...credit, correction_lines: [credit], lot_source: { lot: "" }, without_pav: true });
+      items.push({ ...credit, correction_lines: [credit], lot_source: { lot: "" }, without_pav: true, link_key: `line:${credit.id}` });
     }
   }
   // A credit without a brief number with its purchase, as the comparison
@@ -13653,6 +13675,21 @@ async function computeInkoopCorrectionRetourChecks(state, { from, to }) {
       }
     }
   }
+  // Lots linked by hand (Corrections check > a line > Link to lot) win over
+  // the automatic pairing: their pieces are what was received.
+  const lotLinks = state.correction_lot_links || {};
+  const linked = items.filter((item) => lotLinks[item.link_key]?.lots?.length);
+  if (linked.length) {
+    const rows = await getInkoopTraceLots(linked.flatMap((item) => lotLinks[item.link_key].lots)).catch(() => []);
+    const piecesOf = new Map(rows.map((row) => [String(row.lot), Number(row.pieces) || 0]));
+    for (const item of linked) {
+      const link = lotLinks[item.link_key];
+      item.auto_lot = item.lot_source?.lot || "";
+      item.lot_source = { lot: link.lots.join("+") };
+      item.erp_pieces = link.lots.reduce((sum, lot) => sum + (piecesOf.get(String(lot)) || 0), 0);
+      item.linked_by_hand = { by: link.by, at: link.at, note: link.note };
+    }
+  }
   const allLotNumbers = new Set(items.flatMap((item) => inkoopCorrectionLotNumbers(item.lot_source)));
   const dispatchLots = await getInkoopDispatchLotsByLots([...allLotNumbers]);
   const dispatchByLot = new Map(dispatchLots.map((lot) => [String(lot.lot), lot]));
@@ -13686,6 +13723,11 @@ async function computeInkoopCorrectionRetourChecks(state, { from, to }) {
       correction_lines: item.correction_lines,
       lots,
       status,
+      // Which lot(s) this correction was compared with, and whether by hand.
+      link_key: item.link_key || "",
+      lot_numbers: inkoopCorrectionLotNumbers(item.lot_source).map(String),
+      linked_by_hand: item.linked_by_hand || null,
+      auto_lot: item.linked_by_hand ? item.auto_lot || "" : undefined,
     };
   }).sort((left, right) => String(right.invoice_date || "").localeCompare(String(left.invoice_date || "")));
   if (inkoopCorrectionsCache.size >= 40) {
@@ -28347,6 +28389,74 @@ async function handleApi(req, res, url) {
   // Inkoop Controle "Search" -- ERP side: purchase lots by ERP date plus
   // product, supplier code, PAV / lot and customer (dispatch code or name
   // from the klant gegevens). At most 3 months per search, 500 rows shown.
+  // Track & Trace "Find a product": which growers had a product in the
+  // period -- invoice lines and Connect lots, each grower named as Track &
+  // Trace names it (so a click opens it there).
+  if (url.pathname === "/api/inkoop/product-growers" && req.method === "GET") {
+    if (!requirePermission(res, requestUser, PERMISSIONS.INKOOP_VIEW)) {
+      return;
+    }
+    try {
+      const to = String(url.searchParams.get("to") || localDateIso()).slice(0, 10);
+      let from = String(url.searchParams.get("from") || addDaysToIsoDate(to, -30)).slice(0, 10);
+      if (from < addDaysToIsoDate(to, -92)) from = addDaysToIsoDate(to, -92);
+      const product = normalizeUkdocsText(url.searchParams.get("product")).slice(0, 80);
+      if (product.replace(/\s+/g, "").length < 3) {
+        sendJson(res, 400, { error: "Type at least 3 letters of the product" });
+        return;
+      }
+      const company = normalizeUkdocsText(url.searchParams.get("company"));
+      const state = await readInkoopState();
+      const view = inkoopOverviewNaming(state);
+      const [invoiceResult, lotResult] = await Promise.all([
+        searchInkoopInvoiceLines({ from, to, product, ...(company ? { company } : {}), limit: 3000 }),
+        searchInkoopErpLines({ from, to, product, limit: 2000 }),
+      ]);
+      const growers = new Map();
+      const entryOf = (name) => {
+        if (!growers.has(name)) growers.set(name, { grower: name, invoice_lines: 0, invoice_pieces: 0, invoice_value: 0, lots: 0, lot_pieces: 0, lot_value: 0, products: new Map(), aka: new Set(), first: "", last: "" });
+        return growers.get(name);
+      };
+      const seen = (entry, day) => {
+        if (day && (!entry.first || day < entry.first)) entry.first = day;
+        if (day && (!entry.last || day > entry.last)) entry.last = day;
+      };
+      for (const line of invoiceResult.rows || []) {
+        const entry = entryOf(view.growerOf({ supplier_name: line.supplier_name, supplier_code: "", list: "only_in_invoice" }));
+        entry.invoice_lines += 1;
+        entry.invoice_pieces += Number(line.quantity) || 0;
+        entry.invoice_value += Number(line.total) || 0;
+        entry.products.set(line.description, (entry.products.get(line.description) || 0) + 1);
+        if (line.supplier_name) entry.aka.add(line.supplier_name);
+        seen(entry, line.line_date);
+      }
+      for (const lot of lotResult.rows || []) {
+        const entry = entryOf(view.growerOf({ supplier_code: lot.suppl, supplier_name: "", list: "only_in_erp" }));
+        entry.lots += 1;
+        entry.lot_pieces += Number(lot.pieces) || 0;
+        entry.lot_value += Number(lot.t_price) || 0;
+        entry.products.set(lot.description, (entry.products.get(lot.description) || 0) + 1);
+        if (lot.suppl) entry.aka.add(lot.suppl);
+        seen(entry, lot.erp_date);
+      }
+      const round = (value) => Math.round(value * 100) / 100;
+      sendJson(res, 200, {
+        from, to, product,
+        truncated: Boolean(invoiceResult.truncated || lotResult.truncated),
+        growers: [...growers.values()]
+          .map((entry) => ({
+            ...entry, invoice_value: round(entry.invoice_value), lot_value: round(entry.lot_value),
+            products: [...entry.products.entries()].sort((a, b) => b[1] - a[1]).slice(0, 5).map(([name]) => name),
+            aka: [...entry.aka].filter((name) => inkoopGrowerKeyServer(name) !== inkoopGrowerKeyServer(entry.grower)).slice(0, 4),
+          }))
+          .sort((left, right) => (right.invoice_lines + right.lots) - (left.invoice_lines + left.lots)),
+      });
+    } catch (error) {
+      sendJson(res, 400, { error: error instanceof Error ? error.message : String(error) });
+    }
+    return;
+  }
+
   if (url.pathname === "/api/inkoop/erp-lines/search" && req.method === "GET") {
     if (!requirePermission(res, requestUser, PERMISSIONS.INKOOP_VIEW)) {
       return;
@@ -29201,10 +29311,17 @@ async function handleApi(req, res, url) {
         const growerKey = (value) => String(value || "").toLowerCase().replace(/\(verkoop\)/g, "").replace(/[^a-z0-9]/g, "");
         const wanted = growerKey(url.searchParams.get("grower"));
         const sameGrower = (name) => { const key = growerKey(name); return !wanted || (key && (key === wanted || key.startsWith(wanted) || wanted.startsWith(key))); };
+        // A grower is shown by its Connect code's name; the names it also goes
+        // by (the invoice's own supplier name, the Connect code(s)) come along
+        // as "aka", so typing "floralqualitygroup" or the code finds it too.
+        const akaOf = (row) => [...new Set([row.supplier_name, ...String(row.supplier_code || "").split(/[\s/+]+/)]
+          .map((value) => String(value || "").trim()).filter(Boolean))];
+        const withGrower = totals.map((row) => ({ row, grower: view.growerOf(row), aka: akaOf(row) }));
+        const wantedGrowers = new Set(withGrower.filter((entry) => sameGrower(entry.grower) || entry.aka.some(sameGrower)).map((entry) => entry.grower));
         sendJson(res, 200, {
           from, to,
-          rows: totals.filter((row) => sameGrower(view.growerOf(row))).map((row) => ({
-            date: row.date, grower: view.growerOf(row), bw: view.bwOf(row), flow: inkoopOverviewFlow(row), status: INKOOP_OVERVIEW_STATUS[row.list] || row.list,
+          rows: withGrower.filter((entry) => !wanted || wantedGrowers.has(entry.grower)).map(({ row, grower, aka }) => ({
+            date: row.date, grower, aka, bw: view.bwOf(row), flow: inkoopOverviewFlow(row), status: INKOOP_OVERVIEW_STATUS[row.list] || row.list,
             lines: row.lines, invoice_value: Math.round(row.invoice_value * 100) / 100, erp_value: Math.round(row.erp_value * 100) / 100,
           })),
         });
@@ -29356,6 +29473,39 @@ async function handleApi(req, res, url) {
     sendJson(res, 200, { pairs: state.manual_line_pairs || [] });
     return;
   }
+  // Corrections check: link a correction to its Connect lot(s) by hand (or
+  // take the hand link away -> the automatic pairing again).
+  if (url.pathname === "/api/inkoop/corrections/lot-link" && (req.method === "POST" || req.method === "DELETE")) {
+    if (!requirePermission(res, requestUser, PERMISSIONS.INKOOP_VIEW)) {
+      return;
+    }
+    try {
+      const body = req.method === "POST" ? await readRequestJson(req) : { key: url.searchParams.get("key") };
+      const key = normalizeUkdocsText(body?.key).slice(0, 120);
+      if (!/^(pav|line):./.test(key)) throw new Error("Unknown correction");
+      const state = await readInkoopState();
+      const links = { ...(state.correction_lot_links || {}) };
+      if (req.method === "DELETE") {
+        delete links[key];
+      } else {
+        const lots = [...new Set((Array.isArray(body?.lots) ? body.lots : String(body?.lots || "").split(/[\s,;+]+/)).map((lot) => String(lot || "").replace(/\D/g, "")).filter(Boolean))];
+        if (!lots.length) throw new Error("Type the Connect lot number(s)");
+        const found = await getInkoopTraceLots(lots).catch(() => []);
+        const known = new Set(found.map((row) => String(row.lot)));
+        const missing = lots.filter((lot) => !known.has(lot));
+        if (missing.length) throw new Error(`Lot(s) not in the Connect data: ${missing.join(", ")}`);
+        links[key] = { lots, by: requestUser.username, at: new Date().toISOString(), note: normalizeUkdocsText(body?.note).slice(0, 300) };
+      }
+      state.correction_lot_links = links;
+      await writeInkoopState(state);
+      inkoopCorrectionsCache.clear();
+      sendJson(res, 200, { ok: true, link: links[key] || null });
+    } catch (error) {
+      sendJson(res, 400, { error: error instanceof Error ? error.message : String(error) });
+    }
+    return;
+  }
+
   if (url.pathname === "/api/inkoop/manual-pairs" && req.method === "POST") {
     if (!requirePermission(res, requestUser, PERMISSIONS.INKOOP_VIEW)) {
       return;
