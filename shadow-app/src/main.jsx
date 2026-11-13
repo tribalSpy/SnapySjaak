@@ -22029,7 +22029,7 @@ function ikFollowupLotText(item) {
 // A retour lot's credit once an invoice has it: "credit in: 0585 · -10 pcs · € -12.30".
 function ikRetourCreditText(credit) {
   if (!credit) return "";
-  return `credit in: ${credit.invoice_numbers.join(", ")} (${fustOverviewDate(credit.invoice_date)}) · ${credit.pieces} pcs · ${formatInkoopEuro(credit.total)}`;
+  return `credit in: ${credit.invoice_numbers.join(", ")} (${fustOverviewDate(credit.invoice_date)}) · ${credit.pieces} pcs · ${formatInkoopEuro(credit.total)}${credit.linked_by_hand ? " (linked by hand in the Corrections check)" : ""}`;
 }
 
 // A claim's credit against what was claimed: "of €756.00 claimed ✓" or

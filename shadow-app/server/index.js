@@ -57,6 +57,7 @@ import {
   searchInkoopErpLines,
   getInkoopCorrectionLines,
   getInkoopCreditLinesByPav,
+  getInkoopInvoiceLinesByIds,
   getInkoopCreditPurchaseCandidates,
   getInkoopInvoiceSupplierIdentities,
   getInkoopAi2LinesWithoutBoxes,
@@ -14490,7 +14491,38 @@ async function inkoopRetourDispatchRows(state, range) {
       reason: `${pieces} pcs to retour (${destinations.filter((dest) => dest.is_retour).map((dest) => dest.code).join(", ")}) -- waiting for the credit`,
     });
   }
-  return (await inkoopAttachRetourCredits(rows)).sort((left, right) => right.day.localeCompare(left.day) || left.grower.localeCompare(right.grower));
+  const withCredits = await inkoopAttachHandLinkedCredits(state, await inkoopAttachRetourCredits(rows));
+  return withCredits.sort((left, right) => right.day.localeCompare(left.day) || left.grower.localeCompare(right.grower));
+}
+
+// A retour lot without a brief number (Handel / AI2, "000000") never finds
+// its credit by PAV: when a correction was linked to this lot by hand in the
+// Corrections check, that correction's credit is the lot's credit.
+async function inkoopAttachHandLinkedCredits(state, items) {
+  const links = state.correction_lot_links || {};
+  const keysByLot = new Map();
+  for (const [key, link] of Object.entries(links)) {
+    for (const lot of link.lots || []) keysByLot.set(String(lot), [...(keysByLot.get(String(lot)) || []), key]);
+  }
+  const wanted = items.filter((item) => !item.credit && item.lot?.lot && keysByLot.has(String(item.lot.lot)));
+  if (!wanted.length) return items;
+  const keys = [...new Set(wanted.flatMap((item) => keysByLot.get(String(item.lot.lot))))];
+  const lineIds = keys.filter((key) => key.startsWith("line:")).map((key) => key.slice(5));
+  const pavs = keys.filter((key) => key.startsWith("pav:")).map((key) => key.slice(4));
+  const [byId, byPav] = await Promise.all([
+    getInkoopInvoiceLinesByIds(lineIds).catch(() => []),
+    pavs.length ? getInkoopCreditLinesByPav(pavs, null).catch(() => []) : [],
+  ]);
+  const linesOfKey = (key) => (key.startsWith("line:")
+    ? byId.filter((line) => line.id === key.slice(5))
+    : byPav.filter((line) => inkoopPavBase(line.pav) === inkoopPavBase(key.slice(4))));
+  return items.map((item) => {
+    if (!wanted.includes(item)) return item;
+    const lines = keysByLot.get(String(item.lot.lot)).flatMap(linesOfKey)
+      .filter((line) => Number(line.quantity) < 0 || Number(line.total) < 0);
+    const credit = inkoopRetourCreditOf(lines, "");
+    return credit ? { ...item, credit: { ...credit, linked_by_hand: true } } : item;
+  });
 }
 
 function normalizeInkoopFollowupSettings(value) {
