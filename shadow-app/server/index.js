@@ -29362,7 +29362,12 @@ async function handleApi(req, res, url) {
         const akaOf = (row) => [...new Set([row.supplier_name, ...String(row.supplier_code || "").split(/[\s/+]+/)]
           .map((value) => String(value || "").trim()).filter(Boolean))];
         const withGrower = totals.map((row) => ({ row, grower: view.growerOf(row), aka: akaOf(row) }));
-        const wantedGrowers = new Set(withGrower.filter((entry) => sameGrower(entry.grower) || entry.aka.some(sameGrower)).map((entry) => entry.grower));
+        // Another name counts when it IS the typed name or starts with it --
+        // never the other way round (a short code would match anything).
+        const aliasFits = (alias) => { const key = growerKey(alias); return Boolean(key) && (key === wanted || (wanted.length >= 3 && key.startsWith(wanted))); };
+        const exactGrowers = new Set(withGrower.filter((entry) => growerKey(entry.grower) === wanted || entry.aka.some((alias) => growerKey(alias) === wanted)).map((entry) => entry.grower));
+        const wantedGrowers = exactGrowers.size ? exactGrowers
+          : new Set(withGrower.filter((entry) => sameGrower(entry.grower) || entry.aka.some(aliasFits)).map((entry) => entry.grower));
         sendJson(res, 200, {
           from, to,
           rows: withGrower.filter((entry) => !wanted || wantedGrowers.has(entry.grower)).map(({ row, grower, aka }) => ({

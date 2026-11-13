@@ -20103,13 +20103,24 @@ function inkoopSameGrower(left, right) {
 // the Connect code ("aka" on the overview rows). "floralqualitygroup" finds
 // the grower its lines are listed under even when that has another name.
 function inkoopGrowersMatching(rows, query) {
-  const names = new Set();
-  if (!String(query || "").trim()) return names;
+  const wanted = inkoopGrowerKey(query);
+  if (!wanted) return new Set();
+  // Another name only when it IS the typed name or starts with it (3+
+  // letters typed) -- never the other way round: a short Connect code ("F")
+  // would otherwise match "floralqualitygroup".
+  const aliasFits = (alias) => {
+    const key = inkoopGrowerKey(alias);
+    return Boolean(key) && (key === wanted || (wanted.length >= 3 && key.startsWith(wanted)));
+  };
+  const exact = new Set();
+  const loose = new Set();
   for (const row of rows || []) {
-    if (names.has(row.grower)) continue;
-    if (inkoopSameGrower(row.grower, query) || (row.aka || []).some((alias) => inkoopSameGrower(alias, query))) names.add(row.grower);
+    const ownKey = inkoopGrowerKey(row.grower);
+    if (ownKey === wanted || (row.aka || []).some((alias) => inkoopGrowerKey(alias) === wanted)) exact.add(row.grower);
+    else if (inkoopSameGrower(row.grower, query) || (row.aka || []).some(aliasFits)) loose.add(row.grower);
   }
-  return names;
+  // An exact name / alias wins: only those (so the right grower opens).
+  return exact.size ? exact : loose;
 }
 
 // The other names a grower goes by (for "aka" hints), from its rows.
@@ -21446,6 +21457,10 @@ function InkoopTrackTraceWorkspace({ bar, setBar, overview, company, matchRound 
     return () => { cancelled = true; };
   }, [fetchFrom, fetchTo, company, issueRound, matchRound]);
   useEffect(() => { setPicked({}); }, [bar.grower, from, to]);
+  // Opened on one line (Matched differences): once it is loaded, a line
+  // short in pieces is ticked (its own lot comes along -- tick the missing
+  // lot and Add link); a price-only line opens the matched lines.
+  const [focusNote, setFocusNote] = useState("");
 
   // The growers of the period, most open money first.
   const byGrower = new Map();
@@ -21514,6 +21529,21 @@ function InkoopTrackTraceWorkspace({ bar, setBar, overview, company, matchRound 
   const leftAll = growerIssues.filter((issue) => (issue.issue_type === "gap_invoice" || piecesShort(issue)) && notLinked(issue));
   const rightOwn = growerIssues.filter((issue) => issue.issue_type === "gap_erp" && notLinked(issue));
   const leftIssues = leftAll.filter((issue) => searchHit(issue, searches.left)).sort(sorter(sorts.left));
+  useEffect(() => {
+    if (!bar.focus || !issues) return;
+    const target = growerIssues.find((issue) => issue.detail?.id === bar.focus);
+    if (!target) return; // not loaded yet (or gone): try again on the next load
+    if (leftAll.includes(target)) {
+      setSearches((current) => ({ ...current, left: "" }));
+      setPicked({ [pickKey(target)]: target });
+      setFocusNote(`${target.description}: ticked -- its own lot comes along; tick the missing Connect lot on the right and press Add link.`);
+      window.setTimeout(() => document.getElementById(`ik-item-${target.id}`)?.scrollIntoView({ behavior: "smooth", block: "center" }), 150);
+    } else {
+      setShowMatched(true);
+      setFocusNote(`${target.description}: the pieces match -- only the price differs; it is in the matched lines below.`);
+    }
+    setBar((current) => ({ ...current, focus: "" }));
+  }, [bar.focus, issues, chosen]); // eslint-disable-line react-hooks/exhaustive-deps
   // A search that hides lines says so (count "0 of 3", and a way back).
   const sideCount = (shown, all) => (shown.length === all.length ? shown.length : `${shown.length} of ${all.length}`);
   const sideEmpty = (sideKey, all, nothing) => (all.length
@@ -21720,7 +21750,7 @@ function InkoopTrackTraceWorkspace({ bar, setBar, overview, company, matchRound 
     const key = pickKey(issue);
     const isPicked = Boolean(picked[key]);
     return (
-      <div key={issue.id} className={`ik-item ${sideKey}${isPicked ? " picked" : ""}${issue.status !== "open" ? " handled" : ""}`}
+      <div key={issue.id} id={`ik-item-${issue.id}`} className={`ik-item ${sideKey}${isPicked ? " picked" : ""}${issue.status !== "open" ? " handled" : ""}`}
         onContextMenu={issue.explained ? undefined : (event) => openVerifyMenu(event, issue)} title={issue.explained ? undefined : "Right-click: resolve as Geverifieerd"}>
         <span className="ik-item-tick">
           {issue.detail?.manual_pair_id ? <span title="Linked by hand">🔗</span> : key ? <input type="checkbox" checked={isPicked} onChange={() => togglePick(issue)} /> : null}
@@ -21901,6 +21931,7 @@ function InkoopTrackTraceWorkspace({ bar, setBar, overview, company, matchRound 
                     note: "A matched line: a claim on it stays in the follow-up until the credit is in." });
                 }} />}
             </div>
+            {focusNote && <div className="notice info">{focusNote} <button type="button" className="link-button" onClick={() => setFocusNote("")}>✕</button></div>}
             {issueError && <div className="notice danger">{issueError}</div>}
             {inkoopDaysBetween(from, to) > 30 && <div className="notice">Open lines to link: the last 31 days of the period ({fustOverviewDate(issueFrom)} – {fustOverviewDate(to)}).</div>}
             {linkDock !== "side" && linkPanel}
@@ -23457,7 +23488,9 @@ function InkoopMatchedDiffsWorkspace({ bar, matchRound = 0, onOpenTrackTrace }) 
                           const lot = item.lot || {};
                           const why = ikMatchedWhy(item);
                           return (
-                            <tr key={item.id}>
+                            <tr key={item.id} style={onOpenTrackTrace ? { cursor: "pointer" } : undefined}
+                              title={onOpenTrackTrace ? "Click: open this line in Track & Trace (to link a missing lot)" : undefined}
+                              onClick={onOpenTrackTrace ? () => onOpenTrackTrace({ grower: item.grower, day: item.day || item.date, focus: item.invoice?.id || "", bw: item.bw }) : undefined}>
                               <td>{item.description}<div className="muted">{item.invoice_number}</div></td>
                               <td className="ik-inv-text" style={{ whiteSpace: "normal", minWidth: 220 }}>{ikFollowupInvoiceText(item)}</td>
                               <td className="ik-con-text" style={{ whiteSpace: "normal", minWidth: 220 }}>{ikFollowupLotText(item)}</td>
@@ -24055,9 +24088,18 @@ function InkoopControlePage({ currentUser }) {
   const [ttReturn, setTtReturn] = useState(null);
   useEffect(() => { if (activeTab !== "tracktrace" && activeTab !== ttReturn?.tab) setTtReturn(null); }, [activeTab]); // eslint-disable-line react-hooks/exhaustive-deps
   const backToFollowup = () => { if (ttReturn?.bar) setBar(ttReturn.bar); const tab = ttReturn?.tab || "fu"; setTtReturn(null); setActiveTab(tab); };
-  const openTrackTrace = (fromTab, { grower, from, to }) => {
+  // focus: an invoice line id to show and tick there (from Matched
+  // differences) -- every flow, and its betaalwijze added when filtered out.
+  const openTrackTrace = (fromTab, { grower, from, to, focus = "", bw = "" }) => {
     setTtReturn({ bar, tab: fromTab });
-    setBar((current) => ({ ...current, grower, from, to, day: null }));
+    setBar((current) => ({
+      ...current, grower, from, to, day: null,
+      ...(focus ? {
+        focus,
+        flows: [],
+        bw: current.bw?.length && !current.bw.includes(bw || "?") ? [...current.bw, bw || "?"] : current.bw,
+      } : { focus: "" }),
+    }));
     setActiveTab("tracktrace");
   };
   const withBar = inWorkspace || activeTab === "search";
@@ -24143,7 +24185,7 @@ function InkoopControlePage({ currentUser }) {
       )}
       {activeTab === "md" && !barTooLong && (
         <InkoopMatchedDiffsWorkspace bar={bar} matchRound={matchRound}
-          onOpenTrackTrace={({ grower, day }) => openTrackTrace("md", { grower, from: day, to: day })} />
+          onOpenTrackTrace={({ grower, day, focus, bw }) => openTrackTrace("md", { grower, from: day, to: day, focus, bw })} />
       )}
       {activeTab === "tracktrace" && !barTooLong && <InkoopTrackTraceWorkspace bar={bar} setBar={setBar} overview={overview} company={selectedCompany} matchRound={matchRound} />}
 
