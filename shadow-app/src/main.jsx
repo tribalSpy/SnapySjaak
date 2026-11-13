@@ -23482,25 +23482,37 @@ function InkoopMatchedDiffsWorkspace({ bar, matchRound = 0, onOpenTrackTrace }) 
       </div>
       {days.map((day) => (
         <div key={day.day} className="card ik-card">
-          <div className="ik-card-head">
+          <div className="ik-md-day">
             <strong>{fustOverviewDate(day.day)}</strong>
-            <span className="muted">{day.lines} line(s) · {formatInkoopEuro(day.gross)} in differences · net {formatInkoopEuro(day.money)}</span>
+            <span className="ik-md-figures">
+              <span className="muted">{day.lines} line(s)</span>
+              <span className="ik-md-gross">{formatInkoopEuro(day.gross)} in differences</span>
+              <span>net <InkoopMoneyDiff value={day.money} /></span>
+            </span>
           </div>
           {day.growers.map((grower) => {
             const key = `${day.day}|${grower.grower}`;
             const shown = open[key] === true;
             return (
               <div key={key} className="ik-md-grower">
-                <button type="button" className="link-button" onClick={() => setOpen({ ...open, [key]: !shown })}
-                  onContextMenu={(event) => openMenu(event, grower.lines, `${grower.grower} · ${fustOverviewDate(day.day)}`)} title="Click: open / fold · right-click: resolve as Geverifieerd">
-                  {shown ? "▾" : "▸"} <strong>{grower.grower || "?"}</strong> <span className="muted">· {grower.lines.length} line(s) · {formatInkoopEuro(grower.gross)} in differences · net {formatInkoopEuro(grower.money)}
-                    {grower.lines.some((item) => !ikMatchedSamePieces(item)) ? ` · ⚠ ${grower.lines.filter((item) => !ikMatchedSamePieces(item)).length} with other pieces` : ""}</span>
-                </button>
-                {onOpenTrackTrace && <button type="button" className="link-button" onClick={() => onOpenTrackTrace({ grower: grower.grower, day: day.day })}>Track &amp; Trace</button>}
-                <button type="button" className="link-button" onClick={(event) => openMenu(event, grower.lines, `${grower.grower} · ${fustOverviewDate(day.day)}`)} title="Resolve this grower's lines of the day as Geverifieerd">✓ Geverifieerd ▾</button>
+                <div className="ik-md-grower-head">
+                  <button type="button" className="ik-md-toggle" onClick={() => setOpen({ ...open, [key]: !shown })}
+                    onContextMenu={(event) => openMenu(event, grower.lines, `${grower.grower} · ${fustOverviewDate(day.day)}`)} title="Click: open / fold · right-click: resolve as Geverifieerd">
+                    <span className="ik-md-arrow">{shown ? "▾" : "▸"}</span>
+                    <strong>{grower.grower || "?"}</strong>
+                    <span className="muted">{grower.lines.length} line(s)</span>
+                    <span className="ik-md-gross">{formatInkoopEuro(grower.gross)} in differences</span>
+                    <span>net <InkoopMoneyDiff value={grower.money} /></span>
+                    {grower.lines.some((item) => !ikMatchedSamePieces(item)) && <span className="ik-fu-warn">⚠ {grower.lines.filter((item) => !ikMatchedSamePieces(item)).length} with other pieces</span>}
+                  </button>
+                  <span className="ik-md-actions">
+                    {onOpenTrackTrace && <button type="button" className="link-button" onClick={() => onOpenTrackTrace({ grower: grower.grower, day: day.day })}>Track &amp; Trace</button>}
+                    <button type="button" className="link-button" onClick={(event) => openMenu(event, grower.lines, `${grower.grower} · ${fustOverviewDate(day.day)}`)} title="Resolve this grower's lines of the day as Geverifieerd">✓ Geverifieerd ▾</button>
+                  </span>
+                </div>
                 {shown && (
                   <div className="table-wrap">
-                    <table className="data-table balance-table">
+                    <table className="data-table balance-table ik-md-table">
                       <thead>
                         <tr>
                           <th>Product</th>

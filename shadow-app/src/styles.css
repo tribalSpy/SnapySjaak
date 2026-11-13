@@ -5427,6 +5427,73 @@ table.data-table.balance-table.ik-table.ik-inv-invoices td:nth-child(n+7), table
   border-top: 1px solid #e3e8ee;
 }
 
+.ik-md-day {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px 16px;
+  padding-bottom: 6px;
+  font-size: 1.1rem;
+}
+
+.ik-md-figures {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 14px;
+  font-size: 1rem;
+}
+
+.ik-md-grower-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px 16px;
+}
+
+.ik-md-toggle {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 14px;
+  padding: 4px 6px;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font-size: 1rem;
+  text-align: left;
+  cursor: pointer;
+}
+
+.ik-md-toggle:hover {
+  background: #f1f5f4;
+  border-radius: 6px;
+}
+
+.ik-md-arrow {
+  width: 1em;
+  color: #1f7a5a;
+}
+
+.ik-md-gross {
+  color: #b45309;
+  font-weight: 600;
+}
+
+.ik-md-day .money-loss,
+.ik-md-day .money-gain,
+.ik-md-toggle .money-loss,
+.ik-md-toggle .money-gain {
+  font-weight: 700;
+}
+
+.ik-md-actions {
+  display: flex;
+  gap: 14px;
+  font-size: 0.95rem;
+}
+
 /* A small menu window over a table (Corrections check line): solid, never
    see-through (night mode gets its own dark twin). */
 .ik-popover {
@@ -5458,3 +5525,7 @@ table.data-table.balance-table.ik-table.ik-inv-invoices td:nth-child(n+7), table
 .tw-cal-day.has { font-weight: 700; }
 .tw-cal-day.today { border-color: var(--tw-line); }
 .tw-cal-day.on { border-color: var(--tw-ok); background: var(--tw-ok-soft); }
+
+.ik-md-table {
+  font-size: 0.95rem;
+}
