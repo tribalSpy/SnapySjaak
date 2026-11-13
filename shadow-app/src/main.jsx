@@ -22738,12 +22738,16 @@ function IkClaimCard({ claim, onChanged }) {
 
 // Per grower: the growers folded (open lines, difference, claims); open one
 // for its lines (tick → New claim) and its claims.
-function IkFollowupGrowers({ items, claims, settings, onOpen, quick, onChanged }) {
+// onMenu(event, lines, title, ticked): the right-click menu (resolve as
+// Geverifieerd, follow, claim) -- on the grower row or a line; with lines
+// ticked it acts on those (all but not matched first).
+function IkFollowupGrowers({ items, claims, settings, onOpen, quick, onChanged, onMenu, dataKey }) {
   const [openGrower, setOpenGrower] = useState("");
   const [picked, setPicked] = useState({});
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
-  useEffect(() => { setPicked({}); }, [openGrower]);
+  useEffect(() => { setPicked({}); }, [openGrower, dataKey]);
+  const menuFor = onMenu ? (event, list, title) => onMenu(event, list, title, Object.values(picked)) : undefined;
   const growers = new Map();
   for (const item of items) {
     const entry = growers.get(item.grower) || { grower: item.grower, items: [], diff: 0 };
@@ -22786,7 +22790,9 @@ function IkFollowupGrowers({ items, claims, settings, onOpen, quick, onChanged }
               const ticked = Object.values(picked);
               return (
                 <Fragment key={entry.grower}>
-                  <tr className={`clickable-row${isOpen ? " active-row" : ""}`} onClick={() => setOpenGrower(isOpen ? "" : entry.grower)}>
+                  <tr className={`clickable-row${isOpen ? " active-row" : ""}`} onClick={() => setOpenGrower(isOpen ? "" : entry.grower)}
+                    title={menuFor ? "Click: open / fold · right-click: resolve as Geverifieerd, follow or claim" : undefined}
+                    onContextMenu={menuFor && entry.items.length ? (event) => { event.preventDefault(); menuFor(event, entry.items, entry.grower); } : undefined}>
                     <td>{isOpen ? "▾" : "▸"} <strong>{entry.grower || "-"}</strong></td>
                     <td>{entry.items.length}</td>
                     <td><InkoopMoneyDiff value={Math.round(entry.diff * 100) / 100} /></td>
@@ -22803,9 +22809,15 @@ function IkFollowupGrowers({ items, claims, settings, onOpen, quick, onChanged }
                                 <button type="button" className="primary" disabled={busy || !ticked.length} onClick={() => newClaim(entry)}>
                                   New claim from {ticked.length} ticked{ticked.length ? ` (${formatInkoopEuro(ticked.reduce((sum, item) => sum + (Number(item.money_diff) || 0), 0))})` : ""}
                                 </button>
-                                <span className="muted">Tick the lines to claim from {entry.grower}; they become "Claimed" with the claim's number.</span>
+                                {menuFor && (
+                                  <button type="button" disabled={!entry.items.length}
+                                    onClick={(event) => { event.stopPropagation(); menuFor(event, entry.items, entry.grower); }}>
+                                    ✓ Resolve {ticked.length ? `${ticked.length} ticked` : "all"} ▾
+                                  </button>
+                                )}
+                                <span className="muted">Tick the lines to claim from {entry.grower}; they become "Claimed" with the claim's number. Right-click (or ✓ Resolve ▾): resolve as Geverifieerd -- the ticked lines, all but not matched first.</span>
                               </div>
-                              <IkFollowupTable items={entry.items} settings={settings} picked={picked} setPicked={setPicked} onOpen={onOpen} quick={quick} />
+                              <IkFollowupTable items={entry.items} settings={settings} picked={picked} setPicked={setPicked} onOpen={onOpen} quick={quick} onMenu={menuFor} />
                             </>
                           )}
                           {entry.claims.map((claim) => <IkClaimCard key={claim.id} claim={claim} onChanged={onChanged} />)}
@@ -23207,7 +23219,7 @@ function InkoopFollowupWorkspace({ bar, onOpenTrackTrace, onOpenConnectData, mat
     }
   }
   const [menu, setMenu] = useState(null);
-  const openMenu = (event, list, title) => setMenu({ x: event.clientX, y: event.clientY, items: list, title, ticked: items.filter((item) => picked[item.id]) });
+  const openMenu = (event, list, title, ticked) => setMenu({ x: event.clientX, y: event.clientY, items: list, title, ticked: ticked || items.filter((item) => picked[item.id]) });
   const closeMenu = useCallback(() => setMenu(null), []);
   async function verifyAs(list, resolution) {
     if (!list.length) return;
@@ -23311,7 +23323,7 @@ function InkoopFollowupWorkspace({ bar, onOpenTrackTrace, onOpenConnectData, mat
         </div>
       )}
       {tab === "weeks" ? <IkFollowupWeeks bar={bar} /> : tab === "growers" ? (
-        data && <IkFollowupGrowers items={items} claims={claims} settings={settings} onOpen={setDrawer} quick={quick} onChanged={reload} />
+        data && <IkFollowupGrowers items={items} claims={claims} settings={settings} onOpen={setDrawer} quick={quick} onChanged={reload} onMenu={openMenu} dataKey={data} />
       ) : (
         <>
           <IkFollowupBulkBar picked={picked} setPicked={setPicked} settings={settings} onDone={reload} />
