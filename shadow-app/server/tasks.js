@@ -560,6 +560,8 @@ export async function syncMatchedDiffTasks({ dates, items }) {
   };
   for (const item of items || []) {
     if (item.type !== "mismatch" || !samePieces(item)) continue;
+    // Paid less than Connect counts: a plus value, accepted -- no task.
+    if ((Number(item.money_diff) || 0) < 0) continue;
     const day = isoDay(item.day || item.date);
     if (!day) continue;
     const grower = String(item.grower || "").trim() || "?";
@@ -567,8 +569,7 @@ export async function syncMatchedDiffTasks({ dates, items }) {
     const group = groups.get(key) || { day, grower, lines: [], money: 0, gross: 0 };
     group.lines.push(item);
     group.money += Number(item.money_diff) || 0;
-    // Over- and under-charges both need a look: the amount counts them both
-    // (+120 and -100 is 220 to check, not 20).
+    // Only over-charges get here (plus values are accepted above).
     group.gross += Math.abs(Number(item.money_diff) || 0);
     groups.set(key, group);
   }
@@ -589,7 +590,7 @@ export async function syncMatchedDiffTasks({ dates, items }) {
       source_key: sourceKey,
       title: `Price check ${group.day}: ${group.grower} -- ${money(group.gross)} in differences, net ${money(group.money)} (${lines.length} line(s), same pieces)`,
       body: [
-        `Invoice lines of ${group.grower} on ${group.day} with the same pieces as their Connect lot but another price: ${money(group.gross)} in differences over ${lines.length} line(s), net ${money(group.money)} (more than 0 = we pay more than Connect counts).`,
+        `Invoice lines of ${group.grower} on ${group.day} with the same pieces as their Connect lot but another price: ${money(group.gross)} in differences over ${lines.length} line(s), we pay more than Connect counts (lines where we pay less are accepted as a plus value).`,
         ...lineText,
         ...(lines.length > 12 ? [`... and ${lines.length - 12} more (Inkoop Controle > Matched differences)`] : []),
       ].join("\n"),

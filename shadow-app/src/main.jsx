@@ -23336,6 +23336,24 @@ function ikMatchedSamePieces(item) {
 
 function InkoopMatchedDiffsWorkspace({ bar, matchRound = 0, onOpenTrackTrace }) {
   const [withResolved, setWithResolved] = useState(false);
+  // Paid less than Connect counts = a plus value: accepted, not in the list
+  // (no task either); a chip shows them on demand.
+  const [showPlus, setShowPlus] = useState(false);
+  const [round, setRound] = useState(0);
+  const [menu, setMenu] = useState(null);
+  const [verifyError, setVerifyError] = useState("");
+  const closeMenu = useCallback(() => setMenu(null), []);
+  const openMenu = (event, list, title) => { event.preventDefault(); event.stopPropagation(); setMenu({ x: event.clientX, y: event.clientY, items: list, title }); };
+  async function verifyAs(list, resolution) {
+    if (!list.length) return;
+    setVerifyError("");
+    try {
+      await inkoopFollowupUpdate(list, { resolution }, "");
+      setRound((value) => value + 1);
+    } catch (failure) {
+      setVerifyError(failure.message);
+    }
+  }
   const [minEuro, setMinEuro] = useState("");
   const [search, setSearch] = useState("");
   // Growers start folded; a click opens one.
@@ -23345,13 +23363,16 @@ function InkoopMatchedDiffsWorkspace({ bar, matchRound = 0, onOpenTrackTrace }) 
   const [pieces, setPieces] = useState("all");
   const [kind, setKind] = useState("all");
   const query = { from: bar.from, to: bar.to, ...(bar.grower ? { grower: bar.grower } : {}), status: withResolved ? "all" : "open" };
-  const { data, error, loading } = useInkoopFollowup(query, String(matchRound));
+  const { data, error, loading } = useInkoopFollowup(query, `${matchRound}.${round}`);
   const deptLabel = Object.fromEntries(data?.departments || []);
   const min = Number(String(minEuro).replace(",", ".")) || 0;
   const words = search.toLowerCase().split(/\s+/).filter(Boolean);
-  const base = (data?.items || []).filter((item) => item.type === "mismatch"
+  const isPlus = (item) => (Number(item.money_diff) || 0) < 0;
+  const all = (data?.items || []).filter((item) => item.type === "mismatch"
     && Math.abs(item.money_diff || 0) >= min
     && words.every((word) => `${item.description} ${item.invoice_number} ${item.lot?.lot || ""}`.toLowerCase().includes(word)));
+  const plusCount = all.filter(isPlus).length;
+  const base = showPlus ? all : all.filter((item) => !isPlus(item));
   const count = (test) => base.filter(test).length;
   const piecesTest = { all: () => true, same: ikMatchedSamePieces, other: (item) => !ikMatchedSamePieces(item) };
   const items = base.filter((item) => piecesTest[pieces](item) && (kind === "all" || ikMatchedKind(item) === kind));
@@ -23417,7 +23438,7 @@ function InkoopMatchedDiffsWorkspace({ bar, matchRound = 0, onOpenTrackTrace }) 
         <div className="ik-card-head">
           <span>
             <strong>Matched differences</strong>{" "}
-            <span className="muted">invoice lines paired to their Connect lot that still differ (other price per piece / other pieces) -- per day, grower and line. The same lines stay in the Follow-up for Control; Inkoop gets a task per grower and day (Tasks settings).</span>
+            <span className="muted">invoice lines paired to their Connect lot where we pay more (other price per piece / other pieces) -- per day, grower and line; paying less is accepted as a plus value. The same lines stay in the Follow-up for Control; Inkoop gets a task per grower and day (Tasks settings).</span>
           </span>
           <span className="row-actions">
             <label className="checkbox-label"><input type="checkbox" checked={withResolved} onChange={(event) => setWithResolved(event.target.checked)} /><span>Also resolved</span></label>
@@ -23430,6 +23451,14 @@ function InkoopMatchedDiffsWorkspace({ bar, matchRound = 0, onOpenTrackTrace }) 
         {error && <div className="notice danger">{error}</div>}
         {data?.pending_days?.length > 0 && <div className="notice info">Being compared again: {data.pending_days.map(fustOverviewDate).join(", ")} -- shown as last compared.</div>}
         {data?.waiting_days?.length > 0 && <div className="muted">Days still waiting for data (not in this list yet): {data.waiting_days.map((day) => fustOverviewDate(day.date)).join(", ")}</div>}
+        {verifyError && <div className="notice danger">{verifyError}</div>}
+        <div className="row-actions">
+          <button type="button" className={`ik-chip${showPlus ? " on" : ""}`} onClick={() => setShowPlus((value) => !value)}
+            title="Lines where we pay less than Connect counts: accepted as a plus value -- not in this list and no task">
+            {showPlus ? "Hide" : "Show"} plus values (paid less, accepted) {plusCount}
+          </button>
+          <span className="muted">Right-click a grower or a line: resolve as Geverifieerd.</span>
+        </div>
         <div className="row-actions">
           <span className="muted">Pieces:</span>
           {[["all", "All", () => true], ["same", "Same pieces (price differences)", ikMatchedSamePieces], ["other", "Other pieces (maybe a lot not linked)", (item) => !ikMatchedSamePieces(item)]].map(([key, label, test]) => (
@@ -23462,11 +23491,13 @@ function InkoopMatchedDiffsWorkspace({ bar, matchRound = 0, onOpenTrackTrace }) 
             const shown = open[key] === true;
             return (
               <div key={key} className="ik-md-grower">
-                <button type="button" className="link-button" onClick={() => setOpen({ ...open, [key]: !shown })}>
+                <button type="button" className="link-button" onClick={() => setOpen({ ...open, [key]: !shown })}
+                  onContextMenu={(event) => openMenu(event, grower.lines, `${grower.grower} · ${fustOverviewDate(day.day)}`)} title="Click: open / fold · right-click: resolve as Geverifieerd">
                   {shown ? "▾" : "▸"} <strong>{grower.grower || "?"}</strong> <span className="muted">· {grower.lines.length} line(s) · {formatInkoopEuro(grower.gross)} in differences · net {formatInkoopEuro(grower.money)}
                     {grower.lines.some((item) => !ikMatchedSamePieces(item)) ? ` · ⚠ ${grower.lines.filter((item) => !ikMatchedSamePieces(item)).length} with other pieces` : ""}</span>
                 </button>
                 {onOpenTrackTrace && <button type="button" className="link-button" onClick={() => onOpenTrackTrace({ grower: grower.grower, day: day.day })}>Track &amp; Trace</button>}
+                <button type="button" className="link-button" onClick={(event) => openMenu(event, grower.lines, `${grower.grower} · ${fustOverviewDate(day.day)}`)} title="Resolve this grower's lines of the day as Geverifieerd">✓ Geverifieerd ▾</button>
                 {shown && (
                   <div className="table-wrap">
                     <table className="data-table balance-table">
@@ -23489,7 +23520,8 @@ function InkoopMatchedDiffsWorkspace({ bar, matchRound = 0, onOpenTrackTrace }) 
                           const why = ikMatchedWhy(item);
                           return (
                             <tr key={item.id} style={onOpenTrackTrace ? { cursor: "pointer" } : undefined}
-                              title={onOpenTrackTrace ? "Click: open this line in Track & Trace (to link a missing lot)" : undefined}
+                              title={onOpenTrackTrace ? "Click: open this line in Track & Trace (to link a missing lot) · right-click: Geverifieerd" : "Right-click: Geverifieerd"}
+                              onContextMenu={(event) => openMenu(event, [item], item.description)}
                               onClick={onOpenTrackTrace ? () => onOpenTrackTrace({ grower: item.grower, day: item.day || item.date, focus: item.invoice?.id || "", bw: item.bw }) : undefined}>
                               <td>{item.description}<div className="muted">{item.invoice_number}</div></td>
                               <td className="ik-inv-text" style={{ whiteSpace: "normal", minWidth: 220 }}>{ikFollowupInvoiceText(item)}</td>
@@ -23502,7 +23534,11 @@ function InkoopMatchedDiffsWorkspace({ bar, matchRound = 0, onOpenTrackTrace }) 
                                 {!ikMatchedSamePieces(item) && <div className="ik-fu-warn" title="When the pieces differ, often another Connect lot belongs to this invoice line too -- check and link it in Track & Trace">maybe a lot not linked</div>}
                                 <div className="muted">{({ flowers: "flowers", plants: "plants", other: "" })[ikMatchedKind(item)]}</div>
                               </td>
-                              <td>{INKOOP_FU_STATUS_LABEL[item.status] || item.status || "Open"}{item.department ? <div className="muted">{deptLabel[item.department] || item.department}</div> : null}{item.note ? <div className="muted">{item.note}</div> : null}</td>
+                              <td>
+                                {INKOOP_FU_STATUS_LABEL[item.status] || item.status || "Open"}{item.resolution ? <div className="muted">✓ {ikFuResolutionLabel(item.resolution)}</div> : null}
+                                {item.department ? <div className="muted">{deptLabel[item.department] || item.department}</div> : null}{item.note ? <div className="muted">{item.note}</div> : null}
+                                {item.status !== "resolved" && <button type="button" className="link-button" onClick={(event) => openMenu(event, [item], item.description)} title="Resolve as Geverifieerd">✓ Geverifieerd ▾</button>}
+                              </td>
                             </tr>
                           );
                         })}
@@ -23516,6 +23552,7 @@ function InkoopMatchedDiffsWorkspace({ bar, matchRound = 0, onOpenTrackTrace }) 
         </div>
       ))}
       {data && !loading && !items.length && <div className="notice">No matched differences in this period{bar.grower ? ` for ${bar.grower}` : ""}.</div>}
+      <IkFollowupResolveMenu menu={menu} onPick={verifyAs} onClose={closeMenu} />
     </div>
   );
 }
