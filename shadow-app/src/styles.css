@@ -5529,3 +5529,25 @@ table.data-table.balance-table.ik-table.ik-inv-invoices td:nth-child(n+7), table
 .ik-md-table {
   font-size: 0.95rem;
 }
+
+/* The right-click menu: which lines it acts on (all / but not matched / ticked). */
+.ik-ctx-scope {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  padding: 4px 8px 6px;
+  border-bottom: 1px solid var(--ik-border);
+}
+
+.ik-ctx-menu .ik-ctx-scope button {
+  padding: 3px 10px;
+  border: 1px solid var(--ik-border);
+  border-radius: 999px;
+  font-size: 0.85rem;
+}
+
+.ik-ctx-menu .ik-ctx-scope button.on {
+  border-color: #1f7a5a;
+  background: #1f7a5a;
+  color: #fff;
+}

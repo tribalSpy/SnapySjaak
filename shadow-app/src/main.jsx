@@ -22091,6 +22091,10 @@ const ikFuResolutionLabel = (key) => (INKOOP_FU_RESOLUTIONS.find(([value]) => va
 // them as transport costs, an invoice difference, other costs or Vervanger.
 // Without onFollow only the Geverifieerd part.
 function IkFollowupResolveMenu({ menu, onPick, onClose, departments = [], categories = [], onFollow, onClaim }) {
+  // Which lines the menu acts on: all of them, all but the not matched ones
+  // (only "figures differ"), or only the ticked lines (menu.ticked).
+  const [scope, setScope] = useState("all");
+  useEffect(() => { setScope("all"); }, [menu]);
   useEffect(() => {
     if (!menu) return undefined;
     const close = () => onClose();
@@ -22107,15 +22111,29 @@ function IkFollowupResolveMenu({ menu, onPick, onClose, departments = [], catego
     };
   }, [menu, onClose]);
   if (!menu) return null;
-  const open = menu.items.filter((item) => item.status !== "resolved" && !item.gone);
+  const openOf = (list) => (list || []).filter((item) => item.status !== "resolved" && !item.gone);
+  const scopes = [
+    ["all", "All", openOf(menu.items)],
+    ["differ", "All but not matched", openOf(menu.items).filter((item) => item.type === "mismatch")],
+    ...(menu.ticked?.length ? [["ticked", "Only ticked", openOf(menu.ticked)]] : []),
+  ];
+  const showScopes = scopes.length > 2 || scopes[1][2].length !== scopes[0][2].length;
+  const open = (scopes.find(([key]) => key === scope) || scopes[0])[2];
   const net = Math.round(open.reduce((sum, item) => sum + (Number(item.money_diff) || 0), 0) * 100) / 100;
   const follow = (onFollow ? departments.length + categories.length + 3 : 0) + (onClaim ? departments.length + 1 : 0) - (onPick ? 0 : INKOOP_FU_RESOLUTIONS.length + 1);
-  const style = { left: Math.min(menu.x, window.innerWidth - 290), top: Math.max(8, Math.min(menu.y, window.innerHeight - 230 - follow * 32)) };
+  const style = { left: Math.min(menu.x, window.innerWidth - 320), top: Math.max(8, Math.min(menu.y, window.innerHeight - 230 - follow * 32 - (showScopes ? 44 : 0))) };
   const withCategory = open.some((item) => item.category);
   return (
     <div className="ik-ctx-menu" style={style} role="menu" onClick={(event) => event.stopPropagation()} onContextMenu={(event) => event.preventDefault()}>
       <div className="ik-ctx-title"><strong>{menu.title}</strong><span className="muted">{open.length} line(s) · net <InkoopMoneyDiff value={net} /></span></div>
       {menu.note && <div className="ik-ctx-sub muted">{menu.note}</div>}
+      {showScopes && (
+        <div className="ik-ctx-scope">
+          {scopes.map(([key, label, list]) => (
+            <button key={key} type="button" className={`ik-chip${scope === key ? " on" : ""}`} disabled={!list.length} onClick={() => setScope(key)}>{label} {list.length}</button>
+          ))}
+        </div>
+      )}
       {onFollow && (
         <>
           <div className="ik-ctx-sub muted">Follow up by:</div>
@@ -23182,7 +23200,7 @@ function InkoopFollowupWorkspace({ bar, onOpenTrackTrace, onOpenConnectData, mat
     }
   }
   const [menu, setMenu] = useState(null);
-  const openMenu = (event, list, title) => setMenu({ x: event.clientX, y: event.clientY, items: list, title });
+  const openMenu = (event, list, title) => setMenu({ x: event.clientX, y: event.clientY, items: list, title, ticked: items.filter((item) => picked[item.id]) });
   const closeMenu = useCallback(() => setMenu(null), []);
   async function verifyAs(list, resolution) {
     if (!list.length) return;
