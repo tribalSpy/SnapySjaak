@@ -29035,7 +29035,7 @@ function IkCorrectionLineMenu({ menu, onClose, onOpenTrackTrace, onChanged }) {
   return (
     <>
       <div className="ik-menu-backdrop" onClick={onClose} role="presentation" style={{ position: "fixed", inset: 0, zIndex: 60 }} />
-      <div className="card ik-card" role="dialog" aria-label="Correction" style={{ position: "fixed", left, top, zIndex: 61, width: 370, display: "grid", gap: 8, boxShadow: "0 8px 30px rgba(0,0,0,0.25)" }}>
+      <div className="ik-popover" role="dialog" aria-label="Correction" style={{ left, top }}>
         <strong>{item.description || item.pav} · {item.invoice_number}</strong>
         <div className="muted">
           {grower || "?"} · {fustOverviewDate(day)}<br />

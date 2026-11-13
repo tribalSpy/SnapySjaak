@@ -5426,3 +5426,19 @@ table.data-table.balance-table.ik-table.ik-inv-invoices td:nth-child(n+7), table
   padding: 6px 0;
   border-top: 1px solid #e3e8ee;
 }
+
+/* A small menu window over a table (Corrections check line): solid, never
+   see-through (night mode gets its own dark twin). */
+.ik-popover {
+  position: fixed;
+  z-index: 61;
+  width: 370px;
+  display: grid;
+  gap: 8px;
+  padding: 14px;
+  border: 1px solid #c9d3dd;
+  border-radius: 10px;
+  background: #ffffff;
+  color: #17202a;
+  box-shadow: 0 10px 34px rgba(0, 0, 0, 0.35);
+}
