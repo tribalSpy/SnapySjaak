@@ -21421,6 +21421,14 @@ function InkoopTrackTraceWorkspace({ bar, setBar, overview, company, matchRound 
   const [linkDock, setLinkDock] = useState(() => { try { return ["float", "side", "top"].includes(window.localStorage.getItem("ik-tt-link-dock")) ? window.localStorage.getItem("ik-tt-link-dock") : "float"; } catch { return "float"; } });
   const [linkPos, setLinkPos] = useState(() => { try { const pos = JSON.parse(window.localStorage.getItem("ik-tt-link-pos") || "null"); return pos && Number.isFinite(pos.x) && Number.isFinite(pos.y) ? pos : null; } catch { return null; } });
   const chooseLinkDock = (value) => { setLinkDock(value); try { window.localStorage.setItem("ik-tt-link-dock", value); } catch { /* per browser only */ } };
+  // The window resized (or another screen / zoom): the floating link window
+  // is placed again so it stays on screen.
+  const [, setLinkViewport] = useState(0);
+  useEffect(() => {
+    const onResize = () => setLinkViewport((value) => value + 1);
+    window.addEventListener("resize", onResize);
+    return () => window.removeEventListener("resize", onResize);
+  }, []);
   // Dragged by its head; kept inside the window.
   const startLinkDrag = (event) => {
     if (event.button !== 0 || event.target.closest("button, input, a")) return;
@@ -21856,7 +21864,13 @@ function InkoopTrackTraceWorkspace({ bar, setBar, overview, company, matchRound 
     </div>
   );
   const linkPanel = pickedList.length || pendingLinks.length ? (
-    <div className={`ik-link-panel ${linkDock}`} style={linkDock === "float" && linkPos ? { left: linkPos.x, top: linkPos.y, right: "auto", bottom: "auto" } : undefined}>
+    <div className={`ik-link-panel ${linkDock}`} style={linkDock === "float" && linkPos ? {
+      // A position saved on a bigger window / screen: kept on screen.
+      left: Math.max(0, Math.min(window.innerWidth - 220, linkPos.x)),
+      top: Math.max(0, Math.min(window.innerHeight - 120, linkPos.y)),
+      right: "auto",
+      bottom: "auto",
+    } : undefined}>
       {linkHead}
     {!!pickedList.length && (
       <div className="ik-linkbar">
