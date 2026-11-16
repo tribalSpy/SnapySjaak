@@ -3361,7 +3361,7 @@ export async function getInkoopCorrectionLines({ from, to, marginDays = 4 } = {}
     return base === pav ? [pav] : [base, ...letters.map((letter) => base + letter)];
   }))];
   const erpLots = await pool.query(
-    "SELECT lot::text AS lot, pav, pieces::float8 AS pieces, description FROM inkoop_erp_lines WHERE pav = ANY($1::text[])",
+    "SELECT lot::text AS lot, pav, pieces::float8 AS pieces, description, to_char(erp_date, 'YYYY-MM-DD') AS erp_date FROM inkoop_erp_lines WHERE pav = ANY($1::text[])",
     [pavVariants],
   );
   // The letters that are an invoice line of their own (051795a / b / c each

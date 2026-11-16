@@ -13602,13 +13602,24 @@ async function computeInkoopCorrectionRetourChecks(state, { from, to }) {
   // same base (a delivery split, F9H9CDa -> F9H9CDb) -- but not a letter
   // that is an invoice line of its own (051795a / b / c: other purchases).
   const ownPavs = new Set(invoicedPavs.map((pav) => String(pav).trim()));
-  const erpOfPav = (creditPav) => {
+  // Brief numbers come back over time: only lots of the purchase's days
+  // (its lines' invoice dates, a few days either side), as Track & Trace.
+  const dayShift = (day, days) => {
+    const date = new Date(`${day}T00:00:00Z`);
+    date.setUTCDate(date.getUTCDate() + days);
+    return date.toISOString().slice(0, 10);
+  };
+  const erpOfPav = (creditPav, lines) => {
     const exact = String(creditPav || "").trim();
     const base = inkoopPavBase(exact);
+    const days = (lines || []).map((line) => String(line.invoice_date || "").slice(0, 10)).filter((day) => /^\d{4}-\d{2}-\d{2}$/.test(day)).sort();
+    const first = days.length ? dayShift(days[0], -INKOOP_DAY_TOLERANCE_DAYS - 3) : "";
+    const last = days.length ? dayShift(days[days.length - 1], INKOOP_DAY_TOLERANCE_DAYS) : "";
     return erpLots.filter((row) => {
       const pav = String(row.pav || "").trim();
-      if (pav === exact) return true;
-      return inkoopPavBase(pav) === base && !ownPavs.has(pav);
+      if (pav !== exact && (inkoopPavBase(pav) !== base || ownPavs.has(pav))) return false;
+      const day = String(row.erp_date || "").slice(0, 10);
+      return !first || !day || (day >= first && day <= last);
     });
   };
   const lotsByPav = new Map();
@@ -13617,7 +13628,7 @@ async function computeInkoopCorrectionRetourChecks(state, { from, to }) {
   for (const credit of credits) {
     const key = String(credit.pav || "").trim();
     if (!key || lotsByPav.has(key)) continue;
-    const rows = erpOfPav(key);
+    const rows = erpOfPav(key, linesByPav.get(normalizeInkoopKey(key)) || [credit]);
     lotsByPav.set(key, rows.map((row) => String(row.lot)));
     erpPiecesByPav.set(key, rows.reduce((sum, row) => sum + (Number(row.pieces) || 0), 0));
     const description = rows.map((row) => String(row.description || "").trim()).find(Boolean);
