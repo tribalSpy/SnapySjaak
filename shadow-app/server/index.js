@@ -227,6 +227,7 @@ import {
   syncFacturenTask,
   closeFacturenTask,
   syncInvoiceDuplicateTasks,
+  hideTaskSources,
 } from "./tasks.js";
 import { createCampaignRoutes, runCampaignDeadlineTasks } from "./campaigns.js";
 import { createMediaRoutes, createMediaAgentRoutes, handleMediaJobResult, handleMediaJobFail, requeueStaleMediaJobs } from "./media.js";
@@ -6923,6 +6924,8 @@ function publicUser(user) {
     teams: normalizedUser.teams,
     settings: normalizeUserWidgetSettings(normalizedUser.settings),
     created_at: normalizedUser.created_at,
+    // Modules turned off on this server (the page hides them).
+    features: { campaigns: CAMPAIGNS_ENABLED },
   };
 }
 
@@ -7008,6 +7011,13 @@ const handleAppTasksRoute = createAppTasksRoutes({
   stepCatalog: appTaskStepCatalog,
   runStepPlanSync: () => runAppStepPlanTaskSync(),
 });
+
+// Campagnes on/off (SHADOW_CAMPAIGNS_ENABLED=1 turns it on). Off: no page,
+// no /api/campaigns, /api/media, /api/social (nor the BEAST's media /
+// social agent routes), no campaign jobs, campaign tasks hidden. Nothing is
+// deleted -- turning it on brings everything back as it was.
+const CAMPAIGNS_ENABLED = String(process.env.SHADOW_CAMPAIGNS_ENABLED || "").trim() === "1";
+if (!CAMPAIGNS_ENABLED) hideTaskSources(["campaign"]);
 
 // Campagnes media (server/media.js): library, themes, renders on the BEAST,
 // posts. The BEAST's library scan reports in through the agent route.
@@ -23648,10 +23658,10 @@ async function handleApi(req, res, url) {
   // (machine key = the poller key): which invoice numbers of a day still
   // need their factuur, and the PDFs it got from Uniware.
   // The BEAST's media library scan and platform tokens (poller key).
-  if (await handleMediaAgentRoute(req, res, url)) {
+  if (CAMPAIGNS_ENABLED && await handleMediaAgentRoute(req, res, url)) {
     return;
   }
-  if (await handleSocialAgentRoute(req, res, url)) {
+  if (CAMPAIGNS_ENABLED && await handleSocialAgentRoute(req, res, url)) {
     return;
   }
 
@@ -24286,13 +24296,13 @@ async function handleApi(req, res, url) {
   }
 
   // Campagnes (/api/campaigns...) and its media (/api/media/...).
-  if (await handleCampaignRoute(req, res, url, requestUser)) {
+  if (CAMPAIGNS_ENABLED && await handleCampaignRoute(req, res, url, requestUser)) {
     return;
   }
-  if (await handleMediaRoute(req, res, url, requestUser)) {
+  if (CAMPAIGNS_ENABLED && await handleMediaRoute(req, res, url, requestUser)) {
     return;
   }
-  if (await handleSocialRoute(req, res, url, requestUser)) {
+  if (CAMPAIGNS_ENABLED && await handleSocialRoute(req, res, url, requestUser)) {
     return;
   }
 
@@ -32298,6 +32308,8 @@ async function startServer() {
     setInterval(() => runIfOnline("Tasks: step plan", appStepPlanJob).catch((error) => console.error("Tasks: step plan", error?.message || error)), 5 * 60 * 1000);
     setTimeout(() => runIfOnline("Tasks: invoice differences", appInvoiceDiffJob).catch((error) => console.error("Tasks: invoice differences", error?.message || error)), 3 * 60 * 1000);
     setInterval(() => runIfOnline("Tasks: invoice differences", appInvoiceDiffJob).catch((error) => console.error("Tasks: invoice differences", error?.message || error)), 15 * 60 * 1000);
+  }
+  if (isDatabaseEnabled() && CAMPAIGNS_ENABLED) {
     // Campagnes: a task for each campaign deadline coming up (once each).
     const campaignDeadlineJob = async () => { await runCampaignDeadlineTasks(); };
     setTimeout(() => runIfOnline("Campagnes: deadlines", campaignDeadlineJob).catch((error) => console.error("Campagnes: deadlines", error?.message || error)), 4 * 60 * 1000);

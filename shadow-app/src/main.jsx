@@ -195,7 +195,9 @@ function hasPermission(user, permission) {
 }
 
 function availablePagesForUser(user) {
-  return PAGE_DEFINITIONS.filter((page) => hasPermission(user, page.permission));
+  return PAGE_DEFINITIONS.filter((page) => hasPermission(user, page.permission)
+    // Campagnes only when the server has it on (SHADOW_CAMPAIGNS_ENABLED=1).
+    && !(page.key === "campaigns" && user?.features?.campaigns !== true));
 }
 
 function defaultPageForUser(user) {
@@ -13158,7 +13160,7 @@ function App() {
         {page === "pdkeuring" && <PdKeuringPage currentUser={auth.user} />}
         {page === "pdstepplan" && <PdStepPlanPage onNavigate={(next) => { setFromStepPlan(true); setPage(next); }} />}
         {page === "inkoop" && <InkoopControlePage currentUser={auth.user} />}
-        {page === "campaigns" && <CampaignsPage apiJson={apiJson} />}
+        {page === "campaigns" && auth.user?.features?.campaigns === true && <CampaignsPage apiJson={apiJson} />}
         {page === "settings" && <SettingsPage currentUser={auth.user} />}
         {page === "ukdocs" && <UkdocsPage currentUser={auth.user} onNavigate={setPage} />}
         {page === "dashboard" && canViewPhotos && (

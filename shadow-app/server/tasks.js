@@ -213,6 +213,16 @@ async function writeTaskConfig(value, by) {
 // ---------------------------------------------------------------------------
 // Tasks
 
+// Task sources of a module that is turned off (e.g. "campaign" while
+// Campagnes is off): their tasks stay in the database but don't show.
+let hiddenTaskSources = [];
+export function hideTaskSources(sources) {
+  hiddenTaskSources = (sources || []).filter((source) => /^[a-z_]+$/.test(String(source)));
+}
+function hiddenSourcesSql() {
+  return hiddenTaskSources.length ? ` AND source NOT IN (${hiddenTaskSources.map((source) => `'${source}'`).join(", ")})` : "";
+}
+
 async function logTaskEvent(taskId, by, action, from = "", to = "") {
   await dbQuery(
     "INSERT INTO app_task_events (task_id, by_user, action, from_value, to_value) VALUES ($1, $2, $3, $4, $5)",
@@ -294,7 +304,7 @@ async function listTasks(user, scope) {
   else where = `status IN ('open', 'in_progress') AND assignee_user = $1`;
   // Both parameters typed in every scope (one scope uses only one of them).
   const result = await dbQuery(
-    `SELECT *, ${messages} FROM app_tasks WHERE $1::text IS NOT NULL AND $2::text[] IS NOT NULL AND ${where}
+    `SELECT *, ${messages} FROM app_tasks WHERE $1::text IS NOT NULL AND $2::text[] IS NOT NULL AND ${where}${hiddenSourcesSql()}
      ORDER BY ${PRIORITY_ORDER}, due_date NULLS LAST, id DESC LIMIT ${limit}`,
     [me, teams],
   );
@@ -304,7 +314,7 @@ async function listTasks(user, scope) {
        count(*) FILTER (WHERE assignee_team = ANY($2::text[])) AS team,
        count(*) FILTER (WHERE created_by = $1 AND coalesce(assignee_user, '') <> $1) AS created,
        count(*) FILTER (WHERE assignee_user = $1 OR assignee_team = ANY($2::text[])) AS all_open
-     FROM app_tasks WHERE status IN ('open', 'in_progress')`,
+     FROM app_tasks WHERE status IN ('open', 'in_progress')${hiddenSourcesSql()}`,
     [me, teams],
   );
   const row = counts.rows[0] || {};
@@ -1024,7 +1034,7 @@ export function createAppTasksRoutes({ readUsers, writeUsers, publicUser, sendJs
           `SELECT count(*) AS open,
                   max(id) FILTER (WHERE created_by <> $1) AS newest_id
            FROM app_tasks
-           WHERE status IN ('open', 'in_progress') AND (assignee_user = $1 OR (assignee_user IS NULL AND assignee_team = ANY($2::text[])))`,
+           WHERE status IN ('open', 'in_progress') AND (assignee_user = $1 OR (assignee_user IS NULL AND assignee_team = ANY($2::text[])))${hiddenSourcesSql()}`,
           [user.username, user.teams],
         );
         const newestId = counts.rows[0]?.newest_id;
