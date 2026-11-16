@@ -3364,7 +3364,15 @@ export async function getInkoopCorrectionLines({ from, to, marginDays = 4 } = {}
     "SELECT lot::text AS lot, pav, pieces::float8 AS pieces, description FROM inkoop_erp_lines WHERE pav = ANY($1::text[])",
     [pavVariants],
   );
-  return { credits: credits.rows, pavLines: pavLines.rows, erpLots: erpLots.rows };
+  // The letters that are an invoice line of their own (051795a / b / c each
+  // its own purchase): their lots are not a delivery split of another letter.
+  const invoiced = await pool.query(
+    `SELECT DISTINCT l.reference_bt AS pav FROM inkoop_invoice_lines l
+     WHERE l.reference_bt = ANY($1::text[])
+       AND l.invoice_date >= ($2::date - 60) AND l.invoice_date <= ($3::date + 60)`,
+    [pavVariants, from, to],
+  );
+  return { credits: credits.rows, pavLines: pavLines.rows, erpLots: erpLots.rows, invoicedPavs: invoiced.rows.map((row) => String(row.pav || "")) };
 }
 
 // The credit lines (a negative quantity or total) on the brief numbers of

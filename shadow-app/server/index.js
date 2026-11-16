@@ -13591,23 +13591,37 @@ async function computeInkoopCorrectionRetourChecks(state, { from, to }) {
   if (inkoopCorrectionsCache.has(cacheKey)) {
     return inkoopCorrectionsCache.get(cacheKey);
   }
-  const { credits, pavLines, erpLots } = await getInkoopCorrectionLines({ from, to, marginDays: INKOOP_DAY_TOLERANCE_DAYS });
+  const { credits, pavLines, erpLots, invoicedPavs = [] } = await getInkoopCorrectionLines({ from, to, marginDays: INKOOP_DAY_TOLERANCE_DAYS });
   const linesByPav = new Map();
   for (const line of pavLines) {
     const pav = normalizeInkoopKey(line.pav);
     if (!linesByPav.has(pav)) linesByPav.set(pav, []);
     linesByPav.get(pav).push(line);
   }
+  // A brief number's Connect lots: its own, plus another letter's of the
+  // same base (a delivery split, F9H9CDa -> F9H9CDb) -- but not a letter
+  // that is an invoice line of its own (051795a / b / c: other purchases).
+  const ownPavs = new Set(invoicedPavs.map((pav) => String(pav).trim()));
+  const erpOfPav = (creditPav) => {
+    const exact = String(creditPav || "").trim();
+    const base = inkoopPavBase(exact);
+    return erpLots.filter((row) => {
+      const pav = String(row.pav || "").trim();
+      if (pav === exact) return true;
+      return inkoopPavBase(pav) === base && !ownPavs.has(pav);
+    });
+  };
   const lotsByPav = new Map();
   const erpPiecesByPav = new Map();
   const erpDescriptionByPav = new Map();
-  for (const row of erpLots) {
-    // Keyed by the brief number without its split letter (F9H9CDa/b).
-    const pav = inkoopPavBase(row.pav);
-    if (!lotsByPav.has(pav)) lotsByPav.set(pav, []);
-    lotsByPav.get(pav).push(String(row.lot));
-    erpPiecesByPav.set(pav, (erpPiecesByPav.get(pav) || 0) + (Number(row.pieces) || 0));
-    if (row.description && !erpDescriptionByPav.has(pav)) erpDescriptionByPav.set(pav, String(row.description).trim());
+  for (const credit of credits) {
+    const key = String(credit.pav || "").trim();
+    if (!key || lotsByPav.has(key)) continue;
+    const rows = erpOfPav(key);
+    lotsByPav.set(key, rows.map((row) => String(row.lot)));
+    erpPiecesByPav.set(key, rows.reduce((sum, row) => sum + (Number(row.pieces) || 0), 0));
+    const description = rows.map((row) => String(row.description || "").trim()).find(Boolean);
+    if (description) erpDescriptionByPav.set(key, description);
   }
   const items = [];
   const seenPavs = new Set();
@@ -13627,12 +13641,12 @@ async function computeInkoopCorrectionRetourChecks(state, { from, to }) {
         // invoice lines (the original purchase), else the Connect lot.
         description: String(credit.description || "").trim()
           || group.map((line) => String(line.description || "").trim()).find(Boolean)
-          || erpDescriptionByPav.get(inkoopPavBase(credit.pav)) || "",
+          || erpDescriptionByPav.get(String(credit.pav || "").trim()) || "",
         quantity: Math.round(group.reduce((sum, line) => sum + (Number(line.quantity) || 0), 0) * 100) / 100,
         total: Math.round(group.reduce((sum, line) => sum + (Number(line.total) || 0), 0) * 100) / 100,
         correction_lines: group,
-        lot_source: { lot: (lotsByPav.get(inkoopPavBase(credit.pav)) || []).join("+") },
-        erp_pieces: erpPiecesByPav.get(inkoopPavBase(credit.pav)) || 0,
+        lot_source: { lot: (lotsByPav.get(String(credit.pav || "").trim()) || []).join("+") },
+        erp_pieces: erpPiecesByPav.get(String(credit.pav || "").trim()) || 0,
         link_key: `pav:${pav}`,
       });
     } else {
@@ -13712,7 +13726,12 @@ async function computeInkoopCorrectionRetourChecks(state, { from, to }) {
     .filter((item) => !item.linked_by_hand)
     .map((item) => {
       const lineIds = new Set((item.correction_lines || []).map((line) => String(line.id)).filter(Boolean));
-      const pair = tracePairs.find((candidate) => (candidate.invoice_line_ids || []).some((id) => lineIds.has(String(id))) && (candidate.lots || []).length);
+      // Only a pair of this correction's own lines: a pair that also holds
+      // other purchases' lines shares its lots with them.
+      const pair = tracePairs.find((candidate) => {
+        const ids = (candidate.invoice_line_ids || []).map(String);
+        return ids.length && ids.every((id) => lineIds.has(id)) && (candidate.lots || []).length;
+      });
       return pair ? { item, pair } : null;
     })
     .filter(Boolean);
