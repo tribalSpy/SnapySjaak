@@ -13704,6 +13704,28 @@ async function computeInkoopCorrectionRetourChecks(state, { from, to }) {
       item.linked_by_hand = { by: link.by, at: link.at, note: link.note };
     }
   }
+  // A correction's line linked by hand in Track & Trace (an invoice line ↔
+  // Connect lot(s) pair): those lots are what was received too -- unless
+  // the Corrections check's own "Link to lot" set it already.
+  const tracePairs = state.manual_line_pairs || [];
+  const traceLinked = items
+    .filter((item) => !item.linked_by_hand)
+    .map((item) => {
+      const lineIds = new Set((item.correction_lines || []).map((line) => String(line.id)).filter(Boolean));
+      const pair = tracePairs.find((candidate) => (candidate.invoice_line_ids || []).some((id) => lineIds.has(String(id))) && (candidate.lots || []).length);
+      return pair ? { item, pair } : null;
+    })
+    .filter(Boolean);
+  if (traceLinked.length) {
+    const rows = await getInkoopTraceLots(traceLinked.flatMap(({ pair }) => pair.lots)).catch(() => []);
+    const piecesOf = new Map(rows.map((row) => [String(row.lot), Number(row.pieces) || 0]));
+    for (const { item, pair } of traceLinked) {
+      item.auto_lot = item.lot_source?.lot || "";
+      item.lot_source = { lot: pair.lots.join("+") };
+      item.erp_pieces = pair.lots.reduce((sum, lot) => sum + (piecesOf.get(String(lot)) || 0), 0);
+      item.linked_by_hand = { by: pair.by || pair.created_by || "", at: pair.at || pair.created_at || "", note: pair.note || "", via: "Track & Trace" };
+    }
+  }
   const allLotNumbers = new Set(items.flatMap((item) => inkoopCorrectionLotNumbers(item.lot_source)));
   const dispatchLots = await getInkoopDispatchLotsByLots([...allLotNumbers]);
   const dispatchByLot = new Map(dispatchLots.map((lot) => [String(lot.lot), lot]));
