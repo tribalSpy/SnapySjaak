@@ -4376,6 +4376,18 @@ function mapLlmAgentRow(row) {
   };
 }
 
+// A job without its files (shelf_count photos, CSI documents, invoice
+// workbooks, a generated PDF) -- for lists. SELECT * of the queue loaded
+// every queued night's photos into memory on each refresh of the Shelf
+// count monitor (every 30 s): Render "Ran out of memory (used over 2GB)".
+const LLM_JOB_LIGHT_COLUMNS = `id, job_type, status, created_by, shipment_id, collection_id, document_kind,
+  priority, attempt_count, max_attempts, agent_name,
+  payload_json - 'vision_documents' - 'workbook_content_base64' - 'pdfs' AS payload_json,
+  CASE WHEN result_json->'excel_pdf_result' ? 'content_base64'
+    THEN jsonb_set(result_json, '{excel_pdf_result}', (result_json->'excel_pdf_result') - 'content_base64')
+    ELSE result_json END AS result_json,
+  error_text, created_at, claimed_at, finished_at, updated_at`;
+
 function mapLlmJobRow(row) {
   return {
     id: String(row?.id || "").trim(),
@@ -4658,7 +4670,7 @@ export async function getLlmQueueSnapshot() {
   }
   const [agentsResult, jobsResult, summaryResult] = await Promise.all([
     pool.query("SELECT * FROM llm_agents ORDER BY agent_name ASC"),
-    pool.query("SELECT * FROM llm_jobs ORDER BY created_at DESC LIMIT 50"),
+    pool.query(`SELECT ${LLM_JOB_LIGHT_COLUMNS} FROM llm_jobs ORDER BY created_at DESC LIMIT 50`),
     pool.query(`
       SELECT
         COUNT(*)::int AS total_jobs,
@@ -4864,7 +4876,7 @@ export async function getActiveLlmJobsByType(jobType) {
     return [];
   }
   const result = await pool.query(
-    "SELECT * FROM llm_jobs WHERE job_type = $1 AND status IN ('pending', 'claimed') ORDER BY created_at ASC",
+    `SELECT ${LLM_JOB_LIGHT_COLUMNS} FROM llm_jobs WHERE job_type = $1 AND status IN ('pending', 'claimed') ORDER BY created_at ASC`,
     [String(jobType || "").trim()],
   );
   return (result.rows || []).map(mapLlmJobRow);
