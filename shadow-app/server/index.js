@@ -28602,6 +28602,25 @@ async function handleApi(req, res, url) {
       const [found, state] = await Promise.all([findInkoopByReference(query), readInkoopState()]);
       const excluded = new Set(inkoopExcludedErpCodes(state));
       const pairs = state.manual_line_pairs || [];
+      // A lot found by its number: also the invoice lines with its partij
+      // (the lot number itself is on no invoice).
+      const lineIds = new Set(found.lines.map((row) => String(row.id)));
+      const lotPavs = [...new Set(found.lots.map((row) => normalizeInkoopKey(row.pav)).filter((pav) => isRealInkoopPav(pav)))].slice(0, 5);
+      for (const pav of lotPavs) {
+        if (found.lines.some((row) => normalizeInkoopKey(row.reference_bt) === pav)) continue;
+        const more = await findInkoopByReference(pav).catch(() => ({ lines: [] }));
+        for (const row of more.lines || []) {
+          if (normalizeInkoopKey(row.reference_bt) === pav && !lineIds.has(String(row.id))) {
+            lineIds.add(String(row.id));
+            found.lines.push(row);
+          }
+        }
+      }
+      const invoicedPavs = new Map();
+      for (const row of found.lines) {
+        const pav = normalizeInkoopKey(row.reference_bt);
+        if (isRealInkoopPav(pav) && !invoicedPavs.has(pav)) invoicedPavs.set(pav, row.invoice_number || "");
+      }
       const lots = found.lots.map((row) => {
         const lot = String(row.lot || "").trim();
         const suppl = normalizeInkoopKey(row.suppl);
@@ -28620,8 +28639,9 @@ async function handleApi(req, res, url) {
               if (entry.bw === "N" && normalizeInkoopKey(value) === suppl && !(Number(row.pieces) < 0) && avcBw && avcBw !== "N" && avcBw !== INKOOP_BW_INTERNAL_BUNCHES && !excluded.has(avcCode)) {
                 counted_note = `booked under ${suppl} (BW "N"), counted under its AVC ${avcCode} (BW "${avcBw}")`;
                 left_out = "";
-              } else if (entry.bw === "N" && isRealInkoopPav(normalizeInkoopKey(row.pav)) && !(Number(row.pieces) < 0)) {
-                left_out += `, unless an invoice line has partij ${String(row.pav).trim()} (and no other lot has it) -- then it counts`;
+              } else if (entry.bw === "N" && invoicedPavs.has(normalizeInkoopKey(row.pav)) && !(Number(row.pieces) < 0)) {
+                counted_note = `booked under ${suppl} (BW "N"), counted: invoice ${invoicedPavs.get(normalizeInkoopKey(row.pav))} has its partij ${String(row.pav).trim()} (unless another counted lot has that partij too)`;
+                left_out = "";
               }
             }
             break;
