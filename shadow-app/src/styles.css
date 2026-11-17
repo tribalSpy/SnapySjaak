@@ -5585,3 +5585,9 @@ table.data-table.balance-table.ik-table.ik-inv-invoices td:nth-child(n+7), table
   font-size: 0.85rem;
   max-width: 300px;
 }
+
+/* Track & Trace "Find" (lot / partij / brief / invoice over every day). */
+.ik-find { display: flex; gap: 6px; margin-top: 8px; }
+.ik-find input { flex: 1; min-width: 0; }
+.ik-find-row { display: grid; gap: 2px; padding: 6px 0; border-bottom: 1px solid var(--ik-border); }
+.ik-find-row.left-out { border-left: 3px solid var(--ik-danger, #d9534f); padding-left: 8px; }

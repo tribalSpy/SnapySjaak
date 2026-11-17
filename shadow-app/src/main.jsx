@@ -21423,6 +21423,63 @@ function IkSuggestionMoney({ item }) {
 // Track & Trace: a grower's money side by side -- what's matched folded up,
 // the open invoice lines left and the open Connect lots right, tick both
 // and link. Status / who / note per line in the side panel.
+// Track & Trace "Find": a Connect lot, a partij / brief number (Uniware's
+// PartijNr FALMJBB finds the invoice's FALMJBb) or an invoice number, over
+// every day and grower -- also the lots the comparison leaves out, and why.
+function IkFindPanel({ query, onClose, onOpenTrackTrace }) {
+  const [data, setData] = useState(null);
+  const [error, setError] = useState("");
+  const [trace, setTrace] = useState(null);
+  useEffect(() => {
+    let cancelled = false;
+    setData(null);
+    setError("");
+    apiJson(`/api/inkoop/find?q=${encodeURIComponent(query)}`)
+      .then((payload) => { if (!cancelled) setData(payload); })
+      .catch((loadError) => { if (!cancelled) setError(loadError.message); });
+    return () => { cancelled = true; };
+  }, [query]);
+  const boxes = (count, per, pieces) => (count && per ? `${count} × ${per} = ${pieces}` : `${pieces} pcs`);
+  return (
+    <div className="ik-drawer wide" role="dialog" aria-label={`Find ${query}`}>
+      <div className="ik-drawer-head">
+        <strong>🔎 Find “{query}”</strong>
+        <button type="button" onClick={onClose}>Close</button>
+      </div>
+      {error && <div className="notice danger">{error}</div>}
+      {!data && !error && <div className="muted">Searching every day and grower…</div>}
+      {data && (
+        <>
+          <h4>Connect lots ({data.lots.length})</h4>
+          {!data.lots.length && <div className="muted">No Connect lot with this lot or partij number is imported -- it's not in the Connect data the comparison gets (check the day's Connect / ERP import).</div>}
+          {data.lots.map((lot) => (
+            <div key={lot.lot} className={`ik-find-row${lot.left_out ? " left-out" : ""}`}>
+              <div><strong>Lot {lot.lot}</strong> · {lot.date ? fustOverviewDate(lot.date) : "no date"} · <strong>{lot.description}</strong> · partij {lot.pav || "–"}</div>
+              <div className="muted">{boxes(lot.items, lot.cont, lot.pieces)} @ {formatInkoopEuro(lot.price)} = {formatInkoopEuro(lot.total)} · lev. {lot.suppl || "–"} · AVC {lot.avc || "–"}{lot.transp ? ` · transp. ${lot.transp}` : ""}</div>
+              {lot.left_out && <div className="money-loss">⚠ {lot.left_out}</div>}
+              {lot.linked_by_hand && <div>✋ linked by hand to line(s) {lot.linked_by_hand.lines.join(", ")}{lot.linked_by_hand.by ? ` by ${lot.linked_by_hand.by}` : ""}{lot.linked_by_hand.note ? ` -- ${lot.linked_by_hand.note}` : ""}</div>}
+            </div>
+          ))}
+          <h4>Invoice lines ({data.lines.length})</h4>
+          {!data.lines.length && <div className="muted">No invoice line with this brief or invoice number.</div>}
+          {data.lines.map((line) => (
+            <div key={line.id} className="ik-find-row">
+              <div>
+                <button type="button" className="link-button" onClick={() => setTrace({ invoiceNumber: line.invoice_number, lineId: line.id })} title="The whole trace of this line">{line.invoice_number}</button>
+                {" "}· {line.date ? fustOverviewDate(line.date) : "-"} · brief {line.brief || "–"} · <strong>{line.description}</strong> · {line.supplier}
+              </div>
+              <div className="muted">{boxes(line.packages, line.per_package, line.quantity)} @ {formatInkoopEuro(line.price)} = {formatInkoopEuro(line.total)}{line.company ? ` · ${line.company}` : ""}</div>
+              {line.linked_by_hand && <div>✋ linked by hand to lot(s) {line.linked_by_hand.lots.join(" + ")}{line.linked_by_hand.by ? ` by ${line.linked_by_hand.by}` : ""}{line.linked_by_hand.note ? ` -- ${line.linked_by_hand.note}` : ""}</div>}
+            </div>
+          ))}
+        </>
+      )}
+      {trace && <IkInvoiceTrace invoiceNumber={trace.invoiceNumber} lineId={trace.lineId} onClose={() => setTrace(null)}
+        onOpenTrackTrace={(target) => { setTrace(null); onOpenTrackTrace?.(target); }} />}
+    </div>
+  );
+}
+
 function InkoopTrackTraceWorkspace({ bar, setBar, overview, company, matchRound = 0 }) {
   const allRows = overview.rows || [];
   const growerRows = inkoopBarRows(allRows, bar, { useGrower: false });
@@ -21470,6 +21527,8 @@ function InkoopTrackTraceWorkspace({ bar, setBar, overview, company, matchRound 
   const [sorts, setSorts] = useState({ left: "date", right: "date" });
   const [searches, setSearches] = useState({ left: "", right: "" });
   const [growerFilter, setGrowerFilter] = useState("");
+  const [findText, setFindText] = useState("");
+  const [findQuery, setFindQuery] = useState("");
   // "Open" money: the invoice lines without their lot only (default), or
   // also the Connect lots without an invoice. Kept per browser.
   const [openWithConnect, setOpenWithConnect] = useState(() => {
@@ -22005,7 +22064,14 @@ function InkoopTrackTraceWorkspace({ bar, setBar, overview, company, matchRound 
             <input type="checkbox" checked={wideDays} disabled={!canWiden} onChange={(event) => chooseWideDays(event.target.checked)} />
             <span>Lines and lots ± 4 days{wideDays && !canWiden ? " (period too long)" : ""}</span>
           </label>
+          <form className="ik-find" onSubmit={(event) => { event.preventDefault(); const value = findText.trim(); if (value.length >= 4) setFindQuery(value); }}>
+            <input value={findText} onChange={(event) => setFindText(event.target.value)} placeholder="Find lot / partij / brief / invoice…"
+              title="Every day and grower: a Connect lot number, a partij or brief number (FALMJBB finds FALMJBa/b/c), or an invoice number" />
+            <button type="submit" disabled={findText.trim().length < 4}>Find</button>
+          </form>
         </div>
+        {findQuery && <IkFindPanel query={findQuery} onClose={() => setFindQuery("")}
+          onOpenTrackTrace={(target) => { setFindQuery(""); setBar((current) => ({ ...current, grower: target.grower, from: target.from, to: target.to, day: null })); }} />}
         <div className="data-table-card ik-card ik-growers">
           <input value={growerFilter} onChange={(event) => setGrowerFilter(event.target.value)} placeholder="Find a grower…" />
           <div className="ik-grower-list">

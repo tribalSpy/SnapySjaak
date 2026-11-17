@@ -2181,6 +2181,30 @@ export async function getInkoopErpLines({ from, to } = {}) {
   return result.rows.map((row) => row.raw);
 }
 
+// Track & Trace "Find": a Connect lot number, or a partij / brief number
+// (FALMJBB finds FALMJBa / b / c -- Uniware shows it in capitals), over
+// every day and grower. At most 80 of each.
+export async function findInkoopByReference(query) {
+  const text = String(query || "").trim();
+  if (!pool || text.length < 4) return { lots: [], lines: [] };
+  const upper = text.toUpperCase();
+  // The brief number without its split letter: FALMJBB / FALMJBb -> FALMJB.
+  const base = /^[A-Z0-9]{6,}$/i.test(text) && /[A-Za-z]$/.test(text) && text.length >= 7 ? upper.slice(0, -1) : upper;
+  const lots = await pool.query(
+    `SELECT ${ERP_LINE_RAW_SQL} || jsonb_build_object('lot', lot::text) AS raw FROM inkoop_erp_lines
+     WHERE lot::text = $1 OR upper(trim(pav)) = $2 OR upper(trim(pav)) = $4 OR upper(trim(pav)) LIKE $3
+     ORDER BY erp_date DESC NULLS LAST, lot LIMIT 80`,
+    [text, upper, `${base}_`, base],
+  );
+  const lines = await pool.query(
+    `SELECT ${INVOICE_LINE_RAW_SQL} || jsonb_build_object('id', id) AS raw FROM inkoop_invoice_lines
+     WHERE upper(trim(reference_bt)) = $1 OR upper(trim(reference_bt)) = $2 OR upper(trim(reference_bt)) LIKE $3 OR invoice_number = $4
+     ORDER BY invoice_date DESC NULLS LAST, invoice_number LIMIT 80`,
+    [upper, base, `${base}_`, text],
+  );
+  return { lots: lots.rows.map((row) => row.raw), lines: lines.rows.map((row) => row.raw) };
+}
+
 export async function getInkoopInvoiceLines({ from, to } = {}) {
   if (!pool) {
     return [];

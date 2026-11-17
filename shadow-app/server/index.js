@@ -71,6 +71,7 @@ import {
   getKingExportsByInvoice,
   getInkoopInvoiceTraceLines,
   getInkoopTraceLots,
+  findInkoopByReference,
   getInkoopInvoiceMatchDays,
   setInkoopInvoiceLineBoxes,
   getInkoopMatchDays,
@@ -28534,6 +28535,59 @@ async function handleApi(req, res, url) {
   // made of it (from its day's stored result), the Connect lot(s) with the
   // night action / Levering BB, where the stock was dispatched, the
   // follow-up, a later credit and King. Read only.
+  // Track & Trace "Find": a lot / partij / brief / invoice number over every
+  // day and grower -- also the Connect lots the comparison leaves out, and why.
+  if (url.pathname === "/api/inkoop/find" && req.method === "GET") {
+    if (!requirePermission(res, requestUser, PERMISSIONS.INKOOP_VIEW)) {
+      return;
+    }
+    try {
+      const query = normalizeUkdocsText(url.searchParams.get("q")).slice(0, 40);
+      if (query.length < 4) throw new Error("Type at least 4 characters (a lot, partij, brief or invoice number).");
+      const [found, state] = await Promise.all([findInkoopByReference(query), readInkoopState()]);
+      const excluded = new Set(inkoopExcludedErpCodes(state));
+      const pairs = state.manual_line_pairs || [];
+      const lots = found.lots.map((row) => {
+        const lot = String(row.lot || "").trim();
+        const suppl = normalizeInkoopKey(row.suppl);
+        let left_out = "";
+        if (excluded.has(suppl)) {
+          left_out = `supplier code ${suppl} is set as "no purchase" (Link growers / bedrijf) -- the comparison leaves it out`;
+        } else {
+          for (const value of [row.suppl, row.avc]) {
+            const entry = state.supplier_bw_map?.[normalizeInkoopKey(value)];
+            if (!entry) continue;
+            if (entry.bw === INKOOP_BW_INTERNAL_BUNCHES || entry.bw === "N") {
+              left_out = `code ${normalizeInkoopKey(value)} is BW "${entry.bw}" (${entry.bw === "N" ? "niet berekenen" : "internal bunches"}) -- the comparison leaves it out`;
+            }
+            break;
+          }
+        }
+        const pair = pairs.find((item) => (item.lots || []).map(String).includes(lot));
+        return {
+          lot, date: row.date || "", pav: String(row.pav || "").trim(), suppl, avc: normalizeInkoopKey(row.avc), transp: normalizeInkoopKey(row.transp),
+          description: String(row.description || "").trim(), items: Number(row.items) || null, cont: Number(row.cont) || null,
+          pieces: Number(row.pieces) || 0, price: Number(row.price) || 0, total: Number(row.t_price) || 0,
+          left_out, linked_by_hand: pair ? { lines: pair.invoice_line_ids, by: pair.by || "", note: pair.note || "", at: pair.at || "" } : null,
+        };
+      });
+      const lines = found.lines.map((row) => {
+        const pair = pairs.find((item) => (item.invoice_line_ids || []).map(String).includes(String(row.id)));
+        return {
+          id: String(row.id || ""), invoice_number: row.invoice_number || "", invoice_type: row.invoice_type || "", date: row.invoice_date || "",
+          company: [row.company_number, row.company_name].filter(Boolean).join(" "), brief: String(row.reference_bt || "").trim(),
+          description: row.description || "", supplier: row.supplier_name || "", packages: row.packages ?? null, per_package: row.per_package ?? null,
+          quantity: Number(row.quantity) || 0, price: Number(row.unit_price) || 0, total: Number(row.total) || 0,
+          linked_by_hand: pair ? { lots: pair.lots, by: pair.by || "", note: pair.note || "", at: pair.at || "" } : null,
+        };
+      });
+      sendJson(res, 200, { query, lots, lines });
+    } catch (error) {
+      sendJson(res, 400, { error: error instanceof Error ? error.message : String(error) });
+    }
+    return;
+  }
+
   if (url.pathname === "/api/inkoop/invoice-trace" && req.method === "GET") {
     if (!requirePermission(res, requestUser, PERMISSIONS.INKOOP_VIEW)) {
       return;
