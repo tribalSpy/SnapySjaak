@@ -11278,8 +11278,11 @@ function foutenOverviewTypeSummary(entries) {
 function foutenOverviewPersonSummary(entries) {
   const people = new Map();
   for (const entry of entries) {
-    const personKey = String(entry.person_id || entry.person_name || "");
-    const current = people.get(personKey) || { person_name: entry.person_name || "-", total: 0, types: {} };
+    // One row per name: the same person can be saved under two person ids
+    // (picked from another list), and two rows with the same name made React
+    // keep a stale row on screen whatever the date filter.
+    const personKey = String(entry.person_name || entry.person_id || "-").trim().toLowerCase();
+    const current = people.get(personKey) || { key: personKey, person_name: entry.person_name || "-", total: 0, types: {} };
     current.total += 1;
     current.types[entry.type_label || entry.type_key || "-"] = (current.types[entry.type_label || entry.type_key || "-"] || 0) + 1;
     people.set(personKey, current);
@@ -11460,7 +11463,7 @@ function FoutenOverviewPage() {
                 </thead>
                 <tbody>
                   {peopleSummary.map((row) => (
-                    <tr key={row.person_name}>
+                    <tr key={row.key}>
                       <td>{row.person_name}</td>
                       <td>{row.total}</td>
                       <td>{Object.entries(row.types).sort((a, b) => b[1] - a[1]).map(([label, count]) => `${label}: ${count}`).join(", ")}</td>
