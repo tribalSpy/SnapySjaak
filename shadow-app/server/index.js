@@ -10233,13 +10233,54 @@ function inkoopErpRowIsInternalBunches(row, supplierBwMap) {
   return false;
 }
 
-function excludeInkoopInternalBunchRows(erpRows, supplierBwMap, excludedCodes = []) {
+// A BW "N" lot (VIJVER when the grower wasn't sure, ...) still counts when an
+// invoice line carries its partij (Wicked FALMJBb 45001090: booked under
+// VIJVER, invoiced by Juniflor) -- only when no counted lot has that partij
+// already, and never a minus lot, so a RETOUR/XPAK copy can't take a line.
+function inkoopBwNLotsWithInvoicedPav(dropped, kept, invoiceLines, supplierBwMap) {
+  if (!dropped.length || !Array.isArray(invoiceLines) || !invoiceLines.length) return [];
+  const invoicedPavs = new Set();
+  for (const line of invoiceLines) {
+    const pav = normalizeInkoopKey(line?.reference_bt);
+    if (isRealInkoopPav(pav)) invoicedPavs.add(pav);
+  }
+  const keptPavs = new Set();
+  for (const row of kept) for (const value of [row?.pav, row?.levering_pav]) if (value) keptPavs.add(normalizeInkoopKey(value));
+  const result = [];
+  for (const row of dropped) {
+    const bw = (supplierBwMap?.[normalizeInkoopKey(row?.suppl)] || supplierBwMap?.[normalizeInkoopKey(row?.avc)])?.bw;
+    if (bw !== "N" || Number(row?.pieces) < 0) continue;
+    const pavs = [row?.pav, row?.levering_pav].map((value) => normalizeInkoopKey(value)).filter((pav) => isRealInkoopPav(pav));
+    if (!pavs.some((pav) => invoicedPavs.has(pav)) || pavs.some((pav) => keptPavs.has(pav))) continue;
+    for (const pav of pavs) keptPavs.add(pav);
+    result.push({ ...row, booked_under: row?.booked_under || `${normalizeInkoopKey(row?.suppl)} (BW N, partij on an invoice)` });
+  }
+  return result;
+}
+
+let inkoopBwNLotsLoggedKey = "";
+
+function excludeInkoopInternalBunchRows(erpRows, supplierBwMap, excludedCodes = [], invoiceLines = null) {
   // Also the lines of a code that is no purchase (Link growers tab).
   const excluded = new Set((excludedCodes || []).map((code) => normalizeInkoopKey(code)));
   if ((!supplierBwMap || !Object.keys(supplierBwMap).length) && !excluded.size) {
     return erpRows;
   }
-  return (Array.isArray(erpRows) ? erpRows : []).filter((row) => !excluded.has(normalizeInkoopKey(row?.suppl)) && !inkoopErpRowIsInternalBunches(row, supplierBwMap || {}));
+  const kept = [];
+  const dropped = [];
+  for (const row of Array.isArray(erpRows) ? erpRows : []) {
+    if (excluded.has(normalizeInkoopKey(row?.suppl))) continue;
+    (inkoopErpRowIsInternalBunches(row, supplierBwMap || {}) ? dropped : kept).push(row);
+  }
+  const back = inkoopBwNLotsWithInvoicedPav(dropped, kept, invoiceLines, supplierBwMap);
+  if (back.length) {
+    const key = back.map((row) => row.lot).join(",");
+    if (key !== inkoopBwNLotsLoggedKey) {
+      inkoopBwNLotsLoggedKey = key;
+      console.log(`Inkoop: ${back.length} BW N lot(s) counted because an invoice line has their partij: ${back.slice(0, 20).map((row) => `${row.lot} ${normalizeInkoopKey(row.suppl)} ${row.pav}`).join("; ")}${back.length > 20 ? " ..." : ""}`);
+    }
+  }
+  return back.length ? [...kept, ...back] : kept;
 }
 
 function normalizeInkoopState(state) {
@@ -10834,7 +10875,7 @@ async function buildInkoopAggregateContext(state, range, match = null) {
     getInkoopInvoiceLines(range),
   ]);
   const maps = { supplierMap: state.supplier_map, supplierNameMap: state.supplier_name_map, manualLinks: state.manual_supplier_links, supplierFhMap: state.supplier_fh_map };
-  const erpRows = inkoopErpRowsForInvoiceGrowers(excludeInkoopInternalBunchRows(allErpRows, state.supplier_bw_map, inkoopExcludedErpCodes(state)), invoiceLines, {
+  const erpRows = inkoopErpRowsForInvoiceGrowers(excludeInkoopInternalBunchRows(allErpRows, state.supplier_bw_map, inkoopExcludedErpCodes(state), invoiceLines), invoiceLines, {
     ...maps,
     growerOfCode: buildInkoopCodeNameMap(state.supplier_map, state.supplier_name_map, state.supplier_fh_map, state.facturation_groups),
     nonGrowerCodes: inkoopNonGrowerCodes,
@@ -12807,7 +12848,7 @@ async function gatherInkoopMatchInputs(state, { from, to }) {
   ]);
   return {
     allErpRows,
-    erpRows: excludeInkoopInternalBunchRows(allErpRows, state.supplier_bw_map, inkoopExcludedErpCodes(state)),
+    erpRows: excludeInkoopInternalBunchRows(allErpRows, state.supplier_bw_map, inkoopExcludedErpCodes(state), invoiceLines),
     invoices: groupInkoopInvoiceLinesByInvoice(invoiceLines),
     // The stamgegevens (and manual links) always win over a learned link.
     supplierMap: { ...directory.matcherMaps.gln, ...state.supplier_map },
@@ -28559,6 +28600,9 @@ async function handleApi(req, res, url) {
             if (!entry) continue;
             if (entry.bw === INKOOP_BW_INTERNAL_BUNCHES || entry.bw === "N") {
               left_out = `code ${normalizeInkoopKey(value)} is BW "${entry.bw}" (${entry.bw === "N" ? "niet berekenen" : "internal bunches"}) -- the comparison leaves it out`;
+              if (entry.bw === "N" && isRealInkoopPav(normalizeInkoopKey(row.pav)) && !(Number(row.pieces) < 0)) {
+                left_out += `, unless an invoice line has partij ${String(row.pav).trim()} (and no other lot has it) -- then it counts`;
+              }
             }
             break;
           }
@@ -29144,7 +29188,7 @@ async function handleApi(req, res, url) {
         console.error("Matched lots for the grower totals failed:", matchError instanceof Error ? matchError.message : matchError);
         return new Map();
       });
-      const erpRows = excludeInkoopInternalBunchRows(allErpRows, state.supplier_bw_map, inkoopExcludedErpCodes(state))
+      const erpRows = excludeInkoopInternalBunchRows(allErpRows, state.supplier_bw_map, inkoopExcludedErpCodes(state), allInvoiceLines)
         .filter((row) => String(row?.date || "").slice(0, 10) >= from && String(row?.date || "").slice(0, 10) <= to)
         .filter((row) => !bwFilter.size || bwFilter.has(bwOf(row)) || matchedLotCodes.has(String(row?.lot ?? "").trim()));
       const invoiceLines = allInvoiceLines
