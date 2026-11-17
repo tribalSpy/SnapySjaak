@@ -10233,14 +10233,18 @@ function inkoopErpRowIsInternalBunches(row, supplierBwMap) {
   return false;
 }
 
-// A BW "N" lot (VIJVER when the grower wasn't sure, ...) still counts when an
-// invoice line carries its partij (Wicked FALMJBb 45001090: booked under
-// VIJVER, invoiced by Juniflor) -- only when no counted lot has that partij
-// already, and never a minus lot, so a RETOUR/XPAK copy can't take a line.
-function inkoopBwNLotsWithInvoicedPav(dropped, kept, invoiceLines, supplierBwMap) {
-  if (!dropped.length || !Array.isArray(invoiceLines) || !invoiceLines.length) return [];
+// A BW "N" lot (VIJVER when the grower wasn't sure, ...) still counts when
+// - its AVC is a real supplier (Kwel VIJVER, AVC STALIM Starline Manual): it
+//   counts under that AVC code -- not when the AVC is itself N/B (YBU3K
+//   bunches), unknown in the BW list, or "no purchase";
+// - or an invoice line carries its partij (Wicked FALMJBb 45001090: booked
+//   under VIJVER, invoiced by Juniflor) -- only when no counted lot has that
+//   partij already.
+// Never a minus lot, so a RETOUR/XPAK copy can't take a line.
+function inkoopBwNLotsWithInvoicedPav(dropped, kept, invoiceLines, supplierBwMap, excluded = new Set()) {
+  if (!dropped.length) return [];
   const invoicedPavs = new Set();
-  for (const line of invoiceLines) {
+  for (const line of Array.isArray(invoiceLines) ? invoiceLines : []) {
     const pav = normalizeInkoopKey(line?.reference_bt);
     if (isRealInkoopPav(pav)) invoicedPavs.add(pav);
   }
@@ -10248,12 +10252,18 @@ function inkoopBwNLotsWithInvoicedPav(dropped, kept, invoiceLines, supplierBwMap
   for (const row of kept) for (const value of [row?.pav, row?.levering_pav]) if (value) keptPavs.add(normalizeInkoopKey(value));
   const result = [];
   for (const row of dropped) {
-    const bw = (supplierBwMap?.[normalizeInkoopKey(row?.suppl)] || supplierBwMap?.[normalizeInkoopKey(row?.avc)])?.bw;
-    if (bw !== "N" || Number(row?.pieces) < 0) continue;
+    const suppl = normalizeInkoopKey(row?.suppl);
+    if (supplierBwMap?.[suppl]?.bw !== "N" || Number(row?.pieces) < 0) continue;
+    const avc = normalizeInkoopKey(row?.avc);
+    const avcBw = avc && avc !== suppl ? supplierBwMap?.[avc]?.bw : "";
+    if (avcBw && avcBw !== "N" && avcBw !== INKOOP_BW_INTERNAL_BUNCHES && !excluded.has(avc)) {
+      result.push({ ...row, suppl: avc, booked_under: row?.booked_under || `${suppl} (AVC ${avc})`, bw_n_reason: "avc" });
+      continue;
+    }
     const pavs = [row?.pav, row?.levering_pav].map((value) => normalizeInkoopKey(value)).filter((pav) => isRealInkoopPav(pav));
     if (!pavs.some((pav) => invoicedPavs.has(pav)) || pavs.some((pav) => keptPavs.has(pav))) continue;
     for (const pav of pavs) keptPavs.add(pav);
-    result.push({ ...row, booked_under: row?.booked_under || `${normalizeInkoopKey(row?.suppl)} (BW N, partij on an invoice)` });
+    result.push({ ...row, booked_under: row?.booked_under || `${suppl} (BW N, partij on an invoice)`, bw_n_reason: "partij" });
   }
   return result;
 }
@@ -10272,12 +10282,16 @@ function excludeInkoopInternalBunchRows(erpRows, supplierBwMap, excludedCodes = 
     if (excluded.has(normalizeInkoopKey(row?.suppl))) continue;
     (inkoopErpRowIsInternalBunches(row, supplierBwMap || {}) ? dropped : kept).push(row);
   }
-  const back = inkoopBwNLotsWithInvoicedPav(dropped, kept, invoiceLines, supplierBwMap);
+  const back = inkoopBwNLotsWithInvoicedPav(dropped, kept, invoiceLines, supplierBwMap, excluded);
   if (back.length) {
     const key = back.map((row) => row.lot).join(",");
     if (key !== inkoopBwNLotsLoggedKey) {
       inkoopBwNLotsLoggedKey = key;
-      console.log(`Inkoop: ${back.length} BW N lot(s) counted because an invoice line has their partij: ${back.slice(0, 20).map((row) => `${row.lot} ${normalizeInkoopKey(row.suppl)} ${row.pav}`).join("; ")}${back.length > 20 ? " ..." : ""}`);
+      const byAvc = back.filter((row) => row.bw_n_reason === "avc");
+      const byPav = back.filter((row) => row.bw_n_reason !== "avc");
+      const codes = {};
+      for (const row of byAvc) codes[row.booked_under] = (codes[row.booked_under] || 0) + 1;
+      console.log(`Inkoop: BW N lots counted -- ${byAvc.length} by their AVC (${Object.entries(codes).map(([code, count]) => `${code} x${count}`).join(", ") || "-"}), ${byPav.length} by a partij on an invoice${byPav.length ? `: ${byPav.slice(0, 20).map((row) => `${row.lot} ${normalizeInkoopKey(row.suppl)} ${row.pav}`).join("; ")}${byPav.length > 20 ? " ..." : ""}` : ""}`);
     }
   }
   return back.length ? [...kept, ...back] : kept;
@@ -28592,6 +28606,7 @@ async function handleApi(req, res, url) {
         const lot = String(row.lot || "").trim();
         const suppl = normalizeInkoopKey(row.suppl);
         let left_out = "";
+        let counted_note = "";
         if (excluded.has(suppl)) {
           left_out = `supplier code ${suppl} is set as "no purchase" (Link growers / bedrijf) -- the comparison leaves it out`;
         } else {
@@ -28600,7 +28615,12 @@ async function handleApi(req, res, url) {
             if (!entry) continue;
             if (entry.bw === INKOOP_BW_INTERNAL_BUNCHES || entry.bw === "N") {
               left_out = `code ${normalizeInkoopKey(value)} is BW "${entry.bw}" (${entry.bw === "N" ? "niet berekenen" : "internal bunches"}) -- the comparison leaves it out`;
-              if (entry.bw === "N" && isRealInkoopPav(normalizeInkoopKey(row.pav)) && !(Number(row.pieces) < 0)) {
+              const avcCode = normalizeInkoopKey(row.avc);
+              const avcBw = avcCode && avcCode !== suppl ? state.supplier_bw_map?.[avcCode]?.bw : "";
+              if (entry.bw === "N" && normalizeInkoopKey(value) === suppl && !(Number(row.pieces) < 0) && avcBw && avcBw !== "N" && avcBw !== INKOOP_BW_INTERNAL_BUNCHES && !excluded.has(avcCode)) {
+                counted_note = `booked under ${suppl} (BW "N"), counted under its AVC ${avcCode} (BW "${avcBw}")`;
+                left_out = "";
+              } else if (entry.bw === "N" && isRealInkoopPav(normalizeInkoopKey(row.pav)) && !(Number(row.pieces) < 0)) {
                 left_out += `, unless an invoice line has partij ${String(row.pav).trim()} (and no other lot has it) -- then it counts`;
               }
             }
@@ -28612,7 +28632,7 @@ async function handleApi(req, res, url) {
           lot, date: row.date || "", pav: String(row.pav || "").trim(), suppl, avc: normalizeInkoopKey(row.avc), transp: normalizeInkoopKey(row.transp),
           description: String(row.description || "").trim(), items: Number(row.items) || null, cont: Number(row.cont) || null,
           pieces: Number(row.pieces) || 0, price: Number(row.price) || 0, total: Number(row.t_price) || 0,
-          left_out, linked_by_hand: pair ? { lines: pair.invoice_line_ids, by: pair.by || "", note: pair.note || "", at: pair.at || "" } : null,
+          left_out, counted_note, linked_by_hand: pair ? { lines: pair.invoice_line_ids, by: pair.by || "", note: pair.note || "", at: pair.at || "" } : null,
         };
       });
       const lines = found.lines.map((row) => {

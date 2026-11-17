@@ -21460,6 +21460,7 @@ function IkFindPanel({ query, onClose, onOpenTrackTrace }) {
               <div><strong>Lot {lot.lot}</strong> · {lot.date ? fustOverviewDate(lot.date) : "no date"} · <strong>{lot.description}</strong> · partij {lot.pav || "–"}</div>
               <div className="muted">{boxes(lot.items, lot.cont, lot.pieces)} @ {formatInkoopEuro(lot.price)} = {formatInkoopEuro(lot.total)} · lev. {lot.suppl || "–"} · AVC {lot.avc || "–"}{lot.transp ? ` · transp. ${lot.transp}` : ""}</div>
               {lot.left_out && <div className="money-loss">⚠ {lot.left_out}</div>}
+              {lot.counted_note && <div className="muted">{lot.counted_note}</div>}
               {lot.linked_by_hand && <div>✋ linked by hand to line(s) {lot.linked_by_hand.lines.join(", ")}{lot.linked_by_hand.by ? ` by ${lot.linked_by_hand.by}` : ""}{lot.linked_by_hand.note ? ` -- ${lot.linked_by_hand.note}` : ""}</div>}
             </div>
           ))}
