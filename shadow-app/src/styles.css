@@ -4338,7 +4338,14 @@ button.ik-kpi:hover {
 .ik-hoofd-detail tr.selected td { background: rgba(31, 122, 90, 0.12); }
 .ik-hoofd-detail input[type="text"], .ik-hoofd-editing input { width: 100%; }
 .ik-hoofd-examples { max-width: 340px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.ik-hoofd-bulk { padding: 6px 8px; border-radius: 6px; background: var(--ik-surface-2); align-items: center; }
+/* Floats at the bottom of the screen while something is ticked, so Link /
+   Move is at hand anywhere in a long list. */
+.ik-hoofd-bulk {
+  position: fixed; left: 50%; bottom: 20px; transform: translateX(-50%); z-index: 55;
+  padding: 8px 12px; border-radius: 10px; align-items: center; flex-wrap: nowrap;
+  background: var(--ik-surface-2); border: 1px solid var(--ik-border); box-shadow: 0 8px 28px rgba(0, 0, 0, 0.35);
+  max-width: calc(100vw - 32px);
+}
 .ik-hoofd-note { padding: 8px 10px; border-left: 3px solid var(--ik-accent); background: var(--ik-surface-2); border-radius: 4px; white-space: pre-wrap; }
 .ik-hoofd-note-edit { display: grid; gap: 6px; }
 .ik-hoofd-note-edit textarea { width: 100%; resize: vertical; }
