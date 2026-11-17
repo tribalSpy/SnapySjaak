@@ -8786,13 +8786,70 @@ function matchInkoopVeilingLines(erpRows, invoices, supplierMap = {}, supplierNa
     const lotByNumber = new Map();
     for (const row of Array.isArray(erpRows) ? erpRows : []) if (row?.lot !== undefined && row?.lot !== null) lotByNumber.set(String(row.lot).trim(), row);
     const round2 = (value) => Math.round(value * 100) / 100;
+    // A correction (a brief number with a credit line, netted below) shows
+    // as ONE line carrying its first line's id. A pair holding any of its
+    // lines takes the whole correction, netted -- it only took that first
+    // line (Ro Pres Classic Red 866942: the 10x6 of 1157 linked, the -10x6 +
+    // 9x6 of 1163 left behind as "-6 pcs").
+    const correctionByLineId = new Map();
+    {
+      const byPav = new Map();
+      for (const invoice of Array.isArray(invoices) ? invoices : []) {
+        if (invoice?.type !== "klokfactuur" && invoice?.type !== "connect") continue;
+        for (const line of Array.isArray(invoice?.lines) ? invoice.lines : []) {
+          const pav = normalizeInkoopKey(line?.reference_bt);
+          if (!pav || !line?.id || line?.quantity === null || line?.quantity === undefined || isPackagingOrAdminLine(line)) continue;
+          if (!byPav.has(pav)) byPav.set(pav, []);
+          byPav.get(pav).push({ invoice, line });
+        }
+      }
+      for (const group of byPav.values()) {
+        if (!group.some((item) => Number(item.line.quantity) < 0)) continue;
+        for (const item of group) correctionByLineId.set(String(item.line.id), group);
+      }
+    }
+    const nettedCorrection = (group) => {
+      const latest = group.reduce((a, b) => (String(b.line.invoice_date || "") > String(a.line.invoice_date || "") ? b : a));
+      const quantity = group.reduce((sum, item) => sum + (Number(item.line.quantity) || 0), 0);
+      const total = round2(group.reduce((sum, item) => sum + (Number(item.line.total) || 0), 0));
+      const invoiceNumber = [...new Set(group.map((item) => item.invoice?.invoice_number).filter(Boolean))].join(" + ");
+      return {
+        invoice: { ...latest.invoice, invoice_number: invoiceNumber },
+        line: {
+          ...latest.line,
+          invoice_number: invoiceNumber,
+          quantity,
+          unit_price: quantity ? total / quantity : latest.line.unit_price,
+          total,
+          matched_as_correction: true,
+          correction_lines: group.map((item) => ({ invoice_number: item.invoice?.invoice_number || "", invoice_type: item.invoice?.type || "", ...item.line })),
+        },
+        ids: group.map((item) => item.line.id),
+      };
+    };
     for (const pair of manualPairs) {
-      const lines = (pair?.invoice_line_ids || []).map((id) => lineById.get(String(id)));
+      const picked = (pair?.invoice_line_ids || []).map((id) => lineById.get(String(id)));
       const lots = (pair?.lots || []).map((lot) => lotByNumber.get(String(lot).trim()));
-      if (!lines.length || !lots.length || lines.some((item) => !item) || lots.some((row) => !row)
-        || lines.some((item) => manualLineIds.has(item.line.id)) || lots.some((row) => consumedErpRows.has(row))) continue;
+      if (!picked.length || !lots.length || picked.some((item) => !item) || lots.some((row) => !row)) continue;
+      const lines = [];
+      const lineIds = [];
+      const groupsTaken = new Set();
+      for (const item of picked) {
+        const group = correctionByLineId.get(String(item.line.id));
+        if (!group) {
+          lines.push(item);
+          lineIds.push(item.line.id);
+          continue;
+        }
+        if (groupsTaken.has(group)) continue;
+        groupsTaken.add(group);
+        const netted = nettedCorrection(group);
+        lines.push({ invoice: netted.invoice, line: netted.line });
+        lineIds.push(...netted.ids);
+      }
+      if (lineIds.some((id) => manualLineIds.has(id)) || lots.some((row) => consumedErpRows.has(row))) continue;
       for (const row of lots) consumedErpRows.add(row);
-      for (const item of lines) manualLineIds.add(item.line.id);
+      for (const id of lineIds) manualLineIds.add(id);
       const lotPieces = lots.reduce((sum, row) => sum + (Number(row.pieces) || 0), 0);
       const lotValue = round2(lots.reduce((sum, row) => sum + (parseFloat(row.t_price) || 0), 0));
       const linePieces = lines.reduce((sum, item) => sum + (Number(item.line.quantity) || 0), 0);
