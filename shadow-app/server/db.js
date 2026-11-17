@@ -2722,6 +2722,7 @@ const INKOOP_LINE_KIND_SQL = `
     WHEN btrim(COALESCE(l.description, '')) ~* '^(transactieheffing|serviceheffing)' THEN 'fee'
     WHEN COALESCE(l.raw->>'product_type_code', '') = '128' OR btrim(COALESCE(l.description, '')) ~* '^verrekencode' THEN 'admin'
     WHEN COALESCE(l.raw->>'product_type_code', '') = '67'
+      OR btrim(COALESCE(l.description, '')) ~* '^fc\\s?[0-9]{3}'
       OR (COALESCE(l.raw->>'product_type_code', '') = ''
         AND btrim(COALESCE(l.description, '')) ~* '^(fc\\s?[0-9]{3}|stapelwagen|deense kar|(kleine |medium |grote |kleine hoge |export)?container|exportcontainer|bloemendoos|paraat doos|normpack|normtray)')
       THEN 'fust'

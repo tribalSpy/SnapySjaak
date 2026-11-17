@@ -8324,6 +8324,12 @@ function inkoopInvoiceLineHasNoValue(line) {
 const INKOOP_PACKAGING_DESCRIPTION_RE = /^(?:fc\s?\d{3}|stapelwagen|deense kar|(?:kleine |medium |grote |kleine hoge |export)?container|exportcontainer|bloemendoos|paraat doos|normpack|normtray|verrekencode|emballage|transactieheffing|serviceheffing)/i;
 
 function inkoopInvoiceLineIsPackagingOrAdmin(line) {
+  // A fust code ("Fc566+opzetrek(Fc596)") is fust whatever VBN code the
+  // line carries -- Starline's carried a product code and showed up as a
+  // purchase (and a correction) without its lot.
+  if (/^fc\s?\d{3}/i.test(String(line?.description || "").trim())) {
+    return true;
+  }
   const code = String(line?.product_type_code || "").trim();
   if (code) {
     return code === "67" || code === "128";
@@ -8916,6 +8922,9 @@ function matchInkoopVeilingLines(erpRows, invoices, supplierMap = {}, supplierNa
       if (invoice?.type !== "handel" && invoice?.type !== "ai2") continue;
       for (const line of Array.isArray(invoice?.lines) ? invoice.lines : []) {
         if (!line?.id || manualLineIds.has(line.id) || line?.quantity === null || line?.quantity === undefined) continue;
+        // Fust/packaging (Fc566+opzetrek credited by Starline) is no
+        // purchase: left to the packaging lines below, never a correction.
+        if (isPackagingOrAdminLine(line)) continue;
         const credit = asCredit(line);
         if (credit) credits.push({ invoice, line, ...credit });
         else if (Number(line.quantity) > 0 && Number(line.unit_price) > 0) purchases.push({ invoice, line });
