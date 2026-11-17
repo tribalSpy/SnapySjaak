@@ -2448,7 +2448,11 @@ function deriveUkdocsShipmentStatus(shipment) {
 
 function normalizeUkdocsShipment(shipment) {
   const uploadedFiles = normalizeUkdocsUploadedFiles(shipment?.uploaded_files);
-  const categoriesIncluded = Object.values(uploadedFiles).filter((item) => item.file_name).map((item) => item.category);
+  // MAR+ADM: the extra part's (ADM) data files -- their rows go into the
+  // same category's documents -- and its own invoice numbers, kept only to
+  // find and check its facturen in Finance Audit (never on the UK docs).
+  const extraUploadedFiles = ukdocsUploadedFilesWithoutContent(shipment?.extra_uploaded_files);
+  const categoriesIncluded = Object.keys(uploadedFiles).filter((category) => uploadedFiles[category].file_name || extraUploadedFiles[category]?.file_name);
   const normalized = {
     id: normalizeUkdocsText(shipment?.id) || crypto.randomUUID(),
     customer_id: normalizeUkdocsText(shipment?.customer_id),
@@ -2477,6 +2481,9 @@ function normalizeUkdocsShipment(shipment) {
     marks_and_numbers: String(shipment?.marks_and_numbers || "").trim(),
     container_number: normalizeUkdocsText(shipment?.container_number),
     uploaded_files: uploadedFiles,
+    extra_uploaded_files: extraUploadedFiles,
+    extra_invoice_numbers_by_category: normalizeUkdocsInvoiceNumbersByCategory(shipment?.extra_invoice_numbers_by_category),
+    extra_factuur_ref: normalizeUkdocsText(shipment?.extra_factuur_ref),
     categories_included: categoriesIncluded,
     validation_warnings: Array.isArray(shipment?.validation_warnings) ? shipment.validation_warnings.map((item) => String(item || "").trim()).filter(Boolean) : [],
     audit_status: normalizeUkdocsText(shipment?.audit_status),
@@ -3079,7 +3086,9 @@ function summarizeUkdocsWarnings(warnings) {
 function financeAuditCategoryTokens(state, shipment, category) {
   const own = ukdocsPrintInvoiceTokens(shipment?.invoice_numbers_by_category?.[category]);
   const override = (state?.finance_audit_overrides || []).find((item) => item.shipment_id === shipment?.id && item.category === category);
-  return [...new Set([...own, ...ukdocsPrintInvoiceTokens(override?.extra_invoices)])];
+  // + the extra part's (MAR+ADM: ADM's) own invoice numbers.
+  const part = ukdocsPrintInvoiceTokens(shipment?.extra_invoice_numbers_by_category?.[category]);
+  return [...new Set([...own, ...ukdocsPrintInvoiceTokens(override?.extra_invoices), ...part])];
 }
 
 async function matchFinanceAuditInvoiceFiles({ files, candidateShipments, by, scopeLabel = "any of the visible sendings" }) {
@@ -3177,19 +3186,22 @@ async function matchFinanceAuditInvoiceFiles({ files, candidateShipments, by, sc
 // ---- Finance Audit: where a factuur differs from the export -----------------
 const FINANCE_AUDIT_CATEGORIES = ["508", "515", "1000", "920"];
 
-function financeAuditDataFilePath(shipmentId, category) {
+function financeAuditDataFilePath(shipmentId, category, part = "") {
   const id = String(shipmentId || "").replace(/[^A-Za-z0-9_-]/g, "");
   if (!id || !FINANCE_AUDIT_CATEGORIES.includes(String(category))) return "";
-  return path.join(financeAuditDataFilesDir, `${id}-${category}.xlsx`);
+  return path.join(financeAuditDataFilesDir, `${id}-${category}${part === "extra" ? "-extra" : ""}.xlsx`);
 }
 
 // The data files uploaded in UKdocs for a sending (content_base64 per
 // category), kept as files -- a new upload replaces the old one.
-async function saveFinanceAuditDataFiles(shipmentId, uploadedFiles) {
+async function saveFinanceAuditDataFiles(shipmentId, uploadedFiles, part = "") {
   const files = uploadedFiles && typeof uploadedFiles === "object" ? uploadedFiles : {};
   for (const category of FINANCE_AUDIT_CATEGORIES) {
     const content = String(files?.[category]?.content_base64 || "").trim();
-    const target = financeAuditDataFilePath(shipmentId, category);
+    const target = financeAuditDataFilePath(shipmentId, category, part);
+    // Generated again without an extra (ADM) file: its old one no longer
+    // belongs to these documents.
+    if (!content && target && part === "extra") await fs.unlink(target).catch(() => {});
     if (!content || !target) continue;
     await fs.mkdir(financeAuditDataFilesDir, { recursive: true });
     const temp = `${target}.tmp`;
@@ -3206,12 +3218,16 @@ async function explainFinanceAuditDifference(state, shipmentId, category, candid
   if (!dataPath || !(await fs.stat(dataPath).catch(() => null))) {
     return { ok: false, missing_data: true, error: "No data file kept for this sending (made before this was added) -- pick it with Explain…" };
   }
+  // MAR+ADM: the extra part's (ADM) data file counts too -- its lines are on
+  // its own facturen. Not with a data file picked by hand.
+  const extraPath = candidatePath ? "" : financeAuditDataFilePath(shipmentId, category, "extra");
+  const dataPaths = [dataPath, ...(extraPath && (await fs.stat(extraPath).catch(() => null)) ? [extraPath] : [])];
   const pdfs = (state.finance_audit_invoice_documents || [])
     .filter((document) => document.shipment_id === shipmentId && document.category === category && document.storage_name)
     .map((document) => path.join(ukdocsPrintFilesDir, document.storage_name));
   if (!pdfs.length) return { ok: false, error: "No factuur PDF on this sending yet." };
   try {
-    const output = await runFinanceAuditInvoiceWorker(["explain", "--data", dataPath, ...pdfs.flatMap((pdf) => ["--pdf", pdf])]);
+    const output = await runFinanceAuditInvoiceWorker(["explain", ...dataPaths.flatMap((item) => ["--data", item]), ...pdfs.flatMap((pdf) => ["--pdf", pdf])]);
     return JSON.parse(output.toString("utf8"));
   } catch (error) {
     return { ok: false, error: error instanceof Error ? error.message : String(error) };
@@ -3306,7 +3322,7 @@ function financeAuditNeededInvoices(state, { from = addDaysToIsoDate(localDateIs
   for (const shipment of sendings) {
     const customer = (state.customers || []).find((item) => item.id === shipment.customer_id);
     for (const category of ["508", "515", "1000", "920"]) {
-      if (!shipment.uploaded_files?.[category]?.file_name) continue;
+      if (!shipment.uploaded_files?.[category]?.file_name && !shipment.extra_uploaded_files?.[category]?.file_name) continue;
       const categoryTokens = financeAuditCategoryTokens(state, shipment, category);
       if (!categoryTokens.length) {
         noNumber.push({ shipment_id: shipment.id, category, customer: customer?.customer_name || "", date: String(shipment.shipment_date || "").slice(0, 10) });
@@ -3325,15 +3341,27 @@ function financeAuditNeededInvoices(state, { from = addDaysToIsoDate(localDateIs
       const override = (state.finance_audit_overrides || []).find((item) => item.shipment_id === shipment.id && item.category === category);
       // The customer's Uniware factuur code (Customers > Finance Audit); a
       // code set on the sending's own row wins.
-      const entry = {
-        ref: String(override?.factuur_ref || customer?.uniware_factuur_ref || "").trim(),
-        invoice_numbers: missing,
-        shipment_id: shipment.id,
-        category,
-        customer: customer?.customer_name || "",
-        date: String(shipment.shipment_date || "").slice(0, 10),
-      };
-      (entry.ref ? items : missingRef).push(entry);
+      const mainRef = String(override?.factuur_ref || customer?.uniware_factuur_ref || "").trim();
+      // MAR+ADM: the extra part's facturen are under its own Uniware code
+      // (UKdocs > the sending's "Extra part"), else the sending's.
+      const partTokens = new Set(ukdocsPrintInvoiceTokens(shipment.extra_invoice_numbers_by_category?.[category]));
+      const groups = [
+        { ref: mainRef, invoice_numbers: missing.filter((token) => !partTokens.has(token)) },
+        { ref: String(shipment.extra_factuur_ref || "").trim() || mainRef, invoice_numbers: missing.filter((token) => partTokens.has(token)), part: "extra" },
+      ];
+      for (const group of groups) {
+        if (!group.invoice_numbers.length) continue;
+        const entry = {
+          ref: group.ref,
+          invoice_numbers: group.invoice_numbers,
+          shipment_id: shipment.id,
+          category,
+          customer: customer?.customer_name || "",
+          date: String(shipment.shipment_date || "").slice(0, 10),
+          ...(group.part ? { part: group.part } : {}),
+        };
+        (entry.ref ? items : missingRef).push(entry);
+      }
     }
   }
   // The same factuur number on more than one sending: one of them is wrong
@@ -25781,6 +25809,7 @@ async function handleApi(req, res, url) {
       id: body?.id || crypto.randomUUID(),
       invoice_numbers: body?.invoice_numbers || "",
       uploaded_files: ukdocsUploadedFilesWithoutContent(body?.uploaded_files),
+      extra_uploaded_files: ukdocsUploadedFilesWithoutContent(body?.extra_uploaded_files),
       validation_warnings: warningMessages,
       audit_status: analysis?.audit?.final_status === "PASS" ? "passed" : "failed",
       ready: analysis?.audit?.final_status === "PASS",
@@ -25833,6 +25862,7 @@ async function handleApi(req, res, url) {
     // The uploaded data files (one row per line), kept next to the sending:
     // Finance Audit explains a factuur mismatch line by line from them.
     await saveFinanceAuditDataFiles(shipment.id, body?.uploaded_files).catch((error) => console.error("Finance Audit data files:", error?.message || error));
+    await saveFinanceAuditDataFiles(shipment.id, body?.extra_uploaded_files, "extra").catch((error) => console.error("Finance Audit data files (extra):", error?.message || error));
     const pdfJobs = await queueUkdocsInvoicePdfJobs(printCollection, requestUser);
 
     sendJson(res, 200, {

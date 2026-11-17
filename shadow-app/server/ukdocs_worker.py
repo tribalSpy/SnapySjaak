@@ -1581,9 +1581,42 @@ def build_audit_workbook(analysis):
     return build_xlsx(rows_to_dense_map(rows))
 
 
+def merge_extra_rows(headers, extra_rows, alias_map):
+    """The extra part's data rows (MAR+ADM: ADM's own data file) laid out
+    in the main file's columns -- by column meaning (the aliases), else by
+    the same header text. Returns (rows, required columns the extra file
+    lacks)."""
+    if not extra_rows:
+        return [], []
+    extra_headers = extra_rows[0]
+    main_indexes = resolve_header_indexes(headers, alias_map)
+    extra_indexes = resolve_header_indexes(extra_headers, alias_map)
+    source_of = {}
+    for name, position in main_indexes.items():
+        if position is not None and extra_indexes.get(name) is not None:
+            source_of[position] = extra_indexes[name]
+    extra_by_text = {lower_key(value): index for index, value in enumerate(extra_headers) if clean_text(value)}
+    for position, header in enumerate(headers):
+        if position not in source_of and lower_key(header) in extra_by_text:
+            source_of[position] = extra_by_text[lower_key(header)]
+    lacking = [name for name, position in main_indexes.items() if position is not None and extra_indexes.get(name) is None]
+    merged = []
+    for source_row in extra_rows[1:]:
+        if not any(clean_text(value) for value in source_row):
+            continue
+        merged.append([
+            source_row[source_of[position]] if position in source_of and source_of[position] < len(source_row) else ""
+            for position in range(len(headers))
+        ])
+    return merged, lacking
+
+
 def analyze_payload(payload):
     invoice_numbers_by_category = parse_invoice_numbers(payload)
     uploaded_files = payload.get("uploaded_files") or {}
+    # MAR+ADM: the extra part's data files, added to the same category's
+    # data (its invoice numbers are only for factuur tracking -- not here).
+    extra_files = payload.get("extra_uploaded_files") or {}
     records = []
     categories = []
     warnings = []
@@ -1593,12 +1626,31 @@ def analyze_payload(payload):
     for category_code in CATEGORY_ORDER:
         file_entry = uploaded_files.get(category_code) or {}
         content_base64 = clean_text(file_entry.get("content_base64"))
-        if not content_base64:
+        extra_entry = extra_files.get(category_code) if isinstance(extra_files, dict) else None
+        extra_base64 = clean_text((extra_entry or {}).get("content_base64"))
+        if not content_base64 and not extra_base64:
             continue
-        raw_bytes = base64.b64decode(content_base64)
-        rows = parse_xlsx_rows(raw_bytes)
-        headers = rows[0] if rows else []
         alias_map = build_column_alias_map(payload, category_code)
+        if content_base64:
+            rows = parse_xlsx_rows(base64.b64decode(content_base64))
+            headers = rows[0] if rows else []
+        else:
+            rows = []
+            headers = []
+        if extra_base64:
+            extra_rows = parse_xlsx_rows(base64.b64decode(extra_base64))
+            if not rows:
+                # Only the extra part has this category: its file as it is.
+                rows = extra_rows
+                headers = rows[0] if rows else []
+            else:
+                added, lacking = merge_extra_rows(headers, extra_rows, alias_map)
+                needed = {"grossMassValue", "grossMassUnit", "netMassValue", "netMassUnit", "value", "originCountryCode", "classificationType", "classificationValue", "goodsDescriptionText", "quantityValue", "packages", "fullClassificationCode", "taricCode"}
+                lacking = [name for name in lacking if name in needed]
+                if lacking:
+                    warnings.append({"code": "extra_file_columns_missing", "category": category_code, "message": f'{category_code}: the extra (ADM) data file lacks columns: {", ".join(lacking)}'})
+                    blocking_warning_codes.add("extra_file_columns_missing")
+                rows = rows + added
         indexes = resolve_header_indexes(headers, alias_map)
         required = ["grossMassValue", "grossMassUnit", "netMassValue", "netMassUnit", "value", "originCountryCode", "classificationType", "classificationValue", "goodsDescriptionText", "quantityValue", "packages", "fullClassificationCode", "taricCode"]
         missing_required = [name for name in required if indexes.get(name) is None]

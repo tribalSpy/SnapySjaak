@@ -1864,6 +1864,17 @@ pre {
   color: #5d7088;
 }
 
+/* MAR+ADM: the extra part's (ADM) uploads, set apart from the main ones. */
+.ukdocs-extra-part {
+  display: grid;
+  gap: 10px;
+  padding: 10px 14px;
+  border: 1px dashed #b9c4d0;
+  border-radius: 10px;
+}
+.ukdocs-extra-part > summary { cursor: pointer; }
+.ukdocs-extra-part p { margin: 0; }
+
 .ukdocs-collection-tile {
   transition: border-color 0.2s ease, box-shadow 0.2s ease, transform 0.2s ease;
 }

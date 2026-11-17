@@ -2898,7 +2898,7 @@ function buildUkdocsFinanceAuditRows(state) {
     for (const categoryDefinition of UKDOCS_CATEGORY_DEFINITIONS) {
       const category = categoryDefinition.code;
       const uploaded = shipment.uploaded_files?.[category];
-      if (!uploaded?.file_name) {
+      if (!uploaded?.file_name && !shipment.extra_uploaded_files?.[category]?.file_name) {
         continue;
       }
       const override = overrides.find((item) => item.shipment_id === shipment.id && item.category === category) || null;
@@ -2924,8 +2924,10 @@ function buildUkdocsFinanceAuditRows(state) {
         location_connect: collection?.reference_connect || "",
         opmerking: override?.opmerking || "",
         factuur_ref: override?.factuur_ref || "",
-        // Extra facturen for this sending (Finance Audit only).
-        extra_invoices: override?.extra_invoices || "",
+        // Extra facturen for this sending (Finance Audit only): set here, and
+        // the extra part's (MAR+ADM: ADM's) own numbers from UKdocs.
+        extra_invoices: [override?.extra_invoices, shipment.extra_invoice_numbers_by_category?.[category]]
+          .map((value) => String(value || "").trim()).filter(Boolean).join(" "),
         is_euro_customer: isEuroCustomer,
         waarde_gbp: !isEuroCustomer ? rawValue : "",
         waarde_eu: isEuroCustomer ? rawValue : "",
@@ -2979,8 +2981,8 @@ function groupUkdocsFinanceAuditRows(rows) {
     if (row.type && !group.types.includes(row.type)) {
       group.types.push(row.type);
     }
-    if (row.factuur_nummer) {
-      group.factuur_nummers.push(row.factuur_nummer + (row.extra_invoices ? ` + ${row.extra_invoices}` : ""));
+    if (row.factuur_nummer || row.extra_invoices) {
+      group.factuur_nummers.push([row.factuur_nummer, row.extra_invoices].filter(Boolean).join(" + "));
     }
     group.waarde_gbp_total += Number(row.waarde_gbp) || 0;
     group.waarde_eu_total += Number(row.waarde_eu) || 0;
@@ -3384,6 +3386,10 @@ function emptyUkdocsShipmentDraft() {
     marks_and_numbers: "",
     container_number: "",
     uploaded_files: Object.fromEntries(UKDOCS_CATEGORY_DEFINITIONS.map((category) => [category.code, { category: category.code, file_name: "", uploaded_at: "", size: 0 }])),
+    // MAR+ADM: the extra part's (ADM) data files and invoice numbers.
+    extra_uploaded_files: Object.fromEntries(UKDOCS_CATEGORY_DEFINITIONS.map((category) => [category.code, { category: category.code, file_name: "", uploaded_at: "", size: 0 }])),
+    extra_invoice_numbers_by_category: Object.fromEntries(UKDOCS_CATEGORY_DEFINITIONS.map((category) => [category.code, ""])),
+    extra_factuur_ref: "",
     validation_warnings: [],
     audit_status: "",
     ready: false,
@@ -4888,15 +4894,47 @@ function UkdocsPage({ currentUser, onNavigate }) {
     setGeneratedFiles([]);
   }
 
+  // MAR+ADM: the extra part's (ADM) data file of a category -- its rows are
+  // added to that category's data; its invoice number is kept only to find
+  // and check its factuur in Finance Audit.
+  async function updateExtraUploadedFile(categoryCode, file) {
+    let nextFile = { category: categoryCode, file_name: "", size: 0, uploaded_at: "", content_base64: "" };
+    const invoiceNumberFromFile = file ? ukdocsInvoiceNumberFromFileName(file.name) : "";
+    if (file) {
+      nextFile = { category: categoryCode, file_name: file.name, size: file.size || 0, uploaded_at: new Date().toISOString(), content_base64: await fileToBase64(file) };
+    }
+    // The Uniware factuur code used last time for this customer's extra part.
+    const lastRef = (state?.shipments || []).find((item) => item.customer_id && item.customer_id === shipmentDraft.customer_id && String(item.extra_factuur_ref || "").trim())?.extra_factuur_ref || "";
+    setShipmentDraft((current) => {
+      const currentInvoice = String(current.extra_invoice_numbers_by_category?.[categoryCode] || "").trim();
+      const previousFileInvoice = ukdocsInvoiceNumberFromFileName(current.extra_uploaded_files?.[categoryCode]?.file_name || "");
+      const useFileInvoice = invoiceNumberFromFile && (!currentInvoice || currentInvoice === previousFileInvoice);
+      return {
+        ...current,
+        extra_factuur_ref: String(current.extra_factuur_ref || "").trim() || (file ? lastRef : ""),
+        extra_invoice_numbers_by_category: { ...(current.extra_invoice_numbers_by_category || {}), [categoryCode]: useFileInvoice ? invoiceNumberFromFile : currentInvoice },
+        extra_uploaded_files: { ...(current.extra_uploaded_files || {}), [categoryCode]: nextFile },
+      };
+    });
+    setAnalysis(null);
+    setGeneratedFiles([]);
+  }
+
+  const extraInvoiceText = UKDOCS_CATEGORY_DEFINITIONS
+    .map((category) => String(shipmentDraft.extra_invoice_numbers_by_category?.[category.code] || "").trim())
+    .filter(Boolean).join(" / ");
+
   function confirmShipmentInvoiceNumbers(actionLabel = "continue") {
     const invoiceText = String(combinedInvoiceNumbers || "").trim();
     if (!invoiceText) {
       window.alert("No invoice number is filled in.");
       return false;
     }
-    return window.confirm(`Invoice number(s): ${invoiceText}\n\nDo you want to ${actionLabel}?`);
+    const extraText = extraInvoiceText ? `\nExtra part (ADM) -- factuur tracking only, not on the documents: ${extraInvoiceText}` : "";
+    return window.confirm(`Invoice number(s): ${invoiceText}${extraText}\n\nDo you want to ${actionLabel}?`);
   }
 
+  const extraUploadedCount = Object.values(shipmentDraft.extra_uploaded_files || {}).filter((item) => item?.file_name).length;
   const uploadedCount = Object.values(shipmentDraft.uploaded_files || {}).filter((item) => item?.file_name).length;
   const canContinue = uploadedCount > 0 && !saving;
   const canGenerate = analysis?.audit?.final_status === "PASS" && !saving;
@@ -5062,6 +5100,39 @@ function UkdocsPage({ currentUser, onNavigate }) {
               );
             })}
               </div>
+
+              <details className="ukdocs-extra-part" open={extraUploadedCount > 0 || Boolean(extraInvoiceText) || /ADM/i.test(selectedPrintCollection?.hub_code || "")}>
+                <summary>
+                  <strong>Extra part (MAR+ADM: ADM's data)</strong>
+                  {extraUploadedCount > 0 && <span className="muted"> · {extraUploadedCount} file(s){extraInvoiceText ? ` · ${extraInvoiceText}` : ""}</span>}
+                </summary>
+                <p className="muted">
+                  Its data lines are added to the same category's data above, and the documents are made as usual with the invoice numbers above.
+                  Its own invoice numbers are <strong>not</strong> on the documents. They are kept only to find and check its facturen in Finance Audit.
+                </p>
+                <div className="form-grid">
+                  <label>
+                    <span>Uniware factuur code of this part</span>
+                    <input value={shipmentDraft.extra_factuur_ref || ""} onChange={(event) => setShipmentDraft({ ...shipmentDraft, extra_factuur_ref: event.target.value })} placeholder="e.g. ADM's customer code (empty: the sending's)" />
+                  </label>
+                </div>
+                <div className="ukdocs-upload-grid">
+                  {UKDOCS_CATEGORY_DEFINITIONS.map((category) => {
+                    const fileInfo = shipmentDraft.extra_uploaded_files?.[category.code] || {};
+                    return (
+                      <div key={category.code} className="ukdocs-upload-card">
+                        <strong>{category.shortLabel} (ADM)</strong>
+                        <input key={`${shipmentUploadInputVersion}-extra-${category.code}`} type="file" accept=".xlsx,.xls,.csv" onChange={async (event) => updateExtraUploadedFile(category.code, event.target.files?.[0] || null)} />
+                        <label>
+                          <span>Its invoice number (factuur tracking only)</span>
+                          <input value={shipmentDraft.extra_invoice_numbers_by_category?.[category.code] || ""} onChange={(event) => setShipmentDraft({ ...shipmentDraft, extra_invoice_numbers_by_category: { ...(shipmentDraft.extra_invoice_numbers_by_category || {}), [category.code]: event.target.value } })} placeholder="ADM's own invoice number" />
+                        </label>
+                        <small>{fileInfo.file_name ? `${fileInfo.file_name} (${fileInfo.size || 0} bytes)${fileInfo.content_base64 ? "" : " -- choose it again to add its lines"}` : "No extra file."}</small>
+                      </div>
+                    );
+                  })}
+                </div>
+              </details>
 
               <div className="section-header"><h3>Workflow status</h3></div>
               <div className="ukdocs-badge-row">{["not_started", "files_uploaded", "audit_passed", "ready", "failed"].map((status) => { const definition = ukdocsStatusDefinition(status); return <div key={status} className={`ukdocs-status-badge ${definition.tone}`}>{definition.label}</div>; })}</div>

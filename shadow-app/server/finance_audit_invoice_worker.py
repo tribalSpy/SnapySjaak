@@ -368,7 +368,7 @@ def explain_difference(invoice_lines: list[dict], export_lines: list[dict]) -> d
     }
 
 
-def explain_files(data_path: Path, pdf_paths: list[Path]) -> dict:
+def explain_files(data_paths: list[Path], pdf_paths: list[Path]) -> dict:
     invoice_lines = []
     for pdf in pdf_paths:
         text = extract_pdf_text(pdf)
@@ -380,7 +380,8 @@ def explain_files(data_path: Path, pdf_paths: list[Path]) -> dict:
         if total is not None and abs(read - total) > 0.02:
             return {"ok": False, "error": f"Could not read all of factuur {pdf.stem}'s lines ({read:.2f} of {total:.2f}) -- can't say exactly where the difference is.", "text": ""}
         invoice_lines += lines
-    export_lines = read_export_lines(data_path)
+    # MAR+ADM: the main data file plus the extra part's (ADM) -- together.
+    export_lines = [line for data_path in data_paths for line in read_export_lines(data_path)]
     if not invoice_lines:
         return {"ok": False, "error": "Could not read the factuur's lines", "text": ""}
     if not export_lines:
@@ -394,7 +395,7 @@ def parse_args() -> argparse.Namespace:
     parse_parser = subparsers.add_parser("parse")
     parse_parser.add_argument("--input", required=True)
     explain_parser = subparsers.add_parser("explain")
-    explain_parser.add_argument("--data", required=True)
+    explain_parser.add_argument("--data", action="append", required=True)
     explain_parser.add_argument("--pdf", action="append", required=True)
     return parser.parse_args()
 
@@ -414,7 +415,7 @@ def main() -> None:
         print(json.dumps(result, ensure_ascii=True))
     elif args.command == "explain":
         try:
-            result = explain_files(Path(args.data), [Path(item) for item in args.pdf])
+            result = explain_files([Path(item) for item in args.data], [Path(item) for item in args.pdf])
         except Exception as error:  # noqa: BLE001
             result = {"ok": False, "error": str(error), "text": ""}
         print(json.dumps(result, ensure_ascii=True))
