@@ -11287,6 +11287,16 @@ function bumpInkoopMatchVersion() {
   inkoopCompaniesCache = null;
 }
 
+// Expired results were only replaced when the same period was asked again:
+// up to 80 full comparisons (the views of a busy day) stayed in memory all
+// night. Dropped once expired (an in-flight one is kept while it runs).
+setInterval(() => {
+  const now = Date.now();
+  for (const [key, entry] of inkoopMatchCache) {
+    if (now - entry.at >= INKOOP_MATCH_CACHE_MS) inkoopMatchCache.delete(key);
+  }
+}, 2 * 60 * 1000).unref();
+
 function inkoopCachedCompute(kind, range, compute) {
   const key = `${kind}|${range.from}|${range.to}|${inkoopMatchVersion}`;
   const cached = inkoopMatchCache.get(key);
@@ -32270,11 +32280,78 @@ async function runInkoopMatchChild() {
   setInterval(kickInkoopMatchWorker, 30000);
 }
 
+// Memory watch (Render: "Ran out of memory (used over 2GB)" without saying
+// which process). Every 10 minutes one line with this process's memory and
+// the container's total; once the container is past 1.5 GB, every minute
+// the biggest processes too (Linux only) -- so the log shows who grows.
+const MEMORY_WATCH_WARN_BYTES = 1.5 * 1024 * 1024 * 1024;
+async function readContainerMemoryBytes() {
+  for (const file of ["/sys/fs/cgroup/memory.current", "/sys/fs/cgroup/memory/memory.usage_in_bytes"]) {
+    try {
+      const value = Number(String(await fs.readFile(file, "utf8")).trim());
+      if (Number.isFinite(value) && value > 0) return value;
+    } catch {
+      // Not this cgroup version / not Linux.
+    }
+  }
+  return 0;
+}
+async function readBiggestProcesses(limit = 6) {
+  const list = [];
+  let entries = [];
+  try {
+    entries = await fs.readdir("/proc");
+  } catch {
+    return list;
+  }
+  for (const pid of entries.filter((name) => /^\d+$/.test(name))) {
+    try {
+      const status = await fs.readFile(`/proc/${pid}/status`, "utf8");
+      const rssKb = Number((status.match(/^VmRSS:\s+(\d+)/m) || [])[1] || 0);
+      if (!rssKb) continue;
+      const cmdline = (await fs.readFile(`/proc/${pid}/cmdline`, "utf8")).split("\0").filter(Boolean)
+        .map((part) => path.basename(part)).slice(0, 4).join(" ").slice(0, 90);
+      list.push({ pid, mb: Math.round(rssKb / 1024), cmd: cmdline });
+    } catch {
+      // Gone meanwhile.
+    }
+  }
+  return list.sort((left, right) => right.mb - left.mb).slice(0, limit);
+}
+function startMemoryWatch(label) {
+  const mb = (bytes) => Math.round(bytes / 1024 / 1024);
+  let lastLine = 0;
+  const tick = async () => {
+    try {
+      const usage = process.memoryUsage();
+      const container = label === "app" ? await readContainerMemoryBytes() : 0;
+      const high = container >= MEMORY_WATCH_WARN_BYTES;
+      if (!high && Date.now() - lastLine < 10 * 60 * 1000) return;
+      lastLine = Date.now();
+      let line = `Memory (${label}): rss ${mb(usage.rss)} MB, heap ${mb(usage.heapUsed)}/${mb(usage.heapTotal)} MB, buffers ${mb(usage.external + (usage.arrayBuffers || 0))} MB`;
+      if (container) line += ` -- container ${mb(container)} MB of 2048`;
+      if (high) {
+        const biggest = await readBiggestProcesses();
+        line += ` -- biggest: ${biggest.map((item) => `${item.cmd} (pid ${item.pid}) ${item.mb} MB`).join("; ")}`;
+        console.warn(line);
+      } else {
+        console.log(line);
+      }
+    } catch {
+      // Never let the watch itself fail anything.
+    }
+  };
+  setInterval(tick, 60 * 1000).unref();
+  setTimeout(tick, 30 * 1000).unref();
+}
+
 async function startServer() {
   if (INKOOP_MATCH_CHILD) {
+    startMemoryWatch("inkoop comparison");
     await runInkoopMatchChild();
     return;
   }
+  startMemoryWatch("app");
   let databaseStarted = false;
   if (isDatabaseEnabled()) {
     databaseStarted = await connectDatabaseAtStart();
