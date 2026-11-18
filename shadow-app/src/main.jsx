@@ -2924,6 +2924,7 @@ function buildUkdocsFinanceAuditRows(state) {
         location_connect: collection?.reference_connect || "",
         opmerking: override?.opmerking || "",
         factuur_ref: override?.factuur_ref || "",
+        rounding_difference: override?.rounding_difference || "",
         // Extra facturen for this sending (Finance Audit only): set here, and
         // the extra part's (MAR+ADM: ADM's) own numbers from UKdocs.
         extra_invoices: [override?.extra_invoices, shipment.extra_invoice_numbers_by_category?.[category]]
@@ -3006,6 +3007,11 @@ function financeAuditInvoiceComparison(row, docs) {
   const amount = docs.reduce((total, doc) => total + (Number(doc.parsed?.total_amount) || 0), 0);
   const expectedColli = Number(row.volume) || 0;
   const expectedAmount = Number(row.is_euro_customer ? row.waarde_eu : row.waarde_gbp) || 0;
+  // The line comparison found only price rounding (ADM prints 0,69 for
+  // 0.691): exactly that difference counts as a match.
+  const rounding = String(row.rounding_difference ?? "").trim() === "" ? null : Number(row.rounding_difference);
+  const exact = expectedAmount > 0 && Math.abs(amount - expectedAmount) < 0.01;
+  const byRounding = !exact && expectedAmount > 0 && Number.isFinite(rounding) && rounding !== 0 && Math.abs((amount - expectedAmount) - rounding) < 0.01;
   return {
     colli,
     pieces,
@@ -3013,7 +3019,8 @@ function financeAuditInvoiceComparison(row, docs) {
     expectedColli,
     expectedAmount,
     colliMatch: expectedColli > 0 && colli === expectedColli,
-    amountMatch: expectedAmount > 0 && Math.abs(amount - expectedAmount) < 0.01,
+    amountMatch: exact || byRounding,
+    roundingMatch: byRounding,
   };
 }
 
@@ -4242,6 +4249,7 @@ function UkdocsPage({ currentUser, onNavigate }) {
       volume_override: "volume_override" in edits ? edits.volume_override : (existingOverride.volume_override || ""),
       factuur_ref: "factuur_ref" in edits ? String(edits.factuur_ref || "").trim() : (existingOverride.factuur_ref || ""),
       extra_invoices: existingOverride.extra_invoices || "",
+      rounding_difference: existingOverride.rounding_difference || "",
     };
     const nextOverrides = existingOverrides.some((item) => item.shipment_id === row.shipment_id && item.category === row.category)
       ? existingOverrides.map((item) => (item.shipment_id === row.shipment_id && item.category === row.category ? nextOverride : item))
@@ -5601,7 +5609,7 @@ function UkdocsPage({ currentUser, onNavigate }) {
                                           Colli -- Factuur {comparison.colli} vs Export {comparison.expectedColli || "?"} {comparison.colliMatch ? "match" : "MISMATCH"}
                                         </span>
                                         <span className={`ukdocs-status-badge ${comparison.amountMatch ? "success" : "danger"}`}>
-                                          Value -- Factuur {comparison.amount.toFixed(2)} vs Export {comparison.expectedAmount ? comparison.expectedAmount.toFixed(2) : "?"} {comparison.amountMatch ? "match" : "MISMATCH"}
+                                          Value -- Factuur {comparison.amount.toFixed(2)} vs Export {comparison.expectedAmount ? comparison.expectedAmount.toFixed(2) : "?"} {comparison.roundingMatch ? "match (price rounding)" : comparison.amountMatch ? "match" : "MISMATCH"}
                                         </span>
                                         {(!comparison.colliMatch || !comparison.amountMatch) && (
                                           <button type="button" className="fa-explain-button" disabled={financeAuditExplain[row.key]?.busy} onClick={() => explainFinanceAuditRow(row)} title="Compares the factuur's lines with the data file's lines; the difference goes into an empty Opmerking">

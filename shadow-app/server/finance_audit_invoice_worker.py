@@ -311,6 +311,8 @@ def explain_difference(invoice_lines: list[dict], export_lines: list[dict]) -> d
         return {
             "ok": False,
             "wrong_file": True,
+            "rounding_only": False,
+            "rounding_difference": None,
             "error": f"This data file doesn't fit this factuur: only {same_lines} of its {len(invoice_lines)} lines are the same -- pick the right data file.",
             "text": "",
             "factuur": {"lines": len(invoice_lines), "pieces": sum(line["pieces"] for line in invoice_lines), "amount": round(sum(line["amount"] for line in invoice_lines), 2)},
@@ -351,14 +353,30 @@ def explain_difference(invoice_lines: list[dict], export_lines: list[dict]) -> d
         value = line.get("colli") or 0
         return f", {value:g} colli" if value else ""
 
+    # Only price rounding: every line is there with the same pieces, a price
+    # off by under a cent (ADM prints 0,69 for our 0.691) and an amount off
+    # by no more than that rounding over its pieces.
+    def rounding(d):
+        f, e = d["factuur"], d["export"]
+        return abs(f["price"] - e["price"]) < 0.01 and abs(f["amount"] - e["amount"]) <= f["pieces"] * 0.005 + 0.011
+
+    rounding_only = bool(price_diff) and not exports and not facts and not pieces_diff and all(rounding(d) for d in price_diff)
+    rounding_difference = round(sum(d["factuur"]["amount"] - d["export"]["amount"] for d in price_diff), 2) if rounding_only else None
+
     parts = []
+    if rounding_only:
+        parts.append(f"Only price rounding ({money(rounding_difference)}, counted as a match): " + "; ".join(
+            f"{d['export']['description']} {d['factuur']['pieces']} pcs factuur {d['factuur']['price']:g} / export {d['export']['price']:g}" for d in price_diff))
+        price_diff_text = False
+    else:
+        price_diff_text = True
     if exports:
         parts.append("In export, not on factuur: " + "; ".join(
             f"{e['pieces']} {e['description']}{' (' + e['origin'] + ')' if e.get('origin') else ''} x {e['price']:g} = {money(e['amount'])}{colli(e)}" for e in exports))
     if facts:
         parts.append("On factuur, not in export: " + "; ".join(
             f"{f['pieces']} {f['description']} x {f['price']:g} = {money(f['amount'])}" for f in facts))
-    if price_diff:
+    if price_diff and price_diff_text:
         parts.append("Other price: " + "; ".join(
             f"{d['export']['description']} {d['factuur']['pieces']} pcs factuur {d['factuur']['price']:g} / export {d['export']['price']:g} ({money(d['factuur']['amount'] - d['export']['amount'])})" for d in price_diff))
     if pieces_diff:
@@ -371,6 +389,8 @@ def explain_difference(invoice_lines: list[dict], export_lines: list[dict]) -> d
         "only_factuur": facts,
         "price_diff": price_diff,
         "pieces_diff": pieces_diff,
+        "rounding_only": rounding_only,
+        "rounding_difference": rounding_difference,
         "text": ". ".join(parts) + ("." if parts else ""),
         "ok": True,
         "error": "",

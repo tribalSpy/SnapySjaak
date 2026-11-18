@@ -2162,6 +2162,9 @@ function normalizeUkdocsFinanceAuditOverride(entry) {
     // papers ("739688/739689"): Finance Audit fetches, matches and adds
     // them up too; the papers keep their number.
     extra_invoices: normalizeUkdocsText(entry?.extra_invoices),
+    // The line comparison found only price rounding (ADM prints 0,69 for
+    // 0.691): this factuur-minus-export amount counts as a match.
+    rounding_difference: normalizeUkdocsText(entry?.rounding_difference),
   };
 }
 
@@ -3252,10 +3255,28 @@ async function explainFinanceAuditDifferences(pairs, { overwrite = false } = {})
   // and the note from the right kept file stays.
   const wrong = results.filter((result) => result.wrong_file && !result.data_path);
   const notes = results.filter((result) => result.ok && result.text);
-  if (!notes.length && !wrong.length) return results;
+  // Price rounding only (with the kept data file): its difference counts as
+  // a match; any other outcome clears an earlier one.
+  const roundingOf = (result) => (result.ok && !result.data_path && result.rounding_only && Number.isFinite(Number(result.rounding_difference)) ? String(result.rounding_difference) : "");
+  const roundingChanges = results.filter((result) => !result.data_path && (result.ok || result.wrong_file));
+  if (!notes.length && !wrong.length && !roundingChanges.length) return results;
   const fresh = await readUkdocsState();
   const overrides = [...(fresh.finance_audit_overrides || [])];
   let changed = false;
+  for (const result of roundingChanges) {
+    const value = roundingOf(result);
+    const index = overrides.findIndex((item) => item.shipment_id === result.shipment_id && item.category === result.category);
+    if (index >= 0) {
+      if (String(overrides[index].rounding_difference || "") === value) continue;
+      overrides[index] = { ...overrides[index], rounding_difference: value };
+    } else if (value) {
+      overrides.push({ shipment_id: result.shipment_id, category: result.category, rounding_difference: value });
+    } else {
+      continue;
+    }
+    result.rounding_set = Boolean(value);
+    changed = true;
+  }
   for (const result of notes) {
     const note = `Factuur check: ${result.text}`.slice(0, 900);
     const index = overrides.findIndex((item) => item.shipment_id === result.shipment_id && item.category === result.category);
