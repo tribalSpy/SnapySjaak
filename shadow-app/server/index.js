@@ -58,6 +58,7 @@ import {
   getInkoopCorrectionLines,
   getInkoopCreditLinesByPav,
   getInkoopCreditLinesBySupplier,
+  getInkoopMatchedRowsForLots,
   getInkoopInvoiceLinesByIds,
   getInkoopInvoiceLineAccounts,
   getInkoopCreditPurchaseCandidates,
@@ -14772,18 +14773,12 @@ async function inkoopAttachMatchedLineCredits(range, items) {
   const lineByLot = new Map();
   const from = addDaysToIsoDate(range.from, -INKOOP_DAY_TOLERANCE_DAYS);
   const last = addDaysToIsoDate(range.to, INKOOP_DAY_TOLERANCE_DAYS);
-  for (let start = from; start <= last; start = addDaysToIsoDate(start, 7)) {
-    const end = addDaysToIsoDate(start, 6) < last ? addDaysToIsoDate(start, 6) : last;
-    for (const day of await getInkoopMatchDays({ from: start, to: end }).catch(() => [])) {
-      for (const row of [...(day?.result?.matched_ok || []), ...(day?.result?.matched_mismatch || [])]) {
-        if (!row?.erp_row || row.matched_as_correction || !normalizeUkdocsText(row.supplier_name)) continue;
-        const rowLots = Array.isArray(row.split_lots) && row.split_lots.length ? row.split_lots : String(row.erp_row.lot || "").split("+");
-        for (const lot of rowLots.map((value) => String(value).trim())) {
-          if (lots.has(lot) && !lineByLot.has(lot)) {
-            lineByLot.set(lot, { supplier_name: normalizeUkdocsText(row.supplier_name), description: normalizeUkdocsText(row.description), unit_price: Number(row.unit_price), invoice_number: normalizeUkdocsText(row.invoice_number) });
-          }
-        }
-      }
+  // From the row table: loading the stored days whole (result + aggregate)
+  // for a long period ran the app out of memory.
+  for (const row of await getInkoopMatchedRowsForLots([...lots], from, last).catch(() => [])) {
+    const lot = String(row.lot);
+    if (lots.has(lot) && !lineByLot.has(lot)) {
+      lineByLot.set(lot, { supplier_name: normalizeUkdocsText(row.supplier_name), description: normalizeUkdocsText(row.description), unit_price: row.unit_price === null || row.unit_price === undefined ? NaN : Number(row.unit_price), invoice_number: normalizeUkdocsText(row.invoice_number) });
     }
   }
   if (!lineByLot.size) return items;

@@ -3453,6 +3453,26 @@ export async function getInkoopCreditLinesByPav(pavs, from) {
 // The credit lines (Handel / AI2: no brief number) of some growers, by the
 // name on the invoice, from a day on -- a retour lot's credit is found by
 // its matched purchase line's grower, product and price.
+// The matched comparison rows (not corrections) that hold one of these
+// Connect lots -- read from the row table, never the whole stored days.
+export async function getInkoopMatchedRowsForLots(lots, from, to) {
+  const wanted = [...new Set((lots || []).map((lot) => String(lot || "").trim()).filter(Boolean))];
+  if (!pool || !wanted.length || !from || !to) return [];
+  const result = await pool.query(
+    `SELECT DISTINCT ON (btrim(part)) btrim(part) AS lot, to_char(m.match_date, 'YYYY-MM-DD') AS date,
+            m.supplier_name, m.description, m.invoice_price AS unit_price, m.invoice_number
+       FROM inkoop_match_rows m
+       CROSS JOIN LATERAL unnest(string_to_array(m.lot, '+')) AS part
+      WHERE m.match_date >= $2::date AND m.match_date <= $3::date
+        AND m.list IN ('matched_ok', 'matched_mismatch')
+        AND m.supplier_name <> '' AND m.note NOT LIKE '%correction%'
+        AND btrim(part) = ANY($1::text[])
+      ORDER BY btrim(part), m.match_date`,
+    [wanted, from, to],
+  );
+  return result.rows;
+}
+
 export async function getInkoopCreditLinesBySupplier(names, from) {
   if (!pool) return [];
   const keys = [...new Set((names || []).map((name) => String(name || "").trim().toLowerCase()).filter(Boolean))];
