@@ -21900,6 +21900,39 @@ function InkoopTrackTraceWorkspace({ bar, setBar, overview, company, matchRound 
       setIssueError(unlinkError.message);
     }
   }
+  // A matched line that needs one more Connect lot (a correction booked
+  // before the lots: 300 invoiced, Connect 200 + 100 under a FloraHolland
+  // code): its invoice line(s) -- a correction's all -- and its own lot(s)
+  // go into the link as ticked; tick the other lot and Link.
+  async function addLotToMatched(line) {
+    setIssueError("");
+    const pav = String(line.pav || "").trim();
+    const invoices = new Set(String(line.invoice_number || "").split("+").map((value) => value.trim()).filter(Boolean));
+    if (!pav || !invoices.size) {
+      setIssueError("This line has no brief number or invoice number to find its invoice line(s) by -- link it from the open lists instead.");
+      return;
+    }
+    try {
+      const found = await apiJson(`/api/inkoop/find?q=${encodeURIComponent(pav)}`);
+      const own = (found.lines || []).filter((item) => String(item.brief || "").trim().toUpperCase() === pav.toUpperCase() && invoices.has(String(item.invoice_number || "").trim()));
+      if (!own.length) throw new Error(`Couldn't find the invoice line(s) of ${pav} on ${[...invoices].join(" + ")}.`);
+      const lots = String(line.lot || "").split("+").map((lot) => lot.trim()).filter(Boolean);
+      const next = {};
+      own.forEach((item, index) => {
+        const issue = {
+          id: `gap_invoice:${item.id}`, issue_type: "mismatch", description: line.description, date: item.date,
+          detail: { id: item.id, quantity: item.quantity, total: item.total, invoice_date: item.date, invoice_number: item.invoice_number },
+          // The line's own lot(s) once (on its first invoice line).
+          erp_row: index === 0 && lots.length ? { lot: lots.join("+"), pieces: line.erp_quantity, t_price: line.erp_total, date: line.date } : null,
+        };
+        next[pickKey(issue)] = issue;
+      });
+      setPicked(next);
+      setFocusNote(`${line.description}: its ${own.length} invoice line(s) and lot ${lots.join(", ") || "-"} are ticked -- tick the other Connect lot (open, or under "Lots of other growers / FloraHolland pools") and Link.`);
+    } catch (findError) {
+      setIssueError(findError.message);
+    }
+  }
   const openDrawer = (issue) => setDrawer(issue);
   const issueDay = (issue) => issue.day || inkoopIssueInvoiceDay(issue);
   function openVerifyMenu(event, issue) {
@@ -22160,9 +22193,13 @@ function InkoopTrackTraceWorkspace({ bar, setBar, overview, company, matchRound 
                     x: event.clientX, y: event.clientY, title: line.description, items: [ikClaimFromPairLine(line, chosen)], claimOnly: true,
                     note: "A matched line: a claim on it stays in the follow-up until the credit is in.",
                     ...(hand ? {
-                      actions: [{ label: `🔗 Unlink (linked by hand${hand.by ? ` by ${hand.by}` : ""})`, onClick: () => unlinkMatched(line) }],
+                      actions: [
+                        { label: `🔗 Unlink (linked by hand${hand.by ? ` by ${hand.by}` : ""})`, onClick: () => unlinkMatched(line) },
+                        { label: "➕ Add another Connect lot to this line…", onClick: () => addLotToMatched(line) },
+                      ],
                     } : {
                       warning: "⚠ Matched via the data (the comparison paired it) -- not linked by hand, so it can't be unlinked here.",
+                      actions: [{ label: "➕ Add another Connect lot to this line…", onClick: () => addLotToMatched(line) }],
                     }),
                   });
                 }} />}
