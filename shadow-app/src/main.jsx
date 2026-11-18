@@ -22478,7 +22478,13 @@ function ikFollowupLotText(item) {
 // A retour lot's credit once an invoice has it: "credit in: 0585 · -10 pcs · € -12.30".
 function ikRetourCreditText(credit) {
   if (!credit) return "";
-  return `credit in: ${credit.invoice_numbers.join(", ")} (${fustOverviewDate(credit.invoice_date)}) · ${credit.pieces} pcs · ${formatInkoopEuro(credit.total)}${credit.linked_by_hand ? " (linked by hand in the Corrections check)" : ""}`;
+  return `credit in: ${credit.invoice_numbers.join(", ")} (${fustOverviewDate(credit.invoice_date)}) · ${credit.pieces} pcs · ${formatInkoopEuro(credit.total)}${credit.linked_by_hand ? " (linked by hand in the Corrections check)" : ""}${credit.via_line ? ` (same grower, product and price as its purchase ${credit.via_line})` : ""}`;
+}
+
+// A real brief number -- not the "000000" of a Handel / AI2 lot.
+function ikRealPav(pav) {
+  const core = String(pav || "").replace(/[^0-9A-Z]/gi, "");
+  return Boolean(core) && !/^0+[A-Z]?$/i.test(core);
 }
 
 // A claim's credit against what was claimed: "of €756.00 claimed ✓" or
@@ -29799,12 +29805,12 @@ function InkoopDestinationsTab({ onOpenTrackTrace }) {
                     <td>{inkoopShortDate(row.day)}</td>
                     <td>{row.grower}</td>
                     <td>{row.lot?.lot}</td>
-                    <td>{row.lot?.pav || <span className="muted" title="No brief number: the credit can't be found on an invoice by itself">-</span>}</td>
+                    <td>{ikRealPav(row.lot?.pav) ? row.lot.pav : <span className="muted" title="No brief number: the credit is looked for through its matched invoice line (same grower, product, price)">{row.lot?.pav || "-"}</span>}</td>
                     <td>{row.description}</td>
                     <td>{row.lot?.pieces}</td>
                     <td><strong>{row.retour_pieces}</strong></td>
                     <td>{formatInkoopEuro(row.value)}</td>
-                    <td>{row.credit ? <span className="ik-credit-in" title={ikRetourCreditText(row.credit)}>✓ {row.credit.invoice_numbers.map((number) => <InkoopInvoiceLink key={number} invoiceNumber={number} />)} · {row.credit.pieces} pcs</span> : <span className="ik-fu-warn">{row.lot?.pav ? "⏳ waiting" : "⏳ check by hand"}</span>}</td>
+                    <td>{row.credit ? <span className="ik-credit-in" title={ikRetourCreditText(row.credit)}>✓ {row.credit.invoice_numbers.map((number) => <InkoopInvoiceLink key={number} invoiceNumber={number} />)} · {row.credit.pieces} pcs</span> : <span className="ik-fu-warn" title={ikRealPav(row.lot?.pav) ? "Waiting for a credit line with this brief number" : "No brief number and no credit found through its matched invoice line (same grower, product, price) yet"}>{ikRealPav(row.lot?.pav) ? "⏳ waiting" : "⏳ check by hand"}</span>}</td>
                     <td><IkFollowupState followup={row.followup} settings={settings} /></td>
                     <td><IkDestinations destinations={row.destinations || []} /></td>
                     <td><button type="button" className="link-button" onClick={(event) => { event.stopPropagation(); openFollow(event, row, `${row.grower} · lot ${row.lot?.lot}`); }}>Follow ▾</button></td>

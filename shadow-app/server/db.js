@@ -3450,6 +3450,28 @@ export async function getInkoopCreditLinesByPav(pavs, from) {
   return result.rows;
 }
 
+// The credit lines (Handel / AI2: no brief number) of some growers, by the
+// name on the invoice, from a day on -- a retour lot's credit is found by
+// its matched purchase line's grower, product and price.
+export async function getInkoopCreditLinesBySupplier(names, from) {
+  if (!pool) return [];
+  const keys = [...new Set((names || []).map((name) => String(name || "").trim().toLowerCase()).filter(Boolean))];
+  if (!keys.length) return [];
+  const result = await pool.query(
+    `SELECT l.invoice_number, to_char(l.invoice_date, 'YYYY-MM-DD') AS invoice_date, l.supplier_name, l.description,
+       l.quantity::float8 AS quantity, l.unit_price::float8 AS unit_price, l.total::float8 AS total
+     FROM inkoop_invoice_lines l
+     WHERE lower(btrim(l.supplier_name)) = ANY($1::text[])
+       AND l.quantity IS NOT NULL AND (l.quantity < 0 OR l.total < 0)
+       AND ($2::date IS NULL OR l.invoice_date >= $2::date - 4)
+       AND ${INKOOP_LINE_KIND_SQL} = 'product'
+     ORDER BY l.invoice_date, l.invoice_number
+     LIMIT 5000`,
+    [keys, from || null],
+  );
+  return result.rows;
+}
+
 // The purchases a Handel / AI2 credit (no brief number) can be of: the same
 // grower's product lines at its price, up to a month before it -- with the
 // Connect lot(s) the comparison paired each with.

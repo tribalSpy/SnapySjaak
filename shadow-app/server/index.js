@@ -57,6 +57,7 @@ import {
   searchInkoopErpLines,
   getInkoopCorrectionLines,
   getInkoopCreditLinesByPav,
+  getInkoopCreditLinesBySupplier,
   getInkoopInvoiceLinesByIds,
   getInkoopInvoiceLineAccounts,
   getInkoopCreditPurchaseCandidates,
@@ -14624,7 +14625,13 @@ function inkoopFollowupExtraSnapshot(id, input, view = null) {
 
 // A retour lot's (or a claim's) credit, once an invoice has one on its
 // brief number.
-const inkoopCreditPavOf = (item) => (item.type === "retour" || item.type === "claim" ? item.lot?.pav || item.invoice?.reference || "" : "");
+// Only a real brief number: "000000" (Handel / AI2 lots) would find other
+// growers' credits.
+const inkoopCreditPavOf = (item) => {
+  if (item.type !== "retour" && item.type !== "claim") return "";
+  const pav = item.lot?.pav || item.invoice?.reference || "";
+  return isRealInkoopPav(normalizeInkoopKey(pav)) ? pav : "";
+};
 
 async function inkoopAttachRetourCredits(items) {
   const retour = items.filter((item) => inkoopCreditPavOf(item));
@@ -14710,6 +14717,48 @@ function inkoopRetourCreditOf(lines, day) {
   };
 }
 
+// A retour lot without a brief number (Handel / AI2: "000000") matched to
+// an invoice line: its credit is a credit line of that grower, the same
+// product and price, from the lot's day on (Starline "Seasonal Starline"
+// 45054115 <- BETULA BS KLB 33 x 5 @ 2.25 on 057390.HA.2026.0223).
+async function inkoopAttachMatchedLineCredits(range, items) {
+  const wanted = items.filter((item) => item.type === "retour" && !item.credit && item.lot?.lot && !inkoopCreditPavOf(item));
+  if (!wanted.length) return items;
+  const lots = new Set(wanted.map((item) => String(item.lot.lot)));
+  const lineByLot = new Map();
+  const from = addDaysToIsoDate(range.from, -INKOOP_DAY_TOLERANCE_DAYS);
+  const last = addDaysToIsoDate(range.to, INKOOP_DAY_TOLERANCE_DAYS);
+  for (let start = from; start <= last; start = addDaysToIsoDate(start, 7)) {
+    const end = addDaysToIsoDate(start, 6) < last ? addDaysToIsoDate(start, 6) : last;
+    for (const day of await getInkoopMatchDays({ from: start, to: end }).catch(() => [])) {
+      for (const row of [...(day?.result?.matched_ok || []), ...(day?.result?.matched_mismatch || [])]) {
+        if (!row?.erp_row || row.matched_as_correction || !normalizeUkdocsText(row.supplier_name)) continue;
+        const rowLots = Array.isArray(row.split_lots) && row.split_lots.length ? row.split_lots : String(row.erp_row.lot || "").split("+");
+        for (const lot of rowLots.map((value) => String(value).trim())) {
+          if (lots.has(lot) && !lineByLot.has(lot)) {
+            lineByLot.set(lot, { supplier_name: normalizeUkdocsText(row.supplier_name), description: normalizeUkdocsText(row.description), unit_price: Number(row.unit_price), invoice_number: normalizeUkdocsText(row.invoice_number) });
+          }
+        }
+      }
+    }
+  }
+  if (!lineByLot.size) return items;
+  const firstDay = wanted.map((item) => item.lot.date || item.day).filter(Boolean).sort()[0] || null;
+  const credits = await getInkoopCreditLinesBySupplier([...lineByLot.values()].map((line) => line.supplier_name), firstDay).catch(() => []);
+  const product = (text) => normalizeUkdocsText(text).replace(/\s*\*\s*factnr\s*:\s*\d+/i, "").toLowerCase().replace(/\s+/g, " ");
+  return items.map((item) => {
+    if (!wanted.includes(item)) return item;
+    const line = lineByLot.get(String(item.lot.lot));
+    if (!line) return item;
+    const own = credits.filter((credit) => normalizeUkdocsText(credit.supplier_name).toLowerCase() === line.supplier_name.toLowerCase()
+      && product(credit.description) === product(line.description)
+      && Number.isFinite(line.unit_price) && Math.abs(Math.abs(Number(credit.unit_price)) - Math.abs(line.unit_price)) < 0.0051
+      && credit.invoice_number !== line.invoice_number);
+    const credit = inkoopRetourCreditOf(own, item.lot.date || item.day);
+    return credit ? { ...item, credit: { ...credit, via_line: `${line.invoice_number} (${line.description})` } } : item;
+  });
+}
+
 // The Connect lots of a period that went (partly) to a retour (119)
 // customer: booked to retour, so a credit is expected -- with the credit
 // once an invoice has it.
@@ -14737,7 +14786,7 @@ async function inkoopRetourDispatchRows(state, range) {
       reason: `${pieces} pcs to retour (${destinations.filter((dest) => dest.is_retour).map((dest) => dest.code).join(", ")}) -- waiting for the credit`,
     });
   }
-  const withCredits = await inkoopAttachHandLinkedCredits(state, await inkoopAttachRetourCredits(rows));
+  const withCredits = await inkoopAttachHandLinkedCredits(state, await inkoopAttachMatchedLineCredits(range, await inkoopAttachRetourCredits(rows)));
   return withCredits.sort((left, right) => right.day.localeCompare(left.day) || left.grower.localeCompare(right.grower));
 }
 
