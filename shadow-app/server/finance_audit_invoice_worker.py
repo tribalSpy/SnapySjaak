@@ -97,6 +97,15 @@ def parse_invoice_text(text: str) -> dict:
         if before_package:
             goods_total = normalize_amount(before_package[-1].group(1))
             packaging_cost = normalize_amount(package_match.group(1))
+    # A factuur with VAT (ADM, a UK customer: "20,0 % VAT 151,75 30,35"):
+    # our export has no VAT, so the goods are the VAT line's base -- the
+    # Total and the summary row both include the VAT.
+    vat_match = re.search(r"\d+(?:[.,]\d+)?\s*%\s*VAT\s+(\d[\d.,]*\d)\s+(\d[\d.,]*\d)", text, re.IGNORECASE)
+    vat_amount = normalize_amount(vat_match.group(2)) if vat_match else None
+    vat_base = normalize_amount(vat_match.group(1)) if vat_match else None
+    if vat_amount and vat_base is not None and not package_match:
+        goods_total = vat_base
+    result["vat"] = vat_amount if vat_amount else None
 
     summary_matches = re.findall(
         r"Nett\s+Gross\s+Colli\s+Pieces\s+Amount\s*\n\s*(\d+)\s*KG\s+(\d+)\s*KG\s+(\d+)\s+(\d+)\s+(\d[\d.,]*\d)",

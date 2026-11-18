@@ -5590,6 +5590,7 @@ function UkdocsPage({ currentUser, onNavigate }) {
                                         {doc.parsed?.ok
                                           ? ` -- ${doc.parsed.colli ?? "?"} colli, ${doc.parsed.pieces ?? "?"} pcs, ${doc.parsed.currency || ""} ${doc.parsed.total_amount ?? "?"} (goods only)`
                                             + (doc.parsed.packaging_cost ? `, packaging ${doc.parsed.currency || ""} ${doc.parsed.packaging_cost} excluded` : "")
+                                            + (doc.parsed.vat ? `, VAT ${doc.parsed.currency || ""} ${doc.parsed.vat} excluded` : "")
                                           : ` -- ${doc.parsed?.error || "could not read this PDF"}`}
                                         <button type="button" onClick={() => deleteFinanceAuditInvoiceDocument(doc.id)} title="Remove">×</button>
                                       </span>
