@@ -8418,6 +8418,16 @@ function findInkoopPiecesCombination(rows, target) {
 // grower's purchase.
 const INKOOP_POOL_CODES = new Set(["F2", "X99", "WEST", "VBA", "FLORA"]);
 
+// A lot booked under a pool code: its supplier or the code it resolves to
+// ("X99!," / "X99!@": the X99 AVC with Connect's punctuation).
+function inkoopLotIsPool(row, validSupplierCodes) {
+  const pool = (code) => {
+    const key = normalizeInkoopKey(code);
+    return INKOOP_POOL_CODES.has(key) || /^X99\W*$/.test(key);
+  };
+  return pool(row?.suppl) || pool(resolveErpRowSupplierCode(row, validSupplierCodes));
+}
+
 // The grower a Connect lot without an invoice is named after. A lot booked
 // under an auction / pool code (WEST, VBA, FLORA, a code on the skip list)
 // with a grower's own code in Avc. or Transp (WEST / Avc OUDENJ: Jac Oudijk's
@@ -8784,6 +8794,30 @@ function matchInkoopVeilingLines(erpRows, invoices, supplierMap = {}, supplierNa
       || (quantityDiffers && sameNameLinesFillLot(line, picked.row))) {
       onlyInInvoice.push({ ...context, supplier_code: codesLabel, supplier_match_type: resolved.match_type });
       return;
+    }
+    // The grower's own lot differs (another price / pieces) and the line has
+    // no brief number: a free pool lot (F2, X99, a FloraHolland location)
+    // of the line's day with exactly its pieces and price and its product's
+    // name is the line's (AI2 4871 Protea cynaroides 5 @ 4.25: F2 lot
+    // 45027813 "Cynaroides" of 09-11, not FLOGRE's 5 @ 8.75 of 11-11).
+    if ((quantityDiffers || priceDiffers) && !isRealInkoopPav(normalizeInkoopKey(line?.reference_bt))) {
+      const lineDay = normalizeUkdocsText(line?.invoice_date).slice(0, 10);
+      const pool = (Array.isArray(erpRows) ? erpRows : []).filter((row) => !consumedErpRows.has(row)
+        && String(row?.date || "").slice(0, 10) === lineDay
+        && !inkoopValuesDiffer(row.pieces, line.quantity) && priceFits(row, line.unit_price)
+        && inkoopLotIsPool(row, validSupplierCodes)
+        && inkoopLotNameScore(line, row) > 0 && !namesAnotherProduct(line, row) && !lotBetterNamedByOtherLine(line, row));
+      const poolRow = pool.length === 1 ? pool[0] : inkoopBestNamedRow(pool, line);
+      if (poolRow) {
+        consumedErpRows.add(poolRow);
+        matchedOk.push({
+          ...context,
+          supplier_code: codesLabel,
+          supplier_match_type: `same day, pieces, price and name (${resolveErpRowSupplierCode(poolRow, validSupplierCodes)} lot) -- not ${resolveErpRowSupplierCode(picked.row, validSupplierCodes) || codesLabel} lot ${picked.row.lot} (another ${priceDiffers ? "price" : "pieces"})`,
+          erp_row: poolRow,
+        });
+        return;
+      }
     }
     consumedErpRows.add(picked.row);
     if (quantityDiffers || priceDiffers) {
