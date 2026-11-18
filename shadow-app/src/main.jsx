@@ -1,5 +1,6 @@
 import React, { Fragment, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
+import { createPortal } from "react-dom";
 import JSZip from "jszip";
 import { FRANCE_DEPARTEMENTS, FRANCE_REGIONS, FRANCE_VIEWBOX } from "./france-departements.js";
 import "./styles.css";
@@ -21438,7 +21439,10 @@ function IkSuggestionMoney({ item }) {
 // Track & Trace "Find": a Connect lot, a partij / brief number (Uniware's
 // PartijNr FALMJBB finds the invoice's FALMJBb) or an invoice number, over
 // every day and grower -- also the lots the comparison leaves out, and why.
-function IkFindPanel({ query, onClose, onOpenTrackTrace }) {
+// onPick (Track & Trace): a lot or invoice line found goes into the link
+// selection, as if ticked in the lists -- also a lot the comparison leaves
+// out (a wrong "no purchase" code): linked by hand it counts.
+function IkFindPanel({ query, onClose, onOpenTrackTrace, onPick = null, pickedKeys = null }) {
   const [data, setData] = useState(null);
   const [error, setError] = useState("");
   const [trace, setTrace] = useState(null);
@@ -21452,8 +21456,19 @@ function IkFindPanel({ query, onClose, onOpenTrackTrace }) {
     return () => { cancelled = true; };
   }, [query]);
   const boxes = (count, per, pieces) => (count && per ? `${count} × ${per} = ${pieces}` : `${pieces} pcs`);
-  return (
-    <div className="ik-drawer wide" role="dialog" aria-label={`Find ${query}`}>
+  const pickButton = (kind, item) => {
+    if (!onPick) return null;
+    const on = Boolean(pickedKeys?.has(`${kind}:${kind === "lot" ? item.lot : item.id}`));
+    return (
+      <button type="button" className={on ? "primary" : ""} onClick={() => onPick(kind, item)}
+        title={on ? "Ticked for the link -- click to take it out" : "Tick it for the link (Link panel): with the invoice line(s) / lot(s) it belongs to"}>
+        {on ? "✓ In link" : "+ Link"}
+      </button>
+    );
+  };
+  // On the page itself (not inside the side column): over every bar, not cut.
+  return createPortal(
+    <div className="ik-drawer wide ik-find-drawer" role="dialog" aria-label={`Find ${query}`}>
       <div className="ik-drawer-head">
         <strong>🔎 Find “{query}”</strong>
         <button type="button" onClick={onClose}>Close</button>
@@ -21466,7 +21481,7 @@ function IkFindPanel({ query, onClose, onOpenTrackTrace }) {
           {!data.lots.length && <div className="muted">No Connect lot with this lot or partij number is imported -- it's not in the Connect data the comparison gets (check the day's Connect / ERP import).</div>}
           {data.lots.map((lot) => (
             <div key={lot.lot} className={`ik-find-row${lot.left_out ? " left-out" : ""}`}>
-              <div><strong>Lot {lot.lot}</strong> · {lot.date ? fustOverviewDate(lot.date) : "no date"} · <strong>{lot.description}</strong> · partij {lot.pav || "–"}</div>
+              <div className="ik-find-top"><span><strong>Lot {lot.lot}</strong> · {lot.date ? fustOverviewDate(lot.date) : "no date"} · <strong>{lot.description}</strong> · partij {lot.pav || "–"}</span>{pickButton("lot", lot)}</div>
               <div className="muted">{boxes(lot.items, lot.cont, lot.pieces)} @ {formatInkoopEuro(lot.price)} = {formatInkoopEuro(lot.total)} · lev. {lot.suppl || "–"} · AVC {lot.avc || "–"}{lot.transp ? ` · transp. ${lot.transp}` : ""}</div>
               {lot.left_out && <div className="money-loss">⚠ {lot.left_out}</div>}
               {lot.counted_note && <div className="muted">{lot.counted_note}</div>}
@@ -21477,9 +21492,12 @@ function IkFindPanel({ query, onClose, onOpenTrackTrace }) {
           {!data.lines.length && <div className="muted">No invoice line with this brief or invoice number.</div>}
           {data.lines.map((line) => (
             <div key={line.id} className="ik-find-row">
-              <div>
-                <button type="button" className="link-button" onClick={() => setTrace({ invoiceNumber: line.invoice_number, lineId: line.id })} title="The whole trace of this line">{line.invoice_number}</button>
-                {" "}· {line.date ? fustOverviewDate(line.date) : "-"} · brief {line.brief || "–"} · <strong>{line.description}</strong> · {line.supplier}
+              <div className="ik-find-top">
+                <span>
+                  <button type="button" className="link-button" onClick={() => setTrace({ invoiceNumber: line.invoice_number, lineId: line.id })} title="The whole trace of this line">{line.invoice_number}</button>
+                  {" "}· {line.date ? fustOverviewDate(line.date) : "-"} · brief {line.brief || "–"} · <strong>{line.description}</strong> · {line.supplier}
+                </span>
+                {pickButton("line", line)}
               </div>
               <div className="muted">{boxes(line.packages, line.per_package, line.quantity)} @ {formatInkoopEuro(line.price)} = {formatInkoopEuro(line.total)}{line.company ? ` · ${line.company}` : ""}</div>
               {line.linked_by_hand && <div>✋ linked by hand to lot(s) {line.linked_by_hand.lots.join(" + ")}{line.linked_by_hand.by ? ` by ${line.linked_by_hand.by}` : ""}{line.linked_by_hand.note ? ` -- ${line.linked_by_hand.note}` : ""}</div>}
@@ -21489,7 +21507,8 @@ function IkFindPanel({ query, onClose, onOpenTrackTrace }) {
       )}
       {trace && <IkInvoiceTrace invoiceNumber={trace.invoiceNumber} lineId={trace.lineId} onClose={() => setTrace(null)}
         onOpenTrackTrace={(target) => { setTrace(null); onOpenTrackTrace?.(target); }} />}
-    </div>
+    </div>,
+    document.body,
   );
 }
 
@@ -22117,6 +22136,12 @@ function InkoopTrackTraceWorkspace({ bar, setBar, overview, company, matchRound 
           </form>
         </div>
         {findQuery && <IkFindPanel query={findQuery} onClose={() => setFindQuery("")}
+          pickedKeys={new Set(Object.keys(picked))}
+          onPick={(kind, item) => togglePick(kind === "lot"
+            ? { id: `gap_erp:${item.lot}`, issue_type: "gap_erp", description: item.description, date: item.date, grower: item.suppl,
+              erp_row: { lot: item.lot, pieces: item.pieces, price: item.price, t_price: item.total, date: item.date, pav: item.pav, suppl: item.suppl, description: item.description } }
+            : { id: `gap_invoice:${item.id}`, issue_type: "gap_invoice", description: item.description, date: item.date, grower: item.supplier,
+              detail: { id: item.id, quantity: item.quantity, total: item.total, unit_price: item.price, invoice_date: item.date, invoice_number: item.invoice_number } })}
           onOpenTrackTrace={(target) => { setFindQuery(""); setBar((current) => ({ ...current, grower: target.grower, from: target.from, to: target.to, day: null })); }} />}
         <div className="data-table-card ik-card ik-growers">
           <input value={growerFilter} onChange={(event) => setGrowerFilter(event.target.value)} placeholder="Find a grower…" />

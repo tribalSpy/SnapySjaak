@@ -10335,7 +10335,13 @@ function inkoopBwNLotsWithInvoicedPav(dropped, kept, invoiceLines, supplierBwMap
 
 let inkoopBwNLotsLoggedKey = "";
 
-function excludeInkoopInternalBunchRows(erpRows, supplierBwMap, excludedCodes = [], invoiceLines = null) {
+// The lots linked by hand: they always reach the comparison -- also under
+// a "no purchase" / BW N code (a wrong code still used in Connect).
+function inkoopHandLinkedLots(state) {
+  return new Set((state?.manual_line_pairs || []).flatMap((pair) => pair?.lots || []).map((lot) => String(lot).trim()).filter(Boolean));
+}
+
+function excludeInkoopInternalBunchRows(erpRows, supplierBwMap, excludedCodes = [], invoiceLines = null, handLots = null) {
   // Also the lines of a code that is no purchase (Link growers tab).
   const excluded = new Set((excludedCodes || []).map((code) => normalizeInkoopKey(code)));
   if ((!supplierBwMap || !Object.keys(supplierBwMap).length) && !excluded.size) {
@@ -10344,6 +10350,10 @@ function excludeInkoopInternalBunchRows(erpRows, supplierBwMap, excludedCodes = 
   const kept = [];
   const dropped = [];
   for (const row of Array.isArray(erpRows) ? erpRows : []) {
+    if (handLots?.has(String(row?.lot ?? "").trim())) {
+      kept.push(row);
+      continue;
+    }
     if (excluded.has(normalizeInkoopKey(row?.suppl))) continue;
     (inkoopErpRowIsInternalBunches(row, supplierBwMap || {}) ? dropped : kept).push(row);
   }
@@ -10954,7 +10964,7 @@ async function buildInkoopAggregateContext(state, range, match = null) {
     getInkoopInvoiceLines(range),
   ]);
   const maps = { supplierMap: state.supplier_map, supplierNameMap: state.supplier_name_map, manualLinks: state.manual_supplier_links, supplierFhMap: state.supplier_fh_map };
-  const erpRows = inkoopErpRowsForInvoiceGrowers(excludeInkoopInternalBunchRows(allErpRows, state.supplier_bw_map, inkoopExcludedErpCodes(state), invoiceLines), invoiceLines, {
+  const erpRows = inkoopErpRowsForInvoiceGrowers(excludeInkoopInternalBunchRows(allErpRows, state.supplier_bw_map, inkoopExcludedErpCodes(state), invoiceLines, inkoopHandLinkedLots(state)), invoiceLines, {
     ...maps,
     growerOfCode: buildInkoopCodeNameMap(state.supplier_map, state.supplier_name_map, state.supplier_fh_map, state.facturation_groups),
     nonGrowerCodes: inkoopNonGrowerCodes,
@@ -12927,7 +12937,7 @@ async function gatherInkoopMatchInputs(state, { from, to }) {
   ]);
   return {
     allErpRows,
-    erpRows: excludeInkoopInternalBunchRows(allErpRows, state.supplier_bw_map, inkoopExcludedErpCodes(state), invoiceLines),
+    erpRows: excludeInkoopInternalBunchRows(allErpRows, state.supplier_bw_map, inkoopExcludedErpCodes(state), invoiceLines, inkoopHandLinkedLots(state)),
     invoices: groupInkoopInvoiceLinesByInvoice(invoiceLines),
     // The stamgegevens (and manual links) always win over a learned link.
     supplierMap: { ...directory.matcherMaps.gln, ...state.supplier_map },
@@ -28761,6 +28771,11 @@ async function handleApi(req, res, url) {
           }
         }
         const pair = pairs.find((item) => (item.lots || []).map(String).includes(lot));
+        // Linked by hand: it counts anyway.
+        if (pair && left_out) {
+          counted_note = `linked by hand, so it counts -- although ${left_out.replace(/ -- the comparison leaves it out.*$/, "")}`;
+          left_out = "";
+        }
         return {
           lot, date: row.date || "", pav: String(row.pav || "").trim(), suppl, avc: normalizeInkoopKey(row.avc), transp: normalizeInkoopKey(row.transp),
           description: String(row.description || "").trim(), items: Number(row.items) || null, cont: Number(row.cont) || null,
@@ -29341,7 +29356,7 @@ async function handleApi(req, res, url) {
         console.error("Matched lots for the grower totals failed:", matchError instanceof Error ? matchError.message : matchError);
         return new Map();
       });
-      const erpRows = excludeInkoopInternalBunchRows(allErpRows, state.supplier_bw_map, inkoopExcludedErpCodes(state), allInvoiceLines)
+      const erpRows = excludeInkoopInternalBunchRows(allErpRows, state.supplier_bw_map, inkoopExcludedErpCodes(state), allInvoiceLines, inkoopHandLinkedLots(state))
         .filter((row) => String(row?.date || "").slice(0, 10) >= from && String(row?.date || "").slice(0, 10) <= to)
         .filter((row) => !bwFilter.size || bwFilter.has(bwOf(row)) || matchedLotCodes.has(String(row?.lot ?? "").trim()));
       const invoiceLines = allInvoiceLines

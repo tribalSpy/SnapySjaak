@@ -5590,4 +5590,8 @@ table.data-table.balance-table.ik-table.ik-inv-invoices td:nth-child(n+7), table
 .ik-find { display: flex; gap: 6px; margin-top: 8px; }
 .ik-find input { flex: 1; min-width: 0; }
 .ik-find-row { display: grid; gap: 2px; padding: 6px 0; border-bottom: 1px solid var(--ik-border); }
+.ik-find-top { display: flex; justify-content: space-between; align-items: flex-start; gap: 8px; }
+.ik-find-top > button { flex: none; }
+/* On the page itself: over the sticky filter bars, scrolls on its own. */
+.ik-drawer.ik-find-drawer { z-index: 44; max-height: 100vh; overflow-y: auto; }
 .ik-find-row.left-out { border-left: 3px solid var(--ik-danger, #d9534f); padding-left: 8px; }
