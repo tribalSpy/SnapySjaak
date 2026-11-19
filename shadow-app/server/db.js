@@ -4455,6 +4455,14 @@ const LLM_JOB_LIGHT_COLUMNS = `id, job_type, status, created_by, shipment_id, co
     ELSE result_json END AS result_json,
   error_text, created_at, claimed_at, finished_at, updated_at`;
 
+// A finished / failed job as its result handlers need it: everything but
+// the photos a shelf count (or vision) job carries -- read back whole they
+// were tens of MB per job, many jobs a night.
+const LLM_JOB_REPORT_COLUMNS = `id, job_type, status, created_by, shipment_id, collection_id, document_kind,
+  priority, attempt_count, max_attempts, agent_name,
+  payload_json - 'vision_documents' AS payload_json, result_json,
+  error_text, created_at, claimed_at, finished_at, updated_at`;
+
 function mapLlmJobRow(row) {
   return {
     id: String(row?.id || "").trim(),
@@ -4555,7 +4563,7 @@ export async function claimNextLlmJob(agentName, apiKey, options = {}) {
     const allowedJobTypes = Array.isArray(options.jobTypes) ? options.jobTypes.filter(Boolean) : null;
     const jobResult = await client.query(
       `
-        SELECT *
+        SELECT id
         FROM llm_jobs
         WHERE status = 'pending'
           AND attempt_count < max_attempts
@@ -4637,7 +4645,7 @@ export async function createLlmJob(job) {
         $7, 0, $8, '', $9::jsonb, '{}'::jsonb,
         '', now(), now()
       )
-      RETURNING *
+      RETURNING ${LLM_JOB_REPORT_COLUMNS}
     `,
     [
       jobId,
@@ -4669,7 +4677,7 @@ export async function completeLlmJob(jobId, agentName, resultJson) {
         error_text = ''
       WHERE id = $1
         AND agent_name = $2
-      RETURNING *
+      RETURNING ${LLM_JOB_REPORT_COLUMNS}
     `,
     [
       String(jobId || "").trim(),
@@ -4708,7 +4716,7 @@ export async function failLlmJob(jobId, agentName, errorText, allowRetry = false
         error_text = $3
       WHERE id = $1
         AND agent_name = $2
-      RETURNING *
+      RETURNING ${LLM_JOB_REPORT_COLUMNS}
     `,
     [
       String(jobId || "").trim(),

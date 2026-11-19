@@ -24267,7 +24267,9 @@ async function handleApi(req, res, url) {
       capabilities: Array.isArray(body.capabilities) ? body.capabilities : [],
       meta: body.meta && typeof body.meta === "object" ? body.meta : {},
     }, apiKey);
-    sendJson(res, 200, { ok: true, job });
+    // No poller reads the job back: only its id and status (not its
+    // payload / result again).
+    sendJson(res, 200, { ok: true, job: { id: job.id, job_type: job.job_type, status: job.status } });
     return;
   }
 
@@ -24346,7 +24348,9 @@ async function handleApi(req, res, url) {
       capabilities: Array.isArray(body.capabilities) ? body.capabilities : [],
       meta: body.meta && typeof body.meta === "object" ? body.meta : {},
     }, apiKey);
-    sendJson(res, 200, { ok: true, job });
+    // No poller reads the job back: only its id and status (not its
+    // payload / result again).
+    sendJson(res, 200, { ok: true, job: { id: job.id, job_type: job.job_type, status: job.status } });
     return;
   }
 
@@ -32520,6 +32524,15 @@ async function serveWarehouseStatic(req, res, url) {
 
 const server = http.createServer((req, res) => {
   const url = new URL(req.url || "/", `http://${req.headers.host || "127.0.0.1"}`);
+  // Running API requests, for the memory watch (which request was busy
+  // when the container grew).
+  if (url.pathname.startsWith("/api/")) {
+    const id = ++serverRequestSeq;
+    serverRequestsInFlight.set(id, { at: Date.now(), what: `${req.method} ${url.pathname}${url.search}`.slice(0, 160) });
+    const drop = () => serverRequestsInFlight.delete(id);
+    res.on("finish", drop);
+    res.on("close", drop);
+  }
   // Someone using the app (not a poller / device): the background Inkoop
   // comparison waits for it (see inkoopWaitForQuietServer).
   if (!req.headers["x-shadow-agent-key"] && !url.pathname.startsWith("/warehouse/ingest")) {
@@ -32632,7 +32645,15 @@ async function runInkoopMatchChild() {
 // which process). Every 10 minutes one line with this process's memory and
 // the container's total; once the container is past 1.5 GB, every minute
 // the biggest processes too (Linux only) -- so the log shows who grows.
-const MEMORY_WATCH_WARN_BYTES = 1.5 * 1024 * 1024 * 1024;
+const MEMORY_WATCH_WARN_BYTES = 1.4 * 1024 * 1024 * 1024;
+const serverRequestsInFlight = new Map();
+let serverRequestSeq = 0;
+function describeRequestsInFlight() {
+  const now = Date.now();
+  const list = [...serverRequestsInFlight.values()].sort((left, right) => left.at - right.at)
+    .map((item) => `${item.what} (${Math.round((now - item.at) / 1000)}s)`);
+  return list.length ? list.slice(0, 8).join("; ") + (list.length > 8 ? `; +${list.length - 8} more` : "") : "none";
+}
 async function readContainerMemoryBytes() {
   for (const file of ["/sys/fs/cgroup/memory.current", "/sys/fs/cgroup/memory/memory.usage_in_bytes"]) {
     try {
@@ -32681,6 +32702,7 @@ function startMemoryWatch(label) {
       if (high) {
         const biggest = await readBiggestProcesses();
         line += ` -- biggest: ${biggest.map((item) => `${item.cmd} (pid ${item.pid}) ${item.mb} MB`).join("; ")}`;
+        line += ` -- requests running: ${describeRequestsInFlight()}`;
         console.warn(line);
       } else {
         console.log(line);
@@ -32689,7 +32711,9 @@ function startMemoryWatch(label) {
       // Never let the watch itself fail anything.
     }
   };
-  setInterval(tick, 60 * 1000).unref();
+  // Every 15 s (reading one cgroup file is cheap): a spike from 1 to 2 GB
+  // took under a minute and was never logged at 60 s.
+  setInterval(tick, 15 * 1000).unref();
   setTimeout(tick, 30 * 1000).unref();
 }
 
