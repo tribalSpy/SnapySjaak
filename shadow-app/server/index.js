@@ -28769,6 +28769,33 @@ async function handleApi(req, res, url) {
   // follow-up, a later credit and King. Read only.
   // Track & Trace "Find": a lot / partij / brief / invoice number over every
   // day and grower -- also the Connect lots the comparison leaves out, and why.
+  // Some Connect lots' retour: the pieces their dispatch booked to a retour
+  // customer and their share of the lot's value (Track & Trace's link window:
+  // a lot that matches the invoice before its correction).
+  if (url.pathname === "/api/inkoop/lot-retour" && req.method === "GET") {
+    if (!requirePermission(res, requestUser, PERMISSIONS.INKOOP_VIEW)) {
+      return;
+    }
+    try {
+      const lots = String(url.searchParams.get("lots") || "").split(",").map((lot) => lot.trim()).filter((lot) => /^\d{1,18}$/.test(lot)).slice(0, 200);
+      const state = await readInkoopState();
+      const rows = (await getInkoopDispatchLotsByLots(lots)).map((lot) => {
+        const { destinations } = inkoopCorrectionRetourStatusForLot(lot, state.customer_map);
+        const retourPieces = destinations.filter((dest) => dest.is_retour).reduce((sum, dest) => sum + dest.pieces, 0);
+        return {
+          lot: String(lot.lot), pieces: Number(lot.pieces) || 0, value: Number(lot.t_price) || 0,
+          retour_pieces: Math.round(retourPieces * 100) / 100,
+          retour_value: Math.round(inkoopDispatchValueShare(lot, retourPieces) * 100) / 100,
+          retour_to: destinations.filter((dest) => dest.is_retour).map((dest) => dest.code).filter(Boolean),
+        };
+      });
+      sendJson(res, 200, { lots: rows });
+    } catch (error) {
+      sendJson(res, 400, { error: error instanceof Error ? error.message : String(error) });
+    }
+    return;
+  }
+
   if (url.pathname === "/api/inkoop/find" && req.method === "GET") {
     if (!requirePermission(res, requestUser, PERMISSIONS.INKOOP_VIEW)) {
       return;

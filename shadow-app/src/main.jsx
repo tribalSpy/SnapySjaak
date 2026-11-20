@@ -18223,7 +18223,11 @@ function inkoopCorrectionOf(line) {
   });
   const invoiced = sorted.filter((step) => Number(step.quantity) > 0).reduce((sum, step) => sum + Number(step.quantity), 0);
   const credited = -sorted.filter((step) => Number(step.quantity) < 0).reduce((sum, step) => sum + Number(step.quantity), 0);
-  return { text: `↩ correction: ${parts.join(" · ")}`, invoiced, credited, invoices: [...new Set(sorted.map((step) => step.invoice_number).filter(Boolean))] };
+  // The values too: what was invoiced (before the credit) and credited.
+  const money = (list) => Math.round(list.reduce((sum, step) => sum + (Number(step.total) || 0), 0) * 100) / 100;
+  const invoicedValue = money(sorted.filter((step) => Number(step.quantity) > 0));
+  const creditedValue = -money(sorted.filter((step) => Number(step.quantity) < 0));
+  return { text: `↩ correction: ${parts.join(" · ")}`, invoiced, credited, invoicedValue, creditedValue, invoices: [...new Set(sorted.map((step) => step.invoice_number).filter(Boolean))] };
 }
 
 function inkoopInvoiceTranscript(line) {
@@ -21850,6 +21854,18 @@ function InkoopTrackTraceWorkspace({ bar, setBar, overview, company, matchRound 
   const invoiceValue = pickedLines.reduce((sum, issue) => sum + (Number(issue.detail?.total) || 0), 0);
   const connectPieces = pickedLots.reduce((sum, issue) => sum + (Number(issue.erp_row?.pieces) || 0), 0) + ownLots.reduce((sum, own) => sum + own.pieces, 0);
   const connectValue = pickedLots.reduce((sum, issue) => sum + (parseFloat(issue.erp_row?.t_price) || 0), 0) + ownLots.reduce((sum, own) => sum + own.value, 0);
+  // The ticked lots' retour (pieces their dispatch booked to a retour
+  // customer): the link window shows the values before and after it.
+  const linkLotsKey = linkLots.join(",");
+  const [lotRetour, setLotRetour] = useState({});
+  useEffect(() => {
+    if (!linkLotsKey) return undefined;
+    let cancelled = false;
+    apiJson(`/api/inkoop/lot-retour?lots=${encodeURIComponent(linkLotsKey)}`)
+      .then((payload) => { if (!cancelled) setLotRetour((current) => ({ ...current, ...Object.fromEntries((payload.lots || []).map((lot) => [lot.lot, lot])) })); })
+      .catch(() => {});
+    return () => { cancelled = true; };
+  }, [linkLotsKey]);
   const togglePick = (issue) => setPicked((current) => {
     const key = pickKey(issue);
     const next = { ...current };
@@ -22084,6 +22100,36 @@ function InkoopTrackTraceWorkspace({ bar, setBar, overview, company, matchRound 
         <span><strong>Link:</strong> invoice {pickedLines.length} line(s) {invoicePieces} pcs {formatInkoopEuro(invoiceValue)}</span>
         <span>Connect {linkLots.length} lot(s) {connectPieces} pcs {formatInkoopEuro(connectValue)}</span>
         <span>difference <InkoopMoneyDiff value={Math.round((invoiceValue - connectValue) * 100) / 100} /></span>
+        {(() => {
+          // A correction on either side (an invoice line credited / invoiced
+          // again, a Connect lot partly booked to a retour customer): both
+          // values -- as first invoiced / booked, and after the correction.
+          // Equal as first booked = they belong together; the correction is
+          // expected (or already there) in the dispatch.
+          const lines = pickedLines.map((issue) => ({ issue, correction: inkoopCorrectionOf(issue.detail) }));
+          const retours = linkLots.map((lot) => lotRetour[lot]).filter((lot) => lot && lot.retour_pieces > 0);
+          if (!lines.some((entry) => entry.correction) && !retours.length) return null;
+          const round = (value) => Math.round(value * 100) / 100;
+          const firstPieces = round(lines.reduce((sum, entry) => sum + (entry.correction ? entry.correction.invoiced : Number(entry.issue.detail?.quantity) || 0), 0));
+          const firstValue = round(lines.reduce((sum, entry) => sum + (entry.correction ? entry.correction.invoicedValue : Number(entry.issue.detail?.total) || 0), 0));
+          const retourPieces = round(retours.reduce((sum, lot) => sum + lot.retour_pieces, 0));
+          const retourValue = round(retours.reduce((sum, lot) => sum + lot.retour_value, 0));
+          const credited = round(lines.reduce((sum, entry) => sum + (entry.correction?.credited || 0), 0));
+          const firstDiff = round(firstValue - connectValue);
+          const afterDiff = round(invoiceValue - (connectValue - retourValue));
+          const anyCorrection = lines.some((entry) => entry.correction);
+          return (
+            <span className="ik-correction-both" title="As first booked: the invoice before its credit, Connect before the retour booking. After: the credit and the retour taken off.">
+              <span>↩ <strong>As first booked:</strong> invoice {firstPieces} pcs {formatInkoopEuro(firstValue)} · Connect {round(connectPieces)} pcs {formatInkoopEuro(connectValue)} · difference <InkoopMoneyDiff value={firstDiff} /></span>
+              <span>↩ <strong>After the correction:</strong> invoice {round(invoicePieces)} pcs {formatInkoopEuro(invoiceValue)}{anyCorrection ? ` (credited ${credited} pcs)` : ""} · Connect {round(connectPieces - retourPieces)} pcs {formatInkoopEuro(round(connectValue - retourValue))}{retours.length ? ` (${retourPieces} pcs to retour ${[...new Set(retours.flatMap((lot) => lot.retour_to))].join(", ")})` : " (no retour in the dispatch yet)"} · difference <InkoopMoneyDiff value={afterDiff} /></span>
+              {Math.abs(firstDiff) < 0.01 && Math.abs(afterDiff) >= 0.01 && anyCorrection && !retours.length
+                ? <span className="ik-fu-warn">They match as first booked -- the credit of {credited} pcs is expected as retour in the Connect dispatch.</span>
+                : Math.abs(firstDiff) < 0.01 && Math.abs(afterDiff) < 0.01
+                  ? <span>✓ They match before and after the correction.</span>
+                  : null}
+            </span>
+          );
+        })()}
         {(() => {
           // A ticked line that is a correction: the pieces credited
           // can still be in Connect's lots -- the difference is that
@@ -22342,9 +22388,9 @@ function InkoopTrackTraceWorkspace({ bar, setBar, overview, company, matchRound 
         )}
       </section>
       {pairsOpen && (
-        <div className="ik-drawer wide" role="dialog">
+        <div className="ik-drawer wide ik-pairs-drawer" role="dialog">
           <div className="ik-drawer-head">
-            <strong>🔗 Linked by hand -- {fustOverviewDate(from)}{from !== to ? ` – ${fustOverviewDate(to)}` : ""}</strong>
+            <strong>🔗 Linked by hand --{fustOverviewDate(from)}{from !== to ? ` – ${fustOverviewDate(to)}` : ""}</strong>
             <button type="button" onClick={() => setPairsOpen(false)}>Close</button>
           </div>
           <InkoopManualPairsCard from={from} to={to} refreshKey={pairsKey} onChanged={() => { setIssueRound((value) => value + 1); overview.reload(); }} />
