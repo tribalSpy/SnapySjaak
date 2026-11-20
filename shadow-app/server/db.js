@@ -901,6 +901,18 @@ export async function setInkoopAi2LineReferentie(rows) {
   return updated;
 }
 
+// The days of the AI2 credit lines (the Credit table of a nota).
+export async function getInkoopAi2CreditDates() {
+  if (!pool) return [];
+  const result = await pool.query(
+    `SELECT DISTINCT to_char(invoice_date, 'YYYY-MM-DD') AS date
+       FROM inkoop_invoice_lines
+      WHERE (invoice_type = 'ai2' OR invoice_number LIKE 'AI2-%') AND quantity < 0 AND invoice_date IS NOT NULL
+      ORDER BY 1`,
+  );
+  return result.rows.map((row) => row.date);
+}
+
 // The purchase an AI2 credit line credits ("*factnr", read again from its
 // nota), only where the line has none.
 export async function setInkoopAi2LineCreditOf(rows) {

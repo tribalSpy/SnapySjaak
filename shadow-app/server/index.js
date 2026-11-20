@@ -67,6 +67,7 @@ import {
   fixInkoopAi2CreditSigns,
   setInkoopAi2LineReferentie,
   setInkoopAi2LineCreditOf,
+  getInkoopAi2CreditDates,
   getInkoopSupplierCreditsForLines,
   getInkoopInvoiceLinesForKeys,
   getInkoopVerifiedMatchRows,
@@ -7557,6 +7558,11 @@ async function runInkoopAi2BoxesRefresh() {
     // again (the rule makes it a correction also without the number), with
     // or without its nota PDF.
     for (const line of stored) if (line.needs_credit_of && line.invoice_date) dates.add(line.invoice_date);
+    // Every AI2 credit's day: the comparison never gets the "factnr" (the
+    // credit's purchase number), so a credit of another day's purchase is
+    // only a correction once its day is compared with the rule of 20-11
+    // (4867's -756 on 26-10 had the number stored and stayed open).
+    for (const date of await getInkoopAi2CreditDates().catch(() => [])) dates.add(date);
     if (creditsFixed.length) inkoopSummaryCache.clear();
     const same = (left, right) => !inkoopValuesDiffer(Number(left), Number(right));
     for (const [invoiceNumber, lines] of byNota) {
