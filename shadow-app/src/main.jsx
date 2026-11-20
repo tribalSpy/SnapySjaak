@@ -28371,13 +28371,13 @@ function InkoopAi2BoxesCard() {
         AI2 lines read before 04-11-2026 show "? × ?": the Productnota has the boxes (Aantal × ApE), they were not kept then.
         This reads them again from the PDFs the app stored and fills in only the boxes of those lines -- nothing else changes, the match neither
         (AI2 lines are matched without a box size). Their days are compared again afterwards, so Track & Trace shows them.
-        It fills in each line's Referentie too (what a credit's "factnr" names). It also turns the lines of a nota's Credit table read before 05-11-2026 (+315 pcs @ €−2.40) into the credits they are (−315 @ €2.40), with the purchase they credit ("factnr") -- so they are added to their purchase.
+        It fills in each line's Referentie too (what a credit's "factnr" names). It also turns the lines of a nota's Credit table read before 05-11-2026 (+315 pcs @ €−2.40) into the credits they are (−315 @ €2.40), with the purchase they credit ("factnr") -- so they are added to their purchase. A credit stored without that purchase number gets it from its nota, and the days of such credits are compared again (a credit of another day's purchase is a correction, not open).
       </div>
       <div className="row-actions">
         <button type="button" className="primary" onClick={start} disabled={job?.running}>{job?.running ? `Reading… ${job.done} of ${job.notas} notas` : "Read the AI2 boxes and credits again"}</button>
         {job?.finished_at && !job.running && (
           <span className="muted">
-            Last run {formatTimestamp(job.finished_at)}: {job.credits_fixed ? `${job.credits_fixed} credit line(s) set right · ` : ""}{job.notas} nota(s) with {job.lines} line(s) without boxes or Referentie -- {job.updated} line(s) got their boxes, {job.referentie || 0} their Referentie
+            Last run {formatTimestamp(job.finished_at)}: {job.credits_fixed ? `${job.credits_fixed} credit line(s) set right · ` : ""}{job.notas} nota(s) with {job.lines} line(s) without boxes or Referentie -- {job.updated} line(s) got their boxes, {job.referentie || 0} their Referentie{job.credit_of ? `, ${job.credit_of} credit(s) their purchase number` : ""}
             {job.without_pdf ? `, ${job.without_pdf} nota(s) without a stored PDF (upload those notas again)` : ""}
             {job.lines - job.updated > 0 ? `, ${job.lines - job.updated} line(s) not found on their PDF` : ""}.
           </span>

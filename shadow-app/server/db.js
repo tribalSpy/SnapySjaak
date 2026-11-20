@@ -827,11 +827,13 @@ export async function getInkoopAi2LinesWithoutBoxes() {
   const result = await pool.query(
     `SELECT id, invoice_number, to_char(invoice_date, 'YYYY-MM-DD') AS invoice_date, description,
             quantity::float8 AS quantity, unit_price::float8 AS unit_price, total::float8 AS total,
-            COALESCE(raw->>'packages', '') <> '' AS has_boxes, COALESCE(raw->>'referentie', '') <> '' AS has_referentie
+            COALESCE(raw->>'packages', '') <> '' AS has_boxes, COALESCE(raw->>'referentie', '') <> '' AS has_referentie,
+            quantity < 0 AND COALESCE(raw->>'credit_of', '') = '' AS needs_credit_of
        FROM inkoop_invoice_lines
       WHERE (invoice_type = 'ai2' OR invoice_number LIKE 'AI2-%')
         AND quantity IS NOT NULL AND unit_price IS NOT NULL
-        AND (COALESCE(raw->>'packages', '') = '' OR COALESCE(raw->>'referentie', '') = '')
+        AND (COALESCE(raw->>'packages', '') = '' OR COALESCE(raw->>'referentie', '') = ''
+             OR (quantity < 0 AND COALESCE(raw->>'credit_of', '') = ''))
       ORDER BY invoice_number, id`,
   );
   return result.rows;
@@ -897,6 +899,20 @@ export async function setInkoopAi2LineReferentie(rows) {
     updated += result.rowCount || 0;
   }
   return updated;
+}
+
+// The purchase an AI2 credit line credits ("*factnr", read again from its
+// nota), only where the line has none.
+export async function setInkoopAi2LineCreditOf(rows) {
+  if (!pool || !rows?.length) return 0;
+  const result = await pool.query(
+    `UPDATE inkoop_invoice_lines l
+        SET raw = COALESCE(l.raw, '{}'::jsonb) || jsonb_build_object('credit_of', v.credit_of, 'is_credit', true)
+       FROM unnest($1::text[], $2::text[]) AS v(id, credit_of)
+      WHERE l.id = v.id AND COALESCE(l.raw->>'credit_of', '') = '' AND v.credit_of <> ''`,
+    [rows.map((row) => row.id), rows.map((row) => row.credit_of)],
+  );
+  return result.rowCount || 0;
 }
 
 // Some invoice lines as they are stored now (a follow-up line saved with a

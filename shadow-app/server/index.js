@@ -66,6 +66,7 @@ import {
   getInkoopAi2LinesWithoutBoxes,
   fixInkoopAi2CreditSigns,
   setInkoopAi2LineReferentie,
+  setInkoopAi2LineCreditOf,
   getInkoopSupplierCreditsForLines,
   getInkoopInvoiceLinesForKeys,
   getInkoopVerifiedMatchRows,
@@ -7536,7 +7537,7 @@ function inkoopInvoicePdfPath(invoiceNumber) {
 // of the lines that got boxes are compared again (the screens show them
 // from there); the match does not change -- AI2 lines are matched without a
 // box size. Runs in the background; the status is kept for the screen.
-const inkoopAi2BoxesJob = { running: false, started_at: "", finished_at: "", notas: 0, done: 0, lines: 0, updated: 0, referentie: 0, without_pdf: 0, credits_fixed: 0, failed: [], error: "" };
+const inkoopAi2BoxesJob = { running: false, started_at: "", finished_at: "", notas: 0, done: 0, lines: 0, updated: 0, referentie: 0, credit_of: 0, without_pdf: 0, credits_fixed: 0, failed: [], error: "" };
 
 async function runInkoopAi2BoxesRefresh() {
   if (inkoopAi2BoxesJob.running) return;
@@ -7552,6 +7553,10 @@ async function runInkoopAi2BoxesRefresh() {
     inkoopAi2BoxesJob.notas = byNota.size;
     inkoopAi2BoxesJob.lines = stored.length;
     const dates = new Set(creditsFixed.map((line) => line.invoice_date).filter(Boolean));
+    // An AI2 credit without the purchase it credits: its day is compared
+    // again (the rule makes it a correction also without the number), with
+    // or without its nota PDF.
+    for (const line of stored) if (line.needs_credit_of && line.invoice_date) dates.add(line.invoice_date);
     if (creditsFixed.length) inkoopSummaryCache.clear();
     const same = (left, right) => !inkoopValuesDiffer(Number(left), Number(right));
     for (const [invoiceNumber, lines] of byNota) {
@@ -7566,6 +7571,7 @@ async function runInkoopAi2BoxesRefresh() {
         const used = new Set();
         const updates = [];
         const references = [];
+        const creditOfs = [];
         for (const line of lines) {
           const index = Number(String(line.id).match(/#(\d+)$/)?.[1]);
           // The PDF's line: the same pieces, price and total (for the boxes
@@ -7584,9 +7590,11 @@ async function runInkoopAi2BoxesRefresh() {
             if (line.invoice_date) dates.add(line.invoice_date);
           }
           if (!line.has_referentie && normalizeUkdocsText(parsed[pick].referentie)) references.push({ id: line.id, referentie: normalizeUkdocsText(parsed[pick].referentie) });
+          if (line.needs_credit_of && normalizeUkdocsText(parsed[pick].credit_of)) creditOfs.push({ id: line.id, credit_of: normalizeUkdocsText(parsed[pick].credit_of) });
         }
         inkoopAi2BoxesJob.updated += await setInkoopInvoiceLineBoxes(updates);
         inkoopAi2BoxesJob.referentie += await setInkoopAi2LineReferentie(references);
+        inkoopAi2BoxesJob.credit_of += await setInkoopAi2LineCreditOf(creditOfs);
       } catch (notaError) {
         inkoopAi2BoxesJob.failed.push(`${invoiceNumber}: ${notaError instanceof Error ? notaError.message : String(notaError)}`.slice(0, 300));
       } finally {
