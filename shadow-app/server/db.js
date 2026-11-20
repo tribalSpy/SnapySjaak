@@ -1016,7 +1016,7 @@ export async function getInkoopInvoiceTraceLines(invoiceNumber) {
       `SELECT l.id, l.invoice_number, l.invoice_type, to_char(l.invoice_date, 'YYYY-MM-DD') AS invoice_date, l.reference_bt, l.description,
               l.supplier_name, l.supplier_gln, l.supplier_fh_number, l.quantity::float8 AS quantity, l.unit_price::float8 AS unit_price, l.total::float8 AS total,
               l.raw->>'packages' AS packages, l.raw->>'per_package' AS per_package, l.raw->>'your_reference' AS your_reference, l.raw->>'order_number' AS order_number,
-              l.raw->>'vbn_code' AS vbn_code, l.source_file_name, l.imported_at, l.updated_at, ${INKOOP_LINE_KIND_SQL} AS kind
+              l.raw->>'vbn_code' AS vbn_code, COALESCE(l.raw->>'credit_of', '') AS credit_of, l.source_file_name, l.imported_at, l.updated_at, ${INKOOP_LINE_KIND_SQL} AS kind
          FROM inkoop_invoice_lines l WHERE l.invoice_number = $1
         ORDER BY COALESCE(NULLIF(substring(l.id from '#([0-9]+)$'), '')::int, 0), l.id`,
       [invoiceNumber],

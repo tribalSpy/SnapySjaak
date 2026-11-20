@@ -18368,6 +18368,10 @@ function IkInvoiceLines({ invoiceNumber, onTrace }) {
     // steps, the net) in a note and in its trace.
     const own = inkoopInvoiceTranscript({ ...line, correction: null });
     const correction = line.correction ? inkoopCorrectionOf({ ...line, correction: line.correction }) : null;
+    const purchase = line.credit_of_line || null;
+    const purchaseText = purchase
+      ? `credit of ${purchase.invoice_number} · ${fustOverviewDate(purchase.invoice_date)} · ${purchase.description} ${purchase.quantity} pcs @ €${Number(purchase.unit_price).toFixed(2)}${purchase.lots.length ? ` → lot ${purchase.lots.join(" + ")}` : " (no lot matched)"}`
+      : "";
     return (
       <tr key={line.id} className={`clickable-row ik-inv-line ${status.tone}`} onClick={() => onTrace(invoiceNumber, line.id)}
         onContextMenu={(event) => { event.preventDefault(); onTrace(invoiceNumber, line.id); }} title="Click or right-click: its trace">
@@ -18376,8 +18380,16 @@ function IkInvoiceLines({ invoiceNumber, onTrace }) {
           <strong>{line.description}</strong> <span>{own}</span>
           {correction ? <span className="ik-correction-note"> · ↩ part of a correction ({correction.invoiced} invoiced, {correction.credited} credited)</span> : null}
         </td>
-        <td className="ik-inv-cell ik-con-text" title={line.lots.map(ikTraceLotText).join("\n") || line.reason}>
-          {line.lots.length ? (line.lots.length > 1 ? `${line.lots.length} lots · ${line.lots.map((lot) => lot.lot).join(" + ")}` : ikTraceLotText(line.lots[0])) : <span className="muted">{line.reason || "-"}</span>}
+        <td className="ik-inv-cell ik-con-text" title={line.lots.map(ikTraceLotText).join("\n") || (purchase ? `${purchaseText}\nClick: the purchase line and its match` : line.reason)}>
+          {line.lots.length ? (line.lots.length > 1 ? `${line.lots.length} lots · ${line.lots.map((lot) => lot.lot).join(" + ")}` : ikTraceLotText(line.lots[0]))
+            : purchase ? (
+              // A credit (no Connect lot of its own): the purchase it credits,
+              // a link to that line's trace (its lot and match).
+              <button type="button" className="link-button ik-credit-of" onClick={(event) => { event.stopPropagation(); onTrace(purchase.invoice_number, purchase.id); }}>
+                ↩ {purchaseText}
+              </button>
+            )
+            : <span className="muted">{line.reason || "-"}</span>}
         </td>
         <td>{diff ? <InkoopMoneyDiff value={Math.round((Number(diff.invoice) - Number(diff.erp)) * 100) / 100} /> : line.status === "matched" ? "✓" : ""}</td>
         <td>

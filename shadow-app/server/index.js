@@ -15088,6 +15088,41 @@ const INKOOP_TRACE_STATUS = {
   ambiguous_matches: "ambiguous", embalage_lines: "emballage", fee_lines: "fee",
 };
 
+// The purchase each Handel / AI2 credit line (no brief number) of an
+// invoice credits, as Corrections pairs them: the same grower, product and
+// price, enough pieces, on or before the credit's day; the same invoice
+// first, then the purchase its "*factnr" names, then the nearest day.
+// line id -> { id, invoice_number, invoice_date, description, quantity, unit_price, total, lots }.
+async function inkoopCreditPurchasesForLines(lines) {
+  const byLine = new Map();
+  const creditLines = lines.filter((line) => ["ai2", "handel"].includes(String(line.invoice_type || "").toLowerCase())
+    && !normalizeUkdocsText(line.reference_bt) && Number(line.quantity) < 0);
+  if (!creditLines.length) return byLine;
+  const candidates = await getInkoopCreditPurchaseCandidates(creditLines.map((line) => ({ ...line, invoice_date: String(line.invoice_date || "").slice(0, 10) }))).catch(() => []);
+  const product = (text) => normalizeUkdocsText(text).replace(/\s*\*\s*factnr\s*:\s*\d+/i, "").toLowerCase().replace(/\s+/g, " ");
+  const used = new Set();
+  for (const line of creditLines) {
+    const creditOf = normalizeUkdocsText(line.credit_of || (String(line.description || "").match(/factnr\s*:\s*(\d+)/i) || [])[1]);
+    const day = String(line.invoice_date || "").slice(0, 10);
+    const fits = candidates.filter((item) => !used.has(item.id) && item.invoice_type === line.invoice_type && item.supplier_name === line.supplier_name
+      && product(item.description) === product(line.description) && !inkoopValuesDiffer(Number(item.unit_price), Math.abs(Number(line.unit_price)))
+      && Number(item.quantity) + 0.001 >= Math.abs(Number(line.quantity)) && item.invoice_date <= day
+      && (!creditOf || !normalizeUkdocsText(item.referentie) || normalizeUkdocsText(item.referentie) === creditOf))
+      .sort((left, right) => (left.invoice_number === line.invoice_number ? 0 : 1) - (right.invoice_number === line.invoice_number ? 0 : 1)
+        || (creditOf && normalizeUkdocsText(left.referentie) === creditOf ? 0 : 1) - (creditOf && normalizeUkdocsText(right.referentie) === creditOf ? 0 : 1)
+        || String(right.invoice_date).localeCompare(String(left.invoice_date)));
+    const purchase = fits[0];
+    if (!purchase) continue;
+    used.add(purchase.id);
+    byLine.set(line.id, {
+      id: purchase.id, invoice_number: purchase.invoice_number, invoice_date: purchase.invoice_date, description: normalizeUkdocsText(purchase.description),
+      quantity: Number(purchase.quantity), unit_price: Number(purchase.unit_price), total: Number(purchase.total),
+      lots: String(purchase.lots || "").split("+").map((lot) => lot.trim()).filter(Boolean),
+    });
+  }
+  return byLine;
+}
+
 async function buildInkoopInvoiceTrace(invoiceNumber) {
   const state = await readInkoopState();
   const { lines, header } = await getInkoopInvoiceTraceLines(invoiceNumber);
@@ -15149,6 +15184,7 @@ async function buildInkoopInvoiceTrace(invoiceNumber) {
   const view = inkoopOverviewNaming(state);
   const pavs = lines.map((line) => line.reference_bt).filter(Boolean);
   const credits = await getInkoopCreditLinesByPav(pavs, dates[0] || null).catch(() => []);
+  const purchaseOfCredit = await inkoopCreditPurchasesForLines(lines);
   const traced = lines.map((rawLine) => {
     // The invoice's own totals ("Product aankopen", no pieces) are no product line.
     const line = rawLine.kind === "product" && (rawLine.quantity === null || rawLine.quantity === undefined) ? { ...rawLine, kind: "summary" } : rawLine;
@@ -15191,6 +15227,7 @@ async function buildInkoopInvoiceTrace(invoiceNumber) {
       lots: lotDetails,
       followup,
       credit,
+      credit_of_line: purchaseOfCredit.get(line.id) || null,
     };
   });
   const king = (await getKingExportsByInvoice([invoiceNumber]).catch(() => []))[0] || null;

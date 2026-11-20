@@ -5595,3 +5595,9 @@ table.data-table.balance-table.ik-table.ik-inv-invoices td:nth-child(n+7), table
 /* On the page itself: over the sticky filter bars, scrolls on its own. */
 .ik-drawer.ik-find-drawer { z-index: 44; max-height: 100vh; overflow-y: auto; }
 .ik-find-row.left-out { border-left: 3px solid var(--ik-danger, #d9534f); padding-left: 8px; }
+
+/* An invoice's credit line: the purchase it credits, in place of a lot. */
+.ik-inv-lines button.link-button.ik-credit-of {
+  display: block; max-width: 100%; padding: 0; text-align: left;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
