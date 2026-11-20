@@ -9013,7 +9013,11 @@ function matchInkoopVeilingLines(erpRows, invoices, supplierMap = {}, supplierNa
         used.add(purchase.line.id);
         supplierCreditPairs.set(purchase.line.id, credit);
         supplierCreditPairs.set(credit.line.id, null);
-      } else if (credit.invoice.type === "ai2" && creditOf) {
+      } else if (credit.invoice.type === "ai2") {
+        // Also without its "*factnr": a line of the nota's Credit table
+        // always credits an earlier purchase and never has a Connect lot of
+        // its own (4867 of 26-10 was stored without the number and stayed
+        // open, while Corrections paired it with 4858 of 20-10).
         supplierCreditAlone.add(credit.line.id);
       }
     }
