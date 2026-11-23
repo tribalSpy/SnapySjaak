@@ -1519,6 +1519,34 @@ class ActionRun:
         names_before = {window_file_name(info[1]).lower() for info in windows_before.values() if window_file_name(info[1])}
         used_names = {Path(path).name.lower() for path in self.used_dump_files}
         expected_exe = str((step.get("opens_window") or {}).get("exe") or "").lower()
+
+        def viewer_dirs():
+            configured = self.action.get("viewer_file_dirs") or []
+            return [folder for folder in ([configured] if isinstance(configured, str) else list(configured)) + self.viewer_dirs if folder]
+
+        def old_file(name: str) -> bool:
+            # A file in the viewer's folder written well before this key
+            # press is an old tab (SumatraPDF reopens the tabs of its last
+            # session when Uniware starts it): never this press's file. The
+            # first factuur of 23-11 (742803) got Jane Adams' 291131 of 16-11.
+            for folder in viewer_dirs():
+                try:
+                    path = Path(this_pcs_folder(str(folder))) / name
+                    if path.is_file() and path.stat().st_mtime < started - 600:  # 10 min: the file server's clock may differ
+                        return True
+                except OSError:
+                    continue
+            return False
+
+        skipped_old = set()
+
+        def skip_if_old(name: str) -> bool:
+            if name and name not in skipped_old and old_file(name):
+                skipped_old.add(name)
+                used_names.add(name)
+                self.say(f"{label}: '{name}' is an old file (a tab from before) -- waiting for the new one")
+            return name in skipped_old
+
         while window is None:
             if self.stop_requested:
                 raise RuntimeError("Stopped by you.")
@@ -1526,7 +1554,7 @@ class ActionRun:
                 if pid == uniware_pid:
                     continue
                 name = window_file_name(screen_reader.window_title(other) or title).lower()
-                fresh = bool(name) and name not in names_before and name not in used_names
+                fresh = bool(name) and name not in names_before and name not in used_names and not skip_if_old(name)
                 # A window that was already there counts only when it's the
                 # program recorded for this step (e.g. SumatraPDF.exe).
                 if fresh and other in windows_before and expected_exe and Path(process_exe(pid)).name.lower() != expected_exe:
@@ -1568,11 +1596,10 @@ class ActionRun:
             # without listing the folder. A viewer started by hand on a file
             # elsewhere (Downloads) otherwise sends the search there.
             name = window_file_name(title)
-            if name:
-                configured = self.action.get("viewer_file_dirs") or []
-                for folder in ([configured] if isinstance(configured, str) else list(configured)) + self.viewer_dirs:
-                    path = Path(this_pcs_folder(str(folder))) / name if folder else None
-                    if path is not None and path.is_file() and str(path).lower() not in self.used_dump_files:
+            if name and not skip_if_old(name.lower()):
+                for folder in viewer_dirs():
+                    path = Path(this_pcs_folder(str(folder))) / name
+                    if path.is_file() and str(path).lower() not in self.used_dump_files:
                         source = path
                         break
             if source is None:
