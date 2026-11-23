@@ -2845,12 +2845,21 @@ function financeAuditOmschrijving(category, collection) {
 // here rather than re-deriving anything.
 function financeAuditSummaryValue(auditReport, category, field) {
   const rows = Array.isArray(auditReport?.summary_rows) ? auditReport.summary_rows : [];
+  const valueOf = (row) => (row.invoice_value !== "" && row.invoice_value != null ? row.invoice_value : row.export_value);
   const row = rows.find((item) => item.scope === "category" && item.field === field && String(item.group_label || "").startsWith(`${category} `));
-  if (!row) {
+  // A second invoice set of this category ("508-2 ..."): its own invoice,
+  // the same Finance Audit row -- both added.
+  const second = rows.find((item) => item.scope === "category" && item.field === field && String(item.group_label || "").startsWith(`${category}-2 `));
+  if (!row && !second) {
     return "";
   }
-  const value = row.invoice_value !== "" && row.invoice_value != null ? row.invoice_value : row.export_value;
-  return value === "" || value == null ? "" : String(value);
+  if (!second) {
+    const value = valueOf(row);
+    return value === "" || value == null ? "" : String(value);
+  }
+  const parts = [row, second].filter(Boolean).map(valueOf).filter((value) => value !== "" && value != null);
+  if (!parts.length) return "";
+  return String(Math.round(parts.reduce((sum, value) => sum + (Number(value) || 0), 0) * 1000) / 1000);
 }
 
 // One row per (shipment, uploaded category) -- Finance Audit UKDocs. Pure
@@ -2899,7 +2908,7 @@ function buildUkdocsFinanceAuditRows(state) {
     for (const categoryDefinition of UKDOCS_CATEGORY_DEFINITIONS) {
       const category = categoryDefinition.code;
       const uploaded = shipment.uploaded_files?.[category];
-      if (!uploaded?.file_name && !shipment.extra_uploaded_files?.[category]?.file_name) {
+      if (!uploaded?.file_name && !shipment.extra_uploaded_files?.[category]?.file_name && !shipment.second_uploaded_files?.[category]?.file_name) {
         continue;
       }
       const override = overrides.find((item) => item.shipment_id === shipment.id && item.category === category) || null;
@@ -2921,7 +2930,9 @@ function buildUkdocsFinanceAuditRows(state) {
         grensovergang: customer?.border_crossing_default || collection?.border_crossing || "",
         expediteur: customer?.expediteur_name || "",
         kenteken: collection?.trailer_number || "",
-        factuur_nummer: shipment.invoice_numbers_by_category?.[category] || "",
+        // + the second invoice set's number (on the documents too).
+        factuur_nummer: [shipment.invoice_numbers_by_category?.[category], shipment.second_invoice_numbers_by_category?.[category]]
+          .map((value) => String(value || "").trim()).filter(Boolean).join("/"),
         location_connect: collection?.reference_connect || "",
         opmerking: override?.opmerking || "",
         factuur_ref: override?.factuur_ref || "",
@@ -3398,6 +3409,11 @@ function emptyUkdocsShipmentDraft() {
     extra_uploaded_files: Object.fromEntries(UKDOCS_CATEGORY_DEFINITIONS.map((category) => [category.code, { category: category.code, file_name: "", uploaded_at: "", size: 0 }])),
     extra_invoice_numbers_by_category: Object.fromEntries(UKDOCS_CATEGORY_DEFINITIONS.map((category) => [category.code, ""])),
     extra_factuur_ref: "",
+    // A second invoice set (a sub-customer with its own invoice numbers).
+    second_enabled: false,
+    second_uploaded_files: Object.fromEntries(UKDOCS_CATEGORY_DEFINITIONS.map((category) => [category.code, { category: category.code, file_name: "", uploaded_at: "", size: 0 }])),
+    second_invoice_numbers_by_category: Object.fromEntries(UKDOCS_CATEGORY_DEFINITIONS.map((category) => [category.code, ""])),
+    second_factuur_ref: "",
     validation_warnings: [],
     audit_status: "",
     ready: false,
@@ -3995,8 +4011,12 @@ function UkdocsPage({ currentUser, onNavigate }) {
     [exportDefaults, selectedUkdocsCustomer],
   );
   const combinedInvoiceNumbers = useMemo(
-    () => ukdocsCombinedInvoiceNumbers(shipmentDraft.invoice_numbers_by_category, shipmentDraft.uploaded_files),
-    [shipmentDraft.invoice_numbers_by_category, shipmentDraft.uploaded_files],
+    () => [
+      ukdocsCombinedInvoiceNumbers(shipmentDraft.invoice_numbers_by_category, shipmentDraft.uploaded_files),
+      // The second invoice set's numbers are on the documents too.
+      shipmentDraft.second_enabled ? ukdocsCombinedInvoiceNumbers(shipmentDraft.second_invoice_numbers_by_category, shipmentDraft.second_uploaded_files) : "",
+    ].filter(Boolean).join("/"),
+    [shipmentDraft.invoice_numbers_by_category, shipmentDraft.uploaded_files, shipmentDraft.second_enabled, shipmentDraft.second_invoice_numbers_by_category, shipmentDraft.second_uploaded_files],
   );
 
   useEffect(() => {
@@ -4642,6 +4662,7 @@ function UkdocsPage({ currentUser, onNavigate }) {
   function currentShipmentPayload() {
     return {
       ...shipmentDraft,
+      ...(shipmentDraft.second_enabled ? {} : { second_uploaded_files: {}, second_invoice_numbers_by_category: {}, second_factuur_ref: "" }),
       invoice_numbers: combinedInvoiceNumbers,
       customers,
       company_settings: companySettings,
@@ -4929,6 +4950,30 @@ function UkdocsPage({ currentUser, onNavigate }) {
     setGeneratedFiles([]);
   }
 
+  // A second invoice set's data file of a category: its own invoice (its
+  // number from the file name, as the main ones), its lines in the export.
+  async function updateSecondUploadedFile(categoryCode, file) {
+    let nextFile = { category: categoryCode, file_name: "", size: 0, uploaded_at: "", content_base64: "" };
+    const invoiceNumberFromFile = file ? ukdocsInvoiceNumberFromFileName(file.name) : "";
+    if (file) {
+      nextFile = { category: categoryCode, file_name: file.name, size: file.size || 0, uploaded_at: new Date().toISOString(), content_base64: await fileToBase64(file) };
+    }
+    const lastRef = (state?.shipments || []).find((item) => item.customer_id && item.customer_id === shipmentDraft.customer_id && String(item.second_factuur_ref || "").trim())?.second_factuur_ref || "";
+    setShipmentDraft((current) => {
+      const currentInvoice = String(current.second_invoice_numbers_by_category?.[categoryCode] || "").trim();
+      const previousFileInvoice = ukdocsInvoiceNumberFromFileName(current.second_uploaded_files?.[categoryCode]?.file_name || "");
+      const useFileInvoice = invoiceNumberFromFile && (!currentInvoice || currentInvoice === previousFileInvoice);
+      return {
+        ...current,
+        second_factuur_ref: String(current.second_factuur_ref || "").trim() || (file ? lastRef : ""),
+        second_invoice_numbers_by_category: { ...(current.second_invoice_numbers_by_category || {}), [categoryCode]: useFileInvoice ? invoiceNumberFromFile : currentInvoice },
+        second_uploaded_files: { ...(current.second_uploaded_files || {}), [categoryCode]: nextFile },
+      };
+    });
+    setAnalysis(null);
+    setGeneratedFiles([]);
+  }
+
   const extraInvoiceText = UKDOCS_CATEGORY_DEFINITIONS
     .map((category) => String(shipmentDraft.extra_invoice_numbers_by_category?.[category.code] || "").trim())
     .filter(Boolean).join(" / ");
@@ -4944,7 +4989,8 @@ function UkdocsPage({ currentUser, onNavigate }) {
   }
 
   const extraUploadedCount = Object.values(shipmentDraft.extra_uploaded_files || {}).filter((item) => item?.file_name).length;
-  const uploadedCount = Object.values(shipmentDraft.uploaded_files || {}).filter((item) => item?.file_name).length;
+  const uploadedCount = Object.values(shipmentDraft.uploaded_files || {}).filter((item) => item?.file_name).length
+    + (shipmentDraft.second_enabled ? Object.values(shipmentDraft.second_uploaded_files || {}).filter((item) => item?.file_name).length : 0);
   const canContinue = uploadedCount > 0 && !saving;
   const canGenerate = analysis?.audit?.final_status === "PASS" && !saving;
 
@@ -5143,6 +5189,43 @@ function UkdocsPage({ currentUser, onNavigate }) {
                 </div>
               </details>
 
+              <div className="ukdocs-second-set">
+                <label className="ukdocs-second-toggle">
+                  <input type="checkbox" checked={Boolean(shipmentDraft.second_enabled)} onChange={(event) => { setShipmentDraft({ ...shipmentDraft, second_enabled: event.target.checked }); setAnalysis(null); setGeneratedFiles([]); }} />
+                  <strong>Second invoice set</strong> <span className="muted">(a sub-customer billed on its own invoice numbers)</span>
+                </label>
+                {shipmentDraft.second_enabled && (
+                  <>
+                    <p className="muted">
+                      Each file here is its own invoice, with its own number on the documents: Flowers here and Flowers above make two Flowers invoices.
+                      All their lines go into the one export file, and the export shows both sets of invoice numbers.
+                    </p>
+                    <div className="form-grid">
+                      <label>
+                        <span>Uniware factuur code of this set</span>
+                        <input value={shipmentDraft.second_factuur_ref || ""} onChange={(event) => setShipmentDraft({ ...shipmentDraft, second_factuur_ref: event.target.value })} placeholder="The sub-customer's code (empty: the sending's)" />
+                      </label>
+                    </div>
+                    <div className="ukdocs-upload-grid">
+                      {UKDOCS_CATEGORY_DEFINITIONS.map((category) => {
+                        const fileInfo = shipmentDraft.second_uploaded_files?.[category.code] || {};
+                        return (
+                          <div key={category.code} className="ukdocs-upload-card">
+                            <strong>{category.shortLabel} (second set)</strong>
+                            <input key={`${shipmentUploadInputVersion}-second-${category.code}`} type="file" accept=".xlsx,.xls,.csv" onChange={async (event) => updateSecondUploadedFile(category.code, event.target.files?.[0] || null)} />
+                            <label>
+                              <span>Its invoice number (on the documents)</span>
+                              <input value={shipmentDraft.second_invoice_numbers_by_category?.[category.code] || ""} onChange={(event) => setShipmentDraft({ ...shipmentDraft, second_invoice_numbers_by_category: { ...(shipmentDraft.second_invoice_numbers_by_category || {}), [category.code]: event.target.value } })} placeholder={`Invoice number for ${category.label} (second set)`} />
+                            </label>
+                            <small>{fileInfo.file_name ? `${fileInfo.file_name} (${fileInfo.size || 0} bytes)${fileInfo.content_base64 ? "" : " -- choose it again to add its lines"}` : "No file."}</small>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </>
+                )}
+              </div>
+
               <div className="section-header"><h3>Workflow status</h3></div>
               <div className="ukdocs-badge-row">{["not_started", "files_uploaded", "audit_passed", "ready", "failed"].map((status) => { const definition = ukdocsStatusDefinition(status); return <div key={status} className={`ukdocs-status-badge ${definition.tone}`}>{definition.label}</div>; })}</div>
               <div className="row-actions spread-actions">
@@ -5169,7 +5252,7 @@ function UkdocsPage({ currentUser, onNavigate }) {
                 <table className="data-table">
                   <thead><tr><th>Category</th><th>Invoice</th><th>Rows</th><th>Quantity</th><th>Gross kg</th><th>Net kg</th><th>Packages</th><th>Value</th></tr></thead>
                   <tbody>
-                    {analysis.categories.map((category) => <tr key={category.code}><td>{category.code} {category.label}</td><td>{category.invoice_number || "-"}</td><td>{category.row_count}</td><td>{category.totals.quantity}</td><td>{category.totals.gross_kg}</td><td>{category.totals.net_kg}</td><td>{category.totals.packages}</td><td>{category.totals.customs_value}</td></tr>)}
+                    {analysis.categories.map((category) => <tr key={category.key || category.code}><td>{category.code} {category.label}{category.part === "second" ? " (second set)" : ""}</td><td>{category.invoice_number || "-"}</td><td>{category.row_count}</td><td>{category.totals.quantity}</td><td>{category.totals.gross_kg}</td><td>{category.totals.net_kg}</td><td>{category.totals.packages}</td><td>{category.totals.customs_value}</td></tr>)}
                     <tr className="summary-row"><td colSpan="3"><strong>Combined</strong></td><td><strong>{analysis.combined_totals.quantity}</strong></td><td><strong>{analysis.combined_totals.gross_kg}</strong></td><td><strong>{analysis.combined_totals.net_kg}</strong></td><td><strong>{analysis.combined_totals.packages}</strong></td><td><strong>{analysis.combined_totals.customs_value}</strong></td></tr>
                   </tbody>
                 </table>

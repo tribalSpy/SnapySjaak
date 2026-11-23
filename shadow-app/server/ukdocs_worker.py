@@ -279,8 +279,11 @@ def parse_invoice_numbers(payload):
     explicit = payload.get("invoice_numbers_by_category") or {}
     result = {code: clean_text(explicit.get(code)) for code in CATEGORY_DEFINITIONS}
     raw = clean_text(payload.get("invoice_numbers"))
+    # The second invoice set's numbers (in the combined numbers, for the
+    # documents) are never a main category's.
+    second = {clean_text(value) for value in (payload.get("second_invoice_numbers_by_category") or {}).values() if clean_text(value)}
     if raw:
-        tokens = [token for token in re.split(r"[\s,;/]+", raw.replace("-", "/")) if token]
+        tokens = [token for token in re.split(r"[\s,;/]+", raw.replace("-", "/")) if token and token not in second]
         for code, token in zip(CATEGORY_ORDER, tokens):
             if not result.get(code):
                 result[code] = token
@@ -382,7 +385,7 @@ def build_audit_checks(category_totals, invoice_totals, combined_source_totals, 
             checks.append({"scope": "category", "category": category_code, "field": field, **comparison})
             summary_rows.append({
                 "scope": "category",
-                "group_label": f'{category_code} {CATEGORY_DEFINITIONS.get(category_code, {}).get("label", "")}'.strip(),
+                "group_label": f'{category_code} {CATEGORY_DEFINITIONS.get(category_code.split("-")[0], {}).get("label", "")}{" (second invoice set)" if category_code.endswith("-2") else ""}'.strip(),
                 "field": field,
                 "dump_value": dec(source.get(field)),
                 "invoice_value": dec(invoice.get(field)),
@@ -904,7 +907,7 @@ def build_invoice_customer_lines(customer):
 
 
 def write_invoice_template(workbook, sheet, analysis, category_code):
-    category = next(item for item in analysis["categories"] if item["code"] == category_code)
+    category = next(item for item in analysis["categories"] if item.get("key", item["code"]) == category_code)
     customer = analysis["customer"]
     shipment = analysis["shipment"]
     company = analysis["company"]
@@ -1203,7 +1206,7 @@ def build_export_workbook_raw(analysis):
 
 
 def build_invoice_workbook_raw(analysis, category_code):
-    category = next(item for item in analysis["categories"] if item["code"] == category_code)
+    category = next(item for item in analysis["categories"] if item.get("key", item["code"]) == category_code)
     customer = analysis["customer"]
     shipment = analysis["shipment"]
     company = analysis["company"]
@@ -1400,7 +1403,7 @@ def build_invoice_pdf(analysis, category_code):
     if canvas is None or A4 is None:
         raise RuntimeError("reportlab is required to generate invoice PDF files")
 
-    category = next(item for item in analysis["categories"] if item["code"] == category_code)
+    category = next(item for item in analysis["categories"] if item.get("key", item["code"]) == category_code)
     customer = analysis["customer"]
     shipment = analysis["shipment"]
     company = analysis["company"]
@@ -1617,17 +1620,30 @@ def analyze_payload(payload):
     # MAR+ADM: the extra part's data files, added to the same category's
     # data (its invoice numbers are only for factuur tracking -- not here).
     extra_files = payload.get("extra_uploaded_files") or {}
+    # A second invoice set (a sub-customer with its own invoice numbers): per
+    # category its own invoice (key "508-2": its own invoice file and PDF),
+    # its lines in the same combined export, its numbers on the documents.
+    second_files = payload.get("second_uploaded_files") or {}
+    second_numbers = payload.get("second_invoice_numbers_by_category") or {}
     records = []
     categories = []
     warnings = []
     blocking_warning_codes = set()
     invoice_number_seen = {}
 
-    for category_code in CATEGORY_ORDER:
-        file_entry = uploaded_files.get(category_code) or {}
-        content_base64 = clean_text(file_entry.get("content_base64"))
-        extra_entry = extra_files.get(category_code) if isinstance(extra_files, dict) else None
-        extra_base64 = clean_text((extra_entry or {}).get("content_base64"))
+    jobs = [(code, "main") for code in CATEGORY_ORDER]
+    if isinstance(second_files, dict):
+        jobs += [(code, "second") for code in CATEGORY_ORDER if clean_text((second_files.get(code) or {}).get("content_base64"))]
+    for category_code, part in jobs:
+        category_key = category_code if part == "main" else f"{category_code}-2"
+        if part == "second":
+            content_base64 = clean_text((second_files.get(category_code) or {}).get("content_base64"))
+            extra_base64 = ""
+        else:
+            file_entry = uploaded_files.get(category_code) or {}
+            content_base64 = clean_text(file_entry.get("content_base64"))
+            extra_entry = extra_files.get(category_code) if isinstance(extra_files, dict) else None
+            extra_base64 = clean_text((extra_entry or {}).get("content_base64"))
         if not content_base64 and not extra_base64:
             continue
         alias_map = build_column_alias_map(payload, category_code)
@@ -1659,14 +1675,17 @@ def analyze_payload(payload):
             category_warnings.append(f'Missing required columns: {", ".join(missing_required)}')
             warnings.append({"code": "missing_required_columns", "category": category_code, "message": f'{category_code}: missing required columns: {", ".join(missing_required)}'})
             blocking_warning_codes.add("missing_required_columns")
-            categories.append({"code": category_code, "label": CATEGORY_DEFINITIONS[category_code]["label"], "invoice_number": invoice_numbers_by_category.get(category_code, ""), "row_count": 0, "totals": {"quantity": ZERO, "gross_kg": ZERO, "net_kg": ZERO, "packages": ZERO, "customs_value": ZERO}, "warnings": category_warnings, "invoice_rows": [], "hs_summary_rows": []})
+            categories.append({"code": category_code, "key": category_key, "part": part, "label": CATEGORY_DEFINITIONS[category_code]["label"], "invoice_number": invoice_numbers_by_category.get(category_code, "") if part == "main" else clean_text(second_numbers.get(category_code)), "row_count": 0, "totals": {"quantity": ZERO, "gross_kg": ZERO, "net_kg": ZERO, "packages": ZERO, "customs_value": ZERO}, "warnings": category_warnings, "invoice_rows": [], "hs_summary_rows": []})
             continue
-        invoice_number = invoice_numbers_by_category.get(category_code, "")
+        invoice_number = invoice_numbers_by_category.get(category_code, "") if part == "main" else clean_text(second_numbers.get(category_code))
+        if part == "second" and not invoice_number:
+            warnings.append({"code": "second_invoice_number_missing", "category": category_code, "message": f'{category_code}: the second invoice set has a file but no invoice number'})
+            blocking_warning_codes.add("second_invoice_number_missing")
         if invoice_number:
-            if invoice_number in invoice_number_seen and invoice_number_seen[invoice_number] != category_code:
-                warnings.append({"code": "duplicate_invoice_number", "category": category_code, "message": f'Duplicate invoice number {invoice_number} used for {invoice_number_seen[invoice_number]} and {category_code}'})
+            if invoice_number in invoice_number_seen and invoice_number_seen[invoice_number] != category_key:
+                warnings.append({"code": "duplicate_invoice_number", "category": category_code, "message": f'Duplicate invoice number {invoice_number} used for {invoice_number_seen[invoice_number]} and {category_key}'})
                 blocking_warning_codes.add("duplicate_invoice_number")
-            invoice_number_seen[invoice_number] = category_code
+            invoice_number_seen[invoice_number] = category_key
         category_records = []
         for source_row in rows[1:]:
             description = clean_text(row_value(source_row, indexes, "classificationValue") or row_value(source_row, indexes, "goodsDescriptionText"))
@@ -1720,13 +1739,13 @@ def analyze_payload(payload):
         category_totals = sum_dicts(category_records, ["quantity", "gross_kg", "net_kg", "packages", "customs_value"])
         invoice_rows = aggregate_rows(category_records, ["hs_code", "commodity_code", "description", "origin"])
         hs_summary_rows = aggregate_rows(category_records, ["hs_code", "description"])
-        categories.append({"code": category_code, "label": CATEGORY_DEFINITIONS[category_code]["label"], "invoice_number": invoice_number, "row_count": len(category_records), "totals": category_totals, "warnings": category_warnings, "invoice_rows": invoice_rows, "hs_summary_rows": hs_summary_rows})
+        categories.append({"code": category_code, "key": category_key, "part": part, "label": CATEGORY_DEFINITIONS[category_code]["label"], "invoice_number": invoice_number, "row_count": len(category_records), "totals": category_totals, "warnings": category_warnings, "invoice_rows": invoice_rows, "hs_summary_rows": hs_summary_rows})
 
     export_rows = aggregate_rows(records, ["description", "commodity_code", "origin"])
     control_pivot_rows = aggregate_rows(records, ["description"])
     combined_totals = sum_dicts(records, ["quantity", "gross_kg", "net_kg", "packages", "customs_value"])
-    category_totals = {item["code"]: item["totals"] for item in categories}
-    invoice_totals = {item["code"]: sum_dicts(item["invoice_rows"], ["quantity", "gross_kg", "net_kg", "packages", "customs_value"]) for item in categories}
+    category_totals = {item.get("key", item["code"]): item["totals"] for item in categories}
+    invoice_totals = {item.get("key", item["code"]): sum_dicts(item["invoice_rows"], ["quantity", "gross_kg", "net_kg", "packages", "customs_value"]) for item in categories}
     combined_export_totals = sum_dicts(export_rows, ["quantity", "gross_kg", "net_kg", "packages", "customs_value"])
     checks, audit_summary_rows = build_audit_checks(category_totals, invoice_totals, combined_totals, combined_export_totals, payload)
     check_failures = [check for check in checks if not check["ok"]]
@@ -1783,7 +1802,8 @@ def generate_files(analysis):
     for category in analysis["categories"]:
         if not category["row_count"]:
             continue
-        files.append({"name": f'invoice {category["invoice_number"] or category["code"]} {CATEGORY_DEFINITIONS[category["code"]]["slug"]} {customer_name}.xlsx', "content_base64": base64.b64encode(build_invoice_workbook(analysis, category["code"])).decode("ascii"), "mime_type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", "kind": "invoice", "category": category["code"]})
+        key = category.get("key", category["code"])
+        files.append({"name": f'invoice {category["invoice_number"] or key} {CATEGORY_DEFINITIONS[category["code"]]["slug"]} {customer_name}.xlsx', "content_base64": base64.b64encode(build_invoice_workbook(analysis, key)).decode("ascii"), "mime_type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", "kind": "invoice", "category": key})
     files.append({"name": f'audit {export_reference}.xlsx', "content_base64": base64.b64encode(build_audit_workbook(analysis)).decode("ascii"), "mime_type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", "kind": "audit"})
     return files
 
