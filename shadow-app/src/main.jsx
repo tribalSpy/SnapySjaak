@@ -21955,6 +21955,35 @@ function InkoopTrackTraceWorkspace({ bar, setBar, overview, company, matchRound 
       .catch(() => {});
     return () => { cancelled = true; };
   }, [linkLotsKey]);
+  // The Connect lots the lists show: their retour too (each asked once), so
+  // a lot whose dispatch booked pieces to a retour customer shows ↩ and its
+  // value after that correction.
+  const retourAsked = useRef(new Set());
+  const shownLotsKey = [...new Set([...rightIssues, ...otherShown.slice(0, 150).map(({ issue }) => issue)]
+    .filter((issue) => issue?.erp_row?.lot != null)
+    .flatMap((issue) => String(issue.erp_row.lot).split("+").map((lot) => lot.trim()).filter((lot) => /^d{1,18}$/.test(lot))))].join(",");
+  useEffect(() => {
+    const wanted = shownLotsKey ? shownLotsKey.split(",").filter((lot) => !retourAsked.current.has(lot)) : [];
+    if (!wanted.length) return;
+    for (const lot of wanted) retourAsked.current.add(lot);
+    for (let start = 0; start < wanted.length; start += 200) {
+      const chunk = wanted.slice(start, start + 200);
+      apiJson(`/api/inkoop/lot-retour?lots=${encodeURIComponent(chunk.join(","))}`)
+        .then((payload) => setLotRetour((current) => ({ ...current, ...Object.fromEntries((payload.lots || []).map((lot) => [lot.lot, lot])) })))
+        .catch(() => { for (const lot of chunk) retourAsked.current.delete(lot); });
+    }
+  }, [shownLotsKey]);
+  // A lot (or a "+" pair of lots) with pieces booked to retour: the sums.
+  const retourOf = (issue) => {
+    if (issue?.erp_row?.lot == null) return null;
+    const found = String(issue.erp_row.lot).split("+").map((lot) => lotRetour[lot.trim()]).filter((lot) => lot && lot.retour_pieces > 0);
+    if (!found.length) return null;
+    return {
+      pieces: found.reduce((sum, lot) => sum + lot.retour_pieces, 0),
+      value: found.reduce((sum, lot) => sum + lot.retour_value, 0),
+      to: [...new Set(found.flatMap((lot) => lot.retour_to || []))],
+    };
+  };
   const togglePick = (issue) => setPicked((current) => {
     const key = pickKey(issue);
     const next = { ...current };
@@ -22133,6 +22162,9 @@ function InkoopTrackTraceWorkspace({ bar, setBar, overview, company, matchRound 
   const issueRow = (issue, sideKey, like = null) => {
     const key = pickKey(issue);
     const isPicked = Boolean(picked[key]);
+    const retour = retourOf(issue);
+    const lotPieces = Number(issue.erp_row?.pieces) || 0;
+    const lotValue = parseFloat(issue.erp_row?.t_price) || 0;
     return (
       <div key={issue.id} id={`ik-item-${issue.id}`} className={`ik-item ${sideKey}${isPicked ? " picked" : ""}${issue.status !== "open" ? " handled" : ""}`}
         onContextMenu={issue.explained ? undefined : (event) => openVerifyMenu(event, issue)} title={issue.explained ? undefined : "Right-click: resolve as Geverifieerd"}>
@@ -22142,6 +22174,7 @@ function InkoopTrackTraceWorkspace({ bar, setBar, overview, company, matchRound 
         <button type="button" className="ik-item-body" onClick={() => openDrawer(issue)} title="Status, who's checking, note">
           <span className="ik-item-top">
             <span title={issue.issue_type === "mismatch" ? "Matched, but the pieces differ: link the missing lot(s)" : "No Connect lot"}>{issue.issue_type === "mismatch" ? "⚠ pieces" : "✗"} {fustOverviewDate(inkoopIssueInvoiceDay(issue))}</span>
+            {retour && <span className="ik-retour-icon" title={`Correction: ${retour.pieces} pcs booked to a retour customer in the dispatch`}>↩</span>}
             <strong>{issue.description}</strong>
             <span className="ik-item-money">{priceOf(issue) ? `${formatInkoopEuro(priceOf(issue))}/pc · ` : ""}{formatInkoopEuro(issue.value)}</span>
           </span>
@@ -22155,6 +22188,12 @@ function InkoopTrackTraceWorkspace({ bar, setBar, overview, company, matchRound 
             {issue.issue_type === "gap_erp" ? inkoopErpTranscript(issue.erp_row) : inkoopInvoiceTranscript(issue.detail)}
           </span>
           {issue.issue_type === "mismatch" && <span className="ik-item-sub ik-con-text">Connect: {inkoopErpTranscript(issue.erp_row)} · difference <InkoopMoneyDiff value={issue.money_diff} /></span>}
+          {retour && (
+            <span className="ik-item-sub ik-retour-note" title="From the Connect dispatch: pieces of this lot booked to a retour customer -- the credit is expected for them">
+              ↩ correction: {retour.pieces} pcs to retour{retour.to.length ? ` (${retour.to.join(", ")})` : ""} · {formatInkoopEuro(retour.value)}
+              {lotPieces ? ` → after the correction ${Math.round((lotPieces - retour.pieces) * 100) / 100} pcs · ${formatInkoopEuro(lotValue - retour.value)}` : ""}
+            </span>
+          )}
           {issue.status !== "open" && <span className="ik-item-sub">{issue.status}{issue.assigned_to ? ` · ${issue.assigned_to}` : ""}{issue.note ? ` · ${issue.note}` : ""}</span>}
         </button>
       </div>

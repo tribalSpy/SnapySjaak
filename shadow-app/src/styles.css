@@ -5611,3 +5611,8 @@ table.data-table.balance-table.ik-table.ik-inv-invoices td:nth-child(n+7), table
 /* UKdocs: the second invoice set (a sub-customer's own invoices). */
 .ukdocs-second-set { display: grid; gap: 10px; padding: 10px 12px; border: 1px dashed var(--ik-border, rgba(127,127,127,.4)); border-radius: 8px; }
 .ukdocs-second-toggle { display: flex; align-items: center; gap: 8px; cursor: pointer; }
+
+/* Track & Trace: a Connect lot with pieces booked to retour (a correction). */
+.ik-retour-icon { color: #d97706; font-weight: 700; margin-right: 4px; }
+.ik-item-sub.ik-retour-note { color: #b45309; }
+:root[data-theme="dark"] .ik-item-sub.ik-retour-note, :root[data-theme="dark"] .ik-retour-icon { color: #fbbf24; }
