@@ -2274,6 +2274,11 @@ function normalizeUkdocsCustomer(customer) {
     // The code Uniware lists the customer's facturen under (e.g. "LTD") --
     // the daily factuur fetch picks it from Uniware's menu.
     uniware_factuur_ref: normalizeUkdocsText(customer?.uniware_factuur_ref),
+    // The codes of the second invoice set (a sub-customer, e.g. "I GM W")
+    // and of the extra part (the code ADM uses): their facturen are looked
+    // up under these when the sending doesn't name its own.
+    uniware_factuur_ref_second: normalizeUkdocsText(customer?.uniware_factuur_ref_second),
+    uniware_factuur_ref_extra: normalizeUkdocsText(customer?.uniware_factuur_ref_extra),
     // How this customer's PD Keuring rows go by default: "Truck" or
     // "Airplane" (a new row takes it; the row itself can still change it).
     default_transport_mode: normalizeUkdocsTransportMode(customer?.default_transport_mode),
@@ -3389,8 +3394,8 @@ function financeAuditNeededInvoices(state, { from = addDaysToIsoDate(localDateIs
       const secondTokens = new Set(ukdocsPrintInvoiceTokens(shipment.second_invoice_numbers_by_category?.[category]));
       const groups = [
         { ref: mainRef, invoice_numbers: missing.filter((token) => !partTokens.has(token) && !secondTokens.has(token)) },
-        { ref: String(shipment.extra_factuur_ref || "").trim() || mainRef, invoice_numbers: missing.filter((token) => partTokens.has(token) && !secondTokens.has(token)), part: "extra" },
-        { ref: String(shipment.second_factuur_ref || "").trim() || mainRef, invoice_numbers: missing.filter((token) => secondTokens.has(token)), part: "second" },
+        { ref: String(shipment.extra_factuur_ref || "").trim() || String(customer?.uniware_factuur_ref_extra || "").trim() || mainRef, invoice_numbers: missing.filter((token) => partTokens.has(token) && !secondTokens.has(token)), part: "extra" },
+        { ref: String(shipment.second_factuur_ref || "").trim() || String(customer?.uniware_factuur_ref_second || "").trim() || mainRef, invoice_numbers: missing.filter((token) => secondTokens.has(token)), part: "second" },
       ];
       for (const group of groups) {
         if (!group.invoice_numbers.length) continue;

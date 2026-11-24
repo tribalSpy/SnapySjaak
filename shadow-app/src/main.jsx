@@ -3204,6 +3204,8 @@ const UKDOCS_CUSTOMER_FIELDS = [
   ["expediteur_name", "Expediteur (Finance Audit default)"],
   ["customer_connect", "Customer Connect (Finance Audit default)"],
   ["uniware_factuur_ref", "Uniware factuur code (Finance Audit daily fetch, e.g. LTD)"],
+  ["uniware_factuur_ref_second", "Uniware factuur code, second invoice set (sub-customer, e.g. I GM W)"],
+  ["uniware_factuur_ref_extra", "Uniware factuur code, extra part MAR+ADM (the code ADM uses)"],
   ["default_transport_mode", "Transport (PD Keuring default)", "transport"],
 ];
 
@@ -3215,7 +3217,7 @@ const UKDOCS_CUSTOMER_GROUP_DEFS = [
   { key: "export", label: "Export defaults", hint: "country of destination, regulation, customs, tolerances", fields: [] },
   { key: "invoice", label: "Invoice", hint: "language / text, document references, what the invoice lines show", fields: ["default_invoice_language_text", "default_document_references"] },
   { key: "emails", label: "Emails", hint: "papers ready, CSI, Eric Docs", fields: ["ready_email_subject", "ready_email_body", "csi_email_recipients", "csi_email_subject", "csi_email_body", "eric_docs_email_recipients", "eric_docs_email_subject", "eric_docs_email_body"] },
-  { key: "finance", label: "Finance Audit", hint: "transporteur, grensovergang, expediteur, Customer Connect, rit numbers", fields: ["transporter_name", "border_crossing_default", "expediteur_name", "customer_connect", "uniware_factuur_ref"] },
+  { key: "finance", label: "Finance Audit", hint: "transporteur, grensovergang, expediteur, Customer Connect, rit numbers", fields: ["transporter_name", "border_crossing_default", "expediteur_name", "customer_connect", "uniware_factuur_ref", "uniware_factuur_ref_second", "uniware_factuur_ref_extra"] },
   { key: "documents", label: "Documents & menus", hint: "required files, Gmail sync, ready email, which menus show the shipment", fields: [] },
 ];
 const UKDOCS_CUSTOMER_GROUPED_KEYS = new Set(UKDOCS_CUSTOMER_GROUP_DEFS.flatMap((group) => group.fields));
@@ -3371,6 +3373,8 @@ function emptyUkdocsCustomer() {
     expediteur_name: "",
     customer_connect: "",
     uniware_factuur_ref: "",
+    uniware_factuur_ref_second: "",
+    uniware_factuur_ref_extra: "",
     default_transport_mode: "Truck",
     rit_overrides: Object.fromEntries(UKDOCS_CATEGORY_DEFINITIONS.map((item) => [item.code, ""])),
   };
@@ -4934,7 +4938,8 @@ function UkdocsPage({ currentUser, onNavigate }) {
       nextFile = { category: categoryCode, file_name: file.name, size: file.size || 0, uploaded_at: new Date().toISOString(), content_base64: await fileToBase64(file) };
     }
     // The Uniware factuur code used last time for this customer's extra part.
-    const lastRef = (state?.shipments || []).find((item) => item.customer_id && item.customer_id === shipmentDraft.customer_id && String(item.extra_factuur_ref || "").trim())?.extra_factuur_ref || "";
+    const lastRef = String((state?.customers || []).find((item) => item.id === shipmentDraft.customer_id)?.uniware_factuur_ref_extra || "").trim()
+      || (state?.shipments || []).find((item) => item.customer_id && item.customer_id === shipmentDraft.customer_id && String(item.extra_factuur_ref || "").trim())?.extra_factuur_ref || "";
     setShipmentDraft((current) => {
       const currentInvoice = String(current.extra_invoice_numbers_by_category?.[categoryCode] || "").trim();
       const previousFileInvoice = ukdocsInvoiceNumberFromFileName(current.extra_uploaded_files?.[categoryCode]?.file_name || "");
@@ -4958,7 +4963,8 @@ function UkdocsPage({ currentUser, onNavigate }) {
     if (file) {
       nextFile = { category: categoryCode, file_name: file.name, size: file.size || 0, uploaded_at: new Date().toISOString(), content_base64: await fileToBase64(file) };
     }
-    const lastRef = (state?.shipments || []).find((item) => item.customer_id && item.customer_id === shipmentDraft.customer_id && String(item.second_factuur_ref || "").trim())?.second_factuur_ref || "";
+    const lastRef = String((state?.customers || []).find((item) => item.id === shipmentDraft.customer_id)?.uniware_factuur_ref_second || "").trim()
+      || (state?.shipments || []).find((item) => item.customer_id && item.customer_id === shipmentDraft.customer_id && String(item.second_factuur_ref || "").trim())?.second_factuur_ref || "";
     setShipmentDraft((current) => {
       const currentInvoice = String(current.second_invoice_numbers_by_category?.[categoryCode] || "").trim();
       const previousFileInvoice = ukdocsInvoiceNumberFromFileName(current.second_uploaded_files?.[categoryCode]?.file_name || "");
@@ -5168,7 +5174,7 @@ function UkdocsPage({ currentUser, onNavigate }) {
                 <div className="form-grid">
                   <label>
                     <span>Uniware factuur code of this part</span>
-                    <input value={shipmentDraft.extra_factuur_ref || ""} onChange={(event) => setShipmentDraft({ ...shipmentDraft, extra_factuur_ref: event.target.value })} placeholder="e.g. ADM's customer code (empty: the sending's)" />
+                    <input value={shipmentDraft.extra_factuur_ref || ""} onChange={(event) => setShipmentDraft({ ...shipmentDraft, extra_factuur_ref: event.target.value })} placeholder="e.g. ADM's customer code (empty: the customer's extra-part code, else the sending's)" />
                   </label>
                 </div>
                 <div className="ukdocs-upload-grid">
@@ -5203,7 +5209,7 @@ function UkdocsPage({ currentUser, onNavigate }) {
                     <div className="form-grid">
                       <label>
                         <span>Uniware factuur code of this set</span>
-                        <input value={shipmentDraft.second_factuur_ref || ""} onChange={(event) => setShipmentDraft({ ...shipmentDraft, second_factuur_ref: event.target.value })} placeholder="The sub-customer's code (empty: the sending's)" />
+                        <input value={shipmentDraft.second_factuur_ref || ""} onChange={(event) => setShipmentDraft({ ...shipmentDraft, second_factuur_ref: event.target.value })} placeholder="The sub-customer's code, e.g. I GM W (empty: the customer's second-set code, else the sending's)" />
                       </label>
                     </div>
                     <div className="ukdocs-upload-grid">
