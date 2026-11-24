@@ -2917,6 +2917,32 @@ export async function getInkoopMatchDays({ from, to, withData = true } = {}) {
   return result.rows;
 }
 
+// The matched lines of the stored days of a range, only what the grower
+// totals need of them (the line's supplier, its lot(s), its company) --
+// in the order of the days and of their lists, never the whole results
+// (a month of them doesn't fit in memory next to the comparison).
+export async function getInkoopMatchedLotRows({ from, to } = {}) {
+  if (!pool || !from || !to) {
+    return [];
+  }
+  const result = await pool.query(
+    `SELECT x.r->>'supplier_gln' AS supplier_gln, x.r->>'supplier_fh_number' AS supplier_fh_number,
+       x.r->>'supplier_name' AS supplier_name, x.r->>'supplier_code' AS supplier_code,
+       x.r->>'company_number' AS company_number, x.r->'split_lots' AS split_lots, x.r->'erp_row'->>'lot' AS lot
+     FROM inkoop_match_days d
+     CROSS JOIN LATERAL (
+       SELECT 0 AS list_index, e.r, e.n FROM jsonb_array_elements(CASE WHEN jsonb_typeof(d.result->'matched_ok') = 'array' THEN d.result->'matched_ok' ELSE '[]'::jsonb END) WITH ORDINALITY AS e(r, n)
+       UNION ALL
+       SELECT 1 AS list_index, e.r, e.n FROM jsonb_array_elements(CASE WHEN jsonb_typeof(d.result->'matched_mismatch') = 'array' THEN d.result->'matched_mismatch' ELSE '[]'::jsonb END) WITH ORDINALITY AS e(r, n)
+     ) x
+     WHERE d.match_date >= $1::date AND d.match_date <= $2::date AND d.result IS NOT NULL
+       AND jsonb_typeof(x.r->'erp_row') = 'object'
+     ORDER BY d.match_date, x.list_index, x.n`,
+    [from, to],
+  );
+  return result.rows;
+}
+
 // Days to (re)compare: inserted as pending, or bumped to pending with a new
 // generation (a running computation of the old data then won't mark it
 // ready). priority > 0 moves them to the front of the queue.

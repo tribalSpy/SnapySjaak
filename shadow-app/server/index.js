@@ -83,6 +83,7 @@ import {
   inkoopDataTableDefinitions,
   queryInkoopDataTable,
   markInkoopMatchDaysPending,
+  getInkoopMatchedLotRows,
   prioritizeInkoopMatchDays,
   markStaleInkoopMatchDays,
   ensureInkoopMatchDaysForData,
@@ -10952,19 +10953,16 @@ function inkoopMatchedLotCodes(match, { supplierMap, supplierNameMap, manualLink
 // Every lot matched in the stored day results of a period (and the match
 // tolerance either side: a line can take a lot of another day) -> the codes
 // of its invoice line. Read a week at a time.
+// Only the matched lines' supplier and lot(s) are read (in the database), not
+// the days' whole results: a month of those next to a running comparison
+// took the server over its 2 GB (24-11).
 async function inkoopStoredMatchedLotCodes(from, to, company, maps) {
-  const byLot = new Map();
-  const last = addDaysToIsoDate(to, INKOOP_DAY_TOLERANCE_DAYS);
-  for (let start = addDaysToIsoDate(from, -INKOOP_DAY_TOLERANCE_DAYS); start <= last; start = addDaysToIsoDate(start, 7)) {
-    const end = addDaysToIsoDate(start, 6) < last ? addDaysToIsoDate(start, 6) : last;
-    for (const day of await getInkoopMatchDays({ from: start, to: end })) {
-      if (!day?.result) continue;
-      for (const [lot, codes] of inkoopMatchedLotCodes(filterInkoopResultsByCompany(day.result, company), maps)) {
-        if (!byLot.has(lot)) byLot.set(lot, codes);
-      }
-    }
-  }
-  return byLot;
+  const wanted = normalizeUkdocsText(company);
+  const rows = (await getInkoopMatchedLotRows({ from: addDaysToIsoDate(from, -INKOOP_DAY_TOLERANCE_DAYS), to: addDaysToIsoDate(to, INKOOP_DAY_TOLERANCE_DAYS) }))
+    .filter((row) => !wanted || normalizeUkdocsText(row.company_number) === wanted)
+    .map((row) => ({ ...row, erp_row: { lot: row.lot ?? "" } }));
+  // In day order, first match of a lot wins (as day by day before).
+  return inkoopMatchedLotCodes({ matched_ok: rows, matched_mismatch: [] }, maps);
 }
 
 // matchedLotCodes (inkoopMatchedLotCodes): a lot matched to an invoice line
