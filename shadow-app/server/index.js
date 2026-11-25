@@ -1653,23 +1653,59 @@ async function writeJsonFile(filePath, payload, { allowShrink = false } = {}) {
 // Every hour: a compressed copy of each important state file that changed
 // since its last copy, into the database (state_file_history), then the
 // old copies thinned out (48 h all, then one a day for 60 days).
+// The file read in pieces (never whole in memory -- the hourly copy of a big
+// inkoop-state.json held it several times over and took the app over its
+// 2 GB, 25-11): its sha256, its size and, when gzip, its compressed bytes.
+function streamStateFile(filePath, { gzip = false } = {}) {
+  return new Promise((resolve, reject) => {
+    const hash = crypto.createHash("sha256");
+    const zipper = gzip ? zlib.createGzip() : null;
+    const zipped = [];
+    let size = 0;
+    const input = createReadStream(filePath);
+    input.on("error", reject);
+    input.on("data", (chunk) => {
+      size += chunk.length;
+      hash.update(chunk);
+      if (zipper && !zipper.write(chunk)) {
+        input.pause();
+        zipper.once("drain", () => input.resume());
+      }
+    });
+    if (zipper) {
+      zipper.on("data", (chunk) => zipped.push(chunk));
+      zipper.on("error", reject);
+      zipper.on("end", () => resolve({ sha256: hash.digest("hex"), size, gzipped: Buffer.concat(zipped) }));
+      input.on("end", () => zipper.end());
+    } else {
+      input.on("end", () => resolve({ sha256: hash.digest("hex"), size, gzipped: null }));
+    }
+  });
+}
+
 async function snapshotStateFilesToDatabase() {
   if (!isDatabaseEnabled()) return { ok: false, skipped: true, reason: "no database" };
   let saved = 0;
   for (const fileName of PROTECTED_STATE_FILES) {
     const filePath = path.join(cacheDir, fileName);
     if (!existsSync(filePath) || unreadableJsonFiles.has(filePath)) continue;
-    const buffer = await fs.readFile(filePath);
-    let records = null;
-    try {
-      records = countStateRecords(fileName, JSON.parse(buffer.toString("utf8")));
-    } catch {
-      continue; // not a whole file right now: next hour
+    // Unchanged since its last copy (the usual): only its hash, read in
+    // pieces -- nothing parsed, nothing held.
+    const first = await streamStateFile(filePath);
+    if (first.sha256 === await getLatestStateFileSha(fileName)) continue;
+    // Its record count: known from its last read / save; else read once.
+    let records = stateRecordCounts.get(filePath);
+    if (!Number.isFinite(records)) {
+      try {
+        records = countStateRecords(fileName, JSON.parse(await fs.readFile(filePath, "utf8")));
+      } catch {
+        continue; // not a whole file right now: next hour
+      }
     }
-    const sha256 = crypto.createHash("sha256").update(buffer).digest("hex");
-    if (sha256 === await getLatestStateFileSha(fileName)) continue;
-    const gzipped = await new Promise((resolve, reject) => zlib.gzip(buffer, (error, result) => (error ? reject(error) : resolve(result))));
-    await saveStateFileSnapshot({ fileName, sizeBytes: buffer.length, sha256, records, gzipped });
+    // Compressed in pieces; the hash of exactly what was compressed.
+    const copy = await streamStateFile(filePath, { gzip: true });
+    if (!copy.size) continue;
+    await saveStateFileSnapshot({ fileName, sizeBytes: copy.size, sha256: copy.sha256, records, gzipped: copy.gzipped });
     saved += 1;
   }
   const pruned = await pruneStateFileHistory();
@@ -15268,9 +15304,11 @@ async function inkoopFollowupPeriodItems(state, from, to, grower = "") {
   const loaded = await inkoopFollowupItemsForDates(state, readyDates);
   const items = [];
   const seen = new Set();
+  // Linked by hand, its day not compared again yet: not open.
+  const handLinked = inkoopHandLinkedKeys(state);
   for (const date of readyDates) {
     for (const item of loaded.byDate.get(date) || []) {
-      if (seen.has(item.id)) continue;
+      if (seen.has(item.id) || inkoopIssueHandLinked(item, handLinked)) continue;
       seen.add(item.id);
       items.push(item);
     }
@@ -15550,6 +15588,29 @@ function inkoopFollowupWithStatus(item, stored, last) {
 // Stable ids for the follow-up queue -- must survive a recompute (the same
 // mismatch/gap always derives the same id) so a status set on one persists
 // across every future page load until the underlying data actually changes.
+// The invoice lines and lots in a hand link (Track & Trace / suggestions).
+// A day is compared again after a link, but until then its stored result
+// still has them open: pages leave them out (issues, follow-up) or count
+// them as matched (Money trace) at once.
+function inkoopHandLinkedKeys(state) {
+  const lineIds = new Set();
+  const lots = new Set();
+  for (const pair of state?.manual_line_pairs || []) {
+    for (const id of pair?.invoice_line_ids || []) if (String(id || "").trim()) lineIds.add(String(id).trim());
+    for (const lot of pair?.lots || []) if (String(lot || "").trim()) lots.add(String(lot).trim());
+  }
+  return { lineIds, lots };
+}
+
+// An open line (by its inkoopIssueId: gap_invoice:<line id>, gap_erp:<lot>)
+// that a hand link holds.
+function inkoopIssueHandLinked(issue, keys) {
+  const id = String(issue?.id || "");
+  if (id.startsWith("gap_invoice:")) return keys.lineIds.has(id.slice("gap_invoice:".length));
+  if (id.startsWith("gap_erp:")) return keys.lots.has(id.slice("gap_erp:".length));
+  return false;
+}
+
 function inkoopIssueId(issueType, row) {
   if (issueType === "mismatch" || issueType === "gap_erp") {
     return `${issueType}:${row?.erp_row?.lot ?? row?.lot ?? ""}`;
@@ -30157,22 +30218,32 @@ async function handleApi(req, res, url) {
         lots: verifiedStatuses.filter((row) => row.issue_type === "gap_erp").map((row) => row.id.slice("gap_erp:".length)),
       }).catch(() => []) : [];
       const verifiedRowIds = new Set(verifiedRows.map((row) => row.row_id));
+      // Lines linked by hand whose day isn't compared again yet (still open in
+      // its stored result): matched at once -- the invoice line as a matched
+      // line, the lot's money as matched Connect (no line of its own).
+      const handKeys = inkoopHandLinkedKeys(state);
+      const handRows = handKeys.lineIds.size || handKeys.lots.size
+        ? (await getInkoopVerifiedMatchRows({ company, from, to, lineIds: [...handKeys.lineIds], lots: [...handKeys.lots] }).catch(() => []))
+          .filter((row) => !verifiedRowIds.has(row.row_id))
+        : [];
+      const handRowIds = new Set(handRows.map((row) => row.row_id));
       const totals = (() => {
-        if (!verifiedRows.length) return rawTotals;
+        if (!verifiedRows.length && !handRows.length) return rawTotals;
         const keyOf = (row) => `${row.date}|${row.list}|${row.supplier_code}|${row.supplier_name}|${row.invoice_type}`;
         const less = new Map();
         const added = new Map();
-        for (const row of verifiedRows) {
+        const move = (row, list, lines) => {
           const key = keyOf(row);
           const entry = less.get(key) || { lines: 0, invoice_value: 0, erp_value: 0 };
           entry.lines += 1; entry.invoice_value += row.invoice_value; entry.erp_value += row.erp_value;
           less.set(key, entry);
-          const list = row.list === "only_in_erp" ? "verified_connect" : "verified";
           const addedKey = `${row.date}|${list}|${row.supplier_code}|${row.supplier_name}|${row.invoice_type}`;
           const add = added.get(addedKey) || { date: row.date, list, supplier_code: row.supplier_code, supplier_name: row.supplier_name, invoice_type: row.invoice_type, lines: 0, invoice_value: 0, erp_value: 0 };
-          add.lines += 1; add.invoice_value += row.invoice_value; add.erp_value += row.erp_value;
+          add.lines += lines; add.invoice_value += row.invoice_value; add.erp_value += row.erp_value;
           added.set(addedKey, add);
-        }
+        };
+        for (const row of verifiedRows) move(row, row.list === "only_in_erp" ? "verified_connect" : "verified", 1);
+        for (const row of handRows) move(row, "matched_ok", row.list === "only_in_erp" ? 0 : 1);
         const kept = rawTotals.map((row) => {
           const minus = less.get(keyOf(row));
           return minus ? { ...row, lines: row.lines - minus.lines, invoice_value: row.invoice_value - minus.invoice_value, erp_value: row.erp_value - minus.erp_value } : row;
@@ -30265,7 +30336,9 @@ async function handleApi(req, res, url) {
         from, to, grower,
         lines: lines.map((row) => ({
           ...row, grower: view.growerOf(row), bw: view.bwOf(row), flow: inkoopOverviewFlow(row),
-          status: verifiedRowIds.has(row.row_id) ? (row.list === "only_in_erp" ? "verified_connect" : "verified") : INKOOP_OVERVIEW_STATUS[row.list] || row.list,
+          status: verifiedRowIds.has(row.row_id) ? (row.list === "only_in_erp" ? "verified_connect" : "verified")
+            : handRowIds.has(row.row_id) ? "matched" : INKOOP_OVERVIEW_STATUS[row.list] || row.list,
+          ...(handRowIds.has(row.row_id) ? { linked_pending: true } : {}),
           ...(row.list === "matched_mismatch" ? { dispatch: dispatchOf(row) } : {}),
           ...(handPairOf(row) ? { hand_pair: handPairOf(row) } : {}),
         })),
@@ -30696,7 +30769,10 @@ async function handleApi(req, res, url) {
         kickInkoopMatchWorker();
       }
 
-      const merged = issues.map((issue) => {
+      // Lines linked by hand whose day isn't compared again yet: linked
+      // already -- not open (the comparison makes them matched).
+      const handLinked = inkoopHandLinkedKeys(state);
+      const merged = issues.filter((issue) => !inkoopIssueHandLinked(issue, handLinked)).map((issue) => {
         const stored = statusById.get(issue.id);
         return {
           ...issue,
