@@ -12153,6 +12153,13 @@ function inkoopStateFingerprint(state) {
 // The fingerprint of the current inkoop-state.json, worked out once per
 // version of the file (it hashes every master data map).
 async function inkoopCurrentFingerprint() {
+  // The file unchanged: the cached fingerprint, without copying the whole
+  // state (several MB) -- the issues read asks this once per day of a month.
+  const stat = await fs.stat(inkoopStatePath).catch(() => null);
+  if (stat && inkoopStateCache && inkoopStateCache.mtimeMs === stat.mtimeMs && inkoopStateCache.size === stat.size) {
+    inkoopStateCache.fingerprint = inkoopStateCache.fingerprint || inkoopStateFingerprint(inkoopStateCache.state);
+    return inkoopStateCache.fingerprint;
+  }
   const state = await readInkoopState();
   if (inkoopStateCache) {
     inkoopStateCache.fingerprint = inkoopStateCache.fingerprint || inkoopStateFingerprint(inkoopStateCache.state);
@@ -29442,9 +29449,11 @@ async function handleApi(req, res, url) {
     const bwFilter = new Set(String(url.searchParams.get("bw") || "").split(",").map((value) => value.trim().toUpperCase()).filter(Boolean));
     try {
       const state = await readInkoopState();
+      // Only the fields the grower totals use (93 days of whole raw rows
+      // were hundreds of MB).
       const [allErpRows, allInvoiceLines, directory] = await Promise.all([
-        getInkoopErpLines({ from, to }),
-        getInkoopInvoiceLines({ from, to }),
+        getInkoopErpLines({ from, to, fields: INKOOP_GROWER_TOTALS_ERP_FIELDS }),
+        getInkoopInvoiceLines({ from, to, fields: INKOOP_GROWER_TOTALS_INVOICE_FIELDS }),
         inkoopGrowerDirectory(state),
       ]);
       const bwOf = (row) => (state.supplier_bw_map?.[normalizeInkoopKey(row?.suppl)] || state.supplier_bw_map?.[normalizeInkoopKey(row?.avc)])?.bw || "?";
@@ -32768,6 +32777,12 @@ async function runInkoopMatchChild() {
 const MEMORY_WATCH_WARN_BYTES = 1.4 * 1024 * 1024 * 1024;
 const serverRequestsInFlight = new Map();
 
+// What the grower totals (and their day drill-down) read of a lot / an
+// invoice line: grower codes, partij, date, pieces, money, product.
+const INKOOP_GROWER_TOTALS_ERP_FIELDS = ["lot", "date", "pav", "levering_pav", "suppl", "avc", "transp", "t_price", "pieces", "items", "cont", "price", "description", "uniware_aanv"];
+const INKOOP_GROWER_TOTALS_INVOICE_FIELDS = ["id", "invoice_number", "invoice_type", "invoice_date", "company_number", "reference_bt", "supplier_gln", "supplier_fh_number", "supplier_name",
+  "description", "quantity", "packages", "per_package", "unit_price", "total", "product_type_code"];
+
 // The Inkoop reads that load a month of stored comparisons (or a year of
 // lines): at most 2 at a time, the others wait their turn. A page that
 // changes its period quickly (the date field's month scrolled from 11-25 to
@@ -32776,6 +32791,9 @@ const serverRequestsInFlight = new Map();
 // is dropped without being read.
 const HEAVY_INKOOP_READS = new Set([
   "/api/inkoop/issues",
+  "/api/inkoop/followup",
+  "/api/inkoop/detective",
+  "/api/inkoop/invoice-trace",
   "/api/inkoop/overview-table",
   "/api/inkoop/overview-lines",
   "/api/inkoop/grower-export",

@@ -2193,18 +2193,21 @@ export async function incrementShelfCountNightlyRunTotal(runDate, statusKey) {
   return result.rows?.[0] || null;
 }
 
-export async function getInkoopErpLines({ from, to } = {}) {
+// fields: only those keys of each lot (a period's raw rows are big -- the
+// grower totals read 93 days of them and need a dozen fields).
+export async function getInkoopErpLines({ from, to, fields = null } = {}) {
   if (!pool) {
     return [];
   }
+  const merged = `${ERP_LINE_RAW_SQL} - ARRAY['cr','deb_no','inv_no','ite_date','ite_no','ite_t','keur','po_no','verd','fust']::text[]`;
   const result = await pool.query(
     `
-      SELECT ${ERP_LINE_RAW_SQL} - ARRAY['cr','deb_no','inv_no','ite_date','ite_no','ite_t','keur','po_no','verd','fust']::text[] AS raw
+      SELECT ${Array.isArray(fields) ? `(SELECT COALESCE(jsonb_object_agg(k.key, k.value), '{}'::jsonb) FROM jsonb_each(${merged}) k WHERE k.key = ANY($3::text[]))` : merged} AS raw
       FROM inkoop_erp_lines
       WHERE erp_date IS NULL OR (erp_date >= $1 AND erp_date <= $2)
       ORDER BY lot
     `,
-    [from, to],
+    Array.isArray(fields) ? [from, to, fields] : [from, to],
   );
   return result.rows.map((row) => row.raw);
 }
@@ -2233,18 +2236,19 @@ export async function findInkoopByReference(query) {
   return { lots: lots.rows.map((row) => row.raw), lines: lines.rows.map((row) => row.raw) };
 }
 
-export async function getInkoopInvoiceLines({ from, to } = {}) {
+export async function getInkoopInvoiceLines({ from, to, fields = null } = {}) {
   if (!pool) {
     return [];
   }
+  const merged = `${INVOICE_LINE_RAW_SQL} - ARRAY['source_file_name','account_id','line_id','market_form_code','marketplace_id','marketplace_name','summary_ref','trigger_code','vat_category']::text[]`;
   const result = await pool.query(
     `
-      SELECT ${INVOICE_LINE_RAW_SQL} - ARRAY['source_file_name','account_id','line_id','market_form_code','marketplace_id','marketplace_name','summary_ref','trigger_code','vat_category']::text[] AS raw
+      SELECT ${Array.isArray(fields) ? `(SELECT COALESCE(jsonb_object_agg(k.key, k.value), '{}'::jsonb) FROM jsonb_each(${merged}) k WHERE k.key = ANY($3::text[]))` : merged} AS raw
       FROM inkoop_invoice_lines
       WHERE invoice_date IS NULL OR (invoice_date >= $1 AND invoice_date <= $2)
       ORDER BY invoice_number
     `,
-    [from, to],
+    Array.isArray(fields) ? [from, to, fields] : [from, to],
   );
   return result.rows.map((row) => row.raw);
 }
