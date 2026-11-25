@@ -87,6 +87,9 @@ import {
   prioritizeInkoopMatchDays,
   markStaleInkoopMatchDays,
   getInkoopDatesForSuppliers,
+  saveInkoopDayIssues,
+  getInkoopDayIssues,
+  getInkoopDaysWithoutIssues,
   restampInkoopMatchDays,
   existingInkoopMatchDates,
   ensureInkoopMatchDaysForData,
@@ -12381,8 +12384,48 @@ async function storeInkoopDaySummaryFromBundle(bundle, fingerprint) {
   await saveInkoopDaySummaries(bundle.date, buckets, fingerprint);
 }
 
-async function storeInkoopMatchBundle(bundle, fingerprint, generation, durationMs) {
+// Which build of the stored issues (a change to buildInkoopDayIssues /
+// their storage: up one, and every day gets them again -- on first read or
+// in the background).
+const INKOOP_ISSUES_STORE_VERSION = 1;
+
+// A day's issues as they are stored: built from the day exactly as it is
+// read back from storage (its own part of the aggregate), every line (the
+// explained ones flagged), for all companies, without the naming (that is
+// put on when read). totals: the grower-BW day totals as [grower, bw, side,
+// value].
+function buildInkoopDayIssuesForStore(state, bundle, fingerprint) {
+  const storedAggregate = JSON.parse(JSON.stringify(serializeInkoopAggregate(bundle.aggregateContext?.aggregateResult, bundle.date) || {}));
+  const day = {
+    date: bundle.date,
+    result: bundle.result,
+    aggregateContext: { ...inkoopAggregateMaps(state, fingerprint), aggregateResult: deserializeInkoopAggregate(storedAggregate) },
+  };
+  return buildInkoopDayIssuesFromStoredDay(state, day);
+}
+
+function buildInkoopDayIssuesFromStoredDay(state, day) {
+  const issues = [];
+  const totals = [];
+  buildInkoopDayIssues(state, day, "", issues, (grower, bw, side, value) => totals.push([grower, bw, side, value]), { withExplained: true, naming: false });
+  return { issues: JSON.parse(JSON.stringify(issues)), totals };
+}
+
+async function storeInkoopMatchBundle(bundle, fingerprint, generation, durationMs, state = null) {
+  // The issues with it (Track & Trace reads them, not the whole day); when
+  // building them fails the day is still stored, they are built on read.
+  let built = null;
+  if (state) {
+    try {
+      built = buildInkoopDayIssuesForStore(state, bundle, fingerprint);
+    } catch (error) {
+      console.error(`Inkoop issues of ${bundle.date} not stored:`, error instanceof Error ? error.message : error);
+    }
+  }
   await saveInkoopMatchDay({
+    issues: built ? built.issues : null,
+    issueTotals: built ? built.totals : null,
+    issuesVersion: built ? INKOOP_ISSUES_STORE_VERSION : 0,
     date: bundle.date,
     generation,
     fingerprint,
@@ -12442,7 +12485,7 @@ async function computeInkoopDay(state, date) {
     // Has data: store it (the worker then skips it).
     const fingerprint = await inkoopCurrentFingerprint();
     const current = (await getInkoopMatchDays({ from: date, to: date, withData: false }))[0];
-    await storeInkoopMatchBundle(fresh, fingerprint, current?.generation ?? 0, Date.now() - started);
+    await storeInkoopMatchBundle(fresh, fingerprint, current?.generation ?? 0, Date.now() - started, state);
   }
   return { ...fresh, status: "ready", stale: false, computed: true };
 }
@@ -12547,7 +12590,7 @@ function kickInkoopMatchWorker() {
             const state = await readInkoopState();
             const fingerprint = await inkoopCurrentFingerprint();
             const bundle = await computeInkoopDayFresh(state, job.date, { cache: false });
-            await storeInkoopMatchBundle(bundle, fingerprint, job.generation, Date.now() - started);
+            await storeInkoopMatchBundle(bundle, fingerprint, job.generation, Date.now() - started, state);
           } catch (error) {
             console.error(`Inkoop comparison of ${job.date} failed:`, error instanceof Error ? error.message : error);
             await failInkoopMatchDay(job.date, job.generation, error instanceof Error ? error.message : String(error)).catch(() => {});
@@ -14519,7 +14562,7 @@ async function getInkoopDataDayStatuses(from, to) {
 // grower totals through addTotal. The ids are inkoopIssueId's.
 // withExplained: also the gaps the grower-day totals explain (marked
 // explained) -- Track & Trace shows every open line the grower list counts.
-function buildInkoopDayIssues(state, day, company, issues, addTotal = () => {}, { withExplained = false } = {}) {
+function buildInkoopDayIssues(state, day, company, issues, addTotal = () => {}, { withExplained = false, naming = true } = {}) {
       const firstNew = issues.length;
       const result = filterInkoopResultsByCompany(day.result, company);
       const { aggregateResult: dayAggregate, codeToName, validSupplierCodes, supplierMap, supplierNameMap, manualLinks, supplierFhMap } = day.aggregateContext;
@@ -14653,12 +14696,17 @@ function buildInkoopDayIssues(state, day, company, issues, addTotal = () => {}, 
           grower: mismatch.grower_name || "", bw: bwOfGrower.get(mismatch.grower_name) || "V", invoice_value: mismatch.invoice_value, connect_value: mismatch.erp_value, money_diff: Math.round(valueDiff * 100) / 100,
         });
       }
-      // The lines' grower and BW as the overview names them (Dashboard,
-      // Track & Trace's grower list): the same code / name the stored match
-      // row has -- else a line resolved through its GLN under another name
-      // would be counted for one grower and listed under another.
+      if (naming) applyInkoopIssueNaming(state, issues.slice(firstNew), codeToName);
+}
+
+// The lines' grower and BW as the overview names them (Dashboard, Track &
+// Trace's grower list): the same code / name the stored match row has --
+// else a line resolved through its GLN under another name would be counted
+// for one grower and listed under another. Done when the lines are read
+// (stored lines too), with the master data of now.
+function applyInkoopIssueNaming(state, issues, codeToName) {
       const view = inkoopOverviewNaming(state);
-      for (let index = firstNew; index < issues.length; index += 1) {
+      for (let index = 0; index < issues.length; index += 1) {
         const issue = issues[index];
         if (issue.issue_type === "aggregate_mismatch") continue;
         const row = issue.issue_type === "gap_erp" ? issue.detail : issue.detail || {};
@@ -30289,6 +30337,54 @@ async function handleApi(req, res, url) {
     return;
   }
 
+  // Check: a day's stored issues against the issues built from its whole
+  // result (the old way) -- ?from=&to= (a week at most). Differences listed.
+  if (url.pathname === "/api/inkoop/debug/issues-parity" && req.method === "GET") {
+    if (!requirePermission(res, requestUser, PERMISSIONS.SETTINGS_MANAGE)) {
+      return;
+    }
+    try {
+      const state = await readInkoopState();
+      const to = inkoopIsoDate(url.searchParams.get("to")) || localDateIso();
+      let from = inkoopIsoDate(url.searchParams.get("from")) || to;
+      if (addDaysToIsoDate(from, 6) < to) from = addDaysToIsoDate(to, -6);
+      const fingerprint = await inkoopCurrentFingerprint();
+      const { codeToName } = inkoopAggregateMaps(state, fingerprint);
+      const metas = new Map((await getInkoopMatchDays({ from, to, withData: false })).map((row) => [row.date, row]));
+      const days = [];
+      const plain = (list) => JSON.parse(JSON.stringify(list)).sort((left, right) => String(left.id).localeCompare(String(right.id)));
+      for (const date of inkoopDatesInRange(from, to)) {
+        const meta = metas.get(date);
+        if (!meta?.has_result) continue;
+        if (Number(meta.issues_version) !== INKOOP_ISSUES_STORE_VERSION) { days.push({ date, stored: false }); continue; }
+        const [day] = await loadStoredInkoopDays(state, date, date);
+        const oldIssues = [];
+        const oldTotals = [];
+        buildInkoopDayIssues(state, day, "", oldIssues, (grower, bw, side, value) => oldTotals.push([grower, bw, side, value]), { withExplained: true });
+        const stored = await getInkoopDayIssues(date);
+        applyInkoopIssueNaming(state, stored.issues, codeToName);
+        const left = plain(oldIssues);
+        const right = plain(stored.issues);
+        const byId = new Map(right.map((issue) => [issue.id, issue]));
+        const differ = [];
+        for (const issue of left) {
+          const other = byId.get(issue.id);
+          if (!other) { differ.push({ id: issue.id, only: "old" }); continue; }
+          byId.delete(issue.id);
+          const fields = Object.keys({ ...issue, ...other }).filter((key) => JSON.stringify(issue[key]) !== JSON.stringify(other[key]));
+          if (fields.length) differ.push({ id: issue.id, fields });
+        }
+        for (const id of byId.keys()) differ.push({ id, only: "stored" });
+        const totalsSame = JSON.stringify(oldTotals) === JSON.stringify(stored.totals);
+        days.push({ date, stored: true, stale: Boolean(day.stale), old: left.length, new: right.length, totals_same: totalsSame, differences: differ.length, first: differ.slice(0, 10) });
+      }
+      sendJson(res, 200, { from, to, same: days.every((day) => !day.stored || (day.differences === 0 && day.totals_same)), days });
+    } catch (error) {
+      sendJson(res, 400, { error: error instanceof Error ? error.message : String(error) });
+    }
+    return;
+  }
+
   if (url.pathname === "/api/inkoop/issues" && req.method === "GET") {
     if (!requirePermission(res, requestUser, PERMISSIONS.INKOOP_VIEW)) {
       return;
@@ -30325,7 +30421,43 @@ async function handleApi(req, res, url) {
       // One stored day at a time (a month of full results at once is too much
       // memory); days not compared yet are queued first.
       const pendingDays = [];
-      for (const date of inkoopDatesInRange(range.from, range.to)) {
+      // All companies (the usual): the day's stored issues -- not its whole
+      // result. A day without them (compared before) is built once the old
+      // way and its issues stored. A chosen company: the old way.
+      const fromStore = !normalizeUkdocsText(company) && isDatabaseEnabled();
+      if (fromStore) {
+        const fingerprint = await inkoopCurrentFingerprint();
+        const { codeToName } = inkoopAggregateMaps(state, fingerprint);
+        const metas = new Map((await getInkoopMatchDays({ from: range.from, to: range.to, withData: false })).map((row) => [row.date, row]));
+        for (const date of inkoopDatesInRange(range.from, range.to)) {
+          if (heavyInkoopReadGone(req, res)) return;
+          const meta = metas.get(date);
+          if (!meta) continue;
+          if (!meta.has_result || meta.status !== "ready" || meta.fingerprint !== fingerprint) pendingDays.push(date);
+          if (!meta.has_result) continue;
+          let dayIssues;
+          let dayTotals;
+          if (Number(meta.issues_version) === INKOOP_ISSUES_STORE_VERSION) {
+            ({ issues: dayIssues, totals: dayTotals } = await getInkoopDayIssues(date));
+          } else {
+            const [day] = await loadStoredInkoopDays(state, date, date);
+            if (!day?.computed) continue;
+            ({ issues: dayIssues, totals: dayTotals } = buildInkoopDayIssuesFromStoredDay(state, day));
+            // Stored for next time -- only when the day is up to date.
+            if (!day.stale) {
+              saveInkoopDayIssues({ date, generation: meta.generation, issues: dayIssues, totals: dayTotals, version: INKOOP_ISSUES_STORE_VERSION })
+                .catch((error) => console.error(`Storing the issues of ${date} failed:`, error instanceof Error ? error.message : error));
+            }
+          }
+          applyInkoopIssueNaming(state, dayIssues, codeToName);
+          for (const issue of dayIssues) {
+            if (issue.explained && !withExplained) continue;
+            issues.push({ ...issue, day: date });
+          }
+          for (const [grower, bw, side, value] of dayTotals) addTotal(grower, bw, side, value);
+        }
+      }
+      for (const date of fromStore ? [] : inkoopDatesInRange(range.from, range.to)) {
         // The page asked something else meanwhile (closed, other period or
         // grower): stop here -- the rest of the month is never read.
         if (heavyInkoopReadGone(req, res)) return;
@@ -32850,6 +32982,33 @@ async function runInkoopMatchChild() {
   process.on("disconnect", () => process.exit(0)); // the app stopped
   kickInkoopMatchWorker();
   setInterval(kickInkoopMatchWorker, 30000);
+  // Days compared before their issues were stored: filled in when there is
+  // nothing to compare (a few at a time, from the stored result -- no new
+  // comparison).
+  setInterval(() => { fillInkoopDayIssues().catch((error) => console.error("Filling stored Inkoop issues failed:", error instanceof Error ? error.message : error)); }, 60000);
+}
+
+let inkoopIssuesFilling = false;
+async function fillInkoopDayIssues(limit = 15) {
+  if (inkoopIssuesFilling || inkoopMatchWorker) return;
+  inkoopIssuesFilling = true;
+  try {
+    const days = await getInkoopDaysWithoutIssues(INKOOP_ISSUES_STORE_VERSION, limit);
+    let stored = 0;
+    for (const meta of days) {
+      if (inkoopMatchWorker) break; // comparing has priority
+      const state = await readInkoopState();
+      const [day] = await loadStoredInkoopDays(state, meta.date, meta.date);
+      // Out of date: it is compared again (and stored with its issues).
+      if (!day?.computed || day.stale) continue;
+      const built = buildInkoopDayIssuesFromStoredDay(state, day);
+      if (await saveInkoopDayIssues({ date: meta.date, generation: meta.generation, issues: built.issues, totals: built.totals, version: INKOOP_ISSUES_STORE_VERSION })) stored += 1;
+      await new Promise((resolve) => setTimeout(resolve, 200));
+    }
+    if (stored) console.log(`Inkoop: stored the issues of ${stored} day(s) compared before.`);
+  } finally {
+    inkoopIssuesFilling = false;
+  }
 }
 
 // Memory watch (Render: "Ran out of memory (used over 2GB)" without saying

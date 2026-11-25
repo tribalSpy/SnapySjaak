@@ -2913,7 +2913,7 @@ export async function getInkoopMatchDays({ from, to, withData = true } = {}) {
   }
   const result = await pool.query(
     `SELECT to_char(match_date, 'YYYY-MM-DD') AS date, status, generation, fingerprint,
-       ${withData ? "result, aggregate," : ""} counts, error_text, computed_at
+       ${withData ? "result, aggregate," : ""} counts, error_text, computed_at, issues_version, (result IS NOT NULL) AS has_result
      FROM inkoop_match_days WHERE match_date >= $1::date AND match_date <= $2::date
      ORDER BY match_date`,
     [from, to],
@@ -3086,7 +3086,87 @@ export async function claimNextInkoopMatchDay() {
 // Store one day's comparison (and its rows for the Data tab) -- ready, unless
 // it was queued again while running (then it stays pending, with this
 // result to show meanwhile).
-export async function saveInkoopMatchDay({ date, generation, fingerprint, result, aggregate, counts, rows, durationMs }) {
+// A gap_erp line's detail is its lot itself: stored once, put back on read.
+function inkoopIssueForStore(issue) {
+  if (issue?.issue_type === "gap_erp" && issue.detail === issue.erp_row) {
+    const { detail, ...rest } = issue;
+    return { ...rest, detail_is_lot: true };
+  }
+  return issue;
+}
+
+async function writeInkoopDayIssues(client, date, issues, totals, version) {
+  await client.query("DELETE FROM inkoop_day_issues WHERE match_date = $1::date", [date]);
+  let ord = 0;
+  for (const chunk of chunkArray(issues || [], 200)) {
+    const values = [];
+    const placeholders = chunk.map((issue) => {
+      const base = values.length;
+      values.push(date, ord, String(issue?.issue_type || ""), Boolean(issue?.explained), JSON.stringify(inkoopIssueForStore(issue)));
+      ord += 1;
+      return `($${base + 1}::date, $${base + 2}, $${base + 3}, $${base + 4}, $${base + 5}::jsonb)`;
+    });
+    await client.query(`INSERT INTO inkoop_day_issues (match_date, ord, issue_type, explained, payload) VALUES ${placeholders.join(", ")}`, values);
+  }
+  await client.query(
+    "UPDATE inkoop_match_days SET issues_version = $2, issue_totals = $3::jsonb WHERE match_date = $1::date",
+    [date, version, JSON.stringify(totals || [])],
+  );
+}
+
+// The issues of a day already compared (first read of a day from before
+// they were stored, or the background fill): only while the day is still
+// the same comparison (generation), never over a newer one.
+export async function saveInkoopDayIssues({ date, generation, issues, totals, version }) {
+  if (!pool || !date) return false;
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    const current = await client.query("SELECT generation FROM inkoop_match_days WHERE match_date = $1::date FOR UPDATE", [date]);
+    if (!current.rows[0] || Number(current.rows[0].generation) !== Number(generation)) {
+      await client.query("ROLLBACK");
+      return false;
+    }
+    await writeInkoopDayIssues(client, date, issues, totals, version);
+    await client.query("COMMIT");
+    return true;
+  } catch (error) {
+    await client.query("ROLLBACK").catch(() => {});
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
+// A day's stored issues, in their order (gap_erp's detail put back).
+export async function getInkoopDayIssues(date) {
+  if (!pool || !date) return { issues: [], totals: [] };
+  const [rows, day] = await Promise.all([
+    pool.query("SELECT payload FROM inkoop_day_issues WHERE match_date = $1::date ORDER BY ord", [date]),
+    pool.query("SELECT issue_totals FROM inkoop_match_days WHERE match_date = $1::date", [date]),
+  ]);
+  return {
+    issues: rows.rows.map((row) => {
+      const { detail_is_lot: detailIsLot, ...issue } = row.payload || {};
+      return detailIsLot ? { ...issue, detail: issue.erp_row } : issue;
+    }),
+    totals: Array.isArray(day.rows[0]?.issue_totals) ? day.rows[0].issue_totals : [],
+  };
+}
+
+// Days compared and ready whose issues aren't stored (in this version) yet.
+export async function getInkoopDaysWithoutIssues(version, limit = 20) {
+  if (!pool) return [];
+  const result = await pool.query(
+    `SELECT to_char(match_date, 'YYYY-MM-DD') AS date, generation FROM inkoop_match_days
+     WHERE status = 'ready' AND result IS NOT NULL AND issues_version <> $1
+     ORDER BY match_date DESC LIMIT $2`,
+    [version, limit],
+  );
+  return result.rows;
+}
+
+export async function saveInkoopMatchDay({ date, generation, fingerprint, result, aggregate, counts, rows, durationMs, issues = null, issueTotals = null, issuesVersion = 0 }) {
   if (!pool || !date) {
     return;
   }
@@ -3115,6 +3195,13 @@ export async function saveInkoopMatchDay({ date, generation, fingerprint, result
         return `(${columns.map((_, index) => `$${base + index + 1}`).join(", ")})`;
       });
       await client.query(`INSERT INTO inkoop_match_rows (${columns.join(", ")}) VALUES ${placeholders.join(", ")}`, values);
+    }
+    // The day's issues with it (or none: built on first read).
+    if (Array.isArray(issues)) {
+      await writeInkoopDayIssues(client, date, issues, issueTotals, issuesVersion);
+    } else {
+      await client.query("DELETE FROM inkoop_day_issues WHERE match_date = $1::date", [date]);
+      await client.query("UPDATE inkoop_match_days SET issues_version = 0, issue_totals = NULL WHERE match_date = $1::date", [date]);
     }
     await client.query("COMMIT");
   } catch (error) {
@@ -5489,6 +5576,28 @@ const databaseMigrations = [
   `,
   `
     CREATE INDEX IF NOT EXISTS inkoop_match_days_queue_idx ON inkoop_match_days (status, priority DESC, match_date DESC)
+  `,
+  // The day's Track & Trace / follow-up lines, built once when the day is
+  // compared (Track & Trace read a month of whole day results for them on
+  // every load). issues_version on the day: which build of them it has
+  // (0 = none yet: built on first read / in the background).
+  `
+    ALTER TABLE inkoop_match_days ADD COLUMN IF NOT EXISTS issues_version integer NOT NULL DEFAULT 0
+  `,
+  `
+    ALTER TABLE inkoop_match_days ADD COLUMN IF NOT EXISTS issue_totals jsonb
+  `,
+  `
+    CREATE TABLE IF NOT EXISTS inkoop_day_issues (
+      match_date date NOT NULL,
+      ord integer NOT NULL,
+      issue_type text NOT NULL DEFAULT '',
+      explained boolean NOT NULL DEFAULT false,
+      payload jsonb NOT NULL
+    )
+  `,
+  `
+    CREATE INDEX IF NOT EXISTS inkoop_day_issues_date_idx ON inkoop_day_issues (match_date, ord)
   `,
   // Every comparison result line as a row (the Data tab filters these
   // across days: "all differences in September for grower X").
