@@ -91,6 +91,8 @@ import {
   getInkoopDayIssues,
   getInkoopDaysWithoutIssues,
   saveInkoopDayViews,
+  getInkoopPairMembers,
+  claimOneTimeStep,
   restampInkoopMatchDays,
   existingInkoopMatchDates,
   ensureInkoopMatchDaysForData,
@@ -13233,15 +13235,79 @@ async function buildInkoopGrowerDirectoryFresh(state) {
   return directory;
 }
 
+// A hand link is applied only when all its invoice lines and lots are in the
+// comparison's data -- a day's window is the day +- 4, so a link over a whole
+// month (Track & Trace, a month ticked at once) was skipped on every day
+// (Melissa 25-11). A link with a member in the window: its other members
+// are added too (whatever their date), so it is applied whole in every
+// window that holds part of it; each day still keeps only its own rows
+// (inkoopResultOnDay). Only links whose members all still exist.
+async function withInkoopHandPairMembers(state, erpRows, invoiceLines) {
+  const pairs = state.manual_line_pairs || [];
+  if (!pairs.length) return { erpRows, invoiceLines };
+  const haveLots = new Set(erpRows.map((row) => String(row?.lot ?? "").trim()));
+  const haveLines = new Set(invoiceLines.map((line) => String(line?.id ?? "").trim()));
+  const touching = pairs.filter((pair) => (pair.invoice_line_ids || []).some((id) => haveLines.has(String(id).trim())) || (pair.lots || []).some((lot) => haveLots.has(String(lot).trim())));
+  const needLines = new Set();
+  const needLots = new Set();
+  for (const pair of touching) {
+    for (const id of pair.invoice_line_ids || []) if (!haveLines.has(String(id).trim())) needLines.add(String(id).trim());
+    for (const lot of pair.lots || []) if (!haveLots.has(String(lot).trim())) needLots.add(String(lot).trim());
+  }
+  if (!needLines.size && !needLots.size) return { erpRows, invoiceLines };
+  const found = await getInkoopPairMembers({ lineIds: [...needLines], lots: [...needLots] });
+  const foundLines = new Map(found.invoiceLines.map((line) => [String(line?.id ?? "").trim(), line]));
+  const foundLots = new Map(found.erpRows.map((row) => [String(row?.lot ?? "").trim(), row]));
+  const addLines = new Map();
+  const addLots = new Map();
+  for (const pair of touching) {
+    const lines = (pair.invoice_line_ids || []).map((id) => String(id).trim());
+    const lots = (pair.lots || []).map((lot) => String(lot).trim());
+    // A member gone (deleted upload): the link can't be applied anyway.
+    if (!lines.every((id) => haveLines.has(id) || foundLines.has(id)) || !lots.every((lot) => haveLots.has(lot) || foundLots.has(lot))) continue;
+    for (const id of lines) if (!haveLines.has(id)) addLines.set(id, foundLines.get(id));
+    for (const lot of lots) if (!haveLots.has(lot)) addLots.set(lot, foundLots.get(lot));
+  }
+  return {
+    erpRows: addLots.size ? [...erpRows, ...addLots.values()] : erpRows,
+    invoiceLines: addLines.size ? [...invoiceLines, ...addLines.values()] : invoiceLines,
+  };
+}
+
+// Once, after the fix above: the days of every hand link wider than the
+// window (its members more than 4 days apart -- skipped before) are
+// compared again; the others were applied already.
+async function requeueWideInkoopHandPairs() {
+  if (!(await claimOneTimeStep("inkoop-hand-pairs-whole-v1"))) return;
+  const state = await readInkoopState();
+  let pairs = 0;
+  const all = new Set();
+  for (const pair of state.manual_line_pairs || []) {
+    const dates = [...new Set((pair.dates || []).map(inkoopIsoDate).filter(Boolean))].sort();
+    if (dates.length < 2 || addDaysToIsoDate(dates[0], INKOOP_DAY_TOLERANCE_DAYS) >= dates[dates.length - 1]) continue;
+    pairs += 1;
+    for (const date of inkoopDatesBetween(addDaysToIsoDate(dates[0], -INKOOP_DAY_TOLERANCE_DAYS), addDaysToIsoDate(dates[dates.length - 1], INKOOP_DAY_TOLERANCE_DAYS))) {
+      if (date <= localDateIso()) all.add(date);
+    }
+  }
+  const existing = await existingInkoopMatchDates([...all]);
+  if (existing.length) {
+    await markInkoopMatchDaysPending(existing);
+    kickInkoopMatchWorker();
+  }
+  console.log(`Inkoop: ${pairs} hand link(s) wider than the window -- ${existing.length} day(s) compared again so they count.`);
+}
+
 // Everything matchInkoopVeilingLines gets for a range -- also what the
 // Settings "Test info" download carries, so a day can be replayed exactly.
 async function gatherInkoopMatchInputs(state, { from, to }) {
-  const [allErpRows, invoiceLines, directory, afgemeldMessages] = await Promise.all([
+  const [windowErpRows, windowInvoiceLines, directory, afgemeldMessages] = await Promise.all([
     getInkoopErpLines({ from, to }),
     getInkoopInvoiceLines({ from, to }),
     inkoopGrowerDirectory(state),
     getInkoopAfgemeldMessages({ from, to }).catch(() => []),
   ]);
+  const { erpRows: allErpRows, invoiceLines } = await withInkoopHandPairMembers(state, windowErpRows, windowInvoiceLines);
   return {
     allErpRows,
     erpRows: excludeInkoopInternalBunchRows(allErpRows, state.supplier_bw_map, inkoopExcludedErpCodes(state), invoiceLines, inkoopHandLinkedLots(state)),
@@ -33808,6 +33874,7 @@ async function startServer() {
     // (Database not there yet: retryDatabaseUntilReady does this later.)
     if (isDatabaseEnabled() && databaseStarted) {
       startInkoopMatchChild();
+      requeueWideInkoopHandPairs().catch((error) => console.error("Re-comparing the days of wide hand links failed:", error instanceof Error ? error.message : error));
       ensureBackgroundIndexes()
         .then((built) => { if (built.length) console.log(`Built database index(es): ${built.join(", ")}`); })
         .catch((error) => console.error("Building background database indexes failed:", error instanceof Error ? error.message : error));

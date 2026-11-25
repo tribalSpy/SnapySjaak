@@ -2236,6 +2236,31 @@ export async function findInkoopByReference(query) {
   return { lots: lots.rows.map((row) => row.raw), lines: lines.rows.map((row) => row.raw) };
 }
 
+// A hand link's invoice lines (by id) and lots (by lot number), whatever
+// their date -- in exactly the shape getInkoopInvoiceLines / getInkoopErpLines
+// give them (a link over a month has members outside a day's window).
+export async function getInkoopPairMembers({ lineIds = [], lots = [] } = {}) {
+  const ids = [...new Set(lineIds.map((id) => String(id || "").trim()).filter(Boolean))];
+  const lotList = [...new Set(lots.map((lot) => String(lot || "").trim()).filter(Boolean))];
+  if (!pool || (!ids.length && !lotList.length)) return { invoiceLines: [], erpRows: [] };
+  const invoiceRaw = `${INVOICE_LINE_RAW_SQL} - ARRAY['source_file_name','account_id','line_id','market_form_code','marketplace_id','marketplace_name','summary_ref','trigger_code','vat_category']::text[]`;
+  const erpRaw = `${ERP_LINE_RAW_SQL} - ARRAY['cr','deb_no','inv_no','ite_date','ite_no','ite_t','keur','po_no','verd','fust']::text[]`;
+  const [invoiceLines, erpRows] = await Promise.all([
+    ids.length ? pool.query(`SELECT ${invoiceRaw} AS raw FROM inkoop_invoice_lines WHERE id = ANY($1::text[]) ORDER BY invoice_number`, [ids]) : { rows: [] },
+    lotList.length ? pool.query(`SELECT ${erpRaw} AS raw FROM inkoop_erp_lines WHERE lot::text = ANY($1::text[]) ORDER BY lot`, [lotList]) : { rows: [] },
+  ]);
+  return { invoiceLines: invoiceLines.rows.map((row) => row.raw), erpRows: erpRows.rows.map((row) => row.raw) };
+}
+
+// Runs once ever per key (true the first time): one-time catch-ups after a
+// deploy (e.g. re-comparing days a fixed rule had skipped).
+export async function claimOneTimeStep(key) {
+  if (!pool || !key) return false;
+  await pool.query("CREATE TABLE IF NOT EXISTS app_one_time_steps (key text PRIMARY KEY, done_at timestamptz NOT NULL DEFAULT now())");
+  const result = await pool.query("INSERT INTO app_one_time_steps (key) VALUES ($1) ON CONFLICT (key) DO NOTHING RETURNING key", [key]);
+  return result.rowCount > 0;
+}
+
 export async function getInkoopInvoiceLines({ from, to, fields = null } = {}) {
   if (!pool) {
     return [];
