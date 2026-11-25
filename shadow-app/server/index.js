@@ -32652,9 +32652,14 @@ const server = http.createServer((req, res) => {
     res.on("close", finish);
   }
   if (url.pathname.startsWith("/api/") || url.pathname.startsWith("/warehouse/ingest") || url.pathname.startsWith("/warehouse/api/")) {
-    handleApi(req, res, url).catch((error) => {
+    const run = () => handleApi(req, res, url).catch((error) => {
       sendJson(res, 500, { error: error instanceof Error ? error.message : String(error) });
     });
+    if (req.method === "GET" && HEAVY_INKOOP_READS.has(url.pathname)) {
+      runHeavyInkoopRead(req, res, run);
+      return;
+    }
+    run();
     return;
   }
 
@@ -32751,6 +32756,74 @@ async function runInkoopMatchChild() {
 // the biggest processes too (Linux only) -- so the log shows who grows.
 const MEMORY_WATCH_WARN_BYTES = 1.4 * 1024 * 1024 * 1024;
 const serverRequestsInFlight = new Map();
+
+// The Inkoop reads that load a month of stored comparisons (or a year of
+// lines): at most 2 at a time, the others wait their turn. A page that
+// changes its period quickly (the date field's month scrolled from 11-25 to
+// 03-25, 25-11) asked ~20 of them at once and took the server over 2 GB --
+// a waiting request whose page went away (closed, or a newer period asked)
+// is dropped without being read.
+const HEAVY_INKOOP_READS = new Set([
+  "/api/inkoop/issues",
+  "/api/inkoop/overview-table",
+  "/api/inkoop/overview-lines",
+  "/api/inkoop/grower-export",
+  "/api/inkoop/grower-lines",
+  "/api/inkoop/dashboard/summary",
+  "/api/inkoop/dashboard/grower-totals",
+  "/api/inkoop/product-growers",
+]);
+const HEAVY_INKOOP_READS_AT_ONCE = 2;
+const HEAVY_INKOOP_READ_WAIT_MS = 120000;
+let heavyInkoopReadsRunning = 0;
+const heavyInkoopReadQueue = [];
+
+function heavyInkoopReadGone(req, res) {
+  return res.writableEnded || res.destroyed || Boolean(req.socket?.destroyed);
+}
+
+function runNextHeavyInkoopRead() {
+  while (heavyInkoopReadsRunning < HEAVY_INKOOP_READS_AT_ONCE && heavyInkoopReadQueue.length) {
+    const next = heavyInkoopReadQueue.shift();
+    if (heavyInkoopReadGone(next.req, next.res)) continue;
+    startHeavyInkoopRead(next.req, next.res, next.run);
+  }
+}
+
+function startHeavyInkoopRead(req, res, run) {
+  heavyInkoopReadsRunning += 1;
+  let released = false;
+  const release = () => {
+    if (released) return;
+    released = true;
+    heavyInkoopReadsRunning = Math.max(0, heavyInkoopReadsRunning - 1);
+    runNextHeavyInkoopRead();
+  };
+  // Free when the work is done -- not when the page goes away: an abandoned
+  // read still holds its memory until it ends.
+  Promise.resolve().then(run).catch(() => {}).finally(release);
+}
+
+function runHeavyInkoopRead(req, res, run) {
+  if (heavyInkoopReadsRunning < HEAVY_INKOOP_READS_AT_ONCE && !heavyInkoopReadQueue.length) {
+    startHeavyInkoopRead(req, res, run);
+    return;
+  }
+  const entry = { req, res, run };
+  heavyInkoopReadQueue.push(entry);
+  // Gone while waiting: out of the queue at once.
+  const leave = () => {
+    const index = heavyInkoopReadQueue.indexOf(entry);
+    if (index >= 0) heavyInkoopReadQueue.splice(index, 1);
+  };
+  res.once("close", leave);
+  setTimeout(() => {
+    const index = heavyInkoopReadQueue.indexOf(entry);
+    if (index < 0) return;
+    heavyInkoopReadQueue.splice(index, 1);
+    if (!heavyInkoopReadGone(req, res)) sendJson(res, 429, { error: "The server is busy with other Inkoop reads -- try again in a moment." });
+  }, HEAVY_INKOOP_READ_WAIT_MS).unref?.();
+}
 let serverRequestSeq = 0;
 function describeRequestsInFlight() {
   const now = Date.now();

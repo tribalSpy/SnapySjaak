@@ -412,6 +412,8 @@ async function apiJsonRequest(path, options = {}) {
       },
     });
   } catch (error) {
+    // Cancelled by the page itself (a newer period asked): not a lost connection.
+    if (error?.name === "AbortError") throw error;
     emitConnectionState({
       connected: false,
       message: "Connection lost. The app may be updating or restarting.",
@@ -20463,10 +20465,15 @@ function useInkoopOverviewRows(from, to, company, grower = "") {
     const params = new URLSearchParams({ from, to });
     if (company) params.set("company", company);
     if (grower) params.set("grower", grower);
-    apiJson(`/api/inkoop/overview-table?${params.toString()}`)
-      .then((payload) => { if (!cancelled) setState({ rows: payload.rows || [], error: "" }); })
-      .catch((loadError) => { if (!cancelled) setState({ rows: [], error: loadError.message }); });
-    return () => { cancelled = true; };
+    // Asked once the period stays put (a scrolled date field changes it every
+    // tick), and the previous ask cancelled -- each is a heavy server read.
+    const controller = new AbortController();
+    const timer = window.setTimeout(() => {
+      apiJson(`/api/inkoop/overview-table?${params.toString()}`, { signal: controller.signal })
+        .then((payload) => { if (!cancelled) setState({ rows: payload.rows || [], error: "" }); })
+        .catch((loadError) => { if (!cancelled && loadError?.name !== "AbortError") setState({ rows: [], error: loadError.message }); });
+    }, 350);
+    return () => { cancelled = true; window.clearTimeout(timer); controller.abort(); };
   }, [from, to, company, grower, round]);
   return { ...state, reload: () => setRound((value) => value + 1) };
 }
@@ -21770,10 +21777,14 @@ function InkoopTrackTraceWorkspace({ bar, setBar, overview, company, matchRound 
     // totals explain, and the lines of a grower not linked yet.
     const params = new URLSearchParams({ from: fetchFrom, to: fetchTo, with_explained: "1" });
     if (company) params.set("company", company);
-    apiJson(`/api/inkoop/issues?${params.toString()}`)
-      .then((payload) => { if (!cancelled) setIssues(payload.issues || []); })
-      .catch((loadError) => { if (!cancelled) { setIssueError(loadError.message); setIssues([]); } });
-    return () => { cancelled = true; };
+    // Once the period stays put; the previous ask cancelled (heavy reads).
+    const controller = new AbortController();
+    const timer = window.setTimeout(() => {
+      apiJson(`/api/inkoop/issues?${params.toString()}`, { signal: controller.signal })
+        .then((payload) => { if (!cancelled) setIssues(payload.issues || []); })
+        .catch((loadError) => { if (!cancelled && loadError?.name !== "AbortError") { setIssueError(loadError.message); setIssues([]); } });
+    }, 350);
+    return () => { cancelled = true; window.clearTimeout(timer); controller.abort(); };
   }, [fetchFrom, fetchTo, company, issueRound, matchRound]);
   useEffect(() => { setPicked({}); }, [bar.grower, from, to]);
   // Opened on one line (Matched differences): once it is loaded, a line
@@ -21801,10 +21812,13 @@ function InkoopTrackTraceWorkspace({ bar, setBar, overview, company, matchRound 
     setChosenLines(null);
     const params = new URLSearchParams({ from, to, grower: chosen });
     if (company) params.set("company", company);
-    apiJson(`/api/inkoop/overview-lines?${params.toString()}`)
-      .then((payload) => { if (!cancelled) setChosenLines(payload.lines || []); })
-      .catch(() => { if (!cancelled) setChosenLines([]); });
-    return () => { cancelled = true; };
+    const controller = new AbortController();
+    const timer = window.setTimeout(() => {
+      apiJson(`/api/inkoop/overview-lines?${params.toString()}`, { signal: controller.signal })
+        .then((payload) => { if (!cancelled) setChosenLines(payload.lines || []); })
+        .catch((loadError) => { if (!cancelled && loadError?.name !== "AbortError") setChosenLines([]); });
+    }, 350);
+    return () => { cancelled = true; window.clearTimeout(timer); controller.abort(); };
   }, [chosen, from, to, company, issueRound]); // eslint-disable-line react-hooks/exhaustive-deps
   const chosenInvoiceLines = (chosenLines || []).filter((line) => line.invoice_number && line.status !== "connect_only"
     && (!bar.bw?.length || bar.bw.includes(line.bw || "?")) && (!bar.flows?.length || bar.flows.includes(line.flow)));
