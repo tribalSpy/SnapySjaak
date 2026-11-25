@@ -90,6 +90,7 @@ import {
   saveInkoopDayIssues,
   getInkoopDayIssues,
   getInkoopDaysWithoutIssues,
+  saveInkoopDayViews,
   restampInkoopMatchDays,
   existingInkoopMatchDates,
   ensureInkoopMatchDaysForData,
@@ -12395,13 +12396,163 @@ const INKOOP_ISSUES_STORE_VERSION = 1;
 // put on when read). totals: the grower-BW day totals as [grower, bw, side,
 // value].
 function buildInkoopDayIssuesForStore(state, bundle, fingerprint) {
+  return buildInkoopDayIssuesFromStoredDay(state, inkoopDayAsStored(state, bundle, fingerprint));
+}
+
+// The day exactly as it is read back from storage (its own part of the
+// aggregate, the master data's maps) -- what is built from it at compare
+// time is what a read of the stored day would build.
+function inkoopDayAsStored(state, bundle, fingerprint) {
   const storedAggregate = JSON.parse(JSON.stringify(serializeInkoopAggregate(bundle.aggregateContext?.aggregateResult, bundle.date) || {}));
-  const day = {
+  return {
     date: bundle.date,
     result: bundle.result,
     aggregateContext: { ...inkoopAggregateMaps(state, fingerprint), aggregateResult: deserializeInkoopAggregate(storedAggregate) },
   };
-  return buildInkoopDayIssuesFromStoredDay(state, day);
+}
+
+// Which build of the stored Dashboard parts (a change to what they hold: up
+// one, and every day gets them again -- on first read or in the background).
+const INKOOP_VIEWS_VERSION = 1;
+// The part for a company not on the day (only its "only in Connect" lots,
+// which no company filter takes away).
+const INKOOP_VIEWS_OTHER = "~other";
+
+// One company's Dashboard part of a day: the grower / AVC / company /
+// product-group sums (every entry, order first met), the embalage sums and
+// the day's bucket (null: none, the day isn't listed).
+function inkoopDayViewPart(day, company) {
+  const filtered = filterInkoopResultsByCompany(day.result, company);
+  const maps = inkoopDashboardSummaryMaps(filtered);
+  const lines = filtered?.embalage_lines || [];
+  const byCompany = new Map();
+  for (const row of lines) {
+    const label = inkoopCompanyLabel(row) || "Unknown";
+    const key = label.toLowerCase();
+    if (!byCompany.has(key)) byCompany.set(key, { key, label, value: 0 });
+    byCompany.get(key).value += inkoopInvoiceLineTotal(row);
+  }
+  return {
+    summary: {
+      byGrower: [...maps.byGrower.values()],
+      byAvc: [...maps.byAvc.values()],
+      byCompany: [...maps.byCompany.values()],
+      byProductGroup: [...maps.byProductGroup.values()],
+    },
+    embalage: {
+      total_value: lines.reduce((sum, row) => sum + inkoopInvoiceLineTotal(row), 0),
+      by_day: [...bucketInkoopResultsByDate({ embalage_lines: lines }).values()].map((bucket) => ({ date: bucket.date, value: bucket.embalage_value })),
+      by_company: [...byCompany.values()],
+    },
+    bucket: bucketInkoopResultsByDate(filtered, day.aggregateContext).get(day.date) || null,
+  };
+}
+
+// A day's Dashboard parts: "" (all), every company on the day, and "~other".
+function buildInkoopDayViews(day) {
+  const companies = new Set();
+  for (const key of INKOOP_RESULT_LISTS) {
+    for (const row of day.result?.[key] || []) {
+      const company = normalizeUkdocsText(row?.company_number);
+      if (company) companies.add(company);
+    }
+  }
+  const views = { "": inkoopDayViewPart(day, null), [INKOOP_VIEWS_OTHER]: inkoopDayViewPart(day, INKOOP_VIEWS_OTHER) };
+  for (const company of companies) views[company] = inkoopDayViewPart(day, company);
+  return JSON.parse(JSON.stringify(views));
+}
+
+// Days' parts (in date order) added up: what buildInkoopDashboardSummary and
+// buildInkoopEmbalageSummary give over the merged days' results.
+function mergeInkoopDayViews(parts) {
+  const maps = { byGrower: new Map(), byAvc: new Map(), byCompany: new Map(), byProductGroup: new Map() };
+  const embalageByDay = new Map();
+  const embalageByCompany = new Map();
+  let embalageTotal = 0;
+  for (const part of parts) {
+    for (const name of Object.keys(maps)) {
+      for (const entry of part?.summary?.[name] || []) {
+        const have = maps[name].get(entry.key);
+        if (!have) {
+          maps[name].set(entry.key, { ...entry });
+          continue;
+        }
+        have.mistake_count += entry.mistake_count;
+        have.mistake_value += entry.mistake_value;
+        have.purchase_value += entry.purchase_value;
+      }
+    }
+    embalageTotal += Number(part?.embalage?.total_value) || 0;
+    for (const entry of part?.embalage?.by_day || []) embalageByDay.set(entry.date, (embalageByDay.get(entry.date) || 0) + (Number(entry.value) || 0));
+    for (const entry of part?.embalage?.by_company || []) {
+      const have = embalageByCompany.get(entry.key);
+      if (have) have.value += Number(entry.value) || 0;
+      else embalageByCompany.set(entry.key, { ...entry });
+    }
+  }
+  return {
+    summary: finishInkoopDashboardSummary(maps),
+    embalage: {
+      total_value: embalageTotal,
+      by_day: [...embalageByDay.entries()].map(([date, value]) => ({ date, value })).sort((left, right) => (left.date < right.date ? 1 : -1)),
+      by_company: [...embalageByCompany.values()].sort((left, right) => right.value - left.value),
+    },
+  };
+}
+
+// The Dashboard summary of a period: { summary, dayBuckets (Map),
+// embalageSummary, pendingDays } -- null when the page went away (gone()).
+// fromStore: every up-to-date day's stored part of the company (one small
+// read for the period); a day without it, or out of date, is built from its
+// stored result one day at a time (and its parts stored when up to date).
+// Else (or for the parity check) the old way: every day's whole result.
+async function inkoopDashboardSummaryParts(state, range, company, { fromStore = true, gone = () => false } = {}) {
+  if (!fromStore) {
+    const dayBundles = await computeInkoopDays(state, range.from, range.to);
+    if (gone()) return null;
+    const result = filterInkoopResultsByCompany(mergeInkoopDayResults(dayBundles.map((day) => day.result)), company);
+    const dayBuckets = new Map();
+    for (const day of dayBundles) {
+      const bucket = bucketInkoopResultsByDate(filterInkoopResultsByCompany(day.result, company), day.aggregateContext).get(day.date);
+      if (bucket) dayBuckets.set(day.date, bucket);
+    }
+    return { summary: buildInkoopDashboardSummary(result), dayBuckets, embalageSummary: buildInkoopEmbalageSummary(result), pendingDays: dayBundles.pending_days || [] };
+  }
+  const companyKey = normalizeUkdocsText(company);
+  const fingerprint = await inkoopCurrentFingerprint();
+  const metas = new Map((await getInkoopMatchDays({ from: range.from, to: range.to, withData: false, viewCompany: companyKey })).map((row) => [row.date, row]));
+  const parts = [];
+  const dayBuckets = new Map();
+  const pendingDays = [];
+  for (const date of inkoopDatesInRange(range.from, range.to)) {
+    if (gone()) return null;
+    const meta = metas.get(date);
+    if (!meta) continue; // no data that day
+    const upToDate = meta.has_result && meta.status === "ready" && meta.fingerprint === fingerprint;
+    if (!upToDate && meta.status !== "empty") pendingDays.push(date);
+    if (!meta.has_result) continue;
+    let part = upToDate && Number(meta.views_version) === INKOOP_VIEWS_VERSION ? meta.view_part : null;
+    if (!part) {
+      const [day] = await loadStoredInkoopDays(state, date, date);
+      if (!day?.computed) continue;
+      const views = buildInkoopDayViews(day);
+      part = views[companyKey] || views[INKOOP_VIEWS_OTHER];
+      // Stored for next time -- only when the day is up to date.
+      if (!day.stale) {
+        saveInkoopDayViews({ date, generation: meta.generation, views, version: INKOOP_VIEWS_VERSION })
+          .catch((error) => console.error(`Storing the Dashboard parts of ${date} failed:`, error instanceof Error ? error.message : error));
+      }
+    }
+    if (!part) continue;
+    parts.push(part);
+    if (part.bucket) dayBuckets.set(date, part.bucket);
+  }
+  if (pendingDays.length) {
+    await prioritizeInkoopMatchDays(pendingDays);
+    kickInkoopMatchWorker();
+  }
+  const merged = mergeInkoopDayViews(parts);
+  return { summary: merged.summary, dayBuckets, embalageSummary: merged.embalage, pendingDays };
 }
 
 function buildInkoopDayIssuesFromStoredDay(state, day) {
@@ -12415,17 +12566,28 @@ async function storeInkoopMatchBundle(bundle, fingerprint, generation, durationM
   // The issues with it (Track & Trace reads them, not the whole day); when
   // building them fails the day is still stored, they are built on read.
   let built = null;
+  let views = null;
   if (state) {
+    let asStored = null;
     try {
-      built = buildInkoopDayIssuesForStore(state, bundle, fingerprint);
+      asStored = inkoopDayAsStored(state, bundle, fingerprint);
+      built = buildInkoopDayIssuesFromStoredDay(state, asStored);
     } catch (error) {
       console.error(`Inkoop issues of ${bundle.date} not stored:`, error instanceof Error ? error.message : error);
+    }
+    // The Dashboard parts with it (when building fails: built on read).
+    try {
+      if (asStored) views = buildInkoopDayViews(asStored);
+    } catch (error) {
+      console.error(`Inkoop Dashboard parts of ${bundle.date} not stored:`, error instanceof Error ? error.message : error);
     }
   }
   await saveInkoopMatchDay({
     issues: built ? built.issues : null,
     issueTotals: built ? built.totals : null,
     issuesVersion: built ? INKOOP_ISSUES_STORE_VERSION : 0,
+    views,
+    viewsVersion: views ? INKOOP_VIEWS_VERSION : 0,
     date: bundle.date,
     generation,
     fingerprint,
@@ -14465,6 +14627,12 @@ function buildInkoopTodaySummary(matched, todayIso, aggregateContext = null) {
 // yet, so the reverse. Mismatches have both sides and count toward every
 // breakdown.
 function buildInkoopDashboardSummary(matched) {
+  return finishInkoopDashboardSummary(inkoopDashboardSummaryMaps(matched));
+}
+
+// The sums per grower / AVC / company / product group (every entry, in the
+// order first met) -- mergeable over days (mergeInkoopDayViews).
+function inkoopDashboardSummaryMaps(matched) {
   const byGrower = new Map();
   const byAvc = new Map();
   const byCompany = new Map();
@@ -14509,7 +14677,10 @@ function buildInkoopDashboardSummary(matched) {
     bump(byGrower, row.supplier_name, 1, inkoopInvoiceLineTotal(row), 0);
     bump(byCompany, inkoopCompanyLabel(row), 1, inkoopInvoiceLineTotal(row), 0);
   }
+  return { byGrower, byAvc, byCompany, byProductGroup };
+}
 
+function finishInkoopDashboardSummary({ byGrower, byAvc, byCompany, byProductGroup }) {
   // Purchase-value context is tracked for every grower/AVC/company/product
   // group so the mistake-rate % is accurate the moment one does show a
   // mistake -- but a dashboard meant to rank problems shouldn't list
@@ -15043,6 +15214,7 @@ async function inkoopFollowupItemsForDates(state, dates) {
   if (!sorted.length) return { byDate, pending };
   const fingerprint = await inkoopCurrentFingerprint();
   const metas = new Map((await getInkoopMatchDays({ from: sorted[0], to: sorted[sorted.length - 1], withData: false })).map((row) => [row.date, row]));
+  let codeToName = null;
   for (const date of sorted) {
     const meta = metas.get(date);
     if (!meta?.computed_at) {
@@ -15057,9 +15229,18 @@ async function inkoopFollowupItemsForDates(state, dates) {
       byDate.set(date, cached.items);
       continue;
     }
-    const [bundle] = await loadStoredInkoopDays(state, date, date);
-    const issues = [];
-    if (bundle?.computed) buildInkoopDayIssues(state, bundle, "", issues);
+    // The day's stored lines (named now, the explained ones left out) --
+    // else, a day from before they were stored, built from its whole result.
+    let issues = [];
+    if (meta.has_result && Number(meta.issues_version) === INKOOP_ISSUES_STORE_VERSION) {
+      if (!codeToName) ({ codeToName } = inkoopAggregateMaps(state, fingerprint));
+      const stored = await getInkoopDayIssues(date);
+      applyInkoopIssueNaming(state, stored.issues, codeToName);
+      issues = stored.issues.filter((issue) => !issue.explained);
+    } else {
+      const [bundle] = await loadStoredInkoopDays(state, date, date);
+      if (bundle?.computed) buildInkoopDayIssues(state, bundle, "", issues);
+    }
     const items = issues.filter((issue) => INKOOP_FOLLOWUP_TYPES.has(issue.issue_type)).map((issue) => inkoopFollowupItem(issue, date));
     inkoopFollowupDayCache.delete(date);
     inkoopFollowupDayCache.set(date, { key, items });
@@ -29759,26 +29940,24 @@ async function handleApi(req, res, url) {
       const state = await readInkoopState();
       const company = url.searchParams.get("company");
       if (heavyInkoopReadGone(req, res)) return;
-      const dayBundles = await computeInkoopDays(state, range.from, range.to);
-      if (heavyInkoopReadGone(req, res)) return;
-      const result = filterInkoopResultsByCompany(mergeInkoopDayResults(dayBundles.map((day) => day.result)), company);
-      const summary = buildInkoopDashboardSummary(result);
-      const dayBuckets = new Map();
-      for (const day of dayBundles) {
-        const bucket = bucketInkoopResultsByDate(filterInkoopResultsByCompany(day.result, company), day.aggregateContext).get(day.date);
-        if (bucket) dayBuckets.set(day.date, bucket);
-      }
+      const parts = await inkoopDashboardSummaryParts(state, range, company, { fromStore: isDatabaseEnabled(), gone: () => heavyInkoopReadGone(req, res) });
+      if (!parts) return;
+      const { summary, dayBuckets, embalageSummary, pendingDays } = parts;
       const onlyConnect = await inkoopOnlyConnectByPeriod(state, { unit: "day", from: range.from, to: range.to, company });
       const dayReport = inkoopDateBucketsToSortedArray(dayBuckets).map((day) => inkoopWithOnlyConnect(day, onlyConnect.get(day.date), company));
       const weekReport = inkoopBucketDayReportsByWeek(dayReport);
-      const embalageSummary = buildInkoopEmbalageSummary(result);
-      const todayBundle = dayBundles.find((day) => day.date === localDateIso()) || await computeInkoopDay(state, localDateIso());
-      const todaySummary = buildInkoopTodaySummary(filterInkoopResultsByCompany(todayBundle.result, company), localDateIso(), todayBundle.aggregateContext);
+      // Today: the stored day when it is in the period (as before), else
+      // today compared now.
+      const today = localDateIso();
+      const todayBundle = inkoopDatesInRange(range.from, range.to).includes(today)
+        ? (await loadStoredInkoopDays(state, today, today))[0]
+        : await computeInkoopDay(state, today);
+      const todaySummary = buildInkoopTodaySummary(filterInkoopResultsByCompany(todayBundle.result, company), today, todayBundle.aggregateContext);
       sendJson(res, 200, {
         days,
         from: range.from,
         to: range.to,
-        pending_days: dayBundles.pending_days || [],
+        pending_days: pendingDays,
         ...summary,
         day_report: dayReport,
         week_report: weekReport,
@@ -30379,6 +30558,50 @@ async function handleApi(req, res, url) {
         days.push({ date, stored: true, stale: Boolean(day.stale), old: left.length, new: right.length, totals_same: totalsSame, differences: differ.length, first: differ.slice(0, 10) });
       }
       sendJson(res, 200, { from, to, same: days.every((day) => !day.stored || (day.differences === 0 && day.totals_same)), days });
+    } catch (error) {
+      sendJson(res, 400, { error: error instanceof Error ? error.message : String(error) });
+    }
+    return;
+  }
+
+  // Check: the Dashboard summary from the stored day parts against the old
+  // way (every day's whole result) -- ?from=&to=&company= (a week at most).
+  // Money compared to the cent (adding per day rounds differently).
+  if (url.pathname === "/api/inkoop/debug/summary-parity" && req.method === "GET") {
+    if (!requirePermission(res, requestUser, PERMISSIONS.SETTINGS_MANAGE)) {
+      return;
+    }
+    try {
+      const state = await readInkoopState();
+      const to = inkoopIsoDate(url.searchParams.get("to")) || localDateIso();
+      let from = inkoopIsoDate(url.searchParams.get("from")) || to;
+      if (addDaysToIsoDate(from, 6) < to) from = addDaysToIsoDate(to, -6);
+      const company = url.searchParams.get("company") || "";
+      const range = { from, to };
+      const plain = (parts) => JSON.parse(JSON.stringify({
+        ...parts.summary,
+        embalage: parts.embalageSummary,
+        day_buckets: inkoopDateBucketsToSortedArray(parts.dayBuckets),
+        pending_days: parts.pendingDays,
+      }, (key, value) => (typeof value === "number" ? Math.round(value * 100) / 100 : value)));
+      const oldWay = plain(await inkoopDashboardSummaryParts(state, range, company, { fromStore: false }));
+      const newWay = plain(await inkoopDashboardSummaryParts(state, range, company, { fromStore: true }));
+      const differences = [];
+      for (const key of new Set([...Object.keys(oldWay), ...Object.keys(newWay)])) {
+        const left = JSON.stringify(oldWay[key]);
+        const right = JSON.stringify(newWay[key]);
+        if (left === right) continue;
+        const list = Array.isArray(oldWay[key]) && Array.isArray(newWay[key]);
+        const firstAt = list ? oldWay[key].findIndex((entry, index) => JSON.stringify(entry) !== JSON.stringify(newWay[key][index])) : -1;
+        differences.push({
+          part: key,
+          old_count: list ? oldWay[key].length : undefined,
+          new_count: list ? newWay[key].length : undefined,
+          first_old: list ? oldWay[key][firstAt < 0 ? oldWay[key].length : firstAt] ?? null : oldWay[key],
+          first_new: list ? newWay[key][firstAt < 0 ? oldWay[key].length : firstAt] ?? null : newWay[key],
+        });
+      }
+      sendJson(res, 200, { from, to, company, same: differences.length === 0, differences });
     } catch (error) {
       sendJson(res, 400, { error: error instanceof Error ? error.message : String(error) });
     }
@@ -32993,19 +33216,25 @@ async function fillInkoopDayIssues(limit = 15) {
   if (inkoopIssuesFilling || inkoopMatchWorker) return;
   inkoopIssuesFilling = true;
   try {
-    const days = await getInkoopDaysWithoutIssues(INKOOP_ISSUES_STORE_VERSION, limit);
+    const days = await getInkoopDaysWithoutIssues(INKOOP_ISSUES_STORE_VERSION, limit, INKOOP_VIEWS_VERSION);
     let stored = 0;
+    let storedViews = 0;
     for (const meta of days) {
       if (inkoopMatchWorker) break; // comparing has priority
       const state = await readInkoopState();
       const [day] = await loadStoredInkoopDays(state, meta.date, meta.date);
       // Out of date: it is compared again (and stored with its issues).
       if (!day?.computed || day.stale) continue;
-      const built = buildInkoopDayIssuesFromStoredDay(state, day);
-      if (await saveInkoopDayIssues({ date: meta.date, generation: meta.generation, issues: built.issues, totals: built.totals, version: INKOOP_ISSUES_STORE_VERSION })) stored += 1;
+      if (Number(meta.issues_version) !== INKOOP_ISSUES_STORE_VERSION) {
+        const built = buildInkoopDayIssuesFromStoredDay(state, day);
+        if (await saveInkoopDayIssues({ date: meta.date, generation: meta.generation, issues: built.issues, totals: built.totals, version: INKOOP_ISSUES_STORE_VERSION })) stored += 1;
+      }
+      if (Number(meta.views_version) !== INKOOP_VIEWS_VERSION) {
+        if (await saveInkoopDayViews({ date: meta.date, generation: meta.generation, views: buildInkoopDayViews(day), version: INKOOP_VIEWS_VERSION })) storedViews += 1;
+      }
       await new Promise((resolve) => setTimeout(resolve, 200));
     }
-    if (stored) console.log(`Inkoop: stored the issues of ${stored} day(s) compared before.`);
+    if (stored || storedViews) console.log(`Inkoop: stored the issues of ${stored} and the Dashboard parts of ${storedViews} day(s) compared before.`);
   } finally {
     inkoopIssuesFilling = false;
   }
@@ -33043,6 +33272,8 @@ const HEAVY_INKOOP_READS = new Set([
   "/api/inkoop/dashboard/summary",
   "/api/inkoop/dashboard/grower-totals",
   "/api/inkoop/product-growers",
+  "/api/inkoop/debug/issues-parity",
+  "/api/inkoop/debug/summary-parity",
 ]);
 const HEAVY_INKOOP_READS_AT_ONCE = 2;
 const HEAVY_INKOOP_READ_WAIT_MS = 120000;

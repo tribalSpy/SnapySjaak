@@ -2907,18 +2907,35 @@ export async function searchInkoopProductCards({ q, limit = 40 } = {}) {
 
 // ---- Stored comparison (inkoop_match_days / inkoop_match_rows) ----------
 
-export async function getInkoopMatchDays({ from, to, withData = true } = {}) {
+// viewCompany (a string, "" = all): also the day's stored Dashboard part of
+// that company (view_part; the "~other" part when the company isn't on the
+// day) -- only that part, not every company's.
+export async function getInkoopMatchDays({ from, to, withData = true, viewCompany = null } = {}) {
   if (!pool || !from || !to) {
     return [];
   }
+  const withView = typeof viewCompany === "string";
   const result = await pool.query(
     `SELECT to_char(match_date, 'YYYY-MM-DD') AS date, status, generation, fingerprint,
-       ${withData ? "result, aggregate," : ""} counts, error_text, computed_at, issues_version, (result IS NOT NULL) AS has_result
+       ${withData ? "result, aggregate," : ""} counts, error_text, computed_at, issues_version, views_version, (result IS NOT NULL) AS has_result
+       ${withView ? ", CASE WHEN views ? $3 THEN views -> $3 ELSE views -> '~other' END AS view_part" : ""}
      FROM inkoop_match_days WHERE match_date >= $1::date AND match_date <= $2::date
      ORDER BY match_date`,
-    [from, to],
+    withView ? [from, to, viewCompany] : [from, to],
   );
   return result.rows;
+}
+
+// A day's Dashboard parts, for a day already compared (first read of a day
+// from before they were stored, or the background fill): only while the day
+// is still the same comparison (generation).
+export async function saveInkoopDayViews({ date, generation, views, version }) {
+  if (!pool || !date) return false;
+  const result = await pool.query(
+    "UPDATE inkoop_match_days SET views = $3::jsonb, views_version = $4 WHERE match_date = $1::date AND generation = $2",
+    [date, generation ?? 0, JSON.stringify(views || {}), version],
+  );
+  return result.rowCount > 0;
 }
 
 // The matched lines of the stored days of a range, only what the grower
@@ -3155,18 +3172,20 @@ export async function getInkoopDayIssues(date) {
 }
 
 // Days compared and ready whose issues aren't stored (in this version) yet.
-export async function getInkoopDaysWithoutIssues(version, limit = 20) {
+// (and, with viewsVersion, the days whose Dashboard parts aren't stored in
+// that version yet -- issues_version / views_version say which is missing).
+export async function getInkoopDaysWithoutIssues(version, limit = 20, viewsVersion = null) {
   if (!pool) return [];
   const result = await pool.query(
-    `SELECT to_char(match_date, 'YYYY-MM-DD') AS date, generation FROM inkoop_match_days
-     WHERE status = 'ready' AND result IS NOT NULL AND issues_version <> $1
+    `SELECT to_char(match_date, 'YYYY-MM-DD') AS date, generation, issues_version, views_version FROM inkoop_match_days
+     WHERE status = 'ready' AND result IS NOT NULL AND (issues_version <> $1 OR ($3::integer IS NOT NULL AND views_version <> $3::integer))
      ORDER BY match_date DESC LIMIT $2`,
-    [version, limit],
+    [version, limit, viewsVersion],
   );
   return result.rows;
 }
 
-export async function saveInkoopMatchDay({ date, generation, fingerprint, result, aggregate, counts, rows, durationMs, issues = null, issueTotals = null, issuesVersion = 0 }) {
+export async function saveInkoopMatchDay({ date, generation, fingerprint, result, aggregate, counts, rows, durationMs, issues = null, issueTotals = null, issuesVersion = 0, views = null, viewsVersion = 0 }) {
   if (!pool || !date) {
     return;
   }
@@ -3203,6 +3222,11 @@ export async function saveInkoopMatchDay({ date, generation, fingerprint, result
       await client.query("DELETE FROM inkoop_day_issues WHERE match_date = $1::date", [date]);
       await client.query("UPDATE inkoop_match_days SET issues_version = 0, issue_totals = NULL WHERE match_date = $1::date", [date]);
     }
+    // The day's Dashboard parts with it (or none: built on first read).
+    await client.query(
+      "UPDATE inkoop_match_days SET views = $2::jsonb, views_version = $3 WHERE match_date = $1::date",
+      [date, views ? JSON.stringify(views) : null, views ? viewsVersion : 0],
+    );
     await client.query("COMMIT");
   } catch (error) {
     await client.query("ROLLBACK").catch(() => {});
@@ -5598,6 +5622,16 @@ const databaseMigrations = [
   `,
   `
     CREATE INDEX IF NOT EXISTS inkoop_day_issues_date_idx ON inkoop_day_issues (match_date, ord)
+  `,
+  // The day's Dashboard figures (per company, "" = all, "~other" = a
+  // company not on the day): the mergeable sums the Dashboard adds up over
+  // a period, instead of reading every day's whole result. views_version:
+  // which build (0 = none yet).
+  `
+    ALTER TABLE inkoop_match_days ADD COLUMN IF NOT EXISTS views jsonb
+  `,
+  `
+    ALTER TABLE inkoop_match_days ADD COLUMN IF NOT EXISTS views_version integer NOT NULL DEFAULT 0
   `,
   // Every comparison result line as a row (the Data tab filters these
   // across days: "all differences in September for grower X").
