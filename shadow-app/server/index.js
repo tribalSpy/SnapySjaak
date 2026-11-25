@@ -12954,10 +12954,27 @@ function buildInkoopGrowerDirectory(state, { pavPairs, codeStats, invoiceSupplie
   };
 }
 
+// One build at a time per version: after a Link growers save every page
+// asked for the directory at once and each built its own (5 reads over all
+// history each) -- they now wait for the one being built.
+let inkoopGrowerDirectoryBuilding = null;
 async function inkoopGrowerDirectory(state) {
-  if (inkoopGrowerDirectoryCache?.version === inkoopMatchVersion && inkoopGrowerDirectoryCache.stateFingerprint === inkoopStateFingerprint(state)) {
+  const fingerprint = inkoopStateFingerprint(state);
+  if (inkoopGrowerDirectoryCache?.version === inkoopMatchVersion && inkoopGrowerDirectoryCache.stateFingerprint === fingerprint) {
     return inkoopGrowerDirectoryCache.directory;
   }
+  const key = `${inkoopMatchVersion}|${fingerprint}`;
+  if (inkoopGrowerDirectoryBuilding?.key === key) return inkoopGrowerDirectoryBuilding.promise;
+  const promise = buildInkoopGrowerDirectoryFresh(state);
+  inkoopGrowerDirectoryBuilding = { key, promise };
+  try {
+    return await promise;
+  } finally {
+    if (inkoopGrowerDirectoryBuilding?.promise === promise) inkoopGrowerDirectoryBuilding = null;
+  }
+}
+
+async function buildInkoopGrowerDirectoryFresh(state) {
   const [briefPairs, lotGlnPairs, codeStats, invoiceSuppliers, handelEvidence] = await Promise.all([
     getInkoopGrowerPavPairs().catch(() => []),
     getInkoopLotGlnPairs().catch(() => []),
@@ -32791,6 +32808,7 @@ const INKOOP_GROWER_TOTALS_INVOICE_FIELDS = ["id", "invoice_number", "invoice_ty
 // is dropped without being read.
 const HEAVY_INKOOP_READS = new Set([
   "/api/inkoop/issues",
+  "/api/inkoop/growers",
   "/api/inkoop/followup",
   "/api/inkoop/detective",
   "/api/inkoop/invoice-trace",
@@ -32891,6 +32909,20 @@ async function readContainerMemoryBytes() {
   }
   return 0;
 }
+// What the container's memory is, beyond the processes: anon (process
+// memory), file (page cache -- freed before an out-of-memory kill), shmem
+// (tmpfs files, e.g. /tmp, /dev/shm -- never freed), kernel. The container
+// showed ~1.55 GB idle with only ~0.65 GB in processes (25-11).
+async function readContainerMemoryStat() {
+  try {
+    const text = await fs.readFile("/sys/fs/cgroup/memory.stat", "utf8");
+    const values = new Map(text.split("\n").map((line) => line.trim().split(" ")).filter((parts) => parts.length === 2).map(([key, number]) => [key, Number(number) || 0]));
+    const value = (key) => values.get(key) || 0;
+    return { anon: value("anon"), file: value("file"), shmem: value("shmem"), kernel: value("kernel") || (value("slab") + value("kernel_stack") + value("pagetables")) };
+  } catch {
+    return null;
+  }
+}
 async function readBiggestProcesses(limit = 6) {
   const list = [];
   let entries = [];
@@ -32924,7 +32956,11 @@ function startMemoryWatch(label) {
       if (!high && Date.now() - lastLine < 10 * 60 * 1000) return;
       lastLine = Date.now();
       let line = `Memory (${label}): rss ${mb(usage.rss)} MB, heap ${mb(usage.heapUsed)}/${mb(usage.heapTotal)} MB, buffers ${mb(usage.external + (usage.arrayBuffers || 0))} MB`;
-      if (container) line += ` -- container ${mb(container)} MB of 2048`;
+      if (container) {
+        line += ` -- container ${mb(container)} MB of 2048`;
+        const stat = await readContainerMemoryStat();
+        if (stat) line += ` (processes ${mb(stat.anon)}, file cache ${mb(stat.file)} of which tmpfs ${mb(stat.shmem)}, kernel ${mb(stat.kernel)})`;
+      }
       if (high) {
         const biggest = await readBiggestProcesses();
         line += ` -- biggest: ${biggest.map((item) => `${item.cmd} (pid ${item.pid}) ${item.mb} MB`).join("; ")}`;
