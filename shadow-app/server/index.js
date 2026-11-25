@@ -29453,6 +29453,7 @@ async function handleApi(req, res, url) {
       // A lot matched to an invoice line counts for that line's grower, also
       // outside the chosen betaalwijzen (an AI2 grower's BW A lots under
       // "only V"): matched is paid -- only what really has no lot differs.
+      if (heavyInkoopReadGone(req, res)) return;
       const matchedLotCodes = await inkoopStoredMatchedLotCodes(from, to, company, {
         supplierMap, supplierNameMap: state.supplier_name_map, manualLinks: state.manual_supplier_links, supplierFhMap,
       }).catch((matchError) => {
@@ -29641,7 +29642,9 @@ async function handleApi(req, res, url) {
     try {
       const state = await readInkoopState();
       const company = url.searchParams.get("company");
+      if (heavyInkoopReadGone(req, res)) return;
       const dayBundles = await computeInkoopDays(state, range.from, range.to);
+      if (heavyInkoopReadGone(req, res)) return;
       const result = filterInkoopResultsByCompany(mergeInkoopDayResults(dayBundles.map((day) => day.result)), company);
       const summary = buildInkoopDashboardSummary(result);
       const dayBuckets = new Map();
@@ -29847,6 +29850,7 @@ async function handleApi(req, res, url) {
       const company = normalizeUkdocsText(url.searchParams.get("company"));
       const view = inkoopOverviewNaming(state);
       const rawTotals = await getInkoopOverviewTotals({ company, from, to });
+      if (heavyInkoopReadGone(req, res)) return;
       // Lines resolved as Geverifieerd (transport costs, an invoice
       // difference, ...): verified -- counted as matched, their money still
       // in the difference -- not as open. Their own rows, out of the open ones.
@@ -29929,7 +29933,9 @@ async function handleApi(req, res, url) {
       if (!grower && !lists.length) throw new Error("grower or lists is required");
       // limit=: one grower's export (a year) may hold more than the 3000 shown.
       const limit = grower ? Math.min(50000, Math.max(3000, Number(url.searchParams.get("limit")) || 3000)) : 3000;
+      if (heavyInkoopReadGone(req, res)) return;
       const lines = await getInkoopOverviewLines({ company, from, to, pairs, lists: grower ? [] : lists, limit });
+      if (heavyInkoopReadGone(req, res)) return;
       // A line whose figures differ: what the dispatch dump sent out of its
       // lot(s) -- pieces and to whom -- to see which side is right.
       const lotsOf = (row) => String(row.lot || "").split("+").map((lot) => lot.trim()).filter((lot) => /^[0-9]{1,18}$/.test(lot));
@@ -29986,7 +29992,9 @@ async function handleApi(req, res, url) {
       const company = url.searchParams.get("company");
       const wanted = normalizeUkdocsText(url.searchParams.get("grower")).toLowerCase();
       if (!wanted) throw new Error("grower is required");
+      if (heavyInkoopReadGone(req, res)) return;
       const dayBundles = await computeInkoopDays(state, range.from, range.to);
+      if (heavyInkoopReadGone(req, res)) return;
       const invoiceLines = [];
       const connectLots = [];
       const lotOut = (row, status, matchedTo, date, line = null) => ({
@@ -30250,6 +30258,9 @@ async function handleApi(req, res, url) {
       // memory); days not compared yet are queued first.
       const pendingDays = [];
       for (const date of inkoopDatesInRange(range.from, range.to)) {
+        // The page asked something else meanwhile (closed, other period or
+        // grower): stop here -- the rest of the month is never read.
+        if (heavyInkoopReadGone(req, res)) return;
         const [day] = await loadStoredInkoopDays(state, date, date);
         if (day.stale && day.status !== "empty") pendingDays.push(date);
         const first = issues.length;
@@ -32782,11 +32793,30 @@ function heavyInkoopReadGone(req, res) {
   return res.writableEnded || res.destroyed || Boolean(req.socket?.destroyed);
 }
 
+// Never critical: a second one starts only while the app is well below its
+// limit (the crashes came at ~1.3 GB of the app's own memory, idle is
+// ~0.4-0.6 GB); otherwise it waits for the one running. One alone always
+// may start.
+const HEAVY_INKOOP_READ_SECOND_BELOW_BYTES = 900 * 1024 * 1024;
+function heavyInkoopReadMayStart() {
+  if (heavyInkoopReadsRunning >= HEAVY_INKOOP_READS_AT_ONCE) return false;
+  return heavyInkoopReadsRunning === 0 || process.memoryUsage().rss < HEAVY_INKOOP_READ_SECOND_BELOW_BYTES;
+}
+
+let heavyInkoopReadPump = null;
 function runNextHeavyInkoopRead() {
-  while (heavyInkoopReadsRunning < HEAVY_INKOOP_READS_AT_ONCE && heavyInkoopReadQueue.length) {
+  // Pages gone while waiting: out first.
+  for (let index = heavyInkoopReadQueue.length - 1; index >= 0; index -= 1) {
+    if (heavyInkoopReadGone(heavyInkoopReadQueue[index].req, heavyInkoopReadQueue[index].res)) heavyInkoopReadQueue.splice(index, 1);
+  }
+  while (heavyInkoopReadQueue.length && heavyInkoopReadMayStart()) {
     const next = heavyInkoopReadQueue.shift();
-    if (heavyInkoopReadGone(next.req, next.res)) continue;
     startHeavyInkoopRead(next.req, next.res, next.run);
+  }
+  // Waiting on memory (not on a slot): look again in a moment.
+  if (heavyInkoopReadQueue.length && !heavyInkoopReadPump) {
+    heavyInkoopReadPump = setTimeout(() => { heavyInkoopReadPump = null; runNextHeavyInkoopRead(); }, 1000);
+    heavyInkoopReadPump.unref?.();
   }
 }
 
@@ -32805,12 +32835,13 @@ function startHeavyInkoopRead(req, res, run) {
 }
 
 function runHeavyInkoopRead(req, res, run) {
-  if (heavyInkoopReadsRunning < HEAVY_INKOOP_READS_AT_ONCE && !heavyInkoopReadQueue.length) {
+  if (!heavyInkoopReadQueue.length && heavyInkoopReadMayStart()) {
     startHeavyInkoopRead(req, res, run);
     return;
   }
   const entry = { req, res, run };
   heavyInkoopReadQueue.push(entry);
+  runNextHeavyInkoopRead();
   // Gone while waiting: out of the queue at once.
   const leave = () => {
     const index = heavyInkoopReadQueue.indexOf(entry);
