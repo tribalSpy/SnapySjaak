@@ -86,6 +86,9 @@ import {
   getInkoopMatchedLotRows,
   prioritizeInkoopMatchDays,
   markStaleInkoopMatchDays,
+  getInkoopDatesForSuppliers,
+  restampInkoopMatchDays,
+  existingInkoopMatchDates,
   ensureInkoopMatchDaysForData,
   resetRunningInkoopMatchDays,
   claimNextInkoopMatchDay,
@@ -15378,14 +15381,53 @@ async function readInkoopState() {
   return state;
 }
 
-async function writeInkoopState(state) {
+// targeted: { oldFingerprint, glns, fhs, names, codes } -- only grower links
+// changed (Link growers): only the days those growers / codes are on are
+// redone, the others keep their result. Without it (or when that fails):
+// every day, as before.
+async function writeInkoopState(state, { targeted = null } = {}) {
   inkoopStateCache = null;
   await writeJsonFile(inkoopStatePath, normalizeInkoopState(state));
   bumpInkoopMatchVersion();
   refreshInkoopInvoiceNameCodesLater();
   // Changed master data: the stored comparison of every day is redone in
   // the background (nothing happens when only the import history changed).
-  markInkoopMatchDaysStaleForCurrentState().catch((error) => console.error("Marking Inkoop days to redo failed:", error instanceof Error ? error.message : error));
+  const everyDay = () => markInkoopMatchDaysStaleForCurrentState().catch((error) => console.error("Marking Inkoop days to redo failed:", error instanceof Error ? error.message : error));
+  if (!targeted) {
+    everyDay();
+    return;
+  }
+  markInkoopMatchDaysForGrowerChange(targeted).catch((error) => {
+    console.error("Marking only the linked growers' days failed -- every day is redone:", error instanceof Error ? error.message : error);
+    return everyDay();
+  });
+}
+
+async function markInkoopMatchDaysForGrowerChange({ oldFingerprint, glns = [], fhs = [], names = [], codes = [] }) {
+  if (!isDatabaseEnabled()) return;
+  const newFingerprint = await inkoopCurrentFingerprint();
+  if (!oldFingerprint || oldFingerprint === newFingerprint) return;
+  const clean = (list, fn) => [...new Set(list.map(fn).filter(Boolean))];
+  const codeList = clean(codes, (value) => normalizeInkoopKey(value));
+  const growerCount = new Set([...glns, ...fhs].filter(Boolean)).size;
+  const found = await getInkoopDatesForSuppliers({
+    glns: clean(glns, (value) => String(value || "").trim()),
+    fhs: clean(fhs, (value) => String(value || "").trim()),
+    names: clean(names, (value) => String(value || "").trim().toLowerCase()),
+    codes: codeList,
+  });
+  // A day's comparison reads the lots and lines of the days around it.
+  const around = new Set();
+  for (const date of found) {
+    for (let shift = -INKOOP_DAY_TOLERANCE_DAYS; shift <= INKOOP_DAY_TOLERANCE_DAYS; shift += 1) around.add(addDaysToIsoDate(date, shift));
+  }
+  const dates = await existingInkoopMatchDates([...around]);
+  if (dates.length) await markInkoopMatchDaysPending(dates);
+  const kept = await restampInkoopMatchDays(oldFingerprint, newFingerprint, dates);
+  // Days already out of date before (another change) stay to be redone.
+  const others = await markStaleInkoopMatchDays(newFingerprint);
+  console.log(`Inkoop: grower links changed -- ${dates.length} day(s) compared again (${codeList.length} code(s), ${growerCount} grower(s)), ${kept} day(s) kept${others ? `, ${others} older day(s) also redone` : ""}.`);
+  if (dates.length || others) kickInkoopMatchWorker();
 }
 
 function mergeUkdocsStatePatch(currentState, patch) {
@@ -30804,6 +30846,9 @@ async function handleApi(req, res, url) {
     }
     const body = await readRequestJson(req);
     const state = await readInkoopState();
+    // What the save touches: only those growers' days are compared again.
+    const oldFingerprint = inkoopStateFingerprint(state);
+    const touched = { glns: [], fhs: [], names: [], codes: [] };
     let links = 0;
     let groups = 0;
     for (const item of Array.isArray(body?.links) ? body.links : []) {
@@ -30812,6 +30857,11 @@ async function handleApi(req, res, url) {
       if (!gln && !fhNumber) continue;
       const rest = state.manual_supplier_links.filter((link) => (!gln || link.gln !== gln) && (!fhNumber || link.fh_number !== fhNumber));
       const codes = normalizeInkoopManualSupplierLinkCodes({ codes: item?.codes });
+      const before = state.manual_supplier_links.filter((link) => !rest.includes(link));
+      if (gln) touched.glns.push(gln);
+      if (fhNumber) touched.fhs.push(fhNumber);
+      touched.names.push(normalizeUkdocsText(item?.name), ...before.map((link) => link.name));
+      touched.codes.push(...codes, ...before.flatMap((link) => link.codes || []));
       state.manual_supplier_links = codes.length
         ? [normalizeInkoopManualSupplierLink({ gln, fh_number: fhNumber, name: item?.name, codes, added_by: requestUser.username }), ...rest]
         : rest;
@@ -30822,6 +30872,7 @@ async function handleApi(req, res, url) {
       if (!groupName) continue;
       const rest = state.facturation_groups.filter((group) => group.group_name.toLowerCase() !== groupName.toLowerCase());
       const codes = normalizeInkoopFacturationGroupCodes({ codes: item?.codes });
+      touched.codes.push(...codes, ...state.facturation_groups.filter((group) => !rest.includes(group)).flatMap((group) => group.codes || []));
       state.facturation_groups = codes.length
         ? [normalizeInkoopFacturationGroup({ group_name: groupName, codes, added_by: requestUser.username }), ...rest]
         : rest;
@@ -30830,16 +30881,30 @@ async function handleApi(req, res, url) {
     // The whole "not a purchase" list, when sent.
     let excludedChanged = false;
     if (Array.isArray(body?.excluded_codes)) {
+      const beforeExcluded = new Set((state.excluded_erp_codes || []).map((code) => normalizeInkoopKey(code)));
       state.excluded_erp_codes = [...new Set(body.excluded_codes.map((code) => normalizeInkoopKey(code)).filter(Boolean))].sort();
+      // Only the codes put on or taken off the list: their lots' days.
+      const afterExcluded = new Set(state.excluded_erp_codes);
+      touched.codes.push(...[...beforeExcluded].filter((code) => !afterExcluded.has(code)), ...[...afterExcluded].filter((code) => !beforeExcluded.has(code)));
       excludedChanged = true;
     }
     // The transaction costs, when sent ({code: pct}; a code left out is removed).
     let costsChanged = false;
     if (body?.transaction_costs && typeof body.transaction_costs === "object") {
+      const beforeCosts = state.transaction_costs || {};
       state.transaction_costs = normalizeInkoopTransactionCosts(body.transaction_costs);
+      // Only the codes whose percentage changed (added, removed or other).
+      const afterCosts = state.transaction_costs || {};
+      for (const code of new Set([...Object.keys(beforeCosts), ...Object.keys(afterCosts)])) {
+        if (JSON.stringify(beforeCosts[code]) !== JSON.stringify(afterCosts[code])) touched.codes.push(code);
+      }
       costsChanged = true;
     }
-    if (links || groups || excludedChanged || costsChanged) await writeInkoopState(state);
+    // Links, groups, "not a purchase" codes and transaction costs all go by
+    // code / grower: only the days those are on are compared again.
+    if (links || groups || excludedChanged || costsChanged) {
+      await writeInkoopState(state, { targeted: { oldFingerprint, ...touched } });
+    }
     sendJson(res, 200, { links, groups, excluded_erp_codes: state.excluded_erp_codes || [], transaction_costs: state.transaction_costs || {}, manual_supplier_links: state.manual_supplier_links, facturation_groups: state.facturation_groups });
     return;
   }

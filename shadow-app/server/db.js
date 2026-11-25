@@ -2983,6 +2983,52 @@ export async function prioritizeInkoopMatchDays(dates) {
 }
 
 // Master data changed: every day compared with other master data is to do.
+// The days a grower link can change: where its GLN / FH number / name is on
+// an invoice line, where one of its codes is a lot's Lev / AVC / transp, or
+// a stored comparison row carries one of its codes.
+export async function getInkoopDatesForSuppliers({ glns = [], fhs = [], names = [], codes = [] } = {}) {
+  if (!pool) return [];
+  const result = await pool.query(
+    `SELECT DISTINCT to_char(d, 'YYYY-MM-DD') AS date FROM (
+       SELECT invoice_date AS d FROM inkoop_invoice_lines
+        WHERE invoice_date IS NOT NULL AND (supplier_gln = ANY($1::text[]) OR supplier_fh_number = ANY($2::text[]) OR lower(trim(supplier_name)) = ANY($3::text[]))
+       UNION
+       SELECT erp_date FROM inkoop_erp_lines
+        WHERE erp_date IS NOT NULL AND (upper(trim(suppl)) = ANY($4::text[]) OR upper(trim(avc)) = ANY($4::text[]) OR upper(trim(transp)) = ANY($4::text[]))
+       UNION
+       SELECT match_date FROM inkoop_match_rows
+        WHERE cardinality($4::text[]) > 0 AND supplier_code <> ''
+          AND regexp_split_to_array(upper(supplier_code), '[[:space:]/+]+') && $4::text[]
+     ) days`,
+    [glns, fhs, names, codes],
+  );
+  return result.rows.map((row) => row.date);
+}
+
+// Days compared with the master data before a change that can't touch them:
+// they hold for the new master data too -- stamped with its fingerprint, so
+// they stay ready (only "ready" days of exactly the old fingerprint).
+export async function restampInkoopMatchDays(oldFingerprint, newFingerprint, exceptDates = []) {
+  if (!pool || !oldFingerprint || !newFingerprint || oldFingerprint === newFingerprint) return 0;
+  const result = await pool.query(
+    `UPDATE inkoop_match_days SET fingerprint = $2
+     WHERE status = 'ready' AND fingerprint = $1 AND NOT (match_date = ANY($3::date[]))`,
+    [oldFingerprint, newFingerprint, exceptDates],
+  );
+  return result.rowCount;
+}
+
+// The dates of a list that have a comparison day (a grower link's days +- 4
+// never adds days without data).
+export async function existingInkoopMatchDates(dates = []) {
+  if (!pool || !dates.length) return [];
+  const result = await pool.query(
+    "SELECT to_char(match_date, 'YYYY-MM-DD') AS date FROM inkoop_match_days WHERE match_date = ANY($1::date[])",
+    [dates],
+  );
+  return result.rows.map((row) => row.date);
+}
+
 export async function markStaleInkoopMatchDays(fingerprint) {
   if (!pool) {
     return 0;

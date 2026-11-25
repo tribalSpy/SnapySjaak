@@ -27878,7 +27878,7 @@ function InkoopLinkGrowersTab() {
       setPendingGroups({});
       setPendingExcluded(null);
       setPendingCosts(null);
-      setMessage(`Saved: ${payload.links} grower link(s)${payload.groups ? `, ${payload.groups} group(s)` : ""}. Every day is compared again in the background.`);
+      setMessage(`Saved: ${payload.links} grower link(s)${payload.groups ? `, ${payload.groups} group(s)` : ""}. The days of these growers (and codes) are compared again in the background -- the other days keep their result.`);
       await load();
     } catch (saveError) {
       setError(saveError.message);
@@ -27932,7 +27932,7 @@ function InkoopLinkGrowersTab() {
           Slide a Connect code (right) onto an invoice grower (left) to link it -- or click the code, then <strong>+ add</strong> on the grower.
           A grower can have several codes (e.g. Milessa: MELISS and -MELUK, when one purchase is booked under both); tick
           <strong> count together</strong> to compare the grower's day total over all its codes. Link as many as you like, then <strong>Save</strong>:
-          all days are compared again once, in the background.
+          only the days those growers and codes are on are compared again, in the background.
         </div>
         {pendingCount > 0 && (
           <div className="notice info row-actions spread-actions" style={{ marginTop: 8 }}>
