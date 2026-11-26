@@ -83,6 +83,8 @@ const PERMISSIONS = {
   SHELF_COUNT_VIEW: "shelf_count:view",
   CAMPAIGN_VIEW: "campaign:view",
   CAMPAIGN_MANAGE: "campaign:manage",
+  // Only the menu link; /methode-b itself opens without a login.
+  METHODE_B_VIEW: "methode_b:view",
 };
 const ALL_PERMISSIONS = Object.values(PERMISSIONS);
 const DEFAULT_PERMISSIONS_BY_ROLE = {
@@ -13035,6 +13037,7 @@ function App() {
   // (warehouse-dashboard/public), served under /warehouse/, not a React
   // page rendered by setPage().
   const canViewWarehouse = hasPermission(auth.user, PERMISSIONS.WAREHOUSE_VIEW);
+  const canViewMethodeB = hasPermission(auth.user, PERMISSIONS.METHODE_B_VIEW);
   const visiblePages = availablePagesForUser(auth.user);
   // A task's "Open" in the widget: that page (and, for Inkoop, its tab).
   function openAppLink(link) {
@@ -13258,9 +13261,11 @@ function App() {
               Warehouse Dashboard
             </a>
           )}
-          <a href="/methode-b" target="_blank" rel="noreferrer" title="The hall TV screen -- opens without a login (/methode-b, ?hal=B for one hall)">
-            Methode B screen
-          </a>
+          {canViewMethodeB && (
+            <a href="/methode-b" target="_blank" rel="noreferrer" title="The hall TV screen -- opens without a login (/methode-b, ?hal=B for one hall)">
+              Methode B screen
+            </a>
+          )}
         </nav>
 
         {canViewPhotos && (

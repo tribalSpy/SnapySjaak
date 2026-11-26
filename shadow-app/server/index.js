@@ -1012,6 +1012,9 @@ const allPermissions = [
   "shelf_count:view",
   "campaign:view",
   "campaign:manage",
+  // Only the menu link: the hall TV screen itself (/methode-b) stays open
+  // without a login.
+  "methode_b:view",
 ];
 const PERMISSIONS = {
   PHOTOS_VIEW: "photos:view",
@@ -1040,6 +1043,7 @@ const PERMISSIONS = {
   SHELF_COUNT_VIEW: "shelf_count:view",
   CAMPAIGN_VIEW: "campaign:view",
   CAMPAIGN_MANAGE: "campaign:manage",
+  METHODE_B_VIEW: "methode_b:view",
 };
 const roleDefaultPermissions = {
   admin: allPermissions,
