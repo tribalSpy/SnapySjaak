@@ -15070,8 +15070,14 @@ function inkoopDataDayStatus(row) {
   const none = new Set(Array.isArray(row?.files_none) ? row.files_none : []);
   for (let index = missing.length - 1; index >= 0; index -= 1) if (none.has(missing[index])) missing.splice(index, 1);
   const empty = !(row?.invoice_lines > 0) && !(row?.lots > 0);
-  let state = empty ? "empty" : missing.length ? "waiting" : "ready";
-  if (row?.override === "ready" && !empty) state = "ready";
+  // A working day (Mon-Fri) of the last 14 days, before today, with nothing
+  // in yet is expected: "waiting" (all four files missing), not hidden as
+  // empty. A day without trade (a holiday) can be marked ready by hand.
+  const today = localDateIso();
+  const weekday = row?.date ? new Date(`${row.date}T12:00:00Z`).getUTCDay() : 0;
+  const expected = empty && row?.date && row.date < today && row.date >= addDaysToIsoDate(today, -14) && weekday >= 1 && weekday <= 5;
+  let state = empty && !expected ? "empty" : missing.length ? "waiting" : "ready";
+  if (row?.override === "ready" && (!empty || expected)) state = "ready";
   if (row?.override === "hold") state = "hold";
   return { ...row, state, missing, files_none: [...none], by_hand: Boolean(row?.override) };
 }
