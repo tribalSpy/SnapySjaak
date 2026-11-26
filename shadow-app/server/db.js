@@ -6714,7 +6714,14 @@ const quoteIdent = (name) => `"${String(name).replace(/"/g, '""')}"`;
 // totals): not in the backup -- a day's result can be MBs, read 200 rows at
 // a time that ran the server out of memory -- and rebuilt where it's loaded
 // (a restore empties them, the comparison pipeline fills them again).
-const SNAPSHOT_DERIVED_TABLES = new Set(["inkoop_match_days", "inkoop_match_rows", "inkoop_invoice_totals"]);
+// inkoop_day_issues / inkoop_day_summaries: written with each compared day
+// (Track & Trace lines, Calendar figures) -- derived the same way; the
+// issues table made the standby's copy so big it took Render down (26-11).
+const SNAPSHOT_DERIVED_TABLES = new Set(["inkoop_match_days", "inkoop_match_rows", "inkoop_invoice_totals", "inkoop_day_issues", "inkoop_day_summaries"]);
+
+// Rows read per step: a state-file copy is several MB (its bytes as hex
+// text), 200 at once was hundreds of MB in one read -- one at a time.
+const SNAPSHOT_FETCH_ROWS_BY_TABLE = { state_file_history: 1, llm_jobs: 20 };
 
 async function listPublicTablesParentsFirst(client) {
   const tables = (await client.query(
@@ -6783,12 +6790,13 @@ export async function exportDatabaseSnapshot(writeLine) {
       // heavy enough to take Render's small Postgres down (Oct 2026:
       // "the database system is in recovery mode" loops).
       await client.query(`DECLARE snapshot_cursor NO SCROLL CURSOR FOR ${await snapshotRowSelect(client, table)}`);
+      const fetchRows = SNAPSHOT_FETCH_ROWS_BY_TABLE[table] || SNAPSHOT_FETCH_ROWS;
       for (;;) {
-        const { rows } = await client.query(`FETCH ${SNAPSHOT_FETCH_ROWS} FROM snapshot_cursor`);
+        const { rows } = await client.query(`FETCH ${fetchRows} FROM snapshot_cursor`);
         for (const row of rows) {
           await writeLine(row.row);
         }
-        if (rows.length < SNAPSHOT_FETCH_ROWS) break;
+        if (rows.length < fetchRows) break;
       }
       await client.query("CLOSE snapshot_cursor");
     }

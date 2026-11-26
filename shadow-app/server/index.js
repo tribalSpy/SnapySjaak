@@ -24919,18 +24919,43 @@ async function handleApi(req, res, url) {
       sendJson(res, 429, { error: `Postgres dump was already taken recently; wait ${pgDumpMinIntervalMinutes} minutes between dumps (use ?force=1 to override).` });
       return;
     }
+    // The last dump never finished -- Render went down during it: no new one
+    // (not even forced) for the normal interval. The standby asks with force
+    // every hour after a failed restore, and every forced dump took Render
+    // down again: a crash every hour (26-11).
+    if (lastAttempt.started_at && !lastAttempt.finished_at && Date.now() - lastPostgresDumpAt < minIntervalMs) {
+      console.error(`Postgres dump for the standby refused: the one of ${lastAttempt.started_at} never finished (the server restarted during it).`);
+      sendJson(res, 429, { error: `The last dump (${lastAttempt.started_at}) never finished -- no new dump for ${pgDumpMinIntervalMinutes} minutes.` });
+      return;
+    }
+    // Never next to heavy work: the standby asks again in 15 minutes.
+    const rssNow = process.memoryUsage().rss;
+    if (heavyInkoopReadsRunning > 0 || rssNow > 700 * 1024 * 1024) {
+      sendJson(res, 503, { error: `Busy (app ${Math.round(rssNow / 1048576)} MB, ${heavyInkoopReadsRunning} heavy read(s)) -- try again later.` });
+      return;
+    }
+    let finished = false;
     try {
       // A JSON snapshot instead of pg_dump: Render's pg_dump (15) refuses
       // its newer Postgres (18) -- see exportDatabaseSnapshot.
       lastPostgresDumpAt = Date.now();
-      await writeJsonFile(backupDumpAttemptPath, { started_at: new Date(lastPostgresDumpAt).toISOString() });
+      const startedAt = new Date(lastPostgresDumpAt).toISOString();
+      await writeJsonFile(backupDumpAttemptPath, { started_at: startedAt });
+      const started = Date.now();
       const dumpBuffer = await buildCompressedDatabaseSnapshot();
       const sealed = sealBuffer(dumpBuffer, backupPublicKey);
       res.writeHead(200, { "content-type": "application/octet-stream", "cache-control": "no-store" });
       res.end(sealed);
+      finished = true;
+      console.log(`Postgres dump for the standby: ${Math.round(dumpBuffer.length / 1048576)} MB compressed in ${Math.round((Date.now() - started) / 1000)} s.`);
+      await writeJsonFile(backupDumpAttemptPath, { started_at: startedAt, finished_at: new Date().toISOString(), size_bytes: dumpBuffer.length });
     } catch (error) {
       console.error("Postgres dump for the standby failed:", error instanceof Error ? error.message : error);
-      sendJson(res, 500, { error: error instanceof Error ? error.message : String(error) });
+      if (!finished) {
+        // Failed, but Render is still up: not a crash -- the next may try.
+        await writeJsonFile(backupDumpAttemptPath, { started_at: new Date(lastPostgresDumpAt).toISOString(), finished_at: new Date().toISOString(), failed: true }).catch(() => {});
+        if (!res.headersSent) sendJson(res, 500, { error: error instanceof Error ? error.message : String(error) });
+      }
     }
     return;
   }
