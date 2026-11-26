@@ -6880,7 +6880,29 @@ export async function exportDatabaseSnapshot(writeLine, { onlyTables = null } = 
 // transaction: either everything is the new copy or nothing changed.
 // `lines` is an (async) iterable of the snapshot's lines, read one at a time
 // so the whole copy never sits in memory as one string either.
-export async function importDatabaseSnapshot(lines) {
+// A copy that would lose data: in all its tables together less than half of
+// the rows held here, or a table of 1000+ rows coming in empty. The history
+// of state-file copies is thinned out on purpose, so it doesn't count.
+const SNAPSHOT_SHRINK_IGNORE = new Set(["state_file_history"]);
+
+function snapshotShrinkProblem(before, after) {
+  let oldTotal = 0;
+  let newTotal = 0;
+  const emptied = [];
+  for (const [table, oldCount] of Object.entries(before)) {
+    if (SNAPSHOT_SHRINK_IGNORE.has(table)) continue;
+    const newCount = Number(after[table] || 0);
+    oldTotal += oldCount;
+    newTotal += newCount;
+    if (oldCount >= 1000 && newCount === 0) emptied.push(`${table} (${oldCount} rows here, 0 in the copy)`);
+  }
+  if (emptied.length) return `table(s) would be emptied: ${emptied.join(", ")}`;
+  if (oldTotal >= 100 && newTotal < oldTotal * 0.5) return `the copy has ${newTotal} rows where this PC has ${oldTotal}`;
+  return "";
+}
+
+// guard (default): refuse a copy that looks like data loss (see above).
+export async function importDatabaseSnapshot(lines, { guard = true } = {}) {
   if (!pool) {
     throw new Error("Database is not initialized");
   }
@@ -6899,6 +6921,13 @@ export async function importDatabaseSnapshot(lines) {
       `SELECT table_name FROM information_schema.tables WHERE table_schema = 'public' AND table_type = 'BASE TABLE'`,
     )).rows.map((row) => row.table_name));
     const tables = (header.tables || []).filter((table) => localTables.has(table));
+    // What this PC holds now, to compare with what came in (see below).
+    const before = {};
+    if (guard) {
+      for (const name of tables) {
+        before[name] = Number((await client.query(`SELECT count(*)::bigint AS n FROM ${quoteIdent(name)}`)).rows[0]?.n || 0);
+      }
+    }
     if (tables.length) {
       // The derived tables go too: they describe the data being replaced.
       const derived = [...SNAPSHOT_DERIVED_TABLES].filter((table) => localTables.has(table) && !tables.includes(table));
@@ -6946,6 +6975,16 @@ export async function importDatabaseSnapshot(lines) {
       }
     }
     await flush();
+
+    // Never load a copy that looks like data loss (Render's database emptied
+    // or broken): everything stays as it was (ROLLBACK) and the caller is
+    // told why -- the standby would otherwise copy the loss over its own.
+    if (guard) {
+      const shrunk = snapshotShrinkProblem(before, counts);
+      if (shrunk) {
+        throw new Error(`REFUSED: ${shrunk} -- this copy was not loaded, the data here is unchanged.`);
+      }
+    }
 
     // Serial ids continue after the highest copied id.
     const sequences = (await client.query(`

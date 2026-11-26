@@ -1,5 +1,5 @@
 import JSZip from "jszip";
-import { createReadStream, existsSync, readdirSync, promises as fs } from "node:fs";
+import { createReadStream, createWriteStream, existsSync, readdirSync, promises as fs } from "node:fs";
 import http from "node:http";
 import os from "node:os";
 import path from "node:path";
@@ -466,6 +466,116 @@ async function recordBackupSyncResult(result) {
   }
 }
 
+// The standby refused a copy from Render that looked like data loss: an
+// email (at most every 6 hours) -- someone must look at Render.
+let lastStandbyRefusedAlertAt = 0;
+async function alertStandbyRefused(message) {
+  console.error(`Standby: ${message}`);
+  if (Date.now() - lastStandbyRefusedAlertAt < 6 * 60 * 60 * 1000) return;
+  lastStandbyRefusedAlertAt = Date.now();
+  try {
+    const settings = await readFustSettings();
+    await sendSupportAttentionEmail(settings, {
+      service: "Office standby PC",
+      action: "Copy from Render refused (looks like data loss)",
+      error: message,
+      reconnect_target: "Render",
+      workaround: "Check Render's data now. The standby PC kept its own data and its daily copies (daily-backups folder).",
+    });
+  } catch {
+    // Best-effort, as the other standby alerts.
+  }
+}
+
+// ---- Daily complete copy on the office PC ----------------------------------
+// Every day after midnight (or at the first check after, when the PC was
+// off): the whole local database and every state file into
+// <repo>/daily-backups/<date>/ (in the Synology folder: also on the NAS).
+// Never touched by the sync with Render. Kept: the last 14 days, and the
+// copy of the 1st of each month for a year.
+const dailyBackupDir = path.resolve(process.env.DAILY_BACKUP_DIR || path.join(repoRoot, "daily-backups"));
+const DAILY_BACKUP_KEEP_DAYS = 14;
+const DAILY_BACKUP_KEEP_MONTHLY_DAYS = 366;
+let dailyBackupRunning = false;
+
+async function runDailyLocalBackupIfDue() {
+  if (!renderBackupBaseUrl || dailyBackupRunning) return { ok: true, skipped: true };
+  const today = localDateIso();
+  if (existsSync(path.join(dailyBackupDir, today, "manifest.json"))) return { ok: true, skipped: true, reason: "made today" };
+  dailyBackupRunning = true;
+  const temporary = path.join(dailyBackupDir, `${today}.tmp-${process.pid}`);
+  const started = Date.now();
+  try {
+    await fs.rm(temporary, { recursive: true, force: true });
+    await fs.mkdir(path.join(temporary, "files"), { recursive: true });
+    // The state files (every .json directly in the cache folder).
+    const files = [];
+    for (const name of readdirSync(cacheDir)) {
+      if (!name.endsWith(".json")) continue;
+      const from = path.join(cacheDir, name);
+      const stat = await fs.stat(from).catch(() => null);
+      if (!stat?.isFile()) continue;
+      await fs.copyFile(from, path.join(temporary, "files", name));
+      files.push({ name, size: stat.size, records: PROTECTED_STATE_FILES.includes(name) ? (stateRecordCounts.get(from) ?? null) : null });
+    }
+    // The whole database, written to disk as it is read (never all in memory).
+    let tables = null;
+    let rows = 0;
+    if (isDatabaseEnabled()) {
+      const gzip = zlib.createGzip();
+      const out = createWriteStream(path.join(temporary, "database.ndjson.gz"));
+      const done = new Promise((resolve, reject) => {
+        out.on("finish", resolve);
+        out.on("error", reject);
+        gzip.on("error", reject);
+      });
+      gzip.pipe(out);
+      const counts = {};
+      let current = "";
+      await exportDatabaseSnapshot((line) => {
+        if (line.startsWith("{\"table\":")) {
+          try { current = JSON.parse(line).table; counts[current] = 0; } catch { /* a row */ }
+        } else if (current) {
+          counts[current] += 1;
+          rows += 1;
+        }
+        return gzip.write(`${line}\n`) ? undefined : new Promise((resolve) => gzip.once("drain", resolve));
+      });
+      gzip.end();
+      await done;
+      tables = counts;
+    }
+    const manifest = { date: today, created_at: new Date().toISOString(), app_version: appVersion, files, database: tables ? { tables, rows } : null };
+    await fs.writeFile(path.join(temporary, "manifest.json"), JSON.stringify(manifest, null, 2), "utf8");
+    await fs.rm(path.join(dailyBackupDir, today), { recursive: true, force: true });
+    await fs.rename(temporary, path.join(dailyBackupDir, today));
+    const pruned = await pruneDailyLocalBackups();
+    console.log(`Daily copy ${today}: ${files.length} file(s), ${rows} database row(s) in ${Math.round((Date.now() - started) / 1000)} s -> ${path.join(dailyBackupDir, today)}${pruned ? ` (${pruned} old cop${pruned === 1 ? "y" : "ies"} removed)` : ""}.`);
+    return { ok: true, date: today, files: files.length, rows };
+  } catch (error) {
+    await fs.rm(temporary, { recursive: true, force: true }).catch(() => {});
+    console.error("Daily copy failed:", error instanceof Error ? error.message : error);
+    return { ok: false, error: error instanceof Error ? error.message : String(error) };
+  } finally {
+    dailyBackupRunning = false;
+  }
+}
+
+// The last 14 days; older ones only the 1st of the month, for a year.
+async function pruneDailyLocalBackups() {
+  const names = readdirSync(dailyBackupDir).filter((name) => /^\d{4}-\d{2}-\d{2}$/.test(name)).sort().reverse();
+  let removed = 0;
+  const today = localDateIso();
+  for (const [index, name] of names.entries()) {
+    if (index < DAILY_BACKUP_KEEP_DAYS) continue;
+    const ageDays = inkoopDaySpan(name, today) - 1;
+    if (name.endsWith("-01") && ageDays <= DAILY_BACKUP_KEEP_MONTHLY_DAYS) continue;
+    await fs.rm(path.join(dailyBackupDir, name), { recursive: true, force: true });
+    removed += 1;
+  }
+  return removed;
+}
+
 async function runBackupSyncCycle() {
   const attemptedAt = new Date().toISOString();
   if (!backupSyncClientConfigured()) {
@@ -502,6 +612,15 @@ async function runBackupSyncCycle() {
   const previousPaths = new Set((previousManifest.files || []).map((entry) => entry.path));
   const nextPaths = new Set((manifest.files || []).map((entry) => entry.path));
 
+  // Render suddenly with far fewer files (its disk lost or emptied): nothing
+  // is copied or removed here -- this PC keeps what it has.
+  if (previousPaths.size >= 5 && nextPaths.size < previousPaths.size * 0.5) {
+    const result = { ok: false, attempted_at: attemptedAt, refused: true, error: `REFUSED: Render lists ${nextPaths.size} file(s) where it had ${previousPaths.size} -- nothing copied or removed on this PC.` };
+    await recordBackupSyncResult(result);
+    await alertStandbyRefused(result.error);
+    return result;
+  }
+
   let filesChanged = 0;
   let filesUnchanged = 0;
   const errors = [];
@@ -537,6 +656,26 @@ async function runBackupSyncCycle() {
       if (crypto.createHash("sha256").update(plaintext).digest("hex") !== expectedSha) {
         throw new Error("checksum mismatch after decrypt");
       }
+      // An important file that lost most of its records on Render (e.g. every
+      // zending, 27-10): not copied over the good one here.
+      const fileName = path.basename(absPath);
+      if (PROTECTED_STATE_FILES.includes(fileName) && existsSync(absPath)) {
+        let before = 0;
+        let after = 0;
+        try {
+          before = countStateRecords(fileName, JSON.parse(await fs.readFile(absPath, "utf8")));
+          after = countStateRecords(fileName, JSON.parse(plaintext.toString("utf8")));
+        } catch {
+          // Unreadable here: Render's copy is the better one.
+        }
+        if (before >= 10 && after < before * 0.5) {
+          const message = `REFUSED ${entry.path}: Render's copy has ${after} records where this PC has ${before} -- kept this PC's.`;
+          await alertStandbyRefused(message);
+          throw new Error(message);
+        }
+        // The version it replaces stays as .prev.
+        await fs.copyFile(absPath, `${absPath}.prev`).catch(() => {});
+      }
       await fs.mkdir(path.dirname(absPath), { recursive: true });
       const tmpPath = `${absPath}.tmp-${process.pid}`;
       await fs.writeFile(tmpPath, plaintext);
@@ -547,11 +686,18 @@ async function runBackupSyncCycle() {
     }
   }
 
+  // A file gone on Render is never deleted here: moved aside (removed-by-sync/
+  // <date>/...), so nothing is lost if Render lost it by mistake.
   let filesDeleted = 0;
+  const removedDir = path.join(cacheDir, "removed-by-sync", localDateIso());
   for (const relPath of previousPaths) {
     if (!nextPaths.has(relPath)) {
       try {
-        await fs.unlink(path.join(cacheDir, ...relPath.split("/")));
+        const from = path.join(cacheDir, ...relPath.split("/"));
+        if (!existsSync(from)) continue;
+        const to = path.join(removedDir, ...relPath.split("/"));
+        await fs.mkdir(path.dirname(to), { recursive: true });
+        await fs.rename(from, to);
         filesDeleted += 1;
       } catch {
         // Already gone locally -- fine.
@@ -690,7 +836,9 @@ async function runPostgresRestoreByPartsOnce() {
       results.push({ part: part.name, rows: Object.values(loaded.tables).reduce((sum, count) => sum + count, 0), snapshot_from: loaded.snapshot_created_at });
     } catch (error) {
       allLoaded = false;
-      results.push({ part: part.name, error: error instanceof Error ? error.message : String(error) });
+      const message = error instanceof Error ? error.message : String(error);
+      if (message.startsWith("REFUSED")) await alertStandbyRefused(`Database part "${part.name}": ${message}`);
+      results.push({ part: part.name, error: message });
     }
   }
   if (loadedAny) {
@@ -779,7 +927,9 @@ async function runPostgresRestoreCycle() {
     }
     return { ok: true };
   } catch (error) {
-    return { ok: false, error: error instanceof Error ? error.message : String(error) };
+    const message = error instanceof Error ? error.message : String(error);
+    if (message.startsWith("REFUSED")) await alertStandbyRefused(`Database copy: ${message}`);
+    return { ok: false, error: message };
   } finally {
     await fs.unlink(tmpDumpPath).catch(() => {});
   }
@@ -34069,6 +34219,11 @@ async function startServer() {
   setInterval(() => {
     runIfBackup("postgres restore", runPostgresRestoreCycle).catch(() => {});
   }, 15 * 60 * 1000);
+  // The office PC's own complete copy, once a day after midnight (any mode).
+  if (renderBackupBaseUrl) {
+    setTimeout(() => runDailyLocalBackupIfDue().catch(() => {}), 3 * 60 * 1000);
+    setInterval(() => runDailyLocalBackupIfDue().catch(() => {}), 5 * 60 * 1000);
+  }
 
   sendPeerOnlineBeacon().catch(() => {});
   setInterval(() => {

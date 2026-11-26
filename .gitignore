@@ -35,3 +35,6 @@ media-poller-app/config.json
 media-poller-app/work/
 media-poller-app/test_output/
 media-poller-app/.venv/
+
+# The office PC's daily complete copies (data -- never in git)
+daily-backups/
