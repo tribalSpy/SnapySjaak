@@ -5616,3 +5616,6 @@ table.data-table.balance-table.ik-table.ik-inv-invoices td:nth-child(n+7), table
 .ik-retour-icon { color: #d97706; font-weight: 700; margin-right: 4px; }
 .ik-item-sub.ik-retour-note { color: #b45309; }
 :root[data-theme="dark"] .ik-item-sub.ik-retour-note, :root[data-theme="dark"] .ik-retour-icon { color: #fbbf24; }
+/* Geverifieerd extra costs (transport, other costs ...): purple, not "lost". */
+.ik-extra-cost { color: #7c3aed; font-weight: 600; }
+:root[data-theme="dark"] .ik-extra-cost { color: #c4b5fd; }

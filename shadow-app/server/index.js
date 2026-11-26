@@ -15262,6 +15262,8 @@ const INKOOP_FOLLOWUP_RESOLUTIONS = [
   ["invoice_diff", "Afwijking van invoice"],
   ["other_costs", "Overige kosten"],
   ["vervanger", "Vervanger"],
+  // A Connect lot with no invoice: the supplier took it off the invoice.
+  ["not_invoiced", "Niet gefactureerd"],
 ];
 const INKOOP_FOLLOWUP_COLORS = ["red", "amber", "blue", "purple", "teal", "grey"];
 const INKOOP_FOLLOWUP_TYPES = new Set(["mismatch", "gap_invoice", "gap_erp"]);
@@ -30644,6 +30646,11 @@ async function handleApi(req, res, url) {
         lots: verifiedStatuses.filter((row) => row.issue_type === "gap_erp").map((row) => row.id.slice("gap_erp:".length)),
       }).catch(() => []) : [];
       const verifiedRowIds = new Set(verifiedRows.map((row) => row.row_id));
+      // Each verified row's kind (transport, other costs, not invoiced ...):
+      // its status is by line id (invoice side) or lot (Connect side).
+      const resolutionById = new Map(verifiedStatuses.map((row) => [row.id, row.resolution]));
+      const resolutionOfRow = new Map(verifiedRows.map((row) => [row.row_id,
+        resolutionById.get(row.list === "only_in_erp" ? `gap_erp:${row.lot}` : `gap_invoice:${row.line_id}`) || ""]));
       // Lines linked by hand whose day isn't compared again yet (still open in
       // its stored result): matched at once -- the invoice line as a matched
       // line, the lot's money as matched Connect (no line of its own).
@@ -30658,17 +30665,19 @@ async function handleApi(req, res, url) {
         const keyOf = (row) => `${row.date}|${row.list}|${row.supplier_code}|${row.supplier_name}|${row.invoice_type}`;
         const less = new Map();
         const added = new Map();
-        const move = (row, list, lines) => {
+        const move = (row, list, lines, resolution = "") => {
           const key = keyOf(row);
           const entry = less.get(key) || { lines: 0, invoice_value: 0, erp_value: 0 };
           entry.lines += 1; entry.invoice_value += row.invoice_value; entry.erp_value += row.erp_value;
           less.set(key, entry);
-          const addedKey = `${row.date}|${list}|${row.supplier_code}|${row.supplier_name}|${row.invoice_type}`;
-          const add = added.get(addedKey) || { date: row.date, list, supplier_code: row.supplier_code, supplier_name: row.supplier_name, invoice_type: row.invoice_type, lines: 0, invoice_value: 0, erp_value: 0 };
+          // Verified rows per kind (Geverifieerd as ...): the extra costs per
+          // grower and kind on every page that uses these rows.
+          const addedKey = `${row.date}|${list}|${row.supplier_code}|${row.supplier_name}|${row.invoice_type}|${resolution}`;
+          const add = added.get(addedKey) || { date: row.date, list, supplier_code: row.supplier_code, supplier_name: row.supplier_name, invoice_type: row.invoice_type, lines: 0, invoice_value: 0, erp_value: 0, ...(resolution ? { resolution } : {}) };
           add.lines += lines; add.invoice_value += row.invoice_value; add.erp_value += row.erp_value;
           added.set(addedKey, add);
         };
-        for (const row of verifiedRows) move(row, row.list === "only_in_erp" ? "verified_connect" : "verified", 1);
+        for (const row of verifiedRows) move(row, row.list === "only_in_erp" ? "verified_connect" : "verified", 1, resolutionOfRow.get(row.row_id) || "");
         for (const row of handRows) move(row, "matched_ok", row.list === "only_in_erp" ? 0 : 1);
         const kept = rawTotals.map((row) => {
           const minus = less.get(keyOf(row));
@@ -30699,6 +30708,7 @@ async function handleApi(req, res, url) {
           rows: withGrower.filter((entry) => !wanted || wantedGrowers.has(entry.grower)).map(({ row, grower, aka }) => ({
             date: row.date, grower, aka, bw: view.bwOf(row), flow: inkoopOverviewFlow(row), status: INKOOP_OVERVIEW_STATUS[row.list] || row.list,
             lines: row.lines, invoice_value: Math.round(row.invoice_value * 100) / 100, erp_value: Math.round(row.erp_value * 100) / 100,
+            ...(row.resolution ? { resolution: row.resolution } : {}),
           })),
         });
         return;
@@ -30764,6 +30774,7 @@ async function handleApi(req, res, url) {
           ...row, grower: view.growerOf(row), bw: view.bwOf(row), flow: inkoopOverviewFlow(row),
           status: verifiedRowIds.has(row.row_id) ? (row.list === "only_in_erp" ? "verified_connect" : "verified")
             : handRowIds.has(row.row_id) ? "matched" : INKOOP_OVERVIEW_STATUS[row.list] || row.list,
+          ...(resolutionOfRow.get(row.row_id) ? { resolution: resolutionOfRow.get(row.row_id) } : {}),
           ...(handRowIds.has(row.row_id) ? { linked_pending: true } : {}),
           ...(row.list === "matched_mismatch" ? { dispatch: dispatchOf(row) } : {}),
           ...(handPairOf(row) ? { hand_pair: handPairOf(row) } : {}),

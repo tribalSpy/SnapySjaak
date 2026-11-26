@@ -21355,6 +21355,7 @@ function InkoopTraceWorkspace({ bar, setBar, overview, company, onOpenTrackTrace
         </div>
       </div>
       <IkTraceTable rows={rows} from={from} to={to} company={company} bar={bar} setBar={setBar} onOpenTrackTrace={onOpenTrackTrace} />
+      <IkExtraCostsByGrower rows={rows} limit={25} />
     </>
   );
 }
@@ -22408,6 +22409,11 @@ function InkoopTrackTraceWorkspace({ bar, setBar, overview, company, matchRound 
                 <span>Connect <strong>{formatInkoopEuro(chosenSum.connect_value)}</strong></span>
                 <span>Difference <InkoopMoneyDiff value={chosenSum.difference} /></span>
                 <span className="money-loss" title={openWithConnect ? "Invoice lines without their lot + Connect lots without an invoice" : "Invoice lines without their lot"}>✗ open {formatInkoopEuro(openOf(chosenSum))}</span>
+                {(chosenSum.extra_value > 0 || chosenSum.not_invoiced_value > 0) && (
+                  <span className="ik-extra-cost" title={ikExtraCostsTitle(chosenSum)}>
+                    ✓G extra costs {formatInkoopEuro(chosenSum.extra_value)}{chosenSum.not_invoiced_value ? ` · not invoiced ${formatInkoopEuro(chosenSum.not_invoiced_value)}` : ""}
+                  </span>
+                )}
                 <button type="button" className="ik-chip" onClick={() => setPairsOpen(true)}>🔗 Linked by hand</button>
               </div>
             </div>
@@ -22586,7 +22592,9 @@ function InkoopTrackTraceWorkspace({ bar, setBar, overview, company, matchRound 
 const INKOOP_FU_STATUS_LABEL = { open: "Open", investigating: "Investigating", claimed: "Claimed", resolved: "Resolved" };
 const INKOOP_FU_ACTION_LABEL = { status: "status", department: "moved", category: "category", due_date: "due date", note: "note", assigned_to: "who's checking", comment: "comment", claim_id: "claim", resolution: "verified as", claim_amount: "claim amount", claim_text: "claim agreed" };
 // How a resolved line was verified (Geverifieerd); the server has the same list.
-const INKOOP_FU_RESOLUTIONS = [["transport", "Transport/levering kosten"], ["invoice_diff", "Afwijking van invoice"], ["other_costs", "Overige kosten"], ["vervanger", "Vervanger"]];
+// not_invoiced: a Connect lot without an invoice because the supplier took it
+// off the invoice.
+const INKOOP_FU_RESOLUTIONS = [["transport", "Transport/levering kosten"], ["invoice_diff", "Afwijking van invoice"], ["other_costs", "Overige kosten"], ["vervanger", "Vervanger"], ["not_invoiced", "Niet gefactureerd"]];
 const ikFuResolutionLabel = (key) => (INKOOP_FU_RESOLUTIONS.find(([value]) => value === key) || [])[1] || key || "";
 
 // The right-click menu of a grower tile or a line (and its "Follow ▾"):
@@ -26573,7 +26581,16 @@ const inkoopMatchBasis = { withConnect: (() => { try { return window.localStorag
 // matched and not matched part, the lots only in Connect, Connect's total
 // and the difference.
 function inkoopOverviewSum(rows) {
-  const sum = { invoice_lines: 0, invoice_value: 0, matched_lines: 0, matched_value: 0, mismatch_lines: 0, not_matched_lines: 0, not_matched_value: 0, connect_only_lines: 0, connect_only_value: 0, connect_value: 0, packaging_value: 0, verified_lines: 0, verified_value: 0 };
+  const sum = { invoice_lines: 0, invoice_value: 0, matched_lines: 0, matched_value: 0, mismatch_lines: 0, not_matched_lines: 0, not_matched_value: 0, connect_only_lines: 0, connect_only_value: 0, connect_value: 0, packaging_value: 0, verified_lines: 0, verified_value: 0,
+    // Geverifieerd per kind: extra costs (invoiced, no lot: transport, other
+    // costs ...) and what was received but not invoiced -- per grower etc.
+    extra_value: 0, not_invoiced_value: 0, extra_by_kind: {} };
+  const addKind = (row, field, value) => {
+    const kind = row.resolution || "";
+    const entry = sum.extra_by_kind[kind] || (sum.extra_by_kind[kind] = { lines: 0, invoice_value: 0, connect_value: 0 });
+    entry.lines += row.lines;
+    entry[field] += value;
+  };
   for (const row of rows) {
     // Geverifieerd (accepted in the follow-up): matched, its money in the
     // difference -- an invoice line without a lot is that much paid more,
@@ -26583,9 +26600,13 @@ function inkoopOverviewSum(rows) {
       sum.matched_lines += row.lines; sum.matched_value += row.invoice_value;
       sum.verified_lines += row.lines; sum.verified_value += row.invoice_value;
       sum.connect_value += row.erp_value;
+      sum.extra_value += row.invoice_value;
+      addKind(row, "invoice_value", row.invoice_value);
     } else if (row.status === "verified_connect") {
       sum.verified_lines += row.lines;
       sum.connect_value += row.erp_value;
+      sum.not_invoiced_value += row.erp_value;
+      addKind(row, "connect_value", row.erp_value);
     } else if (row.status === "matched" || row.status === "mismatch") {
       sum.invoice_lines += row.lines; sum.invoice_value += row.invoice_value;
       sum.matched_lines += row.lines; sum.matched_value += row.invoice_value;
@@ -26635,7 +26656,65 @@ const INKOOP_OVERVIEW_COLUMNS = [
   ["difference", "Difference", (sum) => <td>{sum.invoice_value || sum.connect_value ? <InkoopMoneyDiff value={sum.difference} /> : ""}</td>],
   ["matched_pct", "Matched %", (sum) => <td>{sum.matched_pct === null ? "" : <IkBar pct={sum.matched_pct} />}</td>],
   ["packaging_value", "Packaging", (sum) => <td>{inkoopOverviewEuro(sum.packaging_value)}</td>],
+  // Geverifieerd: invoiced without a lot (transport, other costs ...) and
+  // received without an invoice -- hover: per kind.
+  ["extra_value", "Extra costs (G)", (sum) => <td title={ikExtraCostsTitle(sum)} className={sum.extra_value ? "ik-extra-cost" : ""}>{inkoopOverviewEuro(sum.extra_value)}</td>],
+  ["not_invoiced_value", "Niet gefactureerd (G)", (sum) => <td title={ikExtraCostsTitle(sum)}>{inkoopOverviewEuro(sum.not_invoiced_value)}</td>],
 ];
+
+// The Geverifieerd money of a sum per kind, one line each (a tooltip).
+function ikExtraCostsTitle(sum) {
+  const kinds = Object.entries(sum?.extra_by_kind || {});
+  if (!kinds.length) return undefined;
+  return kinds.map(([kind, entry]) => `${ikFuResolutionLabel(kind) || "Geverifieerd"}: ${entry.lines} line(s)`
+    + `${entry.invoice_value ? ` · invoiced ${formatInkoopEuro(entry.invoice_value)}` : ""}${entry.connect_value ? ` · not invoiced ${formatInkoopEuro(entry.connect_value)}` : ""}`).join("\n");
+}
+
+// Extra costs per grower (Geverifieerd, from the overview rows): which
+// grower's lines were accepted as transport / other costs / invoice
+// difference / Vervanger / not invoiced, and how much -- to present.
+function IkExtraCostsByGrower({ rows, limit = 15 }) {
+  const byGrower = new Map();
+  for (const row of rows || []) {
+    if (row.status !== "verified" && row.status !== "verified_connect") continue;
+    if (!byGrower.has(row.grower)) byGrower.set(row.grower, []);
+    byGrower.get(row.grower).push(row);
+  }
+  const kinds = INKOOP_FU_RESOLUTIONS.map(([key]) => key);
+  const list = [...byGrower.entries()].map(([grower, list]) => ({ grower, sum: inkoopOverviewSum(list) }))
+    .sort((a, b) => (b.sum.extra_value + b.sum.not_invoiced_value) - (a.sum.extra_value + a.sum.not_invoiced_value));
+  if (!list.length) return null;
+  const total = inkoopOverviewSum(list.flatMap(({ grower }) => byGrower.get(grower)));
+  const cell = (sum, kind) => {
+    const entry = sum.extra_by_kind[kind];
+    if (!entry) return <td />;
+    const value = entry.invoice_value || entry.connect_value;
+    return <td title={`${entry.lines} line(s)`}>{formatInkoopEuro(value)}</td>;
+  };
+  return (
+    <div className="data-table-card ik-card">
+      <div className="section-header">
+        <h3>Extra costs per grower (Geverifieerd)</h3>
+        <span className="muted">{list.length} grower(s) · invoiced without a lot {formatInkoopEuro(total.extra_value)} · received, not invoiced {formatInkoopEuro(total.not_invoiced_value)}</span>
+      </div>
+      <div className="table-wrap">
+        <table className="data-table balance-table">
+          <thead>
+            <tr><th>Grower</th>{kinds.map((kind) => <th key={kind}>{ikFuResolutionLabel(kind)}</th>)}<th>Extra costs</th><th>Not invoiced</th></tr>
+          </thead>
+          <tbody>
+            {list.slice(0, limit).map(({ grower, sum }) => (
+              <tr key={grower}><td><strong>{grower}</strong></td>{kinds.map((kind) => <Fragment key={kind}>{cell(sum, kind)}</Fragment>)}<td className="ik-extra-cost">{inkoopOverviewEuro(sum.extra_value)}</td><td>{inkoopOverviewEuro(sum.not_invoiced_value)}</td></tr>
+            ))}
+          </tbody>
+          <tfoot>
+            <tr><th>Total{list.length > limit ? ` (all ${list.length})` : ""}</th>{kinds.map((kind) => <Fragment key={kind}>{cell(total, kind)}</Fragment>)}<th>{inkoopOverviewEuro(total.extra_value)}</th><th>{inkoopOverviewEuro(total.not_invoiced_value)}</th></tr>
+          </tfoot>
+        </table>
+      </div>
+    </div>
+  );
+}
 
 function InkoopOverviewCells({ sum, columns }) {
   return INKOOP_OVERVIEW_COLUMNS.filter(([key]) => columns.includes(key)).map(([key, , cell]) => <Fragment key={key}>{cell(sum)}</Fragment>);

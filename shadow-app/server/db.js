@@ -2537,7 +2537,13 @@ export async function getInkoopVerifiedMatchRows({ company = "", from = "", to =
   if (company) { params.push(company); where.push(`m.company_number = $${params.length}`, "m.list <> 'only_in_erp'"); }
   const result = await pool.query(
     `SELECT m.id::text AS row_id, to_char(m.match_date, 'YYYY-MM-DD') AS date, m.list, m.supplier_code, m.supplier_name, m.invoice_type,
-            COALESCE(m.invoice_total, 0)::float8 AS invoice_value, COALESCE(m.erp_total, 0)::float8 AS erp_value
+            COALESCE(m.invoice_total, 0)::float8 AS invoice_value, COALESCE(m.erp_total, 0)::float8 AS erp_value, m.lot,
+            -- which of the asked invoice lines it is (its Geverifieerd status is by line id)
+            (SELECT l.id FROM inkoop_invoice_lines l
+              WHERE m.list <> 'only_in_erp' AND l.id = ANY($3::text[]) AND l.invoice_number = m.invoice_number
+                AND regexp_replace(btrim(COALESCE(l.description, '')), '\\s+', ' ', 'g') = m.description
+                AND l.quantity = m.invoice_quantity AND l.total = m.invoice_total
+              LIMIT 1) AS line_id
        FROM inkoop_match_rows m
       WHERE ${where.join(" AND ")}
         AND ((m.list IN ('only_in_invoice', 'supplier_not_linked', 'ambiguous_matches') AND EXISTS (
