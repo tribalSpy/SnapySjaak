@@ -21047,8 +21047,12 @@ function inkoopWeekStart(iso) {
 // The money trace, opened in place (as the classic grower totals): grower
 // ▸ week ▸ day ▸ its invoice lines and Connect lots side by side. Weeks only
 // when the period is longer than two weeks.
-// The Dashboard's right-click: open Track & Trace for a grower and days.
-function IkTraceGoMenu({ menu, onGo, onClose }) {
+// The Dashboard's right-click: open Track & Trace for a grower and days, or
+// resolve all its open lines of those days as Geverifieerd (loaded first,
+// asked to confirm with their number and value).
+function IkTraceGoMenu({ menu, onGo, onClose, company = "", onResolved }) {
+  const [busy, setBusy] = useState("");
+  const [menuRef, style] = useIkMenuPlace(menu);
   useEffect(() => {
     if (!menu) return undefined;
     const close = () => onClose();
@@ -21066,16 +21070,41 @@ function IkTraceGoMenu({ menu, onGo, onClose }) {
   }, [menu, onClose]);
   if (!menu) return null;
   const days = `${fustOverviewDate(menu.from)}${menu.from !== menu.to ? ` – ${fustOverviewDate(menu.to)}` : ""}`;
-  const style = { left: Math.min(menu.x, window.innerWidth - 290), top: Math.min(menu.y, window.innerHeight - 110) };
+  const resolve = async (resolution, label) => {
+    setBusy(resolution);
+    try {
+      const params = new URLSearchParams({ from: menu.from, to: menu.to });
+      if (company) params.set("company", company);
+      const payload = await apiJson(`/api/inkoop/issues?${params.toString()}`);
+      const list = (payload.issues || []).filter((issue) => inkoopSameGrower(issue.grower, menu.grower) && !issue.explained && issue.status !== "resolved");
+      if (!list.length) { window.alert(`${menu.grower}, ${days}: no open lines.`); return; }
+      const net = Math.round(list.reduce((sum, issue) => sum + (Number(issue.money_diff) || 0), 0) * 100) / 100;
+      if (!window.confirm(`${menu.grower}, ${days}
+${list.length} open line(s), net ${formatInkoopEuro(net)}
+
+Resolve them all as Geverifieerd: “${label}”?`)) return;
+      await inkoopFollowupUpdate(list.map((issue) => ({ id: issue.id, day: issue.day || inkoopIssueInvoiceDay(issue) })), { resolution }, "");
+      onClose();
+      onResolved?.();
+    } catch (resolveError) {
+      window.alert(resolveError.message);
+    } finally {
+      setBusy("");
+    }
+  };
   return (
-    <div className="ik-ctx-menu" style={style} role="menu" onClick={(event) => event.stopPropagation()} onContextMenu={(event) => event.preventDefault()}>
+    <div ref={menuRef} className="ik-ctx-menu" style={style} role="menu" onClick={(event) => event.stopPropagation()} onContextMenu={(event) => event.preventDefault()}>
       <div className="ik-ctx-title"><strong>{menu.grower}</strong><span className="muted">{days}</span></div>
       <button type="button" role="menuitem" onClick={() => { onGo({ grower: menu.grower, from: menu.from, to: menu.to }); onClose(); }}>↗ Open in Track & Trace</button>
+      <div className="ik-ctx-sub muted">Resolve all open lines as Geverifieerd:</div>
+      {INKOOP_FU_RESOLUTIONS.map(([key, label]) => (
+        <button key={key} type="button" role="menuitem" disabled={Boolean(busy)} onClick={() => resolve(key, label)}>{busy === key ? "Loading…" : `✓ ${label}`}</button>
+      ))}
     </div>
   );
 }
 
-function IkTraceTable({ rows, from, to, company, bar, setBar, onOpenTrackTrace }) {
+function IkTraceTable({ rows, from, to, company, bar, setBar, onOpenTrackTrace, onResolved }) {
   const [goMenu, setGoMenu] = useState(null);
   const closeGoMenu = useCallback(() => setGoMenu(null), []);
   // Right-click: Track & Trace for this grower and these days (a day panel's
@@ -21315,7 +21344,7 @@ function IkTraceTable({ rows, from, to, company, bar, setBar, onOpenTrackTrace }
           </tbody>
         </table>
       </div>
-      <IkTraceGoMenu menu={goMenu} onGo={(target) => onOpenTrackTrace?.(target)} onClose={closeGoMenu} />
+      <IkTraceGoMenu menu={goMenu} onGo={(target) => onOpenTrackTrace?.(target)} onClose={closeGoMenu} company={company} onResolved={onResolved} />
     </div>
   );
 }
@@ -21354,7 +21383,7 @@ function InkoopTraceWorkspace({ bar, setBar, overview, company, onOpenTrackTrace
           <IkMiniCalendar rows={calendarRows} from={bar.from} to={bar.to} day={bar.day} onDay={(day) => setBar((current) => ({ ...current, day }))} />
         </div>
       </div>
-      <IkTraceTable rows={rows} from={from} to={to} company={company} bar={bar} setBar={setBar} onOpenTrackTrace={onOpenTrackTrace} />
+      <IkTraceTable rows={rows} from={from} to={to} company={company} bar={bar} setBar={setBar} onOpenTrackTrace={onOpenTrackTrace} onResolved={() => overview.reload?.()} />
       <IkExtraCostsByGrower rows={rows} limit={25} />
     </>
   );
@@ -22597,7 +22626,23 @@ const INKOOP_FU_ACTION_LABEL = { status: "status", department: "moved", category
 const INKOOP_FU_RESOLUTIONS = [["transport", "Transport/levering kosten"], ["invoice_diff", "Afwijking van invoice"], ["other_costs", "Overige kosten"], ["vervanger", "Vervanger"], ["not_invoiced", "Niet gefactureerd"]];
 const ikFuResolutionLabel = (key) => (INKOOP_FU_RESOLUTIONS.find(([value]) => value === key) || [])[1] || key || "";
 
-// The right-click menu of a grower tile or a line (and its "Follow ▾"):
+// A right-click menu placed where it was clicked, then moved up / left
+// (measured after render) so all of it is on screen.
+function useIkMenuPlace(menu) {
+  const ref = useRef(null);
+  const [place, setPlace] = useState(null);
+  useLayoutEffect(() => {
+    if (!menu || !ref.current) { if (place) setPlace(null); return; }
+    const box = ref.current.getBoundingClientRect();
+    const left = Math.max(8, Math.min(menu.x, window.innerWidth - box.width - 8));
+    const top = Math.max(8, Math.min(menu.y, window.innerHeight - box.height - 8));
+    if (!place || place.left !== left || place.top !== top || place.menu !== menu) setPlace({ left, top, menu });
+  });
+  const style = menu ? (place && place.menu === menu ? { left: place.left, top: place.top } : { left: menu.x, top: menu.y, visibility: "hidden" }) : null;
+  return [ref, style];
+}
+
+// The menu of a grower tile or a line (and its "Follow ▾"):
 // give its open lines to a department or a category, or verify (resolve)
 // them as transport costs, an invoice difference, other costs or Vervanger.
 // Without onFollow only the Geverifieerd part.
@@ -22608,6 +22653,7 @@ function IkFollowupResolveMenu({ menu, onPick, onClose, departments = [], catego
   // ticks "Only this line" takes just what was right-clicked.
   const [scope, setScope] = useState("differ");
   useEffect(() => { setScope("differ"); }, [menu]);
+  const [menuRef, style] = useIkMenuPlace(menu);
   useEffect(() => {
     if (!menu) return undefined;
     const close = () => onClose();
@@ -22638,11 +22684,9 @@ function IkFollowupResolveMenu({ menu, onPick, onClose, departments = [], catego
   const chosen = scope === "differ" && !differ.length ? "all" : scope;
   const open = (scopes.find(([key]) => key === chosen) || scopes[0])[2];
   const net = Math.round(open.reduce((sum, item) => sum + (Number(item.money_diff) || 0), 0) * 100) / 100;
-  const follow = (onFollow ? departments.length + categories.length + 3 : 0) + (onClaim ? departments.length + 1 : 0) - (onPick ? 0 : INKOOP_FU_RESOLUTIONS.length + 1);
-  const style = { left: Math.min(menu.x, window.innerWidth - 320), top: Math.max(8, Math.min(menu.y, window.innerHeight - 230 - follow * 32 - (showScopes ? 44 : 0))) };
   const withCategory = open.some((item) => item.category);
   return (
-    <div className="ik-ctx-menu" style={style} role="menu" onClick={(event) => event.stopPropagation()} onContextMenu={(event) => event.preventDefault()}>
+    <div ref={menuRef} className="ik-ctx-menu" style={style} role="menu" onClick={(event) => event.stopPropagation()} onContextMenu={(event) => event.preventDefault()}>
       <div className="ik-ctx-title"><strong>{menu.title}</strong><span className="muted">{open.length} line(s) · net <InkoopMoneyDiff value={net} /></span></div>
       {menu.note && <div className="ik-ctx-sub muted">{menu.note}</div>}
       {menu.warning && <div className="ik-ctx-warn">{menu.warning}</div>}
