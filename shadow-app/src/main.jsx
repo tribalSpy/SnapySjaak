@@ -3868,19 +3868,52 @@ async function downloadFinanceAuditManifestFiles(folders, summaryFile = null) {
     await summaryWritable.write(summaryFile.blob);
     await summaryWritable.close();
   }
+  // A synced folder (Synology Drive, OneDrive) or the virus scanner can grab
+  // Chrome's temporary file while it is written ("A requested file or
+  // directory could not be found"): each file is tried 3 times, a little
+  // later, and one that still fails does not stop the others -- they are
+  // listed at the end.
+  const tryWrite = async (label, write) => {
+    for (let attempt = 1; ; attempt += 1) {
+      try {
+        await write();
+        return true;
+      } catch (writeError) {
+        if (writeError?.name === "AbortError" || attempt >= 3) {
+          failed.push(`${label} (${writeError?.message || writeError})`);
+          return false;
+        }
+        await new Promise((resolve) => setTimeout(resolve, 600 * attempt));
+      }
+    }
+  };
+  const failed = [];
+  // Windows drops a trailing dot / space from a name, so the folder is not
+  // found again under the name asked for.
+  const entryName = (name) => safeDownloadFilename(name).replace(/[. ]+$/, "").slice(0, 120) || "download";
   for (const folderEntry of folderList) {
-    const targetDirectoryHandle = await rootDirectoryHandle.getDirectoryHandle(safeDownloadFilename(folderEntry.folder), { create: true });
+    let targetDirectoryHandle = null;
+    const folderName = entryName(folderEntry.folder);
+    await tryWrite(folderName, async () => { targetDirectoryHandle = await rootDirectoryHandle.getDirectoryHandle(folderName, { create: true }); });
+    if (!targetDirectoryHandle) continue;
     for (const file of folderEntry.files) {
       const response = await fetch(file.url, { credentials: "include" });
       if (!response.ok) {
+        failed.push(`${folderName}/${file.name} (not on the server: ${response.status})`);
         continue;
       }
       const blob = await response.blob();
-      const fileHandle = await targetDirectoryHandle.getFileHandle(safeDownloadFilename(file.name), { create: true });
-      const writable = await fileHandle.createWritable();
-      await writable.write(blob);
-      await writable.close();
+      const fileName = entryName(file.name);
+      await tryWrite(`${folderName}/${fileName}`, async () => {
+        const fileHandle = await targetDirectoryHandle.getFileHandle(fileName, { create: true });
+        const writable = await fileHandle.createWritable();
+        await writable.write(blob);
+        await writable.close();
+      });
     }
+  }
+  if (failed.length) {
+    throw new Error(`Saved, except ${failed.length} file(s): ${failed.slice(0, 8).join("; ")}${failed.length > 8 ? " …" : ""}. Choose a folder outside Synology Drive (e.g. Downloads) if this keeps happening.`);
   }
 }
 
@@ -4619,7 +4652,7 @@ function UkdocsPage({ currentUser, onNavigate }) {
         return [
           row.week, row.datum, row.truck, row.rit, row.omschrijving, row.type, row.customer_connect, row.customer_name,
           row.transporteur, row.grensovergang, row.expediteur, row.kenteken, row.factuur_nummer,
-          row.location_connect, financeAuditFieldValue(row, "opmerking"), row.waarde_gbp, row.waarde_eu,
+          row.location_connect, financeAuditFieldValue(row, "opmerking"), { money: row.waarde_gbp, currency: "GBP" }, { money: row.waarde_eu, currency: "EUR" },
           financeAuditFieldValue(row, "volume_override"), row.phyto_marston, factuurChecks.colli, factuurChecks.value,
         ];
       }),
@@ -5641,8 +5674,8 @@ function UkdocsPage({ currentUser, onNavigate }) {
                         </td>
                         <td>{group.location_connect || "-"}</td>
                         <td>-</td>
-                        <td>{group.waarde_gbp_total ? group.waarde_gbp_total.toFixed(2) : "-"}</td>
-                        <td>{group.waarde_eu_total ? group.waarde_eu_total.toFixed(2) : "-"}</td>
+                        <td>{group.waarde_gbp_total ? `£ ${group.waarde_gbp_total.toFixed(2)}` : "-"}</td>
+                        <td>{group.waarde_eu_total ? `€ ${group.waarde_eu_total.toFixed(2)}` : "-"}</td>
                         <td>{group.volume_total || "-"}</td>
                         <td>{group.phyto_marston || "-"}</td>
                         <td className="row-actions">
@@ -14630,13 +14663,25 @@ function buildExcelFriendlyTableBlob(headers, rows) {
     .replaceAll("&", "&amp;")
     .replaceAll("<", "&lt;")
     .replaceAll(">", "&gt;"));
-  const safeRows = rows.map((row) => row.map((value) => String(value ?? "")
-    .replaceAll("&", "&amp;")
-    .replaceAll("<", "&lt;")
-    .replaceAll(">", "&gt;")
-    .replaceAll("\n", "<br/>")));
+  // A cell { money, currency } is a real number for Excel (x:num, so a Dutch
+  // Excel does not read the "." as a thousands dot), 2 decimals with £ / €.
+  const cellHtml = (value) => {
+    if (value && typeof value === "object" && "money" in value) {
+      const amount = Number(value.money);
+      if (value.money === "" || value.money === null || value.money === undefined || !Number.isFinite(amount)) return "<td></td>";
+      const rounded = Math.round(amount * 100) / 100;
+      const symbol = value.currency === "EUR" ? "€" : "£";
+      return `<td x:num="${rounded}" style="mso-number-format:'\\${symbol}\\ \\#\\,\\#\\#0\\.00'">${symbol} ${rounded.toFixed(2)}</td>`;
+    }
+    const text = String(value ?? "")
+      .replaceAll("&", "&amp;")
+      .replaceAll("<", "&lt;")
+      .replaceAll(">", "&gt;")
+      .replaceAll("\n", "<br/>");
+    return `<td>${text}</td>`;
+  };
   const html = `<!DOCTYPE html>
-<html>
+<html xmlns:o="urn:schemas-microsoft-com:office:office" xmlns:x="urn:schemas-microsoft-com:office:excel">
   <head>
     <meta charset="utf-8" />
     <style>
@@ -14652,7 +14697,7 @@ function buildExcelFriendlyTableBlob(headers, rows) {
         <tr>${safeHeaders.map((value) => `<th>${value}</th>`).join("")}</tr>
       </thead>
       <tbody>
-        ${safeRows.map((row) => `<tr>${row.map((value) => `<td>${value}</td>`).join("")}</tr>`).join("")}
+        ${rows.map((row) => `<tr>${row.map(cellHtml).join("")}</tr>`).join("")}
       </tbody>
     </table>
   </body>
