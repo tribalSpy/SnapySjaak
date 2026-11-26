@@ -4329,6 +4329,8 @@ button.ik-kpi:hover {
 .ik-inv-status.good { color: var(--ik-good); }
 .ik-inv-status.mid { color: var(--ik-warn); }
 .ik-inv-status.bad { color: var(--ik-bad); }
+.ik-inv-status.resolved { color: hsl(262 70% 50%); white-space: nowrap; }
+:root[data-theme="dark"] .ik-inv-status.resolved { color: hsl(252 95% 85%); }
 .ik-inv-total td { border-top: 2px solid var(--ik-border); }
 
 .ik-trace { width: min(760px, 96vw); }
@@ -4404,8 +4406,12 @@ table.data-table.balance-table.ik-table.ik-inv-invoices td, table.data-table.bal
 .ik-inv-lines table.data-table.balance-table.ik-table td { text-align: left; }
 table.data-table.balance-table.ik-table.ik-inv-companies td:nth-child(n+4), table.data-table.balance-table.ik-table.ik-inv-companies th:nth-child(n+4),
 table.data-table.balance-table.ik-table.ik-inv-invoices td:nth-child(n+7), table.data-table.balance-table.ik-table.ik-inv-invoices th:nth-child(n+7) { text-align: right; }
-.ik-inv-companies td small, .ik-inv-companies .ik-split { display: block; }
-.ik-inv-companies .ik-split { width: 150px; margin-bottom: 3px; }
+.ik-inv-companies td small { display: block; }
+/* Flows: one bar (its parts side by side), the names right after it. */
+.ik-inv-companies .ik-inv-flows { display: flex; align-items: center; gap: 10px; }
+.ik-inv-companies .ik-inv-flows .ik-split { display: inline-flex; flex: 0 0 150px; width: 150px; }
+.ik-inv-companies .ik-inv-flows small { display: inline; }
+.ik-inv-stack-part.resolved { background: hsl(262 70% 62%); }
 /* The lines table keeps its columns: a long line is cut with … (all of it
    in the tooltip), never over the next column. */
 .ik-inv-lines-table { table-layout: fixed; width: 100%; }

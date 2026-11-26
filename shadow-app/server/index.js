@@ -73,6 +73,7 @@ import {
   getInkoopInvoiceLinesForKeys,
   getInkoopVerifiedMatchRows,
   getInkoopInvoiceMatchFigures,
+  getInkoopInvoiceResolvedRows,
   getKingExportsByInvoice,
   getInkoopInvoiceTraceLines,
   getInkoopTraceLots,
@@ -15850,14 +15851,23 @@ async function buildInkoopInvoiceTrace(invoiceNumber) {
     const manual = manualPairs.find((pair) => pair.invoice_line_ids.includes(line.id));
     const pav = normalizeUkdocsText(line.reference_bt);
     const credit = pav ? inkoopRetourCreditOf(credits.filter((item) => inkoopPavBase(item.pav) === inkoopPavBase(pav) && item.invoice_number !== line.invoice_number), line.invoice_date) : null;
+    // Open / figures differ, and the follow-up resolved it (Geverifieerd):
+    // shown as resolved with its reason; what the comparison said is kept.
+    const compareStatus = line.kind === "summary" ? "summary" : row ? found.status : line.kind === "product" ? "not_compared" : line.kind;
+    const resolvedBy = ["open", "not_linked", "ambiguous", "differs"].includes(compareStatus)
+      ? followup.find((item) => item.status === "resolved" && (compareStatus === "differs" ? item.id.startsWith("mismatch:") : item.id.startsWith("gap_invoice:")))
+      : null;
+    const resolutionLabel = resolvedBy ? ((INKOOP_FOLLOWUP_RESOLUTIONS.find(([key]) => key === resolvedBy.resolution) || [])[1] || "resolved in the follow-up") : "";
     return {
       ...line,
+      compare_status: compareStatus,
+      resolution: resolvedBy ? resolvedBy.resolution || "" : "",
       packages: line.packages === null ? null : Number(line.packages), per_package: line.per_package === null ? null : Number(line.per_package),
-      status: line.kind === "summary" ? "summary" : row ? found.status : line.kind === "product" ? "not_compared" : line.kind,
+      status: resolvedBy ? "resolved" : compareStatus,
       compared_day: found?.day || "",
       match_type: row ? (manual ? `linked by hand${manual.by ? ` by ${manual.by}` : ""}${manual.note ? ` -- ${manual.note}` : ""}` : row.supplier_match_type || (row.matched_as_split_delivery ? "split delivery" : row.matched_as_group ? "matched as a group" : pav ? "brief number" : "")) : "",
       diffs: Array.isArray(row?.diffs) ? row.diffs.map((diff) => ({ field: diff.field, erp: diff.erp, invoice: diff.invoice })) : [],
-      reason: row && ["open", "not_linked", "ambiguous"].includes(found.status) ? (found.status === "not_linked" ? "grower not linked to a Connect code" : found.status === "ambiguous" ? "more than one lot fits" : pav ? "no free Connect lot with this brief number" : "no Connect lot with these pieces and price") : "",
+      reason: resolvedBy ? `Geverifieerd: ${resolutionLabel}` : row && ["open", "not_linked", "ambiguous"].includes(found.status) ? (found.status === "not_linked" ? "grower not linked to a Connect code" : found.status === "ambiguous" ? "more than one lot fits" : pav ? "no free Connect lot with this brief number" : "no Connect lot with these pieces and price") : "",
       correction: row?.matched_as_correction && Array.isArray(row.correction_lines) && row.correction_lines.length > 1
         ? row.correction_lines.map((step) => ({ id: step.id, invoice_number: step.invoice_number, invoice_date: String(step.invoice_date || "").slice(0, 10), quantity: step.quantity, packages: step.packages, per_package: step.per_package, total: step.total }))
         : null,
@@ -29528,25 +29538,54 @@ async function handleApi(req, res, url) {
     // cached): a new comparison or a send shows at once.
     const cached = inkoopSummaryCache.get(cacheKey) || [];
     const numbers = cached.flatMap((company) => (company.invoices || []).map((invoice) => invoice.invoice_number));
-    const [figures, kingRows] = await Promise.all([
+    const [figures, kingRows, issueStatuses] = await Promise.all([
       getInkoopInvoiceMatchFigures(numbers).catch(() => []),
       getKingExportsByInvoice(numbers).catch(() => []),
+      getInkoopIssueStatuses().catch(() => []),
     ]);
     const round = (value) => Math.round((Number(value) || 0) * 100) / 100;
+    const blankMatch = () => ({ matched: 0, matched_lines: 0, differs: 0, differs_lines: 0, difference: 0, open: 0, open_lines: 0, resolved: 0, resolved_lines: 0 });
     const matchOf = new Map();
     for (const row of figures) {
-      const entry = matchOf.get(row.invoice_number) || { matched: 0, matched_lines: 0, differs: 0, differs_lines: 0, difference: 0, open: 0, open_lines: 0 };
+      const entry = matchOf.get(row.invoice_number) || blankMatch();
       if (row.list === "matched_ok") { entry.matched += row.invoice_value; entry.matched_lines += row.lines; }
       else if (row.list === "matched_mismatch") { entry.differs += row.invoice_value; entry.differs_lines += row.lines; entry.difference += row.difference; }
       else if (["only_in_invoice", "supplier_not_linked", "ambiguous_matches"].includes(row.list)) { entry.open += row.invoice_value; entry.open_lines += row.lines; }
       matchOf.set(row.invoice_number, entry);
     }
+    // Lines the follow-up resolved (Geverifieerd): out of open / differs,
+    // counted as resolved, per reason.
+    const resolvedLine = new Map();
+    const resolvedLot = new Map();
+    for (const item of issueStatuses) {
+      if (item.status !== "resolved") continue;
+      const id = String(item.id || "");
+      if (id.startsWith("gap_invoice:")) resolvedLine.set(id.slice("gap_invoice:".length), item.resolution || "");
+      else if (id.startsWith("mismatch:")) resolvedLot.set(id.slice("mismatch:".length), item.resolution || "");
+    }
+    const resolvedRows = resolvedLine.size || resolvedLot.size
+      ? await getInkoopInvoiceResolvedRows(numbers, [...resolvedLine.keys()], [...resolvedLot.keys()]).catch(() => [])
+      : [];
+    for (const row of resolvedRows) {
+      const entry = matchOf.get(row.invoice_number);
+      if (!entry) continue;
+      const resolution = row.line_id ? resolvedLine.get(row.line_id) : String(row.lot || "").split("+").map((lot) => lot.trim()).map((lot) => resolvedLot.get(lot)).find((value) => value !== undefined);
+      if (row.list === "matched_mismatch") { entry.differs -= row.invoice_value; entry.differs_lines -= 1; entry.difference -= row.difference; }
+      else { entry.open -= row.invoice_value; entry.open_lines -= 1; }
+      entry.resolved += row.invoice_value;
+      entry.resolved_lines += 1;
+      const key = resolution || "resolved";
+      entry.resolved_by = { ...(entry.resolved_by || {}), [key]: (entry.resolved_by?.[key] || 0) + row.invoice_value };
+    }
     const kingOf = new Map(kingRows.map((row) => [row.invoice_number, row]));
     // Of the money either way: a credit can make an invoice's open money
     // negative (it gave the % over 100).
+    // Resolved (Geverifieerd) counts as done, next to matched.
     const withMatch = (match) => {
-      const base = Math.abs(match.matched) + Math.abs(match.differs) + Math.abs(match.open);
-      return { ...Object.fromEntries(Object.entries(match).map(([key, value]) => [key, round(value)])), matched_pct: base > 0 ? Math.round(((Math.abs(match.matched) + Math.abs(match.differs)) / base) * 1000) / 10 : null };
+      const done = Math.abs(match.matched) + Math.abs(match.differs) + Math.abs(match.resolved || 0);
+      const base = done + Math.abs(match.open);
+      const resolvedBy = Object.fromEntries(Object.entries(match.resolved_by || {}).map(([key, value]) => [key, round(value)]));
+      return { ...Object.fromEntries(Object.entries(match).filter(([key]) => key !== "resolved_by").map(([key, value]) => [key, round(value)])), resolved_by: resolvedBy, matched_pct: base > 0 ? Math.round((done / base) * 1000) / 10 : null };
     };
     const companies = cached.map((company) => {
       const invoices = (company.invoices || []).map((invoice) => {
@@ -29560,9 +29599,13 @@ async function handleApi(req, res, url) {
       });
       const total = invoices.reduce((sum, invoice) => {
         if (!invoice.match) return sum;
-        for (const key of Object.keys(sum)) sum[key] += Number(invoice.match[key]) || 0;
+        for (const key of Object.keys(sum)) {
+          if (key === "resolved_by") {
+            for (const [reason, value] of Object.entries(invoice.match.resolved_by || {})) sum.resolved_by[reason] = (sum.resolved_by[reason] || 0) + value;
+          } else sum[key] += Number(invoice.match[key]) || 0;
+        }
         return sum;
-      }, { matched: 0, matched_lines: 0, differs: 0, differs_lines: 0, difference: 0, open: 0, open_lines: 0 });
+      }, { ...blankMatch(), resolved_by: {} });
       return {
         ...company,
         invoices,

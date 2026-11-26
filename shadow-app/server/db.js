@@ -996,6 +996,36 @@ export async function getInkoopInvoiceMatchFigures(invoiceNumbers) {
   return result.rows;
 }
 
+// The stored rows of these invoices that the follow-up resolved
+// (Geverifieerd): an open line by its invoice line id (gap_invoice:<id>), a
+// figures-differ pair by its lot (mismatch:<lot>). Each row once, with the
+// line id / lot that resolved it.
+export async function getInkoopInvoiceResolvedRows(invoiceNumbers, lineIds = [], lots = []) {
+  const numbers = [...new Set((invoiceNumbers || []).map((number) => String(number || "").trim()).filter(Boolean))];
+  if (!pool || !numbers.length || (!lineIds.length && !lots.length)) return [];
+  const result = await pool.query(
+    `SELECT number AS invoice_number, m.list, m.lot,
+            COALESCE(m.invoice_total, 0)::float8 AS invoice_value, COALESCE(m.difference_total, 0)::float8 AS difference,
+            (SELECT l.id FROM inkoop_invoice_lines l
+              WHERE m.list IN ('only_in_invoice', 'supplier_not_linked', 'ambiguous_matches') AND l.id = ANY($2::text[]) AND l.invoice_number = number
+                AND regexp_replace(btrim(COALESCE(l.description, '')), '\\s+', ' ', 'g') = m.description
+                AND l.quantity = m.invoice_quantity AND l.total = m.invoice_total
+              LIMIT 1) AS line_id
+       FROM inkoop_match_rows m
+       CROSS JOIN LATERAL unnest(string_to_array(m.invoice_number, ' + ')) AS number
+      WHERE m.invoice_number <> '' AND number = ANY($1::text[])
+        AND ((m.list IN ('only_in_invoice', 'supplier_not_linked', 'ambiguous_matches') AND EXISTS (
+               SELECT 1 FROM inkoop_invoice_lines l
+                WHERE l.id = ANY($2::text[]) AND l.invoice_number = number
+                  AND regexp_replace(btrim(COALESCE(l.description, '')), '\\s+', ' ', 'g') = m.description
+                  AND l.quantity = m.invoice_quantity AND l.total = m.invoice_total))
+          OR (m.list = 'matched_mismatch' AND EXISTS (
+               SELECT 1 FROM unnest(string_to_array(m.lot, '+')) AS part WHERE btrim(part) = ANY($3::text[]))))`,
+    [numbers, lineIds, lots],
+  );
+  return result.rows;
+}
+
 // King per invoice (what was sent, delivered, its stuknummer).
 export async function getKingExportsByInvoice(invoiceNumbers) {
   const numbers = [...new Set((invoiceNumbers || []).map((number) => String(number || "").trim()).filter(Boolean))];

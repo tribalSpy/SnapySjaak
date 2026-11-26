@@ -18437,6 +18437,7 @@ const INKOOP_INVOICE_TYPE_ICON = { klokfactuur: "⏱", connect: "🔗", handel: 
 const IK_TRACE_STATUS = {
   matched: { icon: "✓", label: "Matched", tone: "good" },
   differs: { icon: "⚠", label: "Matched, figures differ", tone: "mid" },
+  resolved: { icon: "✓G", label: "Resolved (Geverifieerd)", tone: "resolved" },
   open: { icon: "✗", label: "No Connect lot", tone: "bad" },
   not_linked: { icon: "✗", label: "Grower not linked", tone: "bad" },
   ambiguous: { icon: "?", label: "More than one lot fits", tone: "bad" },
@@ -18451,15 +18452,21 @@ const IK_TRACE_STATUS = {
 // differing, open -- the % in its tooltip.
 function IkMatchStack({ match, width = 120 }) {
   if (!match) return <span className="muted" title="Not compared yet">–</span>;
-  const parts = [["matched", match.matched, "good"], ["differs", match.differs, "mid"], ["open", match.open, "bad"]].filter(([, value]) => value > 0);
+  const parts = [["matched", match.matched, "good"], ["differs", match.differs, "mid"], ["resolved", match.resolved || 0, "resolved"], ["open", match.open, "bad"]].filter(([, value]) => value > 0);
   const total = parts.reduce((sum, [, value]) => sum + value, 0);
   if (!total) return <span className="muted">–</span>;
-  const title = `${match.matched_pct === null ? "" : `${match.matched_pct}% matched\n`}✓ matched ${formatInkoopEuro(match.matched)} (${match.matched_lines} lines)\n⚠ figures differ ${formatInkoopEuro(match.differs)} (${match.differs_lines} lines${match.difference ? `, ${formatInkoopEuro(match.difference)} difference` : ""})\n✗ open ${formatInkoopEuro(match.open)} (${match.open_lines} lines)`;
+  const title = `${match.matched_pct === null ? "" : `${match.matched_pct}% matched${match.resolved ? " + resolved" : ""}\n`}✓ matched ${formatInkoopEuro(match.matched)} (${match.matched_lines} lines)\n⚠ figures differ ${formatInkoopEuro(match.differs)} (${match.differs_lines} lines${match.difference ? `, ${formatInkoopEuro(match.difference)} difference` : ""})${match.resolved ? `\n✓G resolved (Geverifieerd) ${formatInkoopEuro(match.resolved)} (${match.resolved_lines} lines)${ikResolvedByText(match.resolved_by)}` : ""}\n✗ open ${formatInkoopEuro(match.open)} (${match.open_lines} lines)`;
   return (
     <span className="ik-inv-stack" style={{ width }} title={title}>
       {parts.map(([key, value, tone]) => <span key={key} className={`ik-inv-stack-part ${tone}`} style={{ width: `${(value / total) * 100}%` }} />)}
     </span>
   );
+}
+
+// "Transport/levering kosten €12.00 · Niet gefactureerd €5.00", per reason.
+function ikResolvedByText(resolvedBy, separator = "\n  ") {
+  const entries = Object.entries(resolvedBy || {}).filter(([, value]) => value);
+  return entries.length ? `${separator}${entries.map(([key, value]) => `${key === "resolved" ? "resolved" : ikFuResolutionLabel(key)} ${formatInkoopEuro(value)}`).join(separator)}` : "";
 }
 
 function ikKingText(king) {
@@ -18523,6 +18530,7 @@ function IkInvoiceLines({ invoiceNumber, onTrace }) {
         <td className={`ik-inv-status ${status.tone}`} title={`${status.label}${line.reason ? ` -- ${line.reason}` : ""}`}>{status.icon}</td>
         <td className="ik-inv-cell ik-inv-text" title={`${own}${correction ? `\n${correction.text}` : ""}`}>
           <strong>{line.description}</strong> <span>{own}</span>
+          {line.status === "resolved" ? <span className="ik-extra-cost"> · ✓G {line.reason}</span> : null}
           {correction ? <span className="ik-correction-note"> · ↩ part of a correction ({correction.invoiced} invoiced, {correction.credited} credited)</span> : null}
         </td>
         <td className="ik-inv-cell ik-con-text" title={line.lots.map(ikTraceLotText).join("\n") || (purchase ? `${purchaseText}\nClick: the purchase line and its match` : line.reason)}>
@@ -18628,6 +18636,7 @@ function IkInvoiceTrace({ invoiceNumber, lineId, onClose, onOpenTrackTrace }) {
   const match = data ? {
     matched: sum("matched"), matched_lines: products.filter((item) => item.status === "matched").length,
     differs: sum("differs"), differs_lines: products.filter((item) => item.status === "differs").length, difference: 0,
+    resolved: sum("resolved"), resolved_lines: products.filter((item) => item.status === "resolved").length,
     open: products.filter((item) => ["open", "not_linked", "ambiguous"].includes(item.status)).reduce((total, item) => total + (Number(item.total) || 0), 0),
     open_lines: products.filter((item) => ["open", "not_linked", "ambiguous"].includes(item.status)).length, matched_pct: null,
   } : null;
@@ -18658,6 +18667,7 @@ function IkInvoiceTrace({ invoiceNumber, lineId, onClose, onOpenTrackTrace }) {
             <IkMatchStack match={match} width={260} />
             <span>✓ {formatInkoopEuro(match.matched)} ({match.matched_lines})</span>
             <span>⚠ {formatInkoopEuro(match.differs)} ({match.differs_lines})</span>
+            {match.resolved_lines ? <span className="ik-extra-cost" title="Resolved in the follow-up (Geverifieerd)">✓G {formatInkoopEuro(match.resolved)} ({match.resolved_lines})</span> : null}
             <span>✗ {formatInkoopEuro(match.open)} ({match.open_lines})</span>
             <select value={line?.id || ""} onChange={(event) => setChosen(event.target.value)} aria-label="Line">
               {data.lines.map((item) => (
@@ -18824,7 +18834,7 @@ function InkoopOverviewTab({ onOpenTrackTrace = null }) {
     products: sum.products + company.products,
     emballage: sum.emballage + company.emballage,
     fees: sum.fees + company.fees,
-    matched: sum.matched + (company.match?.matched || 0) + (company.match?.differs || 0),
+    matched: sum.matched + (company.match?.matched || 0) + (company.match?.differs || 0) + (company.match?.resolved || 0),
     open: sum.open + Math.abs(company.match?.open || 0),
   }), { invoice_count: 0, total: 0, products: 0, emballage: 0, fees: 0, matched: 0, open: 0 });
   const grandPct = grand.matched + grand.open > 0 ? (grand.matched / (grand.matched + grand.open)) * 100 : null;
@@ -18890,14 +18900,17 @@ function InkoopOverviewTab({ onOpenTrackTrace = null }) {
                           </span>
                         </td>
                         <td>
-                          <IkSplitBar parts={flowParts} />
-                          <small className="muted">{flowParts.map((part) => part.label).join(" · ")}</small>
+                          <span className="ik-inv-flows">
+                            <IkSplitBar parts={flowParts} />
+                            <small className="muted">{flowParts.map((part) => part.label).join(" · ")}</small>
+                          </span>
                         </td>
                         <td>
                           <IkMatchStack match={company.match} width={130} />
                           <small className="ik-inv-chips">
                             <span title="Matched">✓ {formatInkoopEuro(company.match?.matched || 0)}</span>
                             {company.match?.differs ? <span title="Matched, figures differ"> ⚠ {formatInkoopEuro(company.match.differs)}</span> : null}
+                            {company.match?.resolved ? <span className="ik-extra-cost" title={`Resolved in the follow-up (Geverifieerd), ${company.match.resolved_lines} line(s)${ikResolvedByText(company.match.resolved_by)}`}> ✓G {formatInkoopEuro(company.match.resolved)}</span> : null}
                             {company.match?.open ? <span className="money-loss" title="No Connect lot"> ✗ {formatInkoopEuro(company.match.open)}</span> : null}
                           </small>
                         </td>
