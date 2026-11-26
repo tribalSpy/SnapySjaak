@@ -6772,7 +6772,72 @@ async function snapshotRowSelect(client, table) {
   return `SELECT to_jsonb(t)::text AS row FROM (SELECT ${list} FROM llm_jobs j) t`;
 }
 
-export async function exportDatabaseSnapshot(writeLine) {
+// The copy for the standby in parts ("inkoop", "fust", ...): tables grouped by
+// the first word of their name, and tables tied by a foreign key always in
+// the same part (loading a part empties its tables with CASCADE -- a table
+// pointing at one of them must come along, or it would be emptied too).
+// The big tables get a part of their own. [{ name, tables }] parents first.
+const SNAPSHOT_OWN_PART = { state_file_history: "state-history", llm_jobs: "llm-jobs" };
+
+export async function listDatabaseSnapshotParts() {
+  if (!pool) {
+    throw new Error("Database is not initialized");
+  }
+  const client = await pool.connect();
+  try {
+    const tables = await listPublicTablesParentsFirst(client);
+    const deps = (await client.query(`
+      SELECT child.relname AS child, parent.relname AS parent
+      FROM pg_constraint c
+      JOIN pg_class child ON child.oid = c.conrelid
+      JOIN pg_class parent ON parent.oid = c.confrelid
+      JOIN pg_namespace n ON n.oid = child.relnamespace
+      WHERE c.contype = 'f' AND n.nspname = 'public'
+    `)).rows;
+    const parent = new Map(tables.map((table) => [table, table]));
+    const find = (table) => {
+      while (parent.get(table) !== table) table = parent.get(table);
+      return table;
+    };
+    const join = (a, b) => {
+      if (!parent.has(a) || !parent.has(b)) return;
+      const ra = find(a);
+      const rb = find(b);
+      if (ra !== rb) parent.set(rb, ra);
+    };
+    for (const dep of deps) join(dep.child, dep.parent);
+    // Same area (first word), unless the table has a part of its own.
+    const areaOf = (table) => SNAPSHOT_OWN_PART[table] || String(table).split("_")[0] || table;
+    const firstOfArea = new Map();
+    for (const table of tables) {
+      if (SNAPSHOT_OWN_PART[table]) continue;
+      const area = areaOf(table);
+      if (firstOfArea.has(area)) join(firstOfArea.get(area), table);
+      else firstOfArea.set(area, table);
+    }
+    const parts = new Map();
+    for (const table of tables) {
+      const root = find(table);
+      if (!parts.has(root)) parts.set(root, []);
+      parts.get(root).push(table);
+    }
+    // Named after the area of most of its tables.
+    const used = new Set();
+    return [...parts.values()].map((list) => {
+      const counts = new Map();
+      for (const table of list) counts.set(areaOf(table), (counts.get(areaOf(table)) || 0) + 1);
+      let name = [...counts.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))[0][0];
+      while (used.has(name)) name = `${name}-2`;
+      used.add(name);
+      return { name, tables: list };
+    }).sort((a, b) => a.name.localeCompare(b.name));
+  } finally {
+    client.release();
+  }
+}
+
+// onlyTables: just those tables (one part of the copy); else every table.
+export async function exportDatabaseSnapshot(writeLine, { onlyTables = null } = {}) {
   if (!pool) {
     throw new Error("Database is not initialized");
   }
@@ -6780,7 +6845,9 @@ export async function exportDatabaseSnapshot(writeLine) {
   try {
     // One consistent point in time across all tables.
     await client.query("BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY");
-    const tables = await listPublicTablesParentsFirst(client);
+    const all = await listPublicTablesParentsFirst(client);
+    const wanted = Array.isArray(onlyTables) ? new Set(onlyTables) : null;
+    const tables = wanted ? all.filter((table) => wanted.has(table)) : all;
     await writeLine(JSON.stringify({ format: "snappysjaak-db-snapshot", version: 1, created_at: new Date().toISOString(), tables }));
     for (const table of tables) {
       await writeLine(JSON.stringify({ table }));

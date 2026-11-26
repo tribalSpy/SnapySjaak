@@ -29,6 +29,7 @@ import {
   ensureBackgroundIndexes,
   exportDatabaseSnapshot,
   importDatabaseSnapshot,
+  listDatabaseSnapshotParts,
   createLlmJob,
   getLlmJobById,
   completeLlmJobById,
@@ -356,8 +357,11 @@ function requireBackupAgentAuth(req, res) {
 // The database snapshot (see exportDatabaseSnapshot), gzipped as it's
 // produced -- only the compressed bytes are ever held in memory.
 const backupDumpAttemptPath = path.join(cacheDir, "backup-dump-attempt.json");
+// Per part of the copy: when it was last made and whether it finished.
+const backupDumpPartsPath = path.join(cacheDir, "backup-dump-parts.json");
+let backupPartRunning = false;
 
-async function buildCompressedDatabaseSnapshot() {
+async function buildCompressedDatabaseSnapshot(onlyTables = null) {
   const gzip = zlib.createGzip();
   const chunks = [];
   gzip.on("data", (chunk) => chunks.push(chunk));
@@ -365,7 +369,7 @@ async function buildCompressedDatabaseSnapshot() {
     gzip.on("end", resolve);
     gzip.on("error", reject);
   });
-  await exportDatabaseSnapshot((line) => (gzip.write(`${line}\n`) ? undefined : new Promise((resolve) => gzip.once("drain", resolve))));
+  await exportDatabaseSnapshot((line) => (gzip.write(`${line}\n`) ? undefined : new Promise((resolve) => gzip.once("drain", resolve))), { onlyTables });
   gzip.end();
   await finished;
   return Buffer.concat(chunks);
@@ -621,6 +625,92 @@ async function restorePostgresDumpFile(dumpPath) {
   });
 }
 
+// Per part of Render's copy: when this PC last loaded it; whether its next
+// request should be forced (handed out but not loaded, or never loaded since
+// this process started) and when it last was.
+const postgresPartLoadedAt = new Map();
+const postgresPartNeedsForce = new Map();
+const postgresPartForcedAt = new Map();
+const POSTGRES_PART_PAUSE_MS = 20 * 1000;
+
+// null: Render has no parts (older version) -- the whole copy then.
+let postgresPartsRunning = false;
+async function runPostgresRestoreByParts() {
+  if (postgresPartsRunning) {
+    return { ok: true, skipped: true, reason: "The previous run of the parts is still busy" };
+  }
+  postgresPartsRunning = true;
+  try {
+    return await runPostgresRestoreByPartsOnce();
+  } finally {
+    postgresPartsRunning = false;
+  }
+}
+
+async function runPostgresRestoreByPartsOnce() {
+  const headers = { "x-shadow-agent-key": backupAgentApiKey };
+  const listResponse = await fetch(`${renderBackupBaseUrl}/api/backup/postgres-parts`, { headers });
+  if (listResponse.status === 404) {
+    return null;
+  }
+  if (!listResponse.ok) {
+    throw new Error(`Listing the parts failed: HTTP ${listResponse.status}`);
+  }
+  const { parts = [] } = await listResponse.json();
+  const results = [];
+  let loadedAny = false;
+  let allLoaded = true;
+  for (const part of parts) {
+    if (Date.now() - (postgresPartLoadedAt.get(part.name) || 0) < postgresRestoreMinIntervalMs) {
+      continue; // loaded recently
+    }
+    const force = (postgresPartNeedsForce.get(part.name) ?? true)
+      && Date.now() - (postgresPartForcedAt.get(part.name) || 0) >= postgresForcedDumpMinIntervalMs;
+    if (force) postgresPartForcedAt.set(part.name, Date.now());
+    if (results.length) await new Promise((resolve) => setTimeout(resolve, POSTGRES_PART_PAUSE_MS));
+    const response = await fetch(`${renderBackupBaseUrl}/api/backup/postgres-part?name=${encodeURIComponent(part.name)}${force ? "&force=1" : ""}`, { headers });
+    if (!response.ok) {
+      allLoaded = false;
+      const detail = await response.json().then((body) => body?.error || "").catch(() => "");
+      // 429 (made recently / never finished) and 503 (busy): not an error,
+      // the part is asked again later; this PC keeps what it has.
+      results.push(response.status === 429 || response.status === 503
+        ? { part: part.name, skipped: detail || `HTTP ${response.status}` }
+        : { part: part.name, error: `HTTP ${response.status}${detail ? ` (${detail})` : ""}` });
+      continue;
+    }
+    // Handed out: a failure below needs it forced next time.
+    postgresPartNeedsForce.set(part.name, true);
+    try {
+      const compressed = openSealed(Buffer.from(await response.arrayBuffer()), backupPrivateKey);
+      const loaded = await importDatabaseSnapshot(readCompressedSnapshotLines(compressed));
+      postgresPartLoadedAt.set(part.name, Date.now());
+      postgresPartNeedsForce.set(part.name, false);
+      loadedAny = true;
+      results.push({ part: part.name, rows: Object.values(loaded.tables).reduce((sum, count) => sum + count, 0), snapshot_from: loaded.snapshot_created_at });
+    } catch (error) {
+      allLoaded = false;
+      results.push({ part: part.name, error: error instanceof Error ? error.message : String(error) });
+    }
+  }
+  if (loadedAny) {
+    // As after a whole copy: the schema of now, and the derived Inkoop
+    // tables (left out of the copy) built again here.
+    const migrationResult = await applyDatabaseMigrations();
+    markInkoopInvoiceTotalsFilled(false);
+    inkoopStateCache = null;
+    bumpInkoopMatchVersion();
+    startInkoopMatchPipeline();
+    if (!migrationResult.ok) {
+      return { ok: true, by_parts: true, parts: results, migrations_error: migrationResult.error };
+    }
+  }
+  if (allLoaded) {
+    lastPostgresRestoreAt = Date.now();
+  }
+  return { ok: !results.some((result) => result.error), by_parts: true, parts: results };
+}
+
 async function runPostgresRestoreCycle() {
   if (!backupSyncClientConfigured()) {
     return { ok: false, skipped: true, reason: "Backup sync is not configured" };
@@ -630,6 +720,13 @@ async function runPostgresRestoreCycle() {
   }
   if (Date.now() - lastPostgresRestoreAt < postgresRestoreMinIntervalMs) {
     return { ok: false, skipped: true, reason: "Too soon since last restore" };
+  }
+
+  // In parts when Render offers them (each small, one after the other);
+  // only a Render without parts (older version) gets the whole copy asked.
+  const byParts = await runPostgresRestoreByParts().catch((error) => ({ ok: false, error: error instanceof Error ? error.message : String(error) }));
+  if (byParts) {
+    return byParts;
   }
 
   const tmpDumpPath = path.join(cacheDir, `postgres-restore-${Date.now()}.dump`);
@@ -24892,6 +24989,90 @@ async function handleApi(req, res, url) {
       res.end(sealed);
     } catch (error) {
       sendJson(res, 500, { error: error instanceof Error ? error.message : String(error) });
+    }
+    return;
+  }
+
+  // The standby's copy in parts (inkoop, fust, ukdocs, ...): the list, then
+  // one part per request -- each small, its own limits, one at a time.
+  if (url.pathname === "/api/backup/postgres-parts" && req.method === "GET") {
+    if (!requireBackupAgentAuth(req, res)) {
+      return;
+    }
+    if (!isDatabaseEnabled()) {
+      sendJson(res, 503, { error: "Database is not enabled" });
+      return;
+    }
+    try {
+      sendJson(res, 200, { parts: await listDatabaseSnapshotParts(), min_interval_minutes: pgDumpMinIntervalMinutes });
+    } catch (error) {
+      sendJson(res, 500, { error: error instanceof Error ? error.message : String(error) });
+    }
+    return;
+  }
+  if (url.pathname === "/api/backup/postgres-part" && req.method === "GET") {
+    if (!requireBackupAgentAuth(req, res)) {
+      return;
+    }
+    if (!isDatabaseEnabled() || !backupPublicKey) {
+      sendJson(res, 503, { error: !backupPublicKey ? "BACKUP_PUBLIC_KEY is not configured" : "Database is not enabled" });
+      return;
+    }
+    const name = String(url.searchParams.get("name") || "").trim();
+    const forced = url.searchParams.get("force") === "1";
+    if (backupPartRunning) {
+      sendJson(res, 503, { error: "Another part is being made -- one at a time." });
+      return;
+    }
+    try {
+      const part = (await listDatabaseSnapshotParts()).find((entry) => entry.name === name);
+      if (!part) {
+        sendJson(res, 404, { error: `No part "${name}"` });
+        return;
+      }
+      const minIntervalMs = pgDumpMinIntervalMinutes * 60 * 1000;
+      const attempts = await readJsonFile(backupDumpPartsPath, {});
+      const last = attempts[name] || {};
+      const lastAt = Date.parse(last.started_at || "") || 0;
+      if (!forced && Date.now() - lastAt < minIntervalMs) {
+        sendJson(res, 429, { error: `Part "${name}" was made recently; wait ${pgDumpMinIntervalMinutes} minutes.` });
+        return;
+      }
+      // Never finished (Render went down during it): not again, forced
+      // neither, for the interval -- no crash every hour.
+      if (last.started_at && !last.finished_at && Date.now() - lastAt < minIntervalMs) {
+        sendJson(res, 429, { error: `Part "${name}" of ${last.started_at} never finished -- not again for ${pgDumpMinIntervalMinutes} minutes.` });
+        return;
+      }
+      const rssNow = process.memoryUsage().rss;
+      if (heavyInkoopReadsRunning > 0 || rssNow > 700 * 1024 * 1024) {
+        sendJson(res, 503, { error: `Busy (app ${Math.round(rssNow / 1048576)} MB, ${heavyInkoopReadsRunning} heavy read(s)) -- try again later.` });
+        return;
+      }
+      backupPartRunning = true;
+      const startedAt = new Date().toISOString();
+      await writeJsonFile(backupDumpPartsPath, { ...attempts, [name]: { started_at: startedAt } });
+      const started = Date.now();
+      let finishedRecord = { started_at: startedAt, finished_at: "", failed: true };
+      try {
+        const dumpBuffer = await buildCompressedDatabaseSnapshot(part.tables);
+        const sealed = sealBuffer(dumpBuffer, backupPublicKey);
+        res.writeHead(200, { "content-type": "application/octet-stream", "cache-control": "no-store", "x-snapshot-tables": part.tables.join(",") });
+        res.end(sealed);
+        finishedRecord = { started_at: startedAt, finished_at: new Date().toISOString(), size_bytes: dumpBuffer.length };
+        console.log(`Standby copy, part "${name}" (${part.tables.length} table(s)): ${(dumpBuffer.length / 1048576).toFixed(1)} MB compressed in ${Math.round((Date.now() - started) / 1000)} s.`);
+      } catch (error) {
+        console.error(`Standby copy, part "${name}" failed:`, error instanceof Error ? error.message : error);
+        finishedRecord.finished_at = new Date().toISOString();
+        if (!res.headersSent) sendJson(res, 500, { error: error instanceof Error ? error.message : String(error) });
+      } finally {
+        backupPartRunning = false;
+        const now = await readJsonFile(backupDumpPartsPath, {});
+        await writeJsonFile(backupDumpPartsPath, { ...now, [name]: finishedRecord }).catch(() => {});
+      }
+    } catch (error) {
+      backupPartRunning = false;
+      if (!res.headersSent) sendJson(res, 500, { error: error instanceof Error ? error.message : String(error) });
     }
     return;
   }
