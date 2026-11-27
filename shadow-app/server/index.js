@@ -13786,6 +13786,35 @@ async function withInkoopHandPairMembers(state, erpRows, invoiceLines) {
 // Once, after the fix above: the days of every hand link wider than the
 // window (its members more than 4 days apart -- skipped before) are
 // compared again; the others were applied already.
+// "Count together" (a facturation group) was saved with the grower's codes
+// of the moment it was ticked; a code linked to that grower later stayed
+// outside it -- its lots then showed under the code's own Connect name
+// (MEL UK as "melissauk" next to "melissajacoba", 11-2026). Once: every
+// group gets the codes linked by hand to the grower of the same name; only
+// the days of the codes that joined are compared again. (Link growers now
+// keeps a group in step itself when a code is added or taken off.)
+async function repairInkoopGroupsFollowLinks() {
+  if (!(await claimOneTimeStep("inkoop-groups-follow-links-v1"))) return;
+  const state = await readInkoopState();
+  const oldFingerprint = inkoopStateFingerprint(state);
+  const joined = [];
+  const fixed = [];
+  state.facturation_groups = (state.facturation_groups || []).map((group) => {
+    const name = String(group?.group_name || "").trim().toLowerCase();
+    const link = (state.manual_supplier_links || []).find((item) => String(item?.name || "").trim().toLowerCase() === name);
+    if (!name || !link) return group;
+    const codes = (group.codes || []).map((code) => normalizeInkoopKey(code));
+    const missing = (link.codes || []).map((code) => normalizeInkoopKey(code)).filter((code) => code && !codes.includes(code));
+    if (!missing.length) return group;
+    joined.push(...missing);
+    fixed.push(`${group.group_name}: + ${missing.join(", ")}`);
+    return normalizeInkoopFacturationGroup({ ...group, codes: [...codes, ...missing] });
+  });
+  if (!joined.length) return;
+  await writeInkoopState(state, { targeted: { oldFingerprint, glns: [], fhs: [], names: [], codes: joined } });
+  console.log(`Inkoop: "count together" groups brought in step with their linked codes -- ${fixed.join("; ")}. Their days are compared again.`);
+}
+
 async function requeueWideInkoopHandPairs() {
   if (!(await claimOneTimeStep("inkoop-hand-pairs-whole-v1"))) return;
   const state = await readInkoopState();
@@ -34712,6 +34741,7 @@ async function startServer() {
     if (isDatabaseEnabled() && databaseStarted) {
       startInkoopMatchChild();
       requeueWideInkoopHandPairs().catch((error) => console.error("Re-comparing the days of wide hand links failed:", error instanceof Error ? error.message : error));
+      repairInkoopGroupsFollowLinks().catch((error) => console.error("Bringing the count-together groups in step failed:", error instanceof Error ? error.message : error));
       ensureBackgroundIndexes()
         .then((built) => { if (built.length) console.log(`Built database index(es): ${built.join(", ")}`); })
         .catch((error) => console.error("Building background database indexes failed:", error instanceof Error ? error.message : error));
