@@ -18750,14 +18750,52 @@ function IkInvoiceTrace({ invoiceNumber, lineId, onClose, onOpenTrackTrace }) {
   );
 }
 
-// A company's invoices: one row each, a click opens its lines.
+// Sorting a table by a clicked header: the same header again turns it
+// around. columns: key -> (row) => value (a number or a text).
+function useIkSort(columns, startKey, startDir = -1) {
+  const [sort, setSort] = useState({ key: startKey, dir: startDir });
+  const by = (key) => setSort((current) => (current.key === key ? { key, dir: -current.dir } : { key, dir: typeof columns[key]?.({}) === "string" ? 1 : -1 }));
+  const sorted = (rows) => {
+    const valueOf = columns[sort.key];
+    if (!valueOf) return rows;
+    return [...rows].sort((left, right) => {
+      const a = valueOf(left);
+      const b = valueOf(right);
+      return (typeof a === "string" || typeof b === "string" ? String(a ?? "").localeCompare(String(b ?? "")) : (Number(a) || 0) - (Number(b) || 0)) * sort.dir;
+    });
+  };
+  const head = (key, label, props = {}) => (
+    <th {...props} className={`ik-sortable${props.className ? ` ${props.className}` : ""}`} onClick={() => by(key)} title={props.title || "Click: sort by this column"}>
+      {label}{sort.key === key ? (sort.dir > 0 ? " ▲" : " ▼") : ""}
+    </th>
+  );
+  return { sorted, head };
+}
+
+const IK_INVOICE_SORT = {
+  type: (invoice) => String(INKOOP_INVOICE_TYPE_LABELS[invoice.invoice_type] || invoice.invoice_type || ""),
+  date: (invoice) => String(invoice.invoice_date || ""),
+  invoice: (invoice) => String(invoice.invoice_number || ""),
+  lines: (invoice) => Number(invoice.line_count) || 0,
+  matched: (invoice) => (invoice.match?.matched_pct ?? -1),
+  open: (invoice) => Number(invoice.match?.open) || 0,
+  products: (invoice) => Number(invoice.products) || 0,
+  emballage: (invoice) => Number(invoice.emballage) || 0,
+  fees: (invoice) => Number(invoice.fees) || 0,
+  total: (invoice) => Number(invoice.total) || 0,
+  king: (invoice) => (invoice.king?.delivered_at || invoice.king?.status === "delivered" ? 2 : invoice.king ? 1 : 0),
+};
+
+// A company's invoices: one row each, a click opens its lines; a header
+// click sorts (Open first by default).
 function IkInvoiceList({ company, onTrace }) {
   const [open, setOpen] = useState("");
-  const invoices = [...company.invoices].sort((left, right) => (Number(right.match?.open) || 0) - (Number(left.match?.open) || 0) || String(right.invoice_date).localeCompare(String(left.invoice_date)));
+  const { sorted, head } = useIkSort(IK_INVOICE_SORT, "open");
+  const invoices = sorted([...company.invoices].sort((left, right) => String(right.invoice_date).localeCompare(String(left.invoice_date))));
   return (
     <table className="data-table balance-table ik-table ik-inv-invoices">
       <thead>
-        <tr><th /><th>Factuurdatum</th><th>Invoice</th><th>Lines</th><th>Matched</th><th>Open</th><th>Products</th><th>Emballage</th><th>Fees</th><th>Total</th><th title="King">💶</th></tr>
+        <tr>{head("type", "")}{head("date", "Factuurdatum")}{head("invoice", "Invoice")}{head("lines", "Lines")}{head("matched", "Matched")}{head("open", "Open")}{head("products", "Products")}{head("emballage", "Emballage")}{head("fees", "Fees")}{head("total", "Total")}{head("king", "💶", { title: "King -- click: sort" })}</tr>
       </thead>
       <tbody>
         {invoices.map((invoice) => {
@@ -18791,6 +18829,16 @@ function IkInvoiceList({ company, onTrace }) {
     </table>
   );
 }
+
+const IK_COMPANY_SORT = {
+  company: (company) => String(company.company_number || ""),
+  open: (company) => Number(company.match?.open) || 0,
+  products: (company) => Number(company.products) || 0,
+  emballage: (company) => Number(company.emballage) || 0,
+  fees: (company) => Number(company.fees) || 0,
+  total: (company) => Number(company.total) || 0,
+  days: (company) => String(company.last_date || ""),
+};
 
 function InkoopOverviewTab({ onOpenTrackTrace = null }) {
   // By factuurdatum; this month by default, so it lines up with the month's
@@ -18827,7 +18875,8 @@ function InkoopOverviewTab({ onOpenTrackTrace = null }) {
     return () => { cancelled = true; };
   }, [fromDate, toDate]);
 
-  const companies = data?.companies || [];
+  const companySort = useIkSort(IK_COMPANY_SORT, "company", 1);
+  const companies = companySort.sorted(data?.companies || []);
   const grand = companies.reduce((sum, company) => ({
     invoice_count: sum.invoice_count + company.invoice_count,
     total: sum.total + company.total,
@@ -18880,7 +18929,7 @@ function InkoopOverviewTab({ onOpenTrackTrace = null }) {
             <table className="data-table balance-table ik-table ik-inv-companies">
               <thead>
                 <tr>
-                  <th>Company</th><th>Flows</th><th>Matched / open</th><th>Products</th><th>Emballage</th><th>Fees</th><th>Total</th><th>Days</th>
+                  {companySort.head("company", "Company")}<th>Flows</th>{companySort.head("open", "Matched / open", { title: "Click: sort by the open money" })}{companySort.head("products", "Products")}{companySort.head("emballage", "Emballage")}{companySort.head("fees", "Fees")}{companySort.head("total", "Total")}{companySort.head("days", "Days")}
                 </tr>
               </thead>
               <tbody>
