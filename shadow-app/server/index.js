@@ -15418,7 +15418,8 @@ function inkoopDataDayStatus(row) {
   if (!(row?.bb_lots > 0) && !(row?.bb_invoice_lines > 0)) missing.push("levering_bb");
   // A file marked "none that day" counts as in.
   const none = new Set(Array.isArray(row?.files_none) ? row.files_none : []);
-  for (let index = missing.length - 1; index >= 0; index -= 1) if (none.has(missing[index])) missing.splice(index, 1);
+  // Fetched and sent by the recorder for this day: in, too.
+  for (let index = missing.length - 1; index >= 0; index -= 1) if (none.has(missing[index]) || none.has(`fetched:${missing[index]}`)) missing.splice(index, 1);
   const empty = !(row?.invoice_lines > 0) && !(row?.lots > 0);
   // A working day (Mon-Fri) of the last 14 days, before today, with nothing
   // in yet is expected: "waiting" (all four files missing), not hidden as
@@ -25934,6 +25935,28 @@ async function handleApi(req, res, url) {
     requestUser = { username: "recorder", role: "viewer", permissions: [PERMISSIONS.INKOOP_VIEW] };
     url.pathname = agentInkoopRoute;
   }
+  // The recorder fetched and sent a day's file successfully: that file of
+  // that day counts as in ("fetched:<file>"), also when none of its rows
+  // landed on the day itself (they belong to the days around it).
+  if (!requestUser && url.pathname === "/api/agent/inkoop/day-file-fetched" && req.method === "POST") {
+    const apiKey = readAgentApiKey(req);
+    if (!llmPollerEnabled() || !apiKey || apiKey !== llmPollerApiKey) {
+      sendPollerUnauthorized(res);
+      return;
+    }
+    try {
+      const body = await readRequestJson(req);
+      const date = inkoopIsoDate(body?.date);
+      const file = String(body?.file || "");
+      if (!date) throw new Error("Missing date");
+      if (!["connect", "communications", "levering_bb"].includes(file)) throw new Error("Unknown file");
+      await setInkoopDayFileNone(date, `fetched:${file}`, true, "recorder");
+      sendJson(res, 200, { ok: true, day: (await getInkoopDataDayStatuses(date, date))[0] || null });
+    } catch (error) {
+      sendJson(res, 400, { error: error instanceof Error ? error.message : String(error) });
+    }
+    return;
+  }
   if (!requestUser) {
     sendUnauthorized(res);
     return;
@@ -29738,7 +29761,8 @@ async function handleApi(req, res, url) {
     try {
       // body { file, none }: one file of the day "none that day" (or not).
       if (body?.file !== undefined) {
-        if (!INKOOP_DATA_FILES.some(([key]) => key === body.file)) throw new Error("Unknown file");
+        // "fetched:<file>": the recorder's mark (Undo takes it off).
+        if (!INKOOP_DATA_FILES.some(([key]) => key === body.file || `fetched:${key}` === body.file)) throw new Error("Unknown file");
         await setInkoopDayFileNone(date, body.file, body.none !== false, requestUser.username);
         sendJson(res, 200, { ok: true, day: (await getInkoopDataDayStatuses(date, date))[0] || null });
         return;

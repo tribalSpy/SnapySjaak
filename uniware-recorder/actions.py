@@ -2786,6 +2786,9 @@ class ActionRun:
             if erp is not None:
                 details["connect_rows"] = erp
             self.say(f"SnappySjaak Inkoop: {label} in" + (f" -- {', '.join(f'{key} {value}' for key, value in details.items())}" if details else ""))
+        # Every file sent: the day's file counts as in on Connect data per day.
+        snappysjaak.mark_inkoop_day_fetched(kind, day)
+        self.say(f"SnappySjaak Inkoop: {label} of {self.run_date():%d-%m-%Y} marked as fetched")
 
     def run(self):
         self.active = True

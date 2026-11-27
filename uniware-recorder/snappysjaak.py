@@ -105,3 +105,9 @@ def upload_inkoop_file(kind: str, path: Path, date: str = "") -> dict:
     file = {"name": path.name, "content_base64": base64.b64encode(path.read_bytes()).decode("ascii")}
     body = {"erp_file": file, "run_date": date} if kind == "connect" else {"file": file}
     return _request("POST", route, body)
+
+
+def mark_inkoop_day_fetched(kind: str, date: str) -> dict:
+    """The day's file came in: Inkoop Controle counts it as in for that day
+    (also when its rows belong to the days around it)."""
+    return _request("POST", "/api/agent/inkoop/day-file-fetched", {"date": date, "file": kind})

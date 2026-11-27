@@ -20258,6 +20258,16 @@ function InkoopDataDaysCard() {
                   {files.map(([key]) => {
                     const cell = inkoopDataFileCell(day, key);
                     const none = (day.files_none || []).includes(key);
+                    // Fetched and sent by the recorder for this day (its rows
+                    // may belong to the days around it): in.
+                    if (!cell.ok && !none && (day.files_none || []).includes(`fetched:${key}`)) {
+                      return (
+                        <td key={key} className="ik-data-none" title="The Uniware recorder fetched and sent this file for this day -- counted as in">
+                          ✓ fetched by the recorder{" "}
+                          <button type="button" className="link-button" disabled={busy === day.date} onClick={() => markFileNone(day, `fetched:${key}`, false)}>Undo</button>
+                        </td>
+                      );
+                    }
                     if (!cell.ok && none) {
                       return (
                         <td key={key} className="ik-data-none" title={`Marked: no data in this file that day${day.override_by ? ` (${day.override_by})` : ""}`}>

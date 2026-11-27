@@ -906,7 +906,7 @@ export async function syncInkoopDataTasks({ days, today }) {
       // Connect lots are linked by it (bb_lots); "none that day" stops it.
       const weekday = new Date(`${day.date}T12:00:00Z`).getUTCDay();
       if (!kinds.includes("levering_bb") && weekday >= 1 && weekday <= 5 && !(Number(day.bb_lots) > 0)
-        && !(day.files_none || []).includes("levering_bb")) kinds.push("levering_bb");
+        && !(day.files_none || []).includes("levering_bb") && !(day.files_none || []).includes("fetched:levering_bb")) kinds.push("levering_bb");
       kinds.sort((left, right) => Object.keys(INKOOP_DATA_ACTIONS).indexOf(left) - Object.keys(INKOOP_DATA_ACTIONS).indexOf(right));
       if (!kinds.length) continue;
       const sourceKey = `recorder:inkoop_data:${day.date}`;
