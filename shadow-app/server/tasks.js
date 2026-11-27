@@ -916,7 +916,8 @@ export async function syncInkoopDataTasks({ days, today }) {
       const title = `Inkoop data from Uniware ${shown} · ${kinds.map((kind) => INKOOP_DATA_LABELS[kind]).join(", ")} missing`;
       const link = {
         page: "inkoop", date: day.date,
-        recorder_actions: kinds.map((kind) => config.inkoop_data[`action_${kind}`]),
+        // Always all three (the user's rule): the day's files fetched whole.
+        recorder_actions: Object.keys(INKOOP_DATA_ACTIONS).map((kind) => config.inkoop_data[`action_${kind}`]),
         recorder_values: { date: shown },
       };
       const existing = (await dbQuery("SELECT * FROM app_tasks WHERE source_key = $1", [sourceKey])).rows[0];
@@ -925,7 +926,7 @@ export async function syncInkoopDataTasks({ days, today }) {
           source: "recorder",
           source_key: sourceKey,
           title,
-          body: `Fetches the day's missing Uniware file(s) for Inkoop Controle (${kinds.map((kind) => INKOOP_DATA_LABELS[kind]).join(", ")}) and sends them to SnappySjaak. Press ▶ Run on this PC (the recorder dashboard open, Uniware on screen, hands off the keyboard until it's done). The task closes by itself once the files are in.`,
+          body: `Fetches the day's three Uniware files for Inkoop Controle (Connect export, Communications, Levering BB -- missing now: ${kinds.map((kind) => INKOOP_DATA_LABELS[kind]).join(", ")}) and sends them to SnappySjaak. Press ▶ Run on this PC (the recorder dashboard open, Uniware on screen, hands off the keyboard until it's done). The task closes by itself once the files are in.`,
           ...parseAssignee(config.inkoop_data.assign_to),
           due_date: today,
           link,
