@@ -913,7 +913,12 @@ def list_items(layout: list, target: str) -> list[dict]:
             if any(item["highlighted"] for item in column):
                 return column
     if lone and len(cursor_rows) > 1:
-        return _column_of(layout, lone[0])
+        # A lone teal cell with hardly anything above / below it is a
+        # message box ("Geen facturen van LTD op 27-11-2026" over Prg. 243's
+        # teal list), not a list: then the screen's rows.
+        column = _column_of(layout, lone[0])
+        if len(column) >= 3:
+            return column
     return screen_rows(layout)
 
 
@@ -2888,7 +2893,10 @@ class ActionRun:
             except Exception as error:
                 data = load_day_list(settings["list"])
                 entry = day_list_item(data, item["key"])
-                if self.stop_requested or not settings.get("skip_errors"):
+                # Focus lost / another window: nothing to do with this item --
+                # the run stops (never marks it "not found").
+                safety = "lost focus" in str(error) or "opened another window" in str(error)
+                if self.stop_requested or safety or not settings.get("skip_errors"):
                     if entry is not None:
                         entry["note"] = f"stopped: {error}"[:300]
                         save_day_list(data)
