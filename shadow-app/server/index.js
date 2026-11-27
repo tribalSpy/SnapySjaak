@@ -339,6 +339,10 @@ const llmPollerApiKey = String(process.env.SHADOW_LLM_POLLER_API_KEY || "").trim
 const backupAgentApiKey = String(process.env.BACKUP_AGENT_API_KEY || "").trim();
 const backupPublicKey = String(process.env.BACKUP_PUBLIC_KEY || "").trim();
 const pgDumpMinIntervalMinutes = Math.max(1, Number(process.env.PGDUMP_MIN_INTERVAL_MINUTES || 360));
+// A forced copy (the standby after a failed load) skips that wait, but not
+// more than once per 3 hours: a standby that keeps failing made Render copy
+// the database every hour (an hourly CPU spike).
+const pgDumpForcedMinIntervalMs = 3 * 60 * 60 * 1000;
 const backupManifestCachePath = path.join(cacheDir, "backup-manifest-cache.json");
 let lastPostgresDumpAt = 0;
 
@@ -1937,16 +1941,27 @@ function streamStateFile(filePath, { gzip = false } = {}) {
   });
 }
 
+// File path -> "size|mtime" when it was last found copied (this process).
+const stateSnapshotStamps = new Map();
+
 async function snapshotStateFilesToDatabase() {
   if (!isDatabaseEnabled()) return { ok: false, skipped: true, reason: "no database" };
   let saved = 0;
   for (const fileName of PROTECTED_STATE_FILES) {
     const filePath = path.join(cacheDir, fileName);
     if (!existsSync(filePath) || unreadableJsonFiles.has(filePath)) continue;
+    // The same size and time as when it was last found copied: not read at
+    // all (reading + hashing every file each hour was a CPU spike).
+    const stat = await fs.stat(filePath).catch(() => null);
+    const stamp = stat ? `${stat.size}|${stat.mtimeMs}` : "";
+    if (stamp && stateSnapshotStamps.get(filePath) === stamp) continue;
     // Unchanged since its last copy (the usual): only its hash, read in
     // pieces -- nothing parsed, nothing held.
     const first = await streamStateFile(filePath);
-    if (first.sha256 === await getLatestStateFileSha(fileName)) continue;
+    if (first.sha256 === await getLatestStateFileSha(fileName)) {
+      if (stamp) stateSnapshotStamps.set(filePath, stamp);
+      continue;
+    }
     // Its record count: known from its last read / save; else read once.
     let records = stateRecordCounts.get(filePath);
     if (!Number.isFinite(records)) {
@@ -1961,6 +1976,9 @@ async function snapshotStateFilesToDatabase() {
     if (!copy.size) continue;
     await saveStateFileSnapshot({ fileName, sizeBytes: copy.size, sha256: copy.sha256, records, gzipped: copy.gzipped });
     saved += 1;
+    // Not changed while it was copied: next hour it is skipped unread.
+    const after = await fs.stat(filePath).catch(() => null);
+    if (stamp && after && `${after.size}|${after.mtimeMs}` === stamp) stateSnapshotStamps.set(filePath, stamp);
   }
   const pruned = await pruneStateFileHistory();
   return { ok: true, saved, pruned };
@@ -25206,8 +25224,8 @@ async function handleApi(req, res, url) {
       const attempts = await readJsonFile(backupDumpPartsPath, {});
       const last = attempts[name] || {};
       const lastAt = Date.parse(last.started_at || "") || 0;
-      if (!forced && Date.now() - lastAt < minIntervalMs) {
-        sendJson(res, 429, { error: `Part "${name}" was made recently; wait ${pgDumpMinIntervalMinutes} minutes.` });
+      if (Date.now() - lastAt < (forced ? pgDumpForcedMinIntervalMs : minIntervalMs)) {
+        sendJson(res, 429, { error: `Part "${name}" was made recently; wait ${forced ? "3 hours (forced)" : `${pgDumpMinIntervalMinutes} minutes`}.` });
         return;
       }
       // Never finished (Render went down during it): not again, forced
@@ -25268,7 +25286,7 @@ async function handleApi(req, res, url) {
     // set it off again 15 minutes later -- a crash loop.
     const lastAttempt = await readJsonFile(backupDumpAttemptPath, {});
     lastPostgresDumpAt = Math.max(lastPostgresDumpAt, Date.parse(lastAttempt.started_at || "") || 0);
-    if (!forced && Date.now() - lastPostgresDumpAt < minIntervalMs) {
+    if (Date.now() - lastPostgresDumpAt < (forced ? pgDumpForcedMinIntervalMs : minIntervalMs)) {
       sendJson(res, 429, { error: `Postgres dump was already taken recently; wait ${pgDumpMinIntervalMinutes} minutes between dumps (use ?force=1 to override).` });
       return;
     }
