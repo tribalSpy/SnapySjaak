@@ -7409,6 +7409,11 @@ const handleAppTasksRoute = createAppTasksRoutes({
 // social agent routes), no campaign jobs, campaign tasks hidden. Nothing is
 // deleted -- turning it on brings everything back as it was.
 const CAMPAIGNS_ENABLED = String(process.env.SHADOW_CAMPAIGNS_ENABLED || "").trim() === "1";
+// Shelf count (photo AI counting shelves per reference) on ice: its score is
+// too low. Off: no nightly run, no new or resumed runs, no shelf_count job
+// handed to a PC. Its stored counts and the report stay. SHADOW_SHELF_COUNT_ENABLED=1
+// turns it on again.
+const SHELF_COUNT_ENABLED = String(process.env.SHADOW_SHELF_COUNT_ENABLED || "").trim() === "1";
 if (!CAMPAIGNS_ENABLED) hideTaskSources(["campaign"]);
 
 // Campagnes media (server/media.js): library, themes, renders on the BEAST,
@@ -17504,6 +17509,7 @@ async function resumeStaleShelfCountRuns() {
 }
 
 async function runShelfCountNightlyScheduledCheck() {
+  if (!SHELF_COUNT_ENABLED) return;
   try {
     await resumeStaleShelfCountRuns();
   } catch (error) {
@@ -24921,7 +24927,8 @@ async function handleApi(req, res, url) {
       // unaffected; only a poller that names a type here (e.g. the
       // dedicated shelf-count poller sending ["shelf_count"]) can ever
       // claim it. See claimNextLlmJob's own comment for why.
-      jobTypes: Array.isArray(body.job_types) ? body.job_types : null,
+      // Shelf count off: its jobs are not handed out (they wait, untouched).
+      jobTypes: Array.isArray(body.job_types) ? (SHELF_COUNT_ENABLED ? body.job_types : body.job_types.filter((type) => type !== "shelf_count")) : null,
     });
     sendJson(res, 200, {
       ok: true,
@@ -26871,6 +26878,10 @@ async function handleApi(req, res, url) {
     const targetDate = String(body?.date || "").slice(0, 10);
     if (!targetDate) {
       sendJson(res, 400, { error: "date is required" });
+      return;
+    }
+    if (!SHELF_COUNT_ENABLED) {
+      sendJson(res, 409, { error: "The shelf count is turned off for now (on ice). The stored counts stay." });
       return;
     }
     try {
