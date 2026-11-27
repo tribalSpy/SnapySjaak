@@ -2721,6 +2721,31 @@ class ActionRun:
                     entry["note"] = "" if result.get("ok") else str(result.get("error") or "")[:300]
             save_day_list(data)
 
+    def _snappysjaak_inkoop_send(self):
+        """"After the run: send the dump to SnappySjaak Inkoop as ..." -- the
+        day's Connect export / Communications / Levering BB, the dump file
+        this run made (only after a finished run: never half a day)."""
+        kind = (self.action.get("snappysjaak_inkoop") or "").strip()
+        if not kind:
+            return
+        import snappysjaak  # noqa: PLC0415
+        label = snappysjaak.INKOOP_KINDS.get(kind, ("", kind))[1]
+        if self.result != "done":
+            self.say(f"NOT sent to SnappySjaak Inkoop ({label}): the run did not finish.")
+            return
+        dumps = [Path(path) for path in self.exported_files if str(path).lower().endswith((".csv", ".xlsx", ".xls")) and Path(path).is_file()]
+        if not dumps:
+            raise RuntimeError(f"no dump file to send to SnappySjaak Inkoop ({label})")
+        day = f"{self.run_date():%Y-%m-%d}"
+        for path in dumps:
+            self.say(f"Sending {path.name} to SnappySjaak Inkoop as {label} ({day})")
+            answer = snappysjaak.upload_inkoop_file(kind, path, day)
+            details = {key: answer.get(key) for key in ("lines", "saved", "bridges", "afgemeld", "filled_now", "dispatch_lot_count") if answer.get(key) not in (None, "")}
+            erp = (answer.get("import") or {}).get("erp_row_count")
+            if erp is not None:
+                details["connect_rows"] = erp
+            self.say(f"SnappySjaak Inkoop: {label} in" + (f" -- {', '.join(f'{key} {value}' for key, value in details.items())}" if details else ""))
+
     def run(self):
         self.active = True
         try:
@@ -2774,6 +2799,11 @@ class ActionRun:
             except Exception as error:  # noqa: BLE001 -- shown in the dashboard
                 self.result = "failed"
                 self.say(f"Could not send to SnappySjaak: {error}")
+            try:
+                self._snappysjaak_inkoop_send()
+            except Exception as error:  # noqa: BLE001 -- shown in the dashboard
+                self.result = "failed"
+                self.say(f"Could not send to SnappySjaak Inkoop: {error}")
             self.active = False
 
     def _run_steps(self, hwnd, controller, steps: list, start: int, end: int, selected):
@@ -2926,6 +2956,8 @@ class ActionRun:
         if step.get("classify"):
             self._classify(hwnd, step["classify"], f"Step {number}")
             return selected
+        if step.get("until_title") and step.get("key"):
+            return self._press_until_title(hwnd, controller, step, number)
         if "text" in step:
             typed = re.sub(r"\{([a-z0-9_]+)\}", lambda match: self._field_text(match.group(1), step), step["text"])
             controller.type(typed)
@@ -2972,6 +3004,26 @@ class ActionRun:
         if step.get("capture"):
             self._capture(hwnd, number, bool(step.get("capture_pages")), controller, reading)
         return selected
+
+    def _press_until_title(self, hwnd, controller, step: dict, number: int):
+        """A key pressed until the screen's title shows a text (e.g. F11
+        until "Alles": a list's filter cycles, and where it starts differs);
+        already there = not pressed. At most until_max (default 8) presses."""
+        wanted = str(step["until_title"]).strip().lower()
+        limit = int(step.get("until_max") or 8)
+        presses = 0
+        while True:
+            reading = self._read(hwnd)
+            title = reading[2] or ""
+            if wanted in title.lower():
+                self.say(f"Step {number}: '{title}' after {presses} x {step['key']}")
+                return reading[3]
+            if presses >= limit:
+                raise RuntimeError(f"'{step['until_title']}' not on top after {limit} x {step['key']} (now: '{title}').")
+            send_combo(controller, step["key"])
+            presses += 1
+            time.sleep(float(step.get("until_pause") or 1.0))
+            self._wait_not_busy(hwnd, f"Step {number}")
 
     def run_date(self) -> datetime.date:
         """The day this run is about: the {date} field when it was filled in

@@ -311,6 +311,12 @@ class Handler(BaseHTTPRequestHandler):
                             action.pop("snappysjaak_fill", None)
                     if "snappysjaak_send" in body:
                         action["snappysjaak_send"] = bool(body.get("snappysjaak_send"))
+                    if "snappysjaak_inkoop" in body:
+                        kind = str(body.get("snappysjaak_inkoop") or "").strip()
+                        if kind in ("connect", "communications", "levering_bb"):
+                            action["snappysjaak_inkoop"] = kind
+                        else:
+                            action.pop("snappysjaak_inkoop", None)
                     for index, change in enumerate(body.get("steps") or []):
                         if index < len(action["steps"]):
                             step = action["steps"][index]
@@ -651,6 +657,9 @@ function edit(slug) {
     <p class="row"><label>Before the run: fill day list <input id="editSnappyFill" size="16" placeholder="e.g. facturen" value="${esc((a.snappysjaak_fill && a.snappysjaak_fill.list) || "")}"></label>
       with the factuur numbers SnappySjaak still needs (the sendings of the {date} field, else the previous workday)</p>
     <p class="row"><label><input type="checkbox" id="editSnappySend" ${a.snappysjaak_send ? "checked" : ""}> After the run: send the PDFs (and the numbers not found) to SnappySjaak Finance Audit</label></p>
+    <p class="row"><label>After the run: send the dump file to SnappySjaak Inkoop Controle as <select id="editSnappyInkoop">
+      ${[["", "-- not sent --"], ["connect", "Connect export"], ["communications", "Communications"], ["levering_bb", "Levering BB"]].map(([value, text]) => `<option value="${value}" ${(a.snappysjaak_inkoop || "") === value ? "selected" : ""}>${text}</option>`).join("")}
+    </select></label> <span class="muted">(the {date} day's file; only after a finished run)</span></p>
     <p class="muted">Needs snappysjaak.json in this folder (SnappySjaak: Finance Audit UKdocs -> "Recorder setup file"). With a for each on that day list: tick "mark done" and "skip a failing item"; the dump name {invoice} (the for each's field) names each PDF after its number.</p>
     <table><tr><th>#</th><th>Step</th><th>Goes to</th><th>Field (typed text) / list row</th><th>Wait until screen shows</th><th>Max wait (s)</th><th>Read column (into field)</th><th>Capture screen</th><th>All pages</th><th>Remove</th></tr>
     ${a.steps.map((s, i) => `<tr><td>${i + 1}</td>
@@ -798,7 +807,7 @@ function saveEdit() {
   // Show the saved steps right away: an Edit table that still showed the old
   // steps looked like nothing happened, and saving it again changed the
   // wrong (renumbered) steps.
-  api(`/api/actions/${editing}/update`, { description: $("editDesc").value, export_dir: $("editExportDir").value, back_key: $("editBackKey").value, close_dump_window: $("editCloseWindow").checked, join_dumps: $("editJoinDumps").checked, export_name: $("editExportName").value, uniware_dump_dir: $("editUniwareDir").value, uniware_dump_pattern: $("editUniwarePattern").value, uniware_dump_wait: $("editUniwareWait").value, snappysjaak_fill_list: $("editSnappyFill").value, snappysjaak_send: $("editSnappySend").checked, steps }).then((payload) => { if (payload) edit(editing); });
+  api(`/api/actions/${editing}/update`, { description: $("editDesc").value, export_dir: $("editExportDir").value, back_key: $("editBackKey").value, close_dump_window: $("editCloseWindow").checked, join_dumps: $("editJoinDumps").checked, export_name: $("editExportName").value, uniware_dump_dir: $("editUniwareDir").value, uniware_dump_pattern: $("editUniwarePattern").value, uniware_dump_wait: $("editUniwareWait").value, snappysjaak_fill_list: $("editSnappyFill").value, snappysjaak_send: $("editSnappySend").checked, snappysjaak_inkoop: $("editSnappyInkoop").value, steps }).then((payload) => { if (payload) edit(editing); });
 }
 api("/api/state");
 setInterval(() => { if (state && (state.recording.active || state.run.active || (state.plan_run && state.plan_run.active))) api("/api/state"); }, 1000);

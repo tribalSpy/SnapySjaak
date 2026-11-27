@@ -25909,7 +25909,30 @@ async function handleApi(req, res, url) {
     return;
   }
 
-  const requestUser = await getRequestUser(req);
+  let requestUser = await getRequestUser(req);
+  // The Uniware recorder (its machine key, snappysjaak.json): a day's
+  // Connect export, Communications file and Levering BB go in through the
+  // very routes the Setup page uploads them with -- same checks, same
+  // comparison queued. Only these three, only POST.
+  const agentInkoopRoute = {
+    "/api/agent/inkoop/connect-export": "/api/inkoop/veiling/compare",
+    "/api/agent/inkoop/communications": "/api/inkoop/epp-list",
+    "/api/agent/inkoop/levering-bb": "/api/inkoop/levering-bb",
+  }[url.pathname];
+  if (!requestUser && agentInkoopRoute && req.method === "POST") {
+    if (!llmPollerEnabled()) {
+      sendJson(res, 503, { error: "SHADOW_LLM_POLLER_API_KEY is not configured" });
+      return;
+    }
+    const apiKey = readAgentApiKey(req);
+    if (!apiKey || apiKey !== llmPollerApiKey) {
+      sendPollerUnauthorized(res);
+      return;
+    }
+    console.log(`[inkoop] recorder upload: ${url.pathname}`);
+    requestUser = { username: "recorder", role: "viewer", permissions: [PERMISSIONS.INKOOP_VIEW] };
+    url.pathname = agentInkoopRoute;
+  }
   if (!requestUser) {
     sendUnauthorized(res);
     return;

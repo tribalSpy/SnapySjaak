@@ -84,3 +84,24 @@ def upload_invoices(date: str, paths: list[Path], not_found: list[str], agent: s
         results.extend(answer.get("results") or [])
         still_needed = answer.get("still_needed") or []
     return {"results": results, "still_needed": still_needed}
+
+
+# The Inkoop Controle day files an action can send (Edit: "After the run:
+# send the dump to SnappySjaak Inkoop as ..."): the same routes the Setup
+# page uploads them with.
+INKOOP_KINDS = {
+    "connect": ("/api/agent/inkoop/connect-export", "Connect export"),
+    "communications": ("/api/agent/inkoop/communications", "Communications"),
+    "levering_bb": ("/api/agent/inkoop/levering-bb", "Levering BB"),
+}
+
+
+def upload_inkoop_file(kind: str, path: Path, date: str = "") -> dict:
+    """Sends one dump file to Inkoop Controle as `kind` (see INKOOP_KINDS);
+    date (YYYY-MM-DD) is the day it is about."""
+    if kind not in INKOOP_KINDS:
+        raise RuntimeError(f"Unknown Inkoop file kind '{kind}'")
+    route = INKOOP_KINDS[kind][0]
+    file = {"name": path.name, "content_base64": base64.b64encode(path.read_bytes()).decode("ascii")}
+    body = {"erp_file": file, "run_date": date} if kind == "connect" else {"file": file}
+    return _request("POST", route, body)
