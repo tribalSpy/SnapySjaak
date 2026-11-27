@@ -31326,7 +31326,7 @@ async function handleApi(req, res, url) {
         const lots = lotsOf(row);
         if (!lots.length) return null;
         const pair = (state.manual_line_pairs || []).find((entry) => lots.every((lot) => (entry.lots || []).map((value) => String(value).trim()).includes(lot)));
-        return pair ? { id: pair.id, by: pair.by || "", note: pair.note || "", at: pair.at || "", lots: (pair.lots || []).map((lot) => String(lot).trim()) } : null;
+        return pair ? { id: pair.id, by: pair.by || "", note: pair.note || "", at: pair.at || "", lots: (pair.lots || []).map((lot) => String(lot).trim()), invoice_line_ids: (pair.invoice_line_ids || []).map((id) => String(id)) } : null;
       };
       sendJson(res, 200, {
         from, to, grower,
@@ -31434,6 +31434,33 @@ async function handleApi(req, res, url) {
     }
     const state = await readInkoopState();
     const all = state.manual_line_pairs || [];
+    // One link with what it holds (Track & Trace "add to this match": its
+    // lines and lots are ticked again, so the new link keeps them all).
+    const pairId = String(url.searchParams.get("id") || "").trim();
+    if (pairId) {
+      const pair = all.find((entry) => entry.id === pairId);
+      if (!pair) {
+        sendJson(res, 404, { error: "Link not found -- it may have been changed; reload the page." });
+        return;
+      }
+      try {
+        const members = await getInkoopPairMembers({ lineIds: pair.invoice_line_ids || [], lots: pair.lots || [] });
+        sendJson(res, 200, {
+          pair,
+          lines: members.invoiceLines.map((line) => ({
+            id: String(line.id), description: normalizeUkdocsText(line.description), quantity: Number(line.quantity) || 0, total: Number(line.total) || 0,
+            invoice_date: String(line.invoice_date || "").slice(0, 10), invoice_number: normalizeUkdocsText(line.invoice_number),
+          })),
+          lots: members.erpRows.map((row) => ({
+            lot: String(row.lot), description: normalizeUkdocsText(row.description), pieces: Number(row.pieces) || 0, t_price: Number(row.t_price) || 0,
+            date: String(row.date || row.erp_date || "").slice(0, 10),
+          })),
+        });
+      } catch (error) {
+        sendJson(res, 500, { error: error instanceof Error ? error.message : String(error) });
+      }
+      return;
+    }
     const from = inkoopIsoDate(url.searchParams.get("from"));
     const to = inkoopIsoDate(url.searchParams.get("to"));
     if (!from || !to) {

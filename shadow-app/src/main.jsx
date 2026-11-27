@@ -22416,6 +22416,37 @@ function InkoopTrackTraceWorkspace({ bar, setBar, overview, company, matchRound 
   // go into the link as ticked; tick the other lot and Link.
   async function addLotToMatched(line) {
     setIssueError("");
+    // Linked by hand: every invoice line and lot of that link is ticked
+    // (the new link replaces it, so none may drop out) -- then tick the
+    // missing invoice line or Connect lot and Link. Works for pools too
+    // (no brief number needed).
+    if (line.hand_pair?.id) {
+      try {
+        const found = await apiJson(`/api/inkoop/manual-pairs?id=${encodeURIComponent(line.hand_pair.id)}`);
+        const next = {};
+        for (const item of found.lines || []) {
+          const issue = {
+            id: `gap_invoice:${item.id}`, issue_type: "gap_invoice", description: item.description || line.description, date: item.invoice_date,
+            detail: { id: item.id, quantity: item.quantity, total: item.total, invoice_date: item.invoice_date, invoice_number: item.invoice_number },
+          };
+          next[pickKey(issue)] = issue;
+        }
+        for (const lot of found.lots || []) {
+          const issue = {
+            id: `gap_erp:${lot.lot}`, issue_type: "gap_erp", description: lot.description || line.description, date: lot.date,
+            erp_row: { lot: lot.lot, pieces: lot.pieces, t_price: lot.t_price, date: lot.date, description: lot.description },
+          };
+          next[pickKey(issue)] = issue;
+        }
+        if (!(found.lines || []).length || !(found.lots || []).length) throw new Error("Couldn't load the invoice line(s) and lot(s) of this link -- reload and try again.");
+        setPicked(next);
+        if (found.pair?.note) setPairNote(found.pair.note);
+        setFocusNote(`${line.description}: the link's ${found.lines.length} invoice line(s) and ${found.lots.length} lot(s) are ticked -- tick the missing invoice line (open, or under "Invoice lines of other growers") or Connect lot, then Link: the new link replaces the old one.`);
+      } catch (findError) {
+        setIssueError(findError.message);
+      }
+      return;
+    }
     const pav = String(line.pav || "").trim();
     const invoices = new Set(String(line.invoice_number || "").split("+").map((value) => value.trim()).filter(Boolean));
     if (!pav || !invoices.size) {
@@ -22788,7 +22819,7 @@ function InkoopTrackTraceWorkspace({ bar, setBar, overview, company, matchRound 
                     ...(hand ? {
                       actions: [
                         { label: `🔗 Unlink (linked by hand${hand.by ? ` by ${hand.by}` : ""})`, onClick: () => unlinkMatched(line) },
-                        { label: "➕ Add another Connect lot to this line…", onClick: () => addLotToMatched(line) },
+                        { label: "➕ Add another invoice line or Connect lot to this link…", onClick: () => addLotToMatched(line) },
                       ],
                     } : {
                       warning: "⚠ Matched via the data (the comparison paired it) -- not linked by hand, so it can't be unlinked here.",
