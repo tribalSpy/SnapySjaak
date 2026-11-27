@@ -2539,6 +2539,16 @@ class ActionRun:
             # pressed Up and Down forever (Levering BB).
             rows = [row for row in rows if not re.match(r"\s*\[", row["text"]) and "▼" not in row["text"]]
             highlighted = [index for index, row in enumerate(rows) if row["highlighted"]]
+            if len(highlighted) > 1:
+                # More than one teal row in the column (a "Screen (4)" tag
+                # or the table's row behind the popup): the cursor is the
+                # one inside the long unbroken list -- taking the first made
+                # it press Down past the target, round and round.
+                blocks = [_contiguous_around_cursor([{**row, "highlighted": index == pick} for index, row in enumerate(rows)]) for pick in highlighted]
+                best = max(blocks, key=len)
+                if len(best) >= 5:
+                    rows = best
+                    highlighted = [index for index, row in enumerate(rows) if row["highlighted"]]
             if not highlighted:
                 self._save_problem_screen(image)
                 raise RuntimeError(f"{label}: can't see which row is selected in the list. Stopped (screenshot in outputs).")
