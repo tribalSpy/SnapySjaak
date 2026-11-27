@@ -84,6 +84,7 @@ import {
   getInkoopVerifiedMatchRows,
   getInkoopInvoiceMatchFigures,
   getInkoopInvoiceResolvedRows,
+  getInkoopMatchRowsForLots,
   getKingExportsByInvoice,
   getInkoopInvoiceTraceLines,
   getInkoopTraceLots,
@@ -30100,6 +30101,17 @@ async function handleApi(req, res, url) {
           left_out, counted_note, linked_by_hand: pair ? { lines: pair.invoice_line_ids, by: pair.by || "", note: pair.note || "", at: pair.at || "" } : null,
         };
       });
+      // Where the comparison has each lot: day, list and the grower it is
+      // counted under (why it is -- or isn't -- in a grower's money trace).
+      const view = inkoopOverviewNaming(state);
+      const comparedRows = await getInkoopMatchRowsForLots(lots.map((lot) => ({ lot: lot.lot, date: String(lot.date || "").slice(0, 10) }))).catch(() => []);
+      for (const lot of lots) {
+        lot.compared = comparedRows.filter((row) => row.lot === lot.lot).map((row) => ({
+          date: row.date, status: INKOOP_OVERVIEW_STATUS[row.list] || row.list, invoice_number: row.invoice_number || "",
+          supplier_code: row.supplier_code || "", supplier_name: row.supplier_name || "",
+          grower: view.growerOf({ supplier_code: row.supplier_code, supplier_name: row.supplier_name }) || "",
+        }));
+      }
       const lines = found.lines.map((row) => {
         const pair = pairs.find((item) => (item.invoice_line_ids || []).map(String).includes(String(row.id)));
         return {

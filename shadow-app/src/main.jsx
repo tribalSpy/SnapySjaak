@@ -21854,6 +21854,15 @@ function IkFindPanel({ query, onClose, onOpenTrackTrace, onPick = null, pickedKe
               <div className="muted">{boxes(lot.items, lot.cont, lot.pieces)} @ {formatInkoopEuro(lot.price)} = {formatInkoopEuro(lot.total)} · lev. {lot.suppl || "–"} · AVC {lot.avc || "–"}{lot.transp ? ` · transp. ${lot.transp}` : ""}</div>
               {lot.left_out && <div className="money-loss">⚠ {lot.left_out}</div>}
               {lot.counted_note && <div className="muted">{lot.counted_note}</div>}
+              {!lot.left_out && Array.isArray(lot.compared) && (lot.compared.length
+                ? lot.compared.map((row, index) => (
+                  <div key={index}>
+                    In the comparison: {fustOverviewDate(row.date)} · {IK_STATUS_LABEL[row.status] || row.status}{row.invoice_number ? ` (invoice ${row.invoice_number})` : ""}
+                    {" "}· counted under grower <strong>{row.grower || "– none –"}</strong>
+                    <span className="muted"> (code {row.supplier_code || "–"}{row.supplier_name ? `, name ${row.supplier_name}` : ""})</span>
+                  </div>
+                ))
+                : <div className="ik-fu-warn">Not in the stored comparison of its days -- the day is not compared yet, or the lot was not taken in.</div>)}
               {lot.linked_by_hand && <div>✋ linked by hand to line(s) {lot.linked_by_hand.lines.join(", ")}{lot.linked_by_hand.by ? ` by ${lot.linked_by_hand.by}` : ""}{lot.linked_by_hand.note ? ` -- ${lot.linked_by_hand.note}` : ""}</div>}
             </div>
           ))}

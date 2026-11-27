@@ -2631,6 +2631,27 @@ export async function getInkoopOverviewLines({ company = "", from = "", to = "",
 // (the PDF's line) and its Connect lots with everything Connect, the night
 // action / EPP and the dispatches hold -- for some (grower code, grower
 // name) pairs of the stored match lines. Read only.
+// Where the stored comparison has these lots (Find): per lot its row(s) --
+// day, list, the supplier code + name it is counted under. Looked up around
+// each lot's own day (the date index), not through the whole table.
+export async function getInkoopMatchRowsForLots(lots) {
+  const wanted = (lots || []).filter((lot) => lot?.lot && /^\d{4}-\d{2}-\d{2}$/.test(String(lot.date || ""))).slice(0, 20);
+  if (!pool || !wanted.length) return [];
+  const rows = [];
+  for (const lot of wanted) {
+    const result = await pool.query(
+      `SELECT $1::text AS lot, to_char(m.match_date, 'YYYY-MM-DD') AS date, m.list, m.supplier_code, m.supplier_name, m.invoice_number, m.company_number
+         FROM inkoop_match_rows m
+        WHERE m.match_date BETWEEN $2::date - 10 AND $2::date + 10 AND m.lot <> ''
+          AND $1::text = ANY(string_to_array(regexp_replace(m.lot, '\\s', '', 'g'), '+'))
+        LIMIT 10`,
+      [String(lot.lot), lot.date],
+    );
+    rows.push(...result.rows);
+  }
+  return rows;
+}
+
 export async function getInkoopGrowerExport({ company = "", from = "", to = "", pairs = [] } = {}) {
   if (!pool || !from || !to || !pairs.length) return { invoice_lines: [], lots: [] };
   const params = [from, to, pairs.map((pair) => pair[0]), pairs.map((pair) => pair[1])];
