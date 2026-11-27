@@ -3787,37 +3787,83 @@ function ukdocsShipmentStatus(shipment) {
   return "files_uploaded";
 }
 
-async function downloadUkdocsFilesWithPrompt(files, folderName = "") {
-  if (!Array.isArray(files) || !files.length) {
-    return;
-  }
-  if (typeof window.showDirectoryPicker !== "function") {
-    files.forEach((file) => downloadBase64File(file.name, file.content_base64, file.mime_type));
-    return;
-  }
+// Where UKdocs' generated files go: a folder picked by the user (Chrome
+// remembers the last one, id "ukdocs-export"), a truck-named folder inside.
+// The picker must open straight from a click -- opened after waiting for
+// the server (generating takes longer than Chrome's few seconds) it was
+// refused and the files silently went loose into Downloads.
+async function pickUkdocsFolder() {
+  if (typeof window.showDirectoryPicker !== "function") return null;
+  return window.showDirectoryPicker({ id: "ukdocs-export", mode: "readwrite" });
+}
 
+// Writes the files into <picked folder>/<truck>/ (each file tried 3 times: a
+// synced folder can grab the file being written). Returns { saved, folder,
+// failed }; no folder (or the folder failing): the files are downloaded.
+async function saveUkdocsFilesToFolder(files, folderName, directoryHandle) {
+  const list = Array.isArray(files) ? files : [];
+  const download = () => list.forEach((file) => downloadBase64File(file.name, file.content_base64, file.mime_type));
+  if (!list.length) return { saved: 0, folder: "", failed: [] };
+  if (!directoryHandle) {
+    download();
+    return { saved: 0, folder: "", failed: [], downloaded: list.length };
+  }
+  const cleanedFolderName = safeDownloadFilename(String(folderName || "").trim()).replace(/[. ]+$/, "");
+  let target = directoryHandle;
   try {
-    const pickedDirectoryHandle = await window.showDirectoryPicker();
-    const cleanedFolderName = safeDownloadFilename(String(folderName || "").trim());
     // Puts every generated file for this shipment together in one truck-named
     // folder inside wherever the user picked, instead of dumping them loose.
-    const targetDirectoryHandle = cleanedFolderName && cleanedFolderName !== "download"
-      ? await pickedDirectoryHandle.getDirectoryHandle(cleanedFolderName, { create: true })
-      : pickedDirectoryHandle;
-    for (const file of files) {
-      const fileHandle = await targetDirectoryHandle.getFileHandle(safeDownloadFilename(file.name), { create: true });
-      const writable = await fileHandle.createWritable();
-      const binary = window.atob(file.content_base64);
-      const bytes = new Uint8Array(binary.length);
-      for (let index = 0; index < binary.length; index += 1) {
-        bytes[index] = binary.charCodeAt(index);
-      }
-      await writable.write(new Blob([bytes], { type: file.mime_type || "application/octet-stream" }));
-      await writable.close();
-    }
-  } catch {
-    files.forEach((file) => downloadBase64File(file.name, file.content_base64, file.mime_type));
+    if (cleanedFolderName && cleanedFolderName !== "download") target = await directoryHandle.getDirectoryHandle(cleanedFolderName, { create: true });
+  } catch (error) {
+    download();
+    return { saved: 0, folder: cleanedFolderName, failed: [`the folder ${cleanedFolderName}: ${error?.message || error}`], downloaded: list.length };
   }
+  const failed = [];
+  let saved = 0;
+  for (const file of list) {
+    const binary = window.atob(file.content_base64);
+    const bytes = new Uint8Array(binary.length);
+    for (let index = 0; index < binary.length; index += 1) bytes[index] = binary.charCodeAt(index);
+    const blob = new Blob([bytes], { type: file.mime_type || "application/octet-stream" });
+    let done = false;
+    let lastError = null;
+    for (let attempt = 1; attempt <= 3 && !done; attempt += 1) {
+      try {
+        const fileHandle = await target.getFileHandle(safeDownloadFilename(file.name), { create: true });
+        const writable = await fileHandle.createWritable();
+        await writable.write(blob);
+        await writable.close();
+        done = true;
+      } catch (error) {
+        lastError = error;
+        if (attempt < 3) await new Promise((resolve) => setTimeout(resolve, 600 * attempt));
+      }
+    }
+    if (done) saved += 1;
+    else {
+      failed.push(`${file.name} (${lastError?.message || lastError})`);
+      downloadBase64File(file.name, file.content_base64, file.mime_type);
+    }
+  }
+  return { saved, folder: cleanedFolderName || directoryHandle.name || "", failed };
+}
+
+function ukdocsSavedText(result, total) {
+  if (!total) return "";
+  if (result.downloaded && !result.failed.length) return ` No folder chosen -- the ${total} file(s) went to Downloads.`;
+  if (!result.failed.length) return ` Saved in folder "${result.folder}" (${result.saved} file(s)).`;
+  return ` Saved ${result.saved} of ${total} in folder "${result.folder}"; not saved there (downloaded instead): ${result.failed.slice(0, 4).join("; ")}.`;
+}
+
+// "Download files" (the files already generated): picks the folder from this click.
+async function downloadUkdocsFilesWithPrompt(files, folderName = "") {
+  let directoryHandle = null;
+  try {
+    directoryHandle = await pickUkdocsFolder();
+  } catch (error) {
+    if (error?.name === "AbortError") return null; // the user closed the picker
+  }
+  return saveUkdocsFilesToFolder(files, folderName, directoryHandle);
 }
 
 // Writes a "Save audit" manifest (one folder per sending, each with its own
@@ -4743,6 +4789,18 @@ function UkdocsPage({ currentUser, onNavigate }) {
     if (!confirmShipmentInvoiceNumbers("generate the documents")) {
       return;
     }
+    // The folder first, straight from the click (see pickUkdocsFolder);
+    // closed without one: generated anyway, the files go to Downloads.
+    let directoryHandle = null;
+    let pickRefused = false;
+    try {
+      directoryHandle = await pickUkdocsFolder();
+    } catch (pickError) {
+      if (pickError?.name !== "AbortError") {
+        pickRefused = true;
+        console.warn("UKdocs folder picker:", pickError);
+      }
+    }
     setSaving(true);
     setError("");
     setMessage("");
@@ -4763,8 +4821,10 @@ function UkdocsPage({ currentUser, onNavigate }) {
         setSelectedAuditReportId(payload.audit_reports[0].id);
       }
       setShipmentDraft(payload.shipment || shipmentDraft);
-      setMessage(`Generated ${payload.files?.length || 0} UKdocs files and saved the finished shipment.`);
-      await downloadUkdocsFilesWithPrompt(payload.files || [], payload.shipment?.truck_number || shipmentDraft.truck_number);
+      const saved = await saveUkdocsFilesToFolder(payload.files || [], payload.shipment?.truck_number || shipmentDraft.truck_number, directoryHandle);
+      setMessage(`Generated ${payload.files?.length || 0} UKdocs files and saved the finished shipment.${pickRefused
+        ? " Chrome did not open the folder window (too long after the click) -- the files went to Downloads; click \"Download files\" to save them in the truck folder."
+        : ukdocsSavedText(saved, (payload.files || []).length)}`);
     } catch (generateError) {
       setError(generateError.message);
     } finally {
@@ -5283,7 +5343,10 @@ function UkdocsPage({ currentUser, onNavigate }) {
                 {saving ? "Generating..." : "Generate documents"}
               </button>
             )}
-            <button type="button" disabled={!generatedFiles.length} onClick={() => downloadUkdocsFilesWithPrompt(generatedFiles, shipmentDraft.truck_number)}>Download files</button>
+            <button type="button" disabled={!generatedFiles.length} onClick={async () => {
+              const saved = await downloadUkdocsFilesWithPrompt(generatedFiles, shipmentDraft.truck_number);
+              if (saved) setMessage(`UKdocs files:${ukdocsSavedText(saved, generatedFiles.length)}`);
+            }}>Download files</button>
             <button type="button" disabled={!generatedFiles.length} onClick={() => generatedFiles.forEach((file) => downloadBase64File(file.name, file.content_base64, file.mime_type))}>Download only</button>
               </div>
 
