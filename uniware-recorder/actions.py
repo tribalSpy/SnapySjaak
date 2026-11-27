@@ -862,6 +862,27 @@ def _teal_list_cursor(rows: list[dict]) -> list[dict]:
     return [{**row, "highlighted": index == chosen} for index, row in enumerate(rows)]
 
 
+def _join_split_words(layout: list) -> list[dict]:
+    """Text pieces on one screen row with only a space between them, joined
+    into one ("OneDrive" + "CSV" -> "OneDrive CSV"): the reader sometimes
+    splits a list item, and then neither piece is the item."""
+    joined = []
+    for line in sorted(layout, key=lambda line: (round(line["y"] / 6), line["x"])):
+        width = line.get("w") or len(line["text"]) * 14
+        last = joined[-1] if joined else None
+        if last is not None and abs(line["y"] - last["y"]) <= 4 and last.get("cursor") == line.get("cursor"):
+            last_width = last.get("w") or len(last["text"]) * 14
+            char = last_width / max(1, len(last["text"]))
+            gap = line["x"] - (last["x"] + last_width)
+            if 0 <= gap <= 1.6 * char:
+                last["text"] = f"{last['text']} {line['text']}"
+                last["w"] = line["x"] + width - last["x"]
+                last["highlighted"] = bool(last.get("highlighted") or line.get("highlighted"))
+                continue
+        joined.append(dict(line))
+    return joined
+
+
 def list_items(layout: list, target: str) -> list[dict]:
     """The list to move through, as rows {text, y, highlighted}. A popup
     list lies on top of a table (its own teal cell vs the table's teal row):
@@ -871,6 +892,7 @@ def list_items(layout: list, target: str) -> list[dict]:
     # counts -- the unbroken run of rows around the cursor -- never the same
     # words elsewhere (a field above it showing the last choice,
     # "[OneDrive CSV", made the run steer at that field).
+    layout = _join_split_words(layout)
     cursor_rows = {}
     for line in layout:
         if line.get("cursor"):
@@ -2537,7 +2559,7 @@ class ActionRun:
             # A dropdown's own field above its list ("[OneDrive CSV  ▼]",
             # the last choice) is never a row to move to -- steering at it
             # pressed Up and Down forever (Levering BB).
-            rows = [row for row in rows if not re.match(r"\s*\[", row["text"]) and "▼" not in row["text"]]
+            rows = [row for row in rows if "[" not in row["text"] and "▼" not in row["text"]]
             highlighted = [index for index, row in enumerate(rows) if row["highlighted"]]
             if len(highlighted) > 1:
                 # More than one teal row in the column (a "Screen (4)" tag
