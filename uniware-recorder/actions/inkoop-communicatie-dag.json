@@ -1,7 +1,7 @@
 {
   "name": "Inkoop Communicatie dag",
   "slug": "inkoop-communicatie-dag",
-  "description": "Communicatie > Klok transacties of the {date} day: F11 until 'Alles', Ctrl+P to OneDrive CSV; the dump goes to SnappySjaak Inkoop Controle as the day's Communications file (no EPP loop).",
+  "description": "Communicatie > Klok transacties of the {date} day: Shift+F11 until 'Alles', Ctrl+P to OneDrive CSV; the dump goes to SnappySjaak Inkoop Controle as the day's Communications file (no EPP loop).",
   "created": "2026-11-27T15:43:00",
   "start_screen": "prg-000",
   "steps": [
@@ -77,7 +77,7 @@
       "wait_text": ""
     },
     {
-      "key": "F11",
+      "key": "Shift+F11",
       "until_title": "Alles",
       "until_max": 8,
       "to": "prg-510",
@@ -167,5 +167,6 @@
   "close_dump_window": true,
   "join_dumps": false,
   "snappysjaak_inkoop": "communications",
-  "copied_from": "Communicatie nacht"
+  "copied_from": "Communicatie nacht",
+  "snappysjaak_send": false
 }

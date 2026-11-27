@@ -3012,8 +3012,8 @@ class ActionRun:
         wanted = str(step["until_title"]).strip().lower()
         limit = int(step.get("until_max") or 8)
         presses = 0
+        reading = self._read(hwnd)
         while True:
-            reading = self._read(hwnd)
             title = reading[2] or ""
             if wanted in title.lower():
                 self.say(f"Step {number}: '{title}' after {presses} x {step['key']}")
@@ -3022,8 +3022,23 @@ class ActionRun:
                 raise RuntimeError(f"'{step['until_title']}' not on top after {limit} x {step['key']} (now: '{title}').")
             send_combo(controller, step["key"])
             presses += 1
-            time.sleep(float(step.get("until_pause") or 1.0))
+            self.say(f"Step {number}: {step['key']} ({presses}) -- was '{title}'")
+            # One press = one change: wait until the title is another one
+            # (and stays so) before looking -- checked too early, the old
+            # title was read, the key pressed again and "Alles" passed by.
+            changed_by = time.time() + float(step.get("until_pause") or 8)
+            while True:
+                self._check(hwnd)
+                time.sleep(0.4)
+                reading = self._read(hwnd)
+                if (reading[2] or "") != title:
+                    again = self._read(hwnd)
+                    if (again[2] or "") == (reading[2] or ""):
+                        break
+                if time.time() > changed_by:
+                    break  # no change seen: look anyway (counted as a press)
             self._wait_not_busy(hwnd, f"Step {number}")
+            reading = self._read(hwnd)
 
     def run_date(self) -> datetime.date:
         """The day this run is about: the {date} field when it was filled in
