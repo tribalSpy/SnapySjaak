@@ -18779,6 +18779,7 @@ const IK_INVOICE_SORT = {
   lines: (invoice) => Number(invoice.line_count) || 0,
   matched: (invoice) => (invoice.match?.matched_pct ?? -1),
   open: (invoice) => Number(invoice.match?.open) || 0,
+  differs: (invoice) => Math.abs(Number(invoice.match?.difference) || 0),
   products: (invoice) => Number(invoice.products) || 0,
   emballage: (invoice) => Number(invoice.emballage) || 0,
   fees: (invoice) => Number(invoice.fees) || 0,
@@ -18795,7 +18796,7 @@ function IkInvoiceList({ company, onTrace }) {
   return (
     <table className="data-table balance-table ik-table ik-inv-invoices">
       <thead>
-        <tr>{head("type", "")}{head("date", "Factuurdatum")}{head("invoice", "Invoice")}{head("lines", "Lines")}{head("matched", "Matched")}{head("open", "Open")}{head("products", "Products")}{head("emballage", "Emballage")}{head("fees", "Fees")}{head("total", "Total")}{head("king", "💶", { title: "King -- click: sort" })}</tr>
+        <tr>{head("type", "")}{head("date", "Factuurdatum")}{head("invoice", "Invoice")}{head("lines", "Lines")}{head("matched", "Matched")}{head("open", "Open")}{head("differs", "Figures differ", { title: "Lines matched to a Connect lot whose figures differ: their invoice value, and the difference (invoice - Connect) -- click: sort by the difference" })}{head("products", "Products")}{head("emballage", "Emballage")}{head("fees", "Fees")}{head("total", "Total")}{head("king", "💶", { title: "King -- click: sort" })}</tr>
       </thead>
       <tbody>
         {invoices.map((invoice) => {
@@ -18815,13 +18816,16 @@ function IkInvoiceList({ company, onTrace }) {
                 <td>{invoice.line_count}</td>
                 <td><IkMatchStack match={invoice.match} width={90} /> <span className="muted">{invoice.match?.matched_pct === null || invoice.match?.matched_pct === undefined ? "" : `${invoice.match.matched_pct}%`}</span></td>
                 <td>{invoice.match?.open ? <span className="money-loss">{formatInkoopEuro(invoice.match.open)}</span> : invoice.match ? "✓" : ""}</td>
+                <td title={invoice.match?.differs_lines ? `${invoice.match.differs_lines} line(s) matched, figures differ: ${formatInkoopEuro(invoice.match.differs)} invoiced, difference ${formatInkoopEuro(invoice.match.difference)} -- open the invoice to see which lines` : ""}>
+                  {invoice.match?.differs_lines ? <>⚠ {invoice.match.differs_lines} · <InkoopMoneyDiff value={Number(invoice.match.difference) || 0} /></> : ""}
+                </td>
                 <td>{formatInkoopEuro(invoice.products)}</td>
                 <td>{formatInkoopEuro(invoice.emballage)}</td>
                 <td>{formatInkoopEuro(invoice.fees)}</td>
                 <td><strong>{formatInkoopEuro(invoice.total)}</strong></td>
                 <td title={king.title}>{king.icon}</td>
               </tr>
-              {isOpen && <tr className="ik-tree-panel"><td colSpan={11}><IkInvoiceLines invoiceNumber={invoice.invoice_number} onTrace={onTrace} /></td></tr>}
+              {isOpen && <tr className="ik-tree-panel"><td colSpan={12}><IkInvoiceLines invoiceNumber={invoice.invoice_number} onTrace={onTrace} /></td></tr>}
             </Fragment>
           );
         })}
