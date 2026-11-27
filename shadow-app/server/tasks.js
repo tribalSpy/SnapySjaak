@@ -896,8 +896,18 @@ export async function syncInkoopDataTasks({ days, today }) {
   let made = 0;
   if (config.inkoop_data.enabled && config.inkoop_data.assign_to) {
     for (const day of days || []) {
-      if (!day?.date || day.date >= today || day.state !== "waiting") continue;
+      if (!day?.date || day.date >= today) continue;
+      // Waiting, or "ready" by itself (not marked by hand, not held).
+      if (day.state !== "waiting" && !(day.state === "ready" && !day.by_hand)) continue;
       const kinds = Object.keys(INKOOP_DATA_ACTIONS).filter((kind) => (day.missing || []).includes(kind));
+      // Levering BB counts as "in" for the day's status already when a few
+      // invoice lines carry a brief number of an earlier BB file (25-11: 11
+      // of 3253 lines) -- for the fetch, a weekday's BB is only in when its
+      // Connect lots are linked by it (bb_lots); "none that day" stops it.
+      const weekday = new Date(`${day.date}T12:00:00Z`).getUTCDay();
+      if (!kinds.includes("levering_bb") && weekday >= 1 && weekday <= 5 && !(Number(day.bb_lots) > 0)
+        && !(day.files_none || []).includes("levering_bb")) kinds.push("levering_bb");
+      kinds.sort((left, right) => Object.keys(INKOOP_DATA_ACTIONS).indexOf(left) - Object.keys(INKOOP_DATA_ACTIONS).indexOf(right));
       if (!kinds.length) continue;
       const sourceKey = `recorder:inkoop_data:${day.date}`;
       keep.add(sourceKey);
