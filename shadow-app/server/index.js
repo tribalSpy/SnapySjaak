@@ -254,6 +254,7 @@ import {
   syncMatchedDiffTasks,
   syncStepPlanTasks,
   syncFacturenTask,
+  syncInkoopDataTasks,
   closeFacturenTask,
   syncInvoiceDuplicateTasks,
   hideTaskSources,
@@ -34685,6 +34686,9 @@ async function startServer() {
       });
       // The same factuur number on two sendings: a task to fix it.
       await syncInvoiceDuplicateTasks({ duplicates: needed.duplicates });
+      // Inkoop data days missing a Uniware file: a task with Run (recorder).
+      const today = localDateIso();
+      await syncInkoopDataTasks({ days: await getInkoopDataDayStatuses(addDaysToIsoDate(today, -14), addDaysToIsoDate(today, -1)), today });
     };
     setTimeout(() => runIfOnline("Tasks: step plan", appStepPlanJob).catch((error) => console.error("Tasks: step plan", error?.message || error)), 90 * 1000);
     setInterval(() => runIfOnline("Tasks: step plan", appStepPlanJob).catch((error) => console.error("Tasks: step plan", error?.message || error)), 5 * 60 * 1000);

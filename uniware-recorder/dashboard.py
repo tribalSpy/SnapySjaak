@@ -193,7 +193,10 @@ class Handler(BaseHTTPRequestHandler):
                 "slug": run.action.get("slug", "") if run else "",
                 "result": run.result if run else "",
                 "log": run.log[-20:] if run else [],
-            }})
+            }, "plan": (lambda plan: {
+                "active": bool(plan.active), "title": plan.title, "index": plan.index, "total": len(plan.items),
+                "result": plan.result, "log": plan.log[-20:],
+            } if plan else None)(STATE.get("plan"))})
         elif path.startswith("/outputs/"):
             name = Path(unquote(path[len("/outputs/"):])).name
             file = actions.OUTPUTS_DIR / name
@@ -241,6 +244,25 @@ class Handler(BaseHTTPRequestHandler):
                     STATE["run"] = run
                     threading.Thread(target=run.run, daemon=True).start()
                     STATE["message"] = f"Running '{action['name']}' -- don't touch keyboard or mouse until it's done (Ctrl+Alt+Q stops)."
+                elif path == "/api/run-list":
+                    # Several actions one after another, each with its own
+                    # values (SnappySjaak's Inkoop data task: the missing
+                    # files' actions for one day). A failing one doesn't stop
+                    # the others.
+                    if busy():
+                        raise RuntimeError("Something is already running.")
+                    wanted = [item for item in (body.get("items") or []) if isinstance(item, dict) and str(item.get("action") or "").strip()]
+                    if not wanted:
+                        raise RuntimeError("No actions to run.")
+                    missing = [str(item["action"]) for item in wanted if not actions.load_action(str(item["action"]))]
+                    if missing:
+                        raise RuntimeError(f"Action(s) not found in this recorder: {', '.join(missing)}")
+                    items = [plans.normalize_item({"action": str(item["action"]), "on_fail": "continue", "values": dict(item.get("values") or {})}) for item in wanted]
+                    title = str(body.get("title") or "SnappySjaak task")[:120]
+                    plan_run = plans.PlanRun("list", {"items": items}, set_current_run, "SnappySjaak", title)
+                    STATE["plan"] = plan_run
+                    threading.Thread(target=plan_run.run, daemon=True).start()
+                    STATE["message"] = f"Running '{title}': {len(items)} action(s) one after another (Ctrl+Alt+Q stops)."
                 elif path == "/api/run/stop":
                     if STATE["plan"] and STATE["plan"].active:
                         STATE["plan"].stop_requested = True

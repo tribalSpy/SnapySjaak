@@ -169,7 +169,7 @@
     },
     {
       "key": "F12",
-      "times": 6,
+      "times": 3,
       "times_pause": 1.0,
       "pause_before": 6,
       "to": "",

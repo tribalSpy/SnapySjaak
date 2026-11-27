@@ -28,6 +28,14 @@ const TASK_CONFIG_VERSION = 2;
 const TASK_STATUSES = ["open", "in_progress", "done", "cancelled"];
 const TASK_PRIORITIES = ["normal", "high", "urgent"];
 const TASK_REPEATS = ["none", "daily", "workdays", "weekly"];
+// Inkoop data from Uniware: per missing file kind, the recorder action that
+// fetches it (changeable in Teams & tasks).
+const INKOOP_DATA_ACTIONS = {
+  connect: "track-and-trace-connect-data",
+  communications: "inkoop-communicatie-dag",
+  levering_bb: "inkoop-levering-bb-dag",
+};
+const INKOOP_DATA_LABELS = { connect: "Connect", communications: "Communications", levering_bb: "Levering BB" };
 const OPEN_STATUSES = ["open", "in_progress"];
 
 export function normalizeTeamKey(value) {
@@ -183,6 +191,16 @@ function normalizeTaskConfig(value) {
       enabled: source.facturen?.enabled === true,
       assign_to: /^(user|team):./.test(String(source.facturen?.assign_to || "")) ? String(source.facturen.assign_to).trim().slice(0, 80) : "",
       action: String(source.facturen?.action || "facturen-finance-audit").trim().slice(0, 80) || "facturen-finance-audit",
+    },
+    // Inkoop Controle: a task per data day still missing a Uniware file
+    // (Connect export, Communications, Levering BB) with "Run on this PC":
+    // the recorder actions of the missing files, for that day.
+    inkoop_data: {
+      enabled: source.inkoop_data?.enabled === true,
+      assign_to: /^(user|team):./.test(String(source.inkoop_data?.assign_to || "")) ? String(source.inkoop_data.assign_to).trim().slice(0, 80) : "",
+      ...Object.fromEntries(Object.entries(INKOOP_DATA_ACTIONS).map(([kind, fallback]) => [
+        `action_${kind}`, String(source.inkoop_data?.[`action_${kind}`] || fallback).trim().slice(0, 80) || fallback,
+      ])),
     },
     updated_at: source.updated_at || "",
     updated_by: source.updated_by || "",
@@ -864,6 +882,54 @@ function facturenTaskTitle(date, withRef, missingRef, action) {
     title: `Facturen Finance Audit ${date} · ${total} missing${missingRef ? ` (${missingRef} without Uniware ref)` : ""}`,
     link: { page: "ukdocs", recorder_action: action, missing: total, with_ref: withRef, missing_ref: missingRef },
   };
+}
+
+
+// days: Inkoop data days ({ date, state, missing }). A day before today
+// still missing a Uniware file gets a task with Run (only the missing
+// files' actions, that day's date); the task closes by itself once the
+// files are in (or the day is marked ready / held by hand).
+export async function syncInkoopDataTasks({ days, today }) {
+  if (!isDatabaseEnabled()) return { made: 0, closed: 0 };
+  const config = await readTaskConfig();
+  const keep = new Set();
+  let made = 0;
+  if (config.inkoop_data.enabled && config.inkoop_data.assign_to) {
+    for (const day of days || []) {
+      if (!day?.date || day.date >= today || day.state !== "waiting") continue;
+      const kinds = Object.keys(INKOOP_DATA_ACTIONS).filter((kind) => (day.missing || []).includes(kind));
+      if (!kinds.length) continue;
+      const sourceKey = `recorder:inkoop_data:${day.date}`;
+      keep.add(sourceKey);
+      const [year, month, dayOfMonth] = day.date.split("-");
+      const shown = `${dayOfMonth}-${month}-${year}`;
+      const title = `Inkoop data from Uniware ${shown} · ${kinds.map((kind) => INKOOP_DATA_LABELS[kind]).join(", ")} missing`;
+      const link = {
+        page: "inkoop", date: day.date,
+        recorder_actions: kinds.map((kind) => config.inkoop_data[`action_${kind}`]),
+        recorder_values: { date: shown },
+      };
+      const existing = (await dbQuery("SELECT * FROM app_tasks WHERE source_key = $1", [sourceKey])).rows[0];
+      if (!existing) {
+        const row = await createSystemTask({
+          source: "recorder",
+          source_key: sourceKey,
+          title,
+          body: `Fetches the day's missing Uniware file(s) for Inkoop Controle (${kinds.map((kind) => INKOOP_DATA_LABELS[kind]).join(", ")}) and sends them to SnappySjaak. Press ▶ Run on this PC (the recorder dashboard open, Uniware on screen, hands off the keyboard until it's done). The task closes by itself once the files are in.`,
+          ...parseAssignee(config.inkoop_data.assign_to),
+          due_date: today,
+          link,
+        });
+        if (row) made += 1;
+      } else if (existing.title !== title || JSON.stringify(existing.link) !== JSON.stringify(link)) {
+        await dbQuery("UPDATE app_tasks SET title = $2, link = $3, updated_at = now() WHERE id = $1", [existing.id, title, JSON.stringify(link)]);
+      }
+    }
+  }
+  const open = await dbQuery("SELECT * FROM app_tasks WHERE source_key LIKE 'recorder:inkoop_data:%' AND status IN ('open', 'in_progress')");
+  const complete = open.rows.filter((row) => !keep.has(row.source_key));
+  if (config.inkoop_data.enabled) await closeTasks(complete, "system", "The day's Uniware files are in SnappySjaak.");
+  return { made, closed: config.inkoop_data.enabled ? complete.length : 0 };
 }
 
 // A factuur number typed on more than one sending (one is wrong): one task

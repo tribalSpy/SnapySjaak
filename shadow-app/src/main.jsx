@@ -12518,6 +12518,9 @@ function TwTaskDetail({ id, currentUser, directory, teamName, onBack, onOpenLink
       {task.body && <p className="tw-text">{task.body}</p>}
       {task.source === "step_plan" && task.link?.progress && <TwStepPlanProgress progress={task.link.progress} />}
       {task.link?.recorder_action && !finished && <TwRecorderRun action={task.link.recorder_action} />}
+      {Array.isArray(task.link?.recorder_actions) && task.link.recorder_actions.length > 0 && !finished && (
+        <TwRecorderRun actions={task.link.recorder_actions} values={task.link.recorder_values || {}} title={task.title} />
+      )}
       <div className="tw-actions">
         {!finished && <button type="button" className="tw-primary" disabled={busy} onClick={() => change({ status: "done" })}>✓ Done</button>}
         {!finished && task.status !== "in_progress" && <button type="button" disabled={busy} onClick={() => change({ status: "in_progress" })}>▶ Start</button>}
@@ -12580,7 +12583,9 @@ function twDisplayName(username) {
 // in -- see snappysjaak.json) and follows it. Its result reaches the task
 // through SnappySjaak (the run closes the task).
 const TW_RECORDER_URL = "http://127.0.0.1:8765";
-function TwRecorderRun({ action }) {
+// action: one recorder action; actions (+ values): several one after
+// another on the recorder (the Inkoop data task: the day's missing files).
+function TwRecorderRun({ action = "", actions = null, values = {}, title = "" }) {
   const [status, setStatus] = useState(null);
   const [error, setError] = useState("");
   const [starting, setStarting] = useState(false);
@@ -12601,11 +12606,17 @@ function TwRecorderRun({ action }) {
     setStarting(true);
     setError("");
     try {
-      const response = await fetch(`${TW_RECORDER_URL}/api/actions/${encodeURIComponent(action)}/run`, {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ values: {} }),
-      });
+      const response = actions?.length
+        ? await fetch(`${TW_RECORDER_URL}/api/run-list`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ title, items: actions.map((name) => ({ action: name, values })) }),
+        })
+        : await fetch(`${TW_RECORDER_URL}/api/actions/${encodeURIComponent(action)}/run`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ values: {} }),
+        });
       const payload = await response.json().catch(() => ({}));
       if (!response.ok || payload.error) throw new Error(payload.error || `The recorder answered ${response.status}`);
       await poll();
@@ -12621,8 +12632,10 @@ function TwRecorderRun({ action }) {
     await fetch(`${TW_RECORDER_URL}/api/run/stop`, { method: "POST", headers: { "content-type": "application/json" }, body: "{}" }).catch(() => {});
     poll();
   }
-  const run = status?.run;
-  const mine = run && run.slug === action;
+  const plan = status?.plan;
+  const planMine = Boolean(actions?.length && plan && plan.title === title);
+  const run = planMine ? { ...status.run, active: plan.active || status.run?.active, name: `${plan.title} (${Math.min(plan.index + 1, plan.total)} of ${plan.total}${status.run?.name ? `: ${status.run.name}` : ""})`, log: plan.log, result: plan.active ? "" : plan.result } : status?.run;
+  const mine = planMine || (run && run.slug === action);
   return (
     <div className="tw-recorder">
       <div className="tw-recorder-head">
@@ -12638,6 +12651,7 @@ function TwRecorderRun({ action }) {
         <pre className="tw-recorder-log">{run.log.slice(-6).join("\n")}</pre>
       )}
       {mine && !run.active && run.result && <small className={run.result === "done" ? "" : "tw-overdue"}>{run.result === "done" ? "✓ Finished -- the task closes when SnappySjaak has the result." : `✕ ${run.result}`}</small>}
+      {actions?.length > 0 && !run?.active && <small className="muted">Runs: {actions.join(", ")}{values?.date ? ` -- for ${values.date}` : ""}</small>}
       {status && !status.reachable && <small className="muted">Start the recorder dashboard on this PC (uniware-recorder\run_dashboard.bat), with Uniware open and signed in.</small>}
       {error && <small className="tw-overdue">{error}</small>}
     </div>
@@ -13079,6 +13093,20 @@ function AppTeamsTasksCard() {
           <label><span>Recorder action (its name in the recorder's actions folder)</span>
             <input value={config.facturen?.action || ""} onChange={(event) => setConfig({ ...config, facturen: { ...config.facturen, action: event.target.value } })} onBlur={() => saveConfig(config)} placeholder="facturen-finance-audit" />
           </label>
+        </div>
+        <label className="checkbox-label"><input type="checkbox" checked={config.inkoop_data?.enabled === true} onChange={(event) => saveConfig({ ...config, inkoop_data: { ...config.inkoop_data, enabled: event.target.checked } })} /><span>Inkoop data from Uniware: a task per day (last 14 days) still missing its Connect export, Communications or Levering BB, with "Run on this PC" -- starts the recorder actions of the missing files for that day; closes by itself once they are in</span></label>
+        <div className="tw-admin-inline">
+          <label><span>Give it to</span>
+            <select value={config.inkoop_data?.assign_to || ""} onChange={(event) => saveConfig({ ...config, inkoop_data: { ...config.inkoop_data, assign_to: event.target.value } })}>
+              <option value="">— nobody (no task) —</option>
+              {targets.map(([value, label]) => <option key={value} value={value}>{label}</option>)}
+            </select>
+          </label>
+          {[["action_connect", "Connect export action", "track-and-trace-connect-data"], ["action_communications", "Communications action", "inkoop-communicatie-dag"], ["action_levering_bb", "Levering BB action", "inkoop-levering-bb-dag"]].map(([field, label, placeholder]) => (
+            <label key={field}><span>{label}</span>
+              <input value={config.inkoop_data?.[field] || ""} onChange={(event) => setConfig({ ...config, inkoop_data: { ...config.inkoop_data, [field]: event.target.value } })} onBlur={() => saveConfig(config)} placeholder={placeholder} />
+            </label>
+          ))}
         </div>
         <label className="checkbox-label"><input type="checkbox" checked={config.invoice_duplicates?.enabled !== false} onChange={(event) => saveConfig({ ...config, invoice_duplicates: { ...config.invoice_duplicates, enabled: event.target.checked } })} /><span>Same factuur number on more than one sending: a task per number to check and fix it (closed by itself once fixed)</span></label>
         <div className="tw-admin-inline">
