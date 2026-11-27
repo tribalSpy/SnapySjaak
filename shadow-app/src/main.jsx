@@ -22173,7 +22173,10 @@ function InkoopTrackTraceWorkspace({ bar, setBar, overview, company, matchRound 
   // Matched lines stay out (they're in the matched fold above) -- except one
   // matched short in pieces (FA5N2DA: 6500 on the invoice, 4125 in its
   // lot), which may need another lot linked.
-  const piecesShort = (issue) => issue.issue_type === "mismatch" && (issue.detail?.diffs || []).some((diff) => diff.field === "quantity");
+  // Not one linked by hand: that link was made on purpose and is done (it
+  // is in the matched fold; a lot missing from it is added there with
+  // right-click "Add another invoice line or Connect lot to this link").
+  const piecesShort = (issue) => issue.issue_type === "mismatch" && !issue.detail?.manual_pair_id && (issue.detail?.diffs || []).some((diff) => diff.field === "quantity");
   // A search per side: every word typed must be in the line (product,
   // brief / Uw ref., lot, invoice, pieces, price).
   // Boxes are searched as "2x6" (or "2 x 6", "2×6"): the very count and
