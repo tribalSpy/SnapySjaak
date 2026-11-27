@@ -85,6 +85,7 @@ import {
   getInkoopInvoiceMatchFigures,
   getInkoopInvoiceResolvedRows,
   getInkoopMatchRowsForLots,
+  getInkoopStoredLotDays,
   getKingExportsByInvoice,
   getInkoopInvoiceTraceLines,
   getInkoopTraceLots,
@@ -12172,6 +12173,66 @@ function inkoopResultOnDay(result, date) {
   return out;
 }
 
+// A lot of this day that this day's window paired with an invoice line of
+// another day (a pair by supplier belongs to the line's day) is only kept
+// there when that day's own window paired it the same way. Each day has its
+// own window, so the two can differ -- the lot was then in no day at all
+// (Melissa 45027843, 09-11: its line of 06-11 took another lot of the same
+// pieces and price). Such a lot stays here as a lot without invoice unless
+// the line's day holds it.
+async function inkoopResultOnDayKept(match, date) {
+  const onDay = inkoopResultOnDay(match, date);
+  try {
+    const candidates = [];
+    for (const key of ["matched_ok", "matched_mismatch"]) {
+      const kept = new Set(onDay[key] || []);
+      for (const row of match?.[key] || []) {
+        if (kept.has(row)) continue;
+        const lot = String(row?.erp_row?.lot ?? "").trim();
+        if (!lot || lot.includes("+") || inkoopDateKeyFromErpAnchor(row) !== date) continue;
+        const lineDay = inkoopDateKeyFromInvoiceAnchor(row);
+        if (!lineDay || lineDay === date) continue;
+        candidates.push({ lot, lineDay, erp: row.erp_row });
+      }
+    }
+    if (!candidates.length) return onDay;
+    const present = await getInkoopStoredLotDays(candidates.map((item) => ({ lot: item.lot, date: item.lineDay })), ["matched_ok", "matched_mismatch"]);
+    // Already counted on this day (open, or in one of its own pairs).
+    const already = new Set((onDay.only_in_erp || []).map((row) => String(row?.lot ?? "").trim()));
+    for (const key of ["matched_ok", "matched_mismatch"]) {
+      for (const row of onDay[key] || []) for (const lot of String(row?.erp_row?.lot ?? "").split("+")) if (lot.trim()) already.add(lot.trim());
+    }
+    const extra = candidates.filter((item) => !present.has(`${item.lot}|${item.lineDay}`) && !already.has(item.lot))
+      .map((item) => ({ ...item.erp, paired_on_other_day: item.lineDay }));
+    return extra.length ? { ...onDay, only_in_erp: [...(onDay.only_in_erp || []), ...extra] } : onDay;
+  } catch (error) {
+    console.warn(`Inkoop ${date}: checking the lots paired on other days failed:`, error instanceof Error ? error.message : error);
+    return onDay;
+  }
+}
+
+// A day just stored that holds lots of other days (pairs by supplier): a day
+// that still has one of them as a lot without invoice is compared again, so
+// no lot counts twice.
+async function requeueInkoopDaysHoldingLotsOf(result, date) {
+  try {
+    const foreign = [];
+    for (const key of ["matched_ok", "matched_mismatch"]) {
+      for (const row of result?.[key] || []) {
+        const lot = String(row?.erp_row?.lot ?? "").trim();
+        const lotDay = inkoopDateKeyFromErpAnchor(row);
+        if (lot && !lot.includes("+") && lotDay && lotDay !== date) foreign.push({ lot, date: lotDay });
+      }
+    }
+    if (!foreign.length) return;
+    const present = await getInkoopStoredLotDays(foreign, ["only_in_erp"]);
+    const days = [...new Set([...present].map((key) => key.split("|")[1]))].filter((day) => day <= localDateIso());
+    if (days.length) await markInkoopMatchDaysPending(days);
+  } catch (error) {
+    console.warn(`Inkoop ${date}: re-queuing the days of its lots failed:`, error instanceof Error ? error.message : error);
+  }
+}
+
 // A day compared now, from the lines (the stored comparison is read by
 // computeInkoopDay / computeInkoopDays below).
 async function computeInkoopDayFresh(state, date, { cache = true } = {}) {
@@ -12183,14 +12244,14 @@ async function computeInkoopDayFresh(state, date, { cache = true } = {}) {
     const run = inkoopMatchLock.then(async () => {
       const match = await computeInkoopLiveMatchFresh(state, window);
       const aggregateContext = await buildInkoopAggregateContext(state, window, match);
-      return { date, result: inkoopResultOnDay(match, date), aggregateContext };
+      return { date, result: await inkoopResultOnDayKept(match, date), aggregateContext };
     });
     inkoopMatchLock = run.catch(() => {});
     return run;
   }
   const match = await computeInkoopLiveMatch(state, window);
   const aggregateContext = await buildInkoopAggregateContextCached(state, window, match);
-  return { date, result: inkoopResultOnDay(match, date), aggregateContext };
+  return { date, result: await inkoopResultOnDayKept(match, date), aggregateContext };
 }
 
 function inkoopIsoDate(value) {
@@ -13145,6 +13206,7 @@ async function storeInkoopMatchBundle(bundle, fingerprint, generation, durationM
     durationMs,
   });
   await storeInkoopDaySummaryFromBundle(bundle, fingerprint);
+  await requeueInkoopDaysHoldingLotsOf(bundle.result, bundle.date);
 }
 
 function inkoopEmptyDayBundle(date, maps) {

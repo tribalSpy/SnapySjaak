@@ -2652,6 +2652,23 @@ export async function getInkoopMatchRowsForLots(lots) {
   return rows;
 }
 
+// Which of these (lot, day) pairs a stored day holds in one of `lists`
+// ("lot|day" strings) -- by the day's own rows (the date + list index).
+export async function getInkoopStoredLotDays(items, lists) {
+  const wanted = (items || []).filter((item) => item?.lot && /^\d{4}-\d{2}-\d{2}$/.test(String(item.date || "")));
+  if (!pool || !wanted.length) return new Set();
+  const result = await pool.query(
+    `SELECT x.lot, to_char(x.day, 'YYYY-MM-DD') AS day
+       FROM unnest($1::text[], $2::date[]) AS x(lot, day)
+      WHERE EXISTS (
+        SELECT 1 FROM inkoop_match_rows m
+         WHERE m.match_date = x.day AND m.list = ANY($3::text[]) AND m.lot <> ''
+           AND x.lot = ANY(string_to_array(regexp_replace(m.lot, '\\s', '', 'g'), '+')))`,
+    [wanted.map((item) => String(item.lot)), wanted.map((item) => item.date), lists],
+  );
+  return new Set(result.rows.map((row) => `${row.lot}|${row.day}`));
+}
+
 export async function getInkoopGrowerExport({ company = "", from = "", to = "", pairs = [] } = {}) {
   if (!pool || !from || !to || !pairs.length) return { invoice_lines: [], lots: [] };
   const params = [from, to, pairs.map((pair) => pair[0]), pairs.map((pair) => pair[1])];
