@@ -2534,6 +2534,10 @@ class ActionRun:
             self._check(hwnd)
             image, _, _, _, text, layout = self._read(hwnd, timeout=1.5)
             rows = _teal_list_cursor(list_items(layout, target))
+            # A dropdown's own field above its list ("[OneDrive CSV  ▼]",
+            # the last choice) is never a row to move to -- steering at it
+            # pressed Up and Down forever (Levering BB).
+            rows = [row for row in rows if not re.match(r"\s*\[", row["text"]) and "▼" not in row["text"]]
             highlighted = [index for index, row in enumerate(rows) if row["highlighted"]]
             if not highlighted:
                 self._save_problem_screen(image)
