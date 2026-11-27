@@ -4411,6 +4411,8 @@ table.data-table.balance-table.ik-table.ik-inv-invoices td:nth-child(n+7), table
 /* Flows: one line per flow -- a small bar (its share, the biggest flow
    full) and its name next to it. */
 .ik-inv-companies .ik-inv-flows { display: grid; gap: 3px; }
+.ik-inv-legend { display: flex; gap: 16px; padding: 6px 4px 10px; font-size: 0.85rem; }
+.ik-inv-legend i { width: 11px; height: 11px; border-radius: 50%; }
 .ik-inv-companies .ik-inv-flow { display: grid; grid-template-columns: 80px auto; align-items: center; gap: 8px; }
 .ik-inv-companies .ik-inv-flow i { display: block; height: 6px; border-radius: 3px; }
 .ik-inv-companies .ik-inv-flow small { display: inline; font-size: 0.78rem; line-height: 1.15; }

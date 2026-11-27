@@ -18869,6 +18869,14 @@ function InkoopOverviewTab({ onOpenTrackTrace = null }) {
         {loading && data && <div className="notice info">Loading {fustOverviewDate(fromDate)} - {fustOverviewDate(toDate)}... the figures below are still those of {fustOverviewDate(data.from)} - {fustOverviewDate(data.to)}.</div>}
         {loading && !data ? <div className="notice">Loading invoices...</div> : (
           <div className="table-wrap" style={loading ? { opacity: 0.35, pointerEvents: "none" } : undefined} aria-busy={loading}>
+            {/* Legend: a ball in each flow's colour and its name. */}
+            {!!companies.length && (
+              <div className="ik-legend ik-inv-legend">
+                {[...new Set(companies.flatMap((company) => Object.keys(company.by_type || {})))].map((type) => (
+                  <span key={type}><i style={{ background: INKOOP_FLOW_COLORS[INKOOP_INVOICE_TYPE_FLOW[type] || "Other"] }} />{INKOOP_INVOICE_TYPE_LABELS[type] || type}</span>
+                ))}
+              </div>
+            )}
             <table className="data-table balance-table ik-table ik-inv-companies">
               <thead>
                 <tr>
