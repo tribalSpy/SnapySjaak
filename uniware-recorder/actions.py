@@ -2548,6 +2548,10 @@ class ActionRun:
                 self._press(controller, "Down" if distance > 0 else "Up", abs(distance))
                 previous_text = None
                 continue
+            if previous_text is None:
+                # What the list shows (to see why it isn't found).
+                self.say(f"{label}: '{target}' not on screen; the list shows: " + " | ".join(row["text"][:40] for row in rows[:12]))
+                self._save_problem_screen(image)
             if numeric:
                 passed = self._passed_number(rows, int(target.strip()), len(target.strip()), seen_numbers, direction)
                 # Past it going down: the list may have opened lower than its
