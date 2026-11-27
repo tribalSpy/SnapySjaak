@@ -19014,6 +19014,102 @@ function InkoopOverviewTab({ onOpenTrackTrace = null }) {
   );
 }
 
+// Settings: the backup by changes -- what Render tracks, every batch (and
+// whole part) sent to the standby PC and when it confirmed it; on the PC
+// also its own state. Admins only (the route answers 403 otherwise).
+function BackupSyncLogCard() {
+  const [data, setData] = useState(null);
+  const [error, setError] = useState("");
+  const [round, setRound] = useState(0);
+  useEffect(() => {
+    apiJson("/api/backup/sync-log").then(setData).catch((loadError) => setError(loadError.message));
+  }, [round]);
+  if (error) return null;
+  const info = data?.info;
+  const standby = data?.standby;
+  const batches = data?.batches || [];
+  const size = (bytes) => (bytes >= 1048576 ? `${(bytes / 1048576).toFixed(1)} MB` : `${Math.round((bytes || 0) / 1024)} KB`);
+  return (
+    <div className="data-table-card">
+      <div className="section-header">
+        <h2>Backup log (only what changed)</h2>
+        <button type="button" onClick={() => setRound((value) => value + 1)}>Refresh</button>
+      </div>
+      <p className="sidebar-note">
+        Render notes every added, changed or deleted row. The standby PC fetches those changes in small batches every
+        15 minutes, loads each one and confirms it -- a batch not confirmed is sent again. Whole parts are only copied
+        at the start, and at night when a check finds a difference. A batch that would delete more than half of a
+        table is refused on the PC (nothing changes there) and emailed.
+      </p>
+      {!data && <div className="notice">Loading...</div>}
+      {info && !info.error && (
+        <p className="sidebar-note">
+          {info.tracking ? (
+            <>
+              Tracking <strong>{info.tracked.length}</strong> table(s)
+              {info.untracked?.length ? <> · not tracked: {info.untracked.join(", ")}</> : null}
+              {" · "}waiting to be sent: <strong>{info.open_changes}</strong> change(s){info.oldest_open ? ` (oldest ${formatTimestamp(info.oldest_open)})` : ""}
+              {info.last_confirmed_at ? ` · last confirmed ${formatTimestamp(info.last_confirmed_at)}` : ""}
+            </>
+          ) : "Change tracking is not installed in this database yet."}
+        </p>
+      )}
+      {standby && (
+        <div className={`notice ${standby.last_result?.refused || standby.last_result?.errors?.length ? "danger" : "info"}`}>
+          This PC: <strong>{standby.mode === "changes" ? "only changes" : "first whole copy"}</strong>
+          {standby.last_run_at ? ` · last run ${formatTimestamp(standby.last_run_at)}` : ""}
+          {standby.last_success_at ? ` · last batch loaded ${formatTimestamp(standby.last_success_at)}` : ""}
+          {standby.last_result ? ` · ${standby.last_result.batches || 0} batch(es), ${standby.last_result.upserts || 0} row(s) in, ${standby.last_result.deletes || 0} deleted` : ""}
+          {standby.last_result?.refused ? (
+            <div>
+              Refused: {standby.last_result.refused}
+              {standby.last_result.refused_batch_id && !(standby.accepted_tables || {})[standby.last_result.refused_table] ? (
+                <div className="row-actions">
+                  <button type="button" className="danger" onClick={async () => {
+                    if (!window.confirm(`Only when these deletes on Render were meant (e.g. old data cleaned up on purpose).
+
+Let the deletes in ${standby.last_result.refused_table} through on this PC for the next 2 hours? The daily complete copy on this PC still has the rows.`)) return;
+                    try {
+                      await apiJson("/api/backup/accept-refused", { method: "POST", body: JSON.stringify({ batch_id: standby.last_result.refused_batch_id }) });
+                      setRound((value) => value + 1);
+                    } catch (acceptError) {
+                      window.alert(acceptError.message);
+                    }
+                  }}>Accept the deletes in {standby.last_result.refused_table} (they were meant)</button>
+                </div>
+              ) : (standby.accepted_tables || {})[standby.last_result.refused_table] ? <div>Accepted -- loaded at the next run (within 15 minutes).</div> : null}
+            </div>
+          ) : null}
+          {standby.last_result?.errors?.length ? <div>{standby.last_result.errors.join("; ")}</div> : null}
+          {Object.keys(standby.needs_full || {}).length ? <div>To copy whole tonight: {Object.entries(standby.needs_full).map(([name, reason]) => `${name} (${reason})`).join("; ")}</div> : null}
+          {standby.last_counts_check ? <div>Weekly count check {formatTimestamp(standby.last_counts_check)}: {standby.last_counts_off?.length ? standby.last_counts_off.map((item) => `${item.table} Render ${item.render} / here ${item.here}`).join(", ") : "every table the same"}</div> : null}
+        </div>
+      )}
+      {!!batches.length && (
+        <div className="table-wrap">
+          <table className="data-table">
+            <thead><tr><th>#</th><th>What</th><th>Sent</th><th>Times</th><th>Rows in / deleted</th><th>Size</th><th>Confirmed</th><th>Note</th></tr></thead>
+            <tbody>
+              {batches.map((batch) => (
+                <tr key={batch.id}>
+                  <td>{batch.id}</td>
+                  <td>{batch.kind === "changes" ? "Changes" : `Whole part ${batch.kind.replace("part:", "")}`}</td>
+                  <td>{batch.last_sent_at ? formatTimestamp(batch.last_sent_at) : "-"}</td>
+                  <td>{batch.sent_count}</td>
+                  <td>{batch.kind === "changes" ? `${batch.upserts} / ${batch.deletes}` : "-"}</td>
+                  <td>{size(batch.bytes)}</td>
+                  <td>{batch.confirmed_at ? `✓ ${formatTimestamp(batch.confirmed_at)}` : <span className="money-loss">waiting</span>}</td>
+                  <td className="muted">{batch.note}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function inkoopCsv(header, rows) {
   const cell = (value) => {
     const text = String(value ?? "");
@@ -31306,6 +31402,8 @@ function SettingsPage({ currentUser }) {
           </>
         )}
       </div>
+
+      <BackupSyncLogCard />
 
       <div className="data-table-card">
         <div className="section-header">

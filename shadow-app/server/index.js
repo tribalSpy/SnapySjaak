@@ -30,6 +30,16 @@ import {
   exportDatabaseSnapshot,
   importDatabaseSnapshot,
   listDatabaseSnapshotParts,
+  ensureBackupChangeTracking,
+  getBackupChangesInfo,
+  takeBackupChangesBatch,
+  noteBackupBatchBytes,
+  logBackupPartSent,
+  confirmBackupBatch,
+  pruneBackupChanges,
+  listBackupSyncBatches,
+  backupTableCounts,
+  applyBackupChanges,
   createLlmJob,
   getLlmJobById,
   completeLlmJobById,
@@ -365,6 +375,7 @@ const backupDumpAttemptPath = path.join(cacheDir, "backup-dump-attempt.json");
 // Per part of the copy: when it was last made and whether it finished.
 const backupDumpPartsPath = path.join(cacheDir, "backup-dump-parts.json");
 let backupPartRunning = false;
+let backupChangesBusy = false;
 
 async function buildCompressedDatabaseSnapshot(onlyTables = null) {
   const gzip = zlib.createGzip();
@@ -786,19 +797,20 @@ const POSTGRES_PART_PAUSE_MS = 20 * 1000;
 
 // null: Render has no parts (older version) -- the whole copy then.
 let postgresPartsRunning = false;
-async function runPostgresRestoreByParts() {
+// only: a Set of part names -- just those, also when loaded recently.
+async function runPostgresRestoreByParts(options = {}) {
   if (postgresPartsRunning) {
     return { ok: true, skipped: true, reason: "The previous run of the parts is still busy" };
   }
   postgresPartsRunning = true;
   try {
-    return await runPostgresRestoreByPartsOnce();
+    return await runPostgresRestoreByPartsOnce(options);
   } finally {
     postgresPartsRunning = false;
   }
 }
 
-async function runPostgresRestoreByPartsOnce() {
+async function runPostgresRestoreByPartsOnce({ only = null } = {}) {
   const headers = { "x-shadow-agent-key": backupAgentApiKey };
   const listResponse = await fetch(`${renderBackupBaseUrl}/api/backup/postgres-parts`, { headers });
   if (listResponse.status === 404) {
@@ -812,7 +824,8 @@ async function runPostgresRestoreByPartsOnce() {
   let loadedAny = false;
   let allLoaded = true;
   for (const part of parts) {
-    if (Date.now() - (postgresPartLoadedAt.get(part.name) || 0) < postgresRestoreMinIntervalMs) {
+    if (only && !only.has(part.name)) continue;
+    if (!only && Date.now() - (postgresPartLoadedAt.get(part.name) || 0) < postgresRestoreMinIntervalMs) {
       continue; // loaded recently
     }
     const force = (postgresPartNeedsForce.get(part.name) ?? true)
@@ -838,7 +851,13 @@ async function runPostgresRestoreByPartsOnce() {
       postgresPartLoadedAt.set(part.name, Date.now());
       postgresPartNeedsForce.set(part.name, false);
       loadedAny = true;
-      results.push({ part: part.name, rows: Object.values(loaded.tables).reduce((sum, count) => sum + count, 0), snapshot_from: loaded.snapshot_created_at });
+      const rows = Object.values(loaded.tables).reduce((sum, count) => sum + count, 0);
+      results.push({ part: part.name, rows, snapshot_from: loaded.snapshot_created_at });
+      // Backup by changes: this whole copy counts as the start for its
+      // tables (when Render tracks changes), and goes in Render's log.
+      await noteBackupPartLoaded(part.name, response.headers.get("x-backup-tracked") === "1").catch(() => {});
+      const partBatchId = Number(response.headers.get("x-backup-batch") || 0);
+      if (partBatchId) await confirmRemoteBackupBatch(partBatchId, `part ${part.name}: ${rows} rows loaded`).catch(() => {});
     } catch (error) {
       allLoaded = false;
       const message = error instanceof Error ? error.message : String(error);
@@ -864,12 +883,226 @@ async function runPostgresRestoreByPartsOnce() {
   return { ok: !results.some((result) => result.error), by_parts: true, parts: results };
 }
 
+// --- Backup by changes, the PC side. First every part is copied whole once
+// (since Render tracks changes); from then on only the changes, in batches
+// of at most 1000 rows, each loaded in one transaction and confirmed.
+// Whole parts are copied again only at night (01:00-05:00), when needed:
+// a batch that could not be loaded, a table emptied on Render, a new part,
+// Render's log grown too long while this PC was away, or the weekly row
+// count check finding a difference. The job queue (photos, PDFs) and the
+// state-file history are not copied at all any more.
+const backupDbSyncPath = path.join(cacheDir, "backup-db-sync.json");
+const BACKUP_SKIP_PARTS_IN_CHANGES = new Set(["llm-jobs", "state-history"]);
+let backupByChangesRunning = false;
+
+async function readBackupDbSync() {
+  return readJsonFile(backupDbSyncPath, {});
+}
+
+async function noteBackupPartLoaded(name, tracked) {
+  const state = await readBackupDbSync();
+  const partsTracked = { ...(state.parts_tracked || {}) };
+  const needsFull = { ...(state.needs_full || {}) };
+  if (tracked) {
+    partsTracked[name] = new Date().toISOString();
+    delete needsFull[name];
+  }
+  await writeJsonFile(backupDbSyncPath, { ...state, parts_tracked: partsTracked, needs_full: needsFull });
+}
+
+function backupAgentFetch(pathname, options = {}) {
+  return fetch(`${renderBackupBaseUrl}${pathname}`, { ...options, headers: { "x-shadow-agent-key": backupAgentApiKey, ...(options.headers || {}) } });
+}
+
+async function confirmRemoteBackupBatch(batchId, note) {
+  const response = await backupAgentFetch("/api/backup/changes/confirm", {
+    method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ batch_id: batchId, note }),
+  });
+  if (!response.ok) throw new Error(`Confirming batch ${batchId} failed: HTTP ${response.status}`);
+}
+
+async function runBackupByChanges() {
+  if (backupByChangesRunning) return { ok: true, skipped: true, reason: "The previous run is still busy" };
+  backupByChangesRunning = true;
+  try {
+    return await runBackupByChangesOnce();
+  } finally {
+    backupByChangesRunning = false;
+  }
+}
+
+async function runBackupByChangesOnce() {
+  const infoResponse = await backupAgentFetch("/api/backup/changes/info");
+  if (infoResponse.status === 404) return null;
+  if (!infoResponse.ok) throw new Error(`Render's backup info: HTTP ${infoResponse.status}`);
+  const info = await infoResponse.json();
+  if (!info.tracking) return null;
+  const partsResponse = await backupAgentFetch("/api/backup/postgres-parts");
+  if (!partsResponse.ok) throw new Error(`Listing the parts failed: HTTP ${partsResponse.status}`);
+  const parts = ((await partsResponse.json()).parts || []).filter((part) => !BACKUP_SKIP_PARTS_IN_CHANGES.has(part.name));
+  const partOfTable = new Map(parts.flatMap((part) => part.tables.map((table) => [table, part.name])));
+  const nowIso = () => new Date().toISOString();
+  let state = await readBackupDbSync();
+  const notYetWhole = () => parts.filter((part) => !state.parts_tracked?.[part.name]).map((part) => part.name);
+
+  // The start: every part copied whole once (the usual rhythm, one part at
+  // a time); then only changes.
+  if (state.mode !== "changes") {
+    if (notYetWhole().length) {
+      const result = await runPostgresRestoreByParts();
+      state = await readBackupDbSync();
+      const still = notYetWhole();
+      if (!still.length) await writeJsonFile(backupDbSyncPath, { ...state, mode: "changes", changes_since: nowIso() });
+      return { ...(result || { ok: true }), by_changes: "starting", parts_still_to_copy_whole: still };
+    }
+    state = { ...state, mode: "changes", changes_since: nowIso() };
+    await writeJsonFile(backupDbSyncPath, state);
+  }
+
+  const needsFull = { ...(state.needs_full || {}) };
+  for (const name of notYetWhole()) needsFull[name] = needsFull[name] || "new part, not copied whole yet";
+  // A table Render does not track (yet): its changes don't come as
+  // batches, so its part is copied whole at night.
+  for (const table of info.untracked || []) {
+    if (partOfTable.has(table)) needsFull[partOfTable.get(table)] = needsFull[partOfTable.get(table)] || `${table} is not tracked on Render yet`;
+  }
+  let fullFlagHandled = state.full_flag_handled || "";
+  if (info.needs_full_since && info.needs_full_since > fullFlagHandled) {
+    for (const part of parts) needsFull[part.name] = "Render's change log grew too long while this PC was away";
+    fullFlagHandled = info.needs_full_since;
+  }
+  const dayAgo = Date.now() - 24 * 60 * 60 * 1000;
+  const deletesLog = (state.deletes || []).filter((entry) => Date.parse(entry.at) > dayAgo);
+  const totals = { batches: 0, upserts: 0, deletes: 0 };
+  const dates = new Set();
+  const errors = [];
+  let refused = "";
+  let refusedBatchId = 0;
+  let refusedTable = "";
+  let hasMore = false;
+  for (let round = 0; round < 40; round += 1) {
+    const response = await backupAgentFetch("/api/backup/changes");
+    if (response.status === 204) {
+      hasMore = false;
+      break;
+    }
+    if (!response.ok) {
+      const detail = await response.json().then((body) => body?.error || "").catch(() => "");
+      if (response.status !== 503) errors.push(`HTTP ${response.status}${detail ? ` (${detail})` : ""}`);
+      hasMore = true;
+      break;
+    }
+    const batchId = Number(response.headers.get("x-backup-batch") || 0);
+    const batch = JSON.parse(zlib.gunzipSync(openSealed(Buffer.from(await response.arrayBuffer()), backupPrivateKey)).toString("utf8"));
+    const priorDeletes = {};
+    for (const entry of deletesLog) priorDeletes[entry.table] = (priorDeletes[entry.table] || 0) + entry.n;
+    let note = "";
+    // Tables an admin accepted the deletes of on this PC (meant on Render):
+    // no guard there for 2 hours.
+    const allowDeletesIn = Object.entries(state.accepted_tables || {}).filter(([, until]) => Date.parse(until) > Date.now()).map(([table]) => table);
+    try {
+      const result = await applyBackupChanges(batch, { priorDeletes, allowDeletesIn });
+      let upserts = 0;
+      let deletes = 0;
+      for (const [table, counts] of Object.entries(result.tables)) {
+        upserts += counts.upserts || 0;
+        deletes += counts.deletes || 0;
+        if (counts.deletes) deletesLog.push({ at: nowIso(), table, n: counts.deletes });
+      }
+      totals.upserts += upserts;
+      totals.deletes += deletes;
+      for (const day of result.dates) dates.add(day);
+      for (const table of result.truncated) {
+        if (partOfTable.has(table)) needsFull[partOfTable.get(table)] = `${table} was emptied on Render -- copied whole (with the usual checks)`;
+      }
+      note = `loaded: ${upserts} row(s) added/changed, ${deletes} deleted${result.truncated.length ? `, emptied on Render: ${result.truncated.join(", ")}` : ""}`;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      if (message.startsWith("REFUSED")) {
+        // Not confirmed: it stays waiting on Render, nothing here changes
+        // (until an admin accepts it here, Settings > Backup log).
+        refused = message;
+        refusedBatchId = batchId;
+        refusedTable = (/^REFUSED \(([^)]+)\)/.exec(message) || [])[1] || "";
+        await alertStandbyRefused(`Backup by changes, batch ${batchId}: ${message}`);
+        break;
+      }
+      // Could not be loaded here (a key clash, a table that differs): its
+      // parts are copied whole at night instead.
+      for (const part of batch.tables || []) {
+        if (partOfTable.has(part.table)) needsFull[partOfTable.get(part.table)] = `batch ${batchId} could not be loaded: ${message}`.slice(0, 300);
+      }
+      errors.push(`batch ${batchId}: ${message}`);
+      note = `not loaded (${message.slice(0, 200)}) -- its part(s) are copied whole at night`;
+    }
+    await confirmRemoteBackupBatch(batchId, note);
+    totals.batches += 1;
+    hasMore = response.headers.get("x-backup-has-more") === "1";
+    if (!hasMore) break;
+    await new Promise((resolve) => setTimeout(resolve, 2000));
+  }
+  state = await readBackupDbSync();
+  const stillAccepted = Object.fromEntries(Object.entries(state.accepted_tables || {}).filter(([, until]) => Date.parse(until) > Date.now()));
+  state = {
+    ...state, needs_full: needsFull, deletes: deletesLog, full_flag_handled: fullFlagHandled, last_run_at: nowIso(),
+    last_result: { ...totals, has_more: hasMore, refused, refused_batch_id: refusedBatchId, refused_table: refusedTable, errors },
+    accepted_tables: stillAccepted,
+  };
+  if (totals.batches && !errors.length && !refused) state.last_success_at = nowIso();
+  await writeJsonFile(backupDbSyncPath, state);
+  // The Inkoop days the new rows belong to: compared again here.
+  if (dates.size) await refreshInkoopDaySummariesForDates([...dates]).catch(() => {});
+
+  // At night: the parts that need a whole copy, and once a week the row
+  // counts of every table compared with Render's.
+  const night = { parts: [], counts_off: null };
+  const hour = new Date().getHours();
+  if (hour >= 1 && hour < 5 && !hasMore && !refused) {
+    const names = Object.keys(needsFull).filter((name) => parts.some((part) => part.name === name));
+    if (names.length) {
+      const result = await runPostgresRestoreByParts({ only: new Set(names) }).catch((error) => ({ error: error?.message || String(error) }));
+      night.parts = result?.parts || result?.error || [];
+    }
+    state = await readBackupDbSync();
+    if (!state.last_counts_check || Date.now() - Date.parse(state.last_counts_check) > 7 * 24 * 60 * 60 * 1000) {
+      const countsResponse = await backupAgentFetch("/api/backup/counts");
+      if (countsResponse.ok) {
+        const remote = (await countsResponse.json()).counts || {};
+        const local = await backupTableCounts();
+        const off = Object.entries(remote).filter(([table, count]) => partOfTable.has(table) && Number(local[table] ?? -1) !== Number(count));
+        const flagged = { ...(state.needs_full || {}) };
+        for (const [table, count] of off) flagged[partOfTable.get(table)] = `weekly check: ${table} has ${count} row(s) on Render, ${local[table] ?? "none"} here`;
+        state = { ...state, needs_full: flagged, last_counts_check: nowIso(), last_counts_off: off.map(([table, count]) => ({ table, render: count, here: local[table] ?? null })) };
+        await writeJsonFile(backupDbSyncPath, state);
+        night.counts_off = state.last_counts_off;
+      }
+    }
+  }
+  const finalState = await readBackupDbSync();
+  return {
+    ok: !errors.length && !refused,
+    by_changes: true,
+    ...totals,
+    has_more: hasMore,
+    needs_full: Object.keys(finalState.needs_full || {}),
+    ...(night.parts.length || night.counts_off ? { night } : {}),
+    ...(refused ? { refused } : {}),
+    ...(refused || errors.length ? { error: [refused, ...errors].filter(Boolean).join("; ") } : {}),
+  };
+}
+
 async function runPostgresRestoreCycle() {
   if (!backupSyncClientConfigured()) {
     return { ok: false, skipped: true, reason: "Backup sync is not configured" };
   }
   if (!process.env.DATABASE_URL) {
     return { ok: false, skipped: true, reason: "Local DATABASE_URL is not configured on this PC" };
+  }
+  // Only what changed, when Render tracks changes (null: an older Render --
+  // the whole copy as before).
+  const byChanges = await runBackupByChanges().catch((error) => ({ ok: false, by_changes: true, error: error instanceof Error ? error.message : String(error) }));
+  if (byChanges) {
+    return byChanges;
   }
   if (Date.now() - lastPostgresRestoreAt < postgresRestoreMinIntervalMs) {
     return { ok: false, skipped: true, reason: "Too soon since last restore" };
@@ -25192,6 +25425,75 @@ async function handleApi(req, res, url) {
 
   // The standby's copy in parts (inkoop, fust, ukdocs, ...): the list, then
   // one part per request -- each small, its own limits, one at a time.
+  // Backup by changes (see "Backup by changes" in db.js): what Render
+  // tracks, the next batch of changes, the standby's confirmation, and the
+  // row counts for the weekly check.
+  if (url.pathname === "/api/backup/changes/info" && req.method === "GET") {
+    if (!requireBackupAgentAuth(req, res)) return;
+    if (!isDatabaseEnabled()) {
+      sendJson(res, 503, { error: "Database is not enabled" });
+      return;
+    }
+    try {
+      sendJson(res, 200, await getBackupChangesInfo());
+    } catch (error) {
+      sendJson(res, 500, { error: error instanceof Error ? error.message : String(error) });
+    }
+    return;
+  }
+  if (url.pathname === "/api/backup/changes" && req.method === "GET") {
+    if (!requireBackupAgentAuth(req, res)) return;
+    if (!isDatabaseEnabled() || !backupPublicKey) {
+      sendJson(res, 503, { error: !backupPublicKey ? "BACKUP_PUBLIC_KEY is not configured" : "Database is not enabled" });
+      return;
+    }
+    if (backupChangesBusy) {
+      sendJson(res, 503, { error: "A batch is being made -- one at a time." });
+      return;
+    }
+    backupChangesBusy = true;
+    try {
+      const batch = await takeBackupChangesBatch({ limit: 1000 });
+      if (!batch) {
+        res.writeHead(204, { "cache-control": "no-store" });
+        res.end();
+        return;
+      }
+      const compressed = zlib.gzipSync(Buffer.from(JSON.stringify(batch)));
+      await noteBackupBatchBytes(batch.batch_id, compressed.length).catch(() => {});
+      const sealed = sealBuffer(compressed, backupPublicKey);
+      res.writeHead(200, {
+        "content-type": "application/octet-stream", "cache-control": "no-store",
+        "x-backup-batch": String(batch.batch_id), "x-backup-has-more": batch.has_more ? "1" : "0",
+      });
+      res.end(sealed);
+    } catch (error) {
+      if (!res.headersSent) sendJson(res, 500, { error: error instanceof Error ? error.message : String(error) });
+    } finally {
+      backupChangesBusy = false;
+    }
+    return;
+  }
+  if (url.pathname === "/api/backup/changes/confirm" && req.method === "POST") {
+    if (!requireBackupAgentAuth(req, res)) return;
+    const body = await readRequestJson(req);
+    try {
+      sendJson(res, 200, { ok: await confirmBackupBatch(Number(body?.batch_id) || 0, String(body?.note || "")) });
+    } catch (error) {
+      sendJson(res, 500, { error: error instanceof Error ? error.message : String(error) });
+    }
+    return;
+  }
+  if (url.pathname === "/api/backup/counts" && req.method === "GET") {
+    if (!requireBackupAgentAuth(req, res)) return;
+    try {
+      sendJson(res, 200, { counts: await backupTableCounts() });
+    } catch (error) {
+      sendJson(res, 500, { error: error instanceof Error ? error.message : String(error) });
+    }
+    return;
+  }
+
   if (url.pathname === "/api/backup/postgres-parts" && req.method === "GET") {
     if (!requireBackupAgentAuth(req, res)) {
       return;
@@ -25254,7 +25556,13 @@ async function handleApi(req, res, url) {
       try {
         const dumpBuffer = await buildCompressedDatabaseSnapshot(part.tables);
         const sealed = sealBuffer(dumpBuffer, backupPublicKey);
-        res.writeHead(200, { "content-type": "application/octet-stream", "cache-control": "no-store", "x-snapshot-tables": part.tables.join(",") });
+        // In the backup log; x-backup-tracked: this copy marked the changes
+        // it holds, so from here on only later changes are needed.
+        const partBatchId = await logBackupPartSent(name, { tables: part.tables, bytes: dumpBuffer.length }).catch(() => 0);
+        res.writeHead(200, {
+          "content-type": "application/octet-stream", "cache-control": "no-store", "x-snapshot-tables": part.tables.join(","),
+          "x-backup-batch": String(partBatchId || 0), "x-backup-tracked": partBatchId ? "1" : "0",
+        });
         res.end(sealed);
         finishedRecord = { started_at: startedAt, finished_at: new Date().toISOString(), size_bytes: dumpBuffer.length };
         console.log(`Standby copy, part "${name}"${forced ? " (forced: the standby's last load failed)" : ""} (${part.tables.length} table(s)): ${(dumpBuffer.length / 1048576).toFixed(1)} MB compressed in ${Math.round((Date.now() - started) / 1000)} s, app ${Math.round(process.memoryUsage().rss / 1048576)} MB.`);
@@ -25512,6 +25820,50 @@ async function handleApi(req, res, url) {
   const requestUser = await getRequestUser(req);
   if (!requestUser) {
     sendUnauthorized(res);
+    return;
+  }
+
+  // The standby PC: an admin lets a refused batch through (its deletes were
+  // meant) -- that one batch only, at the next run.
+  if (url.pathname === "/api/backup/accept-refused" && req.method === "POST") {
+    if (requestUser.role !== "admin") {
+      sendJson(res, 403, { error: "Admins only" });
+      return;
+    }
+    const body = await readRequestJson(req);
+    const state = existsSync(backupDbSyncPath) ? await readBackupDbSync() : null;
+    const batchId = Number(body?.batch_id) || 0;
+    const table = state?.last_result?.refused_table || "";
+    if (!state || !batchId || Number(state.last_result?.refused_batch_id || 0) !== batchId || !table) {
+      sendJson(res, 400, { error: "That batch is not the refused one on this PC." });
+      return;
+    }
+    // The deletes in that table, for 2 hours (a clean-up comes in many batches).
+    const until = new Date(Date.now() + 2 * 60 * 60 * 1000).toISOString();
+    await writeJsonFile(backupDbSyncPath, {
+      ...state, accepted_tables: { ...(state.accepted_tables || {}), [table]: until },
+      accepted_log: [...(state.accepted_log || []).slice(-20), { table, batch_id: batchId, by: requestUser.username, at: new Date().toISOString() }],
+    });
+    console.log(`Backup by changes: ${requestUser.username} accepted the deletes in ${table} (refused batch ${batchId}) for 2 hours.`);
+    sendJson(res, 200, { ok: true });
+    return;
+  }
+
+  // Backup log (Settings): on Render what it tracks and every batch sent /
+  // confirmed; on the standby PC also its own state.
+  if (url.pathname === "/api/backup/sync-log" && req.method === "GET") {
+    if (requestUser.role !== "admin") {
+      sendJson(res, 403, { error: "Admins only" });
+      return;
+    }
+    let info = null;
+    let batches = [];
+    if (isDatabaseEnabled()) {
+      info = await getBackupChangesInfo().catch((error) => ({ error: error?.message || String(error) }));
+      batches = await listBackupSyncBatches(80).catch(() => []);
+    }
+    const standby = existsSync(backupDbSyncPath) ? await readBackupDbSync() : null;
+    sendJson(res, 200, { info, batches, standby: standby ? { ...standby, deletes: undefined } : null });
     return;
   }
 
@@ -33762,6 +34114,12 @@ async function connectDatabaseAtStart() {
   try {
     await initializeDatabase();
     console.log("Postgres is connected and ready.");
+    // Backup by changes: a trigger on every backed-up table (new tables get
+    // theirs here too).
+    ensureBackupChangeTracking().then((result) => {
+      if (result.installed?.length) console.log(`Backup by changes: tracking ${result.installed.length} more table(s).`);
+      if (result.failed?.length || result.error) console.warn("Backup by changes: tracking not installed on", result.error || result.failed.join("; "));
+    }).catch((error) => console.warn("Backup by changes: tracking failed:", error?.message || error));
     refreshInkoopInvoiceNameCodesLater();
     return true;
   } catch (error) {
@@ -34269,6 +34627,15 @@ async function startServer() {
   setInterval(() => {
     runIfOnline("Compact finished jobs", compactLlmJobs).catch(() => {});
   }, 60 * 60 * 1000);
+  // Backup by changes: the lines the standby confirmed go, hourly -- and a
+  // table that was busy at start (no trigger yet) gets its trigger.
+  setInterval(() => {
+    runIfOnline("Backup changes clean-up", async () => {
+      const tracking = await ensureBackupChangeTracking().catch(() => ({}));
+      const result = await pruneBackupChanges();
+      return { ok: true, ...result, ...(tracking.installed?.length ? { tracking_added: tracking.installed } : {}) };
+    }).catch(() => {});
+  }, 60 * 60 * 1000);
 
   // No "run once at a specific wall-clock time" scheduler exists in this
   // codebase -- this follows the same setInterval house pattern as
@@ -34312,6 +34679,10 @@ async function startServer() {
   setInterval(() => {
     runIfBackup("postgres restore", runPostgresRestoreCycle).catch(() => {});
   }, 15 * 60 * 1000);
+  // Backup by changes: this PC serves no one -- its own change lines go.
+  setInterval(() => {
+    runIfBackup("backup changes clean-up", () => pruneBackupChanges({ onStandby: true }).then((result) => ({ ok: true, ...result }))).catch(() => {});
+  }, 60 * 60 * 1000);
   // The office PC's own complete copy, once a day after midnight (any mode).
   if (renderBackupBaseUrl) {
     setTimeout(() => runDailyLocalBackupIfDue().catch(() => {}), 3 * 60 * 1000);

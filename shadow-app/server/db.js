@@ -6568,6 +6568,44 @@ const databaseMigrations = [
   "ALTER TABLE social_posts ADD COLUMN IF NOT EXISTS error text NOT NULL DEFAULT ''",
   "ALTER TABLE social_posts ADD COLUMN IF NOT EXISTS publish_job_id text",
   "CREATE INDEX IF NOT EXISTS social_posts_item_idx ON social_posts (media_item_id)",
+  // Backup by changes (see "Backup by changes" below): every added, changed
+  // or deleted row of a backed-up table leaves a line here (a trigger), the
+  // standby PC fetches them in batches and confirms each one.
+  `
+    CREATE TABLE IF NOT EXISTS backup_changes (
+      seq bigserial PRIMARY KEY,
+      table_name text NOT NULL,
+      pk jsonb NOT NULL,
+      changed_at timestamptz NOT NULL DEFAULT now(),
+      batch_id bigint
+    )
+  `,
+  "CREATE INDEX IF NOT EXISTS backup_changes_open_idx ON backup_changes (seq) WHERE batch_id IS NULL",
+  "CREATE INDEX IF NOT EXISTS backup_changes_batch_idx ON backup_changes (batch_id)",
+  // The log: every batch (and whole part) sent to the standby, and when it
+  // confirmed having loaded it.
+  `
+    CREATE TABLE IF NOT EXISTS backup_sync_batches (
+      id bigserial PRIMARY KEY,
+      kind text NOT NULL DEFAULT 'changes',
+      created_at timestamptz NOT NULL DEFAULT now(),
+      last_sent_at timestamptz,
+      sent_count integer NOT NULL DEFAULT 0,
+      changes integer NOT NULL DEFAULT 0,
+      upserts integer NOT NULL DEFAULT 0,
+      deletes integer NOT NULL DEFAULT 0,
+      bytes integer NOT NULL DEFAULT 0,
+      confirmed_at timestamptz,
+      note text NOT NULL DEFAULT ''
+    )
+  `,
+  `
+    CREATE TABLE IF NOT EXISTS backup_state (
+      key text PRIMARY KEY,
+      value text NOT NULL DEFAULT '',
+      updated_at timestamptz NOT NULL DEFAULT now()
+    )
+  `,
 ];
 
 // Every statement in databaseMigrations is idempotent (CREATE TABLE IF NOT
@@ -6762,7 +6800,7 @@ const SNAPSHOT_FETCH_ROWS_BY_TABLE = { state_file_history: 1, llm_jobs: 20 };
 async function listPublicTablesParentsFirst(client) {
   const tables = (await client.query(
     `SELECT table_name FROM information_schema.tables WHERE table_schema = 'public' AND table_type = 'BASE TABLE' ORDER BY table_name`,
-  )).rows.map((row) => row.table_name).filter((table) => !SNAPSHOT_DERIVED_TABLES.has(table));
+  )).rows.map((row) => row.table_name).filter((table) => !SNAPSHOT_DERIVED_TABLES.has(table) && !["backup_changes", "backup_sync_batches", "backup_state"].includes(table));
   const deps = (await client.query(`
     SELECT child.relname AS child, parent.relname AS parent
     FROM pg_constraint c
@@ -6880,10 +6918,16 @@ export async function exportDatabaseSnapshot(writeLine, { onlyTables = null } = 
   const client = await pool.connect();
   try {
     // One consistent point in time across all tables.
-    await client.query("BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY");
+    await client.query("BEGIN ISOLATION LEVEL REPEATABLE READ");
+    // The first statement fixes the snapshot: the change lines of these
+    // tables it sees are in this copy (backup by changes: not sent again).
+    const tracked = Boolean((await client.query("SELECT to_regclass('public.backup_changes') AS t")).rows[0]?.t);
     const all = await listPublicTablesParentsFirst(client);
     const wanted = Array.isArray(onlyTables) ? new Set(onlyTables) : null;
     const tables = wanted ? all.filter((table) => wanted.has(table)) : all;
+    if (tracked) {
+      await client.query("UPDATE backup_changes SET batch_id = -1 WHERE batch_id IS NULL AND table_name = ANY($1::text[])", [tables]);
+    }
     await writeLine(JSON.stringify({ format: "snappysjaak-db-snapshot", version: 1, created_at: new Date().toISOString(), tables }));
     for (const table of tables) {
       await writeLine(JSON.stringify({ table }));
@@ -6953,6 +6997,7 @@ export async function importDatabaseSnapshot(lines, { guard = true } = {}) {
   const counts = {};
   try {
     await client.query("BEGIN");
+    await client.query("SET LOCAL backup.applying = '1'");
     const localTables = new Set((await client.query(
       `SELECT table_name FROM information_schema.tables WHERE table_schema = 'public' AND table_type = 'BASE TABLE'`,
     )).rows.map((row) => row.table_name));
@@ -7041,4 +7086,424 @@ export async function importDatabaseSnapshot(lines, { guard = true } = {}) {
     client.release();
   }
   return { tables: counts, snapshot_created_at: header.created_at || "" };
+}
+
+// ---------------------------------------------------------------------------
+// Backup by changes. Every backed-up table has a trigger that writes one line
+// per added / changed / deleted row into backup_changes (table + the row's
+// key; a TRUNCATE leaves a {"__truncate": true} line). The standby PC asks for
+// a batch: Render marks up to N open lines with a batch id and sends each
+// row's CURRENT content (or "deleted" when the row is gone) -- so loading a
+// batch twice is harmless. The PC loads it in one transaction and confirms;
+// an unconfirmed batch is simply sent again. A whole part copied for the
+// standby (its first copy, or a repair) marks the lines it already holds
+// (batch -1) in the same snapshot it is read in. Confirmed lines are
+// removed; the batches stay as the log (backup_sync_batches).
+// Not tracked: the derived Inkoop tables (rebuilt on the PC), the job queue
+// (photos/PDFs, temporary work), the state-file history (the files
+// themselves are backed up), and these backup tables.
+const BACKUP_TABLES = new Set(["backup_changes", "backup_sync_batches", "backup_state"]);
+const BACKUP_UNTRACKED_TABLES = new Set([...SNAPSHOT_DERIVED_TABLES, ...BACKUP_TABLES, "llm_jobs", "state_file_history"]);
+const BACKUP_TRIGGER = "backup_log_change_trg";
+const BACKUP_TRUNCATE_TRIGGER = "backup_log_truncate_trg";
+
+// The key columns of a table (its primary key), with their types.
+async function backupKeyColumns(client, table) {
+  return (await client.query(
+    `SELECT a.attname AS name, format_type(a.atttypid, a.atttypmod) AS type
+       FROM pg_index i
+       JOIN pg_attribute a ON a.attrelid = i.indrelid AND a.attnum = ANY(i.indkey::int2[])
+      WHERE i.indrelid = to_regclass($1) AND i.indisprimary
+      ORDER BY array_position(i.indkey::int2[], a.attnum)`,
+    [`public.${quoteIdent(table)}`],
+  )).rows;
+}
+
+// The trigger function and a trigger on every tracked table (new tables get
+// theirs at the next start). Each table on its own: a busy table is tried
+// again next time. On the PC, loading a copy sets backup.applying, so its
+// own loads are not logged.
+export async function ensureBackupChangeTracking() {
+  if (!pool) return { ok: false, error: "Database is not initialized" };
+  const client = await pool.connect();
+  const installed = [];
+  const failed = [];
+  const untracked = [];
+  try {
+    await client.query("SET lock_timeout = '5s'");
+    await client.query(`
+      CREATE OR REPLACE FUNCTION backup_log_change() RETURNS trigger LANGUAGE plpgsql AS $fn$
+      DECLARE
+        rec jsonb;
+        old_rec jsonb;
+        key jsonb := '{}'::jsonb;
+        old_key jsonb := '{}'::jsonb;
+        col text;
+      BEGIN
+        IF current_setting('backup.applying', true) = '1' THEN
+          RETURN NULL;
+        END IF;
+        IF TG_OP = 'TRUNCATE' THEN
+          INSERT INTO backup_changes (table_name, pk) VALUES (TG_TABLE_NAME, '{"__truncate": true}'::jsonb);
+          RETURN NULL;
+        END IF;
+        IF TG_OP = 'DELETE' THEN rec := to_jsonb(OLD); ELSE rec := to_jsonb(NEW); END IF;
+        FOREACH col IN ARRAY TG_ARGV LOOP
+          key := key || jsonb_build_object(col, rec -> col);
+        END LOOP;
+        INSERT INTO backup_changes (table_name, pk) VALUES (TG_TABLE_NAME, key);
+        -- A key that changed: the old key is gone.
+        IF TG_OP = 'UPDATE' THEN
+          old_rec := to_jsonb(OLD);
+          FOREACH col IN ARRAY TG_ARGV LOOP
+            old_key := old_key || jsonb_build_object(col, old_rec -> col);
+          END LOOP;
+          IF old_key <> key THEN
+            INSERT INTO backup_changes (table_name, pk) VALUES (TG_TABLE_NAME, old_key);
+          END IF;
+        END IF;
+        RETURN NULL;
+      END
+      $fn$
+    `);
+    const tables = await listPublicTablesParentsFirst(client);
+    const existing = new Set((await client.query(
+      `SELECT c.relname AS table_name, t.tgname FROM pg_trigger t JOIN pg_class c ON c.oid = t.tgrelid
+        JOIN pg_namespace n ON n.oid = c.relnamespace
+        WHERE n.nspname = 'public' AND t.tgname IN ($1, $2)`,
+      [BACKUP_TRIGGER, BACKUP_TRUNCATE_TRIGGER],
+    )).rows.map((row) => `${row.table_name}|${row.tgname}`));
+    for (const table of tables) {
+      if (BACKUP_UNTRACKED_TABLES.has(table)) continue;
+      const keys = await backupKeyColumns(client, table);
+      if (!keys.length) {
+        untracked.push(table);
+        continue;
+      }
+      try {
+        if (!existing.has(`${table}|${BACKUP_TRIGGER}`)) {
+          const args = keys.map((key) => `'${String(key.name).replace(/'/g, "''")}'`).join(", ");
+          await client.query(`CREATE TRIGGER ${BACKUP_TRIGGER} AFTER INSERT OR UPDATE OR DELETE ON ${quoteIdent(table)} FOR EACH ROW EXECUTE PROCEDURE backup_log_change(${args})`);
+          installed.push(table);
+        }
+        if (!existing.has(`${table}|${BACKUP_TRUNCATE_TRIGGER}`)) {
+          await client.query(`CREATE TRIGGER ${BACKUP_TRUNCATE_TRIGGER} AFTER TRUNCATE ON ${quoteIdent(table)} FOR EACH STATEMENT EXECUTE PROCEDURE backup_log_change()`);
+        }
+      } catch (error) {
+        failed.push(`${table}: ${error?.message || error}`);
+      }
+    }
+    return { ok: !failed.length, installed, failed, untracked };
+  } catch (error) {
+    return { ok: false, error: error instanceof Error ? error.message : String(error), installed, failed, untracked };
+  } finally {
+    await client.query("RESET lock_timeout").catch(() => {});
+    client.release();
+  }
+}
+
+// Which tables are tracked / not (no key, or left out on purpose), the open
+// lines waiting, and Render's flag (a whole new copy needed after the log
+// grew too long while the PC was away).
+export async function getBackupChangesInfo() {
+  if (!pool) throw new Error("Database is not initialized");
+  const client = await pool.connect();
+  try {
+    if (!(await client.query("SELECT to_regclass('public.backup_changes') AS t")).rows[0]?.t) {
+      return { tracking: false, tracked: [], untracked: [] };
+    }
+    const triggers = new Set((await client.query(
+      `SELECT c.relname FROM pg_trigger t JOIN pg_class c ON c.oid = t.tgrelid JOIN pg_namespace n ON n.oid = c.relnamespace
+        WHERE n.nspname = 'public' AND t.tgname = $1`,
+      [BACKUP_TRIGGER],
+    )).rows.map((row) => row.relname));
+    const tables = (await listPublicTablesParentsFirst(client)).filter((table) => !BACKUP_TABLES.has(table));
+    const open = (await client.query("SELECT count(*)::bigint AS n, min(changed_at) AS oldest FROM backup_changes WHERE batch_id IS NULL")).rows[0] || {};
+    const state = Object.fromEntries((await client.query("SELECT key, value FROM backup_state")).rows.map((row) => [row.key, row.value]));
+    const lastConfirmed = (await client.query("SELECT max(confirmed_at) AS at FROM backup_sync_batches WHERE confirmed_at IS NOT NULL")).rows[0]?.at || null;
+    return {
+      tracking: true,
+      tracked: tables.filter((table) => triggers.has(table)),
+      untracked: tables.filter((table) => !triggers.has(table)),
+      open_changes: Number(open.n || 0),
+      oldest_open: open.oldest || null,
+      needs_full_since: state.needs_full_since || "",
+      last_confirmed_at: lastConfirmed,
+    };
+  } finally {
+    client.release();
+  }
+}
+
+// The batch for the standby: the one it hasn't confirmed yet (sent again,
+// with the rows as they are now), else a new one of up to `limit` open
+// lines. Returns { batch_id, resent, tables: [{ table, keys, upserts,
+// deletes }], truncated: [table], changes, has_more } -- tables parents
+// first. null when there is nothing to send.
+export async function takeBackupChangesBatch({ limit = 2000 } = {}) {
+  if (!pool) throw new Error("Database is not initialized");
+  const client = await pool.connect();
+  try {
+    let batchId = Number((await client.query(
+      "SELECT id FROM backup_sync_batches WHERE kind = 'changes' AND confirmed_at IS NULL ORDER BY id DESC LIMIT 1",
+    )).rows[0]?.id || 0);
+    let changes = [];
+    let resent = false;
+    if (batchId) {
+      changes = (await client.query("SELECT table_name, pk FROM backup_changes WHERE batch_id = $1 ORDER BY seq", [batchId])).rows;
+      if (changes.length) resent = true;
+      else {
+        await client.query("DELETE FROM backup_sync_batches WHERE id = $1", [batchId]);
+        batchId = 0;
+      }
+    }
+    if (!batchId) {
+      await client.query("BEGIN");
+      batchId = Number((await client.query("INSERT INTO backup_sync_batches (kind) VALUES ('changes') RETURNING id")).rows[0].id);
+      changes = (await client.query(
+        `UPDATE backup_changes SET batch_id = $1
+          WHERE seq IN (SELECT seq FROM backup_changes WHERE batch_id IS NULL ORDER BY seq LIMIT $2 FOR UPDATE SKIP LOCKED)
+          RETURNING seq, table_name, pk`,
+        [batchId, limit],
+      )).rows.sort((a, b) => Number(a.seq) - Number(b.seq));
+      if (!changes.length) {
+        await client.query("ROLLBACK");
+        return null;
+      }
+      await client.query("COMMIT");
+    }
+    // Each row once, by table.
+    const byTable = new Map();
+    const truncated = new Set();
+    for (const change of changes) {
+      if (change.pk && change.pk.__truncate) {
+        truncated.add(change.table_name);
+        continue;
+      }
+      if (!byTable.has(change.table_name)) byTable.set(change.table_name, new Map());
+      byTable.get(change.table_name).set(JSON.stringify(change.pk), change.pk);
+    }
+    const order = await listPublicTablesParentsFirst(client);
+    const tables = [];
+    let upsertCount = 0;
+    let deleteCount = 0;
+    for (const table of order) {
+      const wanted = byTable.get(table);
+      if (!wanted) continue;
+      const keys = await backupKeyColumns(client, table);
+      if (!keys.length) continue;
+      const keyList = [...wanted.values()];
+      const definition = keys.map((key) => `${quoteIdent(key.name)} ${key.type}`).join(", ");
+      const join = keys.map((key) => `t.${quoteIdent(key.name)} = k.${quoteIdent(key.name)}`).join(" AND ");
+      const rows = (await client.query(
+        `SELECT to_jsonb(t) AS row FROM ${quoteIdent(table)} t JOIN jsonb_to_recordset($1::jsonb) AS k(${definition}) ON ${join}`,
+        [JSON.stringify(keyList)],
+      )).rows.map((row) => row.row);
+      const keyOf = (record) => JSON.stringify(keys.map((key) => record[key.name] ?? null));
+      const found = new Set(rows.map(keyOf));
+      const deletes = keyList.filter((key) => !found.has(keyOf(key)));
+      upsertCount += rows.length;
+      deleteCount += deletes.length;
+      tables.push({ table, keys: keys.map((key) => key.name), upserts: rows, deletes });
+    }
+    const hasMore = Boolean((await client.query("SELECT 1 FROM backup_changes WHERE batch_id IS NULL LIMIT 1")).rows.length);
+    await client.query(
+      "UPDATE backup_sync_batches SET last_sent_at = now(), sent_count = sent_count + 1, changes = $2, upserts = $3, deletes = $4 WHERE id = $1",
+      [batchId, changes.length, upsertCount, deleteCount],
+    );
+    return { batch_id: batchId, resent, tables, truncated: [...truncated], changes: changes.length, has_more: hasMore };
+  } catch (error) {
+    await client.query("ROLLBACK").catch(() => {});
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
+export async function noteBackupBatchBytes(batchId, bytes) {
+  if (!pool || !batchId) return;
+  await pool.query("UPDATE backup_sync_batches SET bytes = $2 WHERE id = $1", [batchId, Math.round(bytes) || 0]);
+}
+
+// A whole part handed to the standby: logged like a batch (kind "part:<name>").
+export async function logBackupPartSent(name, { tables = [], bytes = 0 } = {}) {
+  if (!pool) return 0;
+  if (!(await pool.query("SELECT to_regclass('public.backup_sync_batches') AS t")).rows[0]?.t) return 0;
+  return Number((await pool.query(
+    "INSERT INTO backup_sync_batches (kind, last_sent_at, sent_count, bytes, note) VALUES ($1, now(), 1, $2, $3) RETURNING id",
+    [`part:${name}`, Math.round(bytes) || 0, tables.join(", ").slice(0, 900)],
+  )).rows[0]?.id || 0);
+}
+
+// The standby loaded it: confirmed (its lines can go).
+export async function confirmBackupBatch(batchId, note = "") {
+  if (!pool || !batchId) return false;
+  const result = await pool.query(
+    "UPDATE backup_sync_batches SET confirmed_at = COALESCE(confirmed_at, now()), note = CASE WHEN $2 = '' THEN note ELSE left($2, 900) END WHERE id = $1",
+    [batchId, String(note || "")],
+  );
+  return result.rowCount > 0;
+}
+
+// Removes the lines the standby has (confirmed, or held by a whole part it
+// was sent), keeps the log 90 days, and -- when the open lines pile up past
+// `maxOpen` (the PC away for weeks) -- drops them and flags that the PC needs
+// a whole new copy. onStandby: this PC serves no one, its own lines go.
+export async function pruneBackupChanges({ maxOpen = 2000000, onStandby = false } = {}) {
+  if (!pool) return { removed: 0 };
+  if (!(await pool.query("SELECT to_regclass('public.backup_changes') AS t")).rows[0]?.t) return { removed: 0 };
+  let removed = 0;
+  const deleteRounds = async (sql, rounds) => {
+    for (let round = 0; round < rounds; round += 1) {
+      const result = await pool.query(sql);
+      removed += result.rowCount;
+      if (result.rowCount < 20000) break;
+    }
+  };
+  if (onStandby) {
+    await deleteRounds("DELETE FROM backup_changes WHERE seq IN (SELECT seq FROM backup_changes LIMIT 20000)", 50);
+    return { removed };
+  }
+  await deleteRounds(
+    `DELETE FROM backup_changes WHERE seq IN (
+       SELECT c.seq FROM backup_changes c
+        WHERE c.batch_id = -1 OR c.batch_id IN (SELECT id FROM backup_sync_batches WHERE confirmed_at IS NOT NULL)
+        LIMIT 20000)`,
+    50,
+  );
+  await pool.query("DELETE FROM backup_sync_batches WHERE created_at < now() - interval '90 days'");
+  let flagged = false;
+  const open = Number((await pool.query("SELECT count(*)::bigint AS n FROM backup_changes WHERE batch_id IS NULL")).rows[0]?.n || 0);
+  if (open > maxOpen) {
+    await pool.query(
+      `INSERT INTO backup_state (key, value, updated_at) VALUES ('needs_full_since', $1, now())
+       ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = now()`,
+      [new Date().toISOString()],
+    );
+    await deleteRounds("DELETE FROM backup_changes WHERE seq IN (SELECT seq FROM backup_changes WHERE batch_id IS NULL LIMIT 20000)", 200);
+    flagged = true;
+  }
+  return { removed, flagged };
+}
+
+export async function listBackupSyncBatches(limit = 60) {
+  if (!pool) return [];
+  if (!(await pool.query("SELECT to_regclass('public.backup_sync_batches') AS t")).rows[0]?.t) return [];
+  return (await pool.query(
+    `SELECT id, kind, created_at, last_sent_at, sent_count, changes, upserts, deletes, bytes, confirmed_at, note
+       FROM backup_sync_batches ORDER BY id DESC LIMIT $1`,
+    [Math.max(1, Math.min(500, Number(limit) || 60))],
+  )).rows;
+}
+
+// Rows per tracked table (the weekly check: Render's counts against the PC's).
+export async function backupTableCounts() {
+  if (!pool) throw new Error("Database is not initialized");
+  const client = await pool.connect();
+  try {
+    const tables = (await listPublicTablesParentsFirst(client)).filter((table) => !BACKUP_UNTRACKED_TABLES.has(table));
+    const counts = {};
+    for (const table of tables) {
+      counts[table] = Number((await client.query(`SELECT count(*)::bigint AS n FROM ${quoteIdent(table)}`)).rows[0]?.n || 0);
+    }
+    return counts;
+  } finally {
+    client.release();
+  }
+}
+
+// The PC side: one batch loaded in one transaction (deletes children first,
+// then the rows parents first), not logged here. Refused (nothing changed,
+// "REFUSED: ...") when it would delete more than half of a table of 1000+
+// rows -- counting what was deleted in the last day (`priorDeletes`,
+// { table: rows }) so small batches can't empty a table either.
+// Returns { tables: { table: { upserts, deletes } }, truncated, dates: the
+// days of the Inkoop rows that came in }.
+// allowDeletesIn: tables an admin accepted the deletes of (no guard there).
+export async function applyBackupChanges(batch, { priorDeletes = {}, guard = true, allowDeletesIn = [] } = {}) {
+  if (!pool) throw new Error("Database is not initialized");
+  const client = await pool.connect();
+  const applied = {};
+  const dates = new Set();
+  try {
+    await client.query("BEGIN");
+    await client.query("SET LOCAL backup.applying = '1'");
+    const localTables = new Set((await client.query(
+      "SELECT table_name FROM information_schema.tables WHERE table_schema = 'public' AND table_type = 'BASE TABLE'",
+    )).rows.map((row) => row.table_name));
+    const parts = (batch.tables || []).filter((part) => localTables.has(part.table));
+    // Deletes, children first.
+    for (const part of [...parts].reverse()) {
+      if (!part.deletes?.length) continue;
+      const keys = await backupKeyColumns(client, part.table);
+      if (!keys.length) continue;
+      if (guard && !allowDeletesIn.includes(part.table)) {
+        const before = Number((await client.query(`SELECT count(*)::bigint AS n FROM ${quoteIdent(part.table)}`)).rows[0]?.n || 0);
+        const prior = Number(priorDeletes[part.table] || 0);
+        const total = prior + part.deletes.length;
+        if (total >= 1000 && total > (before + prior) * 0.5) {
+          throw new Error(`REFUSED (${part.table}): this batch would delete ${part.deletes.length} row(s) of ${part.table} (${total} in the last day, the table holds ${before}) -- not loaded, the data here is unchanged.`);
+        }
+      }
+      const definition = keys.map((key) => `${quoteIdent(key.name)} ${key.type}`).join(", ");
+      const match = keys.map((key) => `t.${quoteIdent(key.name)} = k.${quoteIdent(key.name)}`).join(" AND ");
+      const result = await client.query(
+        `DELETE FROM ${quoteIdent(part.table)} t USING jsonb_to_recordset($1::jsonb) AS k(${definition}) WHERE ${match}`,
+        [JSON.stringify(part.deletes)],
+      );
+      applied[part.table] = { upserts: 0, ...(applied[part.table] || {}), deletes: result.rowCount };
+    }
+    // The rows as they are now on Render, parents first.
+    for (const part of parts) {
+      if (!part.upserts?.length) continue;
+      const keys = (await backupKeyColumns(client, part.table)).map((key) => key.name);
+      if (!keys.length) continue;
+      const columns = (await client.query(
+        "SELECT column_name FROM information_schema.columns WHERE table_schema = 'public' AND table_name = $1 AND is_generated = 'NEVER'",
+        [part.table],
+      )).rows.map((row) => row.column_name);
+      const present = columns.filter((column) => part.upserts.some((row) => Object.prototype.hasOwnProperty.call(row, column)));
+      const list = present.map(quoteIdent).join(", ");
+      const updates = present.filter((column) => !keys.includes(column)).map((column) => `${quoteIdent(column)} = EXCLUDED.${quoteIdent(column)}`);
+      for (let start = 0; start < part.upserts.length; start += SNAPSHOT_BATCH_ROWS) {
+        const slice = part.upserts.slice(start, start + SNAPSHOT_BATCH_ROWS);
+        await client.query(
+          `INSERT INTO ${quoteIdent(part.table)} (${list}) SELECT ${list} FROM jsonb_populate_recordset(NULL::${quoteIdent(part.table)}, $1::jsonb)
+           ON CONFLICT (${keys.map(quoteIdent).join(", ")}) DO ${updates.length ? `UPDATE SET ${updates.join(", ")}` : "NOTHING"}`,
+          [JSON.stringify(slice)],
+        );
+      }
+      applied[part.table] = { deletes: 0, ...(applied[part.table] || {}), upserts: part.upserts.length };
+      if (part.table.startsWith("inkoop_")) {
+        for (const row of part.upserts) {
+          for (const field of ["invoice_date", "erp_date", "msg_date", "item_date", "line_date"]) {
+            const day = String(row[field] || "").slice(0, 10);
+            if (/^\d{4}-\d{2}-\d{2}$/.test(day)) dates.add(day);
+          }
+        }
+      }
+    }
+    // Serial ids go on after the highest id now here.
+    const touched = Object.keys(applied);
+    if (touched.length) {
+      const sequences = (await client.query(
+        `SELECT table_name, column_name FROM information_schema.columns
+          WHERE table_schema = 'public' AND column_default LIKE 'nextval(%' AND table_name = ANY($1::text[])`,
+        [touched],
+      )).rows;
+      for (const { table_name: seqTable, column_name: seqColumn } of sequences) {
+        await client.query(
+          `SELECT setval(pg_get_serial_sequence($1, $2), GREATEST(COALESCE((SELECT MAX(${quoteIdent(seqColumn)}) FROM ${quoteIdent(seqTable)}), 0), 1))`,
+          [`public.${quoteIdent(seqTable)}`, seqColumn],
+        );
+      }
+    }
+    await client.query("COMMIT");
+  } catch (error) {
+    await client.query("ROLLBACK").catch(() => {});
+    throw error;
+  } finally {
+    client.release();
+  }
+  return { tables: applied, truncated: batch.truncated || [], dates: [...dates].sort() };
 }
