@@ -3003,7 +3003,14 @@ class ActionRun:
             return self._press_until_title(hwnd, controller, step, number)
         if step.get("times") and step.get("key"):
             # The same key N times (e.g. F12 x 4 back to the main menu),
-            # each press after Uniware has settled.
+            # each press after Uniware has settled. pause_before: seconds to
+            # wait first (Uniware still saving the OneDrive CSV).
+            if step.get("pause_before"):
+                self.say(f"Step {number}: waiting {step['pause_before']}s (the file is being saved)")
+                waited_until = time.time() + float(step["pause_before"])
+                while time.time() < waited_until:
+                    self._check(hwnd)
+                    time.sleep(0.5)
             for press in range(int(step["times"])):
                 self._check(hwnd)
                 send_combo(controller, step["key"])
