@@ -18901,8 +18901,15 @@ function InkoopOverviewTab({ onOpenTrackTrace = null }) {
                         </td>
                         <td>
                           <span className="ik-inv-flows">
-                            <IkSplitBar parts={flowParts} />
-                            <small className="muted">{flowParts.map((part) => part.label).join(" · ")}</small>
+                            {flowParts.filter((part) => part.value > 0 || flowParts.length === 1).sort((left, right) => right.value - left.value).map((part, _, list) => {
+                              const most = Math.max(...list.map((item) => item.value), 0);
+                              return (
+                                <span key={part.label} className="ik-inv-flow" title={`${part.label}: ${formatInkoopEuro(part.value)}`}>
+                                  <i style={{ width: `${most > 0 ? Math.max(4, (part.value / most) * 100) : 4}%`, background: part.color }} />
+                                  <small>{part.label}</small>
+                                </span>
+                              );
+                            })}
                           </span>
                         </td>
                         <td>

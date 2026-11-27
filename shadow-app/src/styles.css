@@ -4408,9 +4408,12 @@ table.data-table.balance-table.ik-table.ik-inv-companies td:nth-child(n+4), tabl
 table.data-table.balance-table.ik-table.ik-inv-invoices td:nth-child(n+7), table.data-table.balance-table.ik-table.ik-inv-invoices th:nth-child(n+7) { text-align: right; }
 .ik-inv-companies td small { display: block; }
 /* Flows: one bar (its parts side by side), the names right after it. */
-.ik-inv-companies .ik-inv-flows { display: flex; align-items: center; gap: 10px; }
-.ik-inv-companies .ik-inv-flows .ik-split { display: inline-flex; flex: 0 0 150px; width: 150px; }
-.ik-inv-companies .ik-inv-flows small { display: inline; }
+/* Flows: one line per flow -- a small bar (its share, the biggest flow
+   full) and its name next to it. */
+.ik-inv-companies .ik-inv-flows { display: grid; gap: 3px; }
+.ik-inv-companies .ik-inv-flow { display: grid; grid-template-columns: 80px auto; align-items: center; gap: 8px; }
+.ik-inv-companies .ik-inv-flow i { display: block; height: 6px; border-radius: 3px; }
+.ik-inv-companies .ik-inv-flow small { display: inline; font-size: 0.78rem; line-height: 1.15; }
 .ik-inv-stack-part.resolved { background: hsl(262 70% 62%); }
 /* The lines table keeps its columns: a long line is cut with … (all of it
    in the tooltip), never over the next column. */
