@@ -5632,3 +5632,6 @@ table.data-table.balance-table.ik-table.ik-inv-invoices td:nth-child(n+7), table
 /* Geverifieerd extra costs (transport, other costs ...): purple, not "lost". */
 .ik-extra-cost { color: #7c3aed; font-weight: 600; }
 :root[data-theme="dark"] .ik-extra-cost { color: hsl(252 95% 85%); }
+
+/* Product search: "· 👁 2 left out" -- lots the comparison leaves out. */
+.ik-left-out-link { color: var(--ik-accent); text-decoration: underline; cursor: pointer; }

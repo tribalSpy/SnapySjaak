@@ -30322,10 +30322,33 @@ async function handleApi(req, res, url) {
         if (line.supplier_name) entry.aka.add(line.supplier_name);
         seen(entry, line.line_date);
       }
-      // Only the lots the comparison counts (not a "no purchase" code, not
-      // BW B / N -- unless linked by hand or counted by its AVC / partij), so
-      // a grower found here also has them in Track & Trace.
-      const countedLots = excludeInkoopInternalBunchRows(lotResult.rows || [], state.supplier_bw_map, inkoopExcludedErpCodes(state), invoiceResult.rows || [], inkoopHandLinkedLots(state));
+      // The lots the comparison counts, and apart the ones it leaves out (a
+      // "no purchase" code like XSUM1, BW B / N): not in Track & Trace, but
+      // listed here with why -- a lot booked under such a code by mistake can
+      // be found and looked at.
+      const excludedCodes = inkoopExcludedErpCodes(state);
+      const excludedSet = new Set(excludedCodes);
+      const countedLots = excludeInkoopInternalBunchRows(lotResult.rows || [], state.supplier_bw_map, excludedCodes, invoiceResult.rows || [], inkoopHandLinkedLots(state));
+      const countedSet = new Set(countedLots);
+      for (const lot of (lotResult.rows || []).filter((row) => !countedSet.has(row))) {
+        const suppl = normalizeInkoopKey(lot.suppl);
+        const bwCode = [lot.suppl, lot.avc].map((value) => normalizeInkoopKey(value)).find((code) => state.supplier_bw_map?.[code]);
+        const bw = bwCode ? state.supplier_bw_map[bwCode].bw : "";
+        const reason = excludedSet.has(suppl) ? `${suppl} is "not a purchase" (Link growers)` : bw ? `${bwCode} is BW "${bw}" (${bw === "N" ? "niet berekenen" : "internal bunches"})` : "left out of the comparison";
+        const entry = entryOf(view.growerOf({ supplier_code: lot.suppl, supplier_name: "", list: "only_in_erp" }));
+        entry.left_out = (entry.left_out || 0) + 1;
+        if (!entry.left_out_lots) entry.left_out_lots = [];
+        if (entry.left_out_lots.length < 100) {
+          entry.left_out_lots.push({
+            lot: String(lot.lot), date: lot.erp_date, description: normalizeUkdocsText(lot.description), pieces: Number(lot.pieces) || 0,
+            price: Number(lot.price) || 0, total: Math.round((Number(lot.t_price) || 0) * 100) / 100, pav: normalizeUkdocsText(lot.pav),
+            suppl, avc: normalizeInkoopKey(lot.avc), transp: normalizeInkoopKey(lot.transp), reason,
+          });
+        }
+        entry.products.set(lot.description, (entry.products.get(lot.description) || 0) + 1);
+        if (lot.suppl) entry.aka.add(lot.suppl);
+        seen(entry, lot.erp_date);
+      }
       for (const lot of countedLots) {
         const entry = entryOf(view.growerOf({ supplier_code: lot.suppl, supplier_name: "", list: "only_in_erp" }));
         entry.lots += 1;

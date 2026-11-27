@@ -21939,6 +21939,8 @@ function InkoopTrackTraceWorkspace({ bar, setBar, overview, company, matchRound 
   const [growerFilter, setGrowerFilter] = useState("");
   const [findText, setFindText] = useState("");
   const [findQuery, setFindQuery] = useState("");
+  // Product search: a grower's lots the comparison leaves out, to look at.
+  const [leftOut, setLeftOut] = useState(null);
   // "Open" money: the invoice lines without their lot only (default), or
   // also the Connect lots without an invoice. Kept per browser.
   const [openWithConnect, setOpenWithConnect] = useState(() => {
@@ -22601,6 +22603,27 @@ function InkoopTrackTraceWorkspace({ bar, setBar, overview, company, matchRound 
             <button type="submit" disabled={findText.trim().length < 4}>Find</button>
           </form>
         </div>
+        {leftOut && !findQuery && createPortal(
+          <div className="ik-drawer wide ik-find-drawer" role="dialog" aria-label={`Left out: ${leftOut.grower}`}>
+            <div className="ik-drawer-head">
+              <strong>👁 {leftOut.grower} -- {leftOut.left_out} lot(s) left out of the comparison</strong>
+              <button type="button" onClick={() => setLeftOut(null)}>Close</button>
+            </div>
+            <div className="notice">Not compared and not in Track &amp; Trace (their code is set so) -- shown here to check them. A lot booked under such a code by mistake: open it with Find and link it by hand, then it counts.</div>
+            {(leftOut.left_out_lots || []).map((lot) => (
+              <div key={lot.lot} className="ik-find-row left-out">
+                <div className="ik-find-top">
+                  <span><strong>Lot {lot.lot}</strong> · {lot.date ? fustOverviewDate(lot.date) : "no date"} · <strong>{lot.description}</strong> · partij {lot.pav || "–"}</span>
+                  <button type="button" onClick={() => setFindQuery(lot.lot)} title="Everything about this lot (and + Link)">🔎 Find</button>
+                </div>
+                <div className="muted">{lot.pieces} pcs @ {formatInkoopEuro(lot.price)} = {formatInkoopEuro(lot.total)} · lev. {lot.suppl || "–"} · AVC {lot.avc || "–"}{lot.transp ? ` · transp. ${lot.transp}` : ""}</div>
+                <div className="money-loss">⚠ {lot.reason}</div>
+              </div>
+            ))}
+            {leftOut.left_out > (leftOut.left_out_lots || []).length && <div className="muted">The first {(leftOut.left_out_lots || []).length} shown -- search a shorter period for the rest.</div>}
+          </div>,
+          document.body,
+        )}
         {findQuery && <IkFindPanel query={findQuery} onClose={() => setFindQuery("")}
           pickedKeys={new Set(Object.keys(picked))}
           onPick={(kind, item) => togglePick(kind === "lot"
@@ -22633,14 +22656,25 @@ function InkoopTrackTraceWorkspace({ bar, setBar, overview, company, matchRound 
           {productResult && !productResult.loading && !productResult.error && (
             <div className="ik-grower-list">
               <div className="muted">{productResult.growers.length} grower(s) with “{productResult.product}”{productResult.truncated ? " (first results)" : ""}</div>
-              {productResult.growers.map((entry) => (
-                <button key={entry.grower} type="button" className={`ik-grower${entry.grower === chosen ? " on" : ""}`}
-                  title={[entry.products.join(" · "), entry.aka.length ? `Also: ${entry.aka.join(", ")}` : ""].filter(Boolean).join(" -- ")}
-                  onClick={() => setBar((current) => ({ ...current, grower: entry.grower }))}>
-                  <span className="ik-grower-name">{entry.grower}<small className="muted"> · {entry.products[0]}</small></span>
-                  <span className="muted">{entry.invoice_lines} line(s) · {entry.lots} lot(s)</span>
-                </button>
-              ))}
+              {productResult.growers.map((entry) => {
+                // Only lots the comparison leaves out (XSUM1 ...): a click
+                // shows them, Track & Trace wouldn't.
+                const onlyLeftOut = !entry.invoice_lines && !entry.lots && entry.left_out;
+                return (
+                  <button key={entry.grower} type="button" className={`ik-grower${entry.grower === chosen ? " on" : ""}`}
+                    title={[entry.products.join(" · "), entry.aka.length ? `Also: ${entry.aka.join(", ")}` : "", entry.left_out ? `${entry.left_out} lot(s) left out of the comparison -- click "left out" to see them` : ""].filter(Boolean).join(" -- ")}
+                    onClick={() => (onlyLeftOut ? setLeftOut(entry) : setBar((current) => ({ ...current, grower: entry.grower })))}>
+                    <span className="ik-grower-name">{entry.grower}<small className="muted"> · {entry.products[0]}</small></span>
+                    <span className="muted">
+                      {entry.invoice_lines} line(s) · {entry.lots} lot(s)
+                      {entry.left_out ? (
+                        <span role="link" tabIndex={0} className="ik-left-out-link" onClick={(event) => { event.stopPropagation(); setLeftOut(entry); }}
+                          onKeyDown={(event) => { if (event.key === "Enter") { event.stopPropagation(); setLeftOut(entry); } }}> · 👁 {entry.left_out} left out</span>
+                      ) : null}
+                    </span>
+                  </button>
+                );
+              })}
             </div>
           )}
         </div>
