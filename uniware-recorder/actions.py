@@ -179,7 +179,8 @@ def action_fields(action: dict) -> list[str]:
     if action.get("snappysjaak_fill") and filled:
         filled.add("ref")
     for step in action.get("steps", []):
-        for name in re.findall(r"\{([a-z0-9_]+)\}", (step.get("text") or "") + (step.get("pick") or "")):
+        # {date-6}: the date field, 6 days earlier -- still the field "date".
+        for name in re.findall(r"\{([a-z0-9_]+)(?:[+-]\d+)?\}", (step.get("text") or "") + (step.get("pick") or "")):
             if name not in fields and name not in filled and name not in DATE_WORDS:
                 fields.append(name)
     return fields
@@ -2950,7 +2951,7 @@ class ActionRun:
         save_day_list(data)
         self.say(f"{label}: {item[1]} -> {result or 'WARNING'} ({note})")
 
-    def _field_text(self, name: str, step: dict) -> str:
+    def _field_text(self, name: str, step: dict, offset: int = 0) -> str:
         """A field's typed text. {today} / {tomorrow} / {next_workday}, or a
         field filled in with one of those words (e.g. {date} = "tomorrow"),
         becomes that date -- written like the date typed while recording."""
@@ -2963,7 +2964,9 @@ class ActionRun:
         if not day and value and re.search(r"(?<!\d)\d{2}[-/.]?\d{2}[-/.]?\d{2,4}(?!\d)", recorded):
             day = parse_date_value(value)
         if day:
-            return format_date_like(day, recorded)
+            return format_date_like(day + datetime.timedelta(days=offset), recorded)
+        if offset:
+            raise RuntimeError(f"{{{name}{offset:+d}}}: '{value}' is not a date -- fill in the {name} field with a date (or yesterday ...).")
         # Left empty when starting: what was typed while recording (a field
         # that types nothing at all made Uniware stop at an empty input).
         return value if value != "" else str(step.get("recorded_text") or "")
@@ -3009,7 +3012,8 @@ class ActionRun:
                 self._wait_not_busy(hwnd, f"Step {number}")
             return self._read(hwnd)[3]
         if "text" in step:
-            typed = re.sub(r"\{([a-z0-9_]+)\}", lambda match: self._field_text(match.group(1), step), step["text"])
+            # {date-6} = the {date} day 6 days earlier (a period: from {date-6} to {date}).
+            typed = re.sub(r"\{([a-z0-9_]+)([+-]\d+)?\}", lambda match: self._field_text(match.group(1), step, int(match.group(2) or 0)), step["text"])
             controller.type(typed)
             self.say(f"Step {number}: typed {typed!r}")
         else:
