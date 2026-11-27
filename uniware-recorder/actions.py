@@ -2958,6 +2958,16 @@ class ActionRun:
             return selected
         if step.get("until_title") and step.get("key"):
             return self._press_until_title(hwnd, controller, step, number)
+        if step.get("times") and step.get("key"):
+            # The same key N times (e.g. F12 x 4 back to the main menu),
+            # each press after Uniware has settled.
+            for press in range(int(step["times"])):
+                self._check(hwnd)
+                send_combo(controller, step["key"])
+                self.say(f"Step {number}: {step['key']} ({press + 1} of {step['times']})")
+                time.sleep(float(step.get("times_pause") or 1.0))
+                self._wait_not_busy(hwnd, f"Step {number}")
+            return self._read(hwnd)[3]
         if "text" in step:
             typed = re.sub(r"\{([a-z0-9_]+)\}", lambda match: self._field_text(match.group(1), step), step["text"])
             controller.type(typed)

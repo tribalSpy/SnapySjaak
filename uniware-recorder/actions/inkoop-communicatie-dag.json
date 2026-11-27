@@ -146,9 +146,9 @@
     },
     {
       "key": "F12",
-      "until_title": "Hoofdmenu",
-      "until_max": 8,
-      "to": "prg-000",
+      "times": 4,
+      "times_pause": 1.0,
+      "to": "",
       "to_title": "Prg. 000 Hoofdmenu",
       "capture": false,
       "capture_pages": false,
