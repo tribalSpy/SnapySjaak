@@ -25250,7 +25250,7 @@ async function handleApi(req, res, url) {
         res.writeHead(200, { "content-type": "application/octet-stream", "cache-control": "no-store", "x-snapshot-tables": part.tables.join(",") });
         res.end(sealed);
         finishedRecord = { started_at: startedAt, finished_at: new Date().toISOString(), size_bytes: dumpBuffer.length };
-        console.log(`Standby copy, part "${name}" (${part.tables.length} table(s)): ${(dumpBuffer.length / 1048576).toFixed(1)} MB compressed in ${Math.round((Date.now() - started) / 1000)} s.`);
+        console.log(`Standby copy, part "${name}"${forced ? " (forced: the standby's last load failed)" : ""} (${part.tables.length} table(s)): ${(dumpBuffer.length / 1048576).toFixed(1)} MB compressed in ${Math.round((Date.now() - started) / 1000)} s, app ${Math.round(process.memoryUsage().rss / 1048576)} MB.`);
       } catch (error) {
         console.error(`Standby copy, part "${name}" failed:`, error instanceof Error ? error.message : error);
         finishedRecord.finished_at = new Date().toISOString();
