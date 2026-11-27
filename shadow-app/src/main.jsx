@@ -22806,7 +22806,7 @@ function InkoopTrackTraceWorkspace({ bar, setBar, overview, company, matchRound 
             <strong>🔗 Linked by hand --{fustOverviewDate(from)}{from !== to ? ` – ${fustOverviewDate(to)}` : ""}</strong>
             <button type="button" onClick={() => setPairsOpen(false)}>Close</button>
           </div>
-          <InkoopManualPairsCard from={from} to={to} refreshKey={pairsKey} onChanged={() => { setIssueRound((value) => value + 1); overview.reload(); }} />
+          <InkoopManualPairsCard from={from} to={to} grower={chosen || ""} refreshKey={pairsKey} onChanged={() => { setIssueRound((value) => value + 1); overview.reload(); }} />
         </div>
       )}
       {drawer && (
@@ -27628,13 +27628,19 @@ function InkoopDetectiveCard({ from, to, company, onLinked }) {
 
 // The links made by hand (also those that match, so they're not in the
 // Follow-up list) of the shown period, to check or take off again.
-function InkoopManualPairsCard({ from, to, refreshKey, onChanged }) {
+// grower: (Track & Trace) only the links of that grower -- its lines or lots
+// -- with "All growers" to see every link of the period.
+function InkoopManualPairsCard({ from, to, refreshKey, onChanged, grower = "" }) {
   const [pairs, setPairs] = useState(null);
   const [error, setError] = useState("");
+  const [allGrowers, setAllGrowers] = useState(false);
   useEffect(() => {
-    apiJson("/api/inkoop/manual-pairs").then((payload) => setPairs(payload.pairs || [])).catch((loadError) => setError(loadError.message));
-  }, [refreshKey]);
-  const shown = (pairs || []).filter((pair) => !pair.dates?.length || pair.dates.some((date) => date >= from && date <= to));
+    setPairs(null);
+    apiJson(`/api/inkoop/manual-pairs?from=${from}&to=${to}`).then((payload) => setPairs(payload.pairs || [])).catch((loadError) => setError(loadError.message));
+  }, [refreshKey, from, to]);
+  const inPeriod = (pairs || []).filter((pair) => !pair.dates?.length || pair.dates.some((date) => date >= from && date <= to));
+  const ofGrower = grower ? inPeriod.filter((pair) => (pair.growers || []).some((name) => inkoopSameGrower(name, grower))) : inPeriod;
+  const shown = grower && !allGrowers ? ofGrower : inPeriod;
   async function unlink(pairId) {
     try {
       await apiJson(`/api/inkoop/manual-pairs/${encodeURIComponent(pairId)}`, { method: "DELETE" });
@@ -27648,21 +27654,29 @@ function InkoopManualPairsCard({ from, to, refreshKey, onChanged }) {
     <InkoopCollapsibleCard title="Linked by hand" count={shown.length} defaultOpen={false}>
       {error && <div className="notice danger">{error}</div>}
       <div className="notice">Compared again in the background after a change -- the day updates by itself.</div>
+      {grower && (
+        <div className="row-actions">
+          <button type="button" className={`ik-chip${!allGrowers ? " on" : ""}`} onClick={() => setAllGrowers(false)}>{grower} ({ofGrower.length})</button>
+          <button type="button" className={`ik-chip${allGrowers ? " on" : ""}`} onClick={() => setAllGrowers(true)}>All growers ({inPeriod.length})</button>
+        </div>
+      )}
+      {!pairs && <div className="muted">Loading the links…</div>}
       <div className="table-wrap">
         <table className="data-table">
-          <thead><tr><th>Days</th><th>Invoice line(s)</th><th>Lot(s)</th><th>Note</th><th>By</th><th></th></tr></thead>
+          <thead><tr><th>Days</th><th>Grower</th><th>Invoice line(s)</th><th>Lot(s)</th><th>Note</th><th>By</th><th></th></tr></thead>
           <tbody>
             {shown.map((pair) => (
               <tr key={pair.id}>
                 <td>{(pair.dates || []).map(inkoopShortDate).join(", ")}</td>
-                <td>{pair.invoice_line_ids.join(", ")}</td>
-                <td>{pair.lots.join(", ")}</td>
+                <td>{(pair.growers || []).join(", ")}</td>
+                <td title={pair.invoice_line_ids.join(", ")}>{pair.line_text || pair.invoice_line_ids.join(", ")}</td>
+                <td title={pair.lots.join(", ")}>{pair.lots.join(", ")}{pair.lot_text ? <div className="muted">{pair.lot_text}</div> : null}</td>
                 <td>{pair.note}</td>
                 <td>{pair.by}{pair.at ? <div className="muted">{String(pair.at).slice(0, 16).replace("T", " ")}</div> : null}</td>
                 <td><button type="button" onClick={() => unlink(pair.id)}>Unlink</button></td>
               </tr>
             ))}
-            {!shown.length && <tr><td colSpan={6}>None in this period.</td></tr>}
+            {pairs && !shown.length && <tr><td colSpan={7}>{grower && !allGrowers ? `No link by hand of ${grower} in this period.` : "None in this period."}</td></tr>}
           </tbody>
         </table>
       </div>

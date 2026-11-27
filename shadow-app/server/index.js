@@ -30322,7 +30322,11 @@ async function handleApi(req, res, url) {
         if (line.supplier_name) entry.aka.add(line.supplier_name);
         seen(entry, line.line_date);
       }
-      for (const lot of lotResult.rows || []) {
+      // Only the lots the comparison counts (not a "no purchase" code, not
+      // BW B / N -- unless linked by hand or counted by its AVC / partij), so
+      // a grower found here also has them in Track & Trace.
+      const countedLots = excludeInkoopInternalBunchRows(lotResult.rows || [], state.supplier_bw_map, inkoopExcludedErpCodes(state), invoiceResult.rows || [], inkoopHandLinkedLots(state));
+      for (const lot of countedLots) {
         const entry = entryOf(view.growerOf({ supplier_code: lot.suppl, supplier_name: "", list: "only_in_erp" }));
         entry.lots += 1;
         entry.lot_pieces += Number(lot.pieces) || 0;
@@ -31406,7 +31410,42 @@ async function handleApi(req, res, url) {
       return;
     }
     const state = await readInkoopState();
-    sendJson(res, 200, { pairs: state.manual_line_pairs || [] });
+    const all = state.manual_line_pairs || [];
+    const from = inkoopIsoDate(url.searchParams.get("from"));
+    const to = inkoopIsoDate(url.searchParams.get("to"));
+    if (!from || !to) {
+      sendJson(res, 200, { pairs: all });
+      return;
+    }
+    // A period (Track & Trace): its links, each with the grower(s) of its
+    // lines and lots and what they are -- so the list can show only the
+    // grower being looked at.
+    const pairs = all.filter((pair) => !pair.dates?.length || pair.dates.some((date) => date >= from && date <= to));
+    try {
+      const members = await getInkoopPairMembers({ lineIds: pairs.flatMap((pair) => pair.invoice_line_ids || []), lots: pairs.flatMap((pair) => pair.lots || []) });
+      const lineById = new Map(members.invoiceLines.map((line) => [String(line.id), line]));
+      const lotByNumber = new Map(members.erpRows.map((row) => [String(row.lot), row]));
+      const view = inkoopOverviewNaming(state);
+      const money = (value) => Math.round((Number(value) || 0) * 100) / 100;
+      sendJson(res, 200, {
+        pairs: pairs.map((pair) => {
+          const lines = (pair.invoice_line_ids || []).map((id) => lineById.get(String(id))).filter(Boolean);
+          const lots = (pair.lots || []).map((lot) => lotByNumber.get(String(lot))).filter(Boolean);
+          const growers = [...new Set([
+            ...lots.flatMap((row) => [row.suppl, row.avc].map((code) => view.growerOf({ list: "only_in_erp", supplier_code: normalizeUkdocsText(code) }))),
+            ...lines.map((line) => view.growerOf({ supplier_name: normalizeUkdocsText(line.supplier_name) })),
+          ].filter((name) => name && name !== "(grower unknown)"))];
+          return {
+            ...pair,
+            growers,
+            line_text: lines.map((line) => `${normalizeUkdocsText(line.description)} ${Number(line.quantity) || 0} pcs €${money(line.total).toFixed(2)}`).join(" + "),
+            lot_text: lots.map((row) => `${normalizeUkdocsText(row.description)} ${Number(row.pieces) || 0} pcs €${money(row.t_price).toFixed(2)}`).join(" + "),
+          };
+        }),
+      });
+    } catch (error) {
+      sendJson(res, 200, { pairs, error: error instanceof Error ? error.message : String(error) });
+    }
     return;
   }
   // Corrections check: link a correction to its Connect lot(s) by hand (or
